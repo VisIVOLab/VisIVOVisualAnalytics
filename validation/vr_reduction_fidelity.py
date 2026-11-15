@@ -127,7 +127,9 @@ def main() -> None:
             sizes = block_sizes(cube.shape, factors)
             for mode in ("mean", "max"):
                 for enc in encodings:
-                    res = worker_cube_reduced(cube_path, fxy, fz, 4096, mode, enc, limit=False)
+                    # Linear codes, decoded linearly below (a log scale is #317's).
+                    res = worker_cube_reduced(cube_path, fxy, fz, 4096, mode, enc, limit=False,
+                                              scale="linear")
                     shape = (res["depth"], res["height"], res["width"])
                     shown = cube_reduce.dequantise(res["raw_bytes"], shape, res["range_min"],
                                                    res["range_max"], enc)

@@ -226,6 +226,30 @@
         }
       }
     }
+    // A simulation volume (#317): a cube without a spectral axis, its own notes.
+    for (const busy of [false, true]) {
+      for (const page of HM.PAGES) {
+        const debug = page === 'debug' || busy;
+        const ctx = { ...ctxFor('cube', busy, debug), simulation: true, spectralName: 'Z range', clipTool: 'box' };
+        const view = viewFor('cube', page);
+        Object.assign(view.notes, {
+          thr: '9.686e-06 g/cm3 (starts from the full volume\'s 99th percentile)', cmax: '2.116e-05 g/cm3',
+          slab: 'A simulation volume: z is cropped below, as x and y are.', sigma: '',
+          histx: 'Drag: the threshold. Columns: the values on a log scale; white: threshold, colour max.',
+          stretch: 'Linear in log10 of the values: the desktop\'s Log over threshold to colour max (×52.6).',
+          crop0: 'X1 -1.234e+21 to 1.234e+21 cm · 0–2047 of 2048 voxels', crop1: 'X2 -1.234e+21 to 1.234e+21 cm · 0–2047 of 2048 voxels',
+          crop2: 'X3 -1.234e+21 to 1.234e+21 cm · 12–2035 of 2048 voxels',
+        });
+        view.status = view.status.filter((l) => !/HI rest|velocity optical|σ from/.test(l[0] || l));
+        if (page === 'display' || page === 'levels') {
+          view.status.unshift(['Simulation volume: X1, X2, X3 in cm · voxel 1.234e+18 · log scale 1.83e-12 to 2.12e-5 g/cm3, 12345 voxels ≤ 0 blank', '#b9c2d0']);
+        }
+        view.hist.marks = [];
+        const label = `simulation ${page}${busy ? ' (busy)' : ''}`;
+        drawMenuCase(label, page, ctx, view, null);
+        for (const w of HM.menuLayout(page, ctx)) drawMenuCase(label, page, ctx, view, w.id);
+      }
+    }
     if (opts.live && window.__vrMenu) {
       const m = window.__vrMenu;
       const page0 = m.ui.page;
@@ -241,8 +265,8 @@
       m.layout();
     }
 
-    // ── The tool palette and its tooltips ──
-    for (const kind of HM.KINDS) {
+    // ── The tool palette and its tooltips (a simulation volume: kind 'volume', #317) ──
+    for (const kind of [...HM.KINDS, 'volume']) {
       for (const active of ['explore', 'lasso', 'crop', 'pv']) {
         const ctx = { kind, active };
         const layout = TP.paletteLayout(ctx);
@@ -411,12 +435,17 @@
     for (const bar of [
       { lo: 1e8, hi: 1e12, log: true, title: 'log stellar_mass_msun_with_a_long_name [1e10 Msun/h]', ticks: [1e8, 1e9, 1e10, 1e11, 1e12] },
       { lo: -1234.5, hi: 2345.6, log: false, title: 'velocity_z (no unit in the file)', ticks: [-1000, 0, 1000, 2000] },
+      // A simulation volume's (#317, levels.js volumeBar): every decade of a density.
+      { lo: 1.83467e-12, hi: 2.11593e-5, log: true, title: 'density_of_a_long_PLUTO_variable_name [g/cm3], log scale',
+        ticks: [1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5] },
     ]) run('colour bar', bar.title, CB.BAR_PX, (c) => CB.drawColourBar(c, { ...bar, lut: CM.colormapTable('viridis') }));
 
     // ── The readout card ──
     for (const lines of [
       ['EXPLORE', 'RA 10h18m12.34s  Dec -28°45′12.3″', 'v 4321.12 km/s (radio)  ch 108', '1.234e-03 Jy/beam (binned 2×2×1)'],
       ['SELECT · Kinematic Lasso', 'GLON 123.456789 deg  GLAT -12.345678 deg', 'FREQ 1.420405e+09 Hz  ch 1089', 'blank  (binned 4×4×2)'],
+      // A simulation volume (#317): X, Y, Z and the voxel, no channel.
+      ['SELECT · Box region', 'X1 -1.234e+21  X2 -1.234e+21 cm', 'X3 -1.234e+21 cm  voxel 2047, 2047, 2047', '1.835e-12 g/cm3 (binned 8×8×8)'],
     ]) run('readout', lines[0], RO.READOUT_PX, (c) => RO.drawReadout(c, lines, false));
 
     // The check itself: a label wider than its button, a hint over it, a

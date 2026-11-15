@@ -175,13 +175,13 @@ let lookCache = { key: null, look: null };
 function currentLook() {
   const c = state.cube;
   const key = JSON.stringify([state.thrNorm, state.cmaxNorm, state.stretch, state.gamma, state.opacity, state.mode,
-    state.colormap, state.clip, state.zStretch, c ? [c.lo, c.hi, c.factors] : null]);
+    state.colormap, state.clip, state.zStretch, c ? [c.lo, c.hi, c.scale, c.factors] : null]);
   if (lookCache.key !== key && c) {
     lookCache = {
       key,
       look: {
         tf: transferFunction({ thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, stretch: state.stretch, stretchA: stretchA(),
-          opacity: state.opacity, mode: state.mode, lo: c.lo, hi: c.hi, factors: c.factors,
+          opacity: state.opacity, mode: state.mode, lo: c.lo, hi: c.hi, scale: c.scale, factors: c.factors,
           lut: colormapTable(state.colormap) }),
         crop: cropBox(state.clip),
         cropError: cropError(state.clip),
@@ -199,7 +199,7 @@ function refineFrame(t, eyes, centreView, background) {
   if (masks && masks.hidesRefined()) return;
   const look = currentLook();
   refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model,
-    zStretch: state.zStretch, look: look.look, lookKey: look.key, background });
+    zStretch: state.zStretch, aspect: V.voxelAspect(state.info), look: look.look, lookKey: look.key, background });
 }
 
 // ── Settings kept in this browser (issue #172) ──────────────────────────────
@@ -421,7 +421,7 @@ $('spv').addEventListener('change', () => {
 $('skip').addEventListener('change', () => { state.skip = $('skip').checked; });
 $('governor').addEventListener('change', () => { state.governorOn = $('governor').checked; governor.value = state.spv; });
 $('zstretch').addEventListener('input', () => {
-  state.zStretch = readNumber('zstretch') / 100;
+  state.zStretch = simulationShown() ? 1 : readNumber('zstretch') / 100;
   applyExtent();
 });
 
@@ -547,7 +547,11 @@ masks = createMasks({
   renderer: R, state,
   backend: () => { try { return ensureBackend(); } catch { return null; } },
   seedMode: () => selection.sel.seedMode || 'new',
-  setSeedMode: (m) => { setMode('select'); if (selection.sel.tool !== 'lasso') selection.setTool('lasso'); analysis.press(`seed:${m}`, { group: 'seed', value: m }); },
+  setSeedMode: (m) => {
+    // A simulation volume has no Kinematic Lasso (#317).
+    if (simulationShown()) { buzz('primary', 'error'); return; }
+    setMode('select'); if (selection.sel.tool !== 'lasso') selection.setTool('lasso'); analysis.press(`seed:${m}`, { group: 'seed', value: m });
+  },
   armPick: () => setMode('select'),
   onVisit: (row, src) => visitSource(row, src),
   onChange: () => { decorationsChanged(); labelsChanged(); },
@@ -623,16 +627,20 @@ function fmt(v) {
 
 function dataValue(norm) {
   const c = state.cube;
-  return c ? V.normToData(norm, c.lo, c.hi) : norm;
+  return c ? V.normToData(norm, c.lo, c.hi, c.scale) : norm;
 }
+
+/** Is the cube on show a simulation volume (issue #317: no spectral axis)? */
+function simulationShown() { return !!state.cube && V.isSimulation(state.info); }
 
 function updateLabels() {
   const c = state.cube;
   const unit = c && c.bunit ? ` ${c.bunit}` : '';
   const sig = c ? sigmaLine(c, true) : '';
   $('thr-value').textContent = `${fmt(dataValue(state.thrNorm))}${unit}${sig ? ` ${sig}` : ''}`;
-  $('cube-info').textContent = c ? LV.infoLine(state.info) : '';
+  $('cube-info').textContent = c ? LV.infoLine(state.info, c) : '';
   for (const b of document.querySelectorAll('button.sig')) b.disabled = !(c && LV.sigmaOf(state.info));
+  simulationDom();
   $('stretch').value = state.stretch;
   $('gamma').value = String(state.gamma);
   $('cmax-value').textContent = `${fmt(dataValue(state.cmaxNorm))}${unit}`;
@@ -683,7 +691,7 @@ function setThresholdNorm(n) {
 /** The threshold at k σ of the full cube's noise (#258); false without σ. */
 function setSigmaThreshold(k) {
   const c = state.cube;
-  const t = c && LV.sigmaThreshold(k, LV.sigmaOf(state.info), c.lo, c.hi);
+  const t = c && LV.sigmaThreshold(k, LV.sigmaOf(state.info), c.lo, c.hi, c.scale);
   if (!t) return false;
   setThresholdNorm(t.norm);
   if (t.clamped) setStatus(`${k} σ lies outside the drawn cube's values: the threshold is at its ${t.norm > 0.5 ? 'top' : 'bottom'}.`);
@@ -737,7 +745,7 @@ function thresholdNorm(c, info, src) {
   const thr = src === 'cube' ? info.default_threshold : c.reducedThreshold;
   const fallback = info.default_threshold ?? c.reducedThreshold;
   const t = thr ?? fallback;
-  return t === null || t === undefined ? 0.1 : Math.max(0, V.dataToNorm(t, c.lo, c.hi));
+  return t === null || t === undefined ? 0.1 : Math.max(0, V.dataToNorm(t, c.lo, c.hi, c.scale));
 }
 
 // ── Loading ─────────────────────────────────────────────────────────────────
@@ -746,6 +754,7 @@ function reducedRequest(datasetId) {
     dataset_id: datasetId,
     factor_xy: readNumber('fxy'), factor_z: readNumber('fz'), max_dim: readNumber('maxdim'),
     mode: $('mode').value, encoding: $('encoding').value, source: $('source').value,
+    scale: $('scale').value || 'auto',
   };
 }
 
@@ -1453,6 +1462,7 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   ui.undo.clear();
   ui.pin = null;
   ui.crop.drag = null;
+  simulationControls(info, cube);
   applyExtent();
   $('thr-source').value = currentThresholdSource();
   resetThreshold();
@@ -1476,6 +1486,60 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   ].join('\n'));
 }
 
+/**
+ * A cube put on show (issue #317): a simulation volume has no velocity axis
+ * to stretch (its box is to scale: z stretch 1), no spectral tools (the
+ * selection tool becomes the Box region, the Range trigger the crop; the
+ * radio cube shown next gets its tool back), and a log-scaled cube starts
+ * with the Linear stretch (linear in log10 of the values: the desktop's Log);
+ * the stretch a linear cube had comes back with the next linear cube.
+ */
+function simulationControls(info, cube) {
+  const sim = V.isSimulation(info);
+  if (sim && !ui.beforeSim) {
+    // What a spectral cube had, given back with the next one.
+    ui.beforeSim = { zStretch: state.zStretch, clipTool: ui.clipTool,
+      tool: selection.sel.tool === 'lasso' || selection.sel.tool === 'probe' ? selection.sel.tool : null };
+  }
+  if (sim) {
+    state.zStretch = 1;
+    $('zstretch').value = '100';
+    if (selection.sel.tool === 'lasso' || selection.sel.tool === 'probe') selection.setTool('box');
+    if (ui.clipTool === 'slab') setClipTool('box');
+  } else if (ui.beforeSim) {
+    const b = ui.beforeSim;
+    ui.beforeSim = null;
+    state.zStretch = b.zStretch;
+    $('zstretch').value = String(Math.round(b.zStretch * 100));
+    if (b.tool && selection.sel.tool === 'box') selection.setTool(b.tool);
+    if (b.clipTool === 'slab' && ui.clipTool === 'box') setClipTool('slab');
+  }
+  const scale = cube && cube.scale === 'log' ? 'log' : 'linear';
+  if (scale !== ui.shownScale) {
+    if (scale === 'log') { ui.stretchBeforeLog = state.stretch; state.stretch = 'linear'; }
+    else if (ui.shownScale === 'log') state.stretch = ui.stretchBeforeLog || LV.DEFAULT_STRETCH;
+    $('stretch').value = state.stretch;
+    ui.shownScale = scale;
+  }
+  simulationDom();
+}
+
+/** The page's own controls a simulation volume has no use for, hidden: the
+ *  σ presets, the velocity stretch, the spectral tools in the tool list. */
+function simulationDom() {
+  const sim = simulationShown();
+  const sigRow = document.querySelector('button.sig');
+  if (sigRow && sigRow.parentElement) sigRow.parentElement.hidden = sim;
+  const zs = $('zstretch').closest('label');
+  if (zs) zs.hidden = sim;
+  for (const v of ['lasso', 'probe']) {
+    const o = $('sel-tool').querySelector(`option[value="${v}"]`);
+    if (o) { o.hidden = sim; o.disabled = sim; }
+  }
+  const lassoBox = $('lasso-reach').closest('details');
+  if (lassoBox) lassoBox.hidden = sim;
+}
+
 /** The threshold source the cube on show starts with (thresholdSourceFor). */
 function currentThresholdSource() {
   const c = state.cube, info = state.info;
@@ -1484,7 +1548,8 @@ function currentThresholdSource() {
 
 function applyExtent() {
   if (!state.info) return;
-  state.extent = V.boxExtent(state.info.full_shape, state.zStretch);
+  // A simulation volume's box follows its grid spacing (#317).
+  state.extent = V.boxExtent(state.info.full_shape, state.zStretch, V.voxelAspect(state.info));
   state.texScale = V.texScale(state.info.full_shape, state.info.factors, state.info.reduced_shape);
   rebuildDecorations();
   updateLabels();
@@ -1579,6 +1644,9 @@ function volParams(override = {}) {
 /** The stretch's parameter (levels.js stretchParam): the log's a from the
  *  threshold and the colour max in data units, or the Power exponent. */
 function stretchA() {
+  // On a log-scaled cube the stretch acts on log10 of the values: the log's
+  // a from their ratio would be the values' (#317), so the default is taken.
+  if (state.cube && state.cube.scale === 'log' && state.stretch === 'log') return LV.LOG_A_DEFAULT;
   return LV.stretchParam(state.stretch, { gamma: state.gamma, thrData: dataValue(state.thrNorm),
     cmaxData: dataValue(Math.max(state.cmaxNorm, state.thrNorm + 1e-3)) });
 }
@@ -1965,8 +2033,10 @@ function refineShort() {
   return refiner.status === 'refined' ? 'refined (still view)' : refiner.status;
 }
 
-/** The range of the spectral axis, named as the desktop names it. */
+/** The range of the spectral axis, named as the desktop names it (a
+ *  simulation volume has none: its z is cropped as x and y). */
 function spectralName() {
+  if (simulationShown()) return 'Z range';
   const z = state.info && state.info.axes && state.info.axes.z;
   return z && (z.velocity_kms || z.full_velocity_kms) ? 'Velocity range' : 'Spectral range';
 }
@@ -1976,6 +2046,7 @@ function spectralName() {
 function slabNote() {
   const info = state.info;
   if (!info || !info.full_shape) return '';
+  if (simulationShown()) return 'A simulation volume: z is cropped below, as x and y are.';
   const nz = info.full_shape[2];
   const [a, b] = channelsOfClip([state.clip.min[2], state.clip.max[2]], nz);
   const ch = `ch ${a}–${b} of ${nz}`;
@@ -1995,6 +2066,15 @@ function cropNote(i) {
   if (state.cube && state.info && state.info.full_shape) {
     const n = state.info.full_shape[i];
     const a = Math.max(0, Math.min(n - 1, Math.round(lo * n))), b = Math.max(a, Math.min(n - 1, Math.round(hi * n) - 1));
+    // A simulation volume: the kept range in its axis' units too (#317).
+    const axis = simulationShown() && state.info.axes ? state.info.axes['xyz'[i]] : null;
+    if (axis && Array.isArray(axis.world)) {
+      const at = (t) => V.texToWorld(axis.world, V.boxToTex(t, n, state.info.factors[i]));
+      const wa = at((a + 0.5) / n), wb = at((b + 0.5) / n);
+      if (Number.isFinite(wa) && Number.isFinite(wb)) {
+        return `${axis.name || 'xyz'[i]} ${V.valueText(wa)} to ${V.valueText(wb)}${axis.unit ? ` ${axis.unit}` : ''} · ${a}–${b} of ${n} voxels`;
+      }
+    }
     return `${'xyz'[i]} ${a}–${b} of ${n} px`;
   }
   const box = layers.state.box;
@@ -2020,6 +2100,7 @@ function menuContext() {
   return {
     ...HM.defaultContext(),
     kind, debug: DEBUG_HUD, colormap: state.colormap, render: state.mode, spectralName: spectralName(),
+    simulation: simulationShown(),
     cat: lc.cat, clipTool: ui.clipTool,
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
@@ -2056,7 +2137,8 @@ function menuView(ctx = menuContext()) {
     values.opacity = state.opacity / 2;
     values.slab = [state.clip.min[2], state.clip.max[2]];
     notes.cmap = state.colormap;
-    const src = $('thr-source').value === 'cube' ? 'the full cube\'s noise, as on the desktop' : 'this binning\'s noise';
+    const src = simulationShown() ? `the ${$('thr-source').value === 'cube' ? 'full volume\'s' : 'drawn volume\'s'} 99th percentile`
+      : $('thr-source').value === 'cube' ? 'the full cube\'s noise, as on the desktop' : 'this binning\'s noise';
     const sigma = LV.sigmaOf(state.info);
     const thrData = dataValue(state.thrNorm);
     // The threshold in σ of the full cube's noise (#258), else where it started from.
@@ -2078,9 +2160,11 @@ function menuView(ctx = menuContext()) {
       : 'Whole field over the velocity range, the desktop\'s automatic threshold mask.';
     notes.pv = analysis.pv.state.armed ? 'Trigger: the next point of the slice.' : '';
     notes.pvw = pvWidthNote();
+    // A simulation volume has no moments or PV slices (#317): their rows say why, greyed.
+    if (simulationShown()) notes.moment = notes.pv = notes.pvw = '';
     const info = (t) => [t, '#b9c2d0'];
     // The cube's info line (#258): after work and errors on Display, first on Levels.
-    const infoText = page === 'display' || page === 'levels' ? LV.infoLine(state.info) : '';
+    const infoText = page === 'display' || page === 'levels' ? LV.infoLine(state.info, c) : '';
     if (infoText) { if (page === 'levels') status.unshift(info(infoText)); else status.push(info(infoText)); }
     if (page === 'levels') levelsView(c, notes, status, info);
     if (page === 'select') status.push(...[...(sum || []).slice(1), ...analysis.lasso.lines()].map(info));
@@ -2093,7 +2177,7 @@ function menuView(ctx = menuContext()) {
   if (page === 'debug') status.push(`Refinement: ${refineShort()}`);
   const hist = page === 'levels' && c ? {
     density: histDensity(c), thr: normToSlider(state.thrNorm) / 1000, cmax: normToSlider(state.cmaxNorm) / 1000,
-    marks: LV.sigmaMarks(LV.sigmaOf(state.info), c.lo, c.hi).map(({ at, label }) => ({ at, label })),
+    marks: LV.sigmaMarks(LV.sigmaOf(state.info), c.lo, c.hi, undefined, undefined, c.scale).map(({ at, label }) => ({ at, label })),
   } : null;
   return { hist, title: `VisIVO VR · ${ctx.kind === 'points' || ctx.kind === 'flow' ? (state.openPath || '').split('/').pop() || ctx.kind : cubeName()}`,
     notes, values, status };
@@ -2104,14 +2188,18 @@ function levelsView(c, notes, status, info) {
   const unit = c.bunit ? ` ${c.bunit}` : '';
   const sigma = LV.sigmaOf(state.info);
   const h = c.prep && c.prep.hist;
-  notes.histx = h ? 'Drag: the threshold. Yellow: σ multiples; white: threshold, colour max.' : '';
+  notes.histx = !h ? '' : c.scale === 'log' ? 'Drag: the threshold. Columns: the values on a log scale; white: threshold, colour max.'
+    : sigma ? 'Drag: the threshold. Yellow: σ multiples; white: threshold, colour max.' : 'Drag: the threshold. White: threshold, colour max.';
   notes.sigma = sigma ? `${fmt(dataValue(state.thrNorm))}${unit} ${sigmaLine(c)}` : '';
   const above = c.prep && c.prep.sorted ? LV.fractionAbove(c.prep.sorted, state.thrNorm) : null;
   notes.pct = above === null ? '' : `Of the drawn cube's values: ${(100 * above).toPrecision(2)}% are above the threshold now.`;
   const ratio = dataValue(state.cmaxNorm) / dataValue(state.thrNorm);
-  notes.stretch = state.stretch === 'log'
-    ? (dataValue(state.thrNorm) > 0 ? `Log over threshold to colour max (×${ratio.toPrecision(3)}), as the desktop's.` : 'Log with a = 1000: the threshold is not above zero.')
-    : LV.STRETCH_TIPS[state.stretch];
+  notes.stretch = c.scale === 'log'
+    ? (state.stretch === 'linear' ? `Linear in log10 of the values: the desktop's Log over threshold to colour max (×${ratio.toPrecision(3)}).`
+      : `${LV.STRETCH_LABELS[state.stretch]} of log10 of the values (the cube is drawn on a log scale).`)
+    : state.stretch === 'log'
+      ? (dataValue(state.thrNorm) > 0 ? `Log over threshold to colour max (×${ratio.toPrecision(3)}), as the desktop's.` : 'Log with a = 1000: the threshold is not above zero.')
+      : LV.STRETCH_TIPS[state.stretch];
   notes.gamma = `γ ${state.gamma.toFixed(2)}`;
   const conv = LV.conventionLine(state.info);
   if (conv) status.push(info(conv));
@@ -2177,7 +2265,9 @@ const palette = {
   tex: null, key: '', drawnAt: 0, draws: 0,
   pointer: new P.PanelPointer([]),
 };
-function paletteContext() { return { kind: dataKind(), active: TP.activeTool(ui.mode, currentSub(), analysis.pv.state.armed) }; }
+/** The palette's kind: a simulation volume is 'volume' there (no spectral tools, #317). */
+function paletteKind() { return simulationShown() ? 'volume' : dataKind(); }
+function paletteContext() { return { kind: paletteKind(), active: TP.activeTool(ui.mode, currentSub(), analysis.pv.state.armed) }; }
 function paletteShown() { return palette.open && (xr ? !xr.bench && !!palette.model : true); }
 function paletteSize() { return xr ? TP.PALETTE_SIZE : TP.PALETTE_SIZE.map((v) => v * DESKTOP_MENU_SCALE); }
 function paletteWorld() {
@@ -2431,8 +2521,9 @@ function setPage(page) {
   ui.page = page;
   const m = HM.TAB_MODE[page];
   if (m) setMode(m);
-  // A point table or a velocity field has no velocity range: Range is the crop (#277).
-  if (page === 'range' && !state.cube && layers.hasScene() && ui.clipTool !== 'box') setClipTool('box');
+  // A point table, a velocity field or a simulation volume (#317) has no
+  // velocity range: Range is the crop (#277).
+  if (page === 'range' && ((!state.cube && layers.hasScene()) || simulationShown()) && ui.clipTool !== 'box') setClipTool('box');
 }
 
 /** The menu moved by its title bar (headset only: the desktop view keeps it beside the cube). */
@@ -2891,12 +2982,29 @@ function drawSelBox(v, eye) {
 }
 
 // ── The colour bar of a point table or a velocity field (issue #259) ────────
+// and of a simulation volume (issue #317: its values, on its value scale).
 const colourBar = { canvas: null, tex: null, bar: null, cmap: '' };
+let volumeBarCache = { key: '', bar: null };
+/** A simulation volume's bar (levels.js volumeBar), the same object while
+ *  what it shows is unchanged. */
+function volumeColourBar() {
+  const c = state.cube, info = state.info;
+  const a = stretchA();
+  const title = (info && info.object) || cubeName();
+  const key = JSON.stringify([state.thrNorm, state.cmaxNorm, c.lo, c.hi, c.scale, state.stretch, a, title, c.bunit]);
+  if (key !== volumeBarCache.key) {
+    volumeBarCache = { key, bar: LV.volumeBar({ thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, lo: c.lo, hi: c.hi,
+      scale: c.scale, stretch: state.stretch, stretchA: a, title, unit: c.bunit || '' }) };
+  }
+  return volumeBarCache.bar;
+}
 /** The bar beside the box's lower corner, turned to the eye; redrawn and
  *  uploaded only when it changes (a 2-D texture). */
 function drawColourBar(v, eye) {
-  if (state.cube || !layers.hasScene() || !layers.state.s.box) return;
-  const bar = layers.colourBar();          // the same object while it is unchanged
+  const sim = simulationShown();
+  if (!sim && (state.cube || !layers.hasScene() || !layers.state.s.box)) return;
+  // The same object while it is unchanged.
+  const bar = sim ? volumeColourBar() : layers.colourBar();
   if (!bar) return;
   if (!colourBar.tex) {
     colourBar.canvas = Object.assign(document.createElement('canvas'), { width: CB.BAR_PX[0], height: CB.BAR_PX[1] });
@@ -2908,7 +3016,7 @@ function drawColourBar(v, eye) {
     colourBar.bar = bar;
     colourBar.cmap = state.colormap;
   }
-  const e = layers.state.box.extent;
+  const e = sim ? state.extent : layers.state.box.extent;
   const corner = M.transformPoint(state.model, [e[0] / 2, -e[1] / 2, e[2] / 2]);
   const m = M.multiply(RO.faceEye(corner, eye), M.translation(CB.BAR_SIZE[0] / 2 + 0.02, -CB.BAR_SIZE[1] / 2, 0));
   R.drawPanel(v, m, colourBar.tex, CB.BAR_SIZE);
@@ -3017,7 +3125,7 @@ function stickStep(action, step) {
     setColormap(COLORMAP_NAMES[(i + step + n) % n]);
   } else if (action === 'next-tool') {
     const active = TP.activeTool(ui.mode, currentSub(), analysis.pv.state.armed);
-    const next = TP.stepTool(TP.stepFrom(active, ui.lastPick), dataKind(), step);
+    const next = TP.stepTool(TP.stepFrom(active, ui.lastPick), paletteKind(), step);
     if (!next) return;
     pickTool(next);
   } else {
@@ -3411,7 +3519,7 @@ function hubLook(id) {
   const c = state.cube;
   if (!c || !state.open) return null;
   return HUB.lookPayload({ colormap: state.colormap, threshold: dataValue(state.thrNorm), colourMax: dataValue(state.cmaxNorm),
-    opacity: state.opacity, gamma: state.gamma, stretch: state.stretch, mode: state.mode, zStretch: state.zStretch, datasetId: id });
+    opacity: state.opacity, gamma: state.gamma, stretch: HUB.desktopStretch(state.stretch, c.scale), mode: state.mode, zStretch: state.zStretch, datasetId: id });
 }
 function hubClip(id) {
   // Only a cube's clip is reported (a point table has no state.cube); an empty
@@ -5064,7 +5172,7 @@ if (query.has('debug')) {
       const v = desktopView();
       const sz = [Math.round(w * scale), Math.round(h * scale)];
       const f = await refiner.requestOnce({ eyes: desktopEyes(v, w, h), aCentre: M.multiply(v.view, state.model),
-        model: state.model, zStretch: state.zStretch, background: DESKTOP_BG }, extra, sz);
+        model: state.model, zStretch: state.zStretch, aspect: V.voxelAspect(state.info), background: DESKTOP_BG }, extra, sz);
       const bm = await createImageBitmap(new Blob([f.color], { type: 'image/jpeg' }));
       const c2 = Object.assign(document.createElement('canvas'), { width: sz[0], height: sz[1] });
       c2.getContext('2d').drawImage(bm, 0, 0, sz[0], sz[1], 0, 0, sz[0], sz[1]);

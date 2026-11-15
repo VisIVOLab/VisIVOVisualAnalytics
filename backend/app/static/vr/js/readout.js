@@ -13,7 +13,7 @@
 
 import * as M from './mat4.js';
 import { boxToFullPixel, worldOfPixel, formatRA, formatDec, sampleNorm } from './selection.js';
-import { normToData } from './volume.js';
+import { normToData, isSimulation } from './volume.js';
 import { drawFit } from './text-fit.js';
 
 function fmt(v, digits = 4) {
@@ -26,7 +26,8 @@ function fmt(v, digits = 4) {
 /**
  * The readout's lines for box point `p` (0..1 per axis) of the cube on show:
  * [mode line, sky position, velocity (or spectral value), value with unit].
- * `cube`: {data, dims, encoding, lo, hi, bunit, factors}; `info`: reduced_info;
+ * `cube`: {data, dims, encoding, lo, hi, scale, bunit, factors}; `info`: reduced_info;
+ * a simulation volume (#317): [mode, X and Y, Z and the voxel, value].
  * `texScale`: the page's. Without a point, the mode line alone.
  */
 export function readoutLines(modeText, p, { info, cube, texScale } = {}) {
@@ -34,15 +35,25 @@ export function readoutLines(modeText, p, { info, cube, texScale } = {}) {
   if (!p || !info || !cube) return out;
   const px = boxToFullPixel(p, info.full_shape);
   const w = worldOfPixel(info, px);
+  const n = sampleNorm({ data: cube.data, dims: cube.dims, encoding: cube.encoding, texScale }, p);
+  const binned = cube.factors && cube.factors.some((f) => f > 1) ? `  (binned ${cube.factors.join('×')})` : '';
+  const value = n < 0 || !Number.isFinite(n) ? `blank${binned}`
+    : `${fmt(normToData(n, cube.lo, cube.hi, cube.scale))} ${cube.bunit || ''}${binned}`.replace(/\s+\(/, ' (').trim();
+  if (isSimulation(info)) {
+    // A simulation volume (#317): X, Y, Z in its axes' units, no velocity or channel.
+    const z = info.axes.z;
+    out.push(`${w.xName} ${fmt(w.x)}  ${w.yName} ${fmt(w.y)} ${w.xUnit || ''}`.trim());
+    out.push(`${z.name || 'Z'} ${fmt(w.spectral)} ${z.unit || ''}  voxel ${px.join(', ')}`.replace(/\s+voxel/, '  voxel'));
+    out.push(value);
+    return out;
+  }
   if (w.xName === 'RA' && Number.isFinite(w.x) && Number.isFinite(w.y)) out.push(`RA ${formatRA(w.x)}  Dec ${formatDec(w.y)}`);
   else out.push(`${w.xName} ${fmt(w.x, 7)} ${w.xUnit || ''}  ${w.yName} ${fmt(w.y, 7)} ${w.yUnit || ''}`.trim());
   const conv = info.axes && info.axes.z && info.axes.z.velocity_convention;
   out.push(w.velocity !== null && w.velocity !== undefined && Number.isFinite(w.velocity)
     ? `v ${w.velocity.toFixed(2)} km/s${conv ? ` (${conv})` : ''}  ch ${px[2]}`
     : `${info.axes.z.name || 'spectral'} ${fmt(w.spectral, 7)} ${w.spectralUnit || ''}  ch ${px[2]}`);
-  const n = sampleNorm({ data: cube.data, dims: cube.dims, encoding: cube.encoding, texScale }, p);
-  const binned = cube.factors && cube.factors.some((f) => f > 1) ? `  (binned ${cube.factors.join('×')})` : '';
-  out.push(n < 0 || !Number.isFinite(n) ? `blank${binned}` : `${fmt(normToData(n, cube.lo, cube.hi))} ${cube.bunit || ''}${binned}`.replace(/\s+\(/, ' ('));
+  out.push(value);
   return out;
 }
 

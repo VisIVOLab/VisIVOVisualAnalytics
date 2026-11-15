@@ -16,10 +16,18 @@ import { colormapTable } from './colormaps.js';
 import { niceTicks } from './volume.js';
 import { skyOf } from './pairing.js';
 
-/** What a path opens as (`choice`: the page's selector, 'auto' by the name). */
+/** A reference to one field of a volume file (issue #317): a VBT volume's
+ *  `<data>.bin::vbt-field=N`, a PLUTO output's `<data>::pluto-var=<name>`,
+ *  with or without the byte order a VBT reference may carry after it. */
+export const FIELD_REF = /::(vbt-field=\d+|pluto-var=[^:/]+)(::vbt-order=\w+)?$/i;
+
+/** What a path opens as (`choice`: the page's selector, 'auto' by the name).
+ *  A field reference is a volume (a cube to the page), whatever its file is called. */
 export function kindOfPath(path, choice = 'auto') {
   if (choice && choice !== 'auto') return choice;
-  const p = String(path || '').toLowerCase();
+  if (FIELD_REF.test(String(path || ''))) return 'cube';
+  // A table frozen in a byte order (`<x>.head::vbt-order=big`) is still a table.
+  const p = String(path || '').toLowerCase().replace(/::vbt-order=\w+$/, '');
   if (p.endsWith('.bin.head') || p.endsWith('.head') || p.endsWith('.bin')) return 'points';
   if (/\.(csv|tsv|txt|xml|vot|votable|tbl|ipac|speck)$/.test(p)) return 'points';
   if (/(velocity|_vel|vfield|flow)[^/]*\.fits?(\.gz)?$/.test(p)) return 'flow';

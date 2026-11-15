@@ -109,7 +109,8 @@ async def vr_seed(client, headers, ds: str, info: dict, ray: dict, tmp: Path,
     snap to the block's brightest voxel through subvolume_bin."""
     r = await client.post("/v1/cube/reduced_bin", headers=headers,
                           json={"dataset_id": ds, "factor_xy": info["factors"][0],
-                                "factor_z": info["factors"][2], "mode": "mean", "encoding": "uint8"})
+                                "factor_z": info["factors"][2], "mode": "mean", "encoding": "uint8",
+                                "scale": "linear"})
     r.raise_for_status()
     cube_file = tmp / "reduced.bin"
     cube_file.write_bytes(r.content)

@@ -171,6 +171,17 @@ export function lookPayload({ colormap, threshold, colourMax, opacity, gamma, st
   return p;
 }
 
+/**
+ * The stretch the desktop is told for the page's `stretch` on a cube of value
+ * `scale` (issue #317). On a log-scaled cube the page's colours follow log10
+ * of the values, so its Linear is the desktop's Log (log10(v / threshold) /
+ * log10(max / threshold)); the other stretches have no desktop equal on a
+ * log scale and are sent by name, the nearest the desktop has.
+ */
+export function desktopStretch(stretch, scale = 'linear') {
+  return scale === 'log' && stretch === 'linear' ? 'log' : stretch;
+}
+
 /** A `clip` event's payload: the voxel box (null: the whole cube) and the dataset. */
 export function clipPayload(box, datasetId) {
   const p = { box: box ? box.map((r) => [r[0], r[1]]) : null };

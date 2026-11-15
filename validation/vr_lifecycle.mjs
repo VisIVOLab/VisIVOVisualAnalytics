@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -19,6 +19,10 @@
 // issue #201; --menu runs that alone on the smoke run) and every canvas's
 // text fitting its box (vr_text_fit.mjs, issue #276; --text-fit alone). CI
 // runs both; the full lifecycle run remains separate.
+// --simulation (issue #317) adds a simulation volume's checks to the smoke run
+// (validation/vr_simulation.mjs: a VBT density over seven decades on a log
+// scale, its box drawn to the grid spacing, no spectral wording or tools);
+// --regressions runs them too.
 // --measure (issue #224) adds the measurement record's checks to the smoke
 // run (validation/vr_measure.mjs): recording on vs off, a guided run through
 // every condition, the record read back and the report script run on it.
@@ -55,6 +59,7 @@ import { runHeadsetHubChecks, runEntryChecks } from './vr_headset_hub.mjs';
 import { runSourceListChecks } from './vr_sources.mjs';
 import { runMaskChecks } from './vr_masks.mjs';
 import { runSpectatorChecks } from './vr_spectator.mjs';
+import { runSimulationChecks } from './vr_simulation.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -75,7 +80,9 @@ const SOURCES = !!args.sources && !XRFAKE && !args.paired;
 const MASKS = !!args.masks && !XRFAKE && !args.paired;
 // --entry (issues #237/#291/#305): the ways into VR alone (auto-enter, offerSession, a pending offer) (also part of --xrfake and --regressions).
 const ENTRY = !!args.entry && !XRFAKE && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry;
+// --simulation (issue #317): a simulation volume (also part of --regressions).
+const SIMULATION = (!!args.simulation || !!args.regressions) && !args.paired;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -699,6 +706,8 @@ try {
   if (SOURCES) results.sources = await runSourceListChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
   if (MASKS) results.masks = await runMaskChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube, python: PY });
   if (ENTRY) await runEntryChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
+  // Issue #317: a simulation volume (log scale, box to the grid spacing, no spectral wording or tools).
+  if (SIMULATION) results.simulation = await runSimulationChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, cube });
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────

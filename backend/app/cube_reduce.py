@@ -582,7 +582,48 @@ def finite_range(volume: np.ndarray) -> tuple[float, float]:
     return (0.0, 0.0) if lo > hi else (lo, hi)
 
 
-def quantise(volume: np.ndarray, lo: float, hi: float, encoding: str) -> bytes:
+#: The value scales of a reduced cube: ``linear`` quantises the values,
+#: ``log`` their base-10 logarithm, ``auto`` picks one (:func:`resolve_scale`).
+SCALES = ("auto", "linear", "log")
+#: ``auto`` quantises the logarithm of a cube whose finite values are all
+#: positive and span more than this many decades. A simulation's density spans
+#: seven: linear 8-bit codes put all but its densest voxels in the first code,
+#: and no display stretch on the headset brings them back. A radio cube has
+#: negative noise and stays linear.
+AUTO_LOG_DECADES = 3.0
+
+
+def resolve_scale(requested: str, lo: float, hi: float) -> str:
+    """``linear`` or ``log`` for a cube whose finite values span ``lo..hi``.
+    ``auto`` is log for positive values spanning more than
+    :data:`AUTO_LOG_DECADES` decades, linear otherwise."""
+    if requested not in SCALES:
+        raise ValueError(f"scale must be one of {SCALES}, not {requested!r}.")
+    if requested != "auto":
+        return requested
+    if lo > 0.0 and math.isfinite(lo) and math.isfinite(hi) and \
+            math.log10(hi) - math.log10(lo) > AUTO_LOG_DECADES:
+        return "log"
+    return "linear"
+
+
+def positive_range(volume: np.ndarray) -> tuple[float, float, int]:
+    """``(min, max, n)`` of the finite positive values and the number ``n`` of
+    finite values at or below zero (blank on a log scale); ``(0, 0, n)`` when no
+    value is positive. Plane by plane, as :func:`finite_range`."""
+    lo, hi, nonpositive = math.inf, -math.inf, 0
+    for plane in volume:
+        fin = np.isfinite(plane)
+        pos = fin & (plane > 0)
+        nonpositive += int(np.count_nonzero(fin)) - int(np.count_nonzero(pos))
+        if pos.any():
+            lo = min(lo, float(np.min(plane, where=pos, initial=np.inf)))
+            hi = max(hi, float(np.max(plane, where=pos, initial=-np.inf)))
+    return (0.0, 0.0, nonpositive) if lo > hi else (lo, hi, nonpositive)
+
+
+def quantise(volume: np.ndarray, lo: float, hi: float, encoding: str,
+             scale: str = "linear") -> bytes:
     """The reduced volume as the headset's 3-D texture, little-endian, x fastest.
 
     ``uint8``: code 0 is blank, codes 1..255 map ``lo..hi`` linearly (clamped):
@@ -591,9 +632,15 @@ def quantise(volume: np.ndarray, lo: float, hi: float, encoding: str) -> bytes:
     :data:`FLOAT16_BLANK`. Half floats keep about three significant digits at
     every level, so a threshold a few noise sigma above ``lo`` is resolved as
     finely as one near ``hi``.
+
+    ``scale="log"``: the codes are of log10(value), ``lo`` and ``hi`` the
+    log10 range (value = 10 ** (lo + (code - 1) / 254 * (hi - lo))); a value at
+    or below zero has no logarithm and is blank, as a NaN.
     """
     if encoding not in ENCODINGS:
         raise ValueError(f"encoding must be one of {ENCODINGS}, not {encoding!r}.")
+    if scale not in ("linear", "log"):
+        raise ValueError(f"scale must be 'linear' or 'log', not {scale!r}.")
     v = np.asarray(volume, dtype=np.float32)
     span = float(hi) - float(lo)
     if not math.isfinite(span) or span <= 0.0:
@@ -604,6 +651,9 @@ def quantise(volume: np.ndarray, lo: float, hi: float, encoding: str) -> bytes:
     lo32, span32 = np.float32(lo), np.float32(span)
     for k in range(v.shape[0]):
         plane = v[k]
+        if scale == "log":
+            with np.errstate(divide="ignore", invalid="ignore"):
+                plane = np.where(plane > 0, np.log10(plane), np.float32(np.nan))
         blank = ~np.isfinite(plane)
         norm = (plane - lo32) / span32
         if encoding == "uint8":
@@ -612,6 +662,10 @@ def quantise(volume: np.ndarray, lo: float, hi: float, encoding: str) -> bytes:
             codes[blank] = 0.0
             out[k] = codes
         else:
+            if scale == "log":
+                # float32 log10 of the smallest value may round one ulp below
+                # the float64 lo: never stored as a negative (blank) number.
+                norm = np.maximum(norm, np.float32(0.0))
             o = norm.astype(np.float16)
             o[blank] = np.float16(FLOAT16_BLANK)
             out[k] = o
@@ -619,9 +673,10 @@ def quantise(volume: np.ndarray, lo: float, hi: float, encoding: str) -> bytes:
 
 
 def dequantise(raw: bytes, shape_zyx: tuple[int, int, int], lo: float, hi: float,
-               encoding: str) -> np.ndarray:
+               encoding: str, scale: str = "linear") -> np.ndarray:
     """Inverse of :func:`quantise` (NaN for blank), for tests and for checking
-    what the headset is given."""
+    what the headset is given. ``scale="log"``: ``lo``, ``hi`` are the log10
+    range, and the values are given back as 10 ** the decoded logarithm."""
     span = float(hi) - float(lo)
     if not math.isfinite(span) or span <= 0.0:
         span = 1.0
@@ -629,10 +684,12 @@ def dequantise(raw: bytes, shape_zyx: tuple[int, int, int], lo: float, hi: float
         codes = np.frombuffer(raw, dtype=np.uint8).reshape(shape_zyx).astype(np.float32)
         out = np.float32(lo) + (codes - 1.0) / 254.0 * np.float32(span)
         out[codes == 0] = np.nan
-        return out
-    stored = np.frombuffer(raw, dtype="<f2").reshape(shape_zyx).astype(np.float32)
-    out = np.float32(lo) + stored * np.float32(span)
-    out[stored < 0.0] = np.nan
+    else:
+        stored = np.frombuffer(raw, dtype="<f2").reshape(shape_zyx).astype(np.float32)
+        out = np.float32(lo) + stored * np.float32(span)
+        out[stored < 0.0] = np.nan
+    if scale == "log":
+        out = np.power(np.float32(10.0), out, dtype=np.float32)
     return out
 
 

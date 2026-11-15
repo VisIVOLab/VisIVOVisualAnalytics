@@ -133,6 +133,76 @@ def _spectral_axis(dataset: ScientificFitsDataset, shape_zyx, centres) -> dict[s
     return out
 
 
+#: The default threshold of a simulation volume: this percentile of its
+#: values, the desktop's own default for data that is not noise around a
+#: median (``noise_threshold.default_threshold``). A simulation's field has no
+#: noise for the radio rule to read, and a field symmetric about zero (a
+#: velocity component) would pass for noise.
+SIMULATION_PERCENTILE = 99.0
+
+
+def is_simulation(dataset: ScientificFitsDataset) -> bool:
+    """A simulation volume: three active axes, none spectral and none on the
+    sky (linear CTYPEs such as a VBT volume's X, Y, Z, or none at all). Its
+    axes are lengths, its values a physical field (no noise, beam or rest
+    line)."""
+    axes = list(dataset.active_axes)
+    if len(axes) < 3:
+        return False
+    if dataset.wcs is not None and getattr(dataset.wcs, "has_celestial", False):
+        return False
+    for axis in axes[:3]:
+        ctype = str(dataset.header.get(f"CTYPE{axis}", "")).strip().upper()
+        if ctype.startswith(dataset._SPECTRAL_CTYPE_PREFIXES):  # noqa: SLF001
+            return False
+        if dataset._is_celestial_ctype(ctype) or ctype in ("RA", "DEC"):  # noqa: SLF001
+            return False
+    return True
+
+
+def _linear_axis(dataset: ScientificFitsDataset, which: int, centres) -> dict[str, Any]:
+    """World coordinate of each reduced voxel along axis ``which`` (0 x, 1 y,
+    2 z) of a simulation volume, from the header's linear axis (CRVAL, CRPIX,
+    CDELT), with its spacing per full-resolution voxel."""
+    fits_axis = dataset.active_axes[which]
+    ctype = str(dataset.header.get(f"CTYPE{fits_axis}", "")).strip()
+    unit = str(dataset.sanitized_header.get(f"CUNIT{fits_axis}", "")).strip()
+    crpix = float(dataset.sanitized_header.get(f"CRPIX{fits_axis}", 1.0))
+    crval = float(dataset.sanitized_header.get(f"CRVAL{fits_axis}", 0.0))
+    cdelt = _axis_spacing(dataset, which)
+    values = crval + (centres + 1.0 - crpix) * (cdelt if cdelt is not None else 1.0)
+    out: dict[str, Any] = {
+        "name": _short_ctype(ctype) or "XYZ"[which],
+        "ctype": ctype,
+        "unit": unit,
+        "method": "linear",
+        "world": _finite_list(values),
+        "spacing": cdelt,
+    }
+    if which == 2:
+        # No velocity: the keys of a spectral axis, empty, for a reader of either.
+        out.update({"velocity_kms": None, "velocity_convention": "", "channel_width_kms": None,
+                    "full_velocity_kms": None, "full_channel_width_kms": None, "specsys": ""})
+    return out
+
+
+def _axis_spacing(dataset: ScientificFitsDataset, which: int) -> float | None:
+    """The header's step per full-resolution voxel along axis ``which`` (CD
+    matrix included, signed), or None."""
+    try:
+        v = float(dataset._cdelt(dataset.active_axes[which]))  # noqa: SLF001
+    except Exception:  # noqa: BLE001
+        return None
+    return v if math.isfinite(v) and v != 0.0 else None
+
+
+def _percentile_threshold(sample: np.ndarray) -> float | None:
+    """:data:`SIMULATION_PERCENTILE` of the finite values of ``sample``."""
+    s = np.asarray(sample, dtype=np.float32).ravel()
+    s = s[np.isfinite(s)]
+    return float(np.percentile(s, SIMULATION_PERCENTILE)) if s.size else None
+
+
 def _open_cube(path: str):
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
@@ -153,22 +223,27 @@ def _factors(shape_zyx, factor_xy: int, factor_z: int, max_dim: int,
     return fxy, fxy, fz
 
 
-def _full_threshold(data: np.ndarray) -> float | None:
+def _full_threshold(data: np.ndarray, simulation: bool = False) -> float | None:
     """The cube's default 3-D threshold, the rule the desktop's view starts from
-    (issue #93): on a stride sample, for the voxels of the WHOLE cube."""
-    return _full_noise(data)[0]
+    (issue #93): on a stride sample, for the voxels of the WHOLE cube. A
+    simulation volume's is a percentile (:data:`SIMULATION_PERCENTILE`)."""
+    return _full_noise(data, simulation)[0]
 
 
-def _full_noise(data: np.ndarray) -> tuple[float | None, float | None]:
+def _full_noise(data: np.ndarray, simulation: bool = False,
+                ) -> tuple[float | None, float | None]:
     """(:func:`_full_threshold`, the desktop's Noise σ) from one stride sample
     of the whole cube: σ per sampled channel as the desktop's Estimate Noise
     measures it over the whole field (``noise_threshold.channel_noise_sigma``),
-    their median (issue #258)."""
+    their median (issue #258). A simulation volume has no noise: its
+    threshold is the percentile, its σ None."""
     n_voxels = int(np.prod(data.shape))
     st = stride_for(n_voxels)
     sample = np.asarray(data[::st, ::st, ::st], dtype=np.float32)
     if not np.isfinite(sample).any():
         return None, None
+    if simulation:
+        return _percentile_threshold(sample), None
     t = default_threshold(sample, n_voxels)
     return (float(t) if t is not None and math.isfinite(t) else None,
             channel_noise_sigma(sample))
@@ -194,7 +269,8 @@ def _beam(dataset: ScientificFitsDataset, depth: int) -> dict[str, Any] | None:
             "pa_deg": pa, "per_channel": per_channel}
 
 
-def binning_threshold(data: np.ndarray, reduced: np.ndarray, mode: str) -> float | None:
+def binning_threshold(data: np.ndarray, reduced: np.ndarray, mode: str,
+                      simulation: bool = False) -> float | None:
     """The default threshold of a reduced cube.
 
     ``mean``: the noise rule applied to the reduced cube itself, whose noise is
@@ -205,13 +281,19 @@ def binning_threshold(data: np.ndarray, reduced: np.ndarray, mode: str) -> float
     noise from the lower tail, which a block maximum compresses, and set too low
     a cut: on pure Gaussian noise binned 3x3x1 it drew 0.15 % of the voxels
     instead of the rule's 1e-4.
+
+    A simulation volume (``simulation``): the percentile rule
+    (:data:`SIMULATION_PERCENTILE`) on the reduced cube (``mean``) or on the
+    full cube (``max``).
     """
     if mode == "max":
-        return _full_threshold(data)
+        return _full_threshold(data, simulation)
     st = stride_for(reduced.size)
     sample = reduced[::st, ::st, ::st]
     if not np.isfinite(sample).any():
         return None
+    if simulation:
+        return _percentile_threshold(sample)
     t = default_threshold(sample, int(reduced.size))
     return float(t) if t is not None and math.isfinite(t) else None
 
@@ -269,12 +351,13 @@ class _Pyramid:
             out["border"] = dict(self.repair)
         return out
 
-    def threshold(self, n_voxels: int) -> float | None:
+    def threshold(self, n_voxels: int, simulation: bool = False) -> float | None:
         """The cube's default threshold from level-0 bricks, as the out-of-core
         render session takes it (:func:`app.render_session._ooc.level0_sample`)."""
-        return self.noise(n_voxels)[0]
+        return self.noise(n_voxels, simulation)[0]
 
-    def noise(self, n_voxels: int) -> tuple[float | None, float | None]:
+    def noise(self, n_voxels: int, simulation: bool = False,
+              ) -> tuple[float | None, float | None]:
         """(:meth:`threshold`, σ) from one level-0 sample. The sample has no
         channel structure, so σ is 1.4826 x MAD about ONE median over all its
         channels together (``noise_threshold.flat_noise_sigma``), not the
@@ -284,11 +367,14 @@ class _Pyramid:
         medians vary (continuum left in, a baseline ripple, a frequency-
         dependent noise) the spread of the medians adds to this σ, and it is
         larger than the desktop's; ``noise_sigma_method`` says which rule was
-        used."""
+        used. A simulation volume: the percentile threshold
+        (:data:`SIMULATION_PERCENTILE`) and no σ."""
         from ..render_session._ooc import level0_sample  # noqa: PLC0415
         sample = level0_sample(self.pyr)
         if not sample.size:
             return None, None
+        if simulation:
+            return _percentile_threshold(sample), None
         t = default_threshold(sample, n_voxels)
         return (float(t) if t is not None and math.isfinite(t) else None,
                 flat_noise_sigma(sample))
@@ -326,27 +412,32 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
     dataset, hdul, data = _open_cube(path)
     pyramid = None
     try:
+        simulation = is_simulation(dataset)
         shape = tuple(int(n) for n in data.shape)
         if pyramid_path:
             pyramid = _Pyramid(pyramid_path, path, shape, factor_xy, factor_z, max_dim)
             factors = pyramid.factors
             _check_limit(shape, factors, encoding, limit)
-            threshold, sigma = pyramid.noise(int(np.prod(shape)))
+            threshold, sigma = pyramid.noise(int(np.prod(shape)), simulation)
             sigma_method = ("1.4826 x MAD about the median of a sample of level-0 bricks "
                             "of the brick pyramid, all channels together: the desktop's "
                             "per-channel rule only for a flat baseline, larger where "
                             "channel medians vary")
+            threshold_method = ("the 99th percentile of a sample of level-0 bricks"
+                                if simulation else "the noise rule on level-0 bricks")
             plan = pyramid.describe()
         else:
             factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)
-            threshold, sigma = _full_noise(data)
+            threshold, sigma = _full_noise(data, simulation)
             st = stride_for(int(np.prod(shape)))
+            every = "" if st == 1 else f", on every {st}th voxel along each axis"
             sigma_method = ("the desktop's Estimate Noise over the whole field: median over "
-                            "channels of 1.4826 x MAD about each channel's median"
-                            + ("" if st == 1 else f", on every {st}th voxel along each axis"))
+                            "channels of 1.4826 x MAD about each channel's median" + every)
+            threshold_method = (f"the {SIMULATION_PERCENTILE:g}th percentile of the values{every}"
+                                if simulation else f"the noise rule{every}")
             plan = None
-        beam = _beam(dataset, shape[0])
-        rest_hz = dataset._rest_freq_hz()  # noqa: SLF001
+        beam = None if simulation else _beam(dataset, shape[0])
+        rest_hz = None if simulation else dataset._rest_freq_hz()  # noqa: SLF001
     finally:
         if pyramid is not None:
             pyramid.close()
@@ -356,16 +447,22 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
     cx = cube_reduce.block_centres(width, fx)
     cy = cube_reduce.block_centres(height, fy)
     cz = cube_reduce.block_centres(depth, fz)
-    axes = {
-        "x": _spatial_axis(dataset, 0, shape, cx),
-        "y": _spatial_axis(dataset, 1, shape, cy),
-        "z": _spectral_axis(dataset, shape, cz),
-    }
-    # Pixel scale on the sky (arcsec), for the explicit velocity-to-space scale.
-    try:
-        pixel_arcsec = float(dataset.spatial_pixel_scale_arcsec())
-    except Exception:  # noqa: BLE001
+    if simulation:
+        axes = {"x": _linear_axis(dataset, 0, cx), "y": _linear_axis(dataset, 1, cy),
+                "z": _linear_axis(dataset, 2, cz)}
         pixel_arcsec = None
+    else:
+        axes = {
+            "x": _spatial_axis(dataset, 0, shape, cx),
+            "y": _spatial_axis(dataset, 1, shape, cy),
+            "z": _spectral_axis(dataset, shape, cz),
+        }
+        # Pixel scale on the sky (arcsec), for the explicit velocity-to-space scale.
+        try:
+            pixel_arcsec = float(dataset.spatial_pixel_scale_arcsec())
+        except Exception:  # noqa: BLE001
+            pixel_arcsec = None
+    spacing = [_axis_spacing(dataset, i) for i in range(3)]
     rd, rh, rw = cube_reduce.reduced_shape(shape, factors)
     if file_identity(path) != identity:
         raise ValueError("The cube changed while reading its metadata: open it again.")
@@ -375,10 +472,21 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
         "factors": [fx, fy, fz],
         "reduced_shape": [rw, rh, rd],
         "default_threshold": threshold,
+        "default_threshold_method": threshold_method if threshold is not None else "",
         # The noise σ of the full cube (BUNIT), for the threshold in multiples
-        # of σ (issue #258), and how it was measured; null when unmeasurable.
+        # of σ (issue #258), and how it was measured; null when unmeasurable
+        # and for a simulation volume.
         "noise_sigma": sigma,
         "noise_sigma_method": sigma_method if sigma is not None else "",
+        # A simulation volume (issue #317): no spectral axis, linear axes (X, Y,
+        # Z lengths), a physical field. The headset draws its box to the
+        # spacing and offers no spectral tools.
+        "simulation": simulation,
+        # The header's OBJECT: a VBT volume's field name (the colour bar's title).
+        "object": str(dataset.header.get("OBJECT", "") or "").strip(),
+        # The header's step per full-resolution voxel along x, y, z (signed,
+        # CD matrix included; null when the header has none), in each axis' unit.
+        "spacing": spacing,
         # The cube's spectral information for the info line (issue #258).
         "rest_frequency_hz": float(rest_hz) if rest_hz and math.isfinite(float(rest_hz)) else None,
         "rest_line": ("HI" if rest_hz and abs(float(rest_hz) - HI_REST_HZ) < 1e6 else ""),
@@ -395,7 +503,8 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
 
 def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
                         mode: str, encoding: str, limit: bool = True,
-                        pyramid_path: str | None = None) -> dict[str, Any]:
+                        pyramid_path: str | None = None, scale: str = "auto",
+                        ) -> dict[str, Any]:
     """The reduced cube as the headset's 3-D texture, plus its value range and
     its default threshold (:func:`binning_threshold`). ``limit=False`` lifts the
     headset size cap, for measurements on the backend (the validation scripts).
@@ -407,11 +516,22 @@ def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
     ``file_revision`` is the revision of the file actually read (as
     reduced_info gives it): taken before reading and checked after, so a file
     written again meanwhile is refused rather than answered under the
-    revision of a request made earlier (or queued for a heavy slot)."""
+    revision of a request made earlier (or queued for a heavy slot).
+
+    ``scale`` (issue #317): ``linear`` quantises the values, ``log`` their
+    log10 (a value at or below zero is then blank), ``auto`` the log for
+    positive values spanning more than ``cube_reduce.AUTO_LOG_DECADES``
+    decades. The reduction itself (block means or maxima) is on the values
+    either way; only the quantisation of its result changes. ``range_min`` and
+    ``range_max`` are values (on a log scale, the positive ones'), ``log_min``
+    and ``log_max`` the log10 range the codes span (None on a linear scale)."""
+    if scale not in cube_reduce.SCALES:
+        raise ValueError(f"scale must be one of {cube_reduce.SCALES}, not {scale!r}.")
     identity = file_identity(path)
     dataset, hdul, data = _open_cube(path)
     pyramid = None
     try:
+        simulation = is_simulation(dataset)
         shape = tuple(int(n) for n in data.shape)
         if pyramid_path:
             if mode != "mean":
@@ -426,7 +546,7 @@ def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
             factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)
             reduced = cube_reduce.reduce_cube(data, factors, mode)
             plan = None
-        own = binning_threshold(data, reduced, mode)
+        own = binning_threshold(data, reduced, mode, simulation)
     finally:
         if pyramid is not None:
             pyramid.close()
@@ -434,7 +554,17 @@ def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
     if file_identity(path) != identity:
         raise ValueError("The cube changed while it was being reduced: load it again.")
     lo, hi = cube_reduce.finite_range(reduced)
-    raw = cube_reduce.quantise(reduced, lo, hi, encoding)
+    used = cube_reduce.resolve_scale(scale, lo, hi)
+    log_min = log_max = None
+    nonpositive = 0
+    if used == "log":
+        lo, hi, nonpositive = cube_reduce.positive_range(reduced)
+        if not hi > 0.0:
+            raise ValueError("A log scale needs positive values: this cube has none.")
+        log_min, log_max = math.log10(lo), math.log10(hi)
+        raw = cube_reduce.quantise(reduced, log_min, log_max, encoding, "log")
+    else:
+        raw = cube_reduce.quantise(reduced, lo, hi, encoding)
     rd, rh, rw = reduced.shape
     return {
         "file_revision": hashlib.sha256(identity.encode()).hexdigest() if identity else "",
@@ -444,6 +574,11 @@ def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
         "mode": mode,
         "encoding": encoding,
         "range_min": lo, "range_max": hi,
+        "scale": used,
+        "log_min": log_min, "log_max": log_max,
+        # Finite reduced voxels at or below zero, blank on a log scale.
+        "nonpositive_voxels": int(nonpositive),
+        "simulation": simulation,
         "threshold": own,
         "bunit": dataset.bunit or "",
         "source": "pyramid" if plan else "cube",

@@ -16,6 +16,10 @@
 // The cube's value scale (issue #258: histogram, threshold in σ and by
 // percentile, stretch) is a page of its own too, Levels, one press from
 // Display (its tab stays lit); 3σ and 5σ are on Display itself.
+// A simulation volume (ctx.simulation, issue #317) is a cube without a
+// spectral axis: no noise σ (Display offers the 90 % and 99 % percentiles
+// where a cube has 3σ and 5σ), no velocity range (its z is cropped as x and
+// y are), no Kinematic Lasso, Spectrum probe, moments or PV slices.
 //
 // The layout is a pure function of a context (what is shown and chosen), so
 // the hit tests, the greying and the "two presses from opening" rule are
@@ -127,12 +131,16 @@ export const WHY = {
   noSigma: 'No noise σ: these values are not noise about a median.',
   noHist: 'This cube keeps no values (a benchmark): no histogram.',
   powerOnly: 'The Power stretch only.',
+  simulation: 'A simulation volume has no spectral axis: no channels or spectra.',
+  simSigma: 'A simulation volume has no noise σ: use a percentile.',
 };
 
 /** The default context: nothing shown, nothing chosen. main.js fills it. */
 export function defaultContext() {
   return {
     kind: 'none', debug: false, colormap: COLORMAP_NAMES[0], render: 0, spectralName: 'Velocity range',
+    // A simulation volume (issue #317): kind 'cube', no spectral axis.
+    simulation: false,
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     src: { total: 0, shown: false, canAdd: false },
@@ -165,22 +173,30 @@ function displayCube(ctx) {
   const noCat = c.loaded ? '' : WHY.noCatalogue;
   const lv = ctx.lv || {};
   const noSigma = lv.sigma ? '' : WHY.noSigma;
-  // The threshold: the slider, 3σ and 5σ (the noise σ of the full cube, #258), Reset.
+  // The threshold: the slider, 3σ and 5σ (the noise σ of the full cube, #258), Reset;
+  // on a simulation volume the 90th and 99th percentiles instead (#317).
   const bw = 110, gap = 10, sl = RIGHT - X0 - 3 * (bw + gap);
+  const sim = !!ctx.simulation;
+  const noHist = lv.hist ? '' : WHY.noHist;
   const w = [
     ...swatches(0, ctx),
     { id: 'thr', kind: 'slider', rect: [X0, rowY(1), sl, WH] },
-    btn('sig:3', [X0 + sl + gap, rowY(1), bw, WH], '3σ', { group: 'sig', value: 3, disabled: noSigma, tip: 'Threshold at 3 σ of the full-resolution noise' }),
-    btn('sig:5', [X0 + sl + gap + (bw + gap), rowY(1), bw, WH], '5σ', { group: 'sig', value: 5, disabled: noSigma, tip: 'Threshold at 5 σ of the full-resolution noise' }),
+    ...(sim ? [
+      btn('pct:90', [X0 + sl + gap, rowY(1), bw, WH], '90%', { group: 'pct', value: 90, disabled: noHist, tip: 'Threshold at the 90th percentile: 10% of the values above it' }),
+      btn('pct:99', [X0 + sl + gap + (bw + gap), rowY(1), bw, WH], '99%', { group: 'pct', value: 99, disabled: noHist, tip: 'Threshold at the 99th percentile: 1% of the values above it' }),
+    ] : [
+      btn('sig:3', [X0 + sl + gap, rowY(1), bw, WH], '3σ', { group: 'sig', value: 3, disabled: noSigma, tip: 'Threshold at 3 σ of the full-resolution noise' }),
+      btn('sig:5', [X0 + sl + gap + (bw + gap), rowY(1), bw, WH], '5σ', { group: 'sig', value: 5, disabled: noSigma, tip: 'Threshold at 5 σ of the full-resolution noise' }),
+    ]),
     btn('thr-reset', [X0 + sl + gap + 2 * (bw + gap), rowY(1), bw, WH], 'Reset', { tip: 'Reset: the threshold the cube opened with' }),
     { id: 'cmax', kind: 'slider', rect: [X0, rowY(2), 560, WH] },
-    btn('levels-page', [X0 + 570, rowY(2), RIGHT - X0 - 570, WH], 'Levels ▸', { tip: 'Levels: histogram, σ, percentiles, stretch' }),
+    btn('levels-page', [X0 + 570, rowY(2), RIGHT - X0 - 570, WH], 'Levels ▸', { tip: sim ? 'Levels: histogram, percentiles, stretch' : 'Levels: histogram, σ, percentiles, stretch' }),
     { id: 'opacity', kind: 'slider', rect: [X0, rowY(3), RIGHT - X0, WH] },
     btn('render:0', span(4, 2, 0), 'Emission', { group: 'render', value: 0, on: ctx.render === 0, tip: 'Emission: the voxels add up along each ray' }),
     btn('render:1', span(4, 2, 1), 'MIP', { group: 'render', value: 1, on: ctx.render === 1, tip: 'MIP: the brightest value along each ray' }),
     btn('ct-show', span(5, 3, 0), 'Overlay', { on: c.loaded && c.show, disabled: noCat, tip: 'The catalogue\'s sources over the cube' }),
     btn('ct-labels', span(5, 3, 1), 'Labels', { on: c.loaded && c.labels, disabled: noCat, tip: 'The sources\' names' }),
-    btn('ct-pins', span(5, 3, 2), 'Through velocity', { on: c.loaded && c.pins, disabled: noCat, tip: 'Through velocity: pins along the velocity axis' }),
+    btn('ct-pins', span(5, 3, 2), 'Through velocity', { on: c.loaded && c.pins, disabled: sim ? WHY.simulation : noCat, tip: 'Through velocity: pins along the velocity axis' }),
   ];
   return { rows, widgets: w, status: 6 };
 }
@@ -258,7 +274,7 @@ function levelsPage(ctx) {
   const lv = ctx.lv || {};
   const cube = ctx.kind === 'cube';
   const notCube = cube ? '' : WHY.cubeOnly;
-  const noSigma = notCube || (lv.sigma ? '' : WHY.noSigma);
+  const noSigma = notCube || (ctx.simulation ? WHY.simSigma : lv.sigma ? '' : WHY.noSigma);
   const noHist = notCube || (lv.hist ? '' : WHY.noHist);
   const rows = [['hist', 'Values'], ['histx', ''], ['sigma', 'Threshold'], ['pct', 'Percentile'], ['stretch', 'Stretch'], ['gamma', 'Power γ']];
   // The histogram spans two rows: the track of a slider (the drag sets the threshold).
@@ -308,20 +324,22 @@ function dataPage(ctx) {
 
 function rangePage(ctx) {
   const cube = ctx.kind === 'cube';
+  const sim = cube && !!ctx.simulation;
   const rows = [['slab', ctx.spectralName], ['trigger', 'Trigger'], ['crop0', 'Crop x'], ['crop1', 'Crop y'], ['crop2', 'Crop z'],
     ['crop', 'Spatial crop']];
-  const notCube = cube ? '' : WHY.noSpectral;
+  // A simulation volume's z is cropped as x and y are: no spectral range.
+  const notCube = sim ? WHY.simulation : cube ? '' : WHY.noSpectral;
   const w = [
     { id: 'slab', kind: 'range', rect: [X0, rowY(0), 560, WH], disabled: notCube },
     btn('slab-all', [X0 + 570, rowY(0), RIGHT - X0 - 570, WH], 'Full band', { disabled: notCube }),
-    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && ctx.clipTool === 'slab', disabled: notCube,
+    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && !sim && ctx.clipTool === 'slab', disabled: notCube,
       tip: 'The trigger centres the range on the emission' }),
     // The crop is drawn and grabbed on every kind of data (#277).
-    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.kind !== 'none' && ctx.clipTool === 'box',
+    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.kind !== 'none' && (sim || ctx.clipTool === 'box'),
       tip: 'Drag a dot, the inside, or elsewhere for a new box' }),
   ];
   for (const a of [0, 1, 2]) {
-    w.push({ id: `crop:${a}`, kind: 'range', rect: [X0, rowY(2 + a), RIGHT - X0, WH], axis: a, disabled: cube && a === 2 ? WHY.cubeZ : '' });
+    w.push({ id: `crop:${a}`, kind: 'range', rect: [X0, rowY(2 + a), RIGHT - X0, WH], axis: a, disabled: cube && !sim && a === 2 ? WHY.cubeZ : '' });
   }
   w.push(btn('crop-reset', [X0, rowY(5), 300, WH], 'Reset crop'));
   return { rows, widgets: w, status: 6 };
@@ -335,15 +353,17 @@ function selectPage(ctx) {
   // only its inside shown, or all but it.
   const pts = ctx.kind === 'points';
   const notCube = cube ? '' : pts ? WHY.cubeTool : WHY.particlesSelect;
+  // A simulation volume has the Box region, not the spectral tools (#317).
+  const notSpectral = notCube || (ctx.simulation ? WHY.simulation : '');
   const w = [
     // The tool palette's order and icons (tool-palette.js), so both places look alike.
-    btn('tool:lasso', span(0, 3, 0), 'Kinematic Lasso', { group: 'tool', value: 'lasso', icon: 'lasso', on: cube && s.tool === 'lasso', disabled: notCube, tip: 'Kinematic Lasso: a connected object' }),
-    btn('tool:probe', span(0, 3, 1), cube ? 'Spectrum probe' : 'Probe', { group: 'tool', value: 'probe', icon: 'probe', on: cube && s.tool === 'probe', disabled: notCube, tip: 'Spectrum probe: the spectrum where you point' }),
+    btn('tool:lasso', span(0, 3, 0), 'Kinematic Lasso', { group: 'tool', value: 'lasso', icon: 'lasso', on: cube && !notSpectral && s.tool === 'lasso', disabled: notSpectral, tip: 'Kinematic Lasso: a connected object' }),
+    btn('tool:probe', span(0, 3, 1), cube ? 'Spectrum probe' : 'Probe', { group: 'tool', value: 'probe', icon: 'probe', on: cube && !notSpectral && s.tool === 'probe', disabled: notSpectral, tip: 'Spectrum probe: the spectrum where you point' }),
     btn('tool:box', span(0, 3, 2), pts ? 'Box select' : 'Box region', { group: 'tool', value: 'box', icon: 'box', on: (cube && s.tool === 'box') || pts,
       disabled: pts ? '' : notCube, tip: pts ? 'Box select: drag with the trigger across the particles' : 'Box region: statistics between two corners' }),
   ];
   [['new', 'New'], ['add', 'Add'], ['carve', 'Subtract']].forEach(([v, label], k) => {
-    w.push(btn(`seed:${v}`, span(1, 3, k), label, { group: 'seed', value: v, on: cube && s.tool === 'lasso' && s.seedMode === v, disabled: notCube }));
+    w.push(btn(`seed:${v}`, span(1, 3, k), label, { group: 'seed', value: v, on: cube && !notSpectral && s.tool === 'lasso' && s.seedMode === v, disabled: notSpectral }));
   });
   w.push(btn('sel-clear', [X0, rowY(2), 240, WH], 'Clear', { disabled: pts ? '' : notCube }));
   const sim = ctx.sim;
@@ -383,7 +403,8 @@ function measurePage(ctx) {
   const cube = ctx.kind === 'cube';
   const m = ctx.meas;
   const rows = [['moment', 'Moment', 'moment'], ['pv', 'PV slice', 'pv'], ['pvw', 'PV width'], ['spectrum', 'Spectrum']];
-  const notCube = cube ? '' : WHY.measureCube;
+  // Moments, PV slices and spectra are along a spectral axis: none on a simulation volume (#317).
+  const notCube = cube ? (ctx.simulation ? WHY.simulation : '') : WHY.measureCube;
   const w = [
     // Short labels, the long form as the tooltip (#276).
     btn('moment:0', span(0, 4, 0), 'M0', { group: 'moment', value: 0, on: m.moment === 0, disabled: notCube, tip: 'Intensity (M0)' }),

@@ -18,7 +18,7 @@
 // (renderer.js stretchFn) and the refined frames' transfer function
 // (refine.js) use stretchValue / stretchInverse below.
 
-import { voxelNorm } from './volume.js';
+import { voxelNorm, dataToNorm, normToData, valueText, niceTicks } from './volume.js';
 
 export const STRETCHES = ['linear', 'log', 'sqrt', 'square', 'power'];
 export const STRETCH_LABELS = { linear: 'Linear', log: 'Log', sqrt: 'Sqrt', square: 'Square', power: 'Power' };
@@ -136,11 +136,12 @@ export function drawnSigmaText(k, factors, mode, short = false) {
 /**
  * The normalised threshold (0..1 over the drawn cube's [lo, hi]) of k σ:
  * {norm, clamped} (clamped: k σ lies outside the cube's values, the nearest
- * end is taken), or null without σ.
+ * end is taken), or null without σ. `scale`: the cube's (volume.js
+ * dataToNorm; on 'log', lo and hi are log10 values).
  */
-export function sigmaThreshold(k, sigma, lo, hi) {
+export function sigmaThreshold(k, sigma, lo, hi, scale = 'linear') {
   if (!sigma || !(hi > lo)) return null;
-  const n = (k * sigma - lo) / (hi - lo);
+  const n = dataToNorm(k * sigma, lo, hi, scale);
   const norm = Math.max(0, Math.min(1, n));
   return { norm, clamped: norm !== n };
 }
@@ -266,11 +267,11 @@ export function fractionAbove(s, norm) {
  * cube's values, leaving out one closer than `minGap` to a mark already kept,
  * sorted along the axis.
  */
-export function sigmaMarks(sigma, lo, hi, ks = [3, 5, 1, 10], minGap = 0.06) {
+export function sigmaMarks(sigma, lo, hi, ks = [3, 5, 1, 10], minGap = 0.06, scale = 'linear') {
   if (!sigma || !(hi > lo)) return [];
   const out = [];
   for (const k of ks) {
-    const n = (k * sigma - lo) / (hi - lo);
+    const n = dataToNorm(k * sigma, lo, hi, scale);
     if (!(n >= 0 && n <= 1)) continue;
     const at = Math.sqrt(n);
     if (out.some((m) => Math.abs(m.at - at) < minGap)) continue;
@@ -305,6 +306,42 @@ export function sliderDensity(h, n = 160) {
     }
   }
   return out;
+}
+
+// ── The colour bar of a simulation volume (issue #317) ─────────────────────
+
+/**
+ * The colour bar of a volume (colour-bar.js drawColourBar's `bar`): from the
+ * threshold to the colour max, in values (never their logarithms), its
+ * ticks the decades between them on a log-scaled cube (nice linear values
+ * otherwise), each placed where the shader puts its colour: the stretch of
+ * (n − thr) / (cmax − thr), n the value's normalised code. `p`: thrNorm,
+ * cmaxNorm, lo, hi, scale (the cube's), stretch, stretchA, title, unit.
+ */
+export function volumeBar(p) {
+  const thr = p.thrNorm, cmax = Math.max(p.cmaxNorm, thr + 1e-3);
+  const scale = p.scale === 'log' ? 'log' : 'linear';
+  const val = (n) => normToData(n, p.lo, p.hi, scale);
+  const a = val(thr), b = val(cmax);
+  const log = scale === 'log';
+  const at = (v) => {
+    const n = dataToNorm(v, p.lo, p.hi, scale);
+    if (!Number.isFinite(n)) return -1;
+    const t = (n - thr) / (cmax - thr);
+    return t < -1e-9 || t > 1 + 1e-9 ? t : stretchValue(t, p.stretch, p.stretchA);
+  };
+  let ticks = [];
+  if (Number.isFinite(a) && Number.isFinite(b) && b > a) {
+    if (log && a > 0) {
+      for (let e = Math.ceil(Math.log10(a)); e <= Math.floor(Math.log10(b)); e++) ticks.push(10 ** e);
+      // Fewer than two decades inside: the two ends.
+      if (ticks.length < 2) ticks = [a, b];
+    } else {
+      ticks = niceTicks(a, b, 4);
+    }
+  }
+  const unit = p.unit ? ` [${p.unit}]` : '';
+  return { lo: a, hi: b, log, at, ticks, title: `${p.title || 'value'}${unit}${log ? ', log scale' : ''}` };
 }
 
 // ── The info line ───────────────────────────────────────────────────────────
@@ -346,14 +383,39 @@ export function beamText(beam) {
 }
 
 /**
+ * A simulation volume's info line (issue #317): its axes and their unit, the
+ * grid spacing, and the value scale of the drawn cube (`cube`: its scale and
+ * value range, when on show): no channel, rest frequency or beam.
+ */
+export function simulationLine(info, cube = null) {
+  const ax = (info && info.axes) || {};
+  const names = ['x', 'y', 'z'].map((k) => (ax[k] && ax[k].name) || k.toUpperCase());
+  const unit = (ax.x && ax.x.unit) || '';
+  const parts = [`Simulation volume: ${names.join(', ')}${unit ? ` in ${unit}` : ''}`];
+  const sp = Array.isArray(info.spacing) ? info.spacing.map((v) => Math.abs(Number(v))) : [];
+  if (sp.length === 3 && sp.every((v) => Number.isFinite(v) && v > 0)) {
+    parts.push(sp.every((v) => v === sp[0]) ? `voxel ${valueText(sp[0])}` : `voxel ${sp.map((v) => valueText(v)).join(' × ')}`);
+  }
+  if (cube && cube.scale === 'log') {
+    const range = Number.isFinite(cube.valueMin) && Number.isFinite(cube.valueMax)
+      ? ` ${valueText(cube.valueMin)} to ${valueText(cube.valueMax)}${cube.bunit ? ` ${cube.bunit}` : ''}` : '';
+    const blank = cube.nonpositive > 0 ? `, ${cube.nonpositive} voxels ≤ 0 blank` : '';
+    parts.push(`log scale${range}${blank}`);
+  }
+  return parts.join(' · ');
+}
+
+/**
  * The cube's info line: rest frequency (named HI when it is the HI line),
  * the full-resolution channel width (km/s when the cube has a velocity axis;
  * the drawn cube's when binned along the band), the beam when the header has
  * one. Pieces joined by ' · '; '' for a cube without any of them. A missing
- * rest frequency is said only on a frequency axis.
+ * rest frequency is said only on a frequency axis. A simulation volume has
+ * its own (simulationLine); a cube drawn on a log scale says so.
  */
-export function infoLine(info) {
+export function infoLine(info, cube = null) {
   if (!info) return '';
+  if (info.simulation) return simulationLine(info, cube);
   const parts = [];
   const rest = freqText(info.rest_frequency_hz);
   const z = (info.axes && info.axes.z) || {};
@@ -366,6 +428,7 @@ export function infoLine(info) {
   else if (cw) parts.push(`channel ${cw.unit === 'Hz' ? freqText(cw.native) : `${g4(cw.native)} ${cw.unit}`}`);
   const b = beamText(info.beam);
   if (b) parts.push(b);
+  if (cube && cube.scale === 'log') parts.push('log scale');
   return parts.join(' · ');
 }
 

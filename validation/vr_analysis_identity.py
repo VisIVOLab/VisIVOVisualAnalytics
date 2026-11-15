@@ -334,7 +334,8 @@ async def run(cube: str, scratch: Path, sofia_mask: Path | None) -> dict:
 
             # ── 4. PV across NGC 3187 ──
             reduced = await client.post("/v1/cube/reduced_bin", headers=hd, json={
-                "dataset_id": ds, "factor_xy": info["factors"][0], "factor_z": info["factors"][2], "mode": "mean", "encoding": "uint8"})
+                "dataset_id": ds, "factor_xy": info["factors"][0], "factor_z": info["factors"][2], "mode": "mean", "encoding": "uint8",
+                "scale": "linear"})
             reduced.raise_for_status()
             rfile = tmp / "reduced.bin"
             rfile.write_bytes(reduced.content)

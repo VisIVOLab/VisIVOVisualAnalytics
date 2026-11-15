@@ -61,7 +61,9 @@ inline constexpr const char *HEIGHT = "X-Visivo-Height";
 inline constexpr const char *INSTANCE = "X-Visivo-Instance";
 inline constexpr const char *LINE_POINTS = "X-Visivo-Line-Points";
 inline constexpr const char *LINES = "X-Visivo-Lines";
+inline constexpr const char *LOG_RANGE = "X-Visivo-Log-Range";
 inline constexpr const char *N_BASINS = "X-Visivo-N-Basins";
+inline constexpr const char *NONPOSITIVE_VOXELS = "X-Visivo-Nonpositive-Voxels";
 inline constexpr const char *ORIGIN = "X-Visivo-Origin";
 inline constexpr const char *PARTICLE_COUNT = "X-Visivo-Particle-Count";
 inline constexpr const char *PARTICLE_FIELDS = "X-Visivo-Particle-Fields";
@@ -78,6 +80,7 @@ inline constexpr const char *ROI_X0 = "X-Visivo-Roi-X0";
 inline constexpr const char *ROI_Y0 = "X-Visivo-Roi-Y0";
 inline constexpr const char *ROI_Z0 = "X-Visivo-Roi-Z0";
 inline constexpr const char *SCALAR_TYPE = "X-Visivo-Scalar-Type";
+inline constexpr const char *SCALE = "X-Visivo-Scale";
 inline constexpr const char *SEED = "X-Visivo-Seed";
 inline constexpr const char *SEEDS = "X-Visivo-Seeds";
 inline constexpr const char *SELECTED_COUNT = "X-Visivo-Selected-Count";
@@ -109,7 +112,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 95> kAll = {
+inline constexpr std::array<const char *, 98> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -159,7 +162,9 @@ inline constexpr std::array<const char *, 95> kAll = {
     INSTANCE,
     LINE_POINTS,
     LINES,
+    LOG_RANGE,
     N_BASINS,
+    NONPOSITIVE_VOXELS,
     ORIGIN,
     PARTICLE_COUNT,
     PARTICLE_FIELDS,
@@ -176,6 +181,7 @@ inline constexpr std::array<const char *, 95> kAll = {
     ROI_Y0,
     ROI_Z0,
     SCALAR_TYPE,
+    SCALE,
     SEED,
     SEEDS,
     SELECTED_COUNT,

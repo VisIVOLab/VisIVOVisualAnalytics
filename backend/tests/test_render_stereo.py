@@ -161,6 +161,31 @@ def test_the_voxel_camera_sees_every_voxel_where_the_headset_does():
     assert S.clip_range(p_vox) == pytest.approx((0.1 / s, 100.0 / s))
 
 
+def test_a_simulations_box_follows_the_voxel_aspect():
+    """Issue #317: a voxel 0.5 x 0.5 x 1 (relative) draws a 40 x 20 x 10 grid
+    as a 20 x 10 x 10 box, as the page's boxExtent with voxelAspect does, and
+    the voxel camera still lands every voxel where the headset draws it."""
+    assert S.parse_pose(pose()).aspect == (1.0, 1.0, 1.0)
+    assert S.parse_pose(pose(aspect=[1, 1, 2])).aspect == pytest.approx((0.5, 0.5, 1.0))
+    for bad in ([1, 1], [1, 0, 1], [1, 1, 5000], "1,1,1"):
+        with pytest.raises(ValueError, match="aspect"):
+            S.parse_pose(pose(aspect=bad))
+    m = S.voxel_to_model(40, 20, 10, aspect=(0.5, 0.5, 1.0))
+    lo = m @ np.array([-0.5, -0.5, -0.5, 1.0])
+    hi = m @ np.array([39.5, 19.5, 9.5, 1.0])
+    assert hi[:3] - lo[:3] == pytest.approx([1.0, 0.5, 0.5])
+    model = _translation(0.1, 1.4, -0.8) @ np.diag([0.6, 0.6, 0.6, 1.0])
+    view = np.linalg.inv(_translation(0.03, 1.6, 0.1))
+    proj = S.projection_from_fov(FOV)
+    shape, aspect = (40, 20, 10), (0.25, 0.5, 1.0)
+    rigid, p_vox, stretch, _ = S.voxel_camera(view, proj, model, shape, 1.5, aspect)
+    assert np.diag(stretch)[:3] == pytest.approx([0.25, 0.5, 1.5])
+    for x in ([0, 0, 0, 1.0], [39, 19, 9, 1.0], [12.5, 3, 7, 1.0]):
+        x = np.array(x)
+        want = proj @ view @ model @ S.voxel_to_model(*shape, 1.5, aspect) @ x
+        assert p_vox @ rigid @ stretch @ x == pytest.approx(want, rel=1e-9, abs=1e-12)
+
+
 def test_an_eye_starts_its_rays_near_and_ends_them_past_the_box():
     shape = (400, 400, 400)
     model = _translation(0, 0, -0.3) @ np.diag([0.5, 0.5, 0.5, 1.0])   # face 5 cm away
@@ -607,3 +632,39 @@ async def test_a_cube_session_renders_both_eyes_with_their_depth(tmp_path):
     assert mono[:2] == b"\xff\xd8" and mono_again[:2] == b"\xff\xd8"
     a, b = (np.asarray(Image.open(io.BytesIO(j)), dtype=np.float32) for j in (mono, mono_again))
     assert a.shape == b.shape and np.abs(a - b).mean() < 1.0
+
+
+@pytest.mark.skipif(not _can_render(), reason="needs macOS with a logged-in user, or "
+                    "VISIVO_TEST_EGL_RENDER=1 on a host with a real EGL GPU")
+async def test_a_simulations_aspect_squeezes_the_rendered_box(tmp_path):
+    """Issue #317: with aspect (0.5, 1, 1) the sphere's voxels are drawn half
+    as wide as they are high, as the page draws a simulation's box to its grid
+    spacing: the refined frame's silhouette is an ellipse of axis ratio 0.5."""
+    from PIL import Image
+    from app.render_session._process import RenderSessionProcess
+
+    path = tmp_path / "sphere.fits"
+    _sphere(path)
+    size = 192
+    session = RenderSessionProcess("stereo317test", str(path))
+    await session.initialize()
+    try:
+        await session.apply_command({"type": "set_threshold", "value": 0.5})
+        frames = {}
+        for i, aspect in enumerate(([1, 1, 1], [0.5, 1, 1])):
+            await session.apply_command(pose(50 + i, size, ipd=0.0, depth=False, aspect=aspect))
+            frames[aspect[0]] = await session.render_frame()
+    finally:
+        await session.close()
+
+    def extent(frame):
+        _, jpeg, _ = S.parse_frame(frame.to_bytes())
+        lit = np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"))[:, :size] > 20
+        cols, rows = np.flatnonzero(lit.any(axis=0)), np.flatnonzero(lit.any(axis=1))
+        return cols[-1] - cols[0] + 1, rows[-1] - rows[0] + 1
+
+    w1, h1 = extent(frames[1])
+    w2, h2 = extent(frames[0.5])
+    assert abs(w1 - h1) <= 2                              # a circle
+    assert h2 == pytest.approx(h1, abs=2)                 # the same height
+    assert w2 / h2 == pytest.approx(0.5, abs=0.04)        # half as wide

@@ -7,6 +7,9 @@
 // The shader works on a normalised value n: data = lo + n (hi - lo), blank < 0.
 // uint8 codes (/v1/cube/reduced_bin): 0 blank, 1..255 = n in [0, 1].
 // float16: n itself, blank = -1.
+// On a log scale (issue #317, X-Visivo-Scale: log) lo and hi are the log10
+// range the codes span, and data = 10^(lo + n (hi - lo)): the threshold, the
+// colour max and every value shown are values, never their logarithms.
 
 export function codeToNorm(code) {
   return code === 0 ? -1 : (code - 1) / 254;
@@ -34,8 +37,53 @@ export function voxelNorm(data, encoding, i) {
   return encoding === 'uint8' ? codeToNorm(data[i]) : halfToFloat(data[i]);
 }
 
-export function normToData(n, lo, hi) { return lo + n * (hi - lo); }
-export function dataToNorm(v, lo, hi) { return hi > lo ? (v - lo) / (hi - lo) : 0; }
+export function normToData(n, lo, hi, scale = 'linear') {
+  const q = lo + n * (hi - lo);
+  return scale === 'log' ? Math.pow(10, q) : q;
+}
+/** Inverse of normToData. On a log scale a value at or below zero is below
+ *  every code: -Infinity (callers clamp to 0). */
+export function dataToNorm(v, lo, hi, scale = 'linear') {
+  if (!(hi > lo)) return 0;
+  if (scale === 'log') return v > 0 ? (Math.log10(v) - lo) / (hi - lo) : -Infinity;
+  return (v - lo) / (hi - lo);
+}
+
+/** A value as text: three significant digits, scientific notation for the
+ *  very small and very large (a density of 1.8e-12 g/cm³). */
+export function valueText(v, digits = 3) {
+  if (v === null || v === undefined || !Number.isFinite(v)) return 'n/a';
+  const a = Math.abs(v);
+  if (a !== 0 && (a < 1e-3 || a >= 1e5)) return v.toExponential(digits - 1);
+  return String(Number(v.toPrecision(digits)));
+}
+
+// ── Simulation volumes (issue #317) ─────────────────────────────────────────
+// reduced_info's `simulation`: a volume with no spectral axis and linear axes
+// (a VBT volume's X, Y, Z, a PLUTO variable): no channels, velocities, noise σ,
+// beam or rest line, and no spectral tools.
+
+export const isSimulation = (info) => !!(info && info.simulation);
+
+/**
+ * The relative size of one full-resolution voxel along x, y, z, drawn so a
+ * simulation's box keeps its physical proportions: |spacing| normalised to
+ * a largest of 1, when the volume is a simulation whose three axes share a
+ * unit and have a finite non-zero spacing (within 1000 of each other, the
+ * render session's limit); null otherwise (a cube's pixels and channels are
+ * drawn as equal steps, its sky pixels square).
+ */
+export function voxelAspect(info) {
+  if (!isSimulation(info) || !Array.isArray(info.spacing) || info.spacing.length !== 3) return null;
+  const a = info.spacing.map((v) => Math.abs(Number(v)));
+  if (!a.every((v) => Number.isFinite(v) && v > 0)) return null;
+  const ax = info.axes || {};
+  const units = ['x', 'y', 'z'].map((k) => String((ax[k] && ax[k].unit) || '').trim());
+  if (units.some((u) => u !== units[0])) return null;
+  const m = Math.max(...a);
+  if (m > 1000 * Math.min(...a)) return null;
+  return a.map((v) => v / m);
+}
 
 // ── Fixed-capacity storage (issue #235) ─────────────────────────────────────
 // The page allocates its 3-D textures once, at a capacity, before any VR
@@ -258,6 +306,21 @@ function decimalsFor(step) {
   return step > 0 ? Math.max(0, Math.min(6, -Math.floor(Math.log10(step) + 1e-9))) : 2;
 }
 
+/** Tick labels in scientific notation: the step below 1e-4 or a value of
+ *  1e6 or more (a simulation's lengths in cm, 1e18). */
+function sciTicks(values, step) {
+  return step > 0 && (step < 1e-4 || values.some((v) => Math.abs(v) >= 1e6));
+}
+
+/** A tick label: the decimals the step needs, or scientific notation with
+ *  the digits that tell neighbouring ticks apart. */
+export function tickLabel(v, step, values = [v]) {
+  if (!sciTicks(values, step)) return v.toFixed(decimalsFor(step));
+  if (v === 0) return '0';
+  const digits = Math.max(1, Math.min(6, Math.floor(Math.log10(Math.abs(v))) - Math.floor(Math.log10(step)) + 1));
+  return v.toExponential(digits - 1);
+}
+
 /**
  * Ticks of one axis of /v1/cube/reduced_info: [{t, label}], plus the title.
  * The z axis is labelled in km/s when the backend gives a velocity.
@@ -277,13 +340,12 @@ export function axisTicks(axis, which, n = 5) {
   const lo = Math.min(...finite), hi = Math.max(...finite);
   const values = niceTicks(lo, hi, n);
   const step = tickStep(values);
-  const dec = decimalsFor(step);
   const ticks = [];
   for (const v of values) {
     const t = worldToTex(world, v);
     // Only values off [0, 360) are wrapped: the others are left exactly as they were.
     const shown = lon && (v < 0 || v >= 360) ? wrap360(v) : v;
-    if (t !== null) ticks.push({ t, value: shown, label: shown.toFixed(dec) });
+    if (t !== null) ticks.push({ t, value: shown, label: tickLabel(shown, step, values) });
   }
   return { title, unit, ticks };
 }
@@ -297,10 +359,13 @@ export function axisTitle(axisTicksResult) {
  * Model-space extents of the box (longest side = 1): the cube's full-resolution
  * pixels on each axis (a partial last block is drawn at its true width); the
  * spectral axis is stretched by `zStretch` channels per spatial pixel. Pixels
- * are drawn square on the sky even when CDELT1 and CDELT2 differ.
+ * are drawn square on the sky even when CDELT1 and CDELT2 differ. `aspect`
+ * (voxelAspect: a simulation's voxel sides) draws each axis to its physical
+ * length instead.
  */
-export function boxExtent(fullShape, zStretch = 1) {
-  const ex = fullShape[0], ey = fullShape[1], ez = fullShape[2] * zStretch;
+export function boxExtent(fullShape, zStretch = 1, aspect = null) {
+  const a = aspect || [1, 1, 1];
+  const ex = fullShape[0] * a[0], ey = fullShape[1] * a[1], ez = fullShape[2] * a[2] * zStretch;
   const m = Math.max(ex, ey, ez);
   return [ex / m, ey / m, ez / m];
 }
@@ -352,9 +417,11 @@ export function boxToTex(u, nFull, factor) {
 
 /**
  * The explicit scale of the velocity axis against the sky, as a sentence:
- * one channel is drawn as `zStretch` spatial pixels.
+ * one channel is drawn as `zStretch` spatial pixels. A simulation volume:
+ * how its box is drawn (to the grid's spacing, or in voxels), no channels.
  */
 export function velocityScaleText(info, zStretch = 1) {
+  if (isSimulation(info)) return simulationScaleText(info, zStretch);
   const z = info.axes && info.axes.z;
   const pix = info.pixel_scale_arcsec;
   const dv = z && z.channel_width_kms;
@@ -370,8 +437,28 @@ export function velocityScaleText(info, zStretch = 1) {
   return `Spectral scale: 1 full-resolution channel drawn as ${sky}, stretch \u00d7${zStretch.toFixed(2)}${held}`;
 }
 
+/** A simulation volume's box: drawn to its spacing (voxelAspect) or as
+ *  equal voxels, and the voxel's size; z stretched only when zStretch != 1. */
+export function simulationScaleText(info, zStretch = 1) {
+  const sp = Array.isArray(info.spacing) ? info.spacing.map((v) => Math.abs(Number(v))) : [];
+  const unit = (info.axes && info.axes.x && info.axes.x.unit) || '';
+  const fz = info.factors ? info.factors : [1, 1, 1];
+  const same = sp.length === 3 && sp.every((v) => v === sp[0]);
+  const vox = sp.length === 3 && sp.every((v) => Number.isFinite(v) && v > 0)
+    ? (same ? `voxel ${valueText(sp[0])}${unit ? ` ${unit}` : ''}` : `voxel ${sp.map((v) => valueText(v)).join(' × ')}${unit ? ` ${unit}` : ''}`) : '';
+  const box = voxelAspect(info) ? 'Box drawn to the grid spacing' : 'Box drawn in voxels (the axes\' spacings differ in unit or are missing)';
+  const held = fz.some((f) => f > 1) ? `; a drawn voxel holds ${fz.join('×')} of the grid` : '';
+  const zs = Math.abs(zStretch - 1) > 1e-6 ? `, z stretched ×${zStretch.toFixed(2)}` : '';
+  return `${box}${vox ? ` (${vox})` : ''}${zs}${held}`;
+}
+
 /** The same scale, short enough for a label over the box. */
 export function velocityScaleShort(info, zStretch = 1) {
+  if (isSimulation(info)) {
+    const fz = info.factors ? info.factors : [1, 1, 1];
+    const zs = Math.abs(zStretch - 1) > 1e-6 ? ` (z ×${zStretch.toFixed(2)})` : '';
+    return `${voxelAspect(info) ? 'to scale' : 'in voxels'}${zs}${fz.some((f) => f > 1) ? `, ${fz.join('×')} per voxel` : ''}`;
+  }
   const z = info.axes && info.axes.z;
   const pix = info.pixel_scale_arcsec;
   const dv = z && z.channel_width_kms;

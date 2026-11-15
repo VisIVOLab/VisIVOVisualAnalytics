@@ -6,7 +6,10 @@
 // icon shows the tool's name and what it does; the trigger picks it and
 // closes the palette; A again or × closes it without a change. The tool in
 // use is lit; tools that do not apply to the data shown are greyed. The
-// secondary stick ←/→ steps through the same list, in the same order.
+// secondary stick ←/→ steps through the same list, in the same order. A
+// simulation volume (kind 'volume', issue #317) has no spectral axis: the
+// spectral tools (Kinematic Lasso, Spectrum probe, Velocity range, Moment, PV
+// slice) are greyed on it.
 //
 // Layout, placement, the active tool and the picks are pure
 // (backend/tests/vr/tool-palette.test.mjs); drawPalette needs a 2-D context.
@@ -30,17 +33,17 @@ export const GROUPS = [['look', 'Look'], ['select', 'Select'], ['range', 'Range'
  *  ({mode, sub} for a trigger tool, {measure} for a measurement), the kinds
  *  of data it works on. */
 export const TOOLS = [
-  { id: 'explore', group: 'look', short: 'Explore', name: 'Explore', mode: 'explore', sub: null, kinds: ['cube', 'points', 'flow'],
+  { id: 'explore', group: 'look', short: 'Explore', name: 'Explore', mode: 'explore', sub: null, kinds: ['cube', 'volume', 'points', 'flow'],
     desc: 'Look around: the trigger pins the readout where you point.' },
   { id: 'lasso', group: 'select', short: 'Lasso', name: 'Kinematic Lasso', mode: 'select', sub: 'lasso', kinds: ['cube'],
     desc: 'Select a connected object by pointing at it.' },
   { id: 'probe', group: 'select', short: 'Probe', name: 'Spectrum probe', mode: 'select', sub: 'probe', kinds: ['cube'],
     desc: 'The spectrum of the full cube where you point.' },
-  { id: 'box', group: 'select', short: 'Box', name: 'Box region', mode: 'select', sub: 'box', kinds: ['cube'],
+  { id: 'box', group: 'select', short: 'Box', name: 'Box region', mode: 'select', sub: 'box', kinds: ['cube', 'volume'],
     desc: 'Statistics of the voxels between two corners you place.' },
   { id: 'slab', group: 'range', short: 'Velocity', name: 'Velocity range', mode: 'clip', sub: 'slab', kinds: ['cube'],
     desc: 'The trigger centres the channel range on the emission you point at.' },
-  { id: 'crop', group: 'range', short: 'Crop', name: 'Spatial crop', mode: 'clip', sub: 'box', kinds: ['cube', 'points', 'flow'],
+  { id: 'crop', group: 'range', short: 'Crop', name: 'Spatial crop', mode: 'clip', sub: 'box', kinds: ['cube', 'volume', 'points', 'flow'],
     desc: 'Drag a dot (a face), the inside (move), elsewhere (a new crop).' },
   { id: 'moment', group: 'measure', short: 'Moment', name: 'Moment', measure: 'moment', kinds: ['cube'],
     desc: 'The intensity map (M0) of the selection, or of the whole field.' },
@@ -57,10 +60,13 @@ export function activeTool(mode, sub, pvArmed = false) {
   return 'explore';
 }
 
-/** Why tool `t` is greyed for data `kind` ('' when it applies). */
+/** Why tool `t` is greyed for data `kind` ('' when it applies): cube,
+ *  volume (a simulation volume), points, flow or none. */
 export function whyNot(t, kind) {
   if (kind === 'none' || !kind) return 'Open a cube, a point table or a velocity field first.';
-  return t.kinds.includes(kind) ? '' : 'Cubes only: not on a point table or a velocity field.';
+  if (t.kinds.includes(kind)) return '';
+  return kind === 'volume' ? 'Spectral cubes only: a simulation volume has no spectral axis.'
+    : 'Cubes only: not on a point table or a velocity field.';
 }
 
 const TITLE_H = 64, CELL = 112, LABEL_H = 34, GAP = 6, GROUP_GAP = 22, X0 = 19, Y_GROUP = 72, Y_ICON = 108;
