@@ -284,33 +284,119 @@ export function overscanEye(eye, margin) {
  * edge strip of background).
  */
 export function coversViewport(frameEye, frameModel, view, model, depths) {
+  return coveredBy(prepareCover(frameEye, frameModel, depths), view, model);
+}
+
+/**
+ * The part of coversViewport that depends on the frame only (#300): the
+ * inverse of its eye's view * model, and its four corners unprojected at
+ * each depth (eye-space points of the frame). Null when the frame can never
+ * cover (a projection or pose that does not invert, a depth not above 0).
+ * Made once per shown frame and eye; coveredBy then tests a pose with no
+ * allocation.
+ */
+export function prepareCover(frameEye, frameModel, depths) {
   const invProj = M.invert(frameEye.proj);
-  const E = reprojectionMatrix(frameEye.view, frameModel, view.view, model);
-  if (!invProj || !E) return false;
-  const PE = M.multiply(view.proj, E);
-  const uv = [[0, 0], [1, 0], [1, 1], [0, 1]];
+  const inv = M.invert(M.multiply(frameEye.view, frameModel));
+  if (!invProj || !inv) return null;
+  const pts = new Float64Array(12 * depths.length);
+  let k = 0;
   for (const d of depths) {
-    if (!(d > 0)) return false;
-    const q = [];
-    for (const [u, v] of uv) {
+    if (!(d > 0)) return null;
+    for (const [u, v] of CORNERS_UV) {
       const x = unprojectPixel(invProj, u, v, d);
-      const w = PE[3] * x[0] + PE[7] * x[1] + PE[11] * x[2] + PE[15];
+      pts[k++] = x[0]; pts[k++] = x[1]; pts[k++] = x[2];
+    }
+  }
+  return { inv, pts, n: depths.length };
+}
+
+const CORNERS_UV = [[0, 0], [1, 0], [1, 1], [0, 1]];
+const VIEWPORT = [-1, -1, 1, -1, 1, 1, -1, 1];
+
+/** Scratch arrays for coveredBy: one set per caller that keeps it. */
+export function coverScratch() {
+  return { vm: new Float32Array(16), e: new Float32Array(16), pe: new Float32Array(16), q: new Float64Array(8) };
+}
+const SCRATCH = coverScratch();
+
+/**
+ * Does the prepared frame (prepareCover), warped to the current eye `view`
+ * ({view, proj}) and `model`, cover the whole viewport? The same numbers as
+ * coversViewport, into the scratch arrays `s`: no allocation per call.
+ */
+export function coveredBy(prep, view, model, s = SCRATCH) {
+  if (!prep) return false;
+  // PE = proj * (view * model) * inverse(view * model)_frame, in the order
+  // reprojectionMatrix multiplies it.
+  M.multiplyInto(s.vm, view.view, model);
+  M.multiplyInto(s.e, s.vm, prep.inv);
+  const PE = M.multiplyInto(s.pe, view.proj, s.e);
+  const q = s.q, p = prep.pts;
+  for (let j = 0; j < prep.n; j++) {
+    for (let i = 0; i < 4; i++) {
+      const o = 12 * j + 3 * i, x = p[o], y = p[o + 1], z = p[o + 2];
+      const w = PE[3] * x + PE[7] * y + PE[11] * z + PE[15];
       if (!(w > 0)) return false;
-      q.push(M.transformPoint(PE, x));
+      q[2 * i] = (PE[0] * x + PE[4] * y + PE[8] * z + PE[12]) / w;
+      q[2 * i + 1] = (PE[1] * x + PE[5] * y + PE[9] * z + PE[13]) / w;
     }
     // Convex quad (a homography of a rectangle): each viewport corner on the
     // inner side of every edge.
-    for (const [cx, cy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    for (let c = 0; c < 4; c++) {
+      const cx = VIEWPORT[2 * c], cy = VIEWPORT[2 * c + 1];
       let sign = 0;
       for (let i = 0; i < 4; i++) {
-        const a = q[i], b = q[(i + 1) % 4];
-        const c = (b[0] - a[0]) * (cy - a[1]) - (b[1] - a[1]) * (cx - a[0]);
-        if (sign === 0) sign = Math.sign(c);
-        if (c === 0 || Math.sign(c) !== sign) return false;
+        const a = 2 * i, b = 2 * ((i + 1) % 4);
+        const cr = (q[b] - q[a]) * (cy - q[a + 1]) - (q[b + 1] - q[a + 1]) * (cx - q[a]);
+        if (sign === 0) sign = Math.sign(cr);
+        if (cr === 0 || Math.sign(cr) !== sign) return false;
       }
     }
   }
   return true;
+}
+
+/**
+ * The depths a refined frame is warped at, for coversViewport: its depth
+ * image's range and the plane through the cube's centre (`centre`), or that
+ * plane alone when the frame has no depth image or an empty one (#300). An
+ * empty image (no sample on any ray: encode_depth sends z_near = z_far = 0)
+ * is warped wholly at the centre plane (refine-gl.js: a vertex with no
+ * sample takes uFallback), so that plane is the only one to test.
+ */
+export function coverDepths(depth, centre) {
+  if (!depth || (depth.z_near === 0 && depth.z_far === 0)) return [centre];
+  return [depth.z_near, depth.z_far, centre];
+}
+
+/**
+ * Whether the refined frame on show covers each eye's viewport, its
+ * preparation kept per shown frame and eye (#300): a still view tests the
+ * same frame every display frame, and only the current pose changes.
+ * `covers(shown, eye, view, model)`: `shown` refine-gl's {rec, header,
+ * hasDepth} (a new object per uploaded frame). `prepared` counts the
+ * preparations (for the tests).
+ */
+export function createCoverCache() {
+  const slots = [{ frame: null, prep: null }, { frame: null, prep: null }];
+  const s = coverScratch();
+  const cache = {
+    prepared: 0,
+    covers(f, eye, view, model) {
+      if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
+      const slot = slots[eye ? 1 : 0];
+      if (slot.frame !== f) {
+        const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
+        const depths = coverDepths(f.hasDepth ? f.header.depth : null, centreDistance(fe.view, f.rec.model));
+        slot.frame = f;
+        slot.prep = prepareCover(fe, f.rec.model, depths);
+        cache.prepared++;
+      }
+      return coveredBy(slot.prep, view, model, s);
+    },
+  };
+  return cache;
 }
 
 // ── Whether a frame may be shown ─────────────────────────────────────────────

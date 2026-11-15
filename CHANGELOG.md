@@ -8,6 +8,26 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: a re-cut moment keeps its colour range on sparse maps, and the splat
+  row governor no longer stays frozen while still (#300).** When the crop of
+  a whole-field moment changes, Moments 0 and 2 now take their exact finite
+  range again (one pass, no sort), and Moment 1's robust range is measured
+  on up to 65 536 of the crop's finite pixels, all of them when there are
+  fewer. Before, a strided sample of a NaN-masked 2048² map with a 13×10
+  source gave [10, 16] for all three orders instead of [5, 17] (Moments 0
+  and 2) and [-6.8, 28.8] (Moment 1), and a sample with no finite value gave
+  [0, 1]. A re-cut of a 2048² map takes 2.5–10 ms for Moments 0 and 2 and
+  11–36 ms for Moment 1 on an M-series Mac. The splat row governor now
+  stops raising the rows only while a still view's refined frame is on its
+  way or fading in. A frame shown in full that does not cover the view (a
+  particle close to the eye) used to hold the rows at their last cut until
+  the user moved. A frame whose depth image is empty (no particle in its
+  view) is tested for coverage at the centre plane, where it is warped, so
+  the splats under it are skipped as under any other covering frame. The
+  coverage test is prepared once per shown frame and eye (about 470 → 144 ns
+  per eye and frame, no garbage), and the moment window's per-frame crop
+  check compares six numbers instead of building a JSON key.
+
 - **3-D sky catalogues: the selected source follows a model change, and the
   cz < 1000 km/s flag reads the cz the file shows (#298).** Changing the
   cosmology model, the distance mode or the frame now keeps the source

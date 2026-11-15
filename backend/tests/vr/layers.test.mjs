@@ -360,3 +360,37 @@ test('row governor review (#297): which governor, earned clean time, decaying ba
   assert.equal(PT.quantizeRows(900_000, 1_000_000, 1_000_000), 1_000_000, 'the whole sample kept near it');
   assert.equal(PT.quantizeRows(240_000, 200_000, prev), prev, 'clamped to the sample before comparing');
 });
+
+test('#300: the row governor freezes growth only while a refined frame is on its way, not under one shown that leaves the view uncovered', () => {
+  const still = { splats: true, refineOn: true, motion: 'still' };
+  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'waiting', weight: 0 }), true, 'asked for, not shown yet');
+  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'refined', weight: 0.4 }), true, 'shown, fading in');
+  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'refined', weight: 1 }), false,
+    'shown whole: the governor runs only when it does not cover the view, and then may raise');
+  assert.equal(LY.rowGrowthFrozen({ ...still, motion: 'moving', status: 'waiting', weight: 0 }), false);
+  assert.equal(LY.rowGrowthFrozen({ ...still, refineOn: false, status: 'waiting', weight: 0 }), false);
+  assert.equal(LY.rowGrowthFrozen({ ...still, splats: false, status: 'waiting', weight: 0 }), false, 'points');
+  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'off', weight: 0 }), false);
+  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'unavailable', weight: 0 }), false);
+
+  // drawScene's loop, four times a second: still, a refined frame shown whole
+  // that does not cover the view (a particle close to the eye). A hitch cuts
+  // the rows; clean frames then bring them back. Before #300 ('refined'
+  // froze growth) they stayed at the cut until the user moved.
+  const hz = 72, P = 1000 / hz, count = 1_000_000;
+  const late = { n: 18, meanMs: 2 * P, medianMs: 2 * P, missed: 0.6, slow: 0.6 };
+  const clean = { n: 18, meanMs: P, medianMs: P, missed: 0, slow: 0 };
+  const run = (status, weight) => {
+    const gov = new PT.FrameRowGovernor();
+    let govRows = 400_000, drawRows = PT.quantizeRows(govRows, count);
+    for (let now = 0; now <= 12_000; now += 250) {
+      const next = gov.update(govRows, count, now === 0 ? late : clean, hz, now);
+      govRows = LY.rowGrowthFrozen({ ...still, status, weight }) ? Math.min(next, govRows) : next;
+      drawRows = PT.quantizeRows(govRows, count, drawRows);
+    }
+    return drawRows;
+  };
+  assert.equal(PT.quantizeRows(200_000, count), 185_364, 'the cut: 400 k halved');
+  assert.ok(run('refined', 1) >= 370_000, `${run('refined', 1)}: back near where it missed`);
+  assert.equal(run('waiting', 0), 185_364, 'a frame on its way: held at the cut');
+});

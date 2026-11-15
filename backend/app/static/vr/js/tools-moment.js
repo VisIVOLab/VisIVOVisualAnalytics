@@ -64,16 +64,35 @@ export function cutWhole(order, values, width, height, clip, fullShape, { sample
   const crop = wholeCrop(width, height, clip, fullShape);
   const box = crop || [0, width - 1, 0, height - 1];
   const cut = crop ? PC.crop(values, width, box[0], box[1], box[2], box[3]) : values;
-  // A re-cut (the crop changed) takes its colour range from at most `sample`
-  // values, evenly strided: the robust range's two sorts stay a few ms.
-  const range = colourRange(order, sample ? strided(cut, sample) : cut);
-  return { box, cut, range, summary: mapSummary(cut), cropped: !!crop, cropKey: JSON.stringify(crop) };
+  // One pass for the numbers shown and the exact finite range; a re-cut (the
+  // crop changed) takes a velocity field's robust range from at most `sample`
+  // of its finite values: its two sorts stay a few ms (#300).
+  const st = mapStats(cut);
+  const range = colourRange(order, cut, sample, st);
+  return { box, cut, range, summary: { pixels: st.pixels, sum: st.sum }, cropped: !!crop, cropKey: JSON.stringify(crop) };
 }
-/** At most n values of `a`, evenly strided (all of them when it is short). */
-export function strided(a, n) {
-  if (a.length <= n) return a;
-  const out = new Float32Array(n), step = a.length / n;
-  for (let i = 0; i < n; i++) out[i] = a[Math.floor(i * step)];
+/**
+ * At most n of the finite values of `a`, evenly strided among them (#300):
+ * all of them when there are n or fewer, so a sparse map (a NaN-masked
+ * field with a compact source) is never sampled into too few values, nor
+ * into none. `count` the finite values of `a` when known (mapStats), else
+ * counted: one or two passes over `a`, no sort.
+ */
+export function finiteSample(a, n, count = null) {
+  if (count === null) {
+    count = 0;
+    for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i])) count++;
+  }
+  const out = new Float32Array(Math.min(count, n));
+  if (!out.length) return out;
+  const step = count <= n ? 1 : count / n;
+  let k = 0, j = 0, next = 0;
+  for (let i = 0; i < a.length && j < out.length; i++) {
+    const v = a[i];
+    if (!Number.isFinite(v)) continue;
+    if (k === next) { out[j++] = v; next = Math.floor(j * step); }
+    k++;
+  }
   return out;
 }
 /** A re-cut waits for the crop to stay still this long (ms), and samples this many values for its range. */
@@ -149,13 +168,32 @@ export function cropBox(bbox, w, h, pad = null) {
 }
 
 /** The colour range of an order: the desktop's robust symmetric range for a
- *  velocity field, the finite range otherwise. */
-export function colourRange(order, values) {
+ *  velocity field, the finite range otherwise. The finite range is always
+ *  exact (one pass, no sort; `stats` mapStats of `values` when already
+ *  made); with `sample` (#300) the robust range is measured on at most that
+ *  many finite values (finiteSample: all of them on a map with fewer), its
+ *  median and MAD sorts being the slow part. */
+export function colourRange(order, values, sample = 0, stats = null) {
   if (order === 1) {
-    const r = PC.robustSymmetricRange(values);
+    const r = PC.robustSymmetricRange(sample ? finiteSample(values, sample, stats ? stats.pixels : null) : values);
     if (r) return r;
   }
+  if (stats) return stats.pixels ? [stats.lo, stats.hi] : [0, 1];
   return PC.finiteRange(values) || [0, 1];
+}
+
+/** mapSummary and the finite range [lo, hi] in one pass (#300):
+ *  {pixels, sum, lo, hi}, lo > hi when no pixel is finite. */
+export function mapStats(values) {
+  let n = 0, sum = 0, lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (!Number.isFinite(v)) continue;
+    n++; sum += v;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  return { pixels: n, sum, lo, hi };
 }
 
 /** Map statistics shown under the title: the number of finite pixels and
@@ -173,6 +211,23 @@ export function createMomentTool(ctx) {
   const t = { busy: '', error: '', result: null, gen: 0, canvas: PC.makeCanvas(...PC.PLANE_PX), dirty: false,
     recipes: { lasso: null, ids: {} } };   // the recipe id of each order, for the selection they measure
   const changed = () => { t.dirty = true; ctx.onChange && ctx.onChange(); };
+  // The crop's key of a whole-field map, kept with the six clip numbers it
+  // was made from (#300): tick() runs every frame, and builds the key only
+  // when one of them (or the map) changed. The page edits its clip in place.
+  const memo = { result: null, clip: new Float64Array(6), none: true, key: '' };
+  function cropKeyOf(R) {
+    const c = ctx.clip();
+    let same = memo.result === R && memo.none === !c;
+    if (same && c) {
+      for (let i = 0; i < 3 && same; i++) same = memo.clip[i] === c.min[i] && memo.clip[3 + i] === c.max[i];
+    }
+    if (same) return memo.key;
+    memo.result = R;
+    memo.none = !c;
+    if (c) for (let i = 0; i < 3; i++) { memo.clip[i] = c.min[i]; memo.clip[3 + i] = c.max[i]; }
+    memo.key = JSON.stringify(wholeCrop(R.width, R.height, c, R.fullShape));
+    return memo.key;
+  }
 
   /** The moment of the whole field over the velocity range shown (#257). */
   async function computeWhole(order, gen) {
@@ -323,7 +378,7 @@ export function createMomentTool(ctx) {
   function recut() {
     const R = t.result;
     if (!R || !R.whole || !ctx.clip) return false;
-    if (JSON.stringify(wholeCrop(R.width, R.height, ctx.clip(), R.fullShape)) === R.cropKey) return false;
+    if (cropKeyOf(R) === R.cropKey) return false;
     const c = cutWhole(R.order, R.values, R.width, R.height, ctx.clip(), R.fullShape, { sample: RECUT_SAMPLE });
     t.result = { ...R, ...c };
     t.recutPending = null;
@@ -340,7 +395,7 @@ export function createMomentTool(ctx) {
   function tick(now, shown) {
     const R = t.result;
     if (!R || !R.whole || !ctx.clip) { t.recutPending = null; return false; }
-    const key = JSON.stringify(wholeCrop(R.width, R.height, ctx.clip(), R.fullShape));
+    const key = cropKeyOf(R);
     if (key === R.cropKey) { t.recutPending = null; return false; }
     if (!t.recutPending || t.recutPending.key !== key) { t.recutPending = { key, at: now }; return false; }
     if (!shown || now - t.recutPending.at < RECUT_MS) return false;

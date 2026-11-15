@@ -73,6 +73,20 @@ function fmt(v) {
  *  view on every side (about 3° on a Quest 3 eye), 12 % more pixels. */
 export const REFINE_OVERSCAN = 0.06;
 
+/**
+ * Whether the splat row governor may not raise the rows now (#297, #300):
+ * still, refining splats, and a refined frame on its way: asked for and not
+ * shown yet ('waiting'), or shown and still fading in (weight < 1). A new
+ * row step changes the look and drops that frame before it is seen. A frame
+ * shown whole that does not cover the view (a particle close to the eye, an
+ * edge after a turn) frees the governor: it cuts and raises as when moving,
+ * else it would stay at the rows of its last cut until the user moved.
+ */
+export function rowGrowthFrozen({ splats, refineOn, motion, status, weight }) {
+  return !!(splats && refineOn && motion === 'still'
+    && (status === 'waiting' || (status === 'refined' && weight < 1)));
+}
+
 export function createLayers(ctx) {
   const { gl, R, state, $ } = ctx;
   let lut = gl.createTexture();
@@ -92,6 +106,9 @@ export function createLayers(ctx) {
     box: null, info: null, load: {}, error: '',
   };
   let cloud = null, lines = null;
+  // Whether the refined frame on show covers each eye, its warp prepared once
+  // per shown frame and eye (#300: no allocation per display frame).
+  const coverCache = RF.createCoverCache();
   let scene = 0, linesRequest = 0, overlayRequest = 0;
   let linesAbort = null;
   function invalidateRequests() {
@@ -637,14 +654,9 @@ export function createLayers(ctx) {
     return { notes, values, status };
   }
   /** Whether the refined frame on show, warped to this eye, covers its whole
-   *  viewport (RF.coversViewport at the depths the warp uses). */
+   *  viewport (RF.coversViewport at the depths the warp uses: RF.coverDepths). */
   function refinedCovers(view, model, eye) {
-    const f = ctx.refiner.draw && ctx.refiner.draw.shown;
-    if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
-    const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
-    const centre = RF.centreDistance(fe.view, f.rec.model);
-    const d = f.hasDepth && f.header.depth ? [f.header.depth.z_near, f.header.depth.z_far, centre] : [centre];
-    return RF.coversViewport(fe, f.rec.model, view, model, d);
+    return coverCache.covers(ctx.refiner.draw && ctx.refiner.draw.shown, eye, view, model);
   }
 
   // ── Hooks for main.js ────────────────────────────────────────────────
@@ -752,11 +764,12 @@ export function createLayers(ctx) {
           let next = pt.govRows;
           if (kind === 'gpu') next = PT.governRows(pt.govRows, count, R.gpuMs, hz);
           else if (kind === 'frames') next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now);
-          // Still and waiting for a refined frame: no growth (a new step would
-          // make the frame asked for stale before it arrives).
-          const waiting = splats && ctx.refineOn() && ctx.refiner.motion.state === 'still'
-            && (ctx.refiner.status === 'waiting' || ctx.refiner.status === 'refined');
-          pt.govRows = waiting ? Math.min(next, pt.govRows) : next;
+          // Still with a refined frame on its way: no growth (a new step would
+          // make that frame stale before it is seen). A frame shown whole that
+          // does not cover the view does not freeze it (#300).
+          const frozen = rowGrowthFrozen({ splats, refineOn: ctx.refineOn(), motion: ctx.refiner.motion.state,
+            status: ctx.refiner.status, weight: ctx.refiner.weight });
+          pt.govRows = frozen ? Math.min(next, pt.govRows) : next;
           pt.drawRows = PT.quantizeRows(pt.govRows, count, pt.drawRows);
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
