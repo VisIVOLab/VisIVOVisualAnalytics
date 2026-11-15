@@ -8,6 +8,7 @@
 
 import * as M from './mat4.js';
 import * as PT from './points.js';
+import * as RF from './refine.js';
 import * as FL from './flow.js';
 import * as CT from './catalogue.js';
 import { colormapTable } from './colormaps.js';
@@ -66,6 +67,10 @@ function fmt(v) {
   const a = Math.abs(v);
   return a !== 0 && (a < 1e-2 || a >= 1e5) ? v.toExponential(2) : String(+v.toPrecision(4));
 }
+
+/** The margin splat frames are asked for with (#297): 6 % of the field of
+ *  view on every side (about 3° on a Quest 3 eye), 12 % more pixels. */
+export const REFINE_OVERSCAN = 0.06;
 
 export function createLayers(ctx) {
   const { gl, R, state, $ } = ctx;
@@ -622,6 +627,17 @@ export function createLayers(ctx) {
     if (L.error) status.push([L.error, '#ff8a8a']);
     return { notes, values, status };
   }
+  /** Whether the refined frame on show, warped to this eye, covers its whole
+   *  viewport (RF.coversViewport at the depths the warp uses). */
+  function refinedCovers(view, model, eye) {
+    const f = ctx.refiner.draw && ctx.refiner.draw.shown;
+    if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
+    const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
+    const centre = RF.centreDistance(fe.view, f.rec.model);
+    const d = f.hasDepth && f.header.depth ? [f.header.depth.z_near, f.header.depth.z_far, centre] : [centre];
+    return RF.coversViewport(fe, f.rec.model, view, model, d);
+  }
+
   // ── Hooks for main.js ────────────────────────────────────────────────
   const api = {
     // R.restore() rebuilds its own handles; these layer-specific GPU objects
@@ -709,7 +725,7 @@ export function createLayers(ctx) {
         // whole picture: the splats under it are not drawn (#295), and the
         // governor waits (those frames say nothing about the splats' cost).
         const covered = splats && ctx.refineOn() && !isCropped(state.clip) && ctx.refiner.showing
-          && ctx.refiner.weight >= 1 && ctx.refiner.motion.state === 'still';
+          && ctx.refiner.weight >= 1 && refinedCovers(view, model, eye);
         if (eye === 0) {
           if (pt.wasCovered && !covered) pt.frameGov.interrupted(now);   // the time under it was not earned
           pt.wasCovered = covered;
@@ -758,8 +774,12 @@ export function createLayers(ctx) {
      *  frame-rate governors earn no clean time from those frames (#295). */
     get covered() { return L.mode === 'points' && !!(L.points && L.points.wasCovered); },
     /** Refinement of a point table (none for a velocity field). */
-    refineFrame(t, eyes, centreView, background) {
+    refineFrame(t, eyes0, centreView, background) {
       if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip)) return;
+      // Splat frames are asked for with a margin, so a turn warps them
+      // without uncovering the view (refinedCovers: the splats under a
+      // covering frame are not drawn).
+      const eyes = PT.isSplats(L.s.style) ? eyes0.map((e) => RF.overscanEye(e, REFINE_OVERSCAN)) : eyes0;
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,

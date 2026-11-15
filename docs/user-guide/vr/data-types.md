@@ -65,7 +65,7 @@ Splats on a headset
 - **Defaults.** A headset adds its splats into half floats. The refined frame of a still view brings back the faint light that half floats drop. The splats start from 200 000 of the sample. The sample is still the budget's, used for points and for refinement.
 - **The governor works without a GPU timer.** The Quest Browser has no GPU timer, so in a VR session the rows drawn now follow the frame intervals, once the display rate has settled: missed frames, or a median interval above 1.12 display periods, cut them at once. Clean frames add 12 % a quarter second, up to just under the count that missed. Frames drawn under a refined frame earn no clean time. A desktop browser without a GPU timer keeps the count, because its display rate is not known.
 - **Rows move in half-octave steps** (…, 185 k, 262 k, 370 k, …), with hysteresis, and do not grow while a still view waits for its refined frame. The refined frames, drawn for the same rows, are therefore rarely made stale.
-- **Still views cost nothing.** While a refined frame is fully shown over a still view, the splats under it are not drawn.
+- **Still views cost nothing.** Splat refined frames are asked for with a 6 % margin on every side, about 3° on a Quest 3. While the frame on show, warped to the current pose, covers the whole view, the splats under it are not drawn. A turn or step that would uncover an edge brings them back.
 - **To measure another target**, add `?splattarget=f32`, `f16` or `8bit` to the page address.
 
 *Colour by* a column (the backend puts a positive column spanning more than

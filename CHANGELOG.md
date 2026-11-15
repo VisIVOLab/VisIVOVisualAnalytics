@@ -33,8 +33,9 @@ are preserved here unedited; the branch names they refer to are historical.
     cost of float32; the f16 splat rule keeps its 1/512 floor) and start at
     200 k rows of the sample. `?splattarget=f32|f16|8bit` overrides the
     target.
-  - **Still views.** The splats under a fully shown refined frame of a still
-    view are not drawn.
+  - **Still views.** Splat refined frames are asked for with a 6 % margin.
+    The splats under a fully shown refined frame are not drawn while that
+    frame, warped to the current pose, covers each eye's whole view.
   - **Eye buffer.** It comes back up after 9 s of clean frames. A step taken
     back soon doubles the wait, and showing something else resets it.
   - **Logs.** The display rate and the quality policy are logged once the
