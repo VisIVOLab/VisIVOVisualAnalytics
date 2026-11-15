@@ -45,8 +45,12 @@ _CUTOFF = 2.5           # the kernel is drawn out to 2.5 h (exp(-6.25) = 0.2 %)
 _MIN_RADIUS_PX = 1.0    # smaller particles are widened, their light conserved: a
                         # Gaussian 1 px wide sums to its integral on the pixel grid
 _TILE = 32              # pixels per tile side
+_EDGE = 1.0e-4          # pixels: the cutoff circle's edge is in (see _composite)
 
 QUANTITIES = ("density", "per_particle")
+_NO_DEPTH = np.zeros(0, dtype=np.float32)
+_NO_CODES = np.zeros(0, dtype=np.uint16)
+_NO_ABSORPTION = np.zeros((0, 3), dtype=np.float32)
 
 
 @dataclass
@@ -96,43 +100,76 @@ def project(positions: np.ndarray, radius: np.ndarray, camera: Camera,
 
 if njit is not None:
     @njit(cache=True, nogil=True)
-    def _bin(sx, sy, sr, order, width, height, tiles_x, tiles_y):
-        """Per tile, the particles (in ``order``) whose footprint touches it."""
+    def _tile_span(x, y, r, cutoff, tiles_x, tiles_y):
+        """The tiles a kernel at (x, y) of width r, drawn out to cutoff r,
+        touches: tx0, tx1, ty0, ty1."""
+        reach = cutoff * r
+        return (max(0, int((x - reach) // _TILE)), min(tiles_x - 1, int((x + reach) // _TILE)),
+                max(0, int((y - reach) // _TILE)), min(tiles_y - 1, int((y + reach) // _TILE)))
+
+    @njit(parallel=True, cache=True, nogil=True)
+    def _bin(sx, sy, sr, order, cutoff, width, height, tiles_x, tiles_y):
+        """Per tile, the particles (in ``order``) whose footprint touches it,
+        each tile's in the order given. Parallel over chunks of ``order``:
+        each counts its particles per tile, then writes them at its offset
+        within each tile's run (chunk after chunk, so the order is kept)."""
         n_tiles = tiles_x * tiles_y
+        n = order.size
+        n_chunks = max(1, min(64, n // 16384))
+        step = (n + n_chunks - 1) // n_chunks
+        per = np.zeros((n_chunks, n_tiles), dtype=np.int64)
+        for c in prange(n_chunks):
+            for k in range(c * step, min(n, (c + 1) * step)):
+                i = order[k]
+                tx0, tx1, ty0, ty1 = _tile_span(sx[i], sy[i], sr[i], cutoff, tiles_x, tiles_y)
+                for ty in range(ty0, ty1 + 1):
+                    for tx in range(tx0, tx1 + 1):
+                        per[c, ty * tiles_x + tx] += 1
         counts = np.zeros(n_tiles + 1, dtype=np.int64)
-        for k in range(order.size):
-            i = order[k]
-            reach = _CUTOFF * sr[i]
-            tx0 = max(0, int((sx[i] - reach) // _TILE))
-            tx1 = min(tiles_x - 1, int((sx[i] + reach) // _TILE))
-            ty0 = max(0, int((sy[i] - reach) // _TILE))
-            ty1 = min(tiles_y - 1, int((sy[i] + reach) // _TILE))
-            for ty in range(ty0, ty1 + 1):
-                for tx in range(tx0, tx1 + 1):
-                    counts[ty * tiles_x + tx + 1] += 1
         for t in range(n_tiles):
-            counts[t + 1] += counts[t]
-        fill = counts[:-1].copy()
+            run = counts[t]
+            for c in range(n_chunks):
+                here = per[c, t]
+                per[c, t] = run           # where chunk c starts in tile t
+                run += here
+            counts[t + 1] = run
         items = np.empty(counts[-1], dtype=np.int64)
-        for k in range(order.size):
-            i = order[k]
-            reach = _CUTOFF * sr[i]
-            tx0 = max(0, int((sx[i] - reach) // _TILE))
-            tx1 = min(tiles_x - 1, int((sx[i] + reach) // _TILE))
-            ty0 = max(0, int((sy[i] - reach) // _TILE))
-            ty1 = min(tiles_y - 1, int((sy[i] + reach) // _TILE))
-            for ty in range(ty0, ty1 + 1):
-                for tx in range(tx0, tx1 + 1):
-                    t = ty * tiles_x + tx
-                    items[fill[t]] = i
-                    fill[t] += 1
+        for c in prange(n_chunks):
+            fill = per[c]
+            for k in range(c * step, min(n, (c + 1) * step)):
+                i = order[k]
+                tx0, tx1, ty0, ty1 = _tile_span(sx[i], sy[i], sr[i], cutoff, tiles_x, tiles_y)
+                for ty in range(ty0, ty1 + 1):
+                    for tx in range(tx0, tx1 + 1):
+                        t = ty * tiles_x + tx
+                        items[fill[t]] = i
+                        fill[t] += 1
         return counts, items
 
     @njit(parallel=True, fastmath=True, cache=True, nogil=True)
-    def _composite(sx, sy, sr, weight, emission, absorption, counts, items,
-                   width, height, tiles_x, tiles_y):
+    def _composite(sx, sy, sr, weight, emission, absorption, depth, codes, cutoff, counts,
+                   items, width, height, tiles_x, tiles_y):
+        """The light per pixel, (height, width, 3), and with ``depth`` (one per
+        particle; empty: none) the depth weighted by the light each particle
+        leaves in the pixel, composited as the light is (so a particle hidden
+        by the absorption of nearer ones weighs less): its sum over the
+        pixel's three channels, ``zsum``, (height, width), or (1, 1) without
+        depth. ``zsum`` / the light's channel sum is the pixel's mean depth.
+
+        ``emission`` (N, 3) per particle, or with ``codes`` (N 16-bit codes;
+        empty: none) a palette that the codes index over 0..65535; one row
+        alone gives every particle its emission. ``absorption`` (N, 3), or
+        (0, 3) for none. Each kernel is drawn out to ``cutoff`` times its
+        width."""
         image = np.zeros((height, width, 3), dtype=np.float32)
+        with_depth = depth.size > 0
+        absorbs = absorption.shape[0] > 0
+        palette = codes.size > 0
+        one = emission.shape[0] == 1
+        n_pal = emission.shape[0]
+        zsum = np.zeros((height, width) if with_depth else (1, 1), dtype=np.float32)
         n_tiles = tiles_x * tiles_y
+        cut2 = cutoff * cutoff
         # Tiles dealt out in a stride (a prime, so every tile once), not in
         # rows: the dense middle of a picture would otherwise fall to a few
         # threads, which a static schedule gives consecutive tiles.
@@ -142,42 +179,74 @@ if njit is not None:
             ty, tx = t // tiles_x, t % tiles_x
             x0, y0 = tx * _TILE, ty * _TILE
             x1, y1 = min(width, x0 + _TILE), min(height, y0 + _TILE)
+            fx = np.empty(_TILE, dtype=np.float32)   # the kernel along x, per column
             for k in range(counts[t], counts[t + 1]):
                 i = items[k]
                 r = sr[i]
-                reach = _CUTOFF * r
+                reach = cutoff * r
                 inv_r2 = 1.0 / (r * r)
-                px0 = max(x0, int(math.floor(sx[i] - reach)))
-                px1 = min(x1, int(math.ceil(sx[i] + reach)) + 1)
-                py0 = max(y0, int(math.floor(sy[i] - reach)))
-                py1 = min(y1, int(math.ceil(sy[i] + reach)) + 1)
+                cx, cy = sx[i], sy[i]
+                px0 = max(x0, int(math.floor(cx - reach)))
+                px1 = min(x1, int(math.ceil(cx + reach)) + 1)
+                py0 = max(y0, int(math.floor(cy - reach)))
+                py1 = min(y1, int(math.ceil(cy + reach)) + 1)
+                if px1 <= px0 or py1 <= py0:
+                    continue
                 w = weight[i]
-                e0, e1, e2 = emission[i, 0], emission[i, 1], emission[i, 2]
+                if palette:
+                    c = (np.int64(codes[i]) * n_pal) >> 16
+                elif one:
+                    c = 0
+                else:
+                    c = i
+                e0, e1, e2 = emission[c, 0], emission[c, 1], emission[c, 2]
+                ez = (e0 + e1 + e2) * depth[i] if with_depth else 0.0
                 # Grey: one absorption for the three channels, one exponential.
-                kappa = absorption[i, 0]
+                kappa = absorption[i, 0] if absorbs else 0.0
+                # exp(-(dx² + dy²) / r²) = exp(-dx² / r²) exp(-dy² / r²): one
+                # exponential per column and per row of the footprint.
+                for px in range(px0, px1):
+                    dx = px + 0.5 - cx
+                    fx[px - px0] = math.exp(-dx * dx * inv_r2)
                 for py in range(py0, py1):
-                    dy = py + 0.5 - sy[i]
-                    for px in range(px0, px1):
-                        dx = px + 0.5 - sx[i]
-                        d2 = (dx * dx + dy * dy) * inv_r2
-                        if d2 > _CUTOFF * _CUTOFF:
-                            continue
-                        s = w * math.exp(-d2)
-                        a = kappa * s
-                        if a > 0.0:
-                            # expm1: a faint particle still dims what is behind
-                            # it, and a million of them add up.
+                    dy = py + 0.5 - cy
+                    dy2 = dy * dy * inv_r2
+                    if dy2 > cut2 + _EDGE:
+                        continue
+                    # The row's pixels within the cutoff circle: |dx| <= xr,
+                    # widened by _EDGE so a centre exactly on the circle is in
+                    # whatever the rounding of the square root (fastmath).
+                    xr = math.sqrt(max(cut2 - dy2, 0.0)) * r + _EDGE
+                    qx0 = max(px0, int(math.ceil(cx - 0.5 - xr)))
+                    qx1 = min(px1, int(math.floor(cx - 0.5 + xr)) + 1)
+                    wy = w * math.exp(-dy2)
+                    if kappa > 0.0:
+                        for px in range(qx0, qx1):
+                            a = kappa * wy * fx[px - px0]
+                            # expm1: a faint particle still dims what is
+                            # behind it, and a million of them add up.
                             lost = -math.expm1(-a)
                             att = 1.0 - lost
                             f = lost / kappa
                             image[py, px, 0] = image[py, px, 0] * att + e0 * f
                             image[py, px, 1] = image[py, px, 1] * att + e1 * f
                             image[py, px, 2] = image[py, px, 2] * att + e2 * f
-                        else:
+                            if with_depth:
+                                zsum[py, px] = zsum[py, px] * att + ez * f
+                    elif with_depth:
+                        for px in range(qx0, qx1):
+                            s = wy * fx[px - px0]
                             image[py, px, 0] += e0 * s
                             image[py, px, 1] += e1 * s
                             image[py, px, 2] += e2 * s
-        return image
+                            zsum[py, px] += ez * s
+                    else:
+                        for px in range(qx0, qx1):
+                            s = wy * fx[px - px0]
+                            image[py, px, 0] += e0 * s
+                            image[py, px, 1] += e1 * s
+                            image[py, px, 2] += e2 * s
+        return image, zsum
 
 
 def emission_weights(intensity: np.ndarray, radius: np.ndarray, quantity: str) -> np.ndarray:
@@ -244,22 +313,44 @@ def render(positions: np.ndarray, radius: np.ndarray, colour: np.ndarray,
         qgrown = np.maximum(qr, _MIN_RADIUS_PX).astype(np.float32)
         qweight = ((qr / qgrown) ** 2).astype(np.float32)
         qtx, qty = -(-qw // _TILE), -(-qh // _TILE)
-        qcounts, qitems = _bin(qx, qy, qgrown, order, qw, qh, qtx, qty)
         grey = np.repeat(e.astype(np.float32)[:, None], 3, axis=1)
         with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
-            column = _composite(qx, qy, qgrown, qweight, grey, np.zeros_like(grey),
-                                qcounts, qitems, qw, qh, qtx, qty)[..., 0]
+            qcounts, qitems = _bin(qx, qy, qgrown, order, _CUTOFF, qw, qh, qtx, qty)
+            column = _composite(qx, qy, qgrown, qweight, grey, _NO_ABSORPTION, _NO_DEPTH,
+                                _NO_CODES, _CUTOFF, qcounts, qitems, qw, qh, qtx, qty)[0][..., 0]
         lit = column[column > 0]
         ref = float(np.percentile(lit, 99.5)) if lit.size else 0.0
         kappa = float(absorption) / ref if ref > 0 else 0.0
     # Grey: the same in the three channels, so a thick region keeps the colour
     # of what it emits (its source function is colour / absorption).
     absorb = np.repeat((e * kappa)[:, None], 3, axis=1).astype(np.float32)
+    return composite(sx, sy, grown, weight, emission, absorb, order, width, height)[0]
+
+
+def composite(sx, sy, radius, weight, emission, absorption, order, width: int, height: int,
+              depth: np.ndarray | None = None, codes: np.ndarray | None = None,
+              cutoff: float = _CUTOFF):
+    """``(light, zsum)`` of the particles ``order`` (back to front when they
+    absorb): ``sx``, ``sy`` their centres in pixels, ``radius`` their kernels'
+    widths in pixels (at least ``_MIN_RADIUS_PX``), ``weight`` the column at a
+    kernel's peak, ``emission`` and ``absorption`` (N, 3) per unit column,
+    float32 (``absorption`` None: none; ``emission`` a palette over
+    ``codes``, or one row for all: see :func:`_composite`). ``depth`` (N,):
+    the light-weighted depth ``zsum`` too (else None). ``cutoff``: how far
+    each kernel is drawn, in kernel widths (the default loses 0.2 % of its
+    light)."""
+    if njit is None:   # pragma: no cover
+        raise RuntimeError("Ray-traced particle rendering needs numba.")
     tiles_x, tiles_y = -(-width // _TILE), -(-height // _TILE)
-    counts, items = _bin(sx, sy, grown, order, width, height, tiles_x, tiles_y)
-    with PARALLEL:
-        return _composite(sx, sy, grown, weight, emission, absorb,
-                          counts, items, width, height, tiles_x, tiles_y)
+    z = _NO_DEPTH if depth is None else np.ascontiguousarray(depth, dtype=np.float32)
+    k = _NO_ABSORPTION if absorption is None else absorption
+    c = _NO_CODES if codes is None else np.ascontiguousarray(codes, dtype=np.uint16)
+    with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
+        counts, items = _bin(sx, sy, radius, order, float(cutoff), width, height,
+                             tiles_x, tiles_y)
+        light, zsum = _composite(sx, sy, radius, weight, emission, k, z, c, float(cutoff),
+                                 counts, items, width, height, tiles_x, tiles_y)
+    return light, (zsum if depth is not None else None)
 
 
 def smoothing_lengths(positions: np.ndarray, neighbours: int = 32) -> np.ndarray:

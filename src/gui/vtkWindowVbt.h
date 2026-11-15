@@ -75,6 +75,7 @@ private:
     void rebuildCoordinates();
     void applyFilter();
     void updateColorMapping();
+    void useSolidSplats();
     void updateScalarBar();
     void updateSummary();
     void updateBoundsContext();
@@ -207,6 +208,9 @@ private:
     vtkNew<vtkPolyData> polyData;
     vtkNew<vtkDoubleArray> pointScalars;
     vtkNew<vtkLookupTable> scalarLut;
+    // One colour for the splats without a colour column: vtkPointGaussianMapper
+    // applies its opacity function only to mapped scalars (issue #263).
+    vtkNew<vtkLookupTable> solidSplatLut;
     vtkNew<vtkPolyDataMapper> mapper;
     vtkNew<vtkPointGaussianMapper> gaussianMapper;
     vtkNew<vtkPiecewiseFunction> gaussianScaleFunction;
