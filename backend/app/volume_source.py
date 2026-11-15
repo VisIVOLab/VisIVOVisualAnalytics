@@ -1,5 +1,7 @@
-"""A volume read where it is: an HDU of a FITS file, or a field of a VisIVO
-Binary Table volume (issue #83).
+"""A volume read where it is: an HDU of a FITS file, a field of a VisIVO
+Binary Table volume (issue #83), or a variable of a PLUTO binary output
+(issue #315, app/pluto_source.py). The last two are raw fields
+(:class:`RawField`): samples at an offset of a file, read in place.
 
 A VBT volume is a cube already: each field is ``nx * ny * nz`` scalars, x
 fastest, one field after the other in the ``.bin`` beside its ``.head``. It is
@@ -13,6 +15,7 @@ A VBT is the ``.bin`` file with a ``.head`` beside it (``volume.bin`` and
 from __future__ import annotations
 
 import contextlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -208,6 +211,10 @@ def vbt_field(path: str | Path, field: int, order: str | None = None) -> np.memm
     """Field ``field`` of the VBT volume ``path``, memory-mapped in place as a
     (z, y, x) array of the file's own type, in byte order ``order`` (an open
     dataset's, :func:`ref_order`) or else as the header and the store say."""
+    return _vbt_raw(path, field, order).memmap()
+
+
+def _vbt_raw(path: str | Path, field: int, order: str | None = None) -> "RawField":
     header = vbt_volume_header(path, order or None)
     if not 0 <= field < header["field_count"]:
         raise ValueError(f"field {field} outside 0..{header['field_count'] - 1} of {path}")
@@ -217,8 +224,104 @@ def vbt_field(path: str | Path, field: int, order: str | None = None) -> np.memm
     size = Path(path).stat().st_size
     if size != expected:
         raise ValueError(f"{path} holds {size} bytes; its header describes {expected}.")
-    return np.memmap(path, dtype=dtype, mode="r", shape=(nz, ny, nx),
-                     offset=field * header["num_rows"] * dtype.itemsize)
+    return RawField(str(path), int(field), field * header["num_rows"] * dtype.itemsize,
+                    dtype, (nz, ny, nx), (str(vbt_head(path)),), "vbt")
+
+
+# ── A raw field: a VBT volume's field or a PLUTO variable ────────────────────
+#
+# Both are raw samples at an offset of a file, (z, y, x) with x fastest, read
+# in place. Everything that reads a cube by its samples rather than as FITS
+# (the pyramid, the moments' explicit reads, the product cache's identity, the
+# size a dataset reports) asks raw_field() what the bytes are, so a third such
+# format is one more resolver here, not one more branch in each of them.
+
+@dataclass(frozen=True)
+class RawField:
+    """Where a field's samples are and how they read."""
+    path: str                       # the data file
+    index: int                      # the field in it: a VBT field, a PLUTO variable
+    offset: int                     # bytes from the start of the file
+    dtype: np.dtype                 # sample type, byte order included
+    shape: tuple[int, int, int]     # (z, y, x), x fastest
+    #: The text files whose every change is a change of how the bytes read (a
+    #: VBT's .head): one edited beside the same data is another source. Not a
+    #: PLUTO .out, which a running simulation appends a line to at every
+    #: output: its own line is in :attr:`layout`.
+    sidecars: tuple[str, ...] = ()
+    kind: str = ""                  # "vbt" | "pluto"
+
+    @property
+    def layout(self) -> str:
+        """What the values are read as (type, byte order, offset, shape): what
+        a source keyed by it must match besides the data file."""
+        return f"{self.dtype.str}@{self.offset}:{'x'.join(str(n) for n in self.shape)}"
+
+    @property
+    def nbytes(self) -> int:
+        return int(np.prod(self.shape)) * self.dtype.itemsize
+
+    def memmap(self) -> np.memmap:
+        return np.memmap(self.path, dtype=self.dtype, mode="r", shape=self.shape,
+                         offset=self.offset)
+
+
+def raw_field(path: str | Path, hdu: int | None = None) -> RawField | None:
+    """The raw field ``path`` stands for: a field reference (VBT or PLUTO),
+    or the data file of either with ``hdu`` its field. None for anything else
+    (a FITS file); an error for a field that cannot be read as described."""
+    vbt = resolve_vbt(path, hdu)
+    if vbt is not None:
+        return _vbt_raw(*vbt, order=ref_order(path) or None)
+    from . import pluto_source  # noqa: PLC0415
+    var = pluto_source.resolve(path, hdu)
+    if var is not None:
+        return RawField(var.data_path, var.index, var.offset, var.dtype, var.shape,
+                        (), "pluto")
+    return None
+
+
+def is_field_ref(path: str | Path) -> bool:
+    """Whether ``path`` is a reference to a field (VBT or PLUTO), from the
+    string alone."""
+    from .pluto_source import split_ref as split_pluto  # noqa: PLC0415
+    return split_ref(path)[1] is not None or split_pluto(path)[1] is not None
+
+
+def field_data_file(path: str | Path) -> str:
+    """The file a field reference reads (its data file), from the string
+    alone; ``path`` itself for anything else."""
+    from .pluto_source import split_ref as split_pluto  # noqa: PLC0415
+    base, field = split_ref(path)
+    if field is not None:
+        return base
+    base, name = split_pluto(path)
+    return base if name is not None else str(path)
+
+
+def field_dataset_path(path: str | Path) -> str | None:
+    """The reference a field reference (VBT or PLUTO) opens by, checked; None
+    when ``path`` is no field reference or names a field that is not there."""
+    from . import pluto_source  # noqa: PLC0415
+    base, field = split_ref(path)
+    if field is not None:
+        return vbt_dataset_path(base, field)
+    base, name = pluto_source.split_ref(path)
+    if name is not None:
+        return pluto_source.pluto_dataset_path(base, name)
+    return None
+
+
+def field_siblings(path: str | Path) -> list[dict]:
+    """Every field beside the one ``path`` names, ``{name, path}``: a VBT
+    volume's fields, a PLUTO output's variables present on disk."""
+    from . import pluto_source  # noqa: PLC0415
+    base, field = split_ref(path)
+    if field is not None:
+        return vbt_fields(base)
+    if pluto_source.split_ref(path)[1] is not None:
+        return pluto_source.pluto_fields(path)
+    return []
 
 
 # ── A field as a cube dataset ────────────────────────────────────────────────
@@ -311,28 +414,41 @@ def vbt_fits_header(path: str | Path, field: int):
 
 
 def open_fits(path: str | Path, **kwargs):
-    """``fits.open(path, **kwargs)``; for a field reference, an HDUList with
-    the field memory-mapped in place as its primary HDU's data (no copy)."""
+    """``fits.open(path, **kwargs)``; for a field reference (a VBT field, a
+    PLUTO variable), an HDUList with the field memory-mapped in place as its
+    primary HDU's data (no copy)."""
     from astropy.io import fits  # noqa: PLC0415
 
     base, field = split_ref(path)
-    if field is None:
-        return fits.open(str(path), **kwargs)
-    hdu = fits.PrimaryHDU(data=vbt_field(base, field, ref_order(path)),
-                          header=vbt_fits_header(base, field),
-                          do_not_scale_image_data=True)
-    return fits.HDUList([hdu])
+    if field is not None:
+        hdu = fits.PrimaryHDU(data=vbt_field(base, field, ref_order(path)),
+                              header=vbt_fits_header(base, field),
+                              do_not_scale_image_data=True)
+        return fits.HDUList([hdu])
+    from . import pluto_source  # noqa: PLC0415
+    if pluto_source.split_ref(path)[1] is not None:
+        var = pluto_source.resolve(path)
+        hdu = fits.PrimaryHDU(
+            data=np.memmap(var.data_path, dtype=var.dtype, mode="r", shape=var.shape,
+                           offset=var.offset),
+            header=pluto_source.pluto_fits_header(var), do_not_scale_image_data=True)
+        return fits.HDUList([hdu])
+    return fits.open(str(path), **kwargs)
 
 
 def volume_shape(path: str | Path, hdu: int | None = None) -> tuple[tuple[int, ...], int]:
-    """The full shape of the volume and the HDU (field, for a VBT) it is in;
-    ``hdu`` None: a FITS file's first image HDU, a VBT's first field. Read
-    from the header: no data is touched."""
+    """The full shape of the volume and the HDU (field, for a VBT or a PLUTO
+    output) it is in; ``hdu`` None: a FITS file's first image HDU, a VBT's
+    first field, a PLUTO file's own variable. Read from the header: no data
+    is touched."""
     vbt = resolve_vbt(path, hdu)
     if vbt is not None:
         header = vbt_volume_header(vbt[0])
         nx, ny, nz = header["dimensions"]
         return (nz, ny, nx), vbt[1]
+    raw = raw_field(path, hdu)
+    if raw is not None:
+        return raw.shape, raw.index
     from astropy.io import fits  # noqa: PLC0415
 
     from .fits_dataset import image_hdu_index  # noqa: PLC0415
@@ -348,12 +464,12 @@ def volume_data(path: str | Path, hdu: int | None = None) -> Iterator[np.ndarray
     """The volume's data, memory-mapped, with its leading axes beyond three
     reduced to their first plane: (z, y, x). Read-only, and possibly of the
     file's own type: copy what is to be changed or kept."""
-    vbt = resolve_vbt(path, hdu)
-    if vbt is not None:
+    raw = raw_field(path, hdu)
+    if raw is not None:
         # Not closed on the way out: an array read from it without a copy (the
         # file's own type) is still a view of the map, and numpy closes the
         # map when the last view is gone.
-        yield vbt_field(*vbt, order=ref_order(path))
+        yield raw.memmap()
         return
     from astropy.io import fits  # noqa: PLC0415
 

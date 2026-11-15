@@ -47,6 +47,7 @@ def test_manifest(demo_dir: Path):
         "velocity_field.fits", "hi_cube.fits", "image_2d.fits",
         "combo/velocity.fits", "combo/galaxies.csv",
         "tbl_snapshot/snap_demo_1_1_1.tbl",
+        "pluto_blast/dbl.out", "pluto_blast/data.0001.dbl", "pluto_jet2d/rho.0000.flt",
     ]
     for rel in expected:
         assert (demo_dir / rel).exists(), f"missing demo file: {rel}"

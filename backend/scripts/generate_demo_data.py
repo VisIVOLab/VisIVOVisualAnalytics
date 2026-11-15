@@ -416,6 +416,81 @@ def make_stokes_cubes(out: Path) -> list[Path]:
     ]
 
 
+def write_pluto(out: Path, fields: dict[str, np.ndarray], *, mode: str = "single_file",
+                precision: str = "dbl", endian: str = "little",
+                edges: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+                geometry: str = "CARTESIAN", index: int = 0, time: float = 0.0,
+                step: int = 0, omit: tuple[str, ...] = (), append: bool = False) -> Path:
+    """Write one PLUTO binary output into ``out`` as PLUTO 4 does: a line in
+    ``dbl.out``/``flt.out``, ``grid.out`` and the data (``data.NNNN.ext`` or
+    one ``<var>.NNNN.ext`` per variable). ``fields`` are (nx3, nx2, nx1)
+    arrays, x1 fastest; ``edges`` the cell edges per direction (uniform on
+    [-1, 1] by default); ``omit`` names variables whose file is not written
+    (a run copied one variable at a time). Returns the first data file."""
+    out.mkdir(parents=True, exist_ok=True)
+    names = list(fields)
+    shape = fields[names[0]].shape
+    if edges is None:
+        edges = tuple(np.linspace(-1.0, 1.0, n + 1) for n in shape[::-1])
+    dims = sum(1 for n in shape if n > 1)
+    lines = ["# " + "*" * 54, "# PLUTO 4.4 Grid File", "# ",
+             f"# DIMENSIONS: {dims}", f"# GEOMETRY:   {geometry}"]
+    for d, e in enumerate(edges[:dims], start=1):
+        lines.append(f"# X{d}: [{e[0]: f}, {e[-1]: f}], {e.size - 1} point(s), 2 ghosts")
+    lines.append("# " + "*" * 54)
+    for e in edges:
+        lines.append(f"{e.size - 1} ")
+        lines += [f" {i}   {a:.12e}    {b:.12e}" for i, (a, b) in enumerate(zip(e[:-1], e[1:]),
+                                                                         start=1)]
+    (out / "grid.out").write_text("\n".join(lines) + "\n")
+    with open(out / f"{precision}.out", "a" if append else "w") as fh:
+        fh.write(f"{index} {time:.6e} 1.000000e-03 {step} {mode} {endian} "
+                 + " ".join(names) + " \n")
+    code = ("<" if endian == "little" else ">") + ("f8" if precision == "dbl" else "f4")
+    if mode == "single_file":
+        path = out / f"data.{index:04d}.{precision}"
+        with open(path, "wb") as fh:
+            for name in names:
+                np.ascontiguousarray(fields[name], dtype=code).tofile(fh)
+        return path
+    written = []
+    for name in names:
+        if name in omit:
+            continue
+        path = out / f"{name}.{index:04d}.{precision}"
+        np.ascontiguousarray(fields[name], dtype=code).tofile(path)
+        written.append(path)
+    return written[0]
+
+
+def make_pluto(out: Path) -> list[Path]:
+    """PLUTO binary outputs (issue #315): a 3-D blast wave, two outputs of
+    density and pressure in single_file mode (the .out opens the newer), and
+    a 2-D run on a grid stretched along x1 (opened on cell indices)."""
+    nz, ny, nx = 40, 48, 64
+    z, y, x = np.meshgrid(np.linspace(-1, 1, nz), np.linspace(-1, 1, ny),
+                          np.linspace(-1, 1, nx), indexing="ij")
+    made = []
+    for index, radius in enumerate((0.3, 0.6)):
+        r = np.sqrt(x ** 2 + y ** 2 + z ** 2)
+        shell = np.exp(-((r - radius) / 0.08) ** 2)
+        rho = 1e-3 + 1e-1 * shell + 1e-4 * RNG.random((nz, ny, nx))
+        prs = 1e-2 * (1.0 + 10.0 * shell)
+        made.append(write_pluto(out / "pluto_blast", {"rho": rho, "prs": prs},
+                                index=index, time=0.1 * index, step=100 * index,
+                                append=index > 0))
+    ny2, nx2 = 96, 128
+    x1 = np.concatenate([[0.0], np.cumsum(np.geomspace(0.005, 0.05, nx2))])
+    x2 = np.linspace(-1.0, 1.0, ny2 + 1)
+    yy, xx = np.meshgrid(0.5 * (x2[:-1] + x2[1:]), 0.5 * (x1[:-1] + x1[1:]), indexing="ij")
+    jet = np.exp(-(yy / 0.1) ** 2) * np.exp(-xx / 2.0)
+    made.append(write_pluto(out / "pluto_jet2d",
+                            {"rho": (0.1 + jet)[None], "vx1": jet[None]},
+                            mode="multiple_files", precision="flt", endian="big",
+                            edges=(x1, x2, np.array([0.0, 1.0]))))
+    return made
+
+
 def main() -> int:
     out = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 \
         else Path.home() / "VisIVO_demo_data"
@@ -435,6 +510,7 @@ def main() -> int:
     made.append(str(make_hi_cube(out)))
     made.append(str(make_image_2d(out)))
     made += [str(p) for p in make_stokes_cubes(out)]
+    made += [str(p) for p in make_pluto(out)]
 
     print(f"Wrote {len(made)} demo files under {out}:")
     for m in made:

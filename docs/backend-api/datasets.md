@@ -11,7 +11,7 @@ Open a FITS file; registers a session.
 { "path": "/data/cube.fits" }
 ```
 `path` may also name a VBT volume (its data file or its `.head`), opened as a
-cube of its first field. A compressed FITS (`.fits.gz`, `.fz`) is accepted
+cube of its first field, or a PLUTO binary output (see *PLUTO output* below). A compressed FITS (`.fits.gz`, `.fz`) is accepted
 (see *Compressed FITS* below). Any other file type is answered with
 `valid: false` ("Unsupported file type. Expected FITS (.fits, .fit, also
 compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).").
@@ -27,9 +27,34 @@ The other response fields: `valid`, `error`, `active_axes`,
 threshold should open as a preview first), and
 `server_side_rendering_available` (this backend can host a
 [render session](render.md) for the cube). For a multi-field source (a VBT
-volume) `field_name` is the field opened and `fields` lists every field as
+volume, a PLUTO output) `field_name` is the field opened and `fields` lists every field as
 `{name, path}`, `path` being what `/v1/datasets/open` takes to open that field. The same response is returned by the
 three routes below.
+
+**PLUTO output (issue #315).** `path` may name a PLUTO binary output: a data
+file (`data.NNNN.dbl` in `single_file` mode, `<var>.NNNN.dbl` or `.flt` in
+`multiple_files` mode) with its `dbl.out` / `flt.out` and `grid.out` beside it,
+the `.out` file itself (the newest output listed, its first variable whose file
+is present), or a variable reference `<data file>::pluto-var=<name>`. The
+variable is memory-mapped where it is (`.dbl` float64, `.flt` float32, in the
+byte order the `.out` line gives; `byte_order` is refused), shape
+(nx3, nx2, nx1) with x1 fastest, and the file's size is checked against the
+grid. Nothing is read beyond the text files when it opens: a 32 GB variable
+opens in milliseconds, with `recommended_load_mode: "preview_only"`. A 3-D run
+is a `cube`, a 2-D run an `image`. `fields` lists the output's variables whose
+files are present (a run copied one variable at a time offers only those);
+face-centred fields (`Bx1s` …) are not offered. The header it is read with:
+
+| Grid | Axes |
+|------|------|
+| Cartesian, every direction uniform (cell widths equal to 1e-6) | `CTYPE` `X`/`Y`/`Z`, `CDELT` the cell width, `CRVAL` the first cell's centre at `CRPIX` 1, in code units; `PLUTOGRD = 'UNIFORM'` |
+| Non-uniform, or a polar, cylindrical or spherical geometry | `CTYPE` `X`/`Y`/`Z` counting cells (`CDELT` 1, `CRVAL` 1 at the first: `grid.out`'s numbering), `PLUTOGRD = 'INDEX'` and `PLUTOWHY` the reason |
+
+Every header also carries `OBJECT` and `PLUTOVAR` (the variable), `PLUTOTIM`
+(the output time), `PLUTOSTP` (the step), `PLUTONUM` (the output number) and
+`PLUTOGEO` (the geometry). A pyramid or cached product of a variable is keyed
+by its data file, its `grid.out` and what its own `.out` line says, so a running
+simulation appending outputs to the `.out` does not invalidate it.
 
 **VBT byte order (issue #165).** For a VBT volume the request may carry
 `byte_order` (`"little"` or `"big"`), and the response carries `byte_order`

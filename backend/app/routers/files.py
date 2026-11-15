@@ -80,13 +80,17 @@ _preview_cards = preview_cards
 
 @router.post("/v1/files/header", response_model=FileHeaderResponse, tags=["files"])
 async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeaderResponse:
-    from ..volume_source import open_fits, split_ref, vbt_dataset_path  # noqa: PLC0415
+    from ..volume_source import field_data_file, field_dataset_path, open_fits  # noqa: PLC0415
 
     try:
-        # A field of a VBT volume (issue #83): the header it is read with.
-        base, field = split_ref(request.path)
+        # A field of a VBT volume (issue #83) or a PLUTO variable (#315): the
+        # header it is read with.
+        base = field_data_file(request.path)
         path = _normalize_path(base)
-        ref = vbt_dataset_path(path, field) if field is not None else None
+        # The data file checked as any path, the field kept (a reference
+        # begins with its data file's path).
+        ref = field_dataset_path(str(path) + request.path[len(base):]) \
+            if base != request.path else None
         if ref is None and not _is_fits(path):
             raise ValueError("FITS file not found.")
         # A .fits.gz: the headers off the start of the gzip stream (#57).
@@ -182,21 +186,28 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
     when the client should ask the user rather than pick.
     """
     from ..classify import classify_path  # noqa: PLC0415
-    from ..volume_source import split_ref, vbt_dataset_path  # noqa: PLC0415
+    from ..pluto_source import is_pluto_ref  # noqa: PLC0415
+    from ..volume_source import (field_data_file, field_dataset_path,  # noqa: PLC0415
+                                 is_field_ref, volume_shape)
 
-    # A field of a VBT volume (a Recent entry, a Session Data row) opens as the
-    # cube it was (issue #83).
-    base, field = split_ref(request.path)
-    if field is not None:
+    # A field of a VBT volume (issue #83) or a PLUTO variable (#315) (a Recent
+    # entry, a Session Data row) opens as the cube, or image, it was.
+    if is_field_ref(request.path):
+        base = field_data_file(request.path)
         try:
-            ok = vbt_dataset_path(_normalize_path(base), field) is not None
+            ref = field_dataset_path(str(_normalize_path(base)) + request.path[len(base):])
+            shape = volume_shape(ref)[0] if ref is not None else ()
         except Exception:
-            ok = False
-        if not ok:
+            ref, shape = None, ()
+        if ref is None:
             return FileClassifyResponse(valid=False, error="File not found.")
-        return FileClassifyResponse(valid=True, error="", path=request.path, kind="cube",
-                                    opener="dataset", confident=True,
-                                    detail="A field of a VisIVO Binary Table volume.")
+        pluto = is_pluto_ref(ref)
+        # A PLUTO run may be 2-D: an image. A VBT volume is a cube, as it was.
+        kind = "image" if pluto and sum(1 for n in shape if n > 1) < 3 else "cube"
+        return FileClassifyResponse(
+            valid=True, error="", path=request.path, kind=kind, opener="dataset",
+            confident=True, detail=("A variable of a PLUTO output." if pluto
+                                    else "A field of a VisIVO Binary Table volume."))
     try:
         path = _normalize_path(request.path)
     except Exception:

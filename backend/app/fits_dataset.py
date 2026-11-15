@@ -162,8 +162,8 @@ def _refuse_truncated(path: str) -> None:
     fails at the first data read as "buffer is too small for requested
     array". Headers and ``os.stat`` only; a VBT field is not a FITS file."""
     from .fits_truncation import check_not_truncated  # noqa: PLC0415
-    from .volume_source import split_ref  # noqa: PLC0415
-    if split_ref(path)[1] is None:
+    from .volume_source import is_field_ref  # noqa: PLC0415
+    if not is_field_ref(path):
         check_not_truncated(path)
 
 
@@ -585,9 +585,10 @@ class ScientificFitsDataset:
         """
         import os as _os
 
-        from .volume_source import split_ref  # noqa: PLC0415
-        if split_ref(self.path)[1] is not None:
-            # A field of a VBT volume: its own bytes, not the whole file's.
+        from .volume_source import is_field_ref  # noqa: PLC0415
+        if is_field_ref(self.path):
+            # A field of a VBT volume or a PLUTO variable: its own bytes, not
+            # the whole file's.
             return int(np.prod(self.shape)) * abs(int(self.header.get("BITPIX", -32))) // 8
         try:
             return int(_os.path.getsize(self.path))

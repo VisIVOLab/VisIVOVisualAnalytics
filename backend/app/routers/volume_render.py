@@ -95,8 +95,8 @@ class VolumeGridRequest(VolumeRenderRequest):
 
 def _paths(entry: dict, req: VolumeRenderRequest) -> tuple[str, str | None]:
     """The brightness's volume and the colour's (None: the brightness)."""
-    from ..volume_source import (ref_order, resolve_vbt, vbt_field_ref,  # noqa: PLC0415
-                                 vbt_volume_header, volume_shape, with_order)
+    from ..volume_source import (field_siblings, ref_order, resolve_vbt,  # noqa: PLC0415
+                                 vbt_field_ref, vbt_volume_header, volume_shape, with_order)
     path = str(entry.get("path") or "")
     if entry.get("kind") != "cube" or not path:
         raise HTTPException(422, "Ray-traced volume rendering needs a cube.")
@@ -116,8 +116,16 @@ def _paths(entry: dict, req: VolumeRenderRequest) -> tuple[str, str | None]:
         raise HTTPException(422, "colour_by 'colour' needs colour_field, the field to colour by.")
     vbt = resolve_vbt(path)
     if vbt is None:
-        raise HTTPException(422, "A colour from another field needs a VBT volume; "
-                                 "this cube has one field.")
+        # A PLUTO output: its variables present on disk, in the open answer's
+        # order (issue #315).
+        siblings = field_siblings(path)
+        if not siblings:
+            raise HTTPException(422, "A colour from another field needs a VBT volume or a "
+                                     "PLUTO output; this cube has one field.")
+        if not req.colour_field < len(siblings):
+            raise HTTPException(422, f"The volume has {len(siblings)} fields; "
+                                     f"no field {req.colour_field}.")
+        return path, siblings[req.colour_field]["path"]
     count = vbt_volume_header(vbt[0])["field_count"]
     if not req.colour_field < count:
         raise HTTPException(422, f"The volume has {count} fields; no field {req.colour_field}.")
@@ -133,9 +141,10 @@ def _velocities(path: str, depth: int) -> np.ndarray:
     rest frequency (app/compute/kinematic_fit.cube_velocity_axis)."""
     from ..compute.kinematic_fit import cube_velocity_axis  # noqa: PLC0415
     from ..fits_dataset import ScientificFitsDataset  # noqa: PLC0415
-    from ..volume_source import resolve_vbt  # noqa: PLC0415
-    if resolve_vbt(path) is not None:
-        raise HTTPException(422, "A VBT volume has no spectral axis to colour by velocity.")
+    from ..volume_source import is_field_ref, resolve_vbt  # noqa: PLC0415
+    if resolve_vbt(path) is not None or is_field_ref(path):
+        raise HTTPException(422, "A VBT volume or a PLUTO output has no spectral axis "
+                                 "to colour by velocity.")
     try:
         ds = ScientificFitsDataset(path)
         # The grid is read as (FITS axis 3, 2, 1): its depth must be the spectrum.

@@ -29,6 +29,8 @@ Manifest:
   combo/velocity.fits          combo/galaxies.csv
   stokes_DEMO_I.fits           stokes_DEMO_Q.fits
   stokes_DEMO_U.fits           stokes_DEMO_V.fits
+  pluto_blast/{dbl.out,grid.out,data.0000.dbl,data.0001.dbl}
+  pluto_jet2d/{flt.out,grid.out,rho.0000.flt,vx1.0000.flt}
 ```
 
 ## Prerequisites
@@ -201,6 +203,27 @@ depth is −47 … 36 rad m⁻² against a true −46.7 … 36.3, the residual b
 
 Full workflow and the real-archive caveats:
 [Polarimetry (Stokes Q, U, V)](user-guide/polarimetry).
+
+## 10 · PLUTO binary output  ·  `pluto_blast/`, `pluto_jet2d/`
+
+Two PLUTO runs in PLUTO's own binary format, read in place:
+
+- `pluto_blast/`: a 3-D blast wave, 64 × 48 × 40 cells on a uniform Cartesian
+  grid, two outputs of `rho` and `prs` in `single_file` mode (float64, little
+  endian); the shell grows from radius 0.3 to 0.6 between them;
+- `pluto_jet2d/`: a 2-D jet, 128 × 96 cells, `multiple_files` mode (float32,
+  big endian), on a grid stretched along x1.
+
+**Open:** *File ▸ Open…* → `pluto_blast/dbl.out`, then `pluto_jet2d/flt.out`.
+
+| Feature | Do this | Expect |
+|---|---|---|
+| Newest output | open `pluto_blast/dbl.out` | output 1 opens (the shell at radius 0.6), as a cube of `rho` |
+| Variables | Session Data | *Field: prs* listed; opening it shows the pressure |
+| Coordinates | 3-D axes | X from −0.98 to 0.98 in steps of 0.03125 (code units) |
+| 2-D run | open `pluto_jet2d/flt.out` | the image viewer; axes count cells, the header says `PLUTOGRD = 'INDEX'` (non-uniform cells along x1) |
+
+Details: [PLUTO simulation output](user-guide/pluto-output).
 
 ---
 

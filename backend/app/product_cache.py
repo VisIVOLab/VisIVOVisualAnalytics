@@ -23,15 +23,29 @@ def file_identity(path: str | os.PathLike) -> str:
     rewrite that restores ``mtime`` (``touch -r``, some copy tools); a chmod
     or a rename also moves it, which costs only a recomputation. A VBT field
     reference (``data::field``) is the data file, and a ``.head`` beside the
-    data is part of its version: its values are read as the header says.
+    data is part of its version: its values are read as the header says. A
+    PLUTO variable reference (``data::pluto-var=rho``) is its data file, its
+    ``grid.out`` and what its line of the ``.out`` says it is (not the
+    ``.out``'s own version: a running simulation appends to it).
     Empty for a path that cannot be stat'ed (an in-memory or remote source),
     which keys as before.
     """
-    from .volume_source import byte_order_override, split_ref, vbt_head  # noqa: PLC0415
+    from .pluto_source import GRID_NAME  # noqa: PLC0415
+    from .pluto_source import split_ref as split_pluto  # noqa: PLC0415
+    from .volume_source import (byte_order_override, field_data_file,  # noqa: PLC0415
+                                raw_field, vbt_head)
 
-    base, _field = split_ref(path)
+    base = field_data_file(path)
+    sidecars = [vbt_head(base)]
+    layout = ""
+    if split_pluto(path)[1] is not None:
+        sidecars = [os.path.join(os.path.dirname(base), GRID_NAME)]
+        try:
+            layout = raw_field(path).layout
+        except (OSError, ValueError):
+            return ""
     parts = []
-    for candidate, required in ((base, True), (vbt_head(base), False)):
+    for candidate, required in ((base, True), *((side, False) for side in sidecars)):
         try:
             st = os.stat(candidate)
         except OSError:
@@ -43,7 +57,9 @@ def file_identity(path: str | os.PathLike) -> str:
     # A VBT read against its header's byte order (issue #165) has other
     # values: another version, whichever of its names (data, .head, field
     # reference) the key was made from.
-    order = byte_order_override(path)
+    if layout:
+        parts.append(f"layout={layout}")
+    order = byte_order_override(path) if not layout else ""
     if order:
         parts.append(f"byte-order={order}")
     return "|".join(parts)

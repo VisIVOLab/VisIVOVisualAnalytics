@@ -58,7 +58,7 @@ _ready: set[str] = set()
 # image (a whole-file compressed image, a disk without room). A changed image
 # has another pyramid path, and a restarted backend tries again.
 _failed: dict[str, str] = {}
-_layout: dict[tuple[str, int, int], tuple[int, tuple[int, int, int]]] = {}
+_layout: dict[tuple[str, str, int, int], tuple[int, tuple[int, int, int]]] = {}
 
 
 def _hdu_and_shape(path: str) -> tuple[int, tuple[int, int, int]]:
@@ -67,11 +67,17 @@ def _hdu_and_shape(path: str) -> tuple[int, tuple[int, int, int]]:
     from .brick_pyramid import source_shape  # noqa: PLC0415
     from .fits_dataset import image_hdu_index  # noqa: PLC0415
 
-    st = os.stat(path)
-    key = (os.path.realpath(path), st.st_size, st.st_mtime_ns)
+    from .volume_source import field_data_file, is_field_ref, volume_shape  # noqa: PLC0415
+
+    # A field reference (a 2-D PLUTO run, issue #315) is its data file's version.
+    st = os.stat(field_data_file(path))
+    key = (os.path.realpath(field_data_file(path)), path, st.st_size, st.st_mtime_ns)
     if key not in _layout:
-        with fits.open(path, memmap=True) as hdul:
-            hdu = image_hdu_index(hdul)
+        if is_field_ref(path):
+            hdu = volume_shape(path)[1]
+        else:
+            with fits.open(path, memmap=True) as hdul:
+                hdu = image_hdu_index(hdul)
         _layout[key] = (hdu, source_shape(path, hdu))
     return _layout[key]
 

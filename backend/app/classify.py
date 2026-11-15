@@ -50,11 +50,49 @@ def _classify_vbt(head: Path, reason: str, open_path: str = "") -> dict:
     return _result("vbt", "catalogue", True, reason, open_path=open_path)
 
 
+def _classify_pluto(path: Path) -> dict | None:
+    """The verdict on a PLUTO output, or None for a file that is not one: a
+    ``dbl.out`` / ``flt.out``, or a ``<var>.NNNN.dbl|flt`` with one beside it.
+    ``open_path`` is the reference of the variable to open: the file's own,
+    or, for the ``.out``, the newest output's first variable present."""
+    from . import pluto_source as ps  # noqa: PLC0415
+
+    is_out = path.name in ps.OUT_NAMES
+    if not is_out and not (path.suffix.lower() in ps.EXTENSIONS and ps.is_pluto(path)):
+        return None
+    if not (path.parent / ps.GRID_NAME).is_file():
+        return _result("pluto", "unsupported", True,
+                       f"PLUTO output, but the {ps.GRID_NAME} that gives its grid is not "
+                       "beside it: copy it next to the data to open it.")
+    ref = ps.pluto_dataset_path(path)
+    if ref is None:
+        what = ("none of the newest output's variables is beside it, or its files do "
+                "not match the grid") if is_out else \
+            f"the file does not match {ps.GRID_NAME} and its .out file"
+        return _result("pluto", "unsupported", True,
+                       f"PLUTO output that cannot be read: {what}.")
+    var = ps.resolve(ref)
+    axes = [n for n in var.shape[::-1] if n > 1]
+    if len(axes) < 2:
+        return _result("pluto", "unsupported", True,
+                       f"PLUTO output of a 1-D run ({var.grid.cells} cells): no image or "
+                       "cube to show.")
+    count = len(ps.pluto_fields(ref))
+    more = f", {count - 1} more variable(s) as fields" if count > 1 else ""
+    detail = (f"PLUTO output {var.record.index} ({' × '.join(str(n) for n in axes)}, "
+              f"{var.grid.geometry.lower()}): {var.name}{more}.")
+    notice = var.grid.index_reason()
+    if notice:
+        detail += f" Shown on cell indices ({notice})."
+    return _result("cube" if len(axes) == 3 else "image", "dataset", True, detail,
+                   open_path=ref)
+
+
 def classify_path(path: str | Path) -> dict:
     """``{kind, opener, confident, detail, open_path}`` for one path.
 
     ``kind`` names the content ("image", "cube", "dynspec", "fits-table",
-    "catalogue", "vbt", "unknown"); ``opener`` names the route that opens it.
+    "catalogue", "vbt", "pluto" (an output that cannot be opened), "unknown"); ``opener`` names the route that opens it.
     ``open_path`` is the path the opener should be given when it differs from
     the one asked about — a VBT selected by its ``.bin`` opens by its ``.head``
     sidecar, which is the file that actually describes the table.
@@ -82,6 +120,13 @@ def classify_path(path: str | Path) -> dict:
         return _classify_vbt(path.with_suffix(".bin.head"),
                              "VisIVO Binary Table (header found beside it).",
                              open_path=str(path.with_suffix(".bin.head")))
+
+    # ── PLUTO: a data file, or the dbl.out / flt.out listing the outputs ─────
+    # Read in place as a cube (an image for a 2-D run), one variable at a time
+    # (issue #315).
+    pluto = _classify_pluto(path)
+    if pluto is not None:
+        return pluto
 
     if suffix == ".speck":
         return _result("catalogue", "catalogue", True, "speck point catalogue.")
