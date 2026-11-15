@@ -86,6 +86,11 @@ const span = (i, n, k, x0 = X0, right = RIGHT, gap = 10) => {
   const w = (right - x0 - gap * (n - 1)) / n;
   return [x0 + k * (w + gap), rowY(i), w, WH];
 };
+/** Row i split in cells as wide as `weights` (gaps between): cell k's rect. */
+const weighted = (i, weights, x0 = X0, right = RIGHT, gap = 10) => {
+  const unit = (right - x0 - gap * (weights.length - 1)) / weights.reduce((a, b) => a + b, 0);
+  return (k) => [x0 + weights.slice(0, k).reduce((a, b) => a + b * unit + gap, 0), rowY(i), weights[k] * unit, WH];
+};
 /** Wide-label pages (More, the technical settings): the control on the right. */
 const RX = 784;
 
@@ -102,7 +107,7 @@ export const WHY = {
   measureCube: 'Measure works on a cube.',
   spectrumFirst: 'Take a spectrum with the Probe (Select) first.',
   arrowsOff: 'The arrows are off.',
-  splatsOnly: 'Smooth (splats) only.',
+  splatsOnly: 'Smooth (splats) and Ray-traced only.',
   noColour: 'Choose a column to colour by first.',
   noCatalogue: 'Place a catalogue over the cube on the page (or from the desktop).',
 };
@@ -179,11 +184,15 @@ function displayPoints(ctx) {
   w.push(btn('pt-log', [X0, rowY(1), 150, WH], 'Log', { on: !!p.log, disabled: noCol }));
   w.push({ id: 'pt-range', kind: 'range', rect: [X0 + 160, rowY(1), RIGHT - X0 - 160, WH], disabled: noCol });
   w.push(...swatches(2, ctx));
-  w.push(btn('pt-style:points', span(3, 4, 0), 'Points', { group: 'pt-style', value: 'points', on: p.style !== 'splats', tip: 'Points: one dot a particle' }));
-  w.push(btn('pt-style:splats', span(3, 4, 1), 'Splats', { group: 'pt-style', value: 'splats', on: p.style === 'splats', tip: 'Smooth (splats): a soft blob a particle' }));
-  w.push(btn('pt-smaller', span(3, 4, 2), 'Size −', { tip: 'Smaller points or splats' }));
-  w.push(btn('pt-larger', span(3, 4, 3), 'Size +', { tip: 'Larger points or splats' }));
-  w.push({ id: 'pt-intensity', kind: 'slider', rect: [X0, rowY(4), RIGHT - X0, WH], disabled: p.style === 'splats' ? '' : WHY.splatsOnly });
+  const splats = p.style === 'splats' || p.style === 'raytraced';
+  // Five on the style row, each as wide as its label needs (#264, #276).
+  const cell = weighted(3, [3, 3.2, 4.4, 2.9, 2.9]);
+  w.push(btn('pt-style:points', cell(0), 'Points', { group: 'pt-style', value: 'points', on: !splats, tip: 'Points: one dot a particle' }));
+  w.push(btn('pt-style:splats', cell(1), 'Splats', { group: 'pt-style', value: 'splats', on: p.style === 'splats', tip: 'Smooth (splats): a soft blob a particle' }));
+  w.push(btn('pt-style:raytraced', cell(2), 'Ray-traced', { group: 'pt-style', value: 'raytraced', on: p.style === 'raytraced', tip: 'Ray-traced: splats refined by the ray tracer' }));
+  w.push(btn('pt-smaller', cell(3), 'Size −', { tip: 'Smaller points or splats' }));
+  w.push(btn('pt-larger', cell(4), 'Size +', { tip: 'Larger points or splats' }));
+  w.push({ id: 'pt-intensity', kind: 'slider', rect: [X0, rowY(4), RIGHT - X0, WH], disabled: splats ? '' : WHY.splatsOnly });
   w.push(btn('pt-budget', span(5, 3, 0), `${p.budget || '?'} ▸`, { tip: 'Particles sampled: the next budget' }));
   w.push(btn('pt-reload', span(5, 3, 1), 'Sample again', { tip: 'Sample the table again' }));
   w.push(btn('pt-box', span(5, 3, 2), 'Box and ticks', { on: !!p.box, tip: 'The box and its ticks' }));

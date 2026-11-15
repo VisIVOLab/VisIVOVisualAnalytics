@@ -268,8 +268,10 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     velocity columns such as *VX*, *VY*, *VZ*, then the others; *more ▸* when
     there are more than fit, and the menu opens on the first page); **Scale, range**: *Log* and the colour
     window (a range with two ends; its data values below); **Colour map**;
-    **Style**: *Points* or *Smooth (splats)*, *Size −*, *Size +*;
-    **Intensity** (splats); **Particles shown** (the next budget of rows),
+    **Style**: *Points*, *Smooth (splats)* or *Ray-traced* (splats whose
+    still view is ray-traced by the backend, the default for a VBT point
+    table), *Size −*, *Size +*;
+    **Intensity** (splats and ray-traced); **Particles shown** (the next budget of rows),
     *Sample again*, *Box and ticks*.
   - *A velocity field*: *Streamlines*, *Arrows*; **Arrow length**: *Shorter*,
     *Longer*; **Seed density**: *Fewer*, *More* (about ×1.4 a press, traced

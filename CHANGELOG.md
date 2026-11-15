@@ -40,6 +40,119 @@ are preserved here unedited; the branch names they refer to are historical.
   the open menu again above the hand; a hand behind or beside the user opens
   the menu along the gaze; `--font` checks the font is really installed.
 
+- **VR: particle splats hold the frame rate on the Quest 3 (#295, part of
+  #261).** On the Quest 3 splats and ray-traced styles ran at 12–26 fps at
+  every budget: they are fill-rate bound, and the row governor never acted,
+  because it needed a GPU timer the Quest Browser does not have.
+  - **Governor without a GPU timer.** The governor now falls back to the frame
+    intervals (`FrameRowGovernor` in `points.js`). More than 15 % missed
+    frames, or a median interval above 1.12 periods, cuts the rows by the
+    period over the interval. Sustained sparse misses or slow frames cut them
+    by 8 %. Clean frames add 12 % a quarter second, up to just under the count
+    that missed. Pauses over 250 ms are not frames, and a cut soon after a
+    probe upward doubles the wait for the next one (halved again for every
+    20 s without such a cut). It runs only in a VR session whose display
+    rate has settled, so a desktop browser without a GPU timer keeps the
+    count. Time not spent drawing splats (under a refined frame, a pause)
+    earns no clean time, and neither do the samples-per-voxel and eye-buffer
+    governors.
+  - **Half-octave steps.** The rows drawn move in half-octave steps, kept
+    until the count is 0.4 octave away, and they do not grow while a still
+    view waits for its refined frame. Refined frames are drawn for those
+    rows, so the governor rarely makes a refined frame stale and its
+    brightness matches the preview.
+  - **Headset defaults.** Splats go into half floats (about half the fill
+    cost of float32; the f16 splat rule keeps its 1/512 floor) and start at
+    200 k rows of the sample. `?splattarget=f32|f16|8bit` overrides the
+    target.
+  - **Still views.** Splat refined frames are asked for with a 6 % margin.
+    The splats under a fully shown refined frame are not drawn while that
+    frame, warped to the current pose, covers each eye's whole view.
+  - **Eye buffer.** It comes back up after 9 s of clean frames. A step taken
+    back soon doubles the wait, and showing something else resets it.
+  - **Logs.** The display rate and the quality policy are logged once the
+    session's rate has settled (`xr-rate`; it said 90 Hz for 72).
+  - **Measured on the Quest 3** (3.93 M rows, quest budget of a 1 M sample,
+    f16, eye buffer 1.0×):
+    - Moving (refinement off): splats 71.6 fps with 0.14 % missed, ray-traced
+      71.7 fps with 0.09 % missed, both at 185 k rows. Before: 18.5 and
+      17.8 fps at 1 M rows.
+    - Still, with the refined frame shown: 72.0 fps, 0 % missed.
+    - Points: 72.0 fps, 0 % missed.
+    - An eye buffer set to 0.85× came back to 1.0× after 19 s.
+
+- **VR: the splats' look (#263, part of #261).** The page adds its splats
+  into a float target (float32 where it can be blended, else half floats)
+  and tone-maps it onto the view: luminance Y → 1 − exp(−Y), hue kept, never
+  above 1. Dense halos no longer burn out to white (size 4 on the 3.9 M-row
+  snapshot: 17.9 % of the view saturated before, 0.04 % now), and faint
+  splats are no longer rounded away at each 8-bit addition. Also:
+  - Splat opacity is divided by the size step squared, so *Size −/+* changes
+    the size and not the brightness (view mean 19.4 at size 1 and 19.7 at
+    size 4; before, 21.4 and 60.1).
+  - Splats are instanced quads instead of point sprites, so near splats grow
+    up to 256 px instead of stopping at 64.
+  - A table opens coloured by a density-like column (`LogD`, `*dens*`,
+    `*rho*`) where it has one, instead of `vx`; a catalogue by its first
+    column that is not a position, velocity, sky coordinate or identifier.
+  - A sky catalogue's box is labelled *x (Mpc)* instead of `@x`.
+
+  The backend's refined frames follow the page: `set_point_style` takes the
+  page's `splat_rule` (`v1`, sent by none, the look before; `v2-8bit`, no
+  float target, the desktop's opacity, since over size² a size-12 splat
+  would add less than half an 8-bit step and vanish; `v2-f16`, opacity over
+  size² at least 1/512, tone-mapped; `v2-f32`, over size², tone-mapped), the
+  splat cap is 256 px (64 px for v1, as an older page drew), for both the page-rule splats and the ray-traced
+  ones. Each stereo frame says the rule it was drawn by and the page shows
+  only frames of its own: with a backend from before #263 its splat frames
+  are not shown (the panel says why) instead of popping in at another
+  brightness; an older cached page sends no rule and gets the old look. Refined frame against preview, light over the background: 1.039 at
+  size 1 and 1.031 at size 4. In half floats the size-4 figure was 1.175,
+  hence float32 where it can be blended; with the old 8-bit preview it was
+  1.089 at size 1. GPU time on the Mac for 1 M rows (headless Chrome, ANGLE
+  Metal, whole frame, noisy: an unchanged points frame read 3.2 then 3.9 ms):
+  splats size 1, 4.0 → 4.5 ms; size 4, 5.3 → 5.2 ms; inside the box,
+  3.8 → 4.0 ms. A headset without float render targets keeps the old
+  additive look and says *8-bit* in the HUD.
+  
+  The desktop too: in the VBT viewer and the point session's VTK view,
+  Gaussian splats without a colour column now follow the intensity.
+  vtkPointGaussianMapper applies its opacity function only to mapped scalars,
+  so with scalar visibility off every intensity drew the same picture (mean
+  51.8 at 1, 35 and 100; now 35.5, 44.5 and 50.2, as with a colour column).
+  They keep their scalars now, mapped through a one-colour table whose NaN
+  colour is that colour too, and are set to 0 when going solid (a column
+  with NaN left them behind, drawn dark red at an undefined opacity;
+  `src/gui/SolidSplats.h`). Solid splats are therefore dimmer than before at
+  the default intensity, as coloured ones are, and no longer match the 3-D
+  catalogue viewer's (vtkWindowCatalogue3D, deliberately left alone).
+
+- **VR: ray-traced still views of particles (#264, part of #261).** A point
+  table has a third style on the menu's Display tab, *Ray-traced*: the page
+  draws the same splats while the view moves, and when it holds still the
+  refined frame comes from the backend's ray-traced particle renderer (the
+  desktop's *Ray-traced* shape, `app/particle_raytrace.py`) over every row
+  the session holds. Each splat becomes a smooth Gaussian kernel carrying the
+  light the page's splat carries in expectation (`app/point_splat.py`
+  `raytrace_eye`), so the swap keeps brightness and colours: on a 3.9 M-row
+  snapshot the refined frame adds the same light over the background as the
+  *splats* frame, within 0.1 % (both 9 % above the preview, whose 8-bit
+  additions round faint light away). The frame also carries the depth its
+  light comes from (the light-weighted mean distance per block, `"source":
+  "medium"`), so it is reprojected like a cube's instead of as a plane: 2.7 to
+  3.7 dB closer to the true view after a 1-4° orbit, and kept on show beyond
+  1 cm of head motion. A VBT point table opens *ray-traced*, a catalogue as
+  points, until a style is chosen (`/v1/points/info` now says `format`). The
+  point session takes `stereo_renderer` (`"splat"` | `"raytrace"`) in
+  `set_point_style` and names the renderer in each stereo frame's header.
+  Measured on an M-series Mac, 1600 × 1000 eyes: 3.9 M rows about 63 ms per
+  eye (splats 44 ms), camera stop to refined frame shown 385 ms (splats
+  335 ms); 11.5 M rows 535 ms. The ray tracer itself got faster for the
+  desktop too: tiles binned in parallel and the Gaussian evaluated per row
+  and column of a footprint give the same image (within 3e-6 of the peak) 1.5 times faster
+  (448 → 274 ms for a 3.9 M-particle 1280 × 720 still), and the page's
+  frame conversion (`page_frame`) went from 34 to 11 ms per eye.
+
 - **3-D sky catalogues: sources without a distance are no longer put on a
   300 Mpc shell (#265).** In a catalogue that has a redshift or a distance
   column, a row with no usable distance and a redshift that is ≤ 0, zero or

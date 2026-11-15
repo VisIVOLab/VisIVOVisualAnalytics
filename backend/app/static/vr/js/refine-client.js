@@ -518,6 +518,14 @@ export class Refiner {
         if (this.error.startsWith('clipping box')) this.error = '';
       }
     }
+    if (this.incoming && ctx.accept && !ctx.accept(this.incoming.header)) {
+      // Drawn by another rule than the page's (a point table's splats with
+      // a backend from before #263): dropped, and said why.
+      if (this.incoming.bitmap) this.incoming.bitmap.close();
+      this.incoming = null;
+      this.error = 'backend draws splats by an older rule: update it to refine them';
+    }
+    if (this.incoming && this.error.startsWith('backend draws splats')) this.error = '';
     if (this.incoming) {
       const up = this.draw.upload(this.incoming);
       this.stats.upload.push(up);
