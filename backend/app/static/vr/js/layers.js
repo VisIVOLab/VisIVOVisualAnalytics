@@ -249,7 +249,7 @@ export function createLayers(ctx) {
     L.box = PT.dataToModel(info.bounds);
     L.load = { requestMs: tBody - t1, uploadMs: up, mb: buf.byteLength / 1e6, totalMs: performance.now() - t0 };
     state.extent = L.box.extent;
-    decorate(p.axes);
+    decorate(PT.axisTitles(p.axes));
     ctx.refiner.setDataset(p.datasetId);
   }
 
@@ -285,8 +285,7 @@ export function createLayers(ctx) {
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
-    const others = info.fields.filter((f) => !info.axes.includes(f) && !f.startsWith('@'));
-    L.s.colourField = others.length ? others[0] : null;
+    L.s.colourField = PT.defaultColourField(info.fields, info.axes);
     L.s.autoLog = true;
     L.s.colourLog = false;
     logBox.checked = false;
@@ -709,7 +708,8 @@ export function createLayers(ctx) {
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
-        const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity);
+        const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity,
+          cloud.splatRule);
         cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
           opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
           clip: state.clip });
@@ -732,13 +732,17 @@ export function createLayers(ctx) {
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
-        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, sky: L.points.sky });
+        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, sky: L.points.sky,
+        splatRule: cloud ? cloud.splatRule : 'v2-8bit' });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.
       const key = JSON.stringify([commands, sm.bounds, sm.count]);
       ctx.refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model, zStretch: 1,
         look: { commands, cropError: '' }, lookKey: key, background,
+        // A backend drawing by another splat rule (one from before #263): its
+        // frames are not shown (refine-client.js accept).
+        accept: (h) => PT.acceptFrame(h, L.s.style, commands.find((c) => c.type === 'set_point_style').splat_rule),
         poseExtra: PT.refinePoseExtra(L.box, L.s.style, sm.count, eyes) });
     },
     hudLines() {
@@ -746,7 +750,7 @@ export function createLayers(ctx) {
       if (L.mode === 'points' && L.points && L.points.sample) {
         const s = L.points.sample;
         const d = L.s.govern ? L.points.drawRows : s.count;
-        out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}`);
+        out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}${PT.isSplats(L.s.style) && cloud ? ` (${cloud.hdr ? (cloud.float32 ? 'f32' : 'f16') + ' tone-mapped' : '8-bit'})` : ''}`);
         out.push(`  sample ${L.load.mb.toFixed(1)} MB: request ${L.load.requestMs.toFixed(0)} ms, upload ${L.load.uploadMs.toFixed(1)} ms`);
         // A sky catalogue: how it is placed, and the sources with no distance (#260, #265).
         const sky = PT.skyLabel(L.points.skySettings);

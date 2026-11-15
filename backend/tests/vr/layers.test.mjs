@@ -59,8 +59,35 @@ test('the colours sent to the point session are the page map on data values', ()
 test('splats are sized by the desktop rule and grow for a sample', () => {
   const s = PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35);
   close(s.radius, 1, 1e-9);                      // spacing 1, size 8 -> 1
-  close(s.opacity, Math.max(0.05, Math.min(0.9, 20 / 100) * 0.35), 1e-12);
+  close(s.opacity, Math.max(0.05, Math.min(0.9, 20 / 100) * 0.35), 1e-12);   // the desktop's
+  // In a float32 target over size² (#263): the size changes the size, not the light.
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35, 'v2-f32').opacity, 0.07 / 64, 1e-12);
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 1, 35, 'v2-f32').opacity, 0.07, 1e-12);
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e3, 8, 35).sampleRadius, 10, 1e-9);
+});
+
+test('splat look (#263): tone curve, default colour column, axis units', () => {
+  // Linear for faint light, the hue kept, never above 1 (app/point_splat.py tone_map).
+  const faint = PT.toneMap([1e-4, 2e-4, 3e-4]);
+  faint.forEach((v, i) => close(v, [1e-4, 2e-4, 3e-4][i], 1e-7));
+  const y = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.1;
+  PT.toneMap([0.5, 0.25, 0.1]).forEach((v, i) => close(v, [0.5, 0.25, 0.1][i] * (1 - Math.exp(-y)) / y, 1e-12));
+  const hot = PT.toneMap([40, 20, 8]);
+  close(Math.max(...hot), 1, 1e-12);
+  close(hot[1] / hot[0], 0.5, 1e-12);
+  assert.deepEqual(PT.toneMap([0, 0, 0]), [0, 0, 0]);
+  // A density first; else not a position, velocity, sky coordinate or id.
+  const axes = ['x', 'y', 'z'];
+  assert.equal(PT.defaultColourField(['x', 'y', 'z', 'vx', 'vy', 'vz', 'LogMass', 'LogD', 'LogT'], axes), 'LogD');
+  assert.equal(PT.defaultColourField(['X', 'Y', 'Z', 'vx', 'vy', 'vz', 'Lmass', 'LTemp', 'LDensity'], ['X', 'Y', 'Z']), 'LDensity');
+  assert.equal(PT.defaultColourField(['x', 'y', 'z', 'Mass', 'Rho'], axes), 'Rho');
+  assert.equal(PT.defaultColourField(['RA', 'Dec', 'z', 'Ktmag', '@x', '@y', '@z'], ['@x', '@y', '@z']), 'Ktmag');
+  assert.equal(PT.defaultColourField(['ID', 'RAJ2000', 'DEJ2000', 'cz', '@x', '@y', '@z'], ['@x', '@y', '@z']), 'cz');
+  assert.equal(PT.defaultColourField(['x', 'y', 'z', 'vx'], axes), null);
+  // A sky catalogue's computed positions say their unit; a table's own keep their names.
+  assert.deepEqual(PT.axisTitles(['@x', '@y', '@z']), ['x (Mpc)', 'y (Mpc)', 'z (Mpc)']);
+  assert.deepEqual(PT.axisTitles(['x', 'y', 'POS_Z']), ['x', 'y', 'POS_Z']);
+  assert.equal(PT.MAX_SPLAT_PX, 256, 'the backend draws up to point_splat.MAX_PX');
 });
 
 test('the governor sheds rows when the GPU is late and takes them back slowly', () => {
@@ -121,9 +148,13 @@ test('ray-traced style (#264): drawn as splats, refined by the backend ray trace
   const look = (style) => PT.pointLook({ axes: ['x', 'y', 'z'], colourField: null, style, splatSize: 2,
     pointPx: 3, intensity: 40 }).find((c) => c.type === 'set_point_style');
   assert.deepEqual(look('raytraced'), { type: 'set_point_style', mode: 'gaussian', size: 2, intensity: 40,
-    stereo_renderer: 'raytrace' });
+    stereo_renderer: 'raytrace', splat_rule: 'v1' });
   assert.deepEqual(look('splats'), { type: 'set_point_style', mode: 'gaussian', size: 2, intensity: 40,
-    stereo_renderer: 'splat' });
+    stereo_renderer: 'splat', splat_rule: 'v1' });
+  // The page's splat rule goes with its look (#263).
+  const rule = PT.pointLook({ axes: ['x', 'y', 'z'], colourField: null, style: 'splats', splatSize: 2,
+    pointPx: 3, intensity: 40, splatRule: 'v2-f32' }).find((c) => c.type === 'set_point_style').splat_rule;
+  assert.equal(rule, 'v2-f32');
   assert.equal(look('points').mode, 'points');
   // The look key changes with the renderer: a swap re-renders the still frame.
   assert.notDeepEqual(look('raytraced'), look('splats'));
@@ -212,4 +243,20 @@ test('the lines say the box they were traced with', () => {
   assert.equal(FL.linesInfo(hdr({ ...base, 'X-Visivo-Box-Mpc': '0.0' }), { boxMpc: 200 }).boxMpc, 0);
   assert.equal(FL.linesInfo(hdr({ ...base, 'X-Visivo-Box-Mpc': '100.0' })).boxMpc, 100);
   assert.equal(FL.linesInfo(hdr(base), { boxMpc: 200 }).boxMpc, 200);    // an older backend
+});
+
+test('splat rules (#263 review): no vanishing splats without a float target, frames of the page\'s rule only', () => {
+  assert.deepEqual(PT.SPLAT_RULES, ['v1', 'v2-8bit', 'v2-f16', 'v2-f32']);
+  // A size-12 splat: over size² it would add 0.05/144 < 1/510 to an 8-bit target (nothing).
+  close(PT.ruleOpacity(0.05, 12, 'v2-f32'), 0.05 / 144, 1e-15);
+  assert.equal(PT.ruleOpacity(0.05, 12, 'v2-8bit'), 0.05);
+  assert.equal(PT.ruleOpacity(0.05, 12, 'v1'), 0.05);
+  assert.equal(PT.ruleOpacity(0.05, 12, 'v2-f16'), PT.F16_OPACITY_FLOOR);
+  assert.equal(PT.ruleOpacity(0.5, 2, 'v2-f16'), 0.125);
+  // Refined frames: shown only when drawn by the page's rule (a backend from
+  // before #263 says none); points do not depend on it.
+  assert.ok(PT.acceptFrame({ splat_rule: 'v2-f32' }, 'raytraced', 'v2-f32'));
+  assert.ok(!PT.acceptFrame({}, 'splats', 'v2-f32'), 'an older backend');
+  assert.ok(!PT.acceptFrame({ splat_rule: 'v2-8bit' }, 'splats', 'v2-f16'));
+  assert.ok(PT.acceptFrame({}, 'points', 'v2-f32'));
 });

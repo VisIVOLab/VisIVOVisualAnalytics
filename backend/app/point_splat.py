@@ -15,7 +15,8 @@ POWER9 EGL image's 9.3.1) sizes them otherwise, and none of them has the
 page's floor for sub-pixel splats. So the stereo splats are drawn here, on the
 CPU, by the page's own shader:
 
-- a splat is a square point sprite ``clamp(px, 1, MAX_PX)`` page pixels wide,
+- a splat is a square ``clamp(px, 1, MAX_PX)`` page pixels wide (an
+  instanced quad on the page since issue #263, a point sprite before),
   ``px = 6 r s P11 H / 2 / depth`` (r the splat radius in table units, s the
   table-to-metre scale, P11 H / 2 the projection's pixels per metre at 1 m,
   depth in metres): out to 3 sigma of a Gaussian of sigma r; a point is
@@ -30,12 +31,14 @@ CPU, by the page's own shader:
   sampled rows / rows drawn, so its frame shows what the preview shows in
   expectation, without the sample's noise.
 
-The picture is drawn at the page's own eye size, over the page's background
-and clamped as the page's framebuffer clamps it; a smaller frame (refinement
-at 0.6×, an eye capped by the link) is that picture averaged over the page
-pixels each frame pixel covers. The light is summed in floating point, where
-the page rounds every addition to 8 bits: the two agree in expectation, not
-pixel for pixel.
+The picture is drawn at the page's own eye size, then put over the page's
+background as the page does: tone-mapped (:func:`tone_map`, issue #263: the
+page adds its splats into a half-float target and maps that onto the frame)
+or, for a page without one, clamped as its 8-bit framebuffer clamps it; a
+smaller frame (refinement at 0.6×, an eye capped by the link) is that picture
+averaged over the page pixels each frame pixel covers. The light is summed in
+floating point, the page's in half floats (or rounded to 8 bits at every
+addition): the two agree in expectation, not pixel for pixel.
 """
 from __future__ import annotations
 
@@ -51,8 +54,29 @@ except ImportError:   # pragma: no cover
 
 from .numba_parallel import LOCK as PARALLEL
 
-#: The page's largest point sprite (points.js PointCloud.maxPx, page pixels).
-MAX_PX = 64.0
+#: The page's widest splat (points.js MAX_SPLAT_PX, page pixels: instanced
+#: quads, issue #263) and a page's from before (v1: point sprites, 64 px).
+MAX_PX = 256.0
+LEGACY_MAX_PX = 64.0
+#: The tone curves of the page's splats (:func:`rule_tone`).
+TONE_MAPS = ("none", "exposure")
+#: The page's splat rules (set_point_style ``splat_rule``, issue #263), by
+#: what its splats are added into:
+#: - ``v1``: the rule before #263 (8-bit target, the desktop's opacity, the
+#:   light clamped): what an older page, which sends none, draws;
+#: - ``v2-8bit``: a page without a float target: the same numbers as v1
+#:   (opacity over size² would put a size-12 splat at 0.05/144, below half
+#:   an 8-bit step: the preview would go black);
+#: - ``v2-f16``: half floats: opacity over size², at least F16_OPACITY_FLOOR,
+#:   tone-mapped;
+#: - ``v2-f32``: float32: opacity over size², tone-mapped.
+SPLAT_RULES = ("v1", "v2-8bit", "v2-f16", "v2-f32")
+#: The faintest splat in a half-float target: at a pixel's light of about 1 a
+#: half float's step is 2^-10, and additions below half of it are dropped;
+#: 1/512 keeps a splat's core above that up to a light of about 4.
+F16_OPACITY_FLOOR = 1.0 / 512.0
+#: Rec. 709 luminance (points.js LUMA).
+_LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 #: The page's floor on a sub-pixel splat's light (points.js FS, max(vSplat, 0.25)).
 SUBPIXEL_FLOOR = 0.25
 #: The threads' own images, at most: their memory (here 256 MB) and count.
@@ -61,23 +85,51 @@ _MAX_CHUNKS = 8
 _ROWS_PER_CHUNK = 65536
 
 
+def rule_max_px(rule: str) -> float:
+    """The widest splat of a splat rule (SPLAT_RULES): a page from before
+    #263 (v1, no rule sent) capped its point sprites at 64 px, a v2 page's
+    quads at 256."""
+    return LEGACY_MAX_PX if rule == "v1" else MAX_PX
+
+
+def rule_tone(rule: str) -> str:
+    """The tone curve of a splat rule (SPLAT_RULES)."""
+    return "exposure" if rule in ("v2-f16", "v2-f32") else "none"
+
+
+def rule_opacity(opacity: float, size: float, rule: str) -> float:
+    """The desktop's splat opacity as a splat rule (SPLAT_RULES) draws it:
+    over size² in a float target (the size step changes the size, not the
+    brightness; floored in half floats), as it is in an 8-bit one."""
+    if rule not in SPLAT_RULES:
+        raise ValueError(f"splat_rule must be one of {SPLAT_RULES}.")
+    if rule == "v2-f32":
+        return opacity / (float(size) * float(size))
+    if rule == "v2-f16":
+        return max(opacity / (float(size) * float(size)), F16_OPACITY_FLOOR)
+    return opacity
+
+
 def splat_style(bounds, total_rows: int, sample_rows: int, size: float,
-                intensity: float) -> tuple[float, float, float]:
+                intensity: float, rule: str = "v1") -> tuple[float, float, float]:
     """``(radius, opacity, sample_radius)`` in table units, as the VR page's
     ``splatStyle`` (static/vr/js/points.js) works them out: spacing ∛(volume /
     total rows) of the box the points fill (a flat axis counted as a
     thousandth of the longest), radius = spacing × size / 8, opacity =
     min(0.9, 20 / D) × intensity / 100 in [0.05, 0.9] with D the longest side
-    over the spacing, and the sample's radius larger by ∛(total / sample rows).
-    It is :func:`app.render_session.points.gaussian_splat` (the desktop's
-    rule) plus the sample's growth."""
+    over the spacing, as the splat ``rule`` draws it (:func:`rule_opacity`:
+    over size² in a float target, issue #263), and the sample's radius larger
+    by ∛(total / sample rows). It is
+    :func:`app.render_session.points.gaussian_splat` (the desktop's rule)
+    plus the sample's growth, and the same at size 1 or in an 8-bit target."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     volume = math.prod(max(d, longest * 1.0e-3) for d in dims)
     spacing = math.cbrt(volume / max(1, int(total_rows)))
     radius = spacing * float(size) / 8.0
     depth = max(longest / spacing, 1.0)
-    opacity = min(max(min(0.9, 20.0 / depth) * float(intensity) / 100.0, 0.05), 0.9)
+    opacity = rule_opacity(min(max(min(0.9, 20.0 / depth) * float(intensity) / 100.0, 0.05),
+                               0.9), size, rule)
     grow = math.cbrt(max(1.0, total_rows / max(1, int(sample_rows))))
     return radius, opacity, radius * grow
 
@@ -153,9 +205,10 @@ if njit is not None:
 
 def splat_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
                 local_to_eye: np.ndarray, projection: np.ndarray, width: int, height: int,
-                radius_m: float, amp: float) -> np.ndarray:
+                radius_m: float, amp: float, max_px: float = MAX_PX) -> np.ndarray:
     """One eye's splats at ``width × height`` (the page's eye size), float32
-    light ``height × width × 3``, bottom row first, before the background.
+    light ``height × width × 3``, bottom row first, before the background;
+    each splat at most ``max_px`` page pixels wide (:func:`rule_max_px`).
 
     ``xyz``: the rows' local float32 coordinates; ``local_to_eye``: them to the
     eye's view space in metres (view @ model @ data_to_model @ local_to_table);
@@ -180,7 +233,7 @@ def splat_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
     out = np.zeros((chunks, height, width, 3), dtype=np.float32)
     with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
         _splat(np.ascontiguousarray(xyz, dtype=np.float32), np.ascontiguousarray(codes),
-               lut, solid, clip, eye_z, float(diameter), float(amp), MAX_PX, out)
+               lut, solid, clip, eye_z, float(diameter), float(amp), float(max_px), out)
     return out[0] if chunks == 1 else out.sum(axis=0, dtype=np.float32)
 
 
@@ -201,12 +254,33 @@ def area_average(a: np.ndarray, n_out: int, axis: int) -> np.ndarray:
     return np.moveaxis((at[1:] - at[:-1]) * (n_out / n), 0, axis)
 
 
-def page_frame(light: np.ndarray, background, width: int, height: int) -> np.ndarray:
-    """The page's picture of ``light`` (its eye size): added to
+def tone_map(light: np.ndarray) -> np.ndarray:
+    """The page's tone curve (points.js toneMap and its resolve shader): the
+    luminance Y of each pixel's light goes to 1 - exp(-Y), the three channels
+    follow it (the hue is kept), and a channel still above 1 scales the
+    three down. A new float32 array."""
+    rgb = np.asarray(light, dtype=np.float32)
+    y = rgb @ _LUMA
+    with np.errstate(divide="ignore", invalid="ignore"):
+        f = np.where(y > 0, -np.expm1(-y) / y, 0.0).astype(np.float32)
+    out = rgb * f[..., None]
+    peak = out.max(axis=-1, keepdims=True)
+    np.divide(out, peak, out=out, where=peak > 1.0)
+    return out
+
+
+def page_frame(light: np.ndarray, background, width: int, height: int,
+               tone: str = "none") -> np.ndarray:
+    """The page's picture of ``light`` (its eye size): tone-mapped
+    (``tone`` ``"exposure"``, :func:`tone_map`) or not, added to
     ``background`` (0..1) and clamped, as the page's additive blend over its
     clear colour; then, for a smaller frame, averaged over the page pixels
     each frame pixel covers (:func:`area_average`). RGBX uint8
     ``height × width × 4``, the stereo frame's layout."""
+    if tone == "exposure":
+        light = tone_map(light)
+    elif tone != "none":
+        raise ValueError(f"tone must be one of {TONE_MAPS}.")
     rgb = light + np.asarray(background, dtype=np.float32)
     np.clip(rgb, 0.0, 1.0, out=rgb)
     if rgb.shape[:2] != (height, width):
@@ -226,16 +300,18 @@ def page_frame(light: np.ndarray, background, width: int, height: int) -> np.nda
 
 def splat_eye(xyz, codes, lut, local_to_eye, projection, width: int, height: int,
               radius_m: float, amp: float, background,
-              page_size: tuple[int, int] | None = None) -> np.ndarray:
+              page_size: tuple[int, int] | None = None, tone: str = "none",
+              max_px: float = MAX_PX) -> np.ndarray:
     """One eye's frame (RGBX uint8, bottom row first): the splats drawn at the
     page's eye size ``page_size`` (width, height; default, or when not larger,
-    the frame's) by :func:`splat_light`, then :func:`page_frame`."""
+    the frame's) by :func:`splat_light` (``max_px``), then :func:`page_frame`
+    (``tone``)."""
     pw, ph = page_size if page_size else (width, height)
     pw, ph = int(round(pw)), int(round(ph))
     if pw < width or ph < height:      # never drawn below the frame's size
         pw, ph = width, height
-    light = splat_light(xyz, codes, lut, local_to_eye, projection, pw, ph, radius_m, amp)
-    return page_frame(light, background, width, height)
+    light = splat_light(xyz, codes, lut, local_to_eye, projection, pw, ph, radius_m, amp, max_px)
+    return page_frame(light, background, width, height, tone)
 
 
 # ── The same splats ray-traced (issue #264) ──────────────────────────────────
@@ -313,7 +389,7 @@ if njit is not None:
 
 def raytrace_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
                    local_to_eye: np.ndarray, projection: np.ndarray, width: int, height: int,
-                   radius_m: float, amp: float) -> tuple[np.ndarray, np.ndarray]:
+                   radius_m: float, amp: float, max_px: float = MAX_PX) -> tuple[np.ndarray, np.ndarray]:
     """One eye's splats ray-traced at ``width × height`` (the page's eye
     size): ``(light, zsum)``, float32 ``height × width × 3`` and
     ``height × width``, bottom row first, before the background; ``zsum`` /
@@ -336,7 +412,7 @@ def raytrace_light(xyz: np.ndarray, codes: np.ndarray | None, lut: np.ndarray,
     keep = np.empty(n, dtype=np.bool_)
     with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
         _project_kernels(np.ascontiguousarray(xyz, dtype=np.float32), clip, eye_z,
-                         float(diameter), MAX_PX, float(RT_MIN_RADIUS_PX), width, height,
+                         float(diameter), float(max_px), float(RT_MIN_RADIUS_PX), width, height,
                          sx, sy, radius, weight, dist, keep)
     order = np.flatnonzero(keep).astype(np.int64)
     # The colours × opacity × row weight: a palette over the codes, or one.
@@ -376,7 +452,8 @@ def block_depth(zsum: np.ndarray, lsum: np.ndarray, width: int, height: int,
 def raytrace_eye(xyz, codes, lut, local_to_eye, projection, width: int, height: int,
                  radius_m: float, amp: float, background,
                  page_size: tuple[int, int] | None = None,
-                 depth_scale: int | None = None) -> tuple[np.ndarray, np.ndarray | None]:
+                 depth_scale: int | None = None,
+                 tone: str = "none", max_px: float = MAX_PX) -> tuple[np.ndarray, np.ndarray | None]:
     """One eye's ray-traced frame: ``(rgba, depth)``, the frame as
     :func:`splat_eye` gives it (the light at the page's eye size, over the
     background, clamped, reduced to the frame's) and, for a ``depth_scale``,
@@ -386,7 +463,7 @@ def raytrace_eye(xyz, codes, lut, local_to_eye, projection, width: int, height: 
     if pw < width or ph < height:
         pw, ph = width, height
     light, zsum = raytrace_light(xyz, codes, lut, local_to_eye, projection, pw, ph,
-                                 radius_m, amp)
+                                 radius_m, amp, max_px)
     depth = (block_depth(zsum, light.sum(axis=2), width, height, int(depth_scale))
              if depth_scale else None)
-    return page_frame(light, background, width, height), depth
+    return page_frame(light, background, width, height, tone), depth
