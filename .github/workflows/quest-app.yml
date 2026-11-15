@@ -85,6 +85,11 @@ jobs:
 
       - uses: android-actions/setup-android@v3
         if: steps.key.outputs.present == 'true'
+        with:
+          # Only what build.sh needs. The action's default list still names the
+          # old `tools` package, which current command-line tools no longer
+          # have: sdkmanager then fails and the job with it.
+          packages: 'platform-tools build-tools;34.0.0 platforms;android-32'
 
       - name: Build and sign
         if: steps.key.outputs.present == 'true'
