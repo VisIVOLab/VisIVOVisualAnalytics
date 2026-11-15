@@ -44,10 +44,11 @@
 #   - macOS:   <App>.app/Contents/Resources/quest-app/   (before signing)
 #   - Linux:   <pkg>/app/usr/bin/quest-app/   (beside the executable)
 #   - Windows: bin\quest-app\
-# Without the signing secrets (a fork) the packages are built without it, with
-# a notice; if its build fails, with a warning. It never holds a release. On a
-# tag push quest-app.yml also attaches the APK to the release, once (never on
-# a manual run, even on a tag).
+# A tag push requires it: without the app every platform's build fails, so
+# the release is never published. On a manual run (or a fork without the
+# signing secrets) the packages are built without it, with a notice; if its
+# build fails, with a warning. On a tag push quest-app.yml also attaches the
+# APK to the release, once (never on a manual run, even on a tag).
 #
 # The setup scripts remain, now optional: they build a venv in a writable
 # user-data location, which BackendLauncher PREFERS over the bundled runtime.
@@ -235,8 +236,9 @@ jobs:
   build:
     name: ${{ matrix.name }}
     needs: [setup, quest-app]
-    # Not held by the headset app: without it (no secrets, or its build
-    # failed) the packages are built anyway, without the app.
+    # Not held by the headset app on a manual run: without it (no secrets, or
+    # its build failed) the packages are built anyway, without the app. On a
+    # tag the "Headset app to bundle?" step fails the build instead.
     if: ${{ !cancelled() && needs.setup.result == 'success' }}
     strategy:
       fail-fast: false
@@ -269,9 +271,16 @@ jobs:
         env:
           QUEST_RESULT: ${{ needs.quest-app.result }}
           QUEST_BUILT: ${{ needs.quest-app.outputs.built }}
+          IS_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
         run: |
           set -euo pipefail
           rm -rf quest-app
+          # A tagged release always ships the headset app: without it the
+          # desktop's "Open on headset" has nothing to install.
+          if [ "$IS_TAG" = "true" ] && [ "$QUEST_BUILT" != "true" ]; then
+            echo "::error::A tagged release needs the VisIVO VR headset app, but its job ended with '$QUEST_RESULT' and built=${QUEST_BUILT:-false} (signing secrets set? see the headset app job)."
+            exit 1
+          fi
           if [ "$QUEST_BUILT" = "true" ]; then
             if [ ! -f quest-app-dl/visivo-vr.apk ] || [ ! -f quest-app-dl/visivo-vr.json ]; then
               echo "::error::The visivo-vr-apk artifact lacks visivo-vr.apk or visivo-vr.json"

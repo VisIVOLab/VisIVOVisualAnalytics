@@ -117,9 +117,11 @@ backend can also take it from `VISIVO_VR_APP_RELEASE_SHA256`.
   the APK, its `.json` and `assetlinks.json` are a workflow artifact.
 
 It fails when the certificate it built is not in `vr_app.json`, so no package
-ships an app its backend does not list. Without the secrets (a fork) it ends
-with a notice, and the packages are built without the app; if its build
-fails, they are built without it, with a warning. It never holds a release.
+ships an app its backend does not list. A tagged release requires the app:
+without it every platform's build fails and the release is not published. On
+a manual run, or in a fork without the secrets, it ends with a notice and the
+packages are built without the app; if its build fails, they are built
+without it, with a warning.
 
 Where the APK ends up in each package, as `visivo-vr.apk` with
 `visivo-vr.json` beside it (where the desktop looks: `apkCandidates` in

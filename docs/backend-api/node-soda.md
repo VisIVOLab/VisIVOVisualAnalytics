@@ -46,7 +46,7 @@ Figures are read where they hold for this process: in a container, from its cgro
 ```json
 {
   "node_code": "INAF-CT",
-  "version": "1.0.12",
+  "version": "1.1.0",
   "timestamp": 1793440000.12,
   "cpu": {"cpus": 16.0, "limited": true, "utilisation_pct": 12.5, "pressure_pct": 0.0, "load_1m": 3.1},
   "memory": {"total_bytes": 68719476736, "available_bytes": 51539607552, "pressure_pct": 0.0},

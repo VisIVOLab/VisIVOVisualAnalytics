@@ -6,7 +6,85 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.1.0 (2026-11-15)
+
+- **Desktop: no stall with many workspace exports (#312).** The Data Hub's
+  Workspace Exports list was rebuilt, one row per export, on every backend
+  health check (every 4 s); with a few thousand exports the app froze at
+  every interaction. The list is now rebuilt only when it changes, and lists
+  the 100 most recent exports with a line counting the older ones. The VR
+  browser checks no longer write their test products into the user's
+  workspace exports.
+
+- **Desktop: double-clicking a Recent Datasets entry no longer crashes the
+  app (#310).** The click on a Data Hub card now runs after the mouse event
+  has been delivered. Before, a reopen that showed a dialog let the rebuilt
+  list delete the row while the event was still being delivered through it.
+  A double-click also opened the dataset twice; it now acts once.
+
+- **A tagged release always ships the VisIVO VR headset app.** On a tag push
+  every platform's build now fails when the headset app job did not build a
+  signed APK (missing signing secrets or a failed build), so a release is never
+  published without it. A manual run of the release workflow, or a fork
+  without the secrets, still builds the packages without the app, with a
+  notice or a warning.
+
+- **VR: Enter VR works on the first press (#291, part of #305).** The page no
+  longer offers its session to the browser (`navigator.xr.offerSession`)
+  unless its address has `?offer`, so the browser's own button and the page's
+  Enter VR never compete for one session. With `?offer`, the page's button
+  still enters on the first press and a session the browser starts meanwhile
+  is ended at once. Every Enter VR failure now says what to do (the browser
+  holding the session, both buttons pressed at once, another VR session open,
+  VR not allowed for the site, a paused page) on the status line, beside the
+  WebXR status and in the diagnostics. The flag that keeps 3-D allocations out
+  of a VR session (#229) now has one owner: a refused session that ends late
+  no longer clears it under the running one, and work deferred to the end of
+  the session (a staged cube, a WebGL context restore) also waits while Enter
+  VR's request is pending.
+
+- **VR page: pre-release fixes (part of #305).** A desktop relaunch of the
+  headset app no longer aborts a product save under way. Mask *Pick* works
+  from any mode: it switches to Select instead of pinning the readout, moving
+  the slab or following an armed PV path. A mask opened by the desktop is
+  saved by its file too, so the save survives a backend session change. A
+  quick burst of snapshot steps no longer leaves datasets open on the backend,
+  or the page on a closed one. A desktop mask whose cube failed to load is
+  dropped instead of being laid over the next cube. The Mask window says
+  "sent to the desktop" only once the desktop was told, and says why when it
+  was not. A source found by eye is not added to another cube's list. Panel
+  textures no longer leak (about 3 MB a window) on a WebGL context restore. A
+  mask layer goes when a point table or velocity field is shown.
+
+- **Desktop: pre-release fixes (part of #305).** The catalogue's *Open in VR
+  Headset…* dialog follows the new backend session after the window reopens
+  its catalogue (for example on *Load more* after the session expired): the
+  unused code is revoked and a new one shown. Shared selections take a
+  refreshed backend token at once instead of failing with 401 until the window
+  is reopened. Only the backend's own "Not Found" turns the headset hub off
+  for good; an HTML or empty 404 from a proxy or tunnel is probed again after
+  a minute. The first-run bootstrap also installs `requirements-webrtc.txt`,
+  and a user-data environment made without it is updated before the backend
+  starts (never fatal), so headset pairing and stereo video work from
+  environments made before 1.1.0.
+
+- **Backend and release: pre-release fixes (part of #305).** Saving a refined
+  mask from the headset refuses a malformed request with 422 and an oversized
+  body (over 65 MiB, chunked or not) before buffering it, and a mask opened by
+  dataset id falls back to its path after a session change. Classifying the
+  sources of a large catalogue writes the VOTable about 25 times faster with
+  about half the extra memory (1 M rows × 37 columns: 7.2 s → 0.29 s). A
+  non-finite colour range for a point table is refused (422). Headset launch
+  tickets are limited per user token, so one user's launches no longer cancel
+  another's, and junk sent to the public ticket exchange cannot block a valid
+  launch. A broken `VISIVO_VR_ASSETLINKS_FILE` is logged and skipped instead of
+  stopping the headset app from opening full screen. The `setup_backend`
+  scripts install the WebRTC packages (wheels only, not fatal), and aiortc
+  (1.16.0) and PyAV (18.1.0) are pinned. The version now has one source,
+  `backend/app/VERSION`: CMake and the backend read it (the backend used to
+  report 1.0.0), and the release workflow fails when the tag, that file and
+  CITATION.cff disagree. A manual run of the headset app workflow on a tag no
+  longer replaces the published APK.
 
 - **VR: the first velocity moment of the whole field no longer sorts every
   pixel (#302).** The colour range of a Moment 1 map (median ± 4 robust

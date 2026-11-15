@@ -331,7 +331,7 @@ reduced_info) give up after 30 s each.
 
 ```json
 { "vr_api": 1, "vr_api_min": 1, "build": "8cc84c409df0",
-  "instance": "2ba71142538a", "token_ok": true, "backend_version": "1.0.12" }
+  "instance": "2ba71142538a", "token_ok": true, "backend_version": "1.1.0" }
 ```
 
 `vr_api` and `vr_api_min` bound the page API this backend serves (a page

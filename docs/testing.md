@@ -10,8 +10,8 @@ tests/
   main.cpp                         # QCoreApplication + QTest::qExec for each class
   Test<Name>.h                     # Q_OBJECT test class declaration (one per area)
   test_backendclient.cpp           # 44 — result parsing, open response, image tiles
-  test_catalogue_parser.cpp        # 35 — redshift/distance field detection, distances
-  test_backend_routing.cpp         # 39 — Settings backend registry + SKAVA routing
+  test_catalogue_parser.cpp        # 51 — redshift/distance field detection, distances
+  test_backend_routing.cpp         # 40 — Settings backend registry + SKAVA routing
   test_image_lod.cpp               # 25 — viewport LOD math (level select + visible tiles)
   test_analysis_param_store.cpp    #  8 — per-dataset dialog parameter persistence
   test_backend_contract.cpp        #  4 — shared header manifest ↔ client constants
@@ -22,7 +22,7 @@ tests/
   test_cube_tool_gate.cpp          # 14 — CubeToolGate: which tools may act, and why not
   test_tool_result_record.cpp      #  8 — reopening a tool result exactly as it was
   test_product_origin.cpp          # 15 — where a measurement was taken (region / voxel)
-  test_catalogue_csv.cpp           # 11 — quoting, multi-line records, truncated files
+  test_catalogue_csv.cpp           # 31 — quoting, multi-line records, truncated files
   test_fits_header_string.cpp      #  6 — header cards → 80-column FITS header string
   test_stokes_companion.cpp        # 11 — Stokes Q/U/V companion filename matching
   test_spectral_axis_infer.cpp     # 16 — spectral-axis descriptor inference
@@ -35,8 +35,8 @@ tests/
   test_fits_header_card.cpp        # 11 — one header card: types, quoting, refused keywords
   test_viewer_mode_state.cpp       #  6 — which image-viewer mode the strip shows
   test_remote_levels.cpp           #  9 — remote view's starting threshold and range
-  test_remote_render_queue.cpp     # 17 — waiting in the backend's render queue
-  test_render_session_calls.cpp    #  6 — what goes on the wire when a queued view closes
+  test_remote_render_queue.cpp     # 24 — waiting in the backend's render queue
+  test_render_session_calls.cpp    #  7 — what goes on the wire when a queued view closes
   test_region_full_res.cpp         #  6 — a region drawn on a reduced display, in full-resolution pixels
   test_dataset_name.cpp            #  5 — how a dataset (or a VBT field) is named
   test_threshold_share.cpp         #  5 — share of voxels above the 3-D threshold
@@ -44,7 +44,7 @@ tests/
   test_probe_spectrum_fetch.cpp    #  9 — live spectrum on a preview: one request in flight, no stale reply
   test_wcs_axis_ticks.cpp          #  5 — WCS axis ticks read along each edge, not the diagonal
   test_open_job_merge.cpp          # 13 — "Last 5 jobs" with the client's own opens merged in
-  test_task_quit_drain.cpp         # 20 — quitting cancels every followed task and waits for it
+  test_task_quit_drain.cpp         # 25 — quitting cancels every followed task and waits for it
   test_system_quit_redirect.cpp    #  4 — only the platform's own Quit goes the Quit menu's way
   test_layer_card_geometry.cpp     #  8 — layer-card hit rectangles in the image viewer
   test_region_readout.cpp          #  8 — what a region reports, and in which units
@@ -57,15 +57,35 @@ tests/
   test_sofia_suggest.cpp           # 24 — SoFiA-2 parameter suggestion as the dialog reads it
   test_update_check.cpp            #  9 — GitHub latest-release reply, version comparison
   test_source_table.cpp            # 11 — VLKB cutouts for a source table
-  test_backend_task_follow.cpp     # 22 — following a backend task to its end, with back-off
-  test_samp.cpp                    # 30 — SAMP: XML-RPC codec, callback server, row identity and linking
+  test_backend_task_follow.cpp     # 23 — following a backend task to its end, with back-off
+  test_samp.cpp                    # 39 — SAMP: XML-RPC codec, callback server, row identity and linking
   test_cosmology_tools.cpp         # 38 — cosmology tools: custom models, distance table, P(ℓ) slope, bindings
   test_copilot_status.cpp          #  8 — why the copilot cannot answer, as the panels show it
   test_copilot_choice.cpp          # 10 — the copilot provider choice and the config it sends
+  test_backend_process_tree.cpp    # 10 — the local backend's child processes end with it
+  test_backend_webrtc_env.cpp      #  8 — WebRTC packages added to a user-data venv made without them
+  test_busy_feedback.cpp           # 13 — a window's busy indicator, the 3-D catalogue's selection marker size
+  test_cube_stat_rows.cpp          #  7 — the Inspector's "3D cube" statistic rows
+  test_file_preview.cpp            # 12 — the file browser's preview of any file
+  test_missing_route.cpp           #  6 — a backend older than the client, told apart from a real 404
+  test_particle_frame.cpp          #  7 — a point table's frame from its headers
+  test_recent_reopen.cpp           #  9 — reopening a Recent Datasets entry whose file has gone
+  test_shared_selection.cpp        # 21 — a selection shared between the headset and the cube viewer
+  test_shared_selection_link.cpp   #  5 — the selection hub against a live backend (skipped without one)
+  test_solid_splats.cpp            #  4 — splats in a solid colour, NaN scalars included
+  test_supported_formats.cpp       # 13 — the file types the file browser offers
+  test_vbt_byte_order.cpp          # 10 — a VBT whose header declares the wrong byte order
+  test_velocity_lod_geometry.cpp   # 13 — reduced velocity-field grids drawn where the backend put them
+  test_vr_headset_app.cpp          # 32 — the VisIVO VR headset app: APK, adb, assetlinks
+  test_vr_headset_hub.cpp          # 35 — the desktop's side of the headset hub
+  test_vr_link.cpp                 # 56 — Open in VR Headset: the WebXR page link and the adb commands
+  test_vr_pair.cpp                 # 40 — pairing a headset by code
+  test_vr_spectator.cpp            # 14 — the headset's view on the desktop
+  test_workspace_exports_view.cpp  #  6 — the Workspace Exports list: unchanged listings, the row cap
   test_quit_exit_main.cpp          # separate executable VisIVOQuitExitTest (see below)
 ```
 
-Total: **750 tests** in 53 classes in the `VisIVOTests` binary at 1.0.12, as
+Total: **1131 tests** in 73 classes in the `VisIVOTests` binary at 1.1.0, as
 QTest counts them — each class contributes its own `initTestCase` /
 `cleanupTestCase` to that figure. The per-file numbers above come from the
 binary's own totals (`./VisIVOTests | grep Totals`), so they can be checked
@@ -107,8 +127,8 @@ out of a catalogue is a pile of column-name rules, and a misread column does not
 crash — it produces a fit that runs and is wrong. The rules therefore live in a
 header with no widgets in it, where they can be checked directly.
 
-The **backend** has its own pytest suite under `backend/tests/` (2584 tests at
-1.0.12; the numbers in brackets below are per file). A few of its
+The **backend** has its own pytest suite under `backend/tests/` (3560 tests at
+1.1.0; the numbers in brackets below are per file). A few of its
 files are worth knowing about when touching the science, the archive path or
 the way files get opened:
 
