@@ -1800,6 +1800,14 @@ Desktop and headset together:
    faint part darker in the refined frame than in the headset's own picture
    is worth a note). Note **FPS**, **missed %**, **pose->frame** and
    **stop->refined** over USB and over Wi-Fi.
+6. With a file of several variables (a PLUTO output with `rho`, `vx1`,
+   `prs` on disk, or a VBT volume of several fields): Display's last row is
+   *Variable*. In VR press another variable. It must appear within about a
+   second, with the same crop, without leaving VR and without a *The new
+   cube is shown when you leave VR* notice. Change its colour map and
+   threshold, go back to the first one, and check that it comes back as it
+   was left (and on its own scale, *log* for a density). On the desktop,
+   *Headset Activity* lists *Variable … of …*.
 
 ### The headset's view on the desktop, with the headset (#281)
 

@@ -48,8 +48,23 @@ backend says it is a *simulation volume* and the page treats it as one:
   noise rule. The readout gives X, Y, Z in the axes' unit, the cell, and the
   value.
 
-The variable picker (choosing another field of the same file in the
-headset) comes in a later change.
+- **The variable picker.** When the file holds more than one field (a VBT
+  volume's fields, a PLUTO output's variables present on disk), the last row
+  of the hand menu's *Display* page is *Variable*: one chip per variable,
+  the one on show lit. With more than five, four chips are shown (the page
+  holding the variable on show) and *next ▸* steps to the next variable. A
+  PLUTO output copied one variable at a time (only `rho` on disk) has one
+  field, and the row is the catalogue's as on any cube. A press loads that
+  variable at the same binning. In VR it is written into the room kept for
+  cubes (no new 3-D texture during the session) and shown at once. The crop
+  stays (the same grid). Each variable keeps its own look, its colour map,
+  stretch, scale (log, linear), threshold and colour max, and gets it back
+  when it is shown again. A variable shown for the first time starts from the
+  backend's choices for it: a density on log, a velocity component linear.
+  The desktop is told (*Headset Activity*: *Variable vx1 of rho.0000.flt*).
+  A cube window of the variable left behind, with *Follow the headset's
+  look* on, brings forward the window of the new variable when one is open,
+  else opens its *Field* product.
 
 ## Opening one
 

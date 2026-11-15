@@ -312,6 +312,24 @@ def field_dataset_path(path: str | Path) -> str | None:
     return None
 
 
+def field_listing(path: str | Path) -> tuple[list[dict], str]:
+    """``(fields, name)`` for a field reference: every field of its source
+    (:func:`field_siblings`, ``{name, path}``) and the name of the one
+    ``path`` names; ``([], "")`` for any other path. The headset's variable
+    picker reads it from reduced_info (issue #317), whichever way the dataset
+    was opened."""
+    from . import pluto_source  # noqa: PLC0415
+    if not is_field_ref(path):
+        return [], ""
+    fields = field_siblings(path)
+    _base, index = split_ref(path)
+    if index is not None:
+        name = fields[index]["name"] if 0 <= index < len(fields) else ""
+    else:
+        name = pluto_source.split_ref(path)[1] or ""
+    return fields, name
+
+
 def field_siblings(path: str | Path) -> list[dict]:
     """Every field beside the one ``path`` names, ``{name, path}``: a VBT
     volume's fields, a PLUTO output's variables present on disk."""

@@ -944,6 +944,10 @@ private:
     /// Follow the headset's look: its latest look and clip of this cube, while
     /// the headset shows it (VrHub::nextToFollow), with a word in the status bar.
     void followHeadsetLook();
+    /// A variable the headset switched to from this cube (issue #317,
+    /// VrHub::fieldToFollow): its window brought forward, or its Field
+    /// product opened, while Follow the headset's look is on.
+    void followHeadsetField();
     /// What a look from the headset changed here, for the status bar.
     struct HeadsetLookApplied
     {
@@ -1368,6 +1372,11 @@ protected:
     bool m_rtFromRemote{ false };             ///< its camera came from the backend view
     quint64 m_rtCameraRequest{ 0 };           ///< the camera request the view waits for
     QList<QPair<QString, int>> m_rtFields;    ///< the volume's other fields, by index
+    /// Every field of the source (name, reference), this one included, and
+    /// the Field product of each other one by its reference (issue #317).
+    QList<QPair<QString, QString>> m_siblingFieldList;
+    QHash<QString, QString> m_fieldProductIds;
+    qint64 m_headsetFieldSinceMs{ 0 };   ///< switches before this are not followed
     /// The stride of the displayed preview (1: full resolution or a region):
     /// a displayed voxel i is the cube's voxel i × stride.
     int m_displayStride{ 1 };

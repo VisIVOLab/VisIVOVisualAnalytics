@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: a variable picker for simulation volumes (#317).** For a file with
+  several fields (a PLUTO output's variables on disk, a VBT volume's fields),
+  the last row of the hand menu's *Display* page picks the variable on show.
+  In VR the chosen variable is written into the room kept for cubes (no new
+  3-D texture during the session) and shown within about 0.1 s for a
+  64×48×24 field in the headless check. The crop stays, and each variable
+  keeps its own colour map, stretch, scale, threshold and colour max. With
+  one field the row is the catalogue's, as before. `reduced_info` now lists
+  `fields` and `field_name`, so a cube sent from the desktop has its picker
+  too. The desktop's *Headset Activity* says *Variable vx1 of rho.0000.flt*.
+  The window of the variable left behind, with *Follow the headset's look*
+  on, brings forward the new variable's window, or opens its *Field*
+  product.
+
 - **Desktop: the preview of a large cube from its brick pyramid (#320).**
   When a cube's brick pyramid is already built (for the headset or remote
   rendering), the desktop's preview of a large cube is made of block means

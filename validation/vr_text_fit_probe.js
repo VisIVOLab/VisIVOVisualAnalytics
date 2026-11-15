@@ -250,6 +250,18 @@
         for (const w of HM.menuLayout(page, ctx)) drawMenuCase(label, page, ctx, view, w.id);
       }
     }
+    // Its variables (#317): a PLUTO output's nine, one page of four and next; two with long names; one loading.
+    for (const vars of [
+      { names: ['rho', 'vx1', 'vx2', 'vx3', 'Bx1', 'Bx2', 'Bx3', 'prs', 'tr1'], current: 'prs', pending: null },
+      { names: ['gas_density_in_code_units', 'electron_temperature_K'], current: 'electron_temperature_K', pending: null },
+      { names: ['rho', 'vx1', 'prs'], current: 'rho', pending: 'vx1' }]) {
+      const ctx = { ...ctxFor('cube', false, false), simulation: true, spectralName: 'Z range', clipTool: 'box', vars };
+      const view = viewFor('cube', 'display');
+      view.notes.var = vars.pending ? `loading ${vars.pending}…` : `${vars.current}, one of ${vars.names.length}`;
+      const label = `simulation variables ${vars.names.length}${vars.pending ? ' (loading)' : ''}`;
+      drawMenuCase(label, 'display', ctx, view, null);
+      for (const w of HM.menuLayout('display', ctx).filter((x) => x.id.startsWith('var'))) drawMenuCase(label, 'display', ctx, view, w.id);
+    }
     if (opts.live && window.__vrMenu) {
       const m = window.__vrMenu;
       const page0 = m.ui.page;

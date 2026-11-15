@@ -322,6 +322,18 @@ async def cube_reduced_info(
     nx, ny, nz = info["full_shape"]
     info["render_out_of_core"] = bool(wants_out_of_core(int(nx) * int(ny) * int(nz) * 4))
     info["source_note"] = note
+    # The other fields of a multi-field source (a VBT volume's fields, a PLUTO
+    # output's variables), for the headset's variable picker (issue #317):
+    # ``fields`` [{name, path}] and ``field_name``, as /v1/datasets/open gives
+    # them; empty for any other cube. Listing them never fails the answer.
+    from ..volume_source import field_listing  # noqa: PLC0415
+    try:
+        fields, field_name = await asyncio.to_thread(field_listing, path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[reduced] the fields beside %s could not be listed: %s", path, exc)
+        fields, field_name = [], ""
+    info["fields"] = fields
+    info["field_name"] = field_name
     return info
 
 
