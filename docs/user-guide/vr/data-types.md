@@ -158,8 +158,11 @@ and pull the trigger to sort by it (again: the other way); *◂ Page* and
   writes a new file (`<catalogue>_vr_classified.xml`, then `_1`, `_2`…); the
   window's line says *changed since sent* when there is more to send.
 
-The flags, notes and found sources are kept in this browser per cube and
-catalogue, so a reload (or a restarted headset browser) finds them again.
+The flags, notes and found sources are kept in this browser per cube (its
+full path) and catalogue (its sources: their number, names and positions), so
+a reload (or a restarted headset browser) finds them again; a catalogue of
+the same name with other sources starts with none, and only the marks of
+sources listed now come back.
 With a large catalogue the markers drawn are the 3 000 nearest the current
 source and the labels the 40 nearest.
 

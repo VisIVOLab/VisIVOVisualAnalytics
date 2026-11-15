@@ -76,6 +76,10 @@ def test_rows_out_of_the_catalogue_and_clashing_names_are_refused():
         ccl.classified_table([], "vr_note", _frame(), {}, None)
     with pytest.raises(ValueError):
         ccl.classified_table([], "f_sum", _frame(), {}, None)
+    # Without a catalogue the table's own columns are name, ra/dec or glon/glat.
+    for name in ("name", "ra", "DEC", "glon", "glat"):
+        with pytest.raises(ValueError):
+            ccl.classified_table([{"origin": "overlay", "label": "a", "flag": "x"}], name, None, None, None, "icrs")
 
 
 def test_the_votable_reads_back(tmp_path):
@@ -85,6 +89,12 @@ def test_the_votable_reads_back(tmp_path):
     ccl.write_votable(t, str(path), {"cube": "x.fits", "flag_set": "real, doubtful, spurious"})
     back = Table.read(path, format="votable")
     assert list(back["vr_flag"]) == ["", "real", ""] and list(back["vr_note"]) == ["", "blended", ""]
+    # Over a reserved (empty) name, in one step, and no temporary file left.
+    reserved = tmp_path / "r.xml"
+    reserved.touch()
+    ccl.write_votable(t, str(reserved), {})
+    assert len(Table.read(reserved, format="votable")) == 3
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["c.xml", "r.xml"]
     assert list(back["name"]) == ["SoFiA A", "SoFiA B", "SoFiA C"]
 
 

@@ -29,6 +29,8 @@ import numpy as np
 
 #: The classification columns other than the flag's own.
 EXTRA_COLUMNS = ("vr_note", "vr_origin", "vr_x", "vr_y", "vr_z", "vr_velocity_kms")
+#: The columns of a table made without a catalogue: never a flag column's name.
+OVERLAY_COLUMNS = ("name", "ra", "dec", "glon", "glat")
 
 
 def _num(v: Any) -> float:
@@ -55,8 +57,8 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
     column. A row number out of the frame is refused (ValueError).
     """
     from astropy.table import MaskedColumn, Table   # noqa: PLC0415
-    if flag_column in EXTRA_COLUMNS:
-        raise ValueError(f"{flag_column!r} is the name of another classification column.")
+    if flag_column in EXTRA_COLUMNS or flag_column.lower() in OVERLAY_COLUMNS:
+        raise ValueError(f"{flag_column!r} is the name of another column of the table.")
     by_row: dict[int, dict] = {}
     rest: list[dict] = []
     for s in sources:
@@ -133,6 +135,18 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
 
 
 def write_votable(table, path: str, meta: dict[str, Any]) -> None:
-    """``table`` as a VOTable at ``path`` (overwriting the reserved name)."""
+    """``table`` as a VOTable at ``path``, the name reserved for it: written
+    to a hidden temporary file beside it, then moved over the reservation in
+    one step (os.replace), so the name is never free in between (astropy's
+    overwrite would remove the reserved file and create it again)."""
+    import os   # noqa: PLC0415
+    import uuid   # noqa: PLC0415
+    from pathlib import Path   # noqa: PLC0415
     table.meta.update({k: str(v) for k, v in meta.items()})
-    table.write(path, format="votable", overwrite=True)
+    target = Path(path)
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        table.write(str(tmp), format="votable")
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
