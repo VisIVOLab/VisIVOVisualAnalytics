@@ -8,6 +8,24 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: mask layers (#282).** A label mask on the cube's grid (a SoFiA-2 mask,
+  a desktop mask) is drawn over the cube in the headset: *Outline* (the
+  sources' surface as a faint skin), *Mask only*, *Residuals* (the cube
+  without the masked emission), *Off*, and labels at the centroids. It comes
+  from the desktop (Show on Headset in a mask's window now sends a `mask`
+  command) or a path on the page (`POST /v1/cube/mask_layer_bin`: only the
+  sources' voxels, refused when the grid differs). *Pick* a source by
+  pointing, then the Kinematic Lasso's Replace / Add / Subtract edit it
+  (never another source's voxels), *New* makes a source with the next ID,
+  *Undo* takes edits back. *Save* writes the mask as FITS with the same grid,
+  header and IDs (`POST /v1/cube/mask_layer_save`) and sends it to the
+  desktop with its recipe; Headset Activity opens it as a cube. The layer
+  shares the capacity's mask storage with the selection (texSubImage3D only,
+  #229) and raises its skip-grid cells instead of turning skipping off. On
+  HCG 44 with its SoFiA-2 mask: 17 sources and 42 171 voxels in about 0.1 s,
+  encoded in 7.5 ms at 3×3×1. An xrfake check loads, picks, refines, undoes
+  and saves.
+
 - **VR: a source list to browse, visit, classify and send (#279).** With a
   catalogue over the cube, *Select ▸ Sources ▸ List* opens a *Sources* window
   (name, RA/Dec or l/b, velocity at the source's channel; sorted by any

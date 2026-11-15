@@ -39,7 +39,7 @@ export function openIn(p) {
   if (p.kind === 'moment') return hasFile ? 'ImageViewer' : 'Nothing';
   if (p.kind === 'pv') return hasFile || (Array.isArray(p.request.vertices) && p.request.vertices.length >= 2) ? 'PvViewer' : 'Nothing';
   if (p.kind === 'spectrum') return hasFile || p.values.length ? 'SpectrumPlot' : 'Nothing';
-  if (p.kind === 'isolate' || p.kind === 'remove') return hasFile ? 'CubeWindow' : 'Nothing';
+  if (p.kind === 'isolate' || p.kind === 'remove' || p.kind === 'mask') return hasFile ? 'CubeWindow' : 'Nothing';
   if (p.kind === 'catalogue' || p.kind === 'flow') return hasFile ? 'File' : 'Nothing';
   if (p.kind === 'classification') return 'CatalogueTable';
   return 'Nothing';

@@ -264,5 +264,5 @@ test('the Select tab has the Sources row, two presses from opening, greyed until
   assert.equal(HM.pressesTo('src-next', 'display', busy), 2);
   assert.equal(HM.pressesTo('src-list', 'select', busy), 1);
   assert.ok(HM.widgetById(HM.menuLayout('select', busy), 'src-list').on);
-  assert.equal(HM.pageSpec('select', busy).status, 5);
+  assert.equal(HM.pageSpec('select', busy).status, 6, 'the Mask row under it (#282)');
 });

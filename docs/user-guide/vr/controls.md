@@ -355,6 +355,11 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     catalogue and no found source), *+ Found* (the selection as a source found
     by eye; greyed with no lasso or probe result). See
     [Catalogues over a cube](data-types.md#the-source-list-browse-visit-classify).
+  - **Mask** (#282): *Mask* (opens or closes the *Mask* window), *Pick* (the
+    next trigger on the cube picks the mask's source under the ray), *Undo*
+    (the last edit of the mask), *Save* (to the desktop). Greyed until a mask
+    is over the cube. See
+    [Mask layers](analysis.md#mask-layers-show-compare-refine-and-save-a-mask).
 - **Measure** (a cube)
   - **Moment**: *Intensity (M0)*, *Velocity (M1)*, *Dispersion (M2)*, *Hide*.
     On a lasso selection it is the moment of that object (its mask). With no
@@ -513,7 +518,8 @@ the spectrum, the lasso's or the box's statistics; right of the cube; since
 Select mode is on), **Moment** (above the cube's right side) and **PV
 diagram** (above its left side), and **Sources** (left of the cube, low;
 opened by *Select ▸ Sources ▸ List*, its rows, headings and buttons used with
-the ray and the trigger like the menu's). Each window's title bar sits above its
+the ray and the trigger like the menu's) and **Mask** (right of the cube, low;
+*Select ▸ Mask ▸ Mask*). Each window's title bar sits above its
 content and names what it shows: *Spectrum probe*, *Kinematic Lasso* or *Box
 region* (the tool whose result it holds), *Moment 0*, *1* or *2*, *PV
 diagram*. A line too long for a window wraps onto the next row (a product

@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--sources] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--sources] [--masks] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -53,6 +53,7 @@ import { runTex3DChecks, TEX3D_PROBE } from './vr_tex3d.mjs';
 import { runControllerShadingChecks } from './vr_controller_shading.mjs';
 import { runHeadsetHubChecks, runEntryChecks } from './vr_headset_hub.mjs';
 import { runSourceListChecks } from './vr_sources.mjs';
+import { runMaskChecks } from './vr_masks.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -69,7 +70,9 @@ const ALLOC = !!args.alloc || !!args.regressions;
 const XRFAKE = (!!args.xrfake || !!args.regressions) && !args.paired;
 // --sources (issue #279): the source list's checks alone (also part of --xrfake and --regressions).
 const SOURCES = !!args.sources && !XRFAKE && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources;
+// --masks (issue #282): the mask layers' checks alone (also part of --xrfake and --regressions).
+const MASKS = !!args.masks && !XRFAKE && !args.paired;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -577,9 +580,9 @@ try {
   // WebGL objects and their bytes, counted from before the page's scripts run.
   if (ALLOC) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: GL_PROBE });
   // A WebXR stand-in, active only on an address with ?xrfake.
-  if (XRFAKE || SOURCES) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
+  if (XRFAKE || SOURCES || MASKS) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
   // Texture calls split by the VR session (issue #229), before the page's scripts.
-  if (XRFAKE || SOURCES) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
+  if (XRFAKE || SOURCES || MASKS) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
   if (PAIRED) {
@@ -659,6 +662,8 @@ try {
     await runEntryChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
     // Issue #279: the source list (window, visit, flags, a found source, the VOTable and the hub's product).
     results.sources = await runSourceListChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
+    // Issue #282: mask layers (load, modes, the desktop's mask command, pick, refine, undo, save).
+    results.masks = await runMaskChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube, python: PY });
     const hubPages = async () => {
       const s = await c.evaluate('window.__vrRefine.refiner.backend().session');
       const r = await api('GET', '/v1/vr/headset', tokenA, { session: s });
@@ -669,6 +674,7 @@ try {
   }
 
   if (SOURCES) results.sources = await runSourceListChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
+  if (MASKS) results.masks = await runMaskChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube, python: PY });
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────

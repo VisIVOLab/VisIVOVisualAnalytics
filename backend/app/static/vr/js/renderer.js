@@ -59,6 +59,15 @@ uniform int uMaskOn;
 uniform int uMaskOnly;
 uniform ivec3 uMaskOrigin, uMaskDims;
 const vec3 MASK_COLOR = vec3(0.25, 1.0, 0.45);
+// A label mask over the cube (issue #282) shares the mask storage: 64 a
+// source's voxel, 112 one on a source's surface, 255 the source refined and
+// the selection. uMaskMode: 0 the selection only, 1 the cube with the
+// sources' outline, 2 only the masked emission, 3 the cube without it
+// (residuals). uMaskCells 1: the cells holding mask voxels are raised in the
+// skip grid (never skipped), so the box test below is not needed.
+uniform int uMaskMode;
+uniform int uMaskCells;
+const vec3 OUTLINE_COLOR = vec3(1.0, 0.78, 0.3);
 
 float maskAt(vec3 p, vec3 vox) {
   ivec3 iv = ivec3(floor(p * vox)) - uMaskOrigin;
@@ -104,10 +113,10 @@ void main() {
     if (uSkip == 1) {
       vec3 cf = clamp(floor(p * vox / uCell), vec3(0.0), uCellDims - 1.0);
       float m = texelFetch(uMacro, ivec3(cf), 0).r;
-      float need = uMaskOnly == 1 ? 2.0 : (uMode == 1 ? max(uThr, best) : uThr);
+      float need = (uMaskOnly == 1 || uMaskMode == 2) ? 2.0 : (uMode == 1 ? max(uThr, best) : uThr);
       // A selected voxel is drawn below the threshold too (the lasso grows into
       // the faint margin), so the cells it meets are never skipped.
-      if (m < need && !(uMaskOn == 1 && cellMeetsMask(cf))) {
+      if (m < need && !(uMaskOn == 1 && uMaskCells == 0 && cellMeetsMask(cf))) {
         vec3 a = (cf * uCell / vox - o) * inv;
         vec3 b = ((cf + 1.0) * uCell / vox - o) * inv;
         float texit = min(min(max(a.x, b.x), max(a.y, b.y)), max(a.z, b.z));
@@ -116,10 +125,22 @@ void main() {
       }
     }
     float v = normAt(p);
-    float sel = uMaskOn == 1 ? maskAt(p, vox) : 0.0;
+    float raw = uMaskOn == 1 ? maskAt(p, vox) : 0.0;
+    float sel = raw > 0.75 ? 1.0 : 0.0;
+    bool inMask = raw > 0.15;
+    bool shell = raw > 0.35 && raw < 0.75;
+    // What the mask's mode lets through: only the masked emission (2), the
+    // emission outside the mask (3), else everything (0, 1).
+    bool allowed = uMaskMode == 2 ? inMask : (uMaskMode == 3 ? !inMask || sel > 0.5 : true);
     if (uMode == 1) {
-      if (v > best) { best = v; bestMask = sel; }
-    } else if ((uMaskOnly == 0 && v >= uThr) || sel > 0.5) {
+      if (allowed && v > best) { best = v; bestMask = sel; }
+    } else if (uMaskMode == 1 && shell && uMaskOnly == 0 && v < uThr) {
+      // The outline below the threshold: a faint skin in the outline colour.
+      float a = 1.0 - exp(-uOpacity * 0.18 * stepVox);
+      acc.rgb += (1.0 - acc.a) * a * OUTLINE_COLOR;
+      acc.a += (1.0 - acc.a) * a;
+    } else if (allowed && ((uMaskOnly == 0 && (v >= uThr || (uMaskMode == 2 && inMask))) || sel > 0.5
+        || (uMaskOnly == 1 && uMaskMode == 1 && shell))) {
       float x = clamp((v - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0);
       x = pow(x, uGamma);
       vec3 col = texture(uLut, vec2(x, 0.5)).rgb;
@@ -127,6 +148,9 @@ void main() {
       if (sel > 0.5) {
         col = mix(col, MASK_COLOR, 0.7);
         a = max(a, 1.0 - exp(-uOpacity * 0.25 * stepVox));
+      } else if (uMaskMode == 1 && shell) {
+        col = mix(col, OUTLINE_COLOR, 0.6);
+        a = max(a, 1.0 - exp(-uOpacity * 0.18 * stepVox));
       }
       acc.rgb += (1.0 - acc.a) * a * col;
       acc.a += (1.0 - acc.a) * a;
@@ -590,6 +614,7 @@ export class Renderer {
     this.store = null;
     this.macroDims = null;
     const maskInput = this._maskInput;     // useVolume() clears it
+    const layer = this._layer;             // and the mask layer (#282)
     this._init();
     const plan = this._capPlan;
     this.capacityError = '';
@@ -599,7 +624,8 @@ export class Renderer {
       try { this.allocCapacity(plan.dims, plan.encoding, plan.cell); } catch (e) { this.capacityError = String(e.message || e); }
     }
     if (this._volume) this.showVolume(this._volume, this._volume.cell);
-    if (maskInput && this.slot) this.setMask(maskInput);
+    if (layer && this.slot) this._layer = layer;
+    if ((maskInput || layer) && this.slot) this.setMask(maskInput);
     for (const [name, segs] of Object.entries(this._lineSegs)) if (this[name]) this.setLines(segs, this[name]);
     if (this._labels) this.setLabels(this._labels);
     for (const h of this._panels) {
@@ -705,7 +731,7 @@ export class Renderer {
     }
     const t3 = performance.now();
     const slot = {
-      volTex, macroTex, maskTex, dims: [w, h, d], store: [w, h, d], encoding, cell, macroDims: macro.dims, cap: null,
+      volTex, macroTex, maskTex, dims: [w, h, d], store: [w, h, d], encoding, cell, macroDims: macro.dims, macroData: macro.data, cap: null,
       textureBytes: voxels(dims) * (u8 ? 1 : 2), macroBytes: voxels(macro.dims) * 4, maskBytes: mask ? voxels(dims) : 0,
       uploadMs: t1 - t0, macroMs: ready ? prep.ms : t2 - t1, maskMs: t3 - t2, lost: false, released: false,
     };
@@ -719,7 +745,7 @@ export class Renderer {
    */
   useVolume(slot) {
     if (!slot || slot.lost || slot.released) throw new Error('that volume is no longer on the GPU');
-    if (slot !== this.slot) { this.mask = null; this._maskInput = null; }
+    if (slot !== this.slot) { this.mask = null; this._maskInput = null; this._layer = null; }
     this.slot = slot;
     this.volTex = slot.volTex;
     this.macroTex = slot.macroTex;
@@ -824,7 +850,7 @@ export class Renderer {
     const s = this.slot;
     const inCap = !!(s && this.cap && s.cap === this.cap);
     const ownShown = !!(s && !s.cap && s.volume && s.volume === this._volume);   // setVolume's, not the benchmark's
-    const vol = this._volume, mask = this._maskInput;
+    const vol = this._volume, mask = this._maskInput, layer = this._layer;
     // Given back before the new capacity is allocated (never both on the GPU);
     // shown again from its voxels after, when asked.
     if (ownShown && (!reshow || (vol && vol.data))) this._dropShown();
@@ -832,7 +858,8 @@ export class Renderer {
     if (plan) this.allocCapacity(plan.dims, plan.encoding, plan.cell ?? 8);
     if (reshow && vol && vol.data && (inCap || ownShown)) {
       this.showVolume(vol, vol.cell);
-      if (mask) this.setMask(mask);
+      if (layer && this.slot) this._layer = layer;
+      if (mask || layer) this.setMask(mask);
     }
   }
 
@@ -962,7 +989,7 @@ export class Renderer {
         if (stage < 3) return false;
         const slot = {
           volTex: bank.volTex, macroTex: bank.macroTex, maskTex: cap.maskTex, dims: [w, h, d], store: cap.dims.slice(), encoding, cell,
-          macroDims: macro.dims, cap, bank: bi,
+          macroDims: macro.dims, macroData: macro.data, cap, bank: bi,
           textureBytes: voxels(dims) * f.bpv, macroBytes: voxels(macro.dims) * 4, maskBytes: 0,
           uploadMs, macroMs, maskMs: 0, lost: false, released: false,
         };
@@ -1005,6 +1032,7 @@ export class Renderer {
    *  an allocation, so it is safe in VR (issue #229). The shader reads only
    *  [origin, origin + dims), so what lies beyond in the storage is never seen. */
   setMask(reduced) {
+    if (this._layer) { this._composeMask(reduced && reduced.count ? reduced : null); return; }
     if (!reduced || !reduced.count) {
       this._maskInput = null;
       this.mask = null;
@@ -1022,6 +1050,81 @@ export class Renderer {
     gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, dims[0], dims[1], dims[2], gl.RED, gl.UNSIGNED_BYTE, reduced.data);
     this._maskInput = reduced;
     this.mask = { origin: reduced.origin, dims, bytes: reduced.data.length };
+  }
+
+  /**
+   * A label mask over the cube on show (issue #282): `layer` {data, origin,
+   * dims} on the reduced grid (mask-layer.js encodeLayer: ENC values), or
+   * null to take it away. Written with the selection into the volume's mask
+   * storage (texSubImage3D only: safe in VR, #229); the skip grid's cells
+   * either meets are raised so they are never skipped, and put back without it.
+   */
+  setMaskLayer(layer) {
+    this._layer = layer && layer.data ? layer : null;
+    if (!this._layer) this._patchMacro(null);
+    this.setMask(this._maskInput);
+  }
+
+  /** The skip grid of the volume on show, with `cells` (1: holds mask voxels) raised to 2, or as built. */
+  _patchMacro(cells) {
+    const s = this.slot;
+    if (!s || !s.macroTex || !s.macroData) return;
+    const d = s.macroDims, n = d[0] * d[1] * d[2];
+    let data = s.macroData;
+    if (cells && cells.length === n) {
+      data = new Float32Array(s.macroData);
+      for (let i = 0; i < n; i++) if (cells[i]) data[i] = Math.max(data[i], 2);
+    }
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_3D, s.macroTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, d[0], d[1], d[2], gl.RED, gl.FLOAT, data);
+  }
+
+  /** The layer and the selection (`sel`, reduceMask's answer or null) as one box in the mask storage. */
+  _composeMask(sel) {
+    const s = this.slot, L = this._layer;
+    if (!s || !s.maskTex) throw new Error('no volume with a selection mask on show');
+    const lo = L.origin.slice(), hi = L.origin.map((o, i) => o + L.dims[i] - 1);
+    if (sel) for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], sel.origin[i]); hi[i] = Math.max(hi[i], sel.origin[i] + sel.dims[i] - 1); }
+    const dims = [0, 1, 2].map((i) => hi[i] - lo[i] + 1);
+    if (dims[0] > s.dims[0] || dims[1] > s.dims[1] || dims[2] > s.dims[2]) {
+      throw new Error(`a mask of ${dims.join('×')} reduced voxels does not fit the cube's grid ${s.dims.join('×')}`);
+    }
+    const out = new Uint8Array(dims[0] * dims[1] * dims[2]);
+    const copy = (src, o, sd, mark) => {
+      for (let z = 0; z < sd[2]; z++) {
+        for (let y = 0; y < sd[1]; y++) {
+          const from = (z * sd[1] + y) * sd[0];
+          const to = ((o[2] - lo[2] + z) * dims[1] + (o[1] - lo[1] + y)) * dims[0] + (o[0] - lo[0]);
+          if (!mark) { out.set(src.subarray(from, from + sd[0]), to); continue; }
+          for (let x = 0; x < sd[0]; x++) if (src[from + x]) out[to + x] = 255;
+        }
+      }
+    };
+    copy(L.data, L.origin, L.dims, false);
+    if (sel) copy(sel.data, sel.origin, sel.dims, true);
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_3D, s.maskTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, dims[0], dims[1], dims[2], gl.RED, gl.UNSIGNED_BYTE, out);
+    this._maskInput = sel;
+    this.mask = { origin: lo, dims, bytes: out.length, layer: true };
+    // The skip grid's cells holding any of it, never skipped (the box test is off with a layer).
+    const md = s.macroDims, c = s.cell;
+    const cells = new Uint8Array(md[0] * md[1] * md[2]);
+    for (let z = 0; z < dims[2]; z++) {
+      const cz = Math.min(md[2] - 1, Math.floor((lo[2] + z) / c));
+      for (let y = 0; y < dims[1]; y++) {
+        const cy = Math.min(md[1] - 1, Math.floor((lo[1] + y) / c));
+        const row = (z * dims[1] + y) * dims[0];
+        for (let x = 0; x < dims[0]; x++) {
+          if (out[row + x]) cells[(cz * md[1] + cy) * md[0] + Math.min(md[0] - 1, Math.floor((lo[0] + x) / c))] = 1;
+        }
+      }
+    }
+    this._patchMacro(cells);
+    this.maskCells = cells.reduce((n, v) => n + v, 0);
   }
 
   /** Segments: array of {a: [x,y,z], b: [x,y,z], color: [r,g,b,a]} in model space. */
@@ -1483,6 +1586,8 @@ export class Renderer {
     gl.uniform1i(u.uMaskOnly, p.maskOnly && mk ? 1 : 0);
     gl.uniform3i(u.uMaskOrigin, ...(mk ? mk.origin : [0, 0, 0]));
     gl.uniform3i(u.uMaskDims, ...(mk ? mk.dims : [0, 0, 0]));
+    gl.uniform1i(u.uMaskMode, mk && this._layer ? (p.maskMode || 0) : 0);
+    gl.uniform1i(u.uMaskCells, mk && this._layer ? 1 : 0);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.FRONT);             // back faces: works with the eye inside the box
     gl.disable(gl.DEPTH_TEST);

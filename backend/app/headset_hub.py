@@ -274,8 +274,8 @@ class HeadsetHub:
             target = next((p for p in present if p.client == client), None)
         if target is None:
             return None
-        if type_ == "show":
-            target.commands = [c for c in target.commands if c.type != "show"]
+        if type_ in ("show", "mask"):
+            target.commands = [c for c in target.commands if c.type != type_]
         cmd = Command(seq=next_seq(), type=type_, body=body)
         target.commands.append(cmd)
         del target.commands[:-MAX_COMMANDS_PER_PAGE]

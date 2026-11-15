@@ -480,6 +480,28 @@ void TestVrHeadsetHub::aClassificationBecomesTableEntries()
     QCOMPARE(value(entries.at(2), u"vr_flag"_s), u"doubtful"_s);
 }
 
+void TestVrHeadsetHub::aLabelMaskGoesAsAMaskLayer()
+{
+    for (const QString &p : { u"/data/hgc44-run5_mask.fits"_s, u"C:\\x\\sofia_out_mask.fits"_s, u"/w/M33_MASK.FITS"_s,
+                              u"/w/cube-mask.fits.gz"_s, u"/w/mask.fits"_s })
+        QVERIFY2(VrHub::isLabelMaskPath(p), qPrintable(p));
+    for (const QString &p : { u"/data/hgc44.fits"_s, u"/data/masked_cube.fits"_s, u"/data/maskfile.fits"_s, u"/data/mask/cube.fits"_s })
+        QVERIFY2(!VrHub::isLabelMaskPath(p), qPrintable(p));
+    VrLink::Inputs in;
+    in.datasetId = u"ds-mask"_s;
+    in.path = u"/data/hgc44-run5_mask.fits"_s;
+    in.token = u"secret-token"_s;
+    const QJsonObject body = VrHub::maskCommandBody(in, u"q3"_s);
+    QCOMPARE(body.value(u"type"_s).toString(), u"mask"_s);
+    QCOMPARE(body.value(u"dataset_id"_s).toString(), u"ds-mask"_s);
+    QCOMPARE(body.value(u"client"_s).toString(), u"q3"_s);
+    QVERIFY(!QJsonDocument(body).toJson().contains("secret-token"));
+    // The refined mask the headset saves opens as a cube window.
+    QCOMPARE(VrHub::openIn(VrHub::parseProduct(productEvent(R"({"product":"mask","output_path":"/w/hgc44-run5_vr_mask.fits"})"))),
+             VrHub::OpenIn::CubeWindow);
+    QCOMPARE(VrHub::openIn(VrHub::parseProduct(productEvent(R"({"product":"mask"})"))), VrHub::OpenIn::Nothing);
+}
+
 void TestVrHeadsetHub::productsOpenWhereTheyBelong()
 {
     using VrHub::OpenIn;

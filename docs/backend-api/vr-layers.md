@@ -160,6 +160,46 @@ sent: `name`, `ra`/`dec` (or `glon`/`glat` for `source_frame: galactic`), then
 the same classification columns. Answer: `valid`, `output_path`,
 `workspace_filename`, `n_rows`, `n_flagged`, `n_user`, `columns`.
 
+## `POST /v1/cube/mask_layer_bin`
+
+A label mask over a cube for the headset's mask layers (issue #282,
+`app/mask_layer.py`). Body (JSON): `dataset_id` (the cube), and
+`mask_dataset_id` (a mask opened in this session) or `mask_path` (a file on
+the backend). The mask must be on the cube's grid: the same size on each of
+the viewer's axes and the same `CTYPE`, `CRVAL`, `CDELT`, `CRPIX` on the axes
+they share (a degenerate axis of either is ignored); otherwise 422 naming
+what differs. An integer mask, or a float one holding whole numbers; a
+negative value or a fraction is 422. At most 16 Mi voxels in sources and
+65 535 sources.
+
+Answer (`application/octet-stream`): a uint32 little-endian length, that many
+bytes of JSON (padded with spaces to a multiple of 4), then the voxels as
+uint32 little-endian linear indices of the full grid, `(z * ny + y) * nx + x`,
+grouped by source (ascending ID) and sorted within each. The JSON: `shape`
+(`[nx, ny, nz]`), `sources` (`id`, `count`, `offset` into the indices,
+`bbox` `[x0, x1, y0, y1, z0, z1]`, `centroid` `[x, y, z]`, geometric, 0-based
+pixels), `max_id`, `n_voxels`, `mask_path`, `mask_name`. Read one channel at a
+time.
+
+## `POST /v1/cube/mask_layer_save`
+
+The headset's refined mask written as FITS in the Workspace Exports. Body
+(`application/octet-stream`, at most 65 MiB): a uint32 little-endian length,
+that many bytes of JSON, padding to a multiple of 4, then each edited source's
+sorted voxel indices (uint32) in the order of `edits`. The JSON:
+`dataset_id`, `mask_dataset_id` or `mask_path`, `edits` (`[{id, count, new}]`:
+each source's whole new voxel list), `removed` (IDs emptied), `history`
+(lines for the header, at most 20), `output_basename` (default
+`<mask without _mask>_vr_mask`).
+
+The original mask is copied; each edited and removed source's voxels are
+cleared, then each edited source is set to its list. A voxel of another
+source claimed by an edit, or an index outside the grid, is 422 (the headset
+never takes one: Add and Replace claim free voxels). The file keeps the
+original header (`BITPIX` 32), adds HISTORY cards (`source N edited`, `added`,
+`removed`), and has the original's shape. Answer: `valid`, `output_path`,
+`workspace_filename`, `n_sources`, `max_id`, `n_voxels`, `edited`, `removed`.
+
 ## `POST /v1/velocity/lines_bin`
 
 The streamlines and arrows of a velocity field (`/v1/velocity/open`), traced

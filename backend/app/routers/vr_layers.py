@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from ..auth import verify_token
@@ -373,6 +373,126 @@ async def catalogue_classified_votable(request: ClassifiedVotableRequest, _: Non
         valid=True, output_path=str(path), workspace_filename=path.name, n_rows=len(table),
         n_flagged=len(flags), n_user=sum(1 for s in sources if s.get("origin") == "user"),
         columns=list(table.colnames))
+
+
+# ── A label mask over the cube (issue #282) ──────────────────────────────────
+
+
+class MaskLayerRequest(BaseModel):
+    dataset_id: str                      # the cube
+    mask_dataset_id: str = ""            # a mask opened in this session, or
+    mask_path: str = ""                  # a mask file on the backend
+
+
+def _mask_source(session: Session, mask_dataset_id: str, mask_path: str) -> str:
+    """The mask file: a dataset of the session, else a path on the backend."""
+    from ..dependencies import _normalize_path   # noqa: PLC0415
+    if mask_dataset_id:
+        entry = session.datasets.get(mask_dataset_id)
+        if not entry or not entry.get("path"):
+            raise HTTPException(404, f"Unknown mask dataset {mask_dataset_id!r}.")
+        return str(entry["path"])
+    if not mask_path.strip():
+        raise HTTPException(422, "Give mask_dataset_id or mask_path.")
+    path = _normalize_path(mask_path.strip())
+    if not path.exists() or not path.is_file():
+        raise HTTPException(404, f"Mask file not found: {path}")
+    return str(path)
+
+
+@router.post("/v1/cube/mask_layer_bin", tags=["vr"])
+async def cube_mask_layer_bin(request: MaskLayerRequest, _: None = _auth,
+                              session: Session = Depends(get_session)) -> Response:
+    """A label mask on the cube's grid as per-source sorted voxel indices
+    (app/mask_layer.py): uint32 JSON length, the JSON {shape, sources: [{id,
+    count, offset, bbox, centroid}], max_id, n_voxels, mask_path, mask_name},
+    then the indices (uint32 little-endian, x fastest). 422 when the mask is
+    not on the cube's grid or is not a label mask."""
+    from .. import mask_layer as ml   # noqa: PLC0415
+    entry = _require_dataset(session, request.dataset_id)
+    if entry.get("kind") != "cube":
+        raise HTTPException(422, "A mask layer goes over a cube.")
+    mask_path = _mask_source(session, request.mask_dataset_id, request.mask_path)
+    try:
+        layer = await asyncio.to_thread(ml.read_layer, str(entry["path"]), mask_path)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    body = ml.pack_layer(layer, {"mask_path": mask_path, "mask_name": Path(mask_path).name})
+    return Response(body, media_type="application/octet-stream")
+
+
+#: The largest save body (its indices included): 64 MiB of voxels and a header.
+MASK_SAVE_MAX_BYTES = 4 * 16 * 1024 * 1024 + 1024 * 1024
+
+
+class MaskLayerSaveResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    n_sources: int = 0
+    max_id: int = 0
+    n_voxels: int = 0
+    edited: list[int] = []
+    removed: list[int] = []
+
+
+@router.post("/v1/cube/mask_layer_save", response_model=MaskLayerSaveResponse, tags=["vr"])
+async def cube_mask_layer_save(request: Request, _: None = _auth,
+                               session: Session = Depends(get_session)) -> MaskLayerSaveResponse:
+    """The headset's refined mask written as FITS in the Workspace Exports: the
+    original mask with each edited source's voxels replaced by the list sent
+    and the removed sources cleared; same grid, header and IDs, new sources
+    under the IDs the page gave them, HISTORY cards saying what changed. The
+    body: uint32 JSON length, the JSON {dataset_id, mask_dataset_id |
+    mask_path, edits: [{id, count, new}], removed: [id], output_basename,
+    history: [text]}, padding to 4 bytes, the edited sources' indices in the
+    order of ``edits``."""
+    from .. import mask_layer as ml   # noqa: PLC0415
+    from ..dependencies import make_workspace_path   # noqa: PLC0415
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MASK_SAVE_MAX_BYTES:
+        raise HTTPException(413, "The mask is too large to save from the headset.")
+    body = await request.body()
+    if len(body) > MASK_SAVE_MAX_BYTES:
+        raise HTTPException(413, "The mask is too large to save from the headset.")
+    try:
+        head, edits = ml.parse_edits(body)
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(422, f"Unreadable save: {exc}") from exc
+    entry = _require_dataset(session, str(head.get("dataset_id", "")))
+    if entry.get("kind") != "cube":
+        raise HTTPException(422, "A mask layer goes over a cube.")
+    mask_path = _mask_source(session, str(head.get("mask_dataset_id", "")), str(head.get("mask_path", "")))
+    removed = [int(i) for i in head.get("removed", []) if int(i) > 0]
+    if not edits and not removed:
+        raise HTTPException(422, "Nothing to save: no source was edited.")
+    base = Path(mask_path).stem
+    for tail in ("_mask", "-mask"):
+        base = base[: -len(tail)] if base.lower().endswith(tail) else base
+    # Still a mask by its name (the desktop's VrHub::isLabelMaskPath).
+    stem = Path(str(head.get("output_basename", "")).strip()).stem or f"{base or 'cube'}_vr_mask"
+    history = [f"VisIVO VR: refined in the headset from {Path(mask_path).name}"]
+    history += [f"VisIVO VR: source {i} {'added' if any(e.get('id') == i and e.get('new') for e in head.get('edits', [])) else 'edited'}"
+                for i in sorted(edits)]
+    history += [f"VisIVO VR: source {i} removed" for i in removed]
+    history += [str(h)[:70] for h in head.get("history", [])[:20]]
+    try:
+        out = make_workspace_path(stem + ".fits", reserve=True)
+    except Exception as exc:   # noqa: BLE001 - said to the page
+        return MaskLayerSaveResponse(valid=False, error=str(exc))
+    try:
+        result = await asyncio.to_thread(ml.write_layer, str(entry["path"]), mask_path, str(out),
+                                         edits, removed, history)
+    except ValueError as exc:
+        out.unlink(missing_ok=True)
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:   # noqa: BLE001 - the placeholder goes, the page is told
+        out.unlink(missing_ok=True)
+        logger.warning("[mask_layer_save] failed: %s", exc)
+        return MaskLayerSaveResponse(valid=False, error=str(exc))
+    return MaskLayerSaveResponse(valid=True, workspace_filename=out.name, edited=sorted(edits),
+                                 removed=removed, **result)
 
 
 # ── Velocity fields ──────────────────────────────────────────────────────────

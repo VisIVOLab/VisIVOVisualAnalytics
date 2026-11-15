@@ -21,12 +21,12 @@ export const DEFAULT_SETTINGS = {
   leftHanded: false,             // the left hand points and acts, the right holds the menu (#201)
   labels: true,                  // the button legend (#201), on the primary wrist since #256
   haptics: true,                 // pulses on a press, a result, an error (#201)
-  windows: {},                   // {result|moment|pv|sources: {right, up, fwd, yaw}}: offsets from the cube's first placement
+  windows: {},                   // {result|moment|pv|sources|mask: {right, up, fwd, yaw}}: offsets from the cube's first placement
   flagSet: '',                   // the source list's flags, comma-separated ('' the defaults: real, doubtful, spurious; #279)
   noteSet: '',                   // its preset notes, comma-separated ('' the defaults)
 };
 
-export const WINDOW_IDS = ['result', 'moment', 'pv', 'sources'];
+export const WINDOW_IDS = ['result', 'moment', 'pv', 'sources', 'mask'];
 
 const finite = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 

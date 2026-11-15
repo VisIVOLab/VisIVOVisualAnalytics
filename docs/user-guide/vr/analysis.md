@@ -246,6 +246,56 @@ The seeds, Isolate, Remove, the moments and the PV diagram were compared with
 the desktop's call by call on HCG 44, and the timings measured: see
 [Selections and analysis](reference.md#selections-and-analysis).
 
+## Mask layers: show, compare, refine and save a mask
+
+A mask cube made by a source finder (SoFiA-2 and others) or on the desktop
+can be shown over the cube in the headset
+([#282](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/282)). It
+must be on the cube's grid: the same pixels on every axis and the same WCS
+(CTYPE, CRVAL, CDELT, CRPIX); a mask on another grid is refused with what
+differs. Only its sources' voxels travel to the headset (HCG 44's SoFiA-2
+mask: 42 171 voxels of 77 million, loaded in about 0.1 s).
+
+**Load it.** On the desktop, open the mask as a cube and press **Show on
+Headset** in its window: a file whose name ends in `mask` (`*_mask.fits`,
+`sofia_out_mask.fits`) goes as a mask layer over the cube the headset shows,
+not as a cube of its own. Send the cube first. On the page, *Mask over the
+cube* under *Catalogue over the cube* takes a path on the backend.
+
+**Show it.** **Select ▸ Mask ▸ Mask** opens the *Mask* window:
+
+- *Outline*: the cube as usual, each source's surface drawn as a faint amber
+  skin (its voxels on the edge of the mask, below the threshold too);
+- *Mask only*: only the masked emission, every voxel of the mask drawn
+  (below the threshold too, faintly);
+- *Residuals*: the cube with the masked emission removed: what the mask
+  missed. On HCG 44 with its SoFiA-2 mask almost nothing is left: outside the
+  mask 61 voxels exceed 5σ and none 6σ;
+- *Off*; *Labels* writes each source's ID at its centroid (the source being
+  refined in green, larger).
+
+Refined frames from the backend show the whole cube, so under *Mask only* and
+*Residuals* the headset draws alone (no refinement).
+
+**Refine a source.** *Pick* (in the window or on the Select tab), then the
+trigger on the cube: the source under the ray is picked and drawn green. With
+the Kinematic Lasso, each trigger then grows from the point it hits (that
+seed alone) and edits the picked source: *Replace* (the lasso's *New*) makes
+the source the grow, *Add* adds the grow, *Subtract* removes it. An edit never
+takes a voxel of another source: *Replace* and *Add* claim free voxels only.
+*New* in the window starts a new source, which takes the next free ID above
+the mask's highest. *Undo* takes back the last edit (up to 32). *◂ / ▸* step
+through the sources and *Visit* brings the picked one to the centre, as the
+source list does.
+
+**Save it.** *Save to desktop* (window) or *Select ▸ Mask ▸ Save*: the
+backend writes the refined mask in the Workspace Exports as FITS
+(`<mask>_vr_mask.fits`): the original mask with the edited sources' voxels
+replaced and emptied sources cleared, the same grid, header and IDs, new
+sources under their new IDs, HISTORY cards saying what changed. It goes to
+the desktop as headset activity with its recipe (the grows, each with the
+edit it made); Headset Activity ▸ Open opens it as a cube.
+
 ## Selections shared with the desktop
 
 A Kinematic Lasso or a box made in the headset appears in the desktop's cube

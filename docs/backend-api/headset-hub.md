@@ -96,10 +96,13 @@ poll ends. `{"removed": true|false}`.
 ```
 `client` is optional: without it, the newest connected page. `type` is
 `show` (show this cube: `dataset_id` of this session; the page opens `path`
-again when it does not hold that id); `kind` and `box` are optional and
+again when it does not hold that id) or `mask` (#282: a label mask on the
+cube's grid, `dataset_id` the mask's in this session and `path` its file,
+drawn over the cube the page shows; the page waits for a cube load under
+way first); `kind` and `box` are optional and
 passed on only when given. **404** when that page is not connected (the
 desktop then opens one the usual way). A `show` replaces an older `show` the
-page has not acknowledged. Response: `{"seq": 41, "client": "q3-7f2a"}`.
+page has not acknowledged, a `mask` an older `mask`. Response: `{"seq": 41, "client": "q3-7f2a"}`.
 
 ### `GET /v1/vr/headset/commands?client=&after=&wait=`
 The page's long poll. `after` acknowledges every command up to it (they are
@@ -129,9 +132,10 @@ handed again until acknowledged. 404 for a client that did not say hello.
 - `clip`: `payload.box`, the clip box in voxels of the full cube, or null; the
   latest per cube replaces the previous;
 - `product`: `payload.product` is `moment`, `pv`, `spectrum`, `isolate`,
-  `remove`, `catalogue`, `flow` or `classification` (a catalogue classified
+  `remove`, `catalogue`, `flow`, `classification` (a catalogue classified
   in the headset, #279: `payload.classification` lists the classified and
-  found sources, see below), with what the desktop needs to open it: a
+  found sources, see below) or `mask` (a label mask refined in the headset,
+  #282: its FITS `file` and recipe), with what the desktop needs to open it: a
   `file` the backend wrote (a Workspace Exports filename, which must exist;
   the backend adds its `output_path`; a payload that sets `output_path`
   itself, or a file that leads out of the exports directory through a
@@ -180,4 +184,6 @@ then posts a `product` event naming the file:
   null on the sky only), `v` (km/s), `flag`, `note`, `o` (`c` catalogue, `o`
   overlay, `u` found), `row`. Only classified and found sources are listed,
   about 11 KB of them at most (`truncated` then says the VOTable holds the
-  rest); the VOTable body itself is not in the event.
+  rest); the VOTable body itself is not in the event;
+- a refined mask (#282): [`POST /v1/cube/mask_layer_save`](vr-layers.md#post-v1cubemask_layer_save)
+  writes it.

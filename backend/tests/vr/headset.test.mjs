@@ -436,7 +436,7 @@ test('the page wires the hub: requests through pageFetch, no keepalive on the po
   const main = readFileSync(new URL('../../app/static/vr/js/main.js', import.meta.url), 'utf8');
   assert.match(main, /setInterval\(hubTick, 250\)/);
   assert.match(main, /onRecord: \(r, detail\) => reportProduct\(r, detail\)/);
-  assert.match(main, /onCommand: \(cmd\) => showFromDesktop\(cmd\)/);
+  assert.match(main, /onCommand: \(cmd\) => \(cmd\.type === 'mask' \? maskFromDesktop\(cmd\) : showFromDesktop\(cmd\)\)/);
   // The frame loop never calls the hub.
   const frame = main.slice(main.indexOf('function onXRFrame('), main.indexOf('function setEyeBufferScale('));
   assert.ok(frame.length > 1000 && !/hub\./.test(frame));

@@ -270,6 +270,36 @@ inline QJsonObject showCommandBody(const VrLink::Inputs &in, const QString &clie
     return body;
 }
 
+/// Is @p path a label mask (a SoFiA-2 mask, the desktop's or the headset's
+/// refined one: a name ending in "mask" before .fits, or the backend's SoFiA
+/// run's sofia_out_mask.fits)? Show on Headset sends it as a mask layer over
+/// the headset's cube (issue #282), not as a cube of its own.
+inline bool isLabelMaskPath(const QString &path)
+{
+    const qsizetype cut = std::max(path.lastIndexOf(u'/'), path.lastIndexOf(u'\\'));
+    QString name = path.mid(cut + 1).toLower();
+    for (const char16_t *ext : { u".fits.gz", u".fits", u".fit", u".fts" }) {
+        if (name.endsWith(QStringView(ext))) {
+            name.chop(QStringView(ext).size());
+            break;
+        }
+    }
+    return name == u"mask" || name.endsWith(u"_mask") || name.endsWith(u"-mask") || name.endsWith(u".mask");
+}
+
+/// POST /v1/vr/headset/command for a label mask over the headset's cube
+/// (issue #282): `mask`, the mask's dataset id and path. The page draws it
+/// over the cube it shows when it is on that cube's grid.
+inline QJsonObject maskCommandBody(const VrLink::Inputs &in, const QString &client = {})
+{
+    QJsonObject body{ { QStringLiteral("type"), QStringLiteral("mask") },
+                      { QStringLiteral("dataset_id"), in.datasetId },
+                      { QStringLiteral("path"), in.path } };
+    if (!client.isEmpty())
+        body.insert(QStringLiteral("client"), client);
+    return body;
+}
+
 struct CommandResult
 {
     enum class Outcome { Sent, NoHeadset, Unsupported, Failed };
@@ -484,7 +514,7 @@ enum class OpenIn {
 
 struct Product
 {
-    QString kind;               ///< moment | pv | spectrum | isolate | remove | catalogue | flow | classification
+    QString kind;               ///< moment | pv | spectrum | isolate | remove | catalogue | flow | classification | mask
     QString label;
     QString path;               ///< the file the backend wrote ('' none)
     QString workspaceFilename;  ///< its name in the Workspace Exports ('' none)
@@ -570,7 +600,8 @@ inline OpenIn openIn(const Product &p)
                                                                               : OpenIn::Nothing;
     if (p.kind == u"spectrum")
         return hasFile || !p.values.isEmpty() ? OpenIn::SpectrumPlot : OpenIn::Nothing;
-    if (p.kind == u"isolate" || p.kind == u"remove")
+    // A label mask refined in the headset (#282) is a cube on the same grid.
+    if (p.kind == u"isolate" || p.kind == u"remove" || p.kind == u"mask")
         return hasFile ? OpenIn::CubeWindow : OpenIn::Nothing;
     if (p.kind == u"catalogue" || p.kind == u"flow")
         return hasFile ? OpenIn::File : OpenIn::Nothing;
