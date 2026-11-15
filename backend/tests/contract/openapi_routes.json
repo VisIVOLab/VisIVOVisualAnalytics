@@ -150,6 +150,7 @@
     "POST /v1/photometry/gaussfit/{dataset_id}",
     "POST /v1/points/info",
     "POST /v1/points/sample_bin",
+    "POST /v1/points/series",
     "POST /v1/polarisation/pi/result/binary",
     "POST /v1/polarisation/pi/{dataset_id}",
     "POST /v1/polarisation/rmsynthesis/{dataset_id}",

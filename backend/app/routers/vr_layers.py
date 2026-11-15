@@ -132,8 +132,13 @@ async def points_info(request: PointInfoRequest, _: None = _auth,
         table = await asyncio.to_thread(_point_table, entry, spec, request.sky)
     except _BAD_TABLE as exc:
         raise HTTPException(422, f"The table could not be read: {exc}") from exc
+    # A catalogue's column units, as its file declares them (issue #259: the
+    # colour bar's unit); a VBT's header carries none.
+    frame = entry.get("dataframe")
+    declared = ((getattr(frame, "attrs", None) or {}).get("units") or {}) if frame is not None else {}
+    units = {k: str(v) for k, v in dict(declared).items() if k in table.columns and v not in (None, "")}
     out = {"valid": True, "num_rows": int(table.num_rows), "fields": list(table.columns),
-           "axes": list(table.axes), "sky": table.sky is not None,
+           "axes": list(table.axes), "sky": table.sky is not None, "units": units,
            # point_table_spec: a VBT's header path, a catalogue's JSON spec.
            "format": "catalogue" if spec.lstrip().startswith("{") else "vbt"}
     if table.sky is not None:
@@ -141,6 +146,31 @@ async def points_info(request: PointInfoRequest, _: None = _auth,
         # out for want of a distance, and placed from cz < 1000 km/s (#265).
         out["sky_settings"] = dict(table.sky_settings)
     return out
+
+
+@router.post("/v1/points/series", tags=["vr"])
+async def points_series(request: PointInfoRequest, _: None = _auth,
+                        session: Session = Depends(get_session)) -> dict:
+    """The snapshots beside the table's file (issue #259, app/snapshot_series.py):
+    the files in its folder whose names differ from it only in their number,
+    in order, and where this one is. Only names are read."""
+    from ..snapshot_series import snapshot_series   # noqa: PLC0415
+    entry = _require_dataset(session, request.dataset_id)
+    _point_spec(entry)                                  # a table of points, else 422
+    path = entry.get("head_path") if entry.get("kind") == "vbt" else entry.get("path")
+    if not path:
+        raise HTTPException(422, "The table has no file to step from.")
+    from ..dependencies import _normalize_path   # noqa: PLC0415
+
+    def allowed(member: str) -> bool:
+        # A member is opened by path later: one the data roots refuse (a
+        # symbolic link resolving outside them, a hidden name) is not listed.
+        try:
+            _normalize_path(member)
+        except (PermissionError, OSError, ValueError):
+            return False
+        return True
+    return {"valid": True, **await asyncio.to_thread(snapshot_series, str(path), allowed)}
 
 
 class PointSampleRequest(BaseModel):
@@ -154,6 +184,9 @@ class PointSampleRequest(BaseModel):
     color_max: float | None = None
     max_points: int = Field(2_000_000, ge=1, le=10_000_000)
     filters: list[dict] = []
+    # Each row's size from this column (a smoothing length, issue #259):
+    # 16-bit codes of its log10 after the colours, X-Visivo-Size-Range.
+    size_field: str | None = None
     sky: dict | None = None            # as PointInfoRequest.sky
 
 
@@ -174,7 +207,7 @@ async def points_sample_bin(request: PointSampleRequest, _: None = _auth,
         chosen = tuple(a or d for a, d in zip(axes, table.axes)) if axes else None
         s = sample_points(table, request.max_points, chosen, request.color_field,
                           request.color_log, request.color_min, request.color_max,
-                          request.filters)
+                          request.filters, request.size_field)
         return s.encode(), {**headers(s), **_sky_headers(table)}
 
     try:

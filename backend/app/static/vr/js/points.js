@@ -113,8 +113,11 @@ export class FrameRowGovernor {
     this.holdUntil = Math.max(this.holdUntil, now + 750);
   }
 
-  /** The rows to draw from `current`; `frame`: recentFrames; `now`: ms. */
-  update(current, sampleRows, frame, targetHz, now) {
+  /** The rows to draw from `current`; `frame`: recentFrames; `now`: ms.
+   *  `riseCeiling` false (still under refined splat frames, #300): no clean
+   *  time is earned and the ceiling does not rise, so the count does not
+   *  probe above where it last missed. */
+  update(current, sampleRows, frame, targetHz, now, { riseCeiling = true } = {}) {
     const floor = Math.min(this.min, sampleRows);
     const clampRows = (v) => Math.round(Math.max(floor, Math.min(sampleRows, v)));
     if (now - this.lastUpdate > this.gapMs) this.cleanSince = null;   // not drawn meanwhile
@@ -141,8 +144,9 @@ export class FrameRowGovernor {
       return clampRows(current * f);
     }
     if (frame.missed > 0.02 || slow > 0.03 || median > 1.04 * period) { this.cleanSince = null; return clampRows(current); }
-    if (this.cleanSince === null) this.cleanSince = now;
-    if (Number.isFinite(this.ceiling) && now - this.cleanSince >= this.riseMs) {
+    if (!riseCeiling) this.cleanSince = null;
+    else if (this.cleanSince === null) this.cleanSince = now;
+    if (riseCeiling && Number.isFinite(this.ceiling) && now - this.cleanSince >= this.riseMs) {
       this.ceiling *= 1.5;
       this.cleanSince = now;
       this.lastRiseAt = now;
@@ -362,6 +366,8 @@ export function pointLook(p) {
       stereo_renderer: p.style === 'raytraced' ? 'raytrace' : 'splat',
       splat_rule: p.splatRule || 'v1' },
     { type: 'set_show_outline', visible: false },
+    // The box selection (issue #259), as the sample's filters.
+    { type: 'set_filters', filters: p.filters || [] },
   ];
 }
 
@@ -478,9 +484,15 @@ uniform float uC0;
 uniform float uC1;
 uniform vec3 uClipMin; // the spatial crop (#257), box fractions: aPos itself
 uniform vec3 uClipMax;
+// The box selection (#259), box fractions as the crop: 1 only inside, 2 all but inside.
+uniform vec3 uSelMin;
+uniform vec3 uSelMax;
+uniform int uSelMode;
 out float vT;
 void main() {
-  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))) {
+  bool inSel = all(greaterThanEqual(aPos, uSelMin)) && all(lessThanEqual(aPos, uSelMax));
+  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))
+      || (uSelMode == 1 && !inSel) || (uSelMode == 2 && inSel)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // outside the view volume: culled
     gl_PointSize = 1.0;
     vT = 0.0;
@@ -512,6 +524,7 @@ precision highp float;
 in vec2 aCorner;       // -1..1, the quad's corners
 in vec3 aPos;          // per splat: 0..1 over the bounds (normalised uint16)
 in float aVal;         // per splat: 0..1 colour code
+in float aSize;        // per splat: 0..1 size code (#259: log10 of a smoothing length)
 uniform mat4 uMV;
 uniform mat4 uP;
 uniform vec3 uLo;
@@ -523,19 +536,36 @@ uniform float uC0;
 uniform float uC1;
 uniform vec3 uClipMin;
 uniform vec3 uClipMax;
+uniform vec3 uSelMin;
+uniform vec3 uSelMax;
+uniform int uSelMode;
+// Splats sized by a column (#259, sim-controls.js sizedSplat): x on, y log10
+// of the smallest size, z the log span; uSizeMul turns a size into a factor of
+// uRadius. Each splat gives the uniform splat's light (vLight).
+uniform vec3 uSize;
+uniform float uSizeMul;
 out float vT;
 out float vSplat;
+out float vLight;
 out vec2 vD;
 void main() {
-  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))) {
+  bool inSel = all(greaterThanEqual(aPos, uSelMin)) && all(lessThanEqual(aPos, uSelMax));
+  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))
+      || (uSelMode == 1 && !inSel) || (uSelMode == 2 && inSel)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    vT = 0.0; vSplat = 0.0; vD = vec2(0.0);
+    vT = 0.0; vSplat = 0.0; vLight = 0.0; vD = vec2(0.0);
     return;
   }
   vec4 eye = uMV * vec4(uLo + aPos * uSpan, 1.0);
   vec4 c = uP * eye;
-  float px = uRadius / max(1e-4, -eye.z);
+  float f = uSize.x > 0.5 ? pow(10.0, uSize.y + aSize * uSize.z) * uSizeMul : 1.0;
+  float pxU = uRadius / max(1e-4, -eye.z);
+  float px = pxU * f;
   float sprite = clamp(px, 1.0, uMaxPx);
+  // The uniform splat's light over this one's, as drawn (clamped sprites,
+  // the sub-pixel factor): sim-controls.js lightFactor.
+  float cu = clamp(pxU, 1.0, uMaxPx);
+  vLight = uSize.x > 0.5 ? (cu * cu * max(min(pxU, 1.0), 0.25)) / (sprite * sprite * max(min(px, 1.0), 0.25)) : 1.0;
   // Half the width each side: sprite / 2 pixels = sprite / viewport in NDC.
   c.xy += aCorner * (sprite / uViewport) * c.w;
   gl_Position = c;
@@ -548,6 +578,7 @@ const SPLAT_FS = `#version 300 es
 precision highp float;
 in float vT;
 in float vSplat;
+in float vLight;
 in vec2 vD;
 uniform sampler2D uLut;
 uniform float uSolid;
@@ -555,7 +586,7 @@ uniform float uOpacity;
 out vec4 outColor;
 void main() {
   vec3 c = uSolid > 0.5 ? vec3(0.8, 0.85, 1.0) : texture(uLut, vec2(vT, 0.5)).rgb;
-  float g = exp(-0.5 * dot(vD, vD)) * uOpacity * max(vSplat, 0.25);
+  float g = exp(-0.5 * dot(vD, vD)) * uOpacity * max(vSplat, 0.25) * vLight;
   outColor = vec4(c * g, g);
 }`;
 
@@ -614,12 +645,14 @@ export class PointCloud {
     this.gl = gl;
     this.lut = lutTexture;
     this.prog = compile(gl, VS, FS, ['aPos', 'aVal']);
-    this.splatProg = compile(gl, SPLAT_VS, SPLAT_FS, ['aPos', 'aVal', 'aCorner']);
+    this.splatProg = compile(gl, SPLAT_VS, SPLAT_FS, ['aPos', 'aVal', 'aCorner', 'aSize']);
     this.resolveProg = compile(gl, RESOLVE_VS, RESOLVE_FS, []);
     this.vao = gl.createVertexArray();          // points: one vertex a row
     this.splatVao = gl.createVertexArray();     // splats: a quad a row (instanced)
     this.posBuf = gl.createBuffer();
     this.valBuf = gl.createBuffer();
+    this.sizeBuf = gl.createBuffer();            // splats' sizes (#259), when sent
+    this.hasSize = false;
     this.cornerBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.cornerBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -647,8 +680,9 @@ export class PointCloud {
    *  refined frames follow it (set_point_style splat_rule). */
   get splatRule() { return this.hdr ? (this.float32 ? 'v2-f32' : 'v2-f16') : 'v2-8bit'; }
 
-  /** Uploads a sample; returns the milliseconds it took (CPU side). */
-  upload(positions, colour) {
+  /** Uploads a sample (`size`: its size codes, #259, or null); returns the
+   *  milliseconds it took (CPU side). */
+  upload(positions, colour, size = null) {
     const gl = this.gl, t0 = performance.now();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
     gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
@@ -669,12 +703,24 @@ export class PointCloud {
         gl.enableVertexAttribArray(2);
         gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 8, 0);
         gl.vertexAttribDivisor(2, 0);
+        // Each splat's size code (#259), per instance; without one, the constant 0.
+        if (size) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.sizeBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, size, gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(3);
+          gl.vertexAttribPointer(3, 1, gl.UNSIGNED_SHORT, true, 2, 0);
+          gl.vertexAttribDivisor(3, 1);
+        } else {
+          gl.disableVertexAttribArray(3);
+        }
       }
     }
     gl.bindVertexArray(null);
+    if (!size) gl.vertexAttrib1f(3, 0);
+    this.hasSize = !!size;
     this.count = positions.length / 3;
     this.hasColour = !!colour;
-    this.bytes = positions.byteLength + (colour ? colour.byteLength : 2 * this.count);
+    this.bytes = positions.byteLength + (colour ? colour.byteLength : 2 * this.count) + (size ? size.byteLength : 0);
     return performance.now() - t0;
   }
 
@@ -713,7 +759,7 @@ export class PointCloud {
   /** Frees the GPU objects (a new cloud replaces this one). */
   dispose() {
     const gl = this.gl;
-    for (const b of [this.posBuf, this.valBuf, this.cornerBuf]) gl.deleteBuffer(b);
+    for (const b of [this.posBuf, this.valBuf, this.cornerBuf, this.sizeBuf]) gl.deleteBuffer(b);
     for (const v of [this.vao, this.splatVao, this.emptyVao]) gl.deleteVertexArray(v);
     if (this.acc) { gl.deleteFramebuffer(this.acc.fb); gl.deleteTexture(this.acc.tex); this.acc = null; }
   }
@@ -729,6 +775,11 @@ export class PointCloud {
     gl.uniform1f(u.uC1, p.c1);
     gl.uniform3fv(u.uClipMin, p.clip ? p.clip.min : [0, 0, 0]);
     gl.uniform3fv(u.uClipMax, p.clip ? p.clip.max : [1, 1, 1]);
+    // The box selection (#259): 1 only inside, 2 all but inside, 0 all.
+    const sel = p.sel && p.sel.box ? p.sel : null;
+    gl.uniform1i(u.uSelMode, sel ? (sel.mode === 'inside' ? 1 : sel.mode === 'outside' ? 2 : 0) : 0);
+    gl.uniform3fv(u.uSelMin, sel ? sel.box.min : [0, 0, 0]);
+    gl.uniform3fv(u.uSelMax, sel ? sel.box.max : [1, 1, 1]);
     gl.uniform1f(u.uSolid, this.hasColour ? 0 : 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.lut);
@@ -739,7 +790,9 @@ export class PointCloud {
    * One eye, into the current framebuffer and viewport. `p`: {box
    * (dataToModel), bounds, style (STYLES), pointPx, radius (data units),
    * opacity, c0, c1, viewportH, count (rows to draw), clip ({min, max} box
-   * fractions over the sample's bounds: the crop; none = all)}.
+   * fractions over the sample's bounds: the crop; none = all), size (splats
+   * by a column, sim-controls.js sizedSplat: {log, mul}; none = uniform), sel
+   * ({box, mode 'inside' | 'outside'}: the box selection, #259; none = all)}.
    */
   draw(view, model, p) {
     const gl = this.gl;
@@ -786,6 +839,9 @@ export class PointCloud {
     gl.uniform1f(u.uMaxPx, this.maxPx);
     gl.uniform2f(u.uViewport, vw, vh);
     gl.uniform1f(u.uOpacity, p.opacity);
+    const sized = !!(p.size && this.hasSize);
+    gl.uniform3fv(u.uSize, sized ? [1, p.size.log[0], p.size.log[1]] : [0, 0, 0]);
+    gl.uniform1f(u.uSizeMul, sized ? p.size.mul : 1);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE);
     gl.disable(gl.DEPTH_TEST);

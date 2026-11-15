@@ -207,8 +207,11 @@ the cropped pixels (*Moment 0 of the cropped field*, its x and y range under
 the title; the product saved for the desktop is the whole-field map of the
 same request). It is cut with the crop as it was when Moment was pressed, and
 cut again when the crop changes afterwards and stays still for a quarter of a
-second, with no new request (only while its window is shown; the colour
-range of that re-cut comes from a sample of 65 536 pixels). Box
+second, with no new request (only while its window is shown). The colour
+range of a re-cut is exact for Moments 0 and 2 (the lowest and highest
+finite pixel of the crop); the robust range of a velocity field (Moment 1)
+comes from at most 65 536 of the crop's finite pixels, or all of them when
+it has fewer, so a NaN-masked map with a compact source keeps its range. Box
 region and the PV slice take the velocity range. A lasso
 grows from its seed over the whole cube as on the desktop (its object is not
 cut at the crop), and a spectrum is the full band at its pixel. The crop of a
@@ -352,6 +355,11 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     a flat baseline. The percentile presets come from a sorted sample of a
     million of the drawn cube's values, so they are right on data spanning
     many decades too (the histogram's bins are only its picture).
+  - *A point table's Data page* (from *Data ▸*, #259): **Snapshot** *◂
+    Previous*, *Next ▸* (the numbered files beside it); **X**, **Y**, **Z**:
+    *◂*, the column, *▸*; **Splat size**: *Uniform*, *By hsml* (a smoothing
+    length), *Column ▸*; *Default axes*, *◂ Display*. See
+    [Simulation controls](data-types.md#simulation-controls-259).
   - *A point table*: **Colour by** (one chip per column, *none* first, then the
     velocity columns such as *VX*, *VY*, *VZ*, then the others; *more ▸* when
     there are more than fit, and the menu opens on the first page); **Scale, range**: *Log* and the colour
@@ -360,7 +368,8 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     still view is ray-traced by the backend, the default for a VBT point
     table), *Size −*, *Size +*;
     **Intensity** (splats and ray-traced); **Particles shown** (the next budget of rows),
-    *Sample again*, *Box and ticks*.
+    *Again* (sample again), *Box* (the box, its ticks and the colour bar),
+    *Data ▸*.
   - *A velocity field*: *Streamlines*, *Arrows*; **Arrow length**: *Shorter*,
     *Longer*; **Seed density**: *Fewer*, *More* (about ×1.4 a press, traced
     again at once), *Reseed streamlines*; **Colour by speed**: the colour
@@ -379,8 +388,11 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     *Spatial crop* trigger tool, as on a cube, and the sliders): the points
     and lines outside it are not drawn (a point table is not refined by the
     backend while it is cropped).
-- **Select** (a cube; greyed on point tables and velocity fields, whose
-  selections come with [#259](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/259))
+- **Select** (a cube; on a point table only the *Box select*, #259: drag a
+  box with the trigger, then *Show inside*, *Hide inside*, *Show all* under
+  **Result**, *Clear* to drop it, see
+  [Simulation controls](data-types.md#simulation-controls-259); greyed on
+  velocity fields)
   - **Tool**: *Kinematic Lasso*, *Spectrum probe*, *Box region*, with the palette's icons (the lasso is the tool on a
     first visit, so a galaxy is lassoed and isolated in two presses: Select,
     the trigger on it, *Isolate*; afterwards the last tool used, kept in the

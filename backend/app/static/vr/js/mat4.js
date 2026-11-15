@@ -9,7 +9,11 @@ export function identity() {
 }
 
 export function multiply(a, b) {
-  const o = new Float32Array(16);
+  return multiplyInto(new Float32Array(16), a, b);
+}
+
+/** a * b written into `o` (16 numbers, neither a nor b), with no allocation; returns o. */
+export function multiplyInto(o, a, b) {
   for (let c = 0; c < 4; c++) {
     for (let r = 0; r < 4; r++) {
       o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1]

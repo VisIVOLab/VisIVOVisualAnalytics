@@ -84,6 +84,9 @@ inline constexpr const char *SELECTED_COUNT = "X-Visivo-Selected-Count";
 inline constexpr const char *SELECTION_KIND = "X-Visivo-Selection-Kind";
 inline constexpr const char *SELECTION_SEQ = "X-Visivo-Selection-Seq";
 inline constexpr const char *SESSION = "X-Visivo-Session";
+inline constexpr const char *SIZE_FIELD = "X-Visivo-Size-Field";
+inline constexpr const char *SIZE_NOTE = "X-Visivo-Size-Note";
+inline constexpr const char *SIZE_RANGE = "X-Visivo-Size-Range";
 inline constexpr const char *SKY = "X-Visivo-Sky";
 inline constexpr const char *SOURCE = "X-Visivo-Source";
 inline constexpr const char *SPACING = "X-Visivo-Spacing";
@@ -106,7 +109,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 92> kAll = {
+inline constexpr std::array<const char *, 95> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -179,6 +182,9 @@ inline constexpr std::array<const char *, 92> kAll = {
     SELECTION_KIND,
     SELECTION_SEQ,
     SESSION,
+    SIZE_FIELD,
+    SIZE_NOTE,
+    SIZE_RANGE,
     SKY,
     SOURCE,
     SPACING,

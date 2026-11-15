@@ -102,8 +102,11 @@ export function rayAabb(o, d, lo, hi) {
  * cropped across the ray yet, e.g. a cube with only a velocity range seen
  * along the velocity axis: a drag there draws a crop).
  * `ray` and `tip` in model space; `scale` the model's metres per model unit.
+ * `empty`: the crop holds nothing of this table (one carried from another
+ * snapshot, #259): it has no dots and no inside, so anything draws a new one.
  */
-export function hitCrop(frame, clip, ray, { scale = 1, tip = null } = {}) {
+export function hitCrop(frame, clip, ray, { scale = 1, tip = null, empty = false } = {}) {
+  if (empty) return { kind: 'new' };
   const { o, d } = ray;
   const dd = M.dot(d, d);
   const r = HIT_M / scale;
@@ -250,6 +253,7 @@ export function clipChanged(a, b) {
 const EDGE = [0.55, 0.8, 1.0, 0.95];
 const EDGE_HOT = [1.0, 0.85, 0.25, 1.0];
 const PREVIEW = [1.0, 0.85, 0.25, 0.9];
+const EMPTY = [1.0, 0.42, 0.32, 0.9];
 
 /** The 12 edges of the box lo..hi (fractions) as model-space segments. */
 export function boxEdges(frame, lo, hi, color = EDGE) {
@@ -269,9 +273,13 @@ export function boxEdges(frame, lo, hi, color = EDGE) {
  * What the gizmo draws for `clip` with `hover` (a hitCrop result, or a drag):
  * {edges: model-space segments, faces: [{m (model-space matrix of the face
  * quad, centred), size [w, h]}] for the fill, handles: [{id, point (model),
- * hot}], fillHot (the inside is pointed at)}.
+ * hot}], fillHot (the inside is pointed at), empty}.
+ * `empty` (a crop carried from another snapshot that lies wholly outside this
+ * table, #259): `clip` is then the whole box only as a placeholder, so it is
+ * not drawn as a crop: the table's outline in red, no fill and no dots.
  */
-export function gizmo(frame, clip, hover = null) {
+export function gizmo(frame, clip, hover = null, { empty = false } = {}) {
+  if (empty) return { edges: boxEdges(frame, [0, 0, 0], [1, 1, 1], EMPTY), faces: [], handles: [], fillHot: false, empty: true };
   const hotId = hover && hover.kind === 'face' ? hover.id : hover && hover.id ? hover.id : null;
   const moving = hover && (hover.kind === 'inside' || hover.kind === 'move');
   const edges = boxEdges(frame, clip.min, clip.max, moving ? EDGE_HOT : EDGE);
@@ -285,7 +293,7 @@ export function gizmo(frame, clip, hover = null) {
     return { id: faceId(f), m: new Float32Array([...ex, 0, ...ey, 0, ...ez, 0, ...c, 1]), size: [Math.abs(hi[u] - lo[u]), Math.abs(hi[v] - lo[v])] };
   });
   const handles = handlePoints(clip, frame).map((h) => ({ id: h.id, point: toModel(frame, h.p), hot: h.id === hotId }));
-  return { edges, faces, handles, fillHot: !!moving };
+  return { edges, faces, handles, fillHot: !!moving, empty: false };
 }
 
 /** The new crop being drawn, as segments (the drag's preview before it is let go). */

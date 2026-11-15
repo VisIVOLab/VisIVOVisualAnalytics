@@ -33,6 +33,7 @@ import * as TP from './tool-palette.js';
 import * as W from './windows.js';
 import * as RO from './readout.js';
 import * as CG from './crop-gizmo.js';
+import * as CB from './colour-bar.js';
 // The wrist cards and the toasts (issue #256).
 import * as WR from './wrist.js';
 import { HandTracker } from './hands.js';
@@ -505,6 +506,13 @@ layers = createLayers({
     : (isHeadsetBrowser(navigator.userAgent) ? 'f16' : 'auto'),
   onLayer: (detail) => reportProduct(null, detail),   // issue #237: a catalogue over the cube
   sourceDecor: () => (sources ? sources.decor() : null),   // issue #279: flags, culling, the current source
+  // The next snapshot of a series is on show (#259): its path is the page's now.
+  // A new snapshot: the steps of the one before (crops and boxes in its own
+  // fractions) no longer apply, and a crop drag begun on it is dropped.
+  onSnapshot: (path) => {
+    state.openPath = path; ui.crop.drag = null; finishSelBoxDrag(); ui.undo.clear();
+    toast(`Snapshot: ${HUB.fileName(path)}`, 'snapshot');
+  },
 });
 
 // The source list (issue #279): the catalogue's sources to browse, visit, classify and send.
@@ -577,6 +585,7 @@ for (const [i, axis] of ['x', 'y', 'z'].entries()) {
         if (end === 'min') state.clip.min[i] = state.clip.max[i] - 0.01;
         else state.clip.max[i] = state.clip.min[i] + 0.01;
       }
+      layers.clipChanged();       // a crop carried empty from another snapshot is gone (#259)
       rebuildDecorations();
       updateLabels();
     });
@@ -1711,6 +1720,7 @@ const ui = {
   pin: null,           // the pinned readout: {p} (box coordinates)
   sliding: null,       // the menu slider held: one undo step per drag
   crop: { hover: null, drag: null, key: '' },   // the Spatial crop tool's box (#277, crop-gizmo.js): pointed at, dragged
+  psel: { hover: null, drag: null, g: null },   // a point table's box selection (#259): pointed at, dragged; its gizmo kept
   hit: null,           // where the primary ray meets the menu or a window: {point, model}
   busy: { busy: '', error: '' },   // the tools' state last frame, for the haptics
 };
@@ -1761,6 +1771,7 @@ function setMode(m) {
   ui.mode = m;
   $('ui-mode').value = m;
   finishCropDrag();
+  finishSelBoxDrag();
   ui.pin = null;
 }
 function setClipTool(t) { ui.clipTool = t; finishCropDrag(); }
@@ -1779,7 +1790,9 @@ function lookKind() { return state.cube ? 'cube' : layers.hasScene() ? layers.mo
 function lookSnapshot() {
   const kind = lookKind();
   const clip = { min: [...state.clip.min], max: [...state.clip.max] };
-  if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState() };
+  // An empty crop carried from another snapshot (#259) is kept with the step:
+  // the whole box in `clip` is only its placeholder.
+  if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState(), cropEmpty: layers.cropEmpty };
   return { kind, thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
     mode: state.mode, stretch: state.stretch, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState() };   // the catalogue's toggles too
 }
@@ -1787,6 +1800,7 @@ function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
   // A crop drag under way ends first (#277 review): its step is the one undone.
   finishCropDrag();
+  finishSelBoxDrag();             // and a box selection's drag (#259), likewise
   const s = ui.undo.pop();
   if (!s) { buzz('primary', 'error'); return false; }
   // A step of other data (a history left from before a switch) is not applied.
@@ -1796,6 +1810,7 @@ function undo() {
     setColormap(s.colormap);
     layers.restoreUndo(s.layer);
     decorationsChanged();
+    layers.keepCropEmpty(s.cropEmpty);
     return true;
   }
   if (s.thrSource && s.thrSource !== $('thr-source').value) {
@@ -1980,7 +1995,7 @@ function menuContext() {
     mask: (() => { const v = masks.view(); return { loaded: v.loaded, shown: masks.state.shown, picking: v.picking, canUndo: v.canUndo, canSave: v.canSave }; })(),
     src: { total: sources.view().total, shown: sources.state.shown, canAdd: !!((s.lasso && !s.lasso.received) || s.spectrum || (s.pick && s.pick.seed)) },
     meas: { lasso, moment: av.moment, pvArmed: av.pvArmed, spectrum: !!s.spectrum, pinned: selection.hasPin() },
-    pts: lc.pts, flow: lc.flow,
+    pts: lc.pts, flow: lc.flow, sim: lc.sim,
     more: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud },
     dbg: { governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScale: `${refiner.o.scale}×`,
       record: measure.recording, run: measure.running ? 'Cancel run' : 'Run protocol', thrSource: $('thr-source').value },
@@ -2078,6 +2093,7 @@ function menuLayout() {
   const ctx = menuContext();
   if (ui.page === 'debug' && !ctx.debug) ui.page = 'more';
   if (ui.page === 'levels' && ctx.kind !== 'cube') ui.page = 'display';
+  if (ui.page === 'data' && ctx.kind !== 'points') ui.page = 'display';
   menu.ctx = ctx;
   menu.spec = HM.pageSpec(ui.page, ctx);
   menu.pointer.layout = HM.menuLayout(ui.page, ctx);
@@ -2436,6 +2452,10 @@ function applyMenu(a, ray = null, eye = null) {
   }
   if (id === 'levels-page') { ui.page = 'levels'; return; }
   if (id === 'levels-back') { ui.page = 'display'; return; }
+  // A point table's Data page (#259) and its box selection's Clear.
+  if (id === 'pt-data') { ui.page = 'data'; return; }
+  if (id === 'data-back') { ui.page = 'display'; return; }
+  if (id === 'sel-clear' && dataKind() === 'points') { pushUndo(); finishSelBoxDrag(); layers.press('psel-clear', w); return; }
   // A point table's or a field's look (not a new sample or new lines): one undo step.
   if (layers.undoable(id, w)) pushUndo();
   if (layers.press(id, w)) return;
@@ -2517,6 +2537,7 @@ function menuSlide(a) {
 
 /** The clipping box changed: its lines and labels (throttled in VR). */
 function decorationsChanged() {
+  layers.clipChanged();         // an empty crop carried from another snapshot is gone (#259)
   if (xr) { xr.slabDirty = true; xr.labelsDirty = true; } else { rebuildDecorations(); updateLabels(); }
 }
 function labelsChanged() {
@@ -2748,14 +2769,117 @@ function cropPointer(worldRay, pressed, edge, tipWorld = null) {
     }
     finishCropDrag();
   }
-  c.hover = ray ? CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), tip }) : null;
+  // A crop carried empty from another snapshot (#259) has no dots and no
+  // inside: anything draws a new one.
+  const empty = layers.cropEmpty;
+  c.hover = ray ? CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), tip, empty: !!empty }) : null;
   if (edge && ray && c.hover) {
     const d = CG.startDrag(c.hover, state.clip, ray, f, tip);
     // The look before the drag, kept: an undo step only if the drag changes the crop.
-    if (d) { d.undo = lookKind() ? lookSnapshot() : null; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
+    if (d) { d.undo = lookKind() ? lookSnapshot() : null; d.empty = empty; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
   }
   return !!c.drag;
 }
+// ── A point table's box selection (issue #259) ──────────────────────────────
+// With Select → Box select on a point table the trigger draws a box across the
+// particles as a new crop is drawn (crop-gizmo.js: two corners across the
+// axes facing the ray, the crop's depth kept), and its dots and inside move
+// its faces and the box, as the crop's. The menu then shows only the inside,
+// all but it, or all (a test in the points' shader; the backend's frames get
+// the same box as a filter).
+
+/** Is the Box select on, over a point table? */
+function pointsBoxOn() { return ui.mode === 'select' && dataKind() === 'points' && !!cropFrame(); }
+
+/** The box selection under the ray this frame (as cropPointer). */
+function selBoxPointer(worldRay, pressed, edge, tipWorld = null) {
+  const c = ui.psel;
+  const f = cropFrame();
+  if (!f) { c.hover = null; c.drag = null; return false; }
+  const ray = worldRay ? CG.modelRay(state.model, worldRay) : null;
+  const tip = tipWorld ? M.transformPoint(M.invert(state.model), tipWorld) : null;
+  if (c.drag) {
+    if (pressed) {
+      if (ray) layers.setSelBox(CG.dragCrop(c.drag, ray, f, tip));
+      return true;
+    }
+    finishSelBoxDrag();
+  }
+  const box = layers.selBox;
+  // No box yet: anything starts a new one.
+  c.hover = ray ? (box ? CG.hitCrop(f, box, ray, { scale: M.uniformScale(state.model), tip }) : { kind: 'new' }) : null;
+  if (edge && ray && c.hover) {
+    // A new box keeps the crop's depth along the ray (its other axes drawn).
+    const d = CG.startDrag(c.hover, box || state.clip, ray, f, tip);
+    if (d) { d.undo = lookKind() ? lookSnapshot() : null; d.prev = box; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
+  }
+  return !!c.drag;
+}
+/** A box selection drag ends: a new box too small is dropped (the box before
+ *  stays), and the drag is one undo step when it changed the box. */
+function finishSelBoxDrag() {
+  const d = ui.psel.drag;
+  if (!d) return;
+  ui.psel.drag = null;
+  const now = layers.selBox;
+  const end = now ? CG.endDrag(d, now, cropFrame()) : null;
+  const dropped = d.kind === 'new' && end && !CG.clipChanged(end, d.clip0);
+  const box = dropped || !end ? d.prev : end;
+  layers.setSelBox(box ? { min: [...box.min], max: [...box.max] } : null);
+  if (d.undo && (!d.prev ? !!box : !box || CG.clipChanged(d.prev, box))) ui.undo.push(d.undo);
+  if (!d.prev && box) toast('Box drawn: Select → Show inside or Hide inside.', 'psel');
+}
+/** The box selection for one eye: its edges (green), and while the tool is on
+ *  its dots. The gizmo and its lines are rebuilt only when the box, what is
+ *  pointed at, the table's box or the tool changes (no per-frame key). */
+function drawSelBox(v, eye) {
+  const box = layers.selBox;
+  const c = ui.psel;
+  if (!box || !layers.state.box) { if (c.g) { R.setLines([], R.pselLines); c.g = null; c.box = null; } return; }
+  const on = pointsBoxOn();
+  const hover = on ? c.drag || c.hover : null;
+  const hk = hover ? hover.id || hover.kind : '';
+  const newDrag = !!(c.drag && c.drag.kind === 'new');
+  if (!c.g || c.box !== box || c.hk !== hk || c.of !== layers.state.box || c.on !== on || c.newDrag !== newDrag) {
+    const f = cropFrame();
+    c.g = CG.gizmo(f, box, hover);
+    const green = [0.45, 1.0, 0.55, 0.95];
+    R.setLines(newDrag ? CG.previewEdges(f, box) : c.g.edges.map((e) => ({ ...e, color: hover && hover.kind !== 'new' ? e.color : green })), R.pselLines);
+    Object.assign(c, { box, hk, of: layers.state.box, on, newDrag });
+  }
+  R.drawLines(v, state.model, R.pselLines);
+  if (!on) return;
+  for (const h of c.g.handles) {
+    const p = M.transformPoint(state.model, h.point);
+    const s = h.hot ? CG.HANDLE_M * 1.5 : CG.HANDLE_M;
+    R.drawPanel(v, RO.faceEye(p, eye), cropTexture(h.hot ? 'dotHot' : 'dot'), [s, s]);
+  }
+}
+
+// ── The colour bar of a point table or a velocity field (issue #259) ────────
+const colourBar = { canvas: null, tex: null, bar: null, cmap: '' };
+/** The bar beside the box's lower corner, turned to the eye; redrawn and
+ *  uploaded only when it changes (a 2-D texture). */
+function drawColourBar(v, eye) {
+  if (state.cube || !layers.hasScene() || !layers.state.s.box) return;
+  const bar = layers.colourBar();          // the same object while it is unchanged
+  if (!bar) return;
+  if (!colourBar.tex) {
+    colourBar.canvas = Object.assign(document.createElement('canvas'), { width: CB.BAR_PX[0], height: CB.BAR_PX[1] });
+    colourBar.tex = R.createPanel();
+  }
+  if (bar !== colourBar.bar || state.colormap !== colourBar.cmap) {
+    CB.drawColourBar(colourBar.canvas.getContext('2d'), { ...bar, lut: colormapTable(state.colormap) });
+    R.updatePanel(colourBar.tex, colourBar.canvas);
+    colourBar.bar = bar;
+    colourBar.cmap = state.colormap;
+  }
+  const e = layers.state.box.extent;
+  const corner = M.transformPoint(state.model, [e[0] / 2, -e[1] / 2, e[2] / 2]);
+  const m = M.multiply(RO.faceEye(corner, eye), M.translation(CB.BAR_SIZE[0] / 2 + 0.02, -CB.BAR_SIZE[1] / 2, 0));
+  R.drawPanel(v, m, colourBar.tex, CB.BAR_SIZE);
+}
+
 /** A crop drag ends (the trigger let go, or the tool, mode or data changed
  *  under it, #277 review): a new crop too small is dropped, and the drag is
  *  one undo step only when it changed the crop. */
@@ -2768,6 +2892,9 @@ function finishCropDrag() {
   if (d.undo && CG.clipChanged(d.clip0, end)) ui.undo.push(d.undo);
   state.clip = end;
   decorationsChanged();
+  // A click that drew no crop leaves an empty carried crop as it was (the
+  // drag's first frames cleared it), never the whole table (#259 review).
+  if (d.empty && !CG.clipChanged(d.clip0, end)) layers.keepCropEmpty(d.empty);
   labelsChanged();
 }
 
@@ -2797,9 +2924,11 @@ function drawCropGizmo(v, eye) {
   if (!cropToolOn()) return;
   const f = cropFrame();
   const hover = ui.crop.drag || ui.crop.hover;
-  const g = CG.gizmo(f, state.clip, hover);
+  // An empty carried crop (#259): the table's outline in red, no dots, no fill.
+  const empty = !!layers.cropEmpty;
+  const g = CG.gizmo(f, state.clip, hover, { empty });
   // The lines only when the box or what is pointed at changed.
-  const key = JSON.stringify([state.clip, hover && (hover.id || hover.kind), f]);
+  const key = JSON.stringify([state.clip, hover && (hover.id || hover.kind), f, empty]);
   if (key !== ui.crop.key) {
     // (A planar table's flat axis has no dots: gizmo() leaves them out.)
     R.setLines(ui.crop.drag && ui.crop.drag.kind === 'new' ? CG.previewEdges(f, state.clip) : g.edges, R.cropLines);
@@ -2882,6 +3011,7 @@ let pressAt = null;
 let mouseOnPanel = false;      // a press on the menu or a window (?panel3d)
 let mouseOnCard = false;
 let mouseOnCrop = false;       // a press on the crop box (#277): the crop is dragged
+let mouseOnSel = false;        // a press on a point table's box selection (#259)
 /** The message card in the desktop view (?panel3d) takes the mouse first. */
 function cardMouse(e, pressed) {
   return !xr && ui.desktop && shell.cardPointer(mouseWorldRay(e), pressed);
@@ -2898,10 +3028,22 @@ canvas.addEventListener('pointerdown', (e) => {
     // The crop (#277) with the mouse: a dot or the inside is dragged; with
     // Shift held a drag elsewhere draws a new crop; any other drag turns the view.
     const f = cropFrame(), ray = CG.modelRay(state.model, mouseWorldRay(e));
-    const hit = CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model) });
+    // (An empty crop carried from another snapshot has no dots: #259.)
+    const hit = CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), empty: !!layers.cropEmpty });
     if (hit.kind !== 'new' || e.shiftKey) {
       mouseOnCrop = true;
       cropPointer(mouseWorldRay(e), true, true);
+      return;
+    }
+  }
+  if (!xr && pointsBoxOn()) {
+    // The box selection (#259) with the mouse, as the crop: Shift and a drag draw a new box.
+    const f = cropFrame(), ray = CG.modelRay(state.model, mouseWorldRay(e));
+    const box = layers.selBox;
+    const hit = box ? CG.hitCrop(f, box, ray, { scale: M.uniformScale(state.model) }) : { kind: 'new' };
+    if (hit.kind !== 'new' || e.shiftKey) {
+      mouseOnSel = true;
+      selBoxPointer(mouseWorldRay(e), true, true);
       return;
     }
   }
@@ -2912,7 +3054,9 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (cardMouse(e, mouseOnCard) || mouseOnCard) return;
   if (mouseOnCrop) { cropPointer(mouseWorldRay(e), true, false); return; }
+  if (mouseOnSel) { selBoxPointer(mouseWorldRay(e), true, false); return; }
   if (!xr && !dragging && cropToolOn()) cropPointer(mouseWorldRay(e), false, false);
+  if (!xr && !dragging && pointsBoxOn()) selBoxPointer(mouseWorldRay(e), false, false);
   if (!xr && (mouseOnPanel || !dragging)) {
     const onPanel = uiPointer(mouseWorldRay(e), mouseOnPanel, camEye());
     if (mouseOnPanel) return;
@@ -2928,6 +3072,7 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   if (mouseOnCard) { mouseOnCard = false; cardMouse(e, false); cardMouse(e, false); return; }
   if (mouseOnCrop) { mouseOnCrop = false; cropPointer(mouseWorldRay(e), false, false); return; }
+  if (mouseOnSel) { mouseOnSel = false; selBoxPointer(mouseWorldRay(e), false, false); return; }
   if (mouseOnPanel) {
     mouseOnPanel = false;
     if (!xr) { uiPointer(mouseWorldRay(e), false, camEye()); uiPointer(mouseWorldRay(e), false, camEye()); }
@@ -3026,6 +3171,8 @@ function desktopFrame(time) {
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
   else if (layers.hasScene()) layers.drawScene(lastDesktopView, 0, h);
   drawCropGizmo(lastDesktopView, camEye());
+  drawSelBox(lastDesktopView, camEye());
+  drawColourBar(lastDesktopView, camEye());
   if (ui.desktop) {
     // The headset's menu and result windows (issue #201), used with the mouse.
     menuLayout();
@@ -3233,7 +3380,9 @@ function hubLook(id) {
     opacity: state.opacity, gamma: state.gamma, stretch: state.stretch, mode: state.mode, zStretch: state.zStretch, datasetId: id });
 }
 function hubClip(id) {
-  if (!state.cube || !state.open || !state.info || !state.info.full_shape) return null;
+  // Only a cube's clip is reported (a point table has no state.cube); an empty
+  // crop carried from another snapshot (#259) is never sent as the whole box.
+  if (!state.cube || !state.open || !state.info || !state.info.full_shape || layers.cropEmpty) return null;
   return HUB.clipPayload(HUB.voxelBox(state.clip, state.info.full_shape), id);
 }
 
@@ -3864,9 +4013,14 @@ function handleInput(frame, dtS) {
   if (act('primary', 'trigger') === 'clip-drag' && cropToolOn()) {
     // The crop (#277), on any data shown: a drag under way keeps the ray even over a panel.
     cropPointer(ui.crop.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
+  } else if (pointsBoxOn()) {
+    // A point table's box selection (#259), as the crop.
+    selBoxPointer(ui.psel.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
   } else {
     ui.crop.hover = null;
     finishCropDrag();
+    ui.psel.hover = null;
+    finishSelBoxDrag();
     if (trigEdge && boxRay) primaryAct(act('primary', 'trigger'), boxRay);
   }
 
@@ -4124,6 +4278,8 @@ function onXRFrame(time, frame) {
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
     drawCropGizmo(v, M.position(view.transform.matrix));
+    drawSelBox(v, M.position(view.transform.matrix));
+    drawColourBar(v, M.position(view.transform.matrix));
     if (!asLayers) for (const o of overlays) R.drawPanel(v, o.model, o.handle, o.size);
     R.drawModels(v, modelDraws, modelDrawCount);   // the real controller models
     R.drawMesh(v);            // the page's own controllers and the hands (models.js)
@@ -4518,6 +4674,8 @@ if (query.has('debug')) {
   window.__vrMeasure = { measure, start: (opts) => startOrCancelRun(opts) };
   window.__vrLink = linkState;
   window.__vrState = state;
+  // The page's backend handle, for checks that ask it what the page asked (?debug only).
+  window.__vrBackend = () => { try { return ensureBackend(); } catch { return null; } };
   window.__vrGL = gl;
   // Issue #226: the XR session's state (fake-XR checks), the renderer's GPU
   // textures, the one-page state.
@@ -4579,7 +4737,9 @@ if (query.has('debug')) {
     gl.viewport(0, 0, w, h);
     gl.clearColor(...DESKTOP_BG, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    R.drawVolume(desktopView(), state.model, volParams());
+    // The cube; a point table or a field (#259) with its own drawing (the box too, when shown).
+    if (state.cube) R.drawVolume(desktopView(), state.model, volParams());
+    else if (layers.hasScene()) layers.drawScene(desktopView(), 0, h);
     const px = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
     const bg = DESKTOP_BG.map((v) => Math.round(v * 255));
@@ -4683,6 +4843,13 @@ if (query.has('debug')) {
     get: () => ({ on: cropToolOn(), clip: JSON.parse(JSON.stringify(state.clip)), hover: ui.crop.hover ? ui.crop.hover.id || ui.crop.hover.kind : null,
       drag: ui.crop.drag ? ui.crop.drag.kind : null, lines: R.cropLines.count, sentClip: hub.st && hub.st.sent ? hub.st.sent.clip || 0 : 0 }),
     world: (t) => { const f = cropFrame(); return f ? Array.from(M.transformPoint(state.model, CG.toModel(f, t))) : null; },
+    /** What the gizmo draws now (#259 review: an empty carried crop is not the whole table). */
+    gizmo: () => {
+      const f = cropFrame();
+      if (!f) return null;
+      const g = CG.gizmo(f, state.clip, null, { empty: !!layers.cropEmpty });
+      return { empty: g.empty, handles: g.handles.length, faces: g.faces.length, edges: g.edges.length, edgeColour: g.edges[0] && g.edges[0].color };
+    },
     /** A box fraction as a page pixel in the desktop view. */
     screen: (t) => {
       const f = cropFrame();
@@ -4888,6 +5055,8 @@ function rebuildGraphics() {
     refiner.weight = 0;
     menu.key = '';
     for (const w of Object.values(wins)) w.barKey = '';
+    colourBar.bar = null;            // its texture was on the lost context (#259)
+    ui.psel.g = null;
     for (const k of [readout.live, readout.pin]) k.key = '';
     for (const k of Object.values(wristCards)) { k.key = ''; k.level = -1; }
     toastCard.id = -1;

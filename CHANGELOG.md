@@ -47,6 +47,46 @@ are preserved here unedited; the branch names they refer to are historical.
   check drives it with the controller; `catalogue_pixels` now also answers
   `source_frame` and each source's `row`.
 
+- **VR: controls for simulation data (#259).** A point table's Display tab
+  gets *Data ▸*: *◂ Previous* / *Next ▸* step through the numbered snapshots
+  beside the file (new `/v1/points/series`; no time-series model, each
+  snapshot is a file opened as any table, keeping the columns, colour, crop,
+  selection and view), *X/Y/Z* choose the position columns, and *Splat size*
+  sizes each splat by a smoothing-length column (σ = h/√2, the ray-traced
+  renderer's kernel, light kept per splat; `sample_bin` gains `size_field`,
+  16-bit log codes). A colour bar beside the box carries the column's unit
+  (`/v1/points/info` gains `units` from the catalogue's file). The Select tab
+  has a *Box select* for particles (drawn and grabbed as the crop): *Show
+  inside*, *Hide inside*, *Show all*, tested in the point shader and sent to
+  the refined frames as a new `box` filter (`filters`, `set_filters`). Pure
+  logic in `sim-controls.js` and `colour-bar.js`, unit-tested; a headless
+  check in `validation/vr_sim_controls.mjs`.
+
+- **VR: a re-cut moment keeps its colour range on sparse maps, and the splat
+  row governor no longer stays frozen while still (#300).** When the crop of
+  a whole-field moment changes, Moments 0 and 2 now take their exact finite
+  range again (one pass, no sort), and Moment 1's robust range is measured
+  on up to 65 536 of the crop's finite pixels, all of them when there are
+  fewer. Before, a strided sample of a NaN-masked 2048² map with a 13×10
+  source gave [10, 16] for all three orders instead of [5, 17] (Moments 0
+  and 2) and [-6.8, 28.8] (Moment 1), and a sample with no finite value gave
+  [0, 1]. A re-cut of a 2048² map takes 2.5–10 ms for Moments 0 and 2 and
+  11–36 ms for Moment 1 on an M-series Mac. While a still view is refined,
+  the splat row governor still cuts at once, but its ceiling no longer rises
+  and the rows do not grow while a refined frame is on its way or fading in.
+  Under a frame shown in full that does not cover the view (a particle close
+  to the eye), the rows rise at most one step per frame, after it has been
+  shown for 5 s. Each step drops the frame on show, because the frame is
+  drawn for the same rows. Before, the rows stayed at their last cut until
+  the user moved. Simply lifting that hold would have dropped the refined
+  frame every 20 s for good, 26 times in 120 s in the modelled case, against
+  5 times in the first 20 s now. A frame whose depth image is empty (no particle in its
+  view) is tested for coverage at the centre plane, where it is warped, so
+  the splats under it are skipped as under any other covering frame. The
+  coverage test is prepared once per shown frame and eye (about 470 → 144 ns
+  per eye and frame, no garbage), and the moment window's per-frame crop
+  check compares six numbers instead of building a JSON key.
+
 - **VR: the threshold in multiples of the noise, the cube's spectral
   information, stretches and a histogram (#258).** The headset now knows the
   full cube's noise σ, measured exactly as the desktop's *Estimate Noise*

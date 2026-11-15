@@ -11,6 +11,7 @@ import * as PT from './points.js';
 import * as RF from './refine.js';
 import * as FL from './flow.js';
 import * as CT from './catalogue.js';
+import * as SC from './sim-controls.js';
 import { colormapTable } from './colormaps.js';
 import { niceTicks } from './volume.js';
 import { skyOf } from './pairing.js';
@@ -73,6 +74,52 @@ function fmt(v) {
  *  view on every side (about 3° on a Quest 3 eye), 12 % more pixels. */
 export const REFINE_OVERSCAN = 0.06;
 
+/** How long a refined splat frame stays shown whole over a still view
+ *  before the rows may rise one step (#300): each step changes the look, so
+ *  the frame on show is dropped and asked for again. */
+export const STILL_GROW_MS = 5000;
+
+/**
+ * When the splat row governor may raise the rows and its ceiling (#297,
+ * #300), from the refiner's state each display frame: `step(now, splats,
+ * refineOn, motion, status, weight)` returns {grow, riseCeiling} (one
+ * object, reused: no allocation per frame). Moving,
+ * with points, or with no refined frame to come (refinement off, not
+ * connected): both. Still and refining splats, cuts always apply but:
+ * - the ceiling never rises: the count does not probe above where it last
+ *   missed while a still view is being refined;
+ * - no growth while a frame is on its way ('waiting') or fading in or out
+ *   (weight < 1): a row step changes the look (lookKey, the refiner's
+ *   version) and drops that frame;
+ * - with a frame shown whole that does not cover the view (a particle close
+ *   to the eye), growth only after STILL_GROW_MS of it: at most one step per
+ *   frame shown (the step drops it, and the time starts again), so the rows
+ *   recover from a cut without the refined frame flickering away four times a
+ *   second, nor staying at the cut until the user moves.
+ */
+export class RowGrowthGate {
+  constructor(growMs = STILL_GROW_MS) {
+    this.growMs = growMs;
+    this.fullSince = null;
+    this.out = { grow: true, riseCeiling: true };
+  }
+
+  step(now, splats, refineOn, motion, status, weight) {
+    const whole = status === 'refined' && weight >= 1;
+    if (!whole) this.fullSince = null;
+    else if (this.fullSince === null) this.fullSince = now;
+    const o = this.out;
+    if (!(splats && refineOn && motion === 'still') || (status !== 'waiting' && status !== 'refined')) {
+      o.grow = true;
+      o.riseCeiling = true;
+    } else {
+      o.grow = whole && now - this.fullSince >= this.growMs;
+      o.riseCeiling = false;
+    }
+    return o;
+  }
+}
+
 export function createLayers(ctx) {
   const { gl, R, state, $ } = ctx;
   let lut = gl.createTexture();
@@ -88,10 +135,26 @@ export function createLayers(ctx) {
       // The menu (#257): the box and its ticks shown, the velocity field's
       // colour range (fractions of its speed range), the page of column chips.
       box: true, flC0: 0, flC1: 1, fieldPage: 0,
+      // Simulation controls (#259): splats sized by a column (a smoothing
+      // length), and the box selection ({min, max} fractions over the sample's
+      // bounds, as the crop) with what it shows: all, inside or outside.
+      sizeOn: false, sizeField: null, selBox: null, selMode: 'all',
     },
     box: null, info: null, load: {}, error: '',
+    // Snapshot steps (#259): the newest step's token, the series it moves to,
+    // a press waiting for the series; size columns with no positive value.
+    stepToken: 0, stepTarget: null, pendingStep: 0, badSize: new Set(),
+    // carry: the crop and box (table units) a burst of steps takes from the
+    // last snapshot on show; cropEmpty / selEmpty: a crop or box (table
+    // units) that lies wholly outside the snapshot on show.
+    carry: null, cropEmpty: null, selEmpty: null,
   };
   let cloud = null, lines = null;
+  // The colour bar's description, kept while what it shows is the same (#259).
+  const barCache = { of: null, c0: NaN, c1: NaN, bar: null };
+  // Whether the refined frame on show covers each eye, its warp prepared once
+  // per shown frame and eye (#300: no allocation per display frame).
+  const coverCache = RF.createCoverCache();
   let scene = 0, linesRequest = 0, overlayRequest = 0;
   let linesAbort = null;
   function invalidateRequests() {
@@ -218,6 +281,7 @@ export function createLayers(ctx) {
     const body = { dataset_id: p.datasetId, max_points: L.s.budgetRows,
       color_field: L.s.colourField, color_log: L.s.autoLog ? null : L.s.colourLog,
       x: p.axes[0], y: p.axes[1], z: p.axes[2] };
+    if (L.s.sizeOn && L.s.sizeField) body.size_field = L.s.sizeField;
     // A sky catalogue placed as the desktop window places it (issue #260).
     if (p.sky) body.sky = p.sky;
     // Through the page's Backend, as every request (api.js), so a prefix or
@@ -240,10 +304,18 @@ export function createLayers(ctx) {
     const tBody = performance.now();
     const info = PT.sampleInfo((k) => resp.headers.get(k));
     const arr = PT.sampleArrays(buf, info);
+    // Each row's size (#259), after the colours.
+    const size = SC.sizeInfo((k) => resp.headers.get(k));
+    arr.size = size ? SC.sizeArray(buf, info.count, !!arr.colour) : null;
     load.check?.();
     load.commit?.();
     if (!cloud) cloud = new PT.PointCloud(gl, lut, { target: ctx.splatTarget || 'auto' });
-    const up = cloud.upload(arr.positions, arr.colour);
+    const up = cloud.upload(arr.positions, arr.colour, arr.size);
+    p.size = arr.size ? size : null;
+    // A size column with no positive value: uniform splats, and said (#259 review).
+    const sizeNote = resp.headers.get('X-Visivo-Size-Note') || '';
+    p.sizeNote = sizeNote;
+    if (sizeNote && L.s.sizeField) L.badSize.add(L.s.sizeField);
     L.s.autoLog = false;
     L.s.colourLog = info.colourLog;
     logBox.checked = info.colourLog;
@@ -256,14 +328,32 @@ export function createLayers(ctx) {
     p.govRows = info.count;
     p.govSplats = null;           // set on the first frame (the style's start)
     p.frameGov = new PT.FrameRowGovernor();
+    p.growGate = new RowGrowthGate();
     L.box = PT.dataToModel(info.bounds);
     L.load = { requestMs: tBody - t1, uploadMs: up, mb: buf.byteLength / 1e6, totalMs: performance.now() - t0 };
     state.extent = L.box.extent;
     decorate(PT.axisTitles(p.axes));
-    ctx.refiner.setDataset(p.datasetId);
+    p.refinerSwitch = ctx.refiner.setDataset(p.datasetId);
   }
 
-  async function openPoints(b, { datasetId, path, sky = null }, load = {}) {
+  /**
+   * Opens a point table (`datasetId`: one the session holds, else `path`;
+   * `sky`: a sky catalogue's placement, #260). A snapshot step (#259) passes
+   * `keep` (what to carry over), `series` (the series moved on by one: no new
+   * /series request) and `token` (the step's; a step overtaken by a newer one
+   * installs nothing and closes what it opened). A dataset the page opened
+   * itself is `own`: when a step replaces it, it is closed (DELETE), never one
+   * the desktop opened.
+   */
+  async function openPoints(b, { datasetId, path, sky = null, keep = null, series = null, token = 0, gen = 0 }, load = {}) {
+    const own = !datasetId;
+    // A table opened afresh (not a step) overtakes any step under way.
+    if (!token) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; L.carry = null; }
+    // A step is stale once a newer step was pressed, any other load began
+    // (state.loadGen: a cube, a field, another table) or the scene left the
+    // point table (enter): it then installs nothing.
+    const stale = () => token && (token !== L.stepToken || state.loadGen !== gen || L.mode !== 'points');
+    const drop = () => { if (own && datasetId) closeDataset(b, datasetId); };
     if (!datasetId) {
       const fmt = catalogueFormat(path);
       if (fmt === 'vbt') {
@@ -277,6 +367,7 @@ export function createLayers(ctx) {
         datasetId = r.dataset_id;
       }
     }
+    if (stale()) { drop(); return null; }
     load.check?.();
     // A sky catalogue's frame, distance mode and cosmology (issue #260): the
     // desktop's, else the backend's defaults; the answer says how it placed it
@@ -284,9 +375,15 @@ export function createLayers(ctx) {
     const infoBody = { dataset_id: datasetId };
     if (sky) infoBody.sky = sky;
     const info = await b._json('POST', '/v1/points/info', infoBody);
+    if (stale()) { drop(); return null; }
     load.check?.();
-    L.points = { datasetId, path, axes: info.axes, fields: info.fields, rows: info.num_rows,
-      sky, skySettings: info.sky_settings || null };
+    const prevShown = L.points;
+    // The crop and the box in the table's units, taken from the last snapshot
+    // fully on show when the burst of steps began (L.carry, simPress): an
+    // intermediate step has no sample to take them from.
+    const carry = token ? L.carry : null;
+    L.points = { datasetId, path, own, axes: info.axes, defaultAxes: info.axes.slice(), fields: info.fields, rows: info.num_rows,
+      units: info.units || {}, series, sky, skySettings: info.sky_settings || null };
     if (!L.s.styleChosen) {
       L.s.style = PT.defaultStyle(info.format);
       styleSel.value = L.s.style;
@@ -295,14 +392,70 @@ export function createLayers(ctx) {
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
-    L.s.colourField = PT.defaultColourField(info.fields, info.axes);
-    L.s.autoLog = true;
-    L.s.colourLog = false;
-    logBox.checked = false;
+    const defaultColour = PT.defaultColourField(info.fields, info.axes);
+    // The next snapshot of a series (#259) keeps the columns, the look, the
+    // crop and the selection of the one before, where it has those columns.
+    const kept = keep ? SC.carryOver(keep, info.fields, { axes: info.axes, colourField: defaultColour }) : null;
+    if (kept) L.points.axes = kept.axes;
+    if (!kept || kept.colourField !== keep.colourField) {
+      L.s.colourField = kept ? kept.colourField : defaultColour;
+      L.s.autoLog = true;
+      L.s.colourLog = false;
+    }
+    L.s.sizeField = kept ? kept.sizeField : SC.smoothingField(info.fields);
+    if (!L.s.sizeField) L.s.sizeOn = false;
+    if (!keep) { L.s.selBox = null; L.s.selMode = 'all'; L.badSize = new Set(); L.selEmpty = null; L.cropEmpty = null; }
+    logBox.checked = L.s.colourLog;
     fieldSel.value = L.s.colourField || '';
-    enter('points');
+    const pts = L.points;
+    enter('points', true);
+    L.points = pts;
     await fetchSample(b, load);
+    if (stale() || L.points !== pts) { drop(); return null; }
+    // Placed again in the table's units: the same region of space, not the
+    // same fraction of a box that changed (only on the same X/Y/Z columns).
+    // A region wholly outside this snapshot stays as it is, in table units,
+    // and is shown as such: nothing drawn (an empty crop, Show inside of an
+    // empty box) with a note, never the whole table instead.
+    if (carry && pts.sample && carry.axes.join() === pts.axes.join()) {
+      const bounds = pts.sample.bounds;
+      const clip = SC.toFrac(carry.clip, bounds);
+      state.clip = clip || { min: [0, 0, 0], max: [1, 1, 1] };
+      L.cropEmpty = clip ? null : carry.clip;
+      if (carry.sel) {
+        L.s.selBox = SC.toFrac(carry.sel, bounds);
+        L.selEmpty = L.s.selBox ? null : carry.sel;
+        L.s.selMode = carry.selMode;
+      } else {
+        L.s.selBox = null; L.selEmpty = null; L.s.selMode = 'all';
+      }
+    } else if (keep) {
+      L.s.selBox = null; L.s.selMode = 'all'; L.selEmpty = null; L.cropEmpty = null;
+    }
+    if (token) { L.stepTarget = null; L.carry = null; }
+    // The table on show before, when the page opened it, is closed once the
+    // refiner has left it.
+    if (prevShown && prevShown !== pts && prevShown.own && prevShown.datasetId !== datasetId) {
+      Promise.resolve(pts.refinerSwitch).catch(() => {}).then(() => closeDataset(b, prevShown.datasetId));
+    }
+    // The snapshots beside it (#259): asked once (a step carries them on), not
+    // waited for; a step pressed meanwhile waits for them.
+    if (!series) {
+      b._json('POST', '/v1/points/series', { dataset_id: datasetId })
+        .then((sr) => {
+          if (L.points !== pts || !sr || !sr.valid) return;
+          pts.series = sr;
+          const d = L.pendingStep;
+          L.pendingStep = 0;
+          if (d) simPress(d > 0 ? 'snap-next' : 'snap-prev', b);
+        })
+        .catch(() => { L.pendingStep = 0; });
+    }
     return { kind: 'points', datasetId };
+  }
+  /** Closes a dataset the page opened (DELETE /v1/datasets/{id}): not an error when it is gone. */
+  function closeDataset(b, id) {
+    b._json('DELETE', `/v1/datasets/${encodeURIComponent(id)}`).catch(() => {});
   }
 
   // ── Flow ─────────────────────────────────────────────────────────────
@@ -376,8 +529,10 @@ export function createLayers(ctx) {
   }
 
   // ── Modes ────────────────────────────────────────────────────────────
-  function enter(mode) {
+  function enter(mode, forStep = false) {
     invalidateRequests();
+    // Another scene (a cube, a field) or another table: no snapshot step goes on.
+    if (mode !== 'points' || !forStep) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; L.carry = null; }
     L.mode = mode;
     if (mode !== 'cube') {
       ctx.onNonCube?.();
@@ -541,8 +696,78 @@ export function createLayers(ctx) {
     else if (id === 'ct-show') { s.catShow = !s.catShow; ctShow.checked = s.catShow; }
     else if (id === 'ct-labels') { s.catLabels = !s.catLabels; ctLabels.checked = s.catLabels; rebuildOverlay(); }
     else if (id === 'ct-pins') { s.catPins = !s.catPins; ctPins.checked = s.catPins; rebuildOverlay(); }
-    else return /^(pt|fl|ct)-/.test(id);
+    else if (simPress(id, b)) return true;
+    else return /^(pt|fl|ct|psel|snap|axis|size)-/.test(id) || /^(axis|size):/.test(id);
     return true;
+  }
+
+  /** The simulation controls (#259): the Data page's snapshot, X/Y/Z and
+   *  size presses, and the box selection's (Select tab). */
+  function simPress(id, b) {
+    const s = L.s, p = L.points;
+    const ax = /^axis:([012])(:prev|:next)?$/.exec(id);
+    if (ax && p && b) {
+      const i = +ax[1];
+      p.axes = p.axes.slice();
+      p.axes[i] = SC.cycleField(SC.axisFields(p.fields), p.axes[i], ax[2] === ':prev' ? -1 : 1);
+      axesChanged(b);
+    } else if (id === 'axes-default' && p && b) {
+      p.axes = p.defaultAxes.slice();
+      axesChanged(b);
+    } else if ((id === 'size:uniform' || id === 'size:field') && p && b) {
+      const on = id === 'size:field' && !!s.sizeField;
+      if (on !== s.sizeOn) { s.sizeOn = on; fetchSample(b).catch(fail); }
+    } else if (id === 'size-next' && p && b) {
+      // Columns found to have no positive size are passed over.
+      s.sizeField = SC.cycleField(SC.axisFields(p.fields), s.sizeField, 1, L.badSize);
+      if (s.sizeOn) fetchSample(b).catch(fail);
+    } else if ((id === 'snap-prev' || id === 'snap-next') && p && b) {
+      const dir = id === 'snap-next' ? 1 : -1;
+      // Its series not known yet: the press waits for it (openPoints).
+      if (!p.series && !L.stepTarget) { L.pendingStep = dir; return true; }
+      // From the step under way, if any: quick presses go on from there.
+      const from = L.stepTarget || p.series;
+      const next = SC.seriesStep(from, dir);
+      if (!next) return true;
+      const series = { ...from, index: next.index };
+      // The first step of a burst takes the crop and the box, in table units,
+      // from the snapshot on show; the later ones keep that until the newest
+      // step is installed.
+      if (!L.carry && p.sample) L.carry = carryOf(p);
+      const token = ++L.stepToken;
+      L.stepTarget = series;
+      const keep = { axes: p.axes, colourField: s.colourField, sizeField: s.sizeField };
+      openPoints(b, { path: next.path, sky: p.sky || null, keep, series, token, gen: state.loadGen })
+        .then((r) => { if (r && token === L.stepToken) ctx.onSnapshot?.(next.path); })
+        .catch((e) => { if (token === L.stepToken) { L.stepTarget = null; L.carry = null; fail(e); } });
+    } else if (id === 'psel-inside' || id === 'psel-outside' || id === 'psel-all') {
+      s.selMode = id.slice(5);
+    } else if (id === 'psel-clear') {
+      s.selBox = null;
+      L.selEmpty = null;
+      s.selMode = 'all';
+    } else {
+      return false;
+    }
+    return true;
+  }
+  /** The crop and the box selection of the snapshot on show, in table units
+   *  (an empty one carried as it was). */
+  function carryOf(p) {
+    const bounds = p.sample.bounds;
+    return { axes: p.axes.slice(), clip: L.cropEmpty || SC.toData(state.clip, bounds),
+      sel: L.selEmpty || (L.s.selBox ? SC.toData(L.s.selBox, bounds) : null), selMode: L.s.selMode };
+  }
+  /** Nothing to draw: a crop or an inside-only box wholly outside this snapshot. */
+  const drawsNothing = () => !!(L.cropEmpty || (L.selEmpty && L.s.selMode === 'inside'));
+  /** New X/Y/Z columns: a new box, so the crop and the selection start again. */
+  function axesChanged(b) {
+    L.s.selBox = null;
+    L.selEmpty = null;
+    L.cropEmpty = null;
+    L.s.selMode = 'all';
+    state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
+    fetchSample(b).catch(fail);
   }
   /** A range dragged on the menu: the point table's colour window, or the
    *  velocity field's (fractions of its speed range). */
@@ -567,11 +792,12 @@ export function createLayers(ctx) {
   /** The look of a point table or field an undo step keeps: what changes the
    *  drawing only (a new column, budget or seeds asks the backend again). */
   const UNDO_KEYS = ['c0', 'c1', 'flC0', 'flC1', 'intensity', 'style', 'pointPx', 'splatSize', 'arrowScale', 'box',
-    'stream', 'arrows', 'catShow', 'catLabels', 'catPins'];
+    'stream', 'arrows', 'catShow', 'catLabels', 'catPins', 'selBox', 'selMode'];
   function undoState() { return Object.fromEntries(UNDO_KEYS.map((k) => [k, L.s[k]])); }
   function restoreUndo(o) {
     if (!o) return;
     for (const k of UNDO_KEYS) if (k in o) L.s[k] = o[k];
+    L.selEmpty = null;            // the box restored is this snapshot's own (#259)
     const s = L.s;
     styleSel.value = s.style;
     sizeIn.value = PT.isSplats(s.style) ? s.splatSize : s.pointPx;
@@ -586,7 +812,7 @@ export function createLayers(ctx) {
   /** Does a press change only the drawing (one undo step before it)? */
   function undoable(id, w = {}) {
     return w.group === 'pt-style' || ['pt-smaller', 'pt-larger', 'pt-box', 'fl-box', 'fl-stream', 'fl-arrows', 'fl-shorter',
-      'fl-longer', 'ct-show', 'ct-labels', 'ct-pins'].includes(id);
+      'fl-longer', 'ct-show', 'ct-labels', 'ct-pins', 'psel-inside', 'psel-outside', 'psel-all', 'psel-clear'].includes(id);
   }
 
   /** The velocity field's colour range in its speed unit. */
@@ -607,6 +833,11 @@ export function createLayers(ctx) {
       pts: { fields: colourFields(L.points), field: s.colourField, log: s.colourLog, style: s.style,
         budget: `${(s.budgetRows / 1e6).toFixed(1)} M`, box: s.box, fieldPage: s.fieldPage },
       flow: { stream: s.stream, arrows: s.arrows, box: s.box },
+      // The simulation controls (#259).
+      sim: L.points ? { axes: L.points.axes.slice(), series: L.points.series ? L.points.series.count : 1,
+        seriesIndex: (L.stepTarget || L.points.series || { index: 0 }).index, seriesPending: !L.points.series,
+        sizeOn: s.sizeOn, sizeField: s.sizeField,
+        style: s.style, sel: { box: !!(s.selBox || L.selEmpty), mode: s.selMode } } : null,
     };
   }
   /** The values on the menu's rows ({rowKey: text}), its sliders and ranges, and status lines. */
@@ -628,6 +859,20 @@ export function createLayers(ctx) {
       notes.intensity = PT.isSplats(s.style) ? `${s.intensity} %` : '';
       const drawn = s.govern ? L.points.drawRows : sm.count;
       notes.shown = `${(drawn / 1e6).toFixed(2)} M drawn of ${(sm.count / 1e6).toFixed(2)} M sampled, ${(sm.totalRows / 1e6).toFixed(2)} M rows`;
+      // The Data page and the box selection (#259).
+      const p = L.points;
+      notes.snapshot = p.series && p.series.count > 1 ? SC.seriesLabel(p.series) : 'One file: no numbered snapshots beside it.';
+      ['x', 'y', 'z'].forEach((a, i) => { notes[a] = `${a.toUpperCase()} = ${p.axes[i]}${SC.unitOf(p.units, p.axes[i]) ? ` [${SC.unitOf(p.units, p.axes[i])}]` : ''}`; });
+      notes.size = p.sizeNote && s.sizeOn ? `${p.sizeNote}; ▸ picks another column.`
+        : !s.sizeField ? 'No smoothing-length column (h, hsml, …): ▸ picks another.'
+        : s.sizeOn && p.size ? `σ = ${s.sizeField} / √2 × size, ${fmt(p.size.range[0])} to ${fmt(p.size.range[1])}`
+          : `Uniform: one size from the mean spacing; ${s.sizeField} on the right.`;
+      if (L.cropEmpty) status.push(['The crop lies outside this snapshot: nothing is drawn. Reset crop to see it all.', '#ffd27a']);
+      if (L.selEmpty) {
+        status.push([s.selMode === 'inside' ? 'The box lies outside this snapshot: nothing inside it to show.'
+          : 'The box lies outside this snapshot: nothing inside it here.', '#ffd27a']);
+      }
+      notes.selection = L.selEmpty ? `Outside this snapshot: ${SC.boxText(p.axes, [L.selEmpty.min[0], L.selEmpty.max[0], L.selEmpty.min[1], L.selEmpty.max[1], L.selEmpty.min[2], L.selEmpty.max[2]], { min: [0, 0, 0], max: [1, 1, 1] })}` : s.selBox ? `${s.selMode === 'inside' ? 'Inside shown' : s.selMode === 'outside' ? 'Inside hidden' : 'All shown'}: ${SC.boxText(p.axes, sm.bounds, s.selBox)}` : '';
     } else if (L.mode === 'flow' && L.flow && L.flow.info) {
       const i = L.flow.info;
       values['fl-range'] = [s.flC0, s.flC1];
@@ -645,14 +890,9 @@ export function createLayers(ctx) {
     return { notes, values, status };
   }
   /** Whether the refined frame on show, warped to this eye, covers its whole
-   *  viewport (RF.coversViewport at the depths the warp uses). */
+   *  viewport (RF.coversViewport at the depths the warp uses: RF.coverDepths). */
   function refinedCovers(view, model, eye) {
-    const f = ctx.refiner.draw && ctx.refiner.draw.shown;
-    if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
-    const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
-    const centre = RF.centreDistance(fe.view, f.rec.model);
-    const d = f.hasDepth && f.header.depth ? [f.header.depth.z_near, f.header.depth.z_far, centre] : [centre];
-    return RF.coversViewport(fe, f.rec.model, view, model, d);
+    return coverCache.covers(ctx.refiner.draw && ctx.refiner.draw.shown, eye, view, model);
   }
 
   // ── Hooks for main.js ────────────────────────────────────────────────
@@ -667,7 +907,7 @@ export function createLayers(ctx) {
       lines = null;
       if (L.points?.arr) {
         cloud = new PT.PointCloud(gl, lut, { target: ctx.splatTarget || 'auto' });
-        cloud.upload(L.points.arr.positions, L.points.arr.colour);
+        cloud.upload(L.points.arr.positions, L.points.arr.colour, L.points.arr.size || null);
       }
       if (L.flow?.arr) {
         lines = new FL.FlowLines(gl, lut);
@@ -742,11 +982,16 @@ export function createLayers(ctx) {
         // A refined frame fully shown over a still view replaces the page's
         // whole picture: the splats under it are not drawn (#295), and the
         // governor waits (those frames say nothing about the splats' cost).
+        // (Never while the splats follow a size column or nothing is to be drawn: no refined frame then, #259.)
         const covered = splats && ctx.refineOn() && !isCropped(state.clip) && ctx.refiner.showing
-          && ctx.refiner.weight >= 1 && refinedCovers(view, model, eye);
+          && !L.s.sizeOn && !drawsNothing() && ctx.refiner.weight >= 1 && refinedCovers(view, model, eye);
+        let gate = null;
         if (eye === 0) {
           if (pt.wasCovered && !covered) pt.frameGov.interrupted(now);   // the time under it was not earned
           pt.wasCovered = covered;
+          // Every display frame, so the time a refined frame is shown whole counts.
+          gate = pt.growGate.step(now, splats, ctx.refineOn(), ctx.refiner.motion.state,
+            ctx.refiner.status, ctx.refiner.weight);
         }
         if (eye === 0 && L.s.govern && !covered && now - (pt.governedAt || 0) > 250) {
           // The rows drawn follow the frame time (four times a second): GPU
@@ -759,21 +1004,25 @@ export function createLayers(ctx) {
             rateSettled: !!(ctx.rateSettled && ctx.rateSettled()) });
           let next = pt.govRows;
           if (kind === 'gpu') next = PT.governRows(pt.govRows, count, R.gpuMs, hz);
-          else if (kind === 'frames') next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now);
-          // Still and waiting for a refined frame: no growth (a new step would
-          // make the frame asked for stale before it arrives).
-          const waiting = splats && ctx.refineOn() && ctx.refiner.motion.state === 'still'
-            && (ctx.refiner.status === 'waiting' || ctx.refiner.status === 'refined');
-          pt.govRows = waiting ? Math.min(next, pt.govRows) : next;
+          else if (kind === 'frames') {
+            next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now,
+              gate);   // {riseCeiling}
+          }
+          // Still under refined frames: cuts at once, growth by RowGrowthGate
+          // (a step drops the frame on show, #300).
+          pt.govRows = gate.grow ? next : Math.min(next, pt.govRows);
           pt.drawRows = PT.quantizeRows(pt.govRows, count, pt.drawRows);
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
         const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity,
           cloud.splatRule);
+        const size = L.s.sizeOn && pt.size ? SC.sizedSplat(pt.size.range, { splatSize: L.s.splatSize,
+          grow: Math.cbrt(Math.max(1, pt.sample.placedRows / Math.max(1, drawn))), radius: st.sampleRadius }) : null;
         if (!covered) {
           cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
-            opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: drawn, clip: state.clip });
+            opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: drawsNothing() ? 0 : drawn, clip: state.clip,
+            size, sel: L.s.selBox && L.s.selMode !== 'all' ? { box: L.s.selBox, mode: L.s.selMode } : null });
         }
       } else if (L.mode === 'flow' && lines && L.flow && L.flow.info) {
         const [s0, s1] = flowSpeedRange();
@@ -781,19 +1030,65 @@ export function createLayers(ctx) {
           stream: L.s.stream, arrows: L.s.arrows, clip: state.clip });
       }
       // The backend's point session draws the whole table: no refined frame over a crop.
-      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing && !isCropped(state.clip)) ctx.refiner.composite(view, model, eye);
+      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing && !isCropped(state.clip) && !L.s.sizeOn && !drawsNothing()) ctx.refiner.composite(view, model, eye);
       if (L.s.box) {
         R.drawLines(view, model);
         R.drawLabels(view, model, M.uniformScale(model));
       }
     },
     hasScene() { return L.mode !== 'cube' && !!L.box; },
+    /** The colour bar of a point table coloured by a column, or of a velocity
+     *  field (#259: with the column's unit): {lo, hi, log, title, ticks}, or null. */
+    colourBar() {
+      // The same object while nothing it shows changed: built only on a change
+      // (main.js redraws the bar when the object changes).
+      const c = barCache;
+      if (L.mode === 'points' && L.points && L.points.sample) {
+        const sm = L.points.sample;
+        if (c.of === sm && c.c0 === L.s.c0 && c.c1 === L.s.c1) return c.bar;
+        let bar = null;
+        if (sm.colourField && sm.colourRange) {
+          const at = (f) => PT.codeValue(f * 65535, sm.colourRange, sm.colourLog);
+          const lo = at(L.s.c0), hi = at(L.s.c1);
+          bar = { lo, hi, log: sm.colourLog, title: SC.colourBarTitle(sm.colourField, SC.unitOf(L.points.units, sm.colourField), sm.colourLog),
+            ticks: SC.colourBarTicks(lo, hi, sm.colourLog, niceTicks) };
+        }
+        Object.assign(c, { of: sm, c0: L.s.c0, c1: L.s.c1, bar });
+        return bar;
+      }
+      if (L.mode === 'flow' && L.flow && L.flow.info) {
+        const i = L.flow.info;
+        if (c.of === i && c.c0 === L.s.flC0 && c.c1 === L.s.flC1) return c.bar;
+        const [lo, hi] = flowSpeedRange();
+        const bar = { lo, hi, log: false, title: SC.colourBarTitle('speed', i.unit || ''), ticks: SC.colourBarTicks(lo, hi, false, niceTicks) };
+        Object.assign(c, { of: i, c0: L.s.flC0, c1: L.s.flC1, bar });
+        return bar;
+      }
+      return null;
+    },
+    /** The box selection of a point table (#259): its box, or null; set to a box (fractions) or null. */
+    get selBox() { return L.mode === 'points' ? L.s.selBox : null; },
+    setSelBox(box) { L.s.selBox = box; L.selEmpty = null; if (!box) L.s.selMode = 'all'; },
+    /** The crop changed on the page or the menu: an empty crop carried from
+     *  another snapshot is gone (#259). */
+    clipChanged() { L.cropEmpty = null; },
+    /** A crop carried from another snapshot that lies wholly outside this
+     *  table (table units), or null. While it is set state.clip is the whole
+     *  box only as a placeholder: the crop gizmo and the clip report must not
+     *  show it as the whole table (#259 review). */
+    get cropEmpty() { return L.mode === 'points' ? L.cropEmpty : null; },
+    /** The empty crop again, after a change that put it back (an undo, a
+     *  click that drew no crop). */
+    keepCropEmpty(c) { if (L.mode === 'points' && c) L.cropEmpty = c; },
     /** True while a refined frame covers the splats (they are not drawn): the
      *  frame-rate governors earn no clean time from those frames (#295). */
     get covered() { return L.mode === 'points' && !!(L.points && L.points.wasCovered); },
     /** Refinement of a point table (none for a velocity field). */
     refineFrame(t, eyes0, centreView, background) {
-      if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip)) return;
+      // The session draws one splat size: no refined frame while the splats
+      // follow a column (#259; the headset's own picture stays), nor while
+      // nothing is to be drawn.
+      if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip) || L.s.sizeOn || drawsNothing()) return;
       // Splat frames are asked for with a margin, so a turn warps them
       // without uncovering the view (refinedCovers: the splats under a
       // covering frame are not drawn).
@@ -802,7 +1097,8 @@ export function createLayers(ctx) {
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
         splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, sky: L.points.sky,
-        splatRule: cloud ? cloud.splatRule : 'v2-8bit' });
+        splatRule: cloud ? cloud.splatRule : 'v2-8bit',
+        filters: SC.boxFilters(L.points.axes, sm.bounds, L.s.selBox, L.s.selMode) });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.
