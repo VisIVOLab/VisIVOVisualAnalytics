@@ -24,7 +24,8 @@ function ctxOf(kind, extra = {}) {
   }
   if (extra.sel) c.sel = { ...c.sel, ...extra.sel };
   if (extra.meas) c.meas = { ...c.meas, ...extra.meas };
-  for (const k of ['debug', 'cat', 'canUndo', 'clipTool']) if (k in extra) c[k] = extra[k];
+  for (const k of ['debug', 'cat', 'canUndo', 'clipTool', 'simulation']) if (k in extra) c[k] = extra[k];
+  if (extra.lv) c.lv = { ...c.lv, ...extra.lv };
   return c;
 }
 const CONTEXTS = {
@@ -36,7 +37,38 @@ const CONTEXTS = {
   flow: ctxOf('flow'),
   none: ctxOf('none'),
   debugCube: ctxOf('cube', { debug: true, canUndo: true, keep: true }),
+  // A simulation volume (issue #317): a cube without a spectral axis.
+  simulation: ctxOf('cube', { simulation: true, clipTool: 'box', sel: { tool: 'box' }, lv: { hist: true } }),
 };
+
+test('a simulation volume: no spectral tools, percentiles for σ, z cropped as x and y (#317)', () => {
+  const sim = CONTEXTS.simulation;
+  const why = (page, id) => HM.widgetById(HM.menuLayout(page, sim), id).disabled;
+  for (const id of ['tool:lasso', 'tool:probe', 'seed:new', 'seed:add', 'seed:carve']) assert.equal(why('select', id), HM.WHY.simulation, id);
+  assert.equal(why('select', 'tool:box'), '');
+  for (const id of ['moment:0', 'moment:1', 'moment:2', 'pv-draw', 'pv-wide', 'spec-pin']) assert.equal(why('measure', id), HM.WHY.simulation, id);
+  assert.equal(why('range', 'slab'), HM.WHY.simulation);
+  assert.equal(why('range', 'sub:clip:slab'), HM.WHY.simulation);
+  assert.equal(why('range', 'crop:2'), '', 'z is cropped as x and y');
+  assert.ok(HM.widgetById(HM.menuLayout('range', sim), 'sub:clip:box').on);
+  // Display: the 90 % and 99 % percentiles where a cube has 3σ and 5σ, at the same places.
+  const d = HM.menuLayout('display', sim), c = HM.menuLayout('display', CONTEXTS.cube);
+  assert.ok(!d.some((w) => w.group === 'sig'));
+  assert.deepEqual(HM.widgetById(d, 'pct:90').rect, HM.widgetById(c, 'sig:3').rect);
+  assert.deepEqual(HM.widgetById(d, 'pct:99').rect, HM.widgetById(c, 'sig:5').rect);
+  assert.equal(HM.widgetById(d, 'pct:90').disabled, '');
+  assert.equal(HM.widgetById(d, 'ct-pins').disabled, HM.WHY.simulation);
+  // Levels: σ greyed with its reason, the percentiles there.
+  assert.equal(HM.widgetById(HM.menuLayout('levels', sim), 'sig:3').disabled, HM.WHY.simSigma);
+  assert.equal(HM.widgetById(HM.menuLayout('levels', sim), 'pct:99').disabled, '');
+  // Nothing on any page speaks of channels, velocities or σ as an action left open.
+  for (const page of HM.PAGES) {
+    for (const w of HM.menuLayout(page, sim)) {
+      if (w.disabled) continue;
+      assert.ok(!/σ|channel|velocity|spectrum|Kinematic/i.test(`${w.label || ''} ${w.tip || ''}`), `${page} ${w.id}: ${w.label} / ${w.tip}`);
+    }
+  }
+});
 
 test('the tabs follow the work, the same on every dataset; the technical page only with ?debug', () => {
   assert.deepEqual(HM.TABS.map((t) => t[1]), ['Display', 'Range', 'Select', 'Measure', 'More']);

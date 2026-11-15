@@ -6,6 +6,25 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **VR: simulation volumes shown as simulations (part of #317).** A
+  simulation volume whose values are all positive and span more than three
+  decades (a density) now reaches the headset as codes of log10 of its
+  values (`scale` on `/v1/cube/reduced_bin`, `auto` by default; headers
+  `X-Visivo-Scale` and `X-Visivo-Log-Range`), so every decade keeps its
+  share of the 8-bit codes. Every other cube (radio, masked or
+  moment-derived) is quantised exactly as before under `auto`; `log` can
+  still be asked for on any cube. `reduced_info` says when a cube is a
+  simulation volume (no spectral axis, linear axes) and gives its axes and
+  grid spacing; its default threshold is then the 99th percentile instead of
+  the noise rule. On the VR page such a volume's box is drawn to its grid
+  spacing (the backend's full-quality frames too), its threshold, readout and
+  new colour bar show values, and the channel, velocity, σ, beam and rest-line
+  wording and the spectral tools (Kinematic Lasso, Spectrum probe, moments,
+  PV slices) are gone. A VBT or PLUTO field reference opens as a volume
+  whatever its file is called. The variable picker comes later.
+
 ## 1.1.0 (2026-11-15)
 
 - **Desktop: no stall with many workspace exports (#312).** The Data Hub's

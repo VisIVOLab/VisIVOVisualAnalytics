@@ -261,6 +261,27 @@ export function preparingError(progress) {
 /** How soon a failed reduced_bin may be resent (its error came before it was sent). */
 export const RESEND_WITHIN_MS = 2000;
 
+/**
+ * A reduced cube's value scale from its headers (`h(name)`: the header or
+ * null), issue #317: {scale, lo, hi, valueMin, valueMax, nonpositive}. lo and
+ * hi are what the codes span, the values on a linear scale and their log10
+ * on a log scale (X-Visivo-Log-Range); valueMin and valueMax are values
+ * either way. A backend without X-Visivo-Scale sends a linear cube.
+ */
+export function reducedScale(h) {
+  const vmin = Number(h('X-Visivo-Range-Min')), vmax = Number(h('X-Visivo-Range-Max'));
+  const log = String(h('X-Visivo-Scale') || 'linear').trim().toLowerCase() === 'log';
+  const range = log ? String(h('X-Visivo-Log-Range') || '').split(',').map(Number) : [];
+  const ok = range.length === 2 && range.every(Number.isFinite);
+  if (log && !ok) throw new Error('the reduced cube is on a log scale without its X-Visivo-Log-Range');
+  return {
+    scale: log ? 'log' : 'linear',
+    lo: log ? range[0] : vmin, hi: log ? range[1] : vmax,
+    valueMin: vmin, valueMax: vmax,
+    nonpositive: Number(h('X-Visivo-Nonpositive-Voxels')) || 0,
+  };
+}
+
 export class Backend {
   constructor(token) {
     this.token = token;
@@ -515,7 +536,7 @@ export class Backend {
     const thr = h('X-Visivo-Threshold');
     return {
       data, dims, encoding,
-      lo: Number(h('X-Visivo-Range-Min')), hi: Number(h('X-Visivo-Range-Max')),
+      ...reducedScale(h),
       factors: (h('X-Visivo-Bin-Factors') || '1,1,1').split(',').map(Number),
       fullShape: (h('X-Visivo-Full-Shape') || '').split(',').map(Number),
       mode: h('X-Visivo-Bin-Mode') || '',

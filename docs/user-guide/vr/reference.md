@@ -15,6 +15,16 @@ to run on a Quest 3.
   gets coarse steps near the noise (one peak at 1000 σ makes a code about
   1.3 σ wide): choose 16-bit there, which keeps three significant digits at
   every level.
+- **Scale**: *auto* (the default), *log* or *linear*: whether the texture
+  holds the values or their base-10 logarithm
+  ([#317](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/317)).
+  *auto* takes the log for a simulation volume whose values are all
+  positive and span more than three decades (a density), and the values for
+  every other cube (a radio cube, masked or moment-derived ones included,
+  even when all positive); *log* applies to any cube. On a log scale every decade gets
+  the same number of codes (about 36 a decade for seven decades in 8 bits,
+  values within 3.2 %), and values at or below zero are blank. See
+  [Simulation volumes](data-types.md#simulation-volumes).
 - **Threshold from**: *for this binning* or *full cube* (the threshold the
   desktop's 3-D view starts from). Every cube from the backend starts from the
   *full cube*'s threshold, as the desktop does
@@ -1766,6 +1776,30 @@ Desktop and headset together:
    image must stay aligned with the reduced one (no shift while you hold still).
 5. Pick a spectrum and run the lasso on a source: the results must arrive
    (the lasso can take 10-15 s on a large cube); note the times shown.
+
+### A simulation volume, with the headset (#317)
+
+1. Open a simulation's density on the desktop (a VBT volume's field or, with
+   the PLUTO reader, `rho`) and *Open on Headset*, or type its field
+   reference on the page. The status line must say *log scale* on the info
+   line (Display or Levels) with the values' range (for the Palermo 2048³
+   density 1.83e-12 to 2.12e-5), and no channel, velocity, beam or rest line.
+2. The box's proportions must be the grid's (a cubic grid: a cube). The
+   colour bar stands beside the box's lower corner, its ticks at the
+   decades, its title the field and its unit with *log scale*.
+3. Display: the threshold and colour max read as values (scientific
+   notation), *90%* and *99%* where a radio cube has *3σ* and *5σ*. Press
+   *90%*, then *99%*; set the threshold near 1.6e-6 (Orlando's palette
+   1.63e-6 to 7.29e-5): the dense ring must be visible.
+4. Select: only *Box region* is offered; Measure: everything greyed with
+   *A simulation volume has no spectral axis*. Range: *Crop z* works as x and
+   y; the palette (A) offers Explore, Box and Crop only.
+5. Hold still: the refined frame must lie on the headset's own picture (the
+   same box, no stretch along any axis) and its colours must follow the
+   headset's (the page sends the colours spread over log10 of the values; a
+   faint part darker in the refined frame than in the headset's own picture
+   is worth a note). Note **FPS**, **missed %**, **pose->frame** and
+   **stop->refined** over USB and over Wi-Fi.
 
 ### The headset's view on the desktop, with the headset (#281)
 

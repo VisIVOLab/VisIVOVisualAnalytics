@@ -94,6 +94,11 @@ X_PYRAMID_LEVEL = "X-Visivo-Pyramid-Level"
 X_BORDER_VOXELS = "X-Visivo-Border-Voxels"
 # The revision of the file a reduced cube was read from (reduced_info's file_revision).
 X_FILE_REVISION = "X-Visivo-File-Revision"
+# Its value scale, "linear" or "log" (issue #317); on a log scale the log10
+# range the codes span ("min,max") and the voxels at or below zero made blank.
+X_SCALE = "X-Visivo-Scale"
+X_LOG_RANGE = "X-Visivo-Log-Range"
+X_NONPOSITIVE_VOXELS = "X-Visivo-Nonpositive-Voxels"
 
 # ── Line-width / moment map units (out-of-band because body is binary) ──────
 X_FWHM_UNIT = "X-Fwhm-Unit"

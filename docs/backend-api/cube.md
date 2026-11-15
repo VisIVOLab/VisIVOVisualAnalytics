@@ -160,6 +160,7 @@ Request (`CubeReducedRequest`, shared by both routes):
 | `max_dim` | 256 | 16 to 2048 | reduced voxels per side the automatic factors aim at |
 | `mode` | `mean` | `mean`, `max` | `mean`: the mean of each block over its finite voxels (the brick pyramid's rule); `max`: the largest finite value. A block with no finite voxel is blank. A partial block at the end of an axis is reduced over the voxels it holds |
 | `encoding` | `uint8` | `uint8`, `float16` | see below (`reduced_bin` only) |
+| `scale` | `auto` | `auto`, `log`, `linear` | the value scale the voxels are quantised on (`reduced_bin` only, [#317](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/317)): `linear`, the values; `log`, their base-10 logarithm (a value at or below zero is blank); `auto`, `log` only for a simulation volume (see below) whose finite reduced values are all positive and span more than three decades (a density), else `linear`: every other cube (radio, masked or moment-derived ones included, even all positive) stays linear under `auto`, exactly as before. `log` asked for applies to any cube. The reduction (block means or maxima) is on the values either way |
 | `source` | `auto` | `auto`, `pyramid`, `cube` | where the reduced cube is read from: `cube`, a pass over the whole cube; `pyramid`, a level of the cube's brick pyramid ([Brick pyramid](../brick-pyramid.md)), built first when missing, `mean` only; `auto`, the pyramid for a cube larger than `VISIVO_VR_PYRAMID_BYTES` (default: the render sessions' in-core limit, `VISIVO_RENDER_OUT_OF_CORE_BYTES`, 6 GiB as 32-bit floats) binned by the mean, else the cube |
 
 **From the brick pyramid.** Level K of the pyramid is the cube halved K times
@@ -218,6 +219,21 @@ A reduced cube larger than 2048 voxels on a side, 64 Mi voxels in all, or
 64 MiB of texture in the requested encoding (so 32 Mi voxels in `float16`) is
 refused with 422 before the cube is read.
 
+**Simulation volumes** ([#317](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/317)).
+A cube whose three axes are neither spectral (no FREQ, VRAD, VELO, ... CTYPE)
+nor on the sky (no RA, DEC, GLON, ... CTYPE, no celestial WCS) is a
+simulation volume: a VBT volume's field (CTYPE X, Y, Z), a PLUTO variable, a
+FITS cube with linear or no CTYPEs. `reduced_info` says `simulation: true`,
+gives its three `axes` from the header's linear axis (`method: "linear"`,
+each with `spacing`, the CDELT), no velocities, and `noise_sigma`, `beam`,
+`rest_frequency_hz` and `pixel_scale_arcsec` `null`: a simulation has no
+noise, beam or rest line. Its default threshold (`default_threshold`, and
+`reduced_bin`'s `X-Visivo-Threshold`) is the 99th percentile of the values
+(of the stride sample, of the level-0 brick sample, or of the reduced cube for
+`mean`), the desktop's own default for data that is not noise about a median,
+instead of the noise rule, which a field symmetric about zero (a velocity
+component) would pass. `default_threshold_method` says which rule was used.
+
 **`reduced_info`** answers JSON, without reducing the cube: `full_shape` and
 `reduced_shape` (`[width, height, depth]`), `factors` (`[fx, fy, fz]`),
 `file_revision` (an opaque version of the file's stat identity, including the
@@ -238,7 +254,12 @@ median over all channels together, which equals the desktop's per-channel rule
 only for a flat baseline and is larger where channel medians vary, continuum
 left in or a baseline ripple; `null` when it cannot be measured, for example on
 constant data),
-`noise_sigma_method` (how, in words; empty with no σ), `rest_frequency_hz`
+`noise_sigma_method` (how, in words; empty with no σ), `default_threshold_method`
+(the threshold's rule in words: the noise rule, or for a simulation volume
+the 99th percentile), `simulation` (see above), `spacing` (`[x, y, z]`, the
+header's step per full-resolution voxel along each axis in its unit, signed,
+the CD matrix included; `null` for an axis without one), `object` (the
+header's OBJECT: a VBT volume's field name), `rest_frequency_hz`
 (RESTFRQ or RESTFREQ, `null` without one), `rest_line` (`"HI"` within 1 MHz of
 the HI line, else empty), `beam` (`null`, or `major_arcsec`, `minor_arcsec`,
 `pa_deg` from BMAJ/BMIN/BPA; with a BEAMS table and no header beam, the central
@@ -274,7 +295,12 @@ without another call ([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/
 above (x fastest), with headers `X-Visivo-Width`, `X-Visivo-Height`,
 `X-Visivo-Depth`, `X-Visivo-Scalar-Type` (`uint8` or `float16`),
 `X-Visivo-Byte-Order: little`, `X-Visivo-Range-Min` and `X-Visivo-Range-Max`
-(the finite range of the reduced cube, which the encoding spans),
+(the finite range of the reduced cube, which the encoding spans; on a log
+scale the range of its positive values), `X-Visivo-Scale` (`linear` or `log`,
+what `scale` resolved to), `X-Visivo-Log-Range` (`min,max`: on a log scale
+the base-10 logarithms the codes span, empty on a linear one),
+`X-Visivo-Nonpositive-Voxels` (on a log scale the finite reduced voxels at or
+below zero, sent as blank; 0 on a linear one),
 `X-Visivo-Full-Shape` (`width,height,depth` of the cube),
 `X-Visivo-Bin-Factors` (`fx,fy,fz`), `X-Visivo-Bin-Mode`,
 `X-Visivo-Threshold` (the default threshold for this binning: for `mean`, the
@@ -289,6 +315,13 @@ value), `X-Visivo-Bunit`, `X-Visivo-Source` (`cube` or `pyramid`) and
   steps near the noise are coarse (one peak at 1000 σ: about 1.3 σ per code);
   `float16` is the remedy.
 - `float16`: value = min + stored · (max − min); a blank voxel is stored as −1.
+- On a log scale (`X-Visivo-Scale: log`) min and max above are the two
+  numbers of `X-Visivo-Log-Range`, and the value is 10 to the power of what
+  the code gives: value = 10^(lmin + (code − 1) / 254 · (lmax − lmin)). Every
+  decade gets the same number of codes: a density from 1.8e-12 to 2.1e-5
+  (seven decades) has about 36 codes a decade in `uint8` (0.028 dex a code,
+  values within 3.2 %), where a linear scale puts everything below about
+  4e-8 in code 1.
 
 From the cube, the route reads the whole cube; from the pyramid, one level
 and the level-0 boxes of the border voxels; in bounded pieces either way. It

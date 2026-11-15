@@ -446,13 +446,18 @@ export function poseChanged(aSent, aNow, minDeg = 0.05, minMetres = 0.0005) {
  * 1/f of that path, f the geometric mean of the binning factors (VTK's
  * opacity is per voxel: unit distance 1). Values below the threshold are
  * transparent; above the colour maximum, the top of the map.
+ * `scale` 'log' (issue #317): lo and hi are the log10 range, and the points
+ * are at 10^(lo + t (hi - lo)), spread evenly in log10 of the values as the
+ * headset's colours are (the session interpolates linearly between them).
  */
 export function transferFunction(p, n = 48) {
   const span = p.hi - p.lo;
-  const toData = (t) => p.lo + t * span;
+  const log = p.scale === 'log';
+  const toData = (t) => (log ? Math.pow(10, p.lo + t * span) : p.lo + t * span);
   const thr = p.thrNorm, cmax = Math.max(p.cmaxNorm, thr + 1e-3);
   const f = Math.cbrt((p.factors || [1, 1, 1]).reduce((a, b) => a * b, 1)) || 1;
-  const eps = Math.max(Math.abs(span) * 1e-6, 1e-12);
+  // Just below the threshold: relative on a log scale (values of 1e-12 and less).
+  const eps = log ? Math.abs(toData(thr)) * 1e-6 : Math.max(Math.abs(span) * 1e-6, 1e-12);
   const lutAt = (L) => {
     const x = Math.max(0, Math.min(255, L * 255));
     const i = Math.min(254, Math.floor(x)), t = x - i;

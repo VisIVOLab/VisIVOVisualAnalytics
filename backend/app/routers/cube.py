@@ -221,6 +221,13 @@ class CubeReducedRequest(BaseModel):
     #: missing; mean binning only), or ``auto``: the pyramid for a cube larger
     #: than ``VISIVO_VR_PYRAMID_BYTES`` binned by the mean, else the cube.
     source: Literal["auto", "pyramid", "cube"] = "auto"
+    #: The value scale the voxels are quantised on (issue #317): ``linear``,
+    #: ``log`` (log10 of the values; a value at or below zero is blank), or
+    #: ``auto``: log only for a simulation volume (reduced_info's
+    #: ``simulation``) whose values are positive and span more than three
+    #: decades (a density), linear for every other cube (radio, masked or
+    #: moment-derived ones included). Only reduced_bin uses it.
+    scale: Literal["auto", "linear", "log"] = "auto"
 
 
 def _reduced_source(path: str, request: CubeReducedRequest):
@@ -322,7 +329,9 @@ async def cube_reduced_bin(
 ) -> Response:
     """The reduced cube as raw 8- or 16-bit voxels (x fastest), with its value
     range and its default threshold in headers (mean: the noise rule on the
-    reduced cube; max: the full cube's threshold). From the cube it reads the
+    reduced cube; max: the full cube's threshold; a simulation volume: the
+    99th percentile), and its value scale (``X-Visivo-Scale``: on ``log`` the
+    codes are of log10 of the values, over ``X-Visivo-Log-Range``). From the cube it reads the
     whole cube, from the pyramid one level; it takes a compute slot."""
     from ..compute import worker_cube_reduced
     path = _require_cube_path(session, request.dataset_id)
@@ -340,12 +349,13 @@ async def cube_reduced_bin(
         from ..product_cache import file_identity  # noqa: PLC0415
         identity = await asyncio.to_thread(file_identity, path)
         key = (session.session_id, path, identity, request.factor_xy, request.factor_z,
-               request.max_dim, request.mode, request.encoding, pyramid_path)
+               request.max_dim, request.mode, request.encoding, pyramid_path, request.scale)
         task = _REDUCED_IN_FLIGHT.get(key)
         if task is None:
             task = asyncio.ensure_future(_run_heavy_with_limit(
                 session, worker_cube_reduced, path, request.factor_xy, request.factor_z,
-                request.max_dim, request.mode, request.encoding, True, pyramid_path))
+                request.max_dim, request.mode, request.encoding, True, pyramid_path,
+                request.scale))
             _REDUCED_IN_FLIGHT[key] = task
             task.add_done_callback(lambda _t, k=key: _REDUCED_IN_FLIGHT.pop(k, None))
         result = await asyncio.shield(task)
@@ -369,6 +379,12 @@ async def cube_reduced_bin(
         "X-Visivo-Byte-Order": "little",
         "X-Visivo-Range-Min": repr(float(result["range_min"])),
         "X-Visivo-Range-Max": repr(float(result["range_max"])),
+        # Issue #317: on a log scale the codes span log10 of the values over
+        # Log-Range; Range-Min/Max stay values (the positive ones').
+        "X-Visivo-Scale": str(result.get("scale", "linear")),
+        "X-Visivo-Log-Range": (f"{float(result['log_min'])!r},{float(result['log_max'])!r}"
+                               if result.get("scale") == "log" else ""),
+        "X-Visivo-Nonpositive-Voxels": str(int(result.get("nonpositive_voxels", 0))),
         "X-Visivo-Full-Shape": f"{fw},{fh},{fd}",
         "X-Visivo-Bin-Factors": f"{fx},{fy},{fz}",
         "X-Visivo-Bin-Mode": result["mode"],

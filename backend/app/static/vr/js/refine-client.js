@@ -605,6 +605,8 @@ export class Refiner {
     const ok = this._send({
       type: 'xr_pose', pose_id: id, t_client: Date.now() / 1000,
       model: Array.from(ctx.model), z_stretch: ctx.zStretch,
+      // A simulation's box drawn to its grid spacing (#317): the voxel's sides.
+      ...(ctx.aspect ? { aspect: Array.from(ctx.aspect) } : {}),
       views: eyes.map((e) => ({ eye: e.eye, view: Array.from(e.view), projection: Array.from(e.proj), width, height })),
       depth: this.o.depthScale ? { scale: this.o.depthScale } : false,
       quality: this.o.quality, sample_distance: this.o.sampleDistance,

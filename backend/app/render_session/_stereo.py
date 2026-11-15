@@ -14,7 +14,10 @@ Coordinates. Matrices travel as WebGL/WebXR do, 16 numbers in column-major
 order, world units in metres. The model matrix maps the VR page's model space
 to world: the box centred on the origin, its longest side 1, x along NAXIS1,
 y along NAXIS2, z along the spectral axis stretched by ``z_stretch``, its
-faces at the outer pixel edges (``app/static/vr/js/volume.js`` boxExtent).
+faces at the outer pixel edges (``app/static/vr/js/volume.js`` boxExtent). A
+simulation volume's box follows its grid spacing (issue #317): ``aspect`` is
+the size of one voxel along x, y and z, relative (1, 1, 1 for a cube's
+square pixels and channels), and z_stretch multiplies its z.
 
 Depth. For a volume, the depth of the first sample along each ray whose
 opacity is above zero, i.e. the first sample above the transfer function's
@@ -66,6 +69,8 @@ MIN_EYE_PX, MAX_EYE_PX = 16, 2560
 MAX_DEPTH_SCALE = 16
 #: Largest spectral stretch accepted (the VR page's slider stays well inside).
 MAX_Z_STRETCH = 100.0
+#: Largest ratio of two voxel sides in ``aspect`` (a grid finer along one axis).
+MAX_ASPECT_RATIO = 1000.0
 #: Ray step of a stereo frame, in voxels. Half a voxel puts the first sample
 #: above the threshold within a voxel of the emission's surface (measured on
 #: a sphere: median 0.5, 95th percentile 0.9 voxel; the mono view's adaptive
@@ -106,6 +111,9 @@ class XRPose:
     # "jpeg", or "h264": the eyes encoded for the connection's WebRTC video
     # (issue #189, _stereo_webrtc.py); set by the backend while its link is up.
     frame_color: str = "jpeg"
+    # A voxel's relative size along x, y, z (issue #317: a simulation's box
+    # drawn to its grid spacing); (1, 1, 1) for a cube.
+    aspect: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 
 def _matrix(value: Any, name: str) -> np.ndarray:
@@ -254,19 +262,44 @@ def parse_pose(command: dict) -> XRPose:
     frame_color = command.get("frame_color", "jpeg")
     if frame_color not in ("jpeg", "h264"):
         raise ValueError("frame_color must be 'jpeg' or 'h264'.")
+    aspect = parse_aspect(command.get("aspect"))
     return XRPose(pose_id, t_client, model, z_stretch, [eyes["left"], eyes["right"]],
                   width, height, depth_scale, quality, background, t_received, step,
-                  frame_color)
+                  frame_color, aspect)
+
+
+def parse_aspect(value: Any) -> tuple[float, float, float]:
+    """The pose's ``aspect`` (three positive numbers, the largest at most
+    :data:`MAX_ASPECT_RATIO` times the smallest), normalised to a largest of
+    1; (1, 1, 1) when absent."""
+    if value is None:
+        return (1.0, 1.0, 1.0)
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError("aspect must be three positive numbers.")
+    a = [_number(v, "aspect") for v in value]
+    if not all(v > 0.0 for v in a) or max(a) > MAX_ASPECT_RATIO * min(a):
+        raise ValueError(f"aspect must be three positive numbers within a ratio of "
+                         f"{MAX_ASPECT_RATIO:g}.")
+    m = max(a)
+    return (a[0] / m, a[1] / m, a[2] / m)
 
 
 # ── Geometry ─────────────────────────────────────────────────────────────────
 
 
-def voxel_to_model(nx: int, ny: int, nz: int, z_stretch: float = 1.0) -> np.ndarray:
+def _stretch_xyz(z_stretch: float, aspect=(1.0, 1.0, 1.0)) -> np.ndarray:
+    """A voxel's drawn size along x, y, z: ``aspect`` with z times ``z_stretch``."""
+    a = np.asarray(aspect, dtype=float)
+    return np.array([a[0], a[1], a[2] * z_stretch])
+
+
+def voxel_to_model(nx: int, ny: int, nz: int, z_stretch: float = 1.0,
+                   aspect=(1.0, 1.0, 1.0)) -> np.ndarray:
     """4x4 from the session's voxel coordinates (voxel i at x = i, as the VTK
     image data is laid out) to the VR page's model space (see the module doc)."""
-    m = float(max(nx, ny, nz * z_stretch))
-    s = np.array([1.0 / m, 1.0 / m, z_stretch / m])
+    d = _stretch_xyz(z_stretch, aspect)
+    m = float(max(nx * d[0], ny * d[1], nz * d[2]))
+    s = d / m
     out = np.diag([*s, 1.0])
     out[:3, 3] = (0.5 - np.array([nx, ny, nz]) / 2.0) * s
     return out
@@ -281,7 +314,8 @@ def camera_from_view(view: np.ndarray) -> tuple[list[float], list[float], list[f
 
 
 def voxel_camera(view: np.ndarray, projection: np.ndarray, model: np.ndarray,
-                 shape_xyz: tuple[int, int, int], z_stretch: float
+                 shape_xyz: tuple[int, int, int], z_stretch: float,
+                 aspect=(1.0, 1.0, 1.0),
                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     """The eye in the cube's voxel coordinates: ``(view, projection, stretch, s)``.
 
@@ -290,12 +324,13 @@ def voxel_camera(view: np.ndarray, projection: np.ndarray, model: np.ndarray,
     rotation, a translation and a uniform scale s (metres per voxel), is
     folded into a rigid view in voxel units and a projection that scales by s
     first. VTK then ray-casts the volume with its usual magnitudes (a volume a
-    thousandth of a unit across hung Apple's GPU). The spectral stretch, not
-    uniform, stays a prop matrix: ``stretch``, the diagonal (1, 1, z_stretch).
+    thousandth of a unit across hung Apple's GPU). The spectral stretch and a
+    simulation's voxel aspect, not uniform, stay a prop matrix: ``stretch``,
+    the diagonal (ax, ay, az * z_stretch) (1, 1, z_stretch for a cube).
     Every voxel reaches exactly the clip coordinates it reaches through
     ``projection @ view @ model @ voxel_to_model``."""
-    stretch = np.diag([1.0, 1.0, z_stretch, 1.0])
-    placed = model @ voxel_to_model(*shape_xyz, z_stretch) @ np.linalg.inv(stretch)
+    stretch = np.diag([*_stretch_xyz(z_stretch, aspect), 1.0])
+    placed = model @ voxel_to_model(*shape_xyz, z_stretch, aspect) @ np.linalg.inv(stretch)
     ev = view @ placed                       # s * rotation, translation
     s = float(np.cbrt(np.linalg.det(ev[:3, :3])))
     rigid = ev.copy()
@@ -320,7 +355,8 @@ def with_depth_range(projection: np.ndarray, near: float, far: float) -> np.ndar
 
 
 def stereo_eye(view: np.ndarray, projection: np.ndarray, model: np.ndarray,
-               shape_xyz: tuple[int, int, int], z_stretch: float) -> dict:
+               shape_xyz: tuple[int, int, int], z_stretch: float,
+               aspect=(1.0, 1.0, 1.0)) -> dict:
     """Everything one eye is drawn with: the voxel camera (:func:`voxel_camera`)
     with a depth range that VTK draws correctly, the camera inside the cube
     included. The near plane comes to :data:`RAY_NEAR_VOXELS` (or the
@@ -328,7 +364,7 @@ def stereo_eye(view: np.ndarray, projection: np.ndarray, model: np.ndarray,
     corner. The picture is the headset's; emission nearer than the headset's
     near plane is drawn, not clipped. ``depth_projection`` (metres) turns the
     frame's window depth into distances (:func:`eye_distance`)."""
-    rigid, _, stretch, s = voxel_camera(view, projection, model, shape_xyz, z_stretch)
+    rigid, _, stretch, s = voxel_camera(view, projection, model, shape_xyz, z_stretch, aspect)
     nx, ny, nz = shape_xyz
     corners = np.array([[x, y, z, 1.0] for x in (-0.5, nx - 0.5) for y in (-0.5, ny - 0.5)
                         for z in (-0.5, nz - 0.5)])
@@ -843,10 +879,10 @@ class StereoMixin:
             and not depth_off_on_this_backend() and not mip
         depth_problem = None
         shape = (self._nx, self._ny, self._nz)
-        cameras = [stereo_eye(e.view, e.projection, pose.model, shape, pose.z_stretch)
-                   for e in pose.eyes]
+        cameras = [stereo_eye(e.view, e.projection, pose.model, shape, pose.z_stretch,
+                              pose.aspect) for e in pose.eyes]
         stretch = cameras[0]["stretch"]
-        placement = None if pose.z_stretch == 1.0 else _vtk_matrix(stretch)
+        placement = None if np.allclose(np.diag(stretch), 1.0) else _vtk_matrix(stretch)
         placed = [(p, p.GetUserMatrix()) for p in (self._volume, self._iso_actor,
                                                    self._iso_lod_actor) if p is not None]
         hidden = [p for p in (self._outline_actor, self._cutting_plane_actor)

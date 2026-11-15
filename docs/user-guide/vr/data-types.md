@@ -11,6 +11,46 @@ the same rule: the headset draws, the backend computes. The routes are in
 | **Catalogue over a cube** (VLKB compact sources or filaments, a cross-match, a catalogue file) | markers, ellipses and contours in the cube's box | places each source in the cube's pixels with the file's full WCS | with the cube |
 | **Velocity field** | its streamlines and arrows as lines, coloured by the speed | traces them on the desktop's display grid with the desktop's own filters | no |
 
+## Simulation volumes
+
+A gridded field of a simulation (a VBT volume's field,
+`<data>.bin::vbt-field=N`; a PLUTO variable, `<data>::pluto-var=<name>`; a
+FITS cube whose axes are neither spectral nor on the sky) opens as a cube,
+whatever its file is called
+([#317](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/317)). The
+backend says it is a *simulation volume* and the page treats it as one:
+
+- **Log scale.** A field whose values are all positive and span more than
+  three decades (a density from 1.8e-12 to 2.1e-5 g/cm³) is sent as codes of
+  log10 of its values, so every decade keeps its share of the 8-bit codes; a
+  linear scale would put all but the densest voxels in the first code, and no
+  stretch on the headset brings them back. Values at or below zero have no
+  logarithm and are blank. A signed field (a velocity component) stays
+  linear, and so does every cube that is not a simulation volume (radio,
+  masked or moment-derived) unless *log* is chosen. *Scale* on the page (*auto*, *log*,
+  *linear*) overrides the choice. The threshold, the colour max, the
+  readout, the info line and the colour bar beside the box always show
+  values, never their logarithms. A log-scaled field starts with the
+  *Linear* stretch, linear in log10 of the values, which is the desktop's
+  *Log* (the desktop is told so).
+- **The box is drawn to the grid spacing**: a grid of 64 × 48 × 24 cells of
+  1 × 1 × 2 kpc is drawn 1 : 0.75 : 0.75, not by its cell counts. The axes
+  are ticked in their own units (X, Y, Z, in scientific notation for lengths
+  in cm). The full-quality frames from the backend use the same box. When the
+  axes' units differ or a spacing is missing the box is drawn in cells, and
+  the scale line says so.
+- **No spectral wording or tools**: no velocity or spectral range (*Range*
+  crops z as it crops x and y), no velocity stretch, no noise σ (*Display*
+  offers the 90th and 99th percentiles where a cube has 3σ and 5σ), no beam
+  or rest line, and the Kinematic Lasso, the Spectrum probe, moments and PV
+  slices are greyed with the reason. The *Box region* gives the statistics of
+  a box. The default threshold is the 99th percentile of the values, not the
+  noise rule. The readout gives X, Y, Z in the axes' unit, the cell, and the
+  value.
+
+The variable picker (choosing another field of the same file in the
+headset) comes in a later change.
+
 ## Opening one
 
 From the desktop: *Tools → Open in VR Headset…* in a point

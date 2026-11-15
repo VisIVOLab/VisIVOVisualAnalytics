@@ -1,4 +1,5 @@
-// The colour bar of a point table or a velocity field (issue #259): the
+// The colour bar of a point table, a velocity field (issue #259) or a
+// simulation volume (issue #317): the
 // colour map over the colour window, its ticks, and the column with its unit,
 // drawn on a 2-D canvas that stands beside the box, turned to the eyes. It is
 // uploaded only when what it shows changes (a 2-D texture: nothing 3-D during
@@ -30,7 +31,9 @@ export function tickAt(v, a, b, log) {
 
 /**
  * Draws the bar: `bar` {lut (256 × RGBA8), lo, hi (the window's data values,
- * its two ends), log, title (colourBarTitle), ticks (data values)}.
+ * its two ends), log, title (colourBarTitle), ticks (data values), at
+ * (optional: a tick value's place along the bar, 0..1, where the colours are
+ * not linear in the value or its log: a simulation volume's stretch, #317)}.
  */
 export function drawColourBar(c, bar) {
   const [W, H] = BAR_PX;
@@ -59,14 +62,15 @@ export function drawColourBar(c, bar) {
   }
   c.fillRect(x0, BAR_Y, len, BAR_H);
   const { lo, hi, log } = bar;
+  const at = typeof bar.at === 'function' ? bar.at : (v) => tickAt(v, lo, hi, log);
   const ticks = (bar.ticks || []).filter((v) => {
-    const t = tickAt(v, lo, hi, log);
+    const t = at(v);
     return t >= -1e-9 && t <= 1 + 1e-9;
   });
   // Labels at most one per 120 px.
   const placed = [];
   for (const v of ticks) {
-    const x = x0 + tickAt(v, lo, hi, log) * len;
+    const x = x0 + at(v) * len;
     c.fillStyle = '#e6e9ef';
     c.fillRect(x - 1, BAR_Y + BAR_H, 2, 8);
     if (placed.some((p) => Math.abs(p - x) < 120)) continue;
