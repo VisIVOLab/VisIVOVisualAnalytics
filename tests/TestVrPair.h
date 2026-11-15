@@ -14,6 +14,7 @@ class TestVrPair : public QObject
 
 private slots:
     void requestBodyCarriesTheLinkValuesButTheToken();
+    void skyPlacementRidesEveryWayToTheHeadset();
     void expiryIsReadAsEpochOrIso();
     void expiryFollowsTheServersClock();
     void createAnswerIsUnderstood();

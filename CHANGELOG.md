@@ -8,6 +8,37 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **3-D sky catalogues: sources without a distance are no longer put on a
+  300 Mpc shell (#265).** In a catalogue that has a redshift or a distance
+  column, a row with no usable distance and a redshift that is ≤ 0, zero or
+  missing has no position: it is left out of the scene (and of the
+  server-side, ray-traced and headset views) and counted, in every distance
+  mode. A catalogue with no redshift and no distance column at all (positions
+  only) keeps a view: its sources are shown on the celestial sphere (radius
+  300 Mpc, not a distance), which the status line, the pick and the headset's
+  status line say. The 3-D catalogue window shows "N placed · M unplaced (no
+  distance) · K with cz < 1000 km/s (distance uncertain: peculiar
+  velocities)", an **Unplaced Sources…** table (Name, RA, Dec, cz, Reason),
+  and the selected source's readout names where its distance came from
+  ("Distance 12.3 Mpc, from z (comoving, Planck18)", "… from column DIST")
+  with "cz < 1000 km/s: uncertain" when that applies. A measured distance
+  column now wins under every cosmology; before, any model other than
+  Planck18 replaced it with the distance of the redshift, on the desktop and
+  on the backend alike.
+- **VR: a sky catalogue is placed with the desktop window's frame, distance
+  mode and cosmology (#260).** The link, the pairing code, the app launch and
+  the hub's `show` carry the window's applied settings; `/v1/points/info` and
+  `/v1/points/sample_bin` take them as `sky` and apply them as the ray-traced
+  view does, and answer the counts (`sky_settings`, `X-Visivo-Sky`,
+  `X-Visivo-Unplaced`). Samples skip the rows with no position, so the
+  budget, `X-Visivo-Step` and the splat size count the placed rows
+  (`X-Visivo-Placed-Rows`). A custom cosmology is refused as for the
+  ray-traced view (the window goes back to Planck18 and says so), also when
+  it is chosen while the headset window is open; a pairing code still unused
+  is renewed when the placement changes. The page's status line
+  shows the placement and the unplaced count. Redshift-space mode now uses
+  the chosen model's H₀ (WMAP9: 69.32) instead of a fixed 67.66, on the
+  desktop and on the backend.
 - **VR: standard HI measurements of a selection (#280).**
   `/v1/cube/mask_stats_bin` answers, under `hi`, what an HI catalogue quotes
   for a lasso or box selection: the integrated flux in Jy km/s with its

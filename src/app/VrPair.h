@@ -134,6 +134,14 @@ inline QJsonObject requestBody(const VrLink::Inputs &in)
         body.insert(u"kind"_s, in.kind);
     if (!in.boxMpc.isEmpty())
         body.insert(u"box"_s, in.boxMpc);
+    // Flat, under the fragment's names: a pairing's extra parameters are
+    // strings (routers/vr_pair.py PairRequest).
+    if (!in.sky.frame.isEmpty())
+        body.insert(u"sky_frame"_s, in.sky.frame);
+    if (!in.sky.distanceMode.isEmpty())
+        body.insert(u"distance_mode"_s, in.sky.distanceMode);
+    if (!in.sky.cosmology.isEmpty())
+        body.insert(u"cosmology"_s, in.sky.cosmology);
     return body;
 }
 
@@ -534,6 +542,16 @@ private:
     qint64 m_lastAnswerMs{ -1 };
     bool m_everConnected{ false };
 };
+
+/// A code carries the sky placement it was asked with (issue #260) in its
+/// parameters: when the window's placement changes while the code is still
+/// unused, the dialog asks for a new one, or the headset that types it would
+/// place the catalogue the old way. A used or connected code is left alone.
+inline bool renewCodeForNewSky(const Tracker &t, qint64 nowMs, const VrLink::Sky &before,
+                               const VrLink::Sky &after)
+{
+    return before != after && t.codeOutstanding(nowMs);
+}
 
 /// One status poll at a time. Each poll gets a ticket; an answer counts only
 /// with the ticket of the poll out now. reset() (the dialog hidden, a new
