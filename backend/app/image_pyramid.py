@@ -71,7 +71,9 @@ def _hdu_and_shape(path: str) -> tuple[int, tuple[int, int, int]]:
 
     # A field reference (a 2-D PLUTO run, issue #315) is its data file's version.
     st = os.stat(field_data_file(path))
-    key = (os.path.realpath(field_data_file(path)), path, st.st_size, st.st_mtime_ns)
+    from .canonical_path import canonical_path  # noqa: PLC0415
+
+    key = (str(canonical_path(field_data_file(path))), path, st.st_size, st.st_mtime_ns)
     if key not in _layout:
         if is_field_ref(path):
             hdu = volume_shape(path)[1]
