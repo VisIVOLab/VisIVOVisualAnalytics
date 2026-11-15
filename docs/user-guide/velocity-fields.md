@@ -99,10 +99,10 @@ shows an isosurface of it, at *Density level %* of its peak.
 
 ```{caution}
 Galaxy distances come from the catalogue, and a redshift column holding `0`
-means "not measured" — such rows fall back to the catalogue distance field, or
-to a nominal 300 Mpc if there is none. Check how many rows that affects before
-reading anything into their positions; the status line reports the count when
-distances are recomputed.
+means "not measured" — such rows fall back to the catalogue distance field;
+without one (and for a negative redshift) a row has no distance and is not
+drawn. Check how many rows that affects before reading anything into the
+positions.
 ```
 
 ### Bulk flow

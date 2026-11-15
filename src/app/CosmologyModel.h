@@ -36,6 +36,21 @@ inline QStringList presetNames()
              QStringLiteral("Planck13"), QStringLiteral("WMAP9") };
 }
 
+/// H0 in km/s/Mpc of a preset, as astropy defines it (the backend's models),
+/// for the redshift-space distance cz/H0; NaN for a name that is not one.
+inline double presetH0(const QString &name)
+{
+    if (name == QStringLiteral("Planck18"))
+        return 67.66;
+    if (name == QStringLiteral("Planck15"))
+        return 67.74;
+    if (name == QStringLiteral("Planck13"))
+        return 67.77;
+    if (name == QStringLiteral("WMAP9"))
+        return 69.32;
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
 /// The name a custom model travels under inside the client (a combo entry, a
 /// product parameter). Never sent to a preset route.
 inline QString customName() { return QStringLiteral("Custom"); }
