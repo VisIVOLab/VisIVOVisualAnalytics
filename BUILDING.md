@@ -256,7 +256,11 @@ environment on first launch; to do it by hand:
 ```bat
 py -3.12 -m venv "%APPDATA%\VisIVO\.venv"
 "%APPDATA%\VisIVO\.venv\Scripts\python.exe" -m pip install -r backend\requirements.txt
+"%APPDATA%\VisIVO\.venv\Scripts\python.exe" -m pip install --only-binary=:all: -r backend\requirements-webrtc.txt
 ```
+
+The second line adds WebRTC (headset pairing, stereo video in the headset);
+the backend works without it.
 
 `healpy` has no Windows wheels and is skipped there by an environment marker in
 `requirements.txt`, so the HiPS tile-query endpoints are unavailable on Windows;

@@ -249,3 +249,57 @@ async def test_the_hub_takes_a_mask_command_and_a_mask_product(client, auth_head
     from app.routers.headset import PRODUCT_KINDS, HeadsetCommandRequest
     assert "mask" in PRODUCT_KINDS
     assert HeadsetCommandRequest(type="mask", dataset_id="ds1", path="/d/m.fits").type == "mask"
+
+
+@pytest.mark.parametrize("head", [[1, 2], "text", 5, {"edits": {"id": 3}}, {"edits": [3]},
+                                  {"edits": [], "removed": [1], "history": 5},
+                                  {"edits": [], "removed": [1], "history": ["ok", 7]}])
+def test_a_malformed_save_header_is_a_value_error(head):
+    """Any JSON value can arrive as the header: a shape other than an object
+    with a list of edit objects and a list of strings is a ValueError (422),
+    never an AttributeError or TypeError (500)."""
+    with pytest.raises(ValueError):
+        ml.parse_edits(_save_body(head, []))
+
+
+async def test_a_malformed_save_is_422_and_a_large_one_413_however_sent(client, auth_headers, tmp_path,
+                                                                         monkeypatch):
+    from app.routers import vr_layers
+    c, m, _ = _files(tmp_path)
+    cube = (await client.post("/v1/datasets/open", json={"path": c}, headers=auth_headers)).json()
+    for head in ([1, 2], {"dataset_id": cube["dataset_id"], "mask_path": m, "edits": [], "removed": [5],
+                          "history": 5}):
+        r = await client.post("/v1/cube/mask_layer_save", content=_save_body(head, []), headers=auth_headers)
+        assert r.status_code == 422, (head, r.text)
+    # Chunked (no Content-Length): refused once the running total passes the cap.
+    monkeypatch.setattr(vr_layers, "MASK_SAVE_MAX_BYTES", 4096)
+
+    sent = []
+
+    async def chunks():
+        for _ in range(64):
+            sent.append(1)
+            yield b"\0" * 1024
+    r = await client.post("/v1/cube/mask_layer_save", content=chunks(), headers=auth_headers)
+    assert r.status_code == 413
+    assert len(sent) < 64, "the body was read to its end before the size check"
+
+
+async def test_an_unknown_mask_dataset_falls_back_to_the_path(client, auth_headers, tmp_path):
+    """The page sends both the mask's dataset id and its resolved path: after a
+    session change the id is unknown, and the path still opens and saves."""
+    c, m, labels = _files(tmp_path)
+    cube = (await client.post("/v1/datasets/open", json={"path": c}, headers=auth_headers)).json()
+    r = await client.post("/v1/cube/mask_layer_bin", json={"dataset_id": cube["dataset_id"],
+                                                           "mask_dataset_id": "gone", "mask_path": m},
+                          headers=auth_headers)
+    assert r.status_code == 200
+    five = np.flatnonzero(labels.reshape(-1) == 5)
+    save = _save_body({"dataset_id": cube["dataset_id"], "mask_dataset_id": "gone", "mask_path": m,
+                       "removed": [], "edits": [{"id": 5, "count": 1}]}, [five[:1]])
+    r = await client.post("/v1/cube/mask_layer_save", content=save, headers=auth_headers)
+    assert r.status_code == 200 and r.json()["valid"], r.text
+    # The id alone, unknown: still 404.
+    r = await client.post("/v1/cube/mask_layer_bin", json={"dataset_id": cube["dataset_id"], "mask_dataset_id": "gone"},
+                          headers=auth_headers)
+    assert r.status_code == 404

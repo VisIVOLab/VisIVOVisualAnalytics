@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
@@ -35,8 +36,53 @@ logger = logging.getLogger("visivo.vr")
 
 #: The page the desktop opens with a ticket (under the backend's path prefix).
 APP_PAGE = "/vr/?launch=immersive"
-#: Exchanges per client key and minute, and in all (the route is public).
-EXCHANGES = _TokenCheckLimiter(per_minute=20, max_clients=256, global_per_minute=120)
+
+
+class _ExchangeLimiter(_TokenCheckLimiter):
+    """Exchanges per client key and minute, as /v1/vr/info's token checks;
+    the global budget counts refused tickets only. A valid exchange spends a
+    256-bit ticket and tells a guesser nothing, so a few addresses sending
+    junk must not hold every user's launch at 429: a request within its
+    key's limit is always tried, and only a miss beyond the global budget is
+    answered 429 instead of 404."""
+
+    def allow(self, client: str, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            hist = [t for t in self._seen.pop(client, []) if now - t < 60.0]
+            ok = len(hist) < self.per_minute
+            if ok:
+                hist.append(now)
+            self._seen[client] = hist
+            while len(self._seen) > self.max_clients:
+                self._seen.popitem(last=False)
+            return ok
+
+    def _prune_all(self, now: float) -> None:
+        while self._all and now - self._all[0] >= 60.0:
+            self._all.popleft()
+
+    def miss(self, client: str, now: float | None = None) -> int:
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._prune_all(now)
+            # One past the budget is enough to say "over": the window stays
+            # bounded however many addresses send junk.
+            if len(self._all) <= self.global_per_minute:
+                self._all.append(now)
+        return super().miss(client, now)
+
+    def misses_over_budget(self, now: float | None = None) -> bool:
+        """Whether this minute's refused tickets, over every key, are beyond
+        ``global_per_minute``."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            self._prune_all(now)
+            return len(self._all) > self.global_per_minute
+
+
+#: Exchanges per client key and minute, and refused ones in all (the route is public).
+EXCHANGES = _ExchangeLimiter(per_minute=20, max_clients=256, global_per_minute=120)
 #: An exchange body, at most (a ticket is 43 characters).
 MAX_EXCHANGE_BODY = 1024
 _NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
@@ -70,11 +116,8 @@ async def vr_assetlinks() -> Response:
     """The statements that let the packaged headset app open this origin
     (app/vr_launch.py: release, development, extra file). 404 when there is
     none, so a backend without the app says nothing."""
-    try:
-        statements = await asyncio.to_thread(L.assetlinks_statements)
-    except ValueError as exc:
-        logger.warning("[vr] %s", exc)
-        raise HTTPException(status_code=404, detail="Not found") from None
+    # An unreadable VISIVO_VR_ASSETLINKS_FILE is logged and skipped there.
+    statements = await asyncio.to_thread(L.assetlinks_statements)
     if not statements:
         raise HTTPException(status_code=404, detail="Not found")
     return JSONResponse(statements, headers={"Cache-Control": "no-cache"})
@@ -99,11 +142,13 @@ async def vr_launch_exchange(request: Request) -> JSONResponse:
     """The page's exchange of its ticket: ``{"ticket": "…"}`` in a JSON body
     (never the address) gives ``{token, session, launch, cube}`` once. 404 for
     a ticket unknown, used or expired (one answer for all), 429 beyond the
-    rate, 415 for a body that is not JSON."""
+    rate (per address; refused tickets also in all), 415 for a body that is
+    not JSON."""
     ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
     if ctype != "application/json":
         raise HTTPException(status_code=415, detail="Send the ticket as JSON.")
-    if not EXCHANGES.allow(token_check_key(request)):
+    key = token_check_key(request)
+    if not EXCHANGES.allow(key):
         raise HTTPException(status_code=429, detail="Too many ticket exchanges: wait a minute.",
                             headers={"Retry-After": "60"})
     raw = bytearray()
@@ -117,9 +162,12 @@ async def vr_launch_exchange(request: Request) -> JSONResponse:
         raise HTTPException(status_code=422, detail="The body is {\"ticket\": \"…\"}.") from None
     got = L.TICKETS.exchange(body.ticket, accepted_tokens())
     if got is None:
-        n = EXCHANGES.miss(token_check_key(request))
+        n = EXCHANGES.miss(key)
         if n in (5, 20, 100):
             logger.warning("[vr] %d refused launch tickets within a minute", n)
+        if EXCHANGES.misses_over_budget():
+            raise HTTPException(status_code=429, detail="Too many ticket exchanges: wait a minute.",
+                                headers={"Retry-After": "60", **_NO_STORE})
         raise HTTPException(status_code=404, detail="Unknown, used or expired ticket: open the cube again on the computer.",
                             headers=_NO_STORE)
     logger.info("[vr] launch %s: ticket exchanged", got["launch"])

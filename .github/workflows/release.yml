@@ -17,10 +17,11 @@
 #   - Linux x86_64: VisIVOVisualAnalytics-linux-x86_64.tar.gz
 #                   contains: VisIVOVisualAnalytics (launcher) + app/ (the
 #                   application tree linuxdeploy builds) + python/ +
-#                   setup_backend.sh + requirements.txt
+#                   setup_backend.sh + requirements.txt + requirements-webrtc.txt
 #   - Windows x86_64: VisIVOVisualAnalytics-windows-x86_64.zip
 #                     contains: bin/<exe + DLLs + plugins/ + backend/>
 #                              + setup_backend.bat + requirements.txt
+#                              + requirements-webrtc.txt
 #
 # The Python backend code is bundled next to the executable:
 #   - macOS:   <App>.app/Contents/Resources/backend/
@@ -45,7 +46,8 @@
 #   - Windows: bin\quest-app\
 # Without the signing secrets (a fork) the packages are built without it, with
 # a notice; if its build fails, with a warning. It never holds a release. On a
-# tag quest-app.yml also attaches the APK to the release, once.
+# tag push quest-app.yml also attaches the APK to the release, once (never on
+# a manual run, even on a tag).
 #
 # The setup scripts remain, now optional: they build a venv in a writable
 # user-data location, which BackendLauncher PREFERS over the bundled runtime.
@@ -118,6 +120,49 @@ jobs:
     outputs:
       matrix: ${{ steps.pick.outputs.matrix }}
     steps:
+      # Before anything is drafted or built: a tag pushed before the version
+      # bump would otherwise ship packages stamped with the previous version.
+      # backend/app/VERSION is the one source (CMakeLists.txt reads it into
+      # project(VERSION), the backend reports it); CITATION.cff must agree.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            backend/app/VERSION
+            CMakeLists.txt
+            CITATION.cff
+          sparse-checkout-cone-mode: false
+
+      - name: Tag, VERSION and CITATION.cff agree?
+        shell: bash
+        env:
+          IS_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The whole file less a BOM and surrounding whitespace, as
+          # CMakeLists.txt and backend/app/version.py read it.
+          version=$(python3 -I -c 'import sys; print(open(sys.argv[1], encoding="utf-8-sig").read().strip())' backend/app/VERSION)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=backend/app/VERSION::'$version' is not X.Y.Z"
+            exit 1
+          fi
+          # The desktop's version comes from the same file, not a literal.
+          if ! grep -Eq '^[[:space:]]*VERSION[[:space:]]+\$\{VISIVO_PROJECT_VERSION\}' CMakeLists.txt; then
+            echo "::error file=CMakeLists.txt::project() must take VERSION \${VISIVO_PROJECT_VERSION} (read from backend/app/VERSION)"
+            exit 1
+          fi
+          citation=$(sed -n -E 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' CITATION.cff | head -n 1)
+          if [ "$citation" != "$version" ]; then
+            echo "::error file=CITATION.cff::version '$citation' differs from backend/app/VERSION '$version'"
+            exit 1
+          fi
+          if [ "$IS_TAG" = "true" ] && [ "${TAG#v}" != "$version" ]; then
+            echo "::error::Tag $TAG is not the project version $version (backend/app/VERSION, CITATION.cff): bump them first, then tag"
+            exit 1
+          fi
+          echo "Version $version: backend/app/VERSION, CMakeLists.txt and CITATION.cff agree$([ "$IS_TAG" = "true" ] && echo ", and so does tag $TAG")"
+
       # Created once, here, before the matrix starts: the platforms then only
       # upload assets onto it, which is safe in parallel (creating or updating
       # the same release from four jobs is what failed with "HttpError: Server
@@ -733,12 +778,13 @@ jobs:
           rm -rf "$PKG"
           # Layout: <PKG>/bin/<exe + DLLs + plugins/ + backend/>
           #         <PKG>/setup_backend.bat
-          #         <PKG>/requirements.txt
+          #         <PKG>/requirements.txt + requirements-webrtc.txt
           #         <PKG>/README.txt
           mkdir -p "$PKG"
           cp -R dist/* "$PKG/"
           cp scripts/setup_backend.bat "$PKG/setup_backend.bat"
           cp backend/requirements.txt "$PKG/requirements.txt"
+          cp backend/requirements-webrtc.txt "$PKG/requirements-webrtc.txt"
           cat > "$PKG/README.txt" <<README
           VisIVO Visual Analytics (Windows)
           =================================
@@ -877,6 +923,7 @@ jobs:
           cp scripts/setup_backend.sh "$PKG/setup_backend.sh"
           chmod +x "$PKG/setup_backend.sh"
           cp backend/requirements.txt "$PKG/requirements.txt"
+          cp backend/requirements-webrtc.txt "$PKG/requirements-webrtc.txt"
           # The interpreter travels BESIDE the application tree, not inside it:
           # linuxdeploy rewrites what it finds in the AppDir. The client finds
           # it through the launcher's $VISIVO_PACKAGE_DIR, so extracting the

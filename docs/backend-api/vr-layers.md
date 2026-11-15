@@ -67,7 +67,7 @@ An even sample of the table within a budget.
 | `x`, `y`, `z` | the table's | position columns |
 | `color_field` | none | the colour column (none: one colour) |
 | `color_log` | false | code the colour column as log10 (it starts at the smallest positive value); `null`: the backend chooses (log for a positive column over more than three decades), and says which in `X-Visivo-Color-Log` |
-| `color_min`, `color_max` | the sample's range | the values codes 0 and 65535 stand for |
+| `color_min`, `color_max` | the sample's range | the values codes 0 and 65535 stand for; finite numbers only (NaN or Infinity is 422) |
 | `max_points` | 2 000 000 | rows sent at most (1 to 10 000 000) |
 | `filters` | `[]` | numeric filters `{field, op, value}`, as the point session's; or a box `{box: {fields: [x, y, z], min: [...], max: [...]}, op: "inside" \| "outside"}` (issue #259: the rows inside it, bounds included, or all but those; the point session's `set_filters` takes the same) |
 | `size_field` | none | a column of sizes (a smoothing length, data units): one more code per row after the colours, the log10 of the size over `X-Visivo-Size-Range` (issue #259) |
@@ -217,7 +217,9 @@ the same classification columns. Answer: `valid`, `output_path`,
 A label mask over a cube for the headset's mask layers (issue #282,
 `app/mask_layer.py`). Body (JSON): `dataset_id` (the cube), and
 `mask_dataset_id` (a mask opened in this session) or `mask_path` (a file on
-the backend). The mask must be on the cube's grid: the same size and axis
+the backend); when both are sent and the dataset id is unknown (the session
+changed, the backend restarted), `mask_path` is used, and an unknown id alone
+is 404. The mask must be on the cube's grid: the same size and axis
 type on each of the viewer's axes, and the same pixel-to-world transform
 (sample pixels of the mask taken to the world and back through the cube's WCS
 land within 0.001 pixel: CRPIX, CRVAL, CDELT, a CD or PC matrix and units,
@@ -239,14 +241,18 @@ time.
 ## `POST /v1/cube/mask_layer_save`
 
 The headset's refined mask written as FITS in the Workspace Exports. Body
-(`application/octet-stream`, at most 65 MiB): a uint32 little-endian length,
+(`application/octet-stream`, at most 65 MiB, 413 beyond: a declared length is
+checked first, and a chunked body is refused as soon as it passes the limit,
+never read whole): a uint32 little-endian length,
 that many bytes of JSON, padding to a multiple of 4, then each edited source's
 sorted voxel indices (uint32) in the order of `edits`. The JSON:
-`dataset_id`, `mask_dataset_id` or `mask_path`, `edits` (`[{id, count, new}]`:
-each source's whole new voxel list), `removed` (IDs emptied, at most 65 535,
-each 1..2³¹ − 1; anything else is 422), `history`
-(lines for the header, at most 20), `output_basename` (default
-`<mask without _mask>_vr_mask`).
+`dataset_id`, `mask_dataset_id` and/or `mask_path` (as for `mask_layer_bin`,
+the path being the fallback), `edits` (`[{id, count, new}]`: each source's
+whole new voxel list), `removed` (IDs emptied, at most 65 535, each
+1..2³¹ − 1), `history` (strings, lines for the header, at most 20 kept),
+`output_basename` (default `<mask without _mask>_vr_mask`). A header that is
+not a JSON object, `edits` that is not a list of objects, `history` that is not
+a list of strings, or a bad `removed` is 422.
 
 The original mask is read one slab of channels at a time and written out
 sequentially, each edited and removed source's voxels cleared in the same pass

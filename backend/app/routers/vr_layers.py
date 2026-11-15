@@ -180,8 +180,9 @@ class PointSampleRequest(BaseModel):
     z: str | None = None
     color_field: str | None = None
     color_log: bool | None = False     # null: the backend chooses (AUTO_LOG_DECADES)
-    color_min: float | None = None
-    color_max: float | None = None
+    # Finite only: NaN/Infinity would quantise every row to the lowest colour.
+    color_min: float | None = Field(None, allow_inf_nan=False)
+    color_max: float | None = Field(None, allow_inf_nan=False)
     max_points: int = Field(2_000_000, ge=1, le=10_000_000)
     filters: list[dict] = []
     # Each row's size from this column (a smoothing length, issue #259):
@@ -452,13 +453,17 @@ class MaskLayerRequest(BaseModel):
 
 
 def _mask_source(session: Session, mask_dataset_id: str, mask_path: str) -> str:
-    """The mask file: a dataset of the session, else a path on the backend."""
+    """The mask file: a dataset of the session, else (also when that id is
+    unknown) a path on the backend."""
     from ..dependencies import _normalize_path   # noqa: PLC0415
     if mask_dataset_id:
         entry = session.datasets.get(mask_dataset_id)
-        if not entry or not entry.get("path"):
+        if entry and entry.get("path"):
+            return str(entry["path"])
+        # The id belongs to a session that has gone (a backend restart, the
+        # desktop's session ended): the page also sends the resolved path.
+        if not mask_path.strip():
             raise HTTPException(404, f"Unknown mask dataset {mask_dataset_id!r}.")
-        return str(entry["path"])
     if not mask_path.strip():
         raise HTTPException(422, "Give mask_dataset_id or mask_path.")
     path = _normalize_path(mask_path.strip())
@@ -526,9 +531,14 @@ async def cube_mask_layer_save(request: Request, _: None = _auth,
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > MASK_SAVE_MAX_BYTES:
         raise HTTPException(413, "The mask is too large to save from the headset.")
-    body = await request.body()
-    if len(body) > MASK_SAVE_MAX_BYTES:
-        raise HTTPException(413, "The mask is too large to save from the headset.")
+    # Streamed with a running cap: a chunked body has no Content-Length, and
+    # request.body() would buffer all of it before any size check.
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > MASK_SAVE_MAX_BYTES:
+            raise HTTPException(413, "The mask is too large to save from the headset.")
+    body = bytes(buf)
     try:
         head, edits = ml.parse_edits(body)
     except (ValueError, KeyError, TypeError) as exc:

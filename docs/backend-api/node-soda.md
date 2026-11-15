@@ -21,7 +21,7 @@ Figures are read where they hold for this process: in a container, from its cgro
 | Field | Type | Description |
 |---|---|---|
 | `node_code` | string or null | `VISIVO_NODE_CODE`, or `null` when unset. |
-| `version` | string | `VISIVO_VERSION`, or the backend's version. |
+| `version` | string | `VISIVO_VERSION`, or the backend's version (`backend/app/VERSION`, the application's version). |
 | `timestamp` | float | Unix time of the snapshot. |
 | `cpu.cpus` | float | CPUs granted: the CPUs the process may run on, capped by the cgroup CPU quota (rounded to 2 decimals). |
 | `cpu.limited` | bool | `true` when a CPU quota applies or the process may run on fewer CPUs than the host has. |
@@ -46,7 +46,7 @@ Figures are read where they hold for this process: in a container, from its cgro
 ```json
 {
   "node_code": "INAF-CT",
-  "version": "1.0.0",
+  "version": "1.0.12",
   "timestamp": 1793440000.12,
   "cpu": {"cpus": 16.0, "limited": true, "utilisation_pct": 12.5, "pressure_pct": 0.0, "load_1m": 3.1},
   "memory": {"total_bytes": 68719476736, "available_bytes": 51539607552, "pressure_pct": 0.0},

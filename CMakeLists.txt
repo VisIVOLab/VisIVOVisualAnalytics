@@ -24,8 +24,20 @@ if (APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif ()
 
 
+# The version has one source, backend/app/VERSION, which the backend reports
+# too (backend/app/version.py); the release workflow checks the tag against it.
+# Read as release.yml and backend/app/version.py read it: the whole file, less
+# a UTF-8 BOM (dropped by ENCODING UTF-8) and surrounding whitespace, must be
+# X.Y.Z (a second line makes a list, which the check below refuses).
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/backend/app/VERSION" VISIVO_PROJECT_VERSION ENCODING UTF-8)
+string(STRIP "${VISIVO_PROJECT_VERSION}" VISIVO_PROJECT_VERSION)
+if (NOT VISIVO_PROJECT_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "backend/app/VERSION must hold X.Y.Z, not '${VISIVO_PROJECT_VERSION}'")
+endif ()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/backend/app/VERSION")
+
 project(VisIVOVisualAnalytics
-        VERSION 1.0.12
+        VERSION ${VISIVO_PROJECT_VERSION}
         LANGUAGES CXX C
 )
 

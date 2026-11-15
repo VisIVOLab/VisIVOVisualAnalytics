@@ -13,11 +13,13 @@ name: quest-app
 # Two ways in:
 #   - release.yml calls it (workflow_call) once per release run, before the
 #     desktop packages are built: they bundle the APK from this run's
-#     visivo-vr-apk artifact. On a tag it also adds the APK and its
+#     visivo-vr-apk artifact. On a tag push it also adds the APK and its
 #     description to the release drafted by release.yml. It has no tag
 #     trigger of its own, so a tag builds and uploads it once.
 #   - workflow_dispatch: a build on its own, to check the signing; the APK is
-#     a workflow artifact (and, run on a tag, replaces that release's asset).
+#     a workflow artifact only, even run on a tag: a published release keeps
+#     the APK its packages bundle (a rebuild is not byte-identical, so its
+#     apk_sha256 would no longer match the bundled copy).
 #
 # The certificate built must be one backend/app/vr_app.json names: otherwise
 # the job fails, so no package bundles an app its backend does not list. A
@@ -85,6 +87,11 @@ jobs:
 
       - uses: android-actions/setup-android@v3
         if: steps.key.outputs.present == 'true'
+        with:
+          # Only what build.sh needs. The action's default list still names the
+          # old `tools` package, which current command-line tools no longer
+          # have: sdkmanager then fails and the job with it.
+          packages: 'platform-tools build-tools;34.0.0 platforms;android-32'
 
       - name: Build and sign
         if: steps.key.outputs.present == 'true'
@@ -153,21 +160,32 @@ jobs:
         if: steps.key.outputs.present == 'true'
         run: echo "built=true" >> "$GITHUB_OUTPUT"
 
+      # Only on the tag push itself. Called by release.yml, github.event_name
+      # is the CALLER's event: 'push' for a tag push, 'workflow_dispatch' for
+      # release.yml or this workflow run by hand, on a tag or not, which must
+      # never replace a published APK.
       - name: Add it to the tag's release
-        if: steps.key.outputs.present == 'true' && startsWith(github.ref, 'refs/tags/')
+        if: >-
+          steps.key.outputs.present == 'true' && github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # Called from release.yml the draft exists already; run by hand on a
-          # tag, wait for it a while.
-          for _ in $(seq 1 30); do
-            if gh release view "$TAG" > /dev/null 2>&1; then
-              gh release upload "$TAG" "$RUNNER_TEMP/quest-app/visivo-vr.apk" "$RUNNER_TEMP/quest-app/visivo-vr.json" --clobber
+          # release.yml's setup job drafted the release before calling this, so
+          # a failure here is transient (API) or real: retried, then loud, as
+          # the packages bundle this APK and the release must carry it too.
+          for attempt in 1 2 3 4 5; do
+            if gh release view "$TAG" > /dev/null \
+               && gh release upload "$TAG" "$RUNNER_TEMP/quest-app/visivo-vr.apk" \
+                    "$RUNNER_TEMP/quest-app/visivo-vr.json" --clobber; then
+              echo "Attached visivo-vr.apk and visivo-vr.json to $TAG"
               exit 0
             fi
-            sleep 30
+            echo "Attempt $attempt to attach the APK to $TAG failed"
+            [ "$attempt" -lt 5 ] && sleep 10
           done
-          echo "::warning::No release for $TAG after 15 minutes: the APK is only in the workflow artifact."
+          echo "::error::Could not attach visivo-vr.apk/.json to release $TAG after 5 attempts: the release would lack the standalone APK. Re-run this job."
+          exit 1
