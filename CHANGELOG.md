@@ -8,6 +8,25 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: refine a selected box of a large cube (part of #321, client part
+  of #320).** *Tools → Views → Refine Selected Box…* reads a box of the cube
+  at the finest level the detail budget allows and draws it over the 3-D
+  preview, which keeps covering the rest of the cube as up to six coarse
+  pieces. All the volumes share one colour map, threshold and opacity, are
+  cropped so that they meet without seams, and are drawn back to front. The
+  view swaps only when every block has arrived. Full resolution, a region, a
+  new preview, MIP/MinIP, the isosurface, remote rendering and VR go back to
+  the plain preview. A *Level of detail* switch and a *Detail budget* are in
+  Settings → General → Large Cubes. The preview is now placed with its own
+  sampling everywhere the viewer converts between the 3-D view and cube
+  voxels: pick, marker, lasso, regions, headset clip, kinematic model, WCS
+  axes, isosurface, camera ROI and ray-traced view. A block-mean preview
+  stands for the centre of each block. With a ready pyramid the preview stride
+  is rounded to a power of two, and the status line names the preview, for
+  example *Preview: block means, pyramid level 3*. On the 2048³ PLUTO density,
+  a level-0 box of four 256³ blocks took 2.9 s from the click to the refined
+  view on a local backend.
+
 - **Backend: levels of detail for large cubes (part of #321).** Two routes are
   the groundwork for the desktop to refine the part of a large cube it looks
   at.

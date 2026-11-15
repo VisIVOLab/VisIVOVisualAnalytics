@@ -37,7 +37,43 @@ has a [brick pyramid](../brick-pyramid.md#the-desktop-preview-from-the-pyramid)
 instead: each voxel is the mean of the N x N x N block it stands for, so thin
 or noisy structures no longer flicker or vanish between preview sizes, and the
 cube's file is not read. Opening a cube never builds a pyramid just for the
-preview.
+preview. With a pyramid the preview stride is rounded up to a power of two
+(8 rather than 7), so every preview voxel is the mean of one whole block. The
+status line and the data-state badge say which preview is shown: *Preview:
+block means, pyramid level 3* or *Preview: every 8th voxel*. Picks, the lasso,
+regions, the headset clip and the kinematic model are all placed with the
+preview's own sampling: a block mean stands for the centre of its block, half
+a block from where every N-th voxel would put it.
+
+### Refining a box of a large cube
+
+**Tools → Views → Refine Selected Box…** shows one box of a cube at a finer
+level over the 3-D preview, and leaves the preview everywhere else. The box
+starts from the drawn region (its bounding box on the sky) or the middle half
+of the cube, and the amber box in the volume follows it while you edit the
+bounds. **Refine** reads the box from the backend at the finest level the
+detail budget allows: level 0, the cube itself, when it fits, else level 1, 2
+and so on. A box larger than the budget allows at any level finer than the
+preview is refined around its centre. The view changes only once the whole
+box has arrived; the status line then reads, for example, *Detail: level 0 in
+x 512..1023, y 512..1023, z 768..1023; elsewhere block means, pyramid level 3*.
+
+The box and the preview share one colour map, threshold, scale and opacity,
+and they meet without seams. Level 0 is read from the cube's file and needs
+no pyramid; coarser levels come from the pyramid when it is ready, otherwise
+from every 2^l-th voxel. On the 2048³ PLUTO density, a level-0 box of
+512 × 512 × 256 voxels (four blocks, 275 MB) took 2.9 s from the click to the
+refined view on a local backend.
+
+The refined box is drawn by this machine over a preview, in Composite blending.
+Loading the full resolution or a region, a new preview, MIP or MinIP, the
+isosurface, the backend's rendering and Open in VR go back to the plain
+preview, and the status line says why. When the action is unavailable, its
+tooltip gives the reason.
+
+**Settings → General → Large Cubes** holds the *Level of detail* switch (on by
+default) and the *Detail budget*: the memory the finer blocks may take,
+*Automatic* being min(512 MB, the machine's memory / 16).
 
 You can constrain the full-resolution fetch to the **viewport ROI** of the
 3-D camera (toggle *Camera → Use Camera ROI*). This is useful for very large
@@ -472,7 +508,7 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - Getting results out. See
     [Figures, movies and linked views](publication-output).
 * - **Views**
-  - Overlay Slice on an Open Image, Link Views, Open in VR, Open in VR Headset…
+  - Overlay Slice on an Open Image, Link Views, Open in VR, Open in VR Headset…, Refine Selected Box…
   - Move the data to another view, or keep several in step.
 ```
 

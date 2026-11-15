@@ -5156,6 +5156,7 @@ void vtkWindowCube::showRefineBoxDialog()
     // The box to refine (issue #321): a drawn region's bounding box on the
     // sky, else the middle half of the cube; along the third axis the middle
     // half too. The amber box shows it in the volume while it is edited.
+    qDebug().noquote() << u"[lod] Refine Selected Box dialog"_s;
     if (m_refineBoxDialog) {
         m_refineBoxDialog->show();
         m_refineBoxDialog->raise();

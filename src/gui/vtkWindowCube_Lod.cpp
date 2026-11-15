@@ -216,6 +216,7 @@ void vtkWindowCube::refineBox(const std::array<int, 6> &cubeBox)
 {
     const LodGateResult gate = this->lodGate();
     if (!gate.active) {
+        qDebug().noquote() << u"[lod] refine refused: %1"_s.arg(gate.reason);
         this->statusBar()->showMessage(u"Refine Selected Box: %1"_s.arg(gate.reason), 6000);
         return;
     }
@@ -241,6 +242,8 @@ void vtkWindowCube::refineBox(const std::array<int, 6> &cubeBox)
                                     { cubeBox[1] + 1, cubeBox[3] + 1, cubeBox[5] + 1 } };
     const CubeLodPlan::Plan plan = CubeLodPlan::planBox(box, in);
     if (!plan.refine) {
+        qDebug().noquote() << u"[lod] nothing to refine in %1: %2"_s.arg(
+                CubeLodStatus::boxText(box), QString::fromUtf8(CubeLodPlan::reasonText(plan.reason)));
         this->statusBar()->showMessage(
                 u"Refine Selected Box: %1."_s.arg(QString::fromUtf8(CubeLodPlan::reasonText(plan.reason))),
                 8000);
