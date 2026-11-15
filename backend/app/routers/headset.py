@@ -35,7 +35,7 @@ from typing import Annotated, Any, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from pydantic import AfterValidator, BaseModel, Field, ValidationError
+from pydantic import AfterValidator, BaseModel, Field, ValidationError, model_serializer
 
 from .. import headset_hub as H
 from .. import headset_spectator
@@ -71,11 +71,34 @@ def _box(value: list[list[int]] | None) -> list[list[int]] | None:
 VoxelBox = Annotated[list[list[int]], AfterValidator(_box)]
 
 
+class HeadsetSky(BaseModel):
+    """How a sky catalogue is placed: the desktop window's applied frame,
+    distance mode and named cosmology (issue #260), as /v1/points/info takes
+    them. A custom cosmology is not one: the backend knows the presets only."""
+    frame: Literal["fk5", "galactic", "supergalactic"] = "fk5"
+    distance_mode: Literal["comoving", "redshift_space"] = "comoving"
+    cosmology: str = Field("Planck18", pattern=r"^[A-Za-z0-9_.+-]{1,32}$")
+
+
 class HeadsetCube(BaseModel):
     dataset_id: str = Field(..., min_length=1, max_length=128)
     path: str = Field(..., min_length=1, max_length=4096)
     kind: str = Field("cube", min_length=1, max_length=32)
     box: VoxelBox | None = None
+    sky: HeadsetSky | None = None
+
+    @model_serializer(mode="wrap")
+    def _without_empty_sky(self, handler) -> dict[str, Any]:
+        # ``sky`` only when there is one: a cube has none, and the records the
+        # hub lists and the launch hands over stay as they were for it.
+        out = handler(self)
+        if out.get("sky") is None:
+            out.pop("sky", None)
+        return out
+
+    def record(self) -> dict[str, Any]:
+        """As kept and relayed."""
+        return self.model_dump()
 
 
 class HeadsetHelloRequest(BaseModel):
@@ -127,6 +150,7 @@ class HeadsetCommandRequest(BaseModel):
     path: str = Field(..., min_length=1, max_length=4096)
     kind: str | None = Field(None, min_length=1, max_length=32)
     box: VoxelBox | None = None
+    sky: HeadsetSky | None = None
 
 
 class HeadsetCommandResponse(BaseModel):
@@ -231,7 +255,7 @@ def _known_page(hub: H.HeadsetHub, client: str) -> H.Page:
 
 
 def _cube_dict(cube: HeadsetCube | None) -> dict[str, Any] | None:
-    return cube.model_dump() if cube is not None else None
+    return cube.record() if cube is not None else None
 
 
 def _product_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -357,6 +381,8 @@ async def headset_command(
         cmd_body["kind"] = body.kind
     if body.box is not None:
         cmd_body["box"] = body.box
+    if body.sky is not None:
+        cmd_body["sky"] = body.sky.model_dump()
     queued = H.hub_for(session).queue_command(body.client, body.type, cmd_body)
     if queued is None:
         raise HTTPException(404, "No headset page is connected in this session"

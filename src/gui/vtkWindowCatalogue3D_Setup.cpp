@@ -9,6 +9,7 @@
 #include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
+#include "CataloguePlacement.h"
 #include "theme/VisivoTheme.h"
 #include "WorkspaceChrome.h"
 #include "InspectorPanel.h"
@@ -411,6 +412,26 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->m_cosmologyStatus->setWordWrap(true);
         this->m_cosmologyStatus->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
         cosmoLayout->addWidget(this->m_cosmologyStatus);
+        // Placed, unplaced and uncertain sources (issue #265), and the list of
+        // those that have no distance and are not drawn.
+        this->m_placementStatus = new QLabel(cosmoCard);
+        this->m_placementStatus->setWordWrap(true);
+        this->m_placementStatus->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+        this->m_placementStatus->setToolTip(
+                u"A source with no usable distance value and a redshift that is ≤ 0, zero (not "
+                u"measured) or missing has no distance: it is left out of the scene.\n"
+                u"A catalogue with no redshift and no distance column at all is shown on the "
+                u"celestial sphere instead.\n"
+                u"Below cz = 1000 km/s a distance from the redshift is uncertain by 30 % "
+                u"or more: peculiar velocities are about 300 km/s."_s);
+        cosmoLayout->addWidget(this->m_placementStatus);
+        this->m_unplacedButton = new QPushButton(u"Unplaced Sources…"_s, cosmoCard);
+        this->m_unplacedButton->setToolTip(
+                u"The sources left out of the scene for want of a distance, and why."_s);
+        this->m_unplacedButton->hide();
+        QObject::connect(this->m_unplacedButton, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::showUnplacedSources);
+        cosmoLayout->addWidget(this->m_unplacedButton);
         pageLayout->addWidget(cosmoCard);
         this->m_cosmoCard = cosmoCard;
 
@@ -1025,48 +1046,150 @@ void vtkWindowCatalogue3D::refreshViewerChrome()
         InspectorPanel::applyValueStyle(this->m_propSession, this->remoteSessionId);
     if (this->m_workspaceChrome)
         this->m_workspaceChrome->setSessionId(this->remoteSessionId);
+    this->refreshPlacementStatus();
 
     if (!this->m_cosmologyStatus)
         return;
     // What the line must not do is claim a cosmology that had no part in the
     // positions. A Cartesian catalogue carries its own X/Y/Z; the redshift-space
-    // mode uses cz/H₀ and ignores the model entirely; and a catalogue with its
-    // own distance column uses THAT in preference to any conversion, which is
-    // why the column is named rather than implied.
+    // mode uses cz/H₀ with the model's H₀ only; and a catalogue with its own
+    // distance column uses THAT in preference to any conversion, which is why
+    // the column is named rather than implied.
     if (this->schema.isCartesian()) {
         this->m_cosmologyStatus->setText(
                 u"Positions are the catalogue's own X/Y/Z — no redshift conversion."_s);
         return;
     }
-    // The wording follows entryDistanceMpc()'s own order of precedence:
-    // redshift-space (with a usable z) → a distance computed by the backend for
-    // the selected model → the catalogue's distance column → the local Planck18
-    // integral → the 300 Mpc default. Saying anything simpler would be saying
-    // something false for some of the rows.
+    // The wording follows entryDistance()'s own order of precedence:
+    // redshift-space (with a usable z) → the catalogue's distance column → the
+    // selected model's distance for the redshift → no distance (not placed).
+    // Saying anything simpler would be saying something false for some rows.
     const QString distanceField = Catalogue3DParser::detail::detectedDistanceField(this->schema);
-    if (this->schema.distanceMode == CatalogueDistanceMode::RedshiftSpace) {
+    if (distanceField.isEmpty()
+        && Catalogue3DParser::detail::detectedRedshiftField(this->schema).isEmpty()) {
+        // Positions only: the celestial sphere, which no model or mode changes.
         this->m_cosmologyStatus->setText(
-                u"Redshift-space cz/H₀ · %1 sources · the model is not used; a source "
-                u"without a usable redshift keeps its catalogue distance"_s.arg(count));
+                u"No redshift or distance column · %1 sources on the celestial sphere · the "
+                u"model and the distance mode are not used"_s.arg(count));
         return;
     }
     // The model the rows were PLACED with, not the one the selector shows: while
     // a request is out the two differ, and the line describes the scene.
     const QString model =
             this->m_appliedCosmologyModel.isEmpty() ? u"Planck18"_s : this->m_appliedCosmologyModel;
-    const bool backendComputed = model != u"Planck18"_s;
-    const QString source = model == visivo::cosmology::customName()
+    const QString modelName = model == visivo::cosmology::customName()
             ? visivo::cosmology::describe(this->m_appliedCustomCosmology)
-            : (backendComputed ? model : u"Planck18 (local)"_s);
-    QString line = u"%1 · %2 sources"_s.arg(source).arg(count);
-    if (!distanceField.isEmpty()) {
-        line += backendComputed
-                // Once the backend has answered for a redshift, that distance is
-                // the one used: the column only gets a say where it did not.
-                ? u" · \"%1\" where the model produced nothing"_s.arg(distanceField)
-                : u" · \"%1\" is used where a source has one"_s.arg(distanceField);
+            : model;
+    if (this->schema.distanceMode == CatalogueDistanceMode::RedshiftSpace) {
+        this->m_cosmologyStatus->setText(
+                u"Redshift-space cz/H₀ · H₀ = %1 (%2) · %3 sources · a source without a "
+                u"usable redshift keeps its catalogue distance"_s
+                        .arg(this->schema.hubbleH0, 0, 'f', 2)
+                        .arg(modelName)
+                        .arg(count));
+        return;
     }
+    const bool backendComputed = model != u"Planck18"_s;
+    const QString source = backendComputed ? modelName : u"Planck18 (local)"_s;
+    QString line = u"%1 · %2 sources"_s.arg(source).arg(count);
+    // A measured distance wins under every model (issue #265): the model only
+    // places the sources that have a redshift alone.
+    if (!distanceField.isEmpty())
+        line += u" · \"%1\" is used where a source has one"_s.arg(distanceField);
     this->m_cosmologyStatus->setText(line);
+}
+
+void vtkWindowCatalogue3D::refreshPlacementStatus()
+{
+    // A VBT and a Cartesian catalogue are placed by their own columns.
+    const bool sky = !this->m_pointTable && !this->schema.isCartesian();
+    const auto counts = CataloguePlacement::count(this->entries, this->unplacedEntries, this->schema);
+    if (this->m_placementStatus) {
+        this->m_placementStatus->setVisible(sky);
+        this->m_placementStatus->setText(sky ? CataloguePlacement::statusText(counts) : QString());
+    }
+    const bool any = sky && counts.unplaced > 0;
+    if (this->m_unplacedButton) {
+        this->m_unplacedButton->setVisible(any);
+        this->m_unplacedButton->setText(u"Unplaced Sources (%L1)…"_s.arg(counts.unplaced));
+    }
+    if (this->m_actionUnplaced)
+        this->m_actionUnplaced->setEnabled(any);
+    // An open table follows a filter or another page: closed when there is
+    // nothing left to list, rebuilt when the rows changed.
+    if (this->m_unplacedDialog) {
+        if (!any)
+            this->m_unplacedDialog->close();
+        else if (this->unplacedRowKey() != this->m_unplacedDialogKey)
+            this->showUnplacedSources();
+    }
+}
+
+std::vector<qint64> vtkWindowCatalogue3D::unplacedRowKey() const
+{
+    // Which rows the table lists (their rows in the file, else their ids).
+    std::vector<qint64> key;
+    key.reserve(this->unplacedEntries.size());
+    for (const auto &e : this->unplacedEntries)
+        key.push_back(e.sourceRow >= 0 ? e.sourceRow : -1 - e.id);
+    return key;
+}
+
+void vtkWindowCatalogue3D::showUnplacedSources()
+{
+    QPoint where;
+    if (this->m_unplacedDialog) {
+        where = this->m_unplacedDialog->pos();   // a rebuilt table stays where it was
+        this->m_unplacedDialog->close();         // rebuilt on the rows loaded now
+    }
+    this->m_unplacedDialogKey = this->unplacedRowKey();
+    const auto rows = CataloguePlacement::unplacedRows(this->unplacedEntries, this->schema);
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setWindowTitle(u"Unplaced Sources"_s);
+    auto *layout = new QVBoxLayout(dlg);
+    auto *intro = new QLabel(
+            u"%L1 sources have no distance and are left out of the 3-D scene: no usable "
+            u"distance value, and a redshift that is ≤ 0, zero (not measured) or missing. A default "
+            u"distance would invent a position."_s.arg(rows.size()),
+            dlg);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+    auto *table = new QTableWidget(static_cast<int>(rows.size()), 5, dlg);
+    table->setHorizontalHeaderLabels(
+            { u"Name"_s, u"RA"_s, u"Dec"_s, u"cz [km/s]"_s, u"Reason"_s });
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->verticalHeader()->setVisible(false);
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        const auto &r = rows[static_cast<std::size_t>(i)];
+        auto number = [](double v, int decimals) {
+            auto *item = new QTableWidgetItem;
+            if (std::isfinite(v))
+                item->setData(Qt::DisplayRole, QString::number(v, 'f', decimals));
+            else
+                item->setText(u"—"_s);
+            item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+            return item;
+        };
+        table->setItem(i, 0, new QTableWidgetItem(r.name));
+        table->setItem(i, 1, number(r.raDeg, 5));
+        table->setItem(i, 2, number(r.decDeg, 5));
+        table->setItem(i, 3, number(r.czKms, 0));
+        table->setItem(i, 4, new QTableWidgetItem(r.reason));
+    }
+    table->resizeColumnsToContents();
+    table->horizontalHeader()->setStretchLastSection(true);
+    layout->addWidget(table, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dlg);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::close);
+    layout->addWidget(buttons);
+    dlg->resize(620, 420);
+    if (!where.isNull())
+        dlg->move(where);
+    this->m_unplacedDialog = dlg;
+    dlg->show();
 }
 
 void vtkWindowCatalogue3D::showCatalogueFieldsDialog()

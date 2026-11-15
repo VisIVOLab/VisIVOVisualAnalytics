@@ -132,6 +132,24 @@ def test_the_shipped_config_names_both_packages() -> None:
     assert all(L.normalise_fingerprint(f) for f in cfg["release_sha256"])
 
 
+#: The project's release signing certificate (public: tools/quest-app/README.md).
+RELEASE_CERT = "A1:54:C4:5B:54:20:5F:B9:6B:B9:80:28:6D:86:F3:A6:78:17:E1:32:2E:4F:68:AB:44:40:30:C0:43:04:D8:D4"
+
+
+@pytest.mark.asyncio
+async def test_every_backend_lists_the_release_app(client: AsyncClient, monkeypatch) -> None:
+    """With the shipped vr_app.json alone (no development key, no extra
+    file, no environment), the origin's statements name the release app with
+    the project's certificate: what the headset's browser checks before it
+    opens the app bundled with the desktop."""
+    monkeypatch.setattr(L, "APP_CONFIG", Path(L.__file__).resolve().parent / "vr_app.json")
+    r = await client.get("/.well-known/assetlinks.json")
+    assert r.status_code == 200
+    assert r.json() == [{"relation": ["delegate_permission/common.handle_all_urls"],
+                         "target": {"namespace": "android_app", "package_name": "it.inaf.oact.visivo.vr",
+                                    "sha256_cert_fingerprints": [RELEASE_CERT]}}]
+
+
 # ── Tickets: the store ───────────────────────────────────────────────────────
 
 class _Clock:

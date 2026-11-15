@@ -978,14 +978,20 @@ async def cube_mask_stats_bin(
     width: int = Query(..., ge=1), height: int = Query(..., ge=1), depth: int = Query(..., ge=1),
     # true: no mask, every voxel of the box (the headset's box region).
     box: bool = Query(False),
+    # The session's noise per voxel (BUNIT), as the lasso takes it; 0 = measured
+    # around the selection (SoFiA-2's local rule).
+    sigma: float = Query(0.0, ge=0.0, allow_inf_nan=False),
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> dict:
     """Statistics of an EXPLICIT selection (the mask in the body, as for
     mask_apply_bin), or with ``box=true`` and an empty body of the whole box:
     voxels, sum/mean/rms/min/max, integrated flux in Jy km/s, channel and
-    velocity range, the integrated spectrum. Reads only the box, one channel at
-    a time (issue #171: the headset's lasso and box panels)."""
+    velocity range, the integrated spectrum, and the standard HI measurements
+    under ``hi`` (flux uncertainty, peak S/N, W20/W50, systemic velocity,
+    flux-weighted centroid, moment-0 size; issue #280). Reads only the box (and
+    the frame of the local noise), one channel at a time (issue #171: the
+    headset's lasso and box panels)."""
     from ..compute import worker_cube_mask_stats  # noqa: PLC0415
     from ..compute.mask_stats import check_box  # noqa: PLC0415
     try:
@@ -1014,7 +1020,7 @@ async def cube_mask_stats_bin(
     try:
         result = await _run_heavy_with_limit(
             session, worker_cube_mask_stats, entry["path"], mask_bytes,
-            origin_x, origin_y, origin_z, width, height, depth)
+            origin_x, origin_y, origin_z, width, height, depth, float(sigma))
     except HTTPException:
         raise
     except ValueError as exc:
