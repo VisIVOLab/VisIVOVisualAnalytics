@@ -77,9 +77,11 @@ export function createMasks(ctx) {
   }
 
   function forget() {
+    // Only a layer drawn is taken off the volume (onNonCube calls this on every switch).
+    const drawn = !!S.layer;
     S.layer = null; S.mask = null; S.cube = null; S.selected = 0; S.picking = false; S.newSource = false; S.steps = [];
     S.saved = null; S.status = [];
-    try { ctx.renderer.setMaskLayer(null); } catch { /* no volume */ }
+    if (drawn) { try { ctx.renderer.setMaskLayer(null); } catch { /* no volume */ } }
     touch();
   }
 

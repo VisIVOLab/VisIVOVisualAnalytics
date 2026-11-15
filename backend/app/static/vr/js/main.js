@@ -1260,6 +1260,7 @@ async function installStaged() {
   shell.clearNotice('cube-waiting');
   if (!loads.isCurrent(s.ticket)) {
     shell.log('info', 'cube-waits-dropped', 'a newer load began after it');
+    settlePendingMask();
     return;
   }
   state.load = s.load;
@@ -1272,6 +1273,9 @@ async function installStaged() {
   } catch (err) {
     setStatus(`Failed: ${err.message || err}`);
     shell.log('error', 'cube-install-failed', String(err.message || err));
+  } finally {
+    // A desktop mask that waited for this cube and was not laid over it (#305).
+    settlePendingMask();
   }
 }
 
@@ -3456,9 +3460,11 @@ function reportProduct(recipe, detail) {
  */
 function maskFromDesktop(cmd) {
   const name = HUB.fileName(cmd.path) || cmd.dataset_id;
-  if (state.loading > 0) {
+  if (state.loading > 0 || stagedCube) {
     // For the newest load's cube: the desktop sends the cube, then its mask.
-    pendingMask = { cmd, path: loads.path };
+    // A load already over whose cube waits for the end of the VR session:
+    // for that cube, laid over it when it is shown (#305).
+    pendingMask = { cmd, path: stagedCube && !state.loading ? stagedCube.path || '' : loads.path };
     shell.log('info', 'hub-mask-waits', `${name}, command ${cmd.seq}: after the cube being loaded`);
     return;
   }

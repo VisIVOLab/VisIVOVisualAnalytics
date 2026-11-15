@@ -491,6 +491,44 @@ test('review (#305): resync and rehello abort only the command poll, a product s
   hub.stop();
 });
 
+test('review (#305): a post whose 404 comes back after the page moved to another session says no hello and no goodbye there', async () => {
+  const t = clock(), fh = fakeHub();
+  let session = 'sess-1';
+  let hub = null;
+  let switched = false;
+  const wrapped = {
+    ...fh,
+    fetch: async (url, init = {}) => {
+      if (!switched && String(url).includes('/v1/vr/activity')) {
+        // The answer is a 404 of the old session; meanwhile the page moved and said hello in the new one.
+        switched = true;
+        session = 'sess-2';
+        hub.resync();
+        for (let i = 0; i < 5; i++) await flush();
+        fh.calls.push({ method: 'POST', path: '/v1/vr/activity', headers: init.headers, body: JSON.parse(init.body) });
+        return { status: 404, text: async () => JSON.stringify({ detail: 'Unknown headset client in this session: say hello first' }) };
+      }
+      return fh.fetch(url, init);
+    },
+  };
+  ({ hub } = makeHub(t, wrapped, { session: () => session }));
+  hub.start();
+  await t.advance(10);
+  const done = hub.product({ product: 'isolate', dataset_id: 'iso', file: 'x_isolated.fits' }, null, { cubePath: '/a.fits' }, 'iso');
+  let got = null;
+  done.then((v) => { got = v; }, (e) => { got = e; });
+  await t.advance(50);
+  await hub.idle();
+  await flush();
+  assert.ok(switched);
+  const helloSessions = fh.posts('/v1/vr/headset/hello').map((c) => c.headers['X-Visivo-Session']);
+  assert.deepEqual(helloSessions, ['sess-1', 'sess-2'], 'no second hello in the old session');
+  assert.ok(!fh.calls.some((c) => c.method === 'DELETE' && c.headers['X-Visivo-Session'] === 'sess-2'), 'the live registration is not removed');
+  assert.equal(hub.st.helloSession, 'sess-2');
+  assert.ok(got && (got.posted === false || got.stale), 'the product of the old session is not told');
+  hub.stop();
+});
+
 test('review (#305): a hello that answers after the page moved to another session is not kept as its registration', async () => {
   const t = clock(), fh = fakeHub();
   let session = 'sess-1';

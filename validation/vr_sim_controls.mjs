@@ -289,6 +289,32 @@ try {
     && !window.__vrMasks.state.status.length`, 60000);
   check('a mask layer goes with its cube when a point table is shown', maskOn && maskGone,
     `mask loaded ${maskOn}; then ${JSON.stringify(await ev(`({ points: !!${L}.points, layer: !!window.__vrMasks.state.layer, status: window.__vrMasks.state.status })`))}`);
+  // A table opened afresh while a step's table is on show (#305 review): the
+  // burst ends; the table shown before it and the step's are closed once the
+  // fresh one is on show, which is kept. The step's sample is held back 2.5 s
+  // (the table info is still held 4 s from the check above).
+  {
+    const info = (id) => ev(`window.__vrBackend()._json('POST', '/v1/points/info', { dataset_id: ${JSON.stringify(id)} }).then(() => true, () => false)`);
+    await waitFor(`!!(${L}.points && ${L}.points.series)`, 20000);
+    const shownId = await ev(`${L}.points.datasetId`);
+    const shownPath = await ev(`${L}.points.path`);
+    await ev(`(() => { const b = window.__vrBackend(); window.__burstOrig = { binary: b._binary }; const bin = b._binary.bind(b);
+      window.__burst = { sample: 1 };
+      b._binary = (p, ...r) => (p === '/v1/points/sample_bin' && window.__burst.sample-- > 0
+        ? new Promise((res) => setTimeout(res, 2500)).then(() => bin(p, ...r)) : bin(p, ...r)); })()`);
+    await act({ type: 'press', id: 'snap-next' });
+    const onStep = await waitFor(`${L}.points.datasetId !== ${JSON.stringify(shownId)} && ${L}.points.path !== ${JSON.stringify(shownPath)}`, 20000);
+    const stepId = await ev(`${L}.points.datasetId`);
+    await ev(`(() => { const $ = (id) => document.getElementById(id); $('path').value = ${JSON.stringify(join(OUT, 'run_003.bin.head'))}; $('load').click(); })()`);
+    const fresh = await waitFor(`/run_003/.test(${L}.points.path || '') && !!${L}.points.sample && ${L}.stepTarget === null
+      && ${L}.points.datasetId !== ${JSON.stringify(stepId)}`, 60000);
+    const freshId = await ev(`${L}.points.datasetId`);
+    await sleep(3500);           // the held step's sample has come back and been dropped
+    const [o0, o1, o2] = [await info(shownId), await info(stepId), await info(freshId)];
+    await ev(`(() => { const b = window.__vrBackend(); b._binary = window.__burstOrig.binary; })()`);
+    check('a table opened afresh during a step: the table shown before and the step\'s are closed, the fresh one kept',
+      onStep && fresh && !o0 && !o1 && o2, `before ${o0 ? 'OPEN' : 'closed'}, step ${o1 ? 'OPEN' : 'closed'}, fresh ${o2 ? 'open' : 'CLOSED'}`);
+  }
   check('no page error', !pageErrors.length, pageErrors.join(' / '));
   sock.close();
 } catch (err) {

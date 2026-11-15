@@ -23,6 +23,16 @@ export function burstLeftovers(carry, shown, withFrom = true) {
   return ids;
 }
 
+/** Resolves once the promise `get()` returns has settled and no newer one
+ *  replaced it meanwhile (the refiner's newest switch, #305). Never rejects. */
+export async function settled(get, maxRounds = 8) {
+  for (let i = 0; i < maxRounds; i++) {
+    const p = get();
+    try { await p; } catch { /* a failed switch has ended too */ }
+    if (get() === p) return;
+  }
+}
+
 /** The file `dir` steps (-1 back, +1 on) from a series {paths, index, count},
  *  or null at either end or without a series. */
 export function seriesStep(series, dir) {

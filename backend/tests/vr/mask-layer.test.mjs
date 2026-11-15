@@ -335,7 +335,30 @@ test('review (#305): the page wires the mask fixes (Pick in any mode, the report
   assert.match(main, /armPick: \(\) => setMode\('select'\)/);
   assert.match(main, /report: \(recipe, detail\) => \(!single\.active \|\| !hub\.st\.running \? null : reportProduct\(recipe, detail\)\)/);
   assert.match(main, /onNonCube: \(\) => \{[^}]*masks\.forget\(\)/);
-  assert.match(main, /pendingMask = \{ cmd, path: loads\.path \}/);
+  // A mask that comes after its cube was staged for the end of the VR session waits for that cube.
+  const mfd = main.slice(main.indexOf('function maskFromDesktop('), main.indexOf('function loadMaskCommand('));
+  assert.match(mfd, /if \(state\.loading > 0 \|\| stagedCube\)/);
+  assert.match(mfd, /path: stagedCube && !state\.loading \? stagedCube\.path \|\| '' : loads\.path/);
+  // installStaged settles it whatever becomes of the staged cube.
+  const inst = main.slice(main.indexOf('async function installStaged('), main.indexOf('async function installStaged(') + 1200);
+  assert.ok((inst.match(/settlePendingMask\(\)/g) || []).length >= 2, 'on a dropped and on any installed or failed staged cube');
+});
+
+test('review (#305): a staged cube\'s mask goes over it when it is shown, not over the cube on show; forget leaves no layer call without a layer', async () => {
+  // The verdicts the page asks for: the mask came after the load ended, its cube staged.
+  const { pendingMaskVerdict } = await import('../../app/static/vr/js/lifecycle.js');
+  const pending = { cmd: {}, path: '/d/staged.fits' };
+  assert.equal(pendingMaskVerdict(pending, { shown: null, loading: 0, staged: '/d/staged.fits', current: '/d/old.fits' }), 'wait',
+    'not laid over the cube on show');
+  assert.equal(pendingMaskVerdict(pending, { shown: '/d/staged.fits', loading: 0, staged: '' }), 'apply', 'over the staged cube once shown');
+  assert.equal(pendingMaskVerdict(pending, { shown: null, loading: 0, staged: '', current: '/d/old.fits' }), 'drop', 'a staged cube dropped: the mask too');
+  // forget() with no layer leaves the volume's mask alone (it runs on every switch to a point table).
+  let calls = 0;
+  const state = { info: null, open: null, clip: { min: [0, 0, 0], max: [1, 1, 1] }, extent: [1, 1, 1], openPath: '' };
+  const m = createMasks({ renderer: { setMaskLayer() { calls++; }, createPanel: () => ({}), updatePanel() {} }, state, backend: () => null,
+    seedMode: () => 'new', setSeedMode() {}, onVisit() {}, onChange() {}, report: () => null, buzz() {} });
+  m.forget();
+  assert.equal(calls, 0);
 });
 
 test('free voxels among thousands of sources: only the ones near the grow are looked at, the same answer', () => {

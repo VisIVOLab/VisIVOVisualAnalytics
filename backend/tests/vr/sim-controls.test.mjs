@@ -139,3 +139,25 @@ test('review (#305): a burst of snapshot steps closes the table shown before it 
   assert.deepEqual(SC.burstLeftovers(null, t2), []);
   assert.deepEqual(SC.burstLeftovers({ from: t0, left: [] }, null), ['d0']);
 });
+
+test('review (#305): settled waits for the refiner\'s newest switch, a newer one started meanwhile too, and never rejects', async () => {
+  const order = [];
+  let resolveA, resolveB;
+  const r = { lastSwitch: new Promise((res) => { resolveA = res; }) };
+  const done = SC.settled(() => r.lastSwitch).then(() => order.push('settled'));
+  await new Promise((res) => setTimeout(res, 0));
+  // A newer switch starts before the first one ends: settled waits for it too.
+  r.lastSwitch = new Promise((res) => { resolveB = res; });
+  resolveA();
+  await new Promise((res) => setTimeout(res, 0));
+  assert.deepEqual(order, [], 'still the newer switch to wait for');
+  order.push('B ends');
+  resolveB();
+  await done;
+  assert.deepEqual(order, ['B ends', 'settled']);
+  // A failed switch has ended too; no refiner at all is settled at once.
+  const failed = Promise.reject(new Error('closed'));
+  failed.catch(() => {});
+  await SC.settled(() => failed);
+  await SC.settled(() => null);
+});
