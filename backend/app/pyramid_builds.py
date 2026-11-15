@@ -125,6 +125,42 @@ def ensure_pyramid(dataset_path: str, hdu: int) -> BuildStatus:
         return _start(dataset_path, out, hdu, key, progress_file)
 
 
+def peek_pyramid(dataset_path: str, hdu: int) -> BuildStatus:
+    """The pyramid's state as :func:`ensure_pyramid` would answer it, without
+    starting, retrying or reaping a build and without writing anything:
+    ``ready``, ``building`` (here, or by another backend sharing the pyramid
+    directory), ``failed`` (the last build's error, until a build is asked
+    for again), or ``missing``."""
+    from .brick_pyramid import default_pyramid_path  # noqa: PLC0415
+
+    out = default_pyramid_path(dataset_path, hdu)
+    progress_file = _progress_path(out)
+    if pyramid_ready(dataset_path, hdu):
+        return BuildStatus("ready", 1.0)
+    with _lock:
+        build = _builds.get(str(out))
+        if build is not None and build.process.is_alive():
+            return BuildStatus("building", _read_progress(progress_file))
+        if build is not None and build.ended is not None and build.error:
+            return BuildStatus("failed", 0.0, build.error)
+        exitcode = build.process.exitcode if build is not None else None
+    # Another backend's build holds the lock (only looked at when its lock
+    # file is there: taking the lock would create it).
+    try:
+        elsewhere = _lock_path(out).exists() and _locked_elsewhere(out)
+    except OSError:   # a lock file this backend may not open: nobody it can see
+        elsewhere = False
+    if elsewhere:
+        return BuildStatus("building", _read_progress(progress_file))
+    if exitcode == 0 and pyramid_ready(dataset_path, hdu):
+        return BuildStatus("ready", 1.0)   # published since the first check
+    if exitcode not in (None, 0, _BUILT_ELSEWHERE) or progress_file.exists():
+        error = _read_error(progress_file, exitcode)
+        if error:
+            return BuildStatus("failed", 0.0, error)
+    return BuildStatus("missing", 0.0)
+
+
 def _ready(key: str, out: Path, progress_file: Path, locked: bool = False) -> "BuildStatus":
     """The pyramid is in place: its build reaped, its progress file and any
     stale partial file of an earlier build removed (a ready pyramid is never

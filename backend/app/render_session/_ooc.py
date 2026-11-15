@@ -572,23 +572,7 @@ class OutOfCoreCube:
         sample range [0, n - 1] as in the in-core path. Blank voxels are set to
         the cube's minimum, as in the in-core path."""
         level, (zs, ys, xs), lo, hi = self._region(key)
-        dims = self.layout.shapes[level]
-        lo_i = [max(0, r.start - 1) for r in (zs, ys, xs)]
-        hi_i = [min(n, r.stop + 1) for r, n in zip((zs, ys, xs), dims)]
-        # Read straight into the padded block (one copy of it in memory, which
-        # matters for a whole level), then repeat the edge where there was no
-        # neighbour to read, axis by axis as np.pad(mode="edge") does.
-        regions = (zs, ys, xs)
-        data = np.empty([r.stop - r.start + 2 for r in regions], dtype=np.float32)
-        inner = tuple(slice(a - (r.start - 1), b - (r.start - 1)) for r, a, b in zip(regions, lo_i, hi_i))
-        self.pyramid._h5[f"level{level}/data"].read_direct(
-            data, np.s_[lo_i[0]:hi_i[0], lo_i[1]:hi_i[1], lo_i[2]:hi_i[2]], inner)
-        for axis, (r, a, b) in enumerate(zip(regions, lo_i, hi_i)):
-            view = np.moveaxis(data, axis, 0)
-            if a == r.start:
-                view[0] = view[1]
-            if b == r.stop:
-                view[-1] = view[-2]
+        data = self.pyramid.read_region(level, (zs, ys, xs), ghost=1, edge="repeat")
         np.copyto(data, np.float32(self.vmin), where=~np.isfinite(data))
         spacing = float(2 ** level)
         offset = (spacing - 1.0) / 2.0
