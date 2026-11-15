@@ -200,7 +200,8 @@ async def spectator_frame_post(
     ``watched`` (false: nobody watches, the frame is not kept, stop
     capturing), ``stored`` (false: it came sooner than 30 frames a second
     allow, and was dropped) and the ``fps`` and ``width`` asked for. 404 for
-    a client that did not say hello, 413 too large, 415 not a JPEG."""
+    a client that did not say hello, 413 too large, 415 not a JPEG with
+    exactly one frame header (whose size Pillow reads the same)."""
     hub = H.hub_for(session)
     page = _known_page(hub, client)
     ctype = request.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -213,6 +214,10 @@ async def spectator_frame_post(
     w, h = size
     if w > S.MAX_FRAME_SIDE or h > S.MAX_FRAME_SIDE:
         raise HTTPException(413, f"A frame is at most {S.MAX_FRAME_SIDE} pixels a side; this one is {w}×{h}.")
+    # The size the snapshot's decoder will see must be the one checked (its
+    # header only is read here, nothing decoded).
+    if S.decoded_size(data) != size:
+        raise HTTPException(415, "The frame's header does not read the same to every JPEG reader.")
     tokens = [t.encode() for t in accepted_tokens() if t and len(t) >= _MIN_TOKEN_SCAN]
     if any(t in data for t in tokens):
         raise HTTPException(422, "The frame carries the backend token; it is never relayed.")
@@ -237,12 +242,28 @@ def _snapshot_name(label: str, basename: str) -> str:
     return name
 
 
-def _write_png(jpeg: bytes, path: str) -> tuple[int, int]:
+class _BadFrame(ValueError):
+    """A stored frame that is not the JPEG it was checked to be."""
+
+
+def _write_png(jpeg: bytes, path: str, expected: tuple[int, int]) -> tuple[int, int]:
     import io  # noqa: PLC0415
 
     from PIL import Image  # noqa: PLC0415
 
-    with Image.open(io.BytesIO(jpeg)) as im:
+    # Checked on Pillow's own reading of the header, before anything is
+    # decoded: the size it will decode to is the size accepted with the frame,
+    # within the frame bounds. This is the route's decompression-bomb guard;
+    # Pillow's process-wide MAX_IMAGE_PIXELS is left as it is.
+    size = S.decoded_size(jpeg)
+    if size is None:
+        raise _BadFrame("the frame is not a JPEG Pillow reads (or a decompression bomb)")
+    w, h = size
+    if size != expected or w > S.MAX_FRAME_SIDE or h > S.MAX_FRAME_SIDE:
+        raise _BadFrame(f"the frame decodes to {w}×{h}, not the {expected[0]}×{expected[1]} it was accepted as")
+    with Image.open(io.BytesIO(jpeg), formats=["JPEG"]) as im:
+        if im.size != size:                # the same bytes, read again: never, but never decoded if so
+            raise _BadFrame("the frame's header read differently twice")
         rgb = im.convert("RGB")
         rgb.save(path, format="PNG")
         return rgb.size
@@ -258,7 +279,8 @@ async def spectator_snapshot(
     """The latest frame of ``client`` saved as a PNG in the Workspace Exports
     (``basename``, else ``headset_<label>_<time>.png``; a name taken gets a
     suffix). 404 for an unknown page, 409 when it has no frame (not watched,
-    or none came yet)."""
+    or none came yet), 422 when it would decode to another size than it was
+    accepted with (checked on its header, before decoding)."""
     body = await _read_body(request, SpectatorSnapshotRequest)
     _refuse_token(body.client, body.basename)
     hub = H.hub_for(session)
@@ -270,10 +292,12 @@ async def spectator_snapshot(
         raise HTTPException(409, "No frame of this headset page to save: watch it first.")
     out = make_workspace_path(_snapshot_name(page.label, body.basename), reserve=True)
     try:
-        width, height = await asyncio.to_thread(_write_png, frame.jpeg, str(out))
+        width, height = await asyncio.to_thread(_write_png, frame.jpeg, str(out), (frame.width, frame.height))
     except Exception as exc:
         with suppress(OSError):
             Path(out).unlink()
+        if isinstance(exc, _BadFrame):
+            raise HTTPException(422, f"The snapshot was not saved: {exc}") from exc
         raise HTTPException(500, f"The snapshot was not saved: {exc}") from exc
     return SpectatorSnapshotResponse(valid=True, workspace_filename=Path(out).name, output_path=str(out),
                                      width=width, height=height, seq=frame.seq)

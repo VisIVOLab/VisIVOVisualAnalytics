@@ -185,8 +185,9 @@ For the page: one frame, the body `image/jpeg`. `eye` is `left`, `right` or
 With `watched: false`, nobody watches and the frame is not kept: the page
 stops. With `stored: false`, the frame came sooner than 30 a second allow.
 The other answers are 404 for a client that did not say hello, 413 when the
-frame is too large, 415 when the body is not a JPEG with a frame header, and
-422 when the frame carries the token.
+frame is too large, 415 when the body is not a JPEG with exactly one frame
+header before its first scan (or when Pillow reads another size from it than
+that header gives), and 422 when the frame carries the token.
 
 ### `POST /v1/vr/headset/spectator/snapshot`
 The latest frame, saved as a PNG in the Workspace Exports.
@@ -201,7 +202,9 @@ name that is taken gets a suffix. Response:
   "width": 512, "height": 572, "seq": 12 }
 ```
 The answer is 404 for an unknown page and 409 when there is no frame (the
-page is not watched, or no frame came yet).
+page is not watched, or no frame came yet). It is 422 when the frame would
+decode to another size than the one it was accepted with. That is checked on
+the header, before anything is decoded.
 
 ## Activity (page to desktop)
 

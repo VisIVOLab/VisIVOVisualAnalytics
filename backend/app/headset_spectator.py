@@ -177,11 +177,14 @@ async def wait_frame(hub: H.HeadsetHub, page: H.Page, after: int, timeout: float
 
 
 def jpeg_size(data: bytes) -> tuple[int, int] | None:
-    """(width, height) from a baseline or progressive JPEG's SOF marker, or
-    None when the bytes are not a JPEG that says it."""
+    """(width, height) from a JPEG's frame header (SOF), read up to its first
+    scan; None when the bytes are not a JPEG with exactly one frame header
+    before that scan. Two frame headers are refused: a reader that takes the
+    later one (Pillow does) would see another size than the one checked here."""
     if len(data) < 4 or data[:3] != b"\xff\xd8\xff":
         return None
     i, n = 2, len(data)
+    size: tuple[int, int] | None = None
     while i + 4 <= n:
         if data[i] != 0xFF:
             return None
@@ -192,17 +195,40 @@ def jpeg_size(data: bytes) -> tuple[int, int] | None:
         if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
             i += 2
             continue
+        if marker == 0xD9:                # end of image before any scan
+            return None
         length = int.from_bytes(data[i + 2:i + 4], "big")
-        if length < 2:
+        if length < 2 or i + 2 + length > n:
             return None
         # SOF0..SOF15 except DHT (C4), JPG (C8) and DAC (CC).
         if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
-            if i + 9 > n:
-                return None
+            if size is not None or length < 7:
+                return None               # a second frame header, or a short one
             h = int.from_bytes(data[i + 5:i + 7], "big")
             w = int.from_bytes(data[i + 7:i + 9], "big")
-            return (w, h) if w > 0 and h > 0 else None
-        if marker == 0xDA:                # start of scan before any frame header
-            return None
+            if w <= 0 or h <= 0:
+                return None
+            size = (w, h)
+        elif marker == 0xDA:              # the first scan: the header ends here
+            return size
         i += 2 + length
     return None
+
+
+def decoded_size(data: bytes) -> tuple[int, int] | None:
+    """The size Pillow reads from a JPEG's header (nothing is decoded), or
+    None when it does not read it as a JPEG."""
+    import io  # noqa: PLC0415
+    import warnings  # noqa: PLC0415
+
+    from PIL import Image, UnidentifiedImageError  # noqa: PLC0415
+
+    try:
+        # Pillow's own bomb warning (or error, past twice its limit) says
+        # nothing more than the size the caller compares with its bounds.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(data), formats=["JPEG"]) as im:
+                return im.size
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError, SyntaxError):
+        return None

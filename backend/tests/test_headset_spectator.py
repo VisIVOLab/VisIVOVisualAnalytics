@@ -360,6 +360,58 @@ async def test_the_page_posts_a_frame_through_the_bridges_asgi_path(client, auth
 # ── The JPEG header ───────────────────────────────────────────────────────────
 
 
+def _two_frame_headers(side: int = 12000) -> bytes:
+    """A 1×1 JPEG with a second frame header (SOF0) declaring side×side right
+    after its own: about 650 bytes. Pillow takes the later header."""
+    jpg = _jpeg(1, 1)
+    i = jpg.index(b"\xff\xc0")
+    length = int.from_bytes(jpg[i + 2:i + 4], "big")
+    sof = bytearray(jpg[i:i + 2 + length])
+    sof[5:7] = side.to_bytes(2, "big")
+    sof[7:9] = side.to_bytes(2, "big")
+    return jpg[:i + 2 + length] + bytes(sof) + jpg[i + 2 + length:]
+
+
+def test_two_frame_headers_are_refused_before_any_decoder_sees_them():
+    bomb = _two_frame_headers()
+    assert len(bomb) < 1024
+    assert S.decoded_size(bomb) == (12000, 12000)      # what Pillow would allocate for
+    assert S.jpeg_size(bomb) is None
+    assert S.decoded_size(_jpeg(40, 30)) == (40, 30)
+    assert S.decoded_size(b"not a jpeg") is None
+    # Past twice Pillow's bomb limit, Pillow refuses to open it at all: no size.
+    assert S.decoded_size(_two_frame_headers(65535)) is None
+
+
+async def test_a_frame_with_two_headers_is_refused_and_a_stored_one_never_decoded(client, auth_headers):
+    h = await _session(client, auth_headers)
+    await _hello(client, h)
+    await _watch(client, h)
+    bomb = _two_frame_headers()
+    for crafted in (bomb, _two_frame_headers(65535)):
+        r = await _post_frame(client, h, crafted)
+        assert r.status_code == 415, r.text
+    # Defence in depth: such a frame stored all the same (as 1×1) is never
+    # decoded by the snapshot: refused on Pillow's header, before convert().
+    feed = _hub(h).pages["page-1"].feed
+    S.add_frame(feed, bomb, 1, 1, "left", None)
+    t0 = time.monotonic()
+    r = await client.post("/v1/vr/headset/spectator/snapshot", json={"client": "page-1"}, headers=h)
+    assert r.status_code == 422 and "12000" in r.text, r.text
+    assert time.monotonic() - t0 < 2.0
+    feed.frame.received -= 1.0
+    S.add_frame(feed, _two_frame_headers(65535), 1, 1, "left", None)
+    r = await client.post("/v1/vr/headset/spectator/snapshot", json={"client": "page-1"}, headers=h)
+    assert r.status_code == 422, r.text
+    assert not list(_isolated_exports_dir().glob("*.png")), "no file left behind"
+
+
+def _isolated_exports_dir():
+    from app import dependencies
+    return dependencies.get_exports_dir()
+
+
+
 def test_jpeg_size_reads_baseline_and_progressive_frames():
     assert S.jpeg_size(_jpeg(123, 45)) == (123, 45)
     assert S.jpeg_size(_jpeg(31, 77, progressive=True)) == (31, 77)
