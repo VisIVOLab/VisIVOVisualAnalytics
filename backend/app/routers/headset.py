@@ -46,7 +46,7 @@ router = APIRouter(tags=["vr"])
 _auth = Depends(verify_token)
 
 #: What a product event's ``payload.product`` may name.
-PRODUCT_KINDS = ("moment", "pv", "spectrum", "isolate", "remove", "catalogue", "flow")
+PRODUCT_KINDS = ("moment", "pv", "spectrum", "isolate", "remove", "catalogue", "flow", "classification")
 #: Tokens shorter than this are not searched for in bodies (a hand-set test
 #: token of a letter or two would refuse every request).
 _MIN_TOKEN_SCAN = 8
@@ -406,7 +406,8 @@ async def activity_post(
     * ``clip``: ``payload.box`` the clip box in voxels of the full cube, or
       null; the latest per cube replaces the previous;
     * ``product``: ``payload.product`` (moment, pv, spectrum, isolate, remove,
-      catalogue, flow), and what the desktop needs to open it: ``file`` (a
+      catalogue, flow, classification: a catalogue classified in the headset,
+      issue #279), and what the desktop needs to open it: ``file`` (a
       Workspace Exports filename; its ``output_path`` is added) or
       ``dataset_id``, the ``request`` under the API's names, the ``recipe``;
     * ``cube``: the page switched cube (``payload.path``, ``payload.binning``).

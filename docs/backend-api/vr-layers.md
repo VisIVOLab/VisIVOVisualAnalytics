@@ -121,12 +121,44 @@ when the cube's `SPECSYS` is not barycentric or heliocentric, when the
 catalogue declares another frame (a FITS table's `SPECSYS`), and when an LSR
 column (`vlsr`) meets a barycentric cube: no frame change is applied.
 
-Answer (JSON): `valid`, `name`, `source`, `frame` (`galactic` or `icrs`),
-`shape` (`[nx, ny, nz]`), `pixel_scale_arcsec`, `n_input`, `n_sources`,
-`n_polylines`, `n_outside`, `n_unplaced`, `spectral` (`used`, `field`,
-`note`), `warnings`, `sources` (`x`, `y`, `z` or null, 0-based pixels; `label`,
-`band`, `lon`, `lat`, `ellipse` as `[[x, y], …]` or null) and `polylines`
-(`label`, `points`). A VLKB failure answers `valid: false` with the message.
+Answer (JSON): `valid`, `name`, `source`, `frame` (`galactic` or `icrs`:
+the cube's), `source_frame` (the frame of the sources' `lon`/`lat`: the
+catalogue's own, `galactic` for the VLKB), `shape` (`[nx, ny, nz]`),
+`pixel_scale_arcsec`, `n_input`, `n_sources`, `n_polylines`, `n_outside`,
+`n_unplaced`, `spectral` (`used`, `field`, `note`), `warnings`, `sources`
+(`x`, `y`, `z` or null, 0-based pixels; `label`, `band`, `lon`, `lat`,
+`ellipse` as `[[x, y], …]` or null; `row`, the catalogue's row, for a
+catalogue of the session) and `polylines` (`label`, `points`). A VLKB failure
+answers `valid: false` with the message.
+
+## `POST /v1/catalogue/classified_votable`
+
+A catalogue classified in the headset (issue #279) written as a VOTable in the
+Workspace Exports, for the desktop's catalogue table and for saving
+(`app/catalogue_classified.py`).
+
+| Field | Default | Meaning |
+|---|---|---|
+| `dataset_id` | | the cube the catalogue is placed over |
+| `catalogue_id` | `""` | a catalogue of the session: all its columns and rows are kept |
+| `source_frame` | `icrs` | the frame of the sources' `lon`/`lat` (`icrs` or `galactic`) |
+| `flag_set` | `[]` | the flags offered (at most 8; written in the table's metadata) |
+| `flag_column` | `vr_flag` | the flag column's name (`^[A-Za-z_][A-Za-z0-9_]{0,31}$`; refused when the catalogue has it) |
+| `sources` | `[]` | at most 20 000: `origin` (`catalogue`, `overlay`, `user`), `row` (for `catalogue`), `label`, `lon`, `lat`, `frame` (overrides `source_frame`), `x`, `y`, `z` (0-based pixels), `velocity_kms`, `flag`, `note` |
+| `output_basename` | `<catalogue>_vr_classified` | |
+
+With a catalogue, the table is every original column and row in the file's
+order, then `<flag_column>` ('' when not classified), `vr_note`, `vr_origin`,
+`vr_x`, `vr_y`, `vr_z` (NaN when not placed; `vr_z` NaN for a source on the
+sky only) and `vr_velocity_kms` (the cube's velocity at `vr_z`). The page
+sends only the classified rows; the others keep empty classification columns.
+The sources found by eye (`origin: user`) are appended: their original
+columns are null except the name column and the sky columns, filled only when
+the source's frame is the catalogue's. A row out of the catalogue is 422.
+Without a catalogue (VLKB sources, a cross-match) the table is the sources
+sent: `name`, `ra`/`dec` (or `glon`/`glat` for `source_frame: galactic`), then
+the same classification columns. Answer: `valid`, `output_path`,
+`workspace_filename`, `n_rows`, `n_flagged`, `n_user`, `columns`.
 
 ## `POST /v1/velocity/lines_bin`
 

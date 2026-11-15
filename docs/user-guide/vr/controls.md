@@ -342,6 +342,11 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
   - **Result**, only while something is selected: *Isolate*, *Remove*, *Show
     result cube* (greyed until Isolate or Remove made one; greyed on a box
     region, which has no mask). See [Analysis](analysis.md).
+  - **Sources** (#279): *List* (opens or closes the *Sources* window),
+    *◂ Prev*, *Next ▸* (visit the previous or next source; greyed with no
+    catalogue and no found source), *+ Found* (the selection as a source found
+    by eye; greyed with no lasso or probe result). See
+    [Catalogues over a cube](data-types.md#the-source-list-browse-visit-classify).
 - **Measure** (a cube)
   - **Moment**: *Intensity (M0)*, *Velocity (M1)*, *Dispersion (M2)*, *Hide*.
     On a lasso selection it is the moment of that object (its mask). With no
@@ -498,7 +503,9 @@ The results stand in windows: the **selection** window (the picked position,
 the spectrum, the lasso's or the box's statistics; right of the cube; since
 #256 it opens only with a result, work under way or an error, not as soon as
 Select mode is on), **Moment** (above the cube's right side) and **PV
-diagram** (above its left side). Each window's title bar sits above its
+diagram** (above its left side), and **Sources** (left of the cube, low;
+opened by *Select ▸ Sources ▸ List*, its rows, headings and buttons used with
+the ray and the trigger like the menu's). Each window's title bar sits above its
 content and names what it shows: *Spectrum probe*, *Kinematic Lasso* or *Box
 region* (the tool whose result it holds), *Moment 0*, *1* or *2*, *PV
 diagram*. A line too long for a window wraps onto the next row (a product

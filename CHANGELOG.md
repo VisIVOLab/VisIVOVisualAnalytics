@@ -8,6 +8,27 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: a source list to browse, visit, classify and send (#279).** With a
+  catalogue over the cube, *Select ▸ Sources ▸ List* opens a *Sources* window
+  (name, RA/Dec or l/b, velocity at the source's channel; sorted by any
+  column, ten a page). A row (or *Visit*) brings the source 0.55 m in front of
+  you at a comfortable size, orientation kept, with a white bracket, and moves
+  the velocity range to hold it; *Prev*/*Next* step through the sorted list.
+  Flags (real / doubtful / spurious by default, configurable on the page) and
+  preset notes classify the current source, its marker taking the flag's
+  colour; *+ Found* adds the Kinematic Lasso's object (or the probe's voxel)
+  as a source found by eye. *Send* writes a VOTable in the Workspace Exports
+  (`POST /v1/catalogue/classified_votable`: every original column and row,
+  `vr_flag`, `vr_note`, `vr_origin`, pixel and velocity, the found sources
+  appended) and posts a `classification` product; the desktop's Headset
+  Activity opens it in the cube's Catalogue table (flag, note, velocity,
+  origin, row) with *Save VOTable…*. Large catalogues: the 3 000 markers and
+  40 labels nearest the current source. Work kept in the browser across a
+  reload. On HCG 44 with its SoFiA-2 catalogue: 18 of 18 sources placed within
+  0.002 px of SoFiA's x, y, the velocity at z equal to `v_app`. An xrfake
+  check drives it with the controller; `catalogue_pixels` now also answers
+  `source_frame` and each source's `row`.
+
 - **VR: a spatial crop you can see and grab (#277).** While the *Spatial
   crop* tool is on, the crop box is drawn (edges, a faint fill) with a dot on
   each of its six faces; the dot under the ray, or near the controller,

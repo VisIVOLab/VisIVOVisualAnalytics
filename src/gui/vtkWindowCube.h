@@ -909,6 +909,12 @@ private:
     void showCubeOnHeadset();
     void openHeadsetProduct(const VrHub::Event &event);
     void openHeadsetSpectrum(const VrHub::Event &event, const VrHub::Product &product);
+    /// A catalogue classified in the headset (issue #279): its sources in the
+    /// catalogue table, and Save VOTable for the backend's file.
+    void showHeadsetClassification(const VrHub::Event &event, const VrHub::Product &product);
+    void saveHeadsetClassification();
+    QString m_headsetClassificationFile;          ///< its VOTable in the Workspace Exports ('' none)
+    QPointer<QPushButton> m_saveClassificationButton;
     /// A PV made in the headset, opened in this cube's PV view (issue #249):
     /// the view's row carries the headset's record instead of a second row.
     struct HeadsetPv
@@ -1993,6 +1999,8 @@ protected:
     bool finalizePolygonRegion();
     void extractCurrentPvDiagram();
     void loadCatalogueOverlay();
+    /// Puts parsed entries on the cube and in the table; false when none could be placed.
+    bool installCatalogueOverlay(const CatalogueOverlayParseResult &parsed);
     void clearCatalogueOverlay();
     void setCatalogueOverlayVisible(bool visible);
     void rebuildCatalogueOverlay();

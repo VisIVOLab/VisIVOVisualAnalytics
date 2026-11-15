@@ -232,7 +232,7 @@ test('settings round-trip and fall back to the defaults', () => {
   assert.deepEqual(S.loadSettings(st), S.sanitizeSettings(null));
   const s = { colormap: 'magma', thrSource: 'cube', thrSourceChosen: true, refine: { enabled: false, scale: 0.6, quality: 85, depth: false },
     tool: 'box', guideSeen: true, leftHanded: true, labels: false, haptics: false,
-    windows: { result: { right: -0.4, up: 0.1, fwd: -0.2, yaw: 0.5 } } };
+    windows: { result: { right: -0.4, up: 0.1, fwd: -0.2, yaw: 0.5 } }, flagSet: 'yes, no', noteSet: '' };
   assert.ok(S.saveSettings(st, s));
   assert.deepEqual(S.loadSettings(st, { colormaps: ['viridis', 'magma'], tools: ['probe', 'lasso', 'box'] }), s);
   // Unknown or broken values: replaced one by one, never thrown.

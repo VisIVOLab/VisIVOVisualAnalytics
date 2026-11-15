@@ -112,9 +112,9 @@
     FORCE_FONT = opts.font || '';
     if (FORCE_FONT && document.fonts && !document.fonts.check(`20px "${FORCE_FONT}"`)) throw new Error(`no font ${FORCE_FONT} here`);
     const imp = (m) => import(`${base}${m}`);
-    const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU, CG] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
+    const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU, CG, SL, SW] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
       'notice.js', 'onboarding.js', 'lifecycle.js', 'windows.js', 'product-canvas.js', 'readout.js', 'controls.js', 'select-ui.js',
-      'crop-gizmo.js'].map(imp));
+      'crop-gizmo.js', 'source-list.js', 'source-window.js'].map(imp));
     const report = { cases: 0, texts: 0, problems: [], ellipses: [], perCanvas: {}, snaps: [] };
     const snap = opts.snap ? new RegExp(opts.snap) : null;
     const run = (canvas, name, size, draw, widgets = []) => {
@@ -139,6 +139,7 @@
         Object.assign(ctx, {
           cat: { loaded: true, show: true, labels: true, pins: true }, clipTool: 'box',
           sel: { tool: 'lasso', seedMode: 'carve', lasso: true, box: true, applied: true },
+          src: { total: 1234, shown: true, canAdd: true },
           meas: { lasso: true, moment: 2, pvArmed: true, spectrum: true, pinned: true },
           pts: { fields, field: 'velocity_z', log: true, style: 'splats', budget: '12.0 M', box: true, fieldPage: 1 },
           flow: { stream: true, arrows: true, box: true },
@@ -158,6 +159,7 @@
         moment: 'Whole field over the velocity range, the desktop\'s automatic threshold mask.',
         pv: 'Trigger: the next point of the slice.', pvw: '3 px = 18.0″',
         cat: '⚠ 12 sources outside the cube (+2 more on the page)',
+        sources: 'SoFiA J101723.73+214802.8: 10:17:23.73 +21:48:02.8, 1926.8 km/s',
       };
       if (kind === 'points') Object.assign(notes, { field: 'velocity_z (log scale)', scale: '-1.234e+03 to 2.345e+03', style: 'splat size 0.0123',
         intensity: '100 %', shown: '1.23 M drawn of 4.00 M sampled, 11.52 M rows', crop0: '-12.34 to 45.67', crop1: '-12.34 to 45.67', crop2: '-12.34 to 45.67' });
@@ -313,6 +315,35 @@
         Object.assign(s.sel, fields2);
         s.panelTexture();
       });
+    }
+
+    // ── The Sources window (issue #279): every widget hovered, long names, both frames, flags ──
+    {
+      const zinfo = { full_shape: [700, 700, 158], axes: { z: { full_velocity_kms: Array.from({ length: 158 }, (_, i) => -1234.5 + 8.24 * i) } } };
+      const mk = (frame, n, long) => ({ valid: true, name: LONG_FILE, source_frame: frame,
+        sources: Array.from({ length: n }, (_, i) => ({ x: i, y: i, z: i % 3 ? 20.5 + i : null, row: i, lon: frame === 'galactic' ? 359.99 - i : 154.3 + i * 1e-3,
+          lat: -28.75 - i * 1e-3, label: long ? `SoFiA J101723.73+214802.8 extended designation ${i}` : `S${i}` })) });
+      const flagSets = [SL.DEFAULT_FLAGS, SL.parseSet('confirmed, candidate, artefact, unknown', [], 4)];
+      const noteSets = [SL.DEFAULT_NOTES, SL.parseSet('blended pair, cube edge, RFI band', [], 6)];
+      const cases = [['icrs long', 'icrs', 23, true, 0], ['galactic', 'galactic', 7, false, 1], ['empty', 'icrs', 0, false, 0]];
+      for (const [label, frame, n, long, k] of cases) {
+        const user = n ? [SL.foundSource(12, [1, 2, 3], zinfo, { valid: true, ra_deg: 154.3, dec_deg: -28.7 }, 'lasso')] : [];
+        const rows = SL.sourceRows(mk(frame, n, long), zinfo, user);
+        const cls = new SL.Classification(flagSets[k], noteSets[k]);
+        rows.slice(0, 6).forEach((r, i) => cls.toggleFlag(r.key, cls.flagSet[i % cls.flagSet.length]));
+        const sorted = SL.sortRows(rows, 'velocity', -1, (key) => cls.flagOf(key), cls.flagSet);
+        const cur = sorted[1] || null;
+        const v = { title: `${LONG_FILE}: ${n} sources`, info: '6 flagged (2 real, 2 doubtful, 2 spurious), 1 found by eye, changed since sent',
+          page: 0, pages: SL.pageCount(sorted.length, SW.ROWS_PER_PAGE), total: sorted.length, rows: sorted.slice(0, SW.ROWS_PER_PAGE),
+          current: cur ? cur.key : null, currentRow: cur, sort: { key: 'velocity', dir: -1 }, flagSet: cls.flagSet, noteSet: cls.noteSet,
+          mark: cur ? cls.get(cur.key) : null, frame, canSend: n > 0, marks: (key) => cls.get(key),
+          status: ['Not sent: the backend answered 503 Service Unavailable while writing the VOTable, try again', '#ff8a8a'] };
+        const layout = SW.sourceLayout(v);
+        for (const hover of [null, ...layout.map((w) => w.id)]) {
+          run('sources window', `${label} hover=${hover || '-'}`, SW.SRC_PX, (c) => SW.drawSources(c, layout, v, { hover }), layout);
+        }
+      }
+      run('window bar', 'Sources', WN.BAR_PX, (c) => WN.drawBar(c, WN.windowTitle('sources'), {}), WN.barLayout());
     }
 
     // ── The readout card ──

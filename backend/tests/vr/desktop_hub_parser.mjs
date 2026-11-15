@@ -3,7 +3,7 @@
 // (issue #237) are checked against the same rules: in node's tests
 // (headset.test.mjs) and in the browser check (validation/vr_headset_hub.mjs)
 // on what the hub actually relayed. Keep in step with VrHeadsetHub.h:
-// parseProduct, openIn, parseLook, parseClip, cubeKey, aboutCube.
+// parseProduct, openIn, parseLook, parseClip, cubeKey, aboutCube, parseClassification.
 
 const str = (v) => (typeof v === 'string' ? v : '');
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -41,7 +41,28 @@ export function openIn(p) {
   if (p.kind === 'spectrum') return hasFile || p.values.length ? 'SpectrumPlot' : 'Nothing';
   if (p.kind === 'isolate' || p.kind === 'remove') return hasFile ? 'CubeWindow' : 'Nothing';
   if (p.kind === 'catalogue' || p.kind === 'flow') return hasFile ? 'File' : 'Nothing';
+  if (p.kind === 'classification') return 'CatalogueTable';
   return 'Nothing';
+}
+
+/** VrHub::parseClassification (issue #279): a source without a finite pixel is left out. */
+export function parseClassification(payload) {
+  const o = obj(obj(payload).classification);
+  if (!Array.isArray(o.sources)) return { valid: false, sources: [] };
+  const fin = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : NaN);
+  const cat = obj(o.catalogue);
+  const flagSet = (Array.isArray(o.flag_set) ? o.flag_set : []).map(str);
+  const sources = [];
+  for (const s0 of o.sources) {
+    const s = obj(s0);
+    const src = { key: str(s.k), label: str(s.n), lon: fin(s.lon), lat: fin(s.lat), galactic: s.f === 'g',
+      x: fin(s.x), y: fin(s.y), z: fin(s.z), velocityKms: fin(s.v), flag: str(s.flag), note: str(s.note),
+      origin: s.o === 'u' ? 'user' : s.o === 'o' ? 'overlay' : 'catalogue', row: typeof s.row === 'number' ? s.row : -1 };
+    if (Number.isFinite(src.x) && Number.isFinite(src.y)) sources.push(src);
+  }
+  return { valid: true, catalogueName: str(cat.name), cataloguePath: str(cat.path), catalogueRows: cat.rows | 0, flagSet,
+    noteSet: (Array.isArray(o.note_set) ? o.note_set : []).map(str), column: str(o.column) || 'vr_flag',
+    counts: flagSet.map((f) => obj(o.counts)[f] | 0), flagged: o.flagged | 0, found: o.found | 0, truncated: !!o.truncated, sources };
 }
 
 /** VrHub::parseLook: a number only when it is a finite JSON number. */

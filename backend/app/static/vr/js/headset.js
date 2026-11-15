@@ -174,7 +174,7 @@ export function clipPayload(box, datasetId) {
 }
 
 /** The product kinds the hub accepts (backend PRODUCT_KINDS). */
-export const PRODUCT_KINDS = ['moment', 'pv', 'spectrum', 'isolate', 'remove', 'catalogue', 'flow'];
+export const PRODUCT_KINDS = ['moment', 'pv', 'spectrum', 'isolate', 'remove', 'catalogue', 'flow', 'classification'];
 
 /**
  * How a product made here is saved for the desktop: {route, body} of the
@@ -193,6 +193,10 @@ export function savePlan(detail, stem = 'cube') {
   if (d.product === 'pv' && d.dataset_id) {
     return { route: '/v1/products/pv_fits',
       body: { dataset_id: d.dataset_id, vertices: req.vertices, width_pixels: req.width_pixels, output_basename: `${stem}_vr_pv.fits` } };
+  }
+  // A catalogue classified in the headset (#279): the VOTable of its rows and flags.
+  if (d.product === 'classification' && d.dataset_id && d.request) {
+    return { route: '/v1/catalogue/classified_votable', body: { ...req, dataset_id: d.dataset_id } };
   }
   if (d.product === 'spectrum' && d.dataset_id) {
     return { route: '/v1/products/spectrum_table',
@@ -215,6 +219,7 @@ export function productSummary(detail, cubeName, file) {
     case 'remove': s = `Cube${on} with the selection removed`; break;
     case 'catalogue': s = `Catalogue ${fileName(d.path) || ''} over ${cubeName || 'the cube'}`.replace(/\s+/g, ' '); break;
     case 'flow': s = `Velocity field ${fileName(d.path)}`; break;
+    case 'classification': s = String(d.label || 'Catalogue classified in the headset'); break;
     default: s = String(d.label || d.product || 'Product');
   }
   if (file) s += ` → ${file}`;
@@ -234,9 +239,12 @@ export function productPayload(detail, file, recipe) {
   if (file) p.file = String(file);
   else if (d.path) p.path = String(d.path);
   if (d.dataset_id) p.dataset_id = String(d.dataset_id);
-  if (d.request && typeof d.request === 'object') p.request = d.request;
+  // A classification's request is the whole VOTable's body: its file is what the desktop opens.
+  if (d.request && typeof d.request === 'object' && d.product !== 'classification') p.request = d.request;
   if (recipe) p.recipe = recipe;
   if (d.label) p.label = String(d.label).slice(0, 200);
+  // The classified sources for the desktop's catalogue table (#279; source-list.js hubClassification).
+  if (d.product === 'classification' && d.classification) p.classification = d.classification;
   return p;
 }
 

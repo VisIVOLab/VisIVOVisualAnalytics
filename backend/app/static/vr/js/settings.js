@@ -21,10 +21,12 @@ export const DEFAULT_SETTINGS = {
   leftHanded: false,             // the left hand points and acts, the right holds the menu (#201)
   labels: true,                  // the button legend (#201), on the primary wrist since #256
   haptics: true,                 // pulses on a press, a result, an error (#201)
-  windows: {},                   // {result|moment|pv: {right, up, fwd, yaw}}: offsets from the cube's first placement
+  windows: {},                   // {result|moment|pv|sources: {right, up, fwd, yaw}}: offsets from the cube's first placement
+  flagSet: '',                   // the source list's flags, comma-separated ('' the defaults: real, doubtful, spurious; #279)
+  noteSet: '',                   // its preset notes, comma-separated ('' the defaults)
 };
 
-export const WINDOW_IDS = ['result', 'moment', 'pv'];
+export const WINDOW_IDS = ['result', 'moment', 'pv', 'sources'];
 
 const finite = (v, lo, hi) => typeof v === 'number' && Number.isFinite(v) && v >= lo && v <= hi;
 
@@ -66,7 +68,7 @@ export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
   const d = DEFAULT_SETTINGS;
   const s = raw && typeof raw === 'object' ? raw : {};
   const out = { colormap: d.colormap, thrSource: d.thrSource, thrSourceChosen: false, refine: { ...d.refine }, tool: d.tool, guideSeen: d.guideSeen,
-    leftHanded: d.leftHanded, labels: d.labels, haptics: d.haptics, windows: {} };
+    leftHanded: d.leftHanded, labels: d.labels, haptics: d.haptics, windows: {}, flagSet: d.flagSet, noteSet: d.noteSet };
   if (typeof s.colormap === 'string' && (!colormaps || colormaps.includes(s.colormap))) out.colormap = s.colormap;
   if (s.thrSource === 'reduced' || s.thrSource === 'cube') out.thrSource = s.thrSource;
   out.thrSourceChosen = s.thrSourceChosen === true;
@@ -87,6 +89,7 @@ export function sanitizeSettings(raw, { colormaps = null, tools = null } = {}) {
   if (typeof s.tool === 'string' && (!tools || tools.includes(s.tool))) out.tool = s.tool;
   else if (tools && tools.length && !tools.includes(out.tool)) out.tool = tools[0];
   if (typeof s.guideSeen === 'boolean') out.guideSeen = s.guideSeen;
+  for (const k of ['flagSet', 'noteSet']) if (typeof s[k] === 'string') out[k] = s[k].slice(0, 200);
   return out;
 }
 

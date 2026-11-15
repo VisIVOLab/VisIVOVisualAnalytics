@@ -72,6 +72,7 @@ viewer:
 | Spectrum | a spectrum product of its cube's window (pane and Session Data), from its CSV or FITS table |
 | Isolate or Remove | a new cube window (the masked cube's FITS file) |
 | Catalogue or flow layer | its file, when it is a FITS file; otherwise it is named, to open from the Data Hub's Workspace Exports |
+| Classified catalogue (#279) | this cube's Catalogue table: the classified and found sources, at the backend's own pixels, with the flag, note, velocity, origin and catalogue row as columns; **Save VOTable…** above the table saves the full catalogue with the flag column |
 
 A product opened here is recorded in Session Data ▸ Provenance with the
 headset's own record: its parameters, the requests that made it (under the

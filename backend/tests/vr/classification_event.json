@@ -1,0 +1,91 @@
+{
+ "seq": 7,
+ "client": "q3",
+ "time": 1794700002.1,
+ "kind": "product",
+ "cube_path": "/data/cube.fits",
+ "summary": "Classified 2 of 3 sources of cat.csv (1 real, 0 doubtful, 1 spurious), 1 found by eye → cat_vr_classified.xml",
+ "payload": {
+  "product": "classification",
+  "file": "cat_vr_classified.xml",
+  "dataset_id": "cube1",
+  "label": "Classified 2 of 3 sources of cat.csv (1 real, 0 doubtful, 1 spurious), 1 found by eye",
+  "classification": {
+   "catalogue": {
+    "name": "cat.csv",
+    "path": "/data/cat.csv",
+    "dataset_id": "cat1",
+    "rows": 3
+   },
+   "flag_set": [
+    "real",
+    "doubtful",
+    "spurious"
+   ],
+   "note_set": [
+    "blended",
+    "edge",
+    "RFI",
+    "extended",
+    "faint",
+    "check"
+   ],
+   "column": "vr_flag",
+   "counts": {
+    "real": 1,
+    "doubtful": 0,
+    "spurious": 1
+   },
+   "flagged": 2,
+   "found": 1,
+   "sources": [
+    {
+     "k": "c:0",
+     "n": "G030.2-0.1",
+     "lon": 30.2,
+     "lat": -0.1,
+     "f": "g",
+     "x": 40,
+     "y": 30,
+     "z": null,
+     "v": null,
+     "flag": "spurious",
+     "note": "RFI",
+     "o": "c",
+     "row": 0
+    },
+    {
+     "k": "c:2",
+     "n": "G030.0+0.0",
+     "lon": 30,
+     "lat": 0,
+     "f": "g",
+     "x": 32,
+     "y": 30,
+     "z": 20,
+     "v": 1100,
+     "flag": "real",
+     "note": "",
+     "o": "c",
+     "row": 2
+    },
+    {
+     "k": "u:1",
+     "n": "VR-1",
+     "lon": 281.5,
+     "lat": -2.5,
+     "f": "i",
+     "x": 33,
+     "y": 31,
+     "z": 21,
+     "v": 1105,
+     "flag": "doubtful",
+     "note": "",
+     "o": "u"
+    }
+   ],
+   "truncated": false
+  },
+  "output_path": "/srv/exports/cat_vr_classified.xml"
+ }
+}

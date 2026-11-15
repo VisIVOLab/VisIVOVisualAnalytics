@@ -118,6 +118,51 @@ PA), each band in the desktop's colour; filaments lie on the back face. The
 status line says how many sources were placed, how many fell outside the
 cube, and how they were placed in velocity.
 
+### The source list: browse, visit, classify
+
+In the headset, **Select ▸ Sources ▸ List** opens the *Sources* window: the
+sources of the catalogue over the cube, ten a page, with their name, sky
+position (RA/Dec, or l/b for a Galactic catalogue such as the VLKB's) and
+velocity (the cube's velocity at the source's channel, as the readout gives
+it; a dash for a source placed on the sky only). Point at a column heading
+and pull the trigger to sort by it (again: the other way); *◂ Page* and
+*Page ▸* page a large catalogue.
+
+- **Visit**: a row pressed (or *Visit*) makes that source the current one,
+  drawn with a white bracket, and brings it to the centre of the view: the
+  cube is moved and scaled so the source sits about 0.55 m in front of you
+  and its region (2.5 times its ellipse, or 8 % of the field) is about 25 cm
+  across; the cube keeps its orientation. A source outside the velocity range
+  shown moves the range to hold it (its width kept; Undo takes it back). On
+  the page the camera turns about the source.
+- **◂ Prev / Next ▸** (in the window or on the Select tab) visit the previous
+  or next source of the sorted list.
+- **Classify**: the flag buttons (*real*, *doubtful*, *spurious* by default,
+  each with its colour, which the source's marker then takes) and the note
+  presets (*blended*, *edge*, *RFI*, *extended*, *faint*, *check*) mark the
+  current source; pressing the one it has takes it back. Both sets are set on
+  the page under *Catalogue over the cube* (*Flags*, *Notes*, comma-separated,
+  at most 4 flags and 6 notes of 12 characters each); they apply to the next
+  catalogue placed.
+- **Found by eye**: select an object the catalogue does not hold with the
+  Kinematic Lasso (or point the Spectrum probe at it), then **Select ▸
+  Sources ▸ + Found**: it is added to the list as *VR-1*, *VR-2*… (at the
+  lasso's brightest voxel, or the probe's voxel; its ICRS position from the
+  cube's full WCS), drawn as a cyan diamond, and can be flagged like the
+  others; *Remove* takes a found source out.
+- **Send** writes the classification as a VOTable in the Workspace Exports
+  (every original column and row of the catalogue, the flag column `vr_flag`,
+  `vr_note`, `vr_origin`, the pixel and the velocity, the found sources
+  appended) and reports it to the desktop as headset activity (see
+  [The headset from the desktop](desktop.md#headset-activity)). Each Send
+  writes a new file (`<catalogue>_vr_classified.xml`, then `_1`, `_2`…); the
+  window's line says *changed since sent* when there is more to send.
+
+The flags, notes and found sources are kept in this browser per cube and
+catalogue, so a reload (or a restarted headset browser) finds them again.
+With a large catalogue the markers drawn are the 3 000 nearest the current
+source and the labels the 40 nearest.
+
 ## Velocity fields
 
 The backend traces the streamlines and picks the arrows on the grid the
