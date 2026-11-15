@@ -13,6 +13,7 @@ import * as CT from './catalogue.js';
 import * as SC from './sim-controls.js';
 import { colormapTable } from './colormaps.js';
 import { niceTicks } from './volume.js';
+import { skyOf } from './pairing.js';
 
 /** What a path opens as (`choice`: the page's selector, 'auto' by the name). */
 export function kindOfPath(path, choice = 'auto') {
@@ -225,6 +226,8 @@ export function createLayers(ctx) {
       color_field: L.s.colourField, color_log: L.s.autoLog ? null : L.s.colourLog,
       x: p.axes[0], y: p.axes[1], z: p.axes[2] };
     if (L.s.sizeOn && L.s.sizeField) body.size_field = L.s.sizeField;
+    // A sky catalogue placed as the desktop window places it (issue #260).
+    if (p.sky) body.sky = p.sky;
     // Through the page's Backend, as every request (api.js), so a prefix or
     // a change of address it learns applies here too.
     // A newer request (another budget, another column) cancels this one: the
@@ -272,14 +275,15 @@ export function createLayers(ctx) {
   }
 
   /**
-   * Opens a point table (`datasetId`: one the session holds, else `path`).
-   * A snapshot step (#259) passes `keep` (what to carry over), `series` (the
-   * series moved on by one: no new /series request) and `token` (the step's;
-   * a step overtaken by a newer one installs nothing and closes what it
-   * opened). A dataset the page opened itself is `own`: when a step replaces
-   * it, it is closed (DELETE), never one the desktop opened.
+   * Opens a point table (`datasetId`: one the session holds, else `path`;
+   * `sky`: a sky catalogue's placement, #260). A snapshot step (#259) passes
+   * `keep` (what to carry over), `series` (the series moved on by one: no new
+   * /series request) and `token` (the step's; a step overtaken by a newer one
+   * installs nothing and closes what it opened). A dataset the page opened
+   * itself is `own`: when a step replaces it, it is closed (DELETE), never one
+   * the desktop opened.
    */
-  async function openPoints(b, { datasetId, path, keep = null, series = null, token = 0, gen = 0 }, load = {}) {
+  async function openPoints(b, { datasetId, path, sky = null, keep = null, series = null, token = 0, gen = 0 }, load = {}) {
     const own = !datasetId;
     // A table opened afresh (not a step) overtakes any step under way.
     if (!token) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; L.carry = null; }
@@ -303,7 +307,12 @@ export function createLayers(ctx) {
     }
     if (stale()) { drop(); return null; }
     load.check?.();
-    const info = await b._json('POST', '/v1/points/info', { dataset_id: datasetId });
+    // A sky catalogue's frame, distance mode and cosmology (issue #260): the
+    // desktop's, else the backend's defaults; the answer says how it placed it
+    // and how many sources it left out for want of a distance (#265).
+    const infoBody = { dataset_id: datasetId };
+    if (sky) infoBody.sky = sky;
+    const info = await b._json('POST', '/v1/points/info', infoBody);
     if (stale()) { drop(); return null; }
     load.check?.();
     const prevShown = L.points;
@@ -312,7 +321,7 @@ export function createLayers(ctx) {
     // intermediate step has no sample to take them from.
     const carry = token ? L.carry : null;
     L.points = { datasetId, path, own, axes: info.axes, defaultAxes: info.axes.slice(), fields: info.fields, rows: info.num_rows,
-      units: info.units || {}, series };
+      units: info.units || {}, series, sky, skySettings: info.sky_settings || null };
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
@@ -652,7 +661,7 @@ export function createLayers(ctx) {
       const token = ++L.stepToken;
       L.stepTarget = series;
       const keep = { axes: p.axes, colourField: s.colourField, sizeField: s.sizeField };
-      openPoints(b, { path: next.path, keep, series, token, gen: state.loadGen })
+      openPoints(b, { path: next.path, sky: p.sky || null, keep, series, token, gen: state.loadGen })
         .then((r) => { if (r && token === L.stepToken) ctx.onSnapshot?.(next.path); })
         .catch((e) => { if (token === L.stepToken) { L.stepTarget = null; L.carry = null; fail(e); } });
     } else if (id === 'psel-inside' || id === 'psel-outside' || id === 'psel-all') {
@@ -831,7 +840,7 @@ export function createLayers(ctx) {
     /** Opens `path` as a point table or a velocity field; false for a cube. */
     async openPath(b, path, load = {}) {
       const kind = kindOfPath(path, kindSel.value);
-      if (kind === 'points') { await openPoints(b, { path }, load); return true; }
+      if (kind === 'points') { await openPoints(b, { path }, load); return true; }   // the backend's placement
       if (kind === 'flow') { await openFlow(b, { path, boxMpc: boxIn.value }, load); return true; }
       return false;
     },
@@ -841,15 +850,16 @@ export function createLayers(ctx) {
       const mode = pairedMode(pairing.kind);
       if (mode === 'cube') return false;
       const open = mode === 'points' ? openPoints : openFlow;
+      const sky = skyOf(pairing);
       try {
         if (!pairing.dataset) throw new Error('404: no dataset in the link');
-        await open(b, { datasetId: pairing.dataset, boxMpc: pairing.box }, load);
+        await open(b, { datasetId: pairing.dataset, boxMpc: pairing.box, sky }, load);
       } catch (err) {
         load.check?.();
         const next = await onFallback(err);
         load.check?.();
         if (next === 'fail') throw err;
-        await open(b, { path: pairing.path, boxMpc: pairing.box }, load);
+        await open(b, { path: pairing.path, boxMpc: pairing.box, sky }, load);
       }
       return true;
     },
@@ -884,9 +894,9 @@ export function createLayers(ctx) {
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
-        const st = PT.splatStyle(pt.sample.bounds, pt.sample.totalRows, drawn, L.s.splatSize, L.s.intensity);
+        const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity);
         const size = L.s.sizeOn && pt.size ? SC.sizedSplat(pt.size.range, { splatSize: L.s.splatSize,
-          grow: Math.cbrt(Math.max(1, pt.sample.totalRows / Math.max(1, drawn))), radius: st.sampleRadius }) : null;
+          grow: Math.cbrt(Math.max(1, pt.sample.placedRows / Math.max(1, drawn))), radius: st.sampleRadius }) : null;
         cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
           opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
           clip: state.clip, size, sel: L.s.selBox && L.s.selMode !== 'all' ? { box: L.s.selBox, mode: L.s.selMode } : null,
@@ -947,7 +957,7 @@ export function createLayers(ctx) {
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
-        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity,
+        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, sky: L.points.sky,
         filters: SC.boxFilters(L.points.axes, sm.bounds, L.s.selBox, L.s.selMode) });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
@@ -964,6 +974,9 @@ export function createLayers(ctx) {
         const d = L.s.govern ? L.points.drawRows : s.count;
         out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}`);
         out.push(`  sample ${L.load.mb.toFixed(1)} MB: request ${L.load.requestMs.toFixed(0)} ms, upload ${L.load.uploadMs.toFixed(1)} ms`);
+        // A sky catalogue: how it is placed, and the sources with no distance (#260, #265).
+        const sky = PT.skyLabel(L.points.skySettings);
+        if (sky) out.push(`  ${sky}`);
       } else if (L.mode === 'flow' && L.flow && L.flow.info) {
         const i = L.flow.info;
         out.push(`flow ${i.lines} streamlines (${i.points} points), ${i.arrows} arrows, grid ${i.shape.join('×')}`);

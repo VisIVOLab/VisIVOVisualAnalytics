@@ -29,6 +29,12 @@ test('a sample is read back from its headers and body', () => {
     'X-Visivo-Color-Range': '1,100', 'X-Visivo-Color-Log': '1', 'X-Visivo-Data-Range': '0.5,100' }));
   assert.equal(info.count, 2);
   assert.ok(info.colourLog);
+  // No X-Visivo-Placed-Rows (an older backend): every row counts.
+  assert.equal(info.placedRows, 10);
+  // A sky catalogue's unplaced rows are not counted for the splat size (#265).
+  const sky = PT.sampleInfo(hdr({ 'X-Visivo-Count': '2', 'X-Visivo-Total-Rows': '10', 'X-Visivo-Placed-Rows': '7' }));
+  assert.equal(sky.totalRows, 10);
+  assert.equal(sky.placedRows, 7);
   const buf = new Uint16Array([0, 0, 0, 65535, 65535, 65535, 0, 65535]).buffer;
   const a = PT.sampleArrays(buf, info);
   assert.deepEqual(PT.rowPosition(a.positions, 1, info.bounds), [10, 1, 2]);
@@ -78,6 +84,19 @@ test('point look commands and box decorations', () => {
   assert.deepEqual(PT.pointLook({ axes: ['X', 'Y', 'Z'], lut: colormapTable('grey'), style: 'points', filters: box })[4].filters, box);
   const { segs, labels } = PT.boxDecorations(PT.dataToModel([0, 10, 0, 5, 0, 1]), ['X', 'Y', 'Z'], niceTicks);
   assert.ok(segs.length >= 12 && labels.some((l) => l.text === '10'));
+});
+
+test('a sky catalogue\'s placement goes to the point session and the status line (#260, #265)', () => {
+  const sky = { frame: 'supergalactic', distance_mode: 'comoving', cosmology: 'Planck18' };
+  const cmds = PT.pointLook({ axes: ['@x', '@y', '@z'], colourField: null, colourRange: null, colourLog: false,
+    lut: colormapTable('grey'), c0: 0, c1: 1, style: 'points', splatSize: 2, pointPx: 3, intensity: 40, sky });
+  assert.deepEqual(cmds[0], { type: 'set_sky_positions', ...sky });
+  assert.equal(cmds[1].type, 'set_point_fields');
+  assert.equal(PT.skyLabel({ ...sky, unplaced: 26 }), 'supergalactic · comoving · Planck18 · 26 unplaced');
+  assert.equal(PT.skyLabel({ frame: 'fk5', distance_mode: 'redshift_space', cosmology: 'WMAP9', unplaced: 0 }),
+    'fk5 · redshift space · WMAP9');
+  assert.equal(PT.skyLabel(null), '');
+  assert.equal(PT.skyLabel({ ...sky, unplaced: 0, sky_sphere: true }), 'supergalactic · celestial sphere (no distances)');
 });
 
 test('a refined pose carries the rows the splats are sized for and the eye height (#262)', () => {

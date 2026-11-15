@@ -523,16 +523,19 @@ test('review: a re-cut takes its colour range from a strided sample: close to th
   const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
   const values = Float32Array.from({ length: W * H }, () => 100 * (rnd() + rnd() + rnd() - 1.5));
   const clip = { min: [0.1, 0.1, 0], max: [0.95, 0.95, 1] };
-  const exact = TMm.cutWhole(1, values, W, H, clip, [W, H, 4]);
   const t0 = performance.now();
+  const exact = TMm.cutWhole(1, values, W, H, clip, [W, H, 4]);
+  const exactMs = performance.now() - t0;
+  const t1 = performance.now();
   const fast = TMm.cutWhole(1, values, W, H, clip, [W, H, 4], { sample: TMm.RECUT_SAMPLE });
-  const ms = performance.now() - t0;
+  const ms = performance.now() - t1;
   const span = exact.range[1] - exact.range[0];
   assert.ok(Math.abs(fast.range[0] - exact.range[0]) < 0.02 * span && Math.abs(fast.range[1] - exact.range[1]) < 0.02 * span,
     `${fast.range} vs ${exact.range}`);
   assert.deepEqual(fast.box, exact.box);
   assert.equal(fast.summary.pixels, exact.summary.pixels, 'the numbers count every pixel');
-  assert.ok(ms < 100, `${ms.toFixed(1)} ms`);
+  // Relative, not absolute: a CI runner is slower than this Mac (100.2 ms there once).
+  assert.ok(ms < exactMs / 2, `sampled ${ms.toFixed(1)} ms, exact ${exactMs.toFixed(1)} ms`);
   assert.equal(TMm.strided(new Float32Array(10), 64).length, 10);
   assert.equal(TMm.strided(new Float32Array(1000), 64).length, 64);
 });

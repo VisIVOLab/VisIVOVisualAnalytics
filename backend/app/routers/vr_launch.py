@@ -90,7 +90,7 @@ async def vr_launch(
     with the cube it opens (none: the app's empty room). The desktop puts the
     ticket in the launch address's fragment (``#ticket=``) and follows the
     launch with ``GET /v1/vr/launch/{launch}``. Never logged."""
-    issued = L.TICKETS.issue(token, session.session_id, body.cube.model_dump() if body and body.cube else None)
+    issued = L.TICKETS.issue(token, session.session_id, body.cube.record() if body and body.cube else None)
     return JSONResponse({**issued, "page": APP_PAGE}, headers=_NO_STORE)
 
 

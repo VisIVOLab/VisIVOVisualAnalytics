@@ -72,6 +72,10 @@ class PointSample:
     # Why no sizes were sent for the size column asked (none positive): the
     # page then draws uniform splats and says so (review of #259).
     size_note: str = ""
+    # The rows that have a position (a sky catalogue's unplaced ones left
+    # out, issue #265): what `step` and the page's splat size count. None:
+    # every row of the table.
+    placed_rows: int | None = None
 
     def encode(self) -> bytes:
         parts = [np.ascontiguousarray(self.positions, dtype="<u2").tobytes()]
@@ -108,13 +112,16 @@ def prefix_order(n: int) -> np.ndarray:
     return np.concatenate(out)
 
 
-def filtered_rows(table, filters: list[dict]) -> np.ndarray:
-    """Every row passing ``filters``, read a chunk at a time (the filter runs
-    before the sample, so a filter keeps the budget's rows, not a share of it)."""
+def filtered_rows(table, filters: list[dict], base: np.ndarray | None = None) -> np.ndarray:
+    """Every row (of ``base``, sorted indices; None: the whole table) passing
+    ``filters``, read a chunk at a time (the filter runs before the sample, so
+    a filter keeps the budget's rows, not a share of it)."""
     from .point_table import filter_mask   # noqa: PLC0415
     kept = []
-    for start in range(0, table.num_rows, _CHUNK):
-        rows = np.arange(start, min(table.num_rows, start + _CHUNK), dtype=np.int64)
+    count = table.num_rows if base is None else len(base)
+    for start in range(0, count, _CHUNK):
+        rows = (np.arange(start, min(count, start + _CHUNK), dtype=np.int64) if base is None
+                else base[start:start + _CHUNK])
         kept.append(rows[filter_mask(table.columns, filters, rows)])
     return np.concatenate(kept) if kept else np.zeros(0, np.int64)
 
@@ -364,9 +371,15 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
         raise ValueError(f"Unknown colour field: {colour_field!r}")
     if size_field is not None and size_field not in table.columns:
         raise ValueError(f"Unknown size field: {size_field!r}")
+    # A sky catalogue's rows without a position are never sampled: the budget
+    # goes to rows that can be drawn, and the step counts those (issue #265).
+    base = table.drawable(axes)
+    placed_rows = table.drawable_count(axes)
     if filters:
-        candidates = filtered_rows(table, filters)
+        candidates = filtered_rows(table, filters, base)
         rows = candidates[even_rows(len(candidates), limit)]
+    elif base is not None:
+        rows = base[even_rows(len(base), limit)]
     else:
         rows = even_rows(table.num_rows, limit)
     # Positions as float32 offsets from a value of their own axis (see
@@ -387,7 +400,8 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
             positions[start:start + _POS_CHUNK, i] = quantise64(part[:, i], lo_off[i], hi_off[i])
     del xyz
     out = PointSample(positions, None, bounds, axes, int(table.num_rows),
-                      table.num_rows / max(1, len(rows)), names=list(table.columns))
+                      placed_rows / max(1, len(rows)), names=list(table.columns),
+                      placed_rows=placed_rows)
     if colour_field is not None:
         # Read once, in float64 (a float32 copy merged 1e9 and 1e9 + 1 into
         # one colour), in file order; the 16-bit codes are put in the sample's
@@ -465,6 +479,7 @@ def headers(s: PointSample) -> dict[str, str]:
     h = {
         "X-Visivo-Count": str(len(s.positions)),
         "X-Visivo-Total-Rows": str(s.total_rows),
+        "X-Visivo-Placed-Rows": str(s.total_rows if s.placed_rows is None else s.placed_rows),
         "X-Visivo-Step": repr(float(s.step)),
         "X-Visivo-Bounds": ",".join(repr(v) for v in s.bounds),
         "X-Visivo-Axes": ",".join(s.axes),

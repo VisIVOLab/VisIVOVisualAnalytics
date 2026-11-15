@@ -15,7 +15,7 @@ import { createSelection, createSelectionSync, TOOLS, TOOL_NAMES } from './selec
 import { channelsOfClip, pixelArcsec } from './selection.js';
 import { Refiner, desktopEyes } from './refine-client.js';
 import { transferFunction, cropBox, cropError } from './refine.js';
-import { pairingFallback } from './pairing.js';
+import { pairingFallback, skyFields, skyOf } from './pairing.js';
 import { loadSettings, saveSettings, clampPanelOffset, thresholdSourceFor, WINDOW_IDS } from './settings.js';
 import * as P from './vr-panel.js';
 import { createLayers, pairedMode } from './layers.js';
@@ -3235,10 +3235,15 @@ function showFromDesktop(cmd) {
   const session = (backend && backend.session) || pairing.session || '';
   shell.log('info', 'hub-show', `${name} (${kind}), command ${cmd.seq}${xr ? ', in VR' : ''}`);
   measure.event('hub-show', { kind, in_vr: !!xr });
+  // A sky catalogue's placement, the desktop window's (issue #260), as the link's keys.
+  const sky = skyFields(cmd.sky);
   // A reload of this tab opens it, as one after the desktop's link does.
-  keepPairing({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '' });
+  keepPairing({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky });
   pendingBox = null;
-  if (shownDatasetId() === cmd.dataset_id && state.openPath === cmd.path) {
+  // The same catalogue placed otherwise is drawn again.
+  const skyChanged = kind === 'points'
+    && JSON.stringify(skyOf(sky)) !== JSON.stringify((layers.state.points && layers.state.points.sky) || null);
+  if (shownDatasetId() === cmd.dataset_id && state.openPath === cmd.path && !skyChanged) {
     // The cube on show: this command is the newest, so a load under way and a
     // cube waiting for the end of the session (older commands) are dropped.
     loads.begin(cmd.path);
@@ -3253,7 +3258,7 @@ function showFromDesktop(cmd) {
   }
   shell.notify('cube-from-desktop', { detail: name });
   $('path').value = cmd.path;
-  withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '' }))
+  withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky }))
     .then(() => {
       // Waiting for the end of the VR session (larger than the room kept for
       // cubes in VR): its box is applied when it is shown (installStaged).
@@ -3398,7 +3403,8 @@ function adoptGrant(grant, handed) {
   saveToken(grant.token, false);
   ensureBackend().adoptSession(grant.session);
   const c = grant.cube;
-  Object.assign(pairing, { session: grant.session, dataset: c ? c.dataset_id : '', path: c ? c.path : '', kind: c ? c.kind : '', box: '' });
+  Object.assign(pairing, { session: grant.session, dataset: c ? c.dataset_id : '', path: c ? c.path : '', kind: c ? c.kind : '', box: '',
+    ...skyFields(c && c.sky) });
   hub.start();
   hub.rehello();      // the hello names this launch: the desktop finds its page
   if (!c) {
@@ -3416,8 +3422,10 @@ function adoptGrant(grant, handed) {
         const eff = flow ? (flow.boxMpc != null ? flow.boxMpc : flow.info ? flow.info.boxMpc : null) : null;
         const box = kind === 'velocity' && eff != null && Number.isFinite(Number(eff)) ? String(eff) : '';
         const path = state.openPath;
-        keepPairing({ session: grant.session, dataset: '', path, kind, box });   // a reload opens it in the new session
-        withLoading(() => loadLinked({ session: grant.session, dataset: '', path, kind, box }))
+        // A sky catalogue keeps the placement it is drawn with (issue #260).
+        const sky = skyFields(layers.state.points && layers.state.points.sky);
+        keepPairing({ session: grant.session, dataset: '', path, kind, box, ...sky });   // a reload opens it in the new session
+        withLoading(() => loadLinked({ session: grant.session, dataset: '', path, kind, box, ...sky }))
           .catch((err) => { if (!err.superseded) setStatus(`${HUB.fileName(path)} could not be opened again: ${err.message || err}`); });
       }
     } else if (!state.openPath && !state.cube && !layers.hasScene()) {
@@ -3426,11 +3434,12 @@ function adoptGrant(grant, handed) {
     }
     return;
   }
-  const cmd = { seq: 0, type: 'show', dataset_id: c.dataset_id, path: c.path, kind: c.kind, box: c.box };
+  const cmd = { seq: 0, type: 'show', dataset_id: c.dataset_id, path: c.path, kind: c.kind, box: c.box, sky: c.sky };
   if (handed) { showFromDesktop(cmd); return; }
-  keepPairing({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '' });
+  const sky = skyFields(c.sky);
+  keepPairing({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '', ...sky });
   $('path').value = c.path;
-  withLoading(() => loadLinked({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '' }))
+  withLoading(() => loadLinked({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '', ...sky }))
     .then(() => { if (state.openPath === c.path) applyCommandBox(cmd); })
     .catch((err) => {
       if (err.superseded) return;
