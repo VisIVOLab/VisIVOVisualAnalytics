@@ -7,6 +7,7 @@
 // a green isosurface overlay showing the selected object. No coordinates, no box.
 
 #include "vtkWindowCube.h"
+#include "CubeLodVolumes.h"
 
 #include "theme/ToolDialogStyle.h"
 #include "theme/VisivoTheme.h"
@@ -256,13 +257,18 @@ void vtkWindowCube::onLassoRelease()
     picker->PickFromListOn();
     // Shown = in the renderer AND visible: isosurface mode takes the volume out of
     // the renderer without touching its visibility flag.
-    const bool volumeShown = renderer->HasViewProp(this->volume) && this->volume->GetVisibility() != 0;
+    const bool volumeShown = this->volumeLayerShown(renderer);
     vtkActor *iso = this->currentIsosurfaceActor;
     const bool isoShown = !volumeShown && iso && renderer->HasViewProp(iso) && iso->GetVisibility() != 0;
-    if (volumeShown)
-        picker->AddPickList(this->volume);
-    else if (isoShown)
+    if (volumeShown) {
+        // The blocks of a refined box stand in for the volume while shown.
+        if (this->m_lod && this->m_lod->active())
+            this->m_lod->addToPickList(picker);
+        else
+            picker->AddPickList(this->volume);
+    } else if (isoShown) {
         picker->AddPickList(iso);
+    }
     if ((!volumeShown && !isoShown) || picker->Pick(pos[0], pos[1], 0.0, renderer) == 0) {
         qDebug().noquote() << u"[lasso] no pick at (%1,%2) volume=%3 iso=%4"_s
                                       .arg(pos[0]).arg(pos[1]).arg(volumeShown).arg(isoShown);
@@ -274,7 +280,22 @@ void vtkWindowCube::onLassoRelease()
         return;
     }
     int ijk[3];
-    if (volumeShown) {
+    // The blocks of a refined box are images of their own: GetPointIJK would
+    // index the block that was hit, so the hit's world position is used, on
+    // the finest data drawn there.
+    const bool lodPick = volumeShown && this->m_lod && this->m_lod->active();
+    double hitWorld[3] = { 0., 0., 0. };
+    if (lodPick) {
+        picker->GetPickPosition(hitWorld);
+        double org[3], sp[3];
+        int dims[3];
+        cubeImage->GetOrigin(org);
+        cubeImage->GetSpacing(sp);
+        cubeImage->GetDimensions(dims);
+        for (int a = 0; a < 3; ++a)
+            ijk[a] = std::clamp(static_cast<int>(std::lround((hitWorld[a] - org[a]) / (sp[a] != 0. ? sp[a] : 1.))),
+                                0, std::max(0, dims[a] - 1));
+    } else if (volumeShown) {
         picker->GetPointIJK(ijk);   // voxel index in the DISPLAYED cube
     } else {
         // The isosurface is a mesh, not voxels: take the picked point back
@@ -296,32 +317,21 @@ void vtkWindowCube::onLassoRelease()
     }
 
     // Map the displayed-cube voxel → full-resolution cube voxel (the backend
-    // selection runs on the full cube). Two display conventions (same as the
-    // kinematic-model overlay): a high-res ROI subvolume is spacing-1 with its
-    // image origin at the ROI corner → world == full-res voxels, so
-    // full = origin + ijk; a downsampled preview has origin 0 and fewer voxels →
-    // full = round(ijk·(full-1)/(ddim-1)).
-    int ddim[3];
-    double dorg[3];
-    cubeImage->GetDimensions(ddim);
+    // selection runs on the full cube), through the display's world: a
+    // high-res ROI subvolume is spacing-1 with its origin at the ROI corner,
+    // so its world IS the cube's voxels; a preview's world is its own sample
+    // index, which displayToCube turns into the cube voxel it stands for
+    // (strided or block means, #320).
+    double dorg[3], dspc[3];
     cubeImage->GetOrigin(dorg);
-    const int fullW = std::max(1, this->remoteDatasetWidth);
-    const int fullH = std::max(1, this->remoteDatasetHeight);
-    const int fullD = std::max(1, this->remoteDatasetDepth);
-    // NOT "origin is nonzero": a ROI whose lower corner is (0,0,0) gets origin 0
-    // from fetchRemoteSubvolume() yet is still spacing-1 full-res, and would be
-    // misread as a downsampled preview. usingHighResCube is the flag the rest of
-    // the class already uses for exactly this distinction.
-    const bool roi = this->usingHighResCube;
-
-    const auto toFull = [roi](int dv, double dorg1, int ddim1, int full1) -> int {
-        if (roi) return static_cast<int>(std::lround(dorg1)) + dv;   // spacing-1 ROI
-        if (ddim1 <= 1 || full1 <= 1) return 0;
-        return static_cast<int>(std::lround(double(dv) * double(full1 - 1) / double(ddim1 - 1)));
+    cubeImage->GetSpacing(dspc);
+    const auto toFull = [&](int axis, int full1) -> int {
+        const double w = lodPick ? hitWorld[axis] : dorg[axis] + ijk[axis] * dspc[axis];
+        return std::clamp(static_cast<int>(std::lround(this->displayToCube(w))), 0, std::max(0, full1 - 1));
     };
-    const int seedX = std::clamp(toFull(ijk[0], dorg[0], ddim[0], fullW), 0, fullW - 1);
-    const int seedY = std::clamp(toFull(ijk[1], dorg[1], ddim[1], fullH), 0, fullH - 1);
-    const int seedZ = std::clamp(toFull(ijk[2], dorg[2], ddim[2], fullD), 0, fullD - 1);
+    const int seedX = toFull(0, this->remoteDatasetWidth);
+    const int seedY = toFull(1, this->remoteDatasetHeight);
+    const int seedZ = toFull(2, this->remoteDatasetDepth);
 
     qDebug().noquote()
             << QStringLiteral("[lasso] pick display ijk=(%1,%2,%3) → full seed=(%4,%5,%6) "
@@ -886,29 +896,15 @@ bool vtkWindowCube::updateLassoDisplayPlacement()
     if (!dispImg) {
         return false;
     }
-    int ddim[3];
-    dispImg->GetDimensions(ddim);
-    const int fullW = std::max(1, this->remoteDatasetWidth);
-    const int fullH = std::max(1, this->remoteDatasetHeight);
-    const int fullD = std::max(1, this->remoteDatasetDepth);
     // ROI display: world == full-res voxels → origin = selection voxel, spacing 1.
-    // Preview: world == display voxels → origin = selection·s, spacing
-    // s = (displayDim-1)/(fullDim-1) (same convention as the kinematic model).
-    double sx = 1.0, sy = 1.0, sz = 1.0;
-    double ox = this->m_lassoMaskOrigin[0];
-    double oy = this->m_lassoMaskOrigin[1];
-    double oz = this->m_lassoMaskOrigin[2];
-    if (!this->usingHighResCube) {
-        const auto scale = [](int ddim1, int full1) -> double {
-            return (full1 > 1 && ddim1 > 1) ? double(ddim1 - 1) / double(full1 - 1) : 1.0;
-        };
-        sx = scale(ddim[0], fullW);
-        sy = scale(ddim[1], fullH);
-        sz = scale(ddim[2], fullD);
-        ox *= sx;  oy *= sy;  oz *= sz;
+    // Preview: world == its own samples → cube voxel c sits at
+    // cubeToDisplay(c) = (c - offset) / stride, so the mask's voxels are
+    // 1 / stride apart from cubeToDisplay(its origin) (#320).
+    const double spacing = 1.0 / this->m_displaySampling.scale;
+    for (int a = 0; a < 3; ++a) {
+        this->m_lassoDispOrigin[a] = this->cubeToDisplay(this->m_lassoMaskOrigin[a]);
+        this->m_lassoDispSpacing[a] = spacing;
     }
-    this->m_lassoDispOrigin[0] = ox; this->m_lassoDispOrigin[1] = oy; this->m_lassoDispOrigin[2] = oz;
-    this->m_lassoDispSpacing[0] = sx; this->m_lassoDispSpacing[1] = sy; this->m_lassoDispSpacing[2] = sz;
     return true;
 }
 
@@ -1427,10 +1423,10 @@ void vtkWindowCube::rebuildLassoIsosurface(bool render)
 void vtkWindowCube::lassoSeedWorld(double out[3]) const
 {
     // The marked seed is a full-res voxel (z,y,x); the display it is drawn on may
-    // be a decimated preview, so it maps through the same spacing as the mask.
-    out[0] = double(this->m_lassoMarkerSeed[2]) * this->m_lassoDispSpacing[0];
-    out[1] = double(this->m_lassoMarkerSeed[1]) * this->m_lassoDispSpacing[1];
-    out[2] = double(this->m_lassoMarkerSeed[0]) * this->m_lassoDispSpacing[2];
+    // be a preview, so it maps through the display's sampling, as the mask does.
+    out[0] = this->cubeToDisplay(this->m_lassoMarkerSeed[2]);
+    out[1] = this->cubeToDisplay(this->m_lassoMarkerSeed[1]);
+    out[2] = this->cubeToDisplay(this->m_lassoMarkerSeed[0]);
 }
 
 // ── Phase 2: draw a polygon on the 2-D channel map to add/subtract mask pixels ──

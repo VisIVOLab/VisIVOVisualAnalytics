@@ -97,18 +97,6 @@ private:
     int m_generation{ 0 };
 };
 
-/// The full-resolution index of voxel @p index of a preview that samples the
-/// cube with @p stride along an axis of @p fullCount voxels: the backend takes
-/// every stride-th voxel from the first (worker_cube_preview), so preview voxel
-/// i is the cube's i × stride.
-inline int previewToFullIndex(int index, int stride, int fullCount)
-{
-    if (fullCount <= 1)
-        return 0;
-    const long long full = static_cast<long long>(index) * std::max(1, stride);
-    return static_cast<int>(std::clamp<long long>(full, 0, fullCount - 1));
-}
-
 }   // namespace visivo
 
 #endif   // PROBE_SPECTRUM_FETCH_H

@@ -44,6 +44,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_Tasks.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_VrPair.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient_CubeLod.cpp
     ${VISIVO_ROOT}/src/thirdparty/qrcodegen/qrcodegen.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
@@ -129,6 +130,8 @@ add_executable(VisIVOTests
     test_cube_lod_plan.cpp
     TestCubeLodGate.h
     test_cube_lod_gate.cpp
+    TestCubeLodAssembly.h
+    test_cube_lod_assembly.cpp
     TestSpectralAxisInfer.h
     test_spectral_axis_infer.cpp
     TestKinematicLevelField.h

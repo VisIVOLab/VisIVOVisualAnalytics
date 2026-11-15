@@ -1162,6 +1162,9 @@ void vtkWindowCube::updateRenderModeBadges()
 {
     const bool remote = (this->m_effectiveRenderMode == RenderMode::Remote);
     this->updateDataStatePanel();   // its badge names where the view is drawn
+    // A refined box is drawn here only (issue #321): a switch to the
+    // backend's view ends it, and the action says why it is unavailable.
+    this->updateRefineBoxAction();
     // Cinematic lighting is drawn here only (issue #101): not offered while the
     // view on screen is the backend's.
     if (this->m_cinematicCheck) {

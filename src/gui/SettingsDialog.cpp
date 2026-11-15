@@ -7,6 +7,7 @@
 #include "Settings.h"
 
 #include <QBoxLayout>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QFileDialog>
@@ -18,6 +19,7 @@
 #include <QLineEdit>
 #include <QScreen>
 #include <QScrollArea>
+#include <QSpinBox>
 #include <QTabBar>
 #include <QTabWidget>
 
@@ -101,6 +103,7 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     // remote-backends widget are placed by buildTabs() below.
     QWidget *copilotSection = this->buildCopilotSection();
     QWidget *vrPairingSection = this->buildVrPairingSection();
+    QWidget *largeCubesSection = this->buildLargeCubesSection();
 
     // Restore defaults
     QObject::connect(ui->buttonBox, &QDialogButtonBox::clicked, this,
@@ -125,13 +128,14 @@ SettingsDialog::SettingsDialog(Settings *settings, AuthWrapper *auth, QWidget *p
     // keeps its own scroll area, so a tab that still overflows (a long list of
     // remote backends) stays reachable, and the button box is pinned outside
     // them all.
-    this->buildTabs(copilotSection, vrPairingSection);
+    this->buildTabs(copilotSection, vrPairingSection, largeCubesSection);
 }
 
 // Move the sections built by the .ui file (plus the two built in code) into a
 // QTabWidget. The widgets are reparented, never recreated, so every pointer the
 // rest of this class holds — ui->lineVLKBUrl, m_copilotKey, … — stays valid.
-void SettingsDialog::buildTabs(QWidget *copilotSection, QWidget *vrPairingSection)
+void SettingsDialog::buildTabs(QWidget *copilotSection, QWidget *vrPairingSection,
+                               QWidget *largeCubesSection)
 {
     auto *outer = qobject_cast<QVBoxLayout *>(this->layout());
     if (!outer)
@@ -173,7 +177,7 @@ void SettingsDialog::buildTabs(QWidget *copilotSection, QWidget *vrPairingSectio
     };
 
     QWidget *first = addTab(tr("General"), { ui->groupUI, ui->groupPython,
-                                             ui->groupVisualization });
+                                             ui->groupVisualization, largeCubesSection });
     addTab(tr("Data Access"), { ui->groupVLKB, ui->groupPanoramicView });
     addTab(tr("Backends"), { ui->groupBackend, this->backendsWidget, vrPairingSection });
     addTab(tr("Copilot"), { copilotSection });
@@ -245,6 +249,10 @@ void SettingsDialog::accept()
     if (this->m_vrPairUrl) {
         this->settings->setVrPairUrl(this->m_vrPairUrl->text());
         this->settings->setVrPageUrl(this->m_vrPageUrl->text());
+    }
+    if (this->m_lodEnabled) {
+        this->settings->setLodEnabled(this->m_lodEnabled->isChecked());
+        this->settings->setLodBudgetMb(this->m_lodBudget->value());
     }
     QDialog::accept();   // emits accepted → Settings::updated (the Copilot panel re-applies)
 }
@@ -372,6 +380,31 @@ QWidget *SettingsDialog::buildVrPairingSection()
     form->addRow(note);
     m_vrPairUrl->setText(this->settings->getVrPairUrl());
     m_vrPageUrl->setText(this->settings->getVrPageUrl());
+    return group;
+}
+
+QWidget *SettingsDialog::buildLargeCubesSection()
+{
+    auto *group = new QGroupBox(tr("Large Cubes"), this);
+    auto *form = new QFormLayout(group);
+    m_lodEnabled = new QCheckBox(tr("Level of detail"), group);
+    m_lodEnabled->setToolTip(
+            tr("In the 3-D view of a cube shown as a preview, Tools > Views > Refine Selected Box "
+               "draws a box at a finer level of the cube over the preview."));
+    m_lodBudget = new QSpinBox(group);
+    // 0 shows as "Automatic": min(512 MB, the machine's memory / 16).
+    m_lodBudget->setRange(0, 16384);
+    m_lodBudget->setSingleStep(64);
+    m_lodBudget->setSuffix(u" MB"_s);
+    m_lodBudget->setSpecialValueText(tr("Automatic"));
+    m_lodBudget->setToolTip(tr("Memory the finer blocks of a refined box may take, on the GPU "
+                               "and in this application."));
+    form->addRow(m_lodEnabled);
+    form->addRow(tr("Detail budget"), m_lodBudget);
+    m_lodEnabled->setChecked(this->settings->getLodEnabled());
+    m_lodBudget->setValue(this->settings->getLodBudgetMb());
+    QObject::connect(m_lodEnabled, &QCheckBox::toggled, m_lodBudget, &QWidget::setEnabled);
+    m_lodBudget->setEnabled(m_lodEnabled->isChecked());
     return group;
 }
 

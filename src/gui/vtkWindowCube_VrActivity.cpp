@@ -720,6 +720,8 @@ void vtkWindowCube::applyHeadsetClip()
     if (!wanted) {
         if (this->m_headsetCropping && this->volumeMapper) {
             this->volumeMapper->CroppingOff();
+            this->m_headsetCropping = false;
+            this->applyLodUserCrop();   // the refined box's blocks too
             if (auto *rw = ui->vtkCube->renderWindow())
                 rw->Render();
         }
@@ -729,6 +731,7 @@ void vtkWindowCube::applyHeadsetClip()
     // Followed from now on, here and in a remote view's bootstrap, whether or
     // not the local volume exists yet.
     this->m_headsetCropping = true;
+    this->applyLodUserCrop();
     if (!this->volumeMapper)
         return;
     auto *display = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
@@ -736,26 +739,21 @@ void vtkWindowCube::applyHeadsetClip()
         return;
     // Full-cube voxels to the display's world, as the lasso places its mask
     // (updateLassoDisplayPlacement): full resolution (or an ROI) is in
-    // full-cube voxels; a preview is scaled by (displayDim-1)/(fullDim-1).
+    // full-cube voxels; a preview's world is its own samples (cubeToDisplay).
     int ddim[3];
     display->GetDimensions(ddim);
     double dorigin[3], dspacing[3];
     display->GetOrigin(dorigin);
     display->GetSpacing(dspacing);
-    const int full[3] = { std::max(1, this->remoteDatasetWidth), std::max(1, this->remoteDatasetHeight),
-                          std::max(1, this->remoteDatasetDepth) };
     double planes[6];
     for (int i = 0; i < 3; ++i) {
-        const double s = (!this->usingHighResCube && full[i] > 1 && ddim[i] > 1)
-                ? double(ddim[i] - 1) / double(full[i] - 1)
-                : 1.0;
         // Faces at the outer edges of the end voxels (both stay inside), as
         // the render session draws them, then as the mapper must be told
         // them to draw them there.
-        planes[2 * i] = VrHub::gpuCropPlane((this->m_headsetClip.min[i] - 0.5) * s, dorigin[i],
-                                            dspacing[i], ddim[i]);
-        planes[2 * i + 1] = VrHub::gpuCropPlane((this->m_headsetClip.max[i] + 0.5) * s, dorigin[i],
-                                                dspacing[i], ddim[i]);
+        planes[2 * i] = VrHub::gpuCropPlane(this->cubeToDisplay(this->m_headsetClip.min[i] - 0.5),
+                                            dorigin[i], dspacing[i], ddim[i]);
+        planes[2 * i + 1] = VrHub::gpuCropPlane(this->cubeToDisplay(this->m_headsetClip.max[i] + 0.5),
+                                                dorigin[i], dspacing[i], ddim[i]);
     }
     this->volumeMapper->SetCroppingRegionPlanes(planes);
     this->volumeMapper->SetCroppingRegionFlagsToSubVolume();
