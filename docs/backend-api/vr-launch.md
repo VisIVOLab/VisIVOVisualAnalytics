@@ -20,7 +20,11 @@ Links statements of:
 
 1. the release app, `it.inaf.oact.visivo.vr`, with the certificates in
    `backend/app/vr_app.json` (`release_sha256`) and in
-   `VISIVO_VR_APP_RELEASE_SHA256` (comma-separated);
+   `VISIVO_VR_APP_RELEASE_SHA256` (comma-separated). `vr_app.json` names
+   the project's release certificate
+   (`A1:54:C4:5B:…:43:04:D8:D4`, the key that signs the APK bundled with the
+   desktop releases), so every backend, local or on a cluster, serves this
+   statement;
 2. the development app, `it.inaf.oact.visivo.vr.dev`, when this computer has
    a development key: the fingerprint in
    `<VISIVO_QUEST_APP_DIR or ~/.visivo/quest-app>/dev-sha256.txt`, written by
@@ -34,7 +38,8 @@ Links statements of:
                "sha256_cert_fingerprints": ["AB:CD:…"] } }]
 ```
 
-404 when there is no statement (a backend without the app says nothing) or
+404 when there is no statement (a backend whose `vr_app.json` names no
+release certificate and that has no development key says nothing) or
 when `VISIVO_VR_ASSETLINKS_FILE` names something that is not a JSON array of
 objects (larger than 64 KiB, NaN, too deep). `Cache-Control: no-cache`.
 

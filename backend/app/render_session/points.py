@@ -430,13 +430,29 @@ class PointRenderSession(PointStereoMixin):
         self._table.set_sky_positions(self.view.sky_frame, self.view.distance_mode,
                                       self.view.cosmology)
 
+    def _drawable(self) -> np.ndarray | None:
+        """The rows the current axes can place (a sky catalogue's unplaced
+        ones left out, issue #265); None: every row."""
+        return self._table.drawable((self.view.x, self.view.y, self.view.z))
+
+    @property
+    def _placed_rows(self) -> int:
+        """The rows that can be drawn: what the splat size counts, as the
+        page's sample counts them (X-Visivo-Placed-Rows)."""
+        rows = self._drawable() if self._table is not None else None
+        return self._num_rows if rows is None else len(rows)
+
     def _sample_rows(self) -> np.ndarray:
-        """Every row, or an even sample of MAX_POINTS of them."""
-        if self._num_rows <= MAX_POINTS:
-            return np.arange(self._num_rows, dtype=np.int64)
+        """Every drawable row, or an even sample of MAX_POINTS of them: the
+        budget is not spent on rows without a position."""
+        base = self._drawable()
+        count = self._num_rows if base is None else len(base)
+        if count <= MAX_POINTS:
+            return np.arange(count, dtype=np.int64) if base is None else base.copy()
         logger.info("[point-render %s] %d rows, drawing an even sample of %d",
-                    self.session_id[:8], self._num_rows, MAX_POINTS)
-        return np.linspace(0, self._num_rows - 1, MAX_POINTS).astype(np.int64)
+                    self.session_id[:8], count, MAX_POINTS)
+        picks = np.linspace(0, count - 1, MAX_POINTS).astype(np.int64)
+        return picks if base is None else base[picks]
 
     def _make_window(self):
         import vtk
@@ -714,6 +730,7 @@ class PointRenderSession(PointStereoMixin):
                      self.view.cosmology) = previous
                     raise
                 self._splat_basis = None
+                self._sample = self._sample_rows()   # the placed rows, sampled again
                 self._rebuild_points_on_thread()
                 self._renderer.ResetCamera()
                 self.request_idr()
@@ -727,6 +744,7 @@ class PointRenderSession(PointStereoMixin):
                 for axis, name in fields.items():
                     setattr(self.view, axis, name)
                 self._splat_basis = None   # new positions: sized again
+                self._sample = self._sample_rows()   # which rows can be placed may change
                 self._rebuild_points_on_thread()
                 self._renderer.ResetCamera()
                 self.request_idr()

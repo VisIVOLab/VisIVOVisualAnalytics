@@ -12,6 +12,7 @@ import * as FL from './flow.js';
 import * as CT from './catalogue.js';
 import { colormapTable } from './colormaps.js';
 import { niceTicks } from './volume.js';
+import { skyOf } from './pairing.js';
 
 /** What a path opens as (`choice`: the page's selector, 'auto' by the name). */
 export function kindOfPath(path, choice = 'auto') {
@@ -212,6 +213,8 @@ export function createLayers(ctx) {
     const body = { dataset_id: p.datasetId, max_points: L.s.budgetRows,
       color_field: L.s.colourField, color_log: L.s.autoLog ? null : L.s.colourLog,
       x: p.axes[0], y: p.axes[1], z: p.axes[2] };
+    // A sky catalogue placed as the desktop window places it (issue #260).
+    if (p.sky) body.sky = p.sky;
     // Through the page's Backend, as every request (api.js), so a prefix or
     // a change of address it learns applies here too.
     // A newer request (another budget, another column) cancels this one: the
@@ -250,7 +253,7 @@ export function createLayers(ctx) {
     ctx.refiner.setDataset(p.datasetId);
   }
 
-  async function openPoints(b, { datasetId, path }, load = {}) {
+  async function openPoints(b, { datasetId, path, sky = null }, load = {}) {
     if (!datasetId) {
       const fmt = catalogueFormat(path);
       if (fmt === 'vbt') {
@@ -265,9 +268,15 @@ export function createLayers(ctx) {
       }
     }
     load.check?.();
-    const info = await b._json('POST', '/v1/points/info', { dataset_id: datasetId });
+    // A sky catalogue's frame, distance mode and cosmology (issue #260): the
+    // desktop's, else the backend's defaults; the answer says how it placed it
+    // and how many sources it left out for want of a distance (#265).
+    const infoBody = { dataset_id: datasetId };
+    if (sky) infoBody.sky = sky;
+    const info = await b._json('POST', '/v1/points/info', infoBody);
     load.check?.();
-    L.points = { datasetId, path, axes: info.axes, fields: info.fields, rows: info.num_rows };
+    L.points = { datasetId, path, axes: info.axes, fields: info.fields, rows: info.num_rows,
+      sky, skySettings: info.sky_settings || null };
     if (!L.s.styleChosen) {
       L.s.style = PT.defaultStyle(info.format);
       styleSel.value = L.s.style;
@@ -646,7 +655,7 @@ export function createLayers(ctx) {
     /** Opens `path` as a point table or a velocity field; false for a cube. */
     async openPath(b, path, load = {}) {
       const kind = kindOfPath(path, kindSel.value);
-      if (kind === 'points') { await openPoints(b, { path }, load); return true; }
+      if (kind === 'points') { await openPoints(b, { path }, load); return true; }   // the backend's placement
       if (kind === 'flow') { await openFlow(b, { path, boxMpc: boxIn.value }, load); return true; }
       return false;
     },
@@ -656,15 +665,16 @@ export function createLayers(ctx) {
       const mode = pairedMode(pairing.kind);
       if (mode === 'cube') return false;
       const open = mode === 'points' ? openPoints : openFlow;
+      const sky = skyOf(pairing);
       try {
         if (!pairing.dataset) throw new Error('404: no dataset in the link');
-        await open(b, { datasetId: pairing.dataset, boxMpc: pairing.box }, load);
+        await open(b, { datasetId: pairing.dataset, boxMpc: pairing.box, sky }, load);
       } catch (err) {
         load.check?.();
         const next = await onFallback(err);
         load.check?.();
         if (next === 'fail') throw err;
-        await open(b, { path: pairing.path, boxMpc: pairing.box }, load);
+        await open(b, { path: pairing.path, boxMpc: pairing.box, sky }, load);
       }
       return true;
     },
@@ -699,7 +709,7 @@ export function createLayers(ctx) {
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
-        const st = PT.splatStyle(pt.sample.bounds, pt.sample.totalRows, drawn, L.s.splatSize, L.s.intensity);
+        const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity);
         cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
           opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
           clip: state.clip });
@@ -722,7 +732,7 @@ export function createLayers(ctx) {
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
-        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity });
+        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity, sky: L.points.sky });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.
@@ -738,6 +748,9 @@ export function createLayers(ctx) {
         const d = L.s.govern ? L.points.drawRows : s.count;
         out.push(`points ${(d / 1e6).toFixed(2)} M drawn of ${(s.count / 1e6).toFixed(2)} M sampled, ${(s.totalRows / 1e6).toFixed(2)} M rows, ${L.s.style}`);
         out.push(`  sample ${L.load.mb.toFixed(1)} MB: request ${L.load.requestMs.toFixed(0)} ms, upload ${L.load.uploadMs.toFixed(1)} ms`);
+        // A sky catalogue: how it is placed, and the sources with no distance (#260, #265).
+        const sky = PT.skyLabel(L.points.skySettings);
+        if (sky) out.push(`  ${sky}`);
       } else if (L.mode === 'flow' && L.flow && L.flow.info) {
         const i = L.flow.info;
         out.push(`flow ${i.lines} streamlines (${i.points} points), ${i.arrows} arrows, grid ${i.shape.join('×')}`);

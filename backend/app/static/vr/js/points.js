@@ -54,8 +54,12 @@ export function sampleInfo(get) {
   const num = (k, d = 0) => { const v = get(k); return v === null || v === undefined || v === '' ? d : Number(v); };
   const list = (k) => (get(k) || '').split(',').filter((v) => v !== '').map(Number);
   const field = get('X-Visivo-Color-Field') || null;
+  const totalRows = num('X-Visivo-Total-Rows');
   return {
-    count: num('X-Visivo-Count'), totalRows: num('X-Visivo-Total-Rows'), step: num('X-Visivo-Step', 1),
+    count: num('X-Visivo-Count'), totalRows, step: num('X-Visivo-Step', 1),
+    // The rows the sample was drawn from (a sky catalogue's unplaced ones
+    // left out, #265): the splat size counts these. An older backend: all.
+    placedRows: num('X-Visivo-Placed-Rows', totalRows),
     bounds: list('X-Visivo-Bounds'), axes: (get('X-Visivo-Axes') || 'X,Y,Z').split(','),
     colourField: field, colourRange: field ? list('X-Visivo-Color-Range') : null,
     colourLog: get('X-Visivo-Color-Log') === '1', dataRange: field ? list('X-Visivo-Data-Range') : null,
@@ -143,10 +147,14 @@ export function isSplats(style) { return style === 'splats' || style === 'raytra
  *  medium. */
 export function defaultStyle(format) { return format === 'vbt' ? 'raytraced' : 'points'; }
 
-/** The commands that give the backend's point session the page's look. */
+/** The commands that give the backend's point session the page's look. A sky
+ *  catalogue's placement (`p.sky`, the desktop window's, issue #260) goes
+ *  first, so the refined frame places the sources as the sample does. */
 export function pointLook(p) {
   const splats = isSplats(p.style);
+  const sky = p.sky ? [{ type: 'set_sky_positions', ...p.sky }] : [];
   return [
+    ...sky,
     { type: 'set_point_fields', x: p.axes[0], y: p.axes[1], z: p.axes[2] },
     colourCommand(p.colourField, p.colourRange, p.colourLog, p.lut, p.c0, p.c1),
     { type: 'set_point_style', mode: splats ? 'gaussian' : 'points',
@@ -154,6 +162,21 @@ export function pointLook(p) {
       stereo_renderer: p.style === 'raytraced' ? 'raytrace' : 'splat' },
     { type: 'set_show_outline', visible: false },
   ];
+}
+
+/**
+ * A sky catalogue's placement for a status line, from /v1/points/info's
+ * `sky_settings`: "supergalactic · comoving · Planck18 · 26 unplaced"
+ * (the unplaced part only when there are any), or "fk5 · celestial sphere
+ * (no distances)" for a catalogue of positions only; '' for none.
+ */
+export function skyLabel(st) {
+  if (!st || !st.frame) return '';
+  // Positions only (no redshift or distance column): the celestial sphere.
+  if (st.sky_sphere) return `${st.frame} · celestial sphere (no distances)`;
+  const parts = [st.frame, st.distance_mode === 'redshift_space' ? 'redshift space' : 'comoving', st.cosmology];
+  if (st.unplaced > 0) parts.push(`${st.unplaced} unplaced`);
+  return parts.join(' · ');
 }
 
 /**

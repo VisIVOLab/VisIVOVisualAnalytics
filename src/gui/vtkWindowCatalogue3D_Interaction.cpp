@@ -7,6 +7,7 @@
 #include "DiagnosticsWindow.h"
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
+#include "CataloguePlacement.h"
 #include "theme/VisivoTheme.h"
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
@@ -367,6 +368,16 @@ void vtkWindowCatalogue3D::setSelectedSource(int idx)
     }
 }
 
+QStringList vtkWindowCatalogue3D::pickDistanceLines(const Catalogue3DEntry &e) const
+{
+    // The applied model, named as the cosmology line names it.
+    const QString model = this->m_appliedCosmologyModel == visivo::cosmology::customName()
+            ? visivo::cosmology::describe(this->m_appliedCustomCosmology)
+            : this->m_appliedCosmologyModel;
+    return CataloguePlacement::pickLines(Catalogue3DParser::detail::entryDistance(e, this->schema),
+                                         model, this->schema.hubbleH0);
+}
+
 void vtkWindowCatalogue3D::updateInfoPanel()
 {
     if (selectedIndex < 0) {
@@ -378,7 +389,7 @@ void vtkWindowCatalogue3D::updateInfoPanel()
     const Catalogue3DEntry &e = entries[selectedIndex];
     const QString displayName = Catalogue3DParser::detail::entryDisplayName(e, this->schema);
     const QString morphology = Catalogue3DParser::detail::entryMorphology(e, this->schema);
-    const double distanceMpc = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
+    const QStringList distanceLines = this->pickDistanceLines(e);
     const double redshift =
             Catalogue3DParser::detail::fieldDouble(e, this->schema, Catalogue3DParser::detail::detectedRedshiftField(this->schema));
     const double majorAxisArcmin =
@@ -404,8 +415,9 @@ void vtkWindowCatalogue3D::updateInfoPanel()
     html += QStringLiteral("<br>Dec: %1°").arg(e.decDeg, 0, 'f', 4);
     if (redshift > 0.0)
         html += QStringLiteral("<br>z: %1").arg(redshift, 0, 'f', 4);
-    if (distanceMpc > 0.0)
-        html += QStringLiteral("<br>d: %1 Mpc").arg(distanceMpc, 0, 'f', 1);
+    // Where the distance came from, and the uncertain flag (issue #265).
+    for (const QString &line : distanceLines)
+        html += u"<br>"_s + line.toHtmlEscaped();
     html += QStringLiteral("<br>Type: <i>%1</i>").arg(morphology.toHtmlEscaped());
     if (majorAxisArcmin > 0.0) {
         if (minorAxisArcmin > 0.0)
@@ -704,8 +716,8 @@ void vtkWindowCatalogue3D::updateDockSelectionDetails()
                        .arg(Catalogue3DParser::detail::entryDisplayName(entry, this->schema));
     details += QStringLiteral("RA: %1\n").arg(entry.raDeg, 0, 'f', 6);
     details += QStringLiteral("Dec: %1\n").arg(entry.decDeg, 0, 'f', 6);
-    details += QStringLiteral("Distance: %1\n")
-                       .arg(Catalogue3DParser::detail::entryDistanceMpc(entry, this->schema), 0, 'f', 3);
+    for (const QString &line : this->pickDistanceLines(entry))
+        details += line + u'\n';
     details += QStringLiteral("Morphology: %1\n")
                        .arg(Catalogue3DParser::detail::entryMorphology(entry, this->schema));
     const QString rawDetails = this->fallbackDetailsText(entry);
