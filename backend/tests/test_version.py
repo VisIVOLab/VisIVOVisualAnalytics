@@ -3,7 +3,10 @@ CMakeLists.txt reads it, and CITATION.cff must agree (the release workflow
 also refuses a tag that differs)."""
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -35,6 +38,52 @@ def test_cmake_reads_the_file_and_citation_agrees() -> None:
     assert re.search(r"^\s*VERSION\s+\$\{VISIVO_PROJECT_VERSION\}", cmake, re.M)
     citation = re.search(r'^version:\s*"?([^"\s]+)"?\s*$', (ROOT / "CITATION.cff").read_text(encoding="utf-8"), re.M)
     assert citation and citation.group(1) == V.__version__
+
+
+#: VERSION files and what every reader must make of them (None: refused).
+VARIANTS = [(b"1.0.12\n", "1.0.12"), (b"1.0.12 \n", "1.0.12"), (b"\xef\xbb\xbf1.0.12\n", "1.0.12"),
+            (b"\xef\xbb\xbf  1.0.12 \t\r\n", "1.0.12"), (b"1.0.12", "1.0.12"), (b"1.0\n", None),
+            (b"1.0.12\n1\n", None), (b"v1.0.12\n", None)]
+
+
+@pytest.mark.parametrize("raw, want", VARIANTS)
+def test_the_backend_reads_the_file_as_cmake_and_the_release_do(tmp_path: Path, raw: bytes, want) -> None:
+    (tmp_path / "VERSION").write_bytes(raw)
+    assert V.read_version(tmp_path / "VERSION") == (want or V.UNKNOWN)
+
+
+@pytest.mark.skipif(not (ROOT / "CMakeLists.txt").is_file() or shutil.which("cmake") is None,
+                    reason="no source checkout or no cmake")
+@pytest.mark.parametrize("raw, want", VARIANTS)
+def test_cmake_reads_the_file_as_the_backend_does(tmp_path: Path, raw: bytes, want) -> None:
+    """The project's own lines up to project(), configured with no language."""
+    lines = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8").splitlines()
+    end = next(i for i, line in enumerate(lines) if line.startswith(")"))
+    stub = "\n".join(lines[:end + 1]).replace("LANGUAGES CXX C", "LANGUAGES NONE")
+    (tmp_path / "src" / "backend" / "app").mkdir(parents=True)
+    (tmp_path / "src" / "CMakeLists.txt").write_text(stub + '\nmessage(STATUS "GOT [${PROJECT_VERSION}]")\n')
+    (tmp_path / "src" / "backend" / "app" / "VERSION").write_bytes(raw)
+    r = subprocess.run(["cmake", "-S", str(tmp_path / "src"), "-B", str(tmp_path / "b")],
+                       capture_output=True, text=True, timeout=120, check=False)
+    got = re.search(r"GOT \[([^\]]*)\]", r.stdout)
+    assert (got.group(1) if got and r.returncode == 0 else None) == want, r.stdout + r.stderr
+
+
+@pytest.mark.skipif(not (ROOT / ".github" / "workflows" / "release.yml").is_file() or shutil.which("bash") is None,
+                    reason="no source checkout or no bash")
+@pytest.mark.parametrize("raw, want", VARIANTS)
+def test_the_release_check_reads_the_file_as_the_backend_does(tmp_path: Path, raw: bytes, want) -> None:
+    yaml = pytest.importorskip("yaml")
+    steps = yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8"))
+    script = next(s["run"] for s in steps["jobs"]["setup"]["steps"] if s.get("name", "").startswith("Tag, VERSION"))
+    (tmp_path / "backend" / "app").mkdir(parents=True)
+    (tmp_path / "backend" / "app" / "VERSION").write_bytes(raw)
+    shutil.copy(ROOT / "CMakeLists.txt", tmp_path / "CMakeLists.txt")
+    (tmp_path / "CITATION.cff").write_text(f"cff-version: 1.2.0\nversion: {want or '1.0.12'}\n")
+    env = {**os.environ, "IS_TAG": "true", "TAG": f"v{want or '1.0.12'}"}
+    r = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True,
+                       timeout=30, check=False)
+    assert (r.returncode == 0) == (want is not None), r.stdout + r.stderr
 
 
 @pytest.mark.asyncio

@@ -174,9 +174,18 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          # release.yml's setup job drafted the release before calling this.
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" "$RUNNER_TEMP/quest-app/visivo-vr.apk" "$RUNNER_TEMP/quest-app/visivo-vr.json" --clobber
-          else
-            echo "::warning::No release for $TAG: the APK is only in the workflow artifact."
-          fi
+          # release.yml's setup job drafted the release before calling this, so
+          # a failure here is transient (API) or real: retried, then loud, as
+          # the packages bundle this APK and the release must carry it too.
+          for attempt in 1 2 3 4 5; do
+            if gh release view "$TAG" > /dev/null \
+               && gh release upload "$TAG" "$RUNNER_TEMP/quest-app/visivo-vr.apk" \
+                    "$RUNNER_TEMP/quest-app/visivo-vr.json" --clobber; then
+              echo "Attached visivo-vr.apk and visivo-vr.json to $TAG"
+              exit 0
+            fi
+            echo "Attempt $attempt to attach the APK to $TAG failed"
+            [ "$attempt" -lt 5 ] && sleep 10
+          done
+          echo "::error::Could not attach visivo-vr.apk/.json to release $TAG after 5 attempts: the release would lack the standalone APK. Re-run this job."
+          exit 1

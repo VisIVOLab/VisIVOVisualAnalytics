@@ -137,6 +137,35 @@ def test_masked_and_numeric_columns_take_the_found_rows_without_touching_the_fra
     assert t["vr_x"][2] == 4 and math.isnan(t["vr_x"][0]) and math.isnan(t["vr_x"][3])
 
 
+@pytest.mark.parametrize("ids, labels, kind, tail", [
+    # A Gaia-like int64 source_id keeps its type without found sources...
+    (np.array([4295806720, 38655544960, 2**62], dtype=np.int64), [], "i", []),
+    # ... and with found sources whose labels are numbers of that type.
+    (np.array([4295806720, 38655544960, 2**62], dtype=np.int64), ["123", " 456 "], "i", [123, 456]),
+    # A label that is not an integer of the column makes it text.
+    (np.array([1, 2, 3], dtype=np.int64), ["found 1"], "U", ["found 1"]),
+    (np.array([1, 2, 3], dtype=np.int64), ["1.5"], "U", ["1.5"]),
+    (np.array([1, 2, 3], dtype=np.int32), [str(2**40)], "U", [str(2**40)]),   # beyond int32
+    (np.array([1.5, 2.5, 3.5]), [], "f", []),
+    (np.array([1.5, 2.5, 3.5]), ["7.25"], "f", [7.25]),
+    (np.array([1.5, 2.5, 3.5]), ["J1234"], "U", ["J1234"]),
+    (np.array(["A", "B", "C"]), [], "U", []),
+    (np.array(["A", "B", "C"]), ["found 1"], "U", ["found 1"]),
+])
+def test_a_name_column_keeps_its_type_unless_a_label_does_not_fit(ids, labels, kind, tail):
+    df = pd.DataFrame({"src": ids, "ra": [10.0, 11.0, 12.0], "dec": [1.0, 2.0, 3.0]})
+    sources = [{"origin": "catalogue", "row": 0, "flag": "real"}]
+    sources += [{"origin": "user", "label": lab, "lon": 10.5, "lat": 1.5} for lab in labels]
+    t = ccl.classified_table(sources, "vr_flag", df, {"system": "sky", "ra": "ra", "dec": "dec"}, "src", "icrs")
+    col = t["src"]
+    assert col.dtype.kind == kind
+    if kind != "U":
+        assert col.dtype == ids.dtype                     # same width: int64 stays int64
+    assert list(np.asarray(col)[:3]) == (list(ids) if kind != "U" else [str(v) for v in ids])
+    assert list(np.asarray(col)[3:]) == tail
+    assert not np.ma.getmaskarray(col).any()
+
+
 def _cube(tmp_path):
     h = fits.Header()
     for k, v in dict(CTYPE1="RA---SIN", CRPIX1=16, CRVAL1=150.0, CDELT1=-0.002, CUNIT1="deg",

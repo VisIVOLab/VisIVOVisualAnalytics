@@ -51,6 +51,29 @@ def _num(v: Any) -> float:
     return f if math.isfinite(f) else math.nan
 
 
+def _labels_as(dtype: np.dtype, labels: list[str]) -> list | None:
+    """``labels`` (found sources' names) as values of a numeric name column of
+    ``dtype``, so the column keeps its type (a Gaia ``source_id`` stays
+    int64 for joins); None when one of them is not such a number."""
+    out: list = []
+    for text in labels:
+        t = text.strip()
+        try:
+            if dtype.kind in "iu":
+                v = int(t, 10)
+                info = np.iinfo(dtype)
+                if not info.min <= v <= info.max:
+                    return None
+            elif dtype.kind == "f":
+                v = float(t)
+            else:                         # bool: no label is a bool
+                return None
+        except ValueError:
+            return None
+        out.append(v)
+    return out
+
+
 def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=None,
                      coordinates: dict | None = None, label_field: str | None = None,
                      source_frame: str = "icrs"):
@@ -106,8 +129,13 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
             dtype = c.info.dtype if kind in "iufb" else np.dtype(str)
             if sky and kind in "iub":
                 dtype = np.dtype(np.float64)  # a whole-degree column takes a found source's fraction
-            if label and kind in "iufb":
-                dtype = np.dtype(str)         # a numeric name column takes a found source's label
+            numeric_labels = None
+            if label and kind in "iufb" and nr:
+                # A numeric name column keeps its type unless a found source's
+                # label is not such a number: then it becomes text.
+                numeric_labels = _labels_as(c.info.dtype, [str(s.get("label", "")) for s in rest])
+                if numeric_labels is None:
+                    dtype = np.dtype(str)
             head_mask = np.ma.getmaskarray(c)
             head = np.asarray(np.ma.getdata(c)).astype(dtype, copy=False)
             if head_mask.any():           # a new array: never written into the session's frame
@@ -129,7 +157,8 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
                         tail[k], tail_mask[k] = v, False
             elif label and head.ndim == 1:
                 for k, s in enumerate(rest):
-                    tail[k], tail_mask[k] = str(s.get("label", "")), False
+                    value = numeric_labels[k] if numeric_labels is not None else str(s.get("label", ""))
+                    tail[k], tail_mask[k] = value, False
             if dtype.kind == "U" and head.ndim == 1:
                 tail_data = np.array(["" if t is None else str(t) for t in tail], dtype=str)
             else:                             # numbers, or a vector column (never set)

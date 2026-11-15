@@ -23,7 +23,9 @@ def read_version(path: Path = VERSION_FILE) -> str:
     """The version in ``path``; :data:`UNKNOWN` when the file is missing or
     is not ``X.Y.Z`` (a backend copied without it still starts)."""
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        # utf-8-sig drops a BOM; the whole file, stripped, as CMake and
+        # release.yml read it.
+        text = path.read_text(encoding="utf-8-sig").strip()
     except OSError:
         return UNKNOWN
     return text if _VERSION.match(text) else UNKNOWN
