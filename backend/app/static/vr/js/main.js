@@ -3502,6 +3502,7 @@ function showFromDesktop(cmd) {
     loads.begin(cmd.path);
     if (stagedCube) {
       stagedCube = null;
+      settlePendingMask();      // a mask that waited for the dropped cube is dropped now, and said so
       shell.clearNotice('cube-waiting');
       shell.log('info', 'cube-waits-dropped', 'the desktop sent the cube on show again');
     }
