@@ -6,6 +6,8 @@
 
 #include "BackendClient.h"
 
+#include <algorithm>
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -268,7 +270,7 @@ bool pythonRuns(const QString &exe, const QString &code, int timeoutMs = 20000,
     if (running)
         *running = nullptr;
     if (timedOut)
-        *timedOut = !finished && clock.elapsed() >= timeoutMs;
+        *timedOut = !finished;   // a cancel-kill or a failed start both come back finished
     if (!finished) {
         p.kill();
         p.waitForFinished(1000);
@@ -999,16 +1001,29 @@ BackendLauncher::WebrtcInstall BackendLauncher::installWebrtc(const QString &pyt
             left);
     if (m_cancelled)
         return WebrtcInstall::Cancelled;
-    if (depsBefore && !pythonRuns(python, kDepsWithNumba, W::kImportCheckTimeoutMs, &m_child)) {
+    // The checks after the install share what is left of the update's limit
+    // (at least 30 s each: a cold first import after an install can be slow).
+    const auto checkBudget = [&]() {
+        return std::max(30000, std::min(W::kImportCheckTimeoutMs, W::kUpdateTimeoutMs - int(clock.elapsed())));
+    };
+    bool depsTimedOut = false;
+    if (depsBefore && !pythonRuns(python, kDepsWithNumba, checkBudget(), &m_child, &depsTimedOut)) {
         if (m_cancelled)
             return WebrtcInstall::Cancelled;
+        if (depsTimedOut) {
+            // Slow, not broken: never tell the user to delete a venv on a timeout.
+            appendLog(u"[launcher] The import check after adding the WebRTC packages timed out: "
+                      u"starting the backend anyway"_s);
+            rememberWebrtcAttempt(venvDir);
+            return WebrtcInstall::Failed;
+        }
         emit failed(u"Adding the headset-pairing packages to the backend environment at %1 "
                     u"broke an import the backend needs (the Diagnostics log has pip's "
                     u"output). Recreate it: delete that folder and start VisIVO again."_s
                             .arg(venvDir));
         return WebrtcInstall::BrokeBackend;
     }
-    if (installed && pythonRuns(python, W::importCheck(), W::kImportCheckTimeoutMs, &m_child)) {
+    if (installed && pythonRuns(python, W::importCheck(), checkBudget(), &m_child)) {
         appendLog(u"[launcher] WebRTC packages added"_s);
         rememberWebrtcKnown(venvDir);
         return WebrtcInstall::Added;
