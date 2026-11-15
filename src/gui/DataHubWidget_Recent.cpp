@@ -387,6 +387,9 @@ void DataHubWidget::refreshRecentDatasets()
         const std::optional<QString> dsBackend =
                 ds.backendKnown ? std::optional<QString>(ds.backend) : std::nullopt;
         QPointer<DataHubWidget> guard(this);
+        // Queued: the confirmation box is a nested event loop, and a list
+        // rebuilt meanwhile (another dataset opened) would delete this button
+        // while its click is still being handled (#310).
         QObject::connect(removeBtn, &QPushButton::clicked, this,
                          [guard, dsId, dsDisplayName, dsBackend]() {
                              if (!guard || !guard->recentMgr) return;
@@ -400,7 +403,7 @@ void DataHubWidget::refreshRecentDatasets()
                              // changed() signal triggers refreshRecentDatasets
                              // automatically, so the row disappears without
                              // an explicit refresh call here.
-                         });
+                         }, Qt::QueuedConnection);
         hbox->addWidget(removeBtn, 0, Qt::AlignVCenter);
 
         // Click → emit reopenDatasetRequested.
