@@ -40,6 +40,10 @@ export function overlayRequest(datasetId, choice) {
  * in that channel's plane; one without is its ellipse (or a cross) on the back
  * face of the clipping box and a line through the whole spectral range, so it
  * reads at every velocity. Contours lie on the back face.
+ * opts: alpha, labels, maxLabels, pins; `drawn(i)` false leaves source i out
+ * (a large catalogue drawn nearest the focus first, issue #279);
+ * `colourOf(i)` an [r, g, b] for source i (its flag) or null for its own;
+ * `labelled(i)` false: no label for source i (the labels nearest the focus).
  */
 export function overlaySegments(ov, shape, extent, clip, opts = {}) {
   const segs = [], labels = [];
@@ -58,9 +62,12 @@ export function overlaySegments(ov, shape, extent, clip, opts = {}) {
   const size = 0.012 * Math.max(...extent);
   const alpha = opts.alpha ?? 0.95;
   let drawn = 0;
-  for (const s of ov.sources || []) {
+  const sources = ov.sources || [];
+  for (let i = 0; i < sources.length; i++) {
+    const s = sources[i];
+    if (opts.drawn && !opts.drawn(i)) continue;
     if (!inClip(s.x, s.y, s.z)) continue;
-    const rgb = s.band ? (BAND_COLOURS[s.band] || MARKER) : MARKER;
+    const rgb = (opts.colourOf && opts.colourOf(i)) || (s.band ? (BAND_COLOURS[s.band] || MARKER) : MARKER);
     const col = [...rgb, alpha];
     const X = mx(s.x), Y = my(s.y);
     const Z = s.z === null || s.z === undefined ? null : pixelToModel(s.z, nz, extent[2]);
@@ -82,7 +89,7 @@ export function overlaySegments(ov, shape, extent, clip, opts = {}) {
       segs.push({ a: [X, Y - size, Z], b: [X, Y + size, Z], color: col });
       segs.push({ a: [X, Y, Z - size], b: [X, Y, Z + size], color: col });
     }
-    if (opts.labels && labels.length < (opts.maxLabels || 40) && s.label) {
+    if (opts.labels && (!opts.labelled || opts.labelled(i)) && labels.length < (opts.maxLabels || 40) && s.label) {
       labels.push({ pos: [X + 1.3 * size, Y + 1.3 * size, plane], text: s.label, height: 0.022,
         anchor: 'left', color: `rgb(${rgb.map((c) => Math.round(255 * c)).join(',')})` });
     }

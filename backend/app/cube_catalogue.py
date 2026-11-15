@@ -66,6 +66,9 @@ class Placed:
     n_unplaced: int = 0
     warnings: list[str] = field(default_factory=list)
     spectral: dict = field(default_factory=lambda: {"used": False})
+    #: The frame of each source's ``lon``/``lat`` (the catalogue's own, before
+    #: any conversion to the cube's): "icrs" or "galactic".
+    source_frame: str = "galactic"
 
 
 @dataclass
@@ -513,7 +516,7 @@ def place_table(frame, coordinates: dict, cel, wcs, shape: tuple[int, int, int],
                         lon_col, units.get(lon_col))
     lat = angle_degrees(pd.to_numeric(frame[lat_col], errors="coerce").to_numpy(dtype=float),
                         lat_col, units.get(lat_col))
-    out = Placed(n_input=len(frame))
+    out = Placed(n_input=len(frame), source_frame=sky_frame)
     x, y = sky_to_pixel(cel, lon, lat, sky_frame)
     z = np.full(len(frame), np.nan)
     col = spectral_column([str(c) for c in frame.columns], spectral_field)
@@ -624,6 +627,6 @@ def as_response(p: Placed, source: str, frame: str, arcpix: float) -> dict[str, 
         "pixel_scale_arcsec": arcpix,
         "n_input": p.n_input, "n_sources": len(p.sources), "n_polylines": len(p.polylines),
         "n_outside": p.n_outside, "n_unplaced": p.n_unplaced,
-        "spectral": p.spectral, "warnings": p.warnings,
+        "spectral": p.spectral, "warnings": p.warnings, "source_frame": p.source_frame,
         "sources": p.sources, "polylines": p.polylines,
     }

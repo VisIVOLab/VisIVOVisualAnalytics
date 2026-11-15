@@ -497,11 +497,12 @@ enum class OpenIn {
     SpectrumPlot,   ///< a spectrum: a spectrum product of the cube window
     CubeWindow,     ///< an isolated or removed cube
     File,           ///< a catalogue or flow layer: its file, opened by kind
+    CatalogueTable, ///< a catalogue classified in the headset (#279): the cube window's catalogue table
 };
 
 struct Product
 {
-    QString kind;               ///< moment | pv | spectrum | isolate | remove | catalogue | flow
+    QString kind;               ///< moment | pv | spectrum | isolate | remove | catalogue | flow | classification
     QString label;
     QString path;               ///< the file the backend wrote ('' none)
     QString workspaceFilename;  ///< its name in the Workspace Exports ('' none)
@@ -591,6 +592,9 @@ inline OpenIn openIn(const Product &p)
         return hasFile ? OpenIn::CubeWindow : OpenIn::Nothing;
     if (p.kind == u"catalogue" || p.kind == u"flow")
         return hasFile ? OpenIn::File : OpenIn::Nothing;
+    // Its sources travel in the event; the VOTable (its file) is what Save writes.
+    if (p.kind == u"classification")
+        return OpenIn::CatalogueTable;
     return OpenIn::Nothing;
 }
 
@@ -849,6 +853,122 @@ inline QVariant cropCommandBox(const Clip &clip, const std::array<int, 3> &full)
 inline double gpuCropPlane(double drawn, double origin, double spacing, int n)
 {
     return n > 1 ? origin + (drawn - origin + spacing / 2.0) * (n - 1) / n : origin;
+}
+
+// ── A catalogue classified in the headset (issue #279) ─────────────────────
+//
+// payload.classification (the page's source-list.js hubClassification):
+//   {catalogue: {name, path, dataset_id, rows}, flag_set, note_set, column,
+//    counts: {flag: n}, flagged, found, truncated,
+//    sources: [{k, n, lon, lat, f ('i' ICRS | 'g' Galactic), x, y, z, v, flag,
+//               note, o ('c' catalogue | 'o' overlay | 'u' found by eye), row?}]}
+// Only the classified sources and the found ones are listed (at most about
+// 11 KB of them: `truncated` then says the VOTable holds the rest). x, y, z
+// are 0-based pixels of the cube (z null: placed on the sky only); v the
+// cube's velocity at z (km/s).
+
+struct ClassifiedSource
+{
+    QString key;
+    QString label;
+    double lon{ std::nan("") };
+    double lat{ std::nan("") };
+    bool galactic{ false };
+    double x{ std::nan("") };
+    double y{ std::nan("") };
+    double z{ std::nan("") };
+    double velocityKms{ std::nan("") };
+    QString flag;
+    QString note;
+    QString origin;   ///< catalogue | overlay | user
+    int row{ -1 };    ///< the catalogue's row (origin catalogue), else -1
+};
+
+struct Classification
+{
+    bool valid{ false };
+    QString catalogueName;
+    QString cataloguePath;
+    int catalogueRows{ 0 };
+    QStringList flagSet;
+    QStringList noteSet;
+    QString column;
+    QVector<int> counts;   ///< sources given each flag of flagSet (all of them, listed or not)
+    int flagged{ 0 };
+    int found{ 0 };
+    bool truncated{ false };
+    QList<ClassifiedSource> sources;
+};
+
+/// A number only when it is a finite JSON number, else NaN.
+inline double finiteOrNan(const QJsonValue &v)
+{
+    return v.isDouble() && std::isfinite(v.toDouble()) ? v.toDouble() : std::nan("");
+}
+
+inline Classification parseClassification(const QJsonObject &payload)
+{
+    Classification c;
+    const QJsonObject o = payload.value(u"classification").toObject();
+    if (o.isEmpty() || !o.value(u"sources").isArray())
+        return c;
+    c.valid = true;
+    const QJsonObject cat = o.value(u"catalogue").toObject();
+    c.catalogueName = cat.value(u"name").toString();
+    c.cataloguePath = cat.value(u"path").toString();
+    c.catalogueRows = cat.value(u"rows").toInt();
+    for (const QJsonValue v : o.value(u"flag_set").toArray())
+        c.flagSet.append(v.toString());
+    for (const QJsonValue v : o.value(u"note_set").toArray())
+        c.noteSet.append(v.toString());
+    const QJsonObject counts = o.value(u"counts").toObject();
+    for (const QString &f : c.flagSet)
+        c.counts.append(counts.value(f).toInt());
+    c.column = o.value(u"column").toString();
+    if (c.column.isEmpty())
+        c.column = QStringLiteral("vr_flag");
+    c.flagged = o.value(u"flagged").toInt();
+    c.found = o.value(u"found").toInt();
+    c.truncated = o.value(u"truncated").toBool();
+    for (const QJsonValue v : o.value(u"sources").toArray()) {
+        const QJsonObject s = v.toObject();
+        ClassifiedSource src;
+        src.key = s.value(u"k").toString();
+        src.label = s.value(u"n").toString();
+        src.lon = finiteOrNan(s.value(u"lon"));
+        src.lat = finiteOrNan(s.value(u"lat"));
+        src.galactic = s.value(u"f").toString() == u"g";
+        src.x = finiteOrNan(s.value(u"x"));
+        src.y = finiteOrNan(s.value(u"y"));
+        src.z = finiteOrNan(s.value(u"z"));
+        src.velocityKms = finiteOrNan(s.value(u"v"));
+        src.flag = s.value(u"flag").toString();
+        src.note = s.value(u"note").toString();
+        const QString origin = s.value(u"o").toString();
+        src.origin = origin == u"u" ? QStringLiteral("user")
+                : origin == u"o"    ? QStringLiteral("overlay")
+                                    : QStringLiteral("catalogue");
+        src.row = s.value(u"row").isDouble() ? s.value(u"row").toInt() : -1;
+        // A source the desktop cannot place (no pixel) is of no use in its table.
+        if (!std::isfinite(src.x) || !std::isfinite(src.y))
+            continue;
+        c.sources.append(src);
+    }
+    return c;
+}
+
+/// "Headset classification: 3 real, 1 doubtful, 0 spurious, 1 found by eye": the table's title.
+inline QString classificationTitle(const Classification &c)
+{
+    QStringList parts;
+    for (qsizetype i = 0; i < c.flagSet.size(); ++i)
+        parts.append(QStringLiteral("%1 %2").arg(c.counts.value(i)).arg(c.flagSet.at(i)));
+    QString text = QStringLiteral("Headset classification: %1").arg(parts.join(QStringLiteral(", ")));
+    if (c.found > 0)
+        text += QStringLiteral(", %1 found by eye").arg(c.found);
+    if (c.truncated)
+        text += QStringLiteral(" (the first %1 listed; the VOTable has all)").arg(c.sources.size());
+    return text;
 }
 
 /// Is the event about the cube at @p path (or with @p datasetId)?

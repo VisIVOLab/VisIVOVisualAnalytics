@@ -222,7 +222,9 @@ the header, before anything is decoded.
 - `clip`: `payload.box`, the clip box in voxels of the full cube, or null; the
   latest per cube replaces the previous;
 - `product`: `payload.product` is `moment`, `pv`, `spectrum`, `isolate`,
-  `remove`, `catalogue` or `flow`, with what the desktop needs to open it: a
+  `remove`, `catalogue`, `flow` or `classification` (a catalogue classified
+  in the headset, #279: `payload.classification` lists the classified and
+  found sources, see below), with what the desktop needs to open it: a
   `file` the backend wrote (a Workspace Exports filename, which must exist;
   the backend adds its `output_path`; a payload that sets `output_path`
   itself, or a file that leads out of the exports directory through a
@@ -261,4 +263,14 @@ then posts a `product` event naming the file:
   with the pixel of `/v1/spectral/probe` (or the aperture of
   `/v1/spectral/aperture`);
 - an isolated or removed cube: [`POST /v1/cube/mask_apply_bin`](cube.md#post-v1cubemask_apply_bin)
-  already writes it there.
+  already writes it there;
+- a classified catalogue (#279): [`POST /v1/catalogue/classified_votable`](vr-layers.md#post-v1catalogueclassified_votable)
+  writes the VOTable; the event's `payload.classification` carries
+  `catalogue` (`name`, `path`, `dataset_id`, `rows`), `flag_set`, `note_set`,
+  `column`, `counts` (the catalogue's sources per flag), `flagged`, `found`
+  (sources found by eye), `truncated` and `sources`: `k` (key), `n` (name),
+  `lon`, `lat`, `f` (`i` ICRS, `g` Galactic), `x`, `y`, `z` (0-based pixels, z
+  null on the sky only), `v` (km/s), `flag`, `note`, `o` (`c` catalogue, `o`
+  overlay, `u` found), `row`. Only classified and found sources are listed,
+  about 11 KB of them at most (`truncated` then says the VOTable holds the
+  rest); the VOTable body itself is not in the event.

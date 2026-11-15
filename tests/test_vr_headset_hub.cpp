@@ -5,6 +5,7 @@
 #include "HeadsetHubLink.h"
 #include "VrHeadsetFollow.h"
 #include "VrHeadsetHub.h"
+#include "HeadsetClassification.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -377,6 +378,106 @@ void TestVrHeadsetHub::aRestartedBackendsEventsComeFirst()
     QCOMPARE(log.events().first().epoch, 1);
     // The same seq in another epoch is another event.
     QVERIFY(log.add({ hubEvent(40, u"product"_s, u"/a"_s, 1) }));
+}
+
+namespace {
+/// The classification event the page sends (backend/tests/vr/classification_event.json,
+/// made by the page's own code: source-list.test.mjs keeps it current).
+VrHub::Event classificationEvent()
+{
+    QFile f(QStringLiteral(VISIVO_REPO_ROOT "/backend/tests/vr/classification_event.json"));
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    VrHub::Event e;
+    e.seq = static_cast<qint64>(o.value(u"seq").toDouble());
+    e.client = o.value(u"client").toString();
+    e.kind = o.value(u"kind").toString();
+    e.cubePath = o.value(u"cube_path").toString();
+    e.summary = o.value(u"summary").toString();
+    e.payload = o.value(u"payload").toObject();
+    return e;
+}
+} // namespace
+
+void TestVrHeadsetHub::aClassificationOpensInTheCatalogueTable()
+{
+    const VrHub::Event e = classificationEvent();
+    QVERIFY2(e.seq == 7, "classification_event.json not found");
+    const VrHub::Product p = VrHub::parseProduct(e);
+    QCOMPARE(p.kind, u"classification"_s);
+    QCOMPARE(p.workspaceFilename, u"cat_vr_classified.xml"_s);
+    QCOMPARE(VrHub::openIn(p), VrHub::OpenIn::CatalogueTable);
+    // Without a file still: its sources travel in the event.
+    QCOMPARE(VrHub::openIn(VrHub::parseProduct(productEvent(R"({"product":"classification"})"))),
+             VrHub::OpenIn::CatalogueTable);
+
+    const VrHub::Classification c = VrHub::parseClassification(e.payload);
+    QVERIFY(c.valid);
+    QCOMPARE(c.catalogueName, u"cat.csv"_s);
+    QCOMPARE(c.catalogueRows, 3);
+    QCOMPARE(c.flagSet, QStringList({ u"real"_s, u"doubtful"_s, u"spurious"_s }));
+    QCOMPARE(c.counts, QVector<int>({ 1, 0, 1 }));
+    QCOMPARE(c.flagged, 2);
+    QCOMPARE(c.found, 1);
+    QCOMPARE(c.column, u"vr_flag"_s);
+    QCOMPARE(int(c.sources.size()), 3);
+    const VrHub::ClassifiedSource &spurious = c.sources.at(0);
+    QCOMPARE(spurious.key, u"c:0"_s);
+    QCOMPARE(spurious.row, 0);
+    QCOMPARE(spurious.flag, u"spurious"_s);
+    QCOMPARE(spurious.note, u"RFI"_s);
+    QVERIFY(spurious.galactic);
+    QVERIFY(std::isnan(spurious.z));            // placed on the sky only
+    QVERIFY(std::isnan(spurious.velocityKms));
+    const VrHub::ClassifiedSource &real = c.sources.at(1);
+    QCOMPARE(real.z, 20.0);
+    QCOMPARE(real.velocityKms, 1100.0);
+    const VrHub::ClassifiedSource &found = c.sources.at(2);
+    QCOMPARE(found.origin, u"user"_s);
+    QCOMPARE(found.row, -1);
+    QVERIFY(!found.galactic);
+    QCOMPARE(found.label, u"VR-1"_s);
+    QCOMPARE(VrHub::classificationTitle(c),
+             u"Headset classification: 1 real, 0 doubtful, 1 spurious, 1 found by eye"_s);
+    // Not a classification, or a source with no pixel: nothing, or left out.
+    QVERIFY(!VrHub::parseClassification(QJsonObject()).valid);
+    const QJsonObject noPixel = QJsonDocument::fromJson(
+            R"({"classification":{"flag_set":["a"],"sources":[{"k":"o:1","n":"x","flag":"a"}]}})").object();
+    QVERIFY(VrHub::parseClassification(noPixel).sources.isEmpty());
+}
+
+void TestVrHeadsetHub::aClassificationBecomesTableEntries()
+{
+    const VrHub::Classification c = VrHub::parseClassification(classificationEvent().payload);
+    const auto entries = VrHub::classificationEntries(c);
+    QCOMPARE(int(entries.size()), 3);
+    QCOMPARE(VrHub::classificationFrameLabel(c), u"Galactic"_s);
+    const QStringList fields = VrHub::classificationFields(c);
+    QCOMPARE(fields.first(), u"vr_flag"_s);
+    // At the backend's own pixel, as a marker the overlay draws.
+    QCOMPARE(entries.at(1).frame, CatalogueOverlayEntry::Frame::Image);
+    QCOMPARE(entries.at(1).shape, CatalogueOverlayEntry::Shape::Marker);
+    QCOMPARE(entries.at(1).pixelX, 32.0);
+    QCOMPARE(entries.at(1).pixelY, 30.0);
+    QVERIFY(entries.at(1).hasSkyPosition);
+    QCOMPARE(entries.at(1).raDeg, 30.0);
+    const auto value = [&](const CatalogueOverlayEntry &e, const QString &field) {
+        for (const auto &kv : e.extra)
+            if (kv.first == field)
+                return kv.second;
+        return QString();
+    };
+    QCOMPARE(value(entries.at(0), u"vr_flag"_s), u"spurious"_s);
+    QCOMPARE(value(entries.at(0), u"Note"_s), u"RFI"_s);
+    QCOMPARE(value(entries.at(0), u"Catalogue row"_s), u"0"_s);
+    QCOMPARE(value(entries.at(0), u"Velocity (km/s)"_s), QString());
+    QCOMPARE(value(entries.at(1), u"Velocity (km/s)"_s), u"1100.0"_s);
+    QCOMPARE(value(entries.at(1), u"Channel"_s), u"20.0"_s);
+    // The found source's ICRS position is not put under Galactic columns.
+    QVERIFY(!entries.at(2).hasSkyPosition);
+    QCOMPARE(value(entries.at(2), u"Origin"_s), u"found in VR"_s);
+    QCOMPARE(value(entries.at(2), u"vr_flag"_s), u"doubtful"_s);
 }
 
 void TestVrHeadsetHub::productsOpenWhereTheyBelong()

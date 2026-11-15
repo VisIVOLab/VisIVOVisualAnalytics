@@ -12,6 +12,7 @@ import * as M from './mat4.js';
 import { PanelPointer, rayPanel, panelModel } from './vr-panel.js';
 import { TOOL_NAMES } from './select-ui.js';
 import { fitText } from './text-fit.js';
+import { SRC_PX, SRC_SIZE } from './source-window.js';
 
 export const BAR_PX = [768, 64];
 export const BAR_GAP = 0.004;
@@ -26,6 +27,9 @@ export const WINDOWS = {
     place: { right: 0.42, up: 0.48, fwd: -0.05, yaw: -0.35 }, desktop: { right: -1.12, up: 0.22, fwd: 0.1, yaw: 0.55 } },
   pv: { title: 'PV diagram', size: null,
     place: { right: -0.42, up: 0.48, fwd: -0.05, yaw: 0.35 }, desktop: { right: -1.12, up: -0.22, fwd: 0.1, yaw: 0.55 } },
+  // The source list (issue #279): left of the cube, low, turned to the viewer.
+  sources: { title: 'Sources', size: SRC_SIZE, contentPx: SRC_PX,
+    place: { right: -0.6, up: 0.02, fwd: -0.2, yaw: 0.75 }, desktop: { right: 0.98, up: 0.3, fwd: -0.3, yaw: -0.45 } },
 };
 
 /**
@@ -92,10 +96,18 @@ export function pickSurface(hits, captured = -1, onTop = -1) {
  * (which takes the ray, so the selection does not fire through it).
  */
 export class WindowPointer {
-  constructor() { this.bar = new PanelPointer(barLayout()); this.contentDown = false; this.onContent = false; }
-  /** hits: {bar, content} (rayPanel answers or null). Returns the bar's actions. */
+  /** `contentLayout`: the widgets of a content that is used too (the Sources
+   *  window, #279), in content pixels; its presses come back with `content`. */
+  constructor(contentLayout = null) {
+    this.bar = new PanelPointer(barLayout());
+    this.content = contentLayout ? new PanelPointer(contentLayout) : null;
+    this.contentDown = false; this.onContent = false;
+  }
+  /** hits: {bar, content} (rayPanel answers or null). Returns the bar's
+   *  actions, then the content's ({..., content: true}). */
   update(hits, pressed) {
     const acts = this.bar.update(hits.bar, pressed);
+    if (this.content) for (const a of this.content.update(hits.content, pressed)) acts.push({ ...a, content: true });
     this.onContent = !!hits.content;
     if (pressed && !this.down && hits.content) this.contentDown = true;
     if (!pressed) this.contentDown = false;
@@ -107,10 +119,10 @@ export class WindowPointer {
   get captured() { return !!this.bar.active || this.contentDown; }
 }
 
-/** The ray's hits on a window: {bar, content, t (nearest), point}. */
-export function windowHits(model, size, ray) {
+/** The ray's hits on a window: {bar, content (in `contentPx` pixels), t (nearest), point}. */
+export function windowHits(model, size, ray, contentPx = [1000, 1000]) {
   if (!ray) return { bar: null, content: null, t: null };
-  const content = rayPanel(model, size, ray.o, ray.d, [1000, 1000]);
+  const content = rayPanel(model, size, ray.o, ray.d, contentPx);
   const bar = rayPanel(barModel(model, size), barSize(size[0]), ray.o, ray.d, BAR_PX);
   const near = [bar, content].filter(Boolean).sort((a, b) => a.t - b.t)[0] || null;
   return { bar, content, t: near ? near.t : null, point: near ? near.point : null };

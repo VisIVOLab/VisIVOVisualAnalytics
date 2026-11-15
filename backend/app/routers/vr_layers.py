@@ -9,6 +9,7 @@ import asyncio
 import logging
 import threading
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -347,6 +348,98 @@ async def cube_catalogue_pixels(request: CubeCatalogueRequest, _: None = _auth,
     out["name"] = name
     out["shape"] = list(geo.shape)
     return out
+
+
+# ── A catalogue classified in the headset (issue #279) ───────────────────────
+
+
+class ClassifiedSource(BaseModel):
+    # catalogue: a row of the session's catalogue; overlay: a source of an
+    # overlay with no table behind it (VLKB, a cross-match); user: found by eye.
+    origin: Literal["catalogue", "overlay", "user"] = "catalogue"
+    row: int | None = Field(default=None, ge=0)
+    label: str = Field(default="", max_length=200)
+    lon: float | None = Field(default=None, allow_inf_nan=False)
+    lat: float | None = Field(default=None, allow_inf_nan=False)
+    frame: Literal["icrs", "galactic"] | None = None     # of lon/lat; None: source_frame
+    x: float | None = Field(default=None, allow_inf_nan=False)
+    y: float | None = Field(default=None, allow_inf_nan=False)
+    z: float | None = Field(default=None, allow_inf_nan=False)
+    velocity_kms: float | None = Field(default=None, allow_inf_nan=False)
+    flag: str = Field(default="", max_length=32)
+    note: str = Field(default="", max_length=64)
+
+
+class ClassifiedVotableRequest(BaseModel):
+    dataset_id: str                      # the cube the catalogue is placed over
+    catalogue_id: str = ""               # a catalogue of the session: its columns kept
+    source_frame: Literal["icrs", "galactic"] = "icrs"   # of the sources' lon/lat
+    flag_set: list[str] = Field(default_factory=list, max_length=8)
+    flag_column: str = Field(default="vr_flag", pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,31}$")
+    sources: list[ClassifiedSource] = Field(default_factory=list, max_length=20000)
+    output_basename: str = Field(default="", max_length=200)
+
+
+class ClassifiedVotableResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    output_path: str = ""
+    workspace_filename: str = ""
+    n_rows: int = 0
+    n_flagged: int = 0
+    n_user: int = 0
+    columns: list[str] = []
+
+
+@router.post("/v1/catalogue/classified_votable", response_model=ClassifiedVotableResponse, tags=["vr"])
+async def catalogue_classified_votable(request: ClassifiedVotableRequest, _: None = _auth,
+                                       session: Session = Depends(get_session)) -> ClassifiedVotableResponse:
+    """The headset's classification of a catalogue (app/catalogue_classified.py)
+    written as a VOTable in the Workspace Exports: the catalogue's own columns
+    and rows (when it is a catalogue of this session) plus the flag column,
+    vr_note, vr_origin, vr_x/y/z and vr_velocity_kms; the sources found by eye
+    appended as rows. The desktop opens it as a catalogue (issue #279)."""
+    from .. import catalogue_classified as ccl   # noqa: PLC0415
+    from ..dependencies import make_workspace_path   # noqa: PLC0415
+    entry = _require_dataset(session, request.dataset_id)
+    frame = coords = label = None
+    if request.catalogue_id:
+        cat = session.datasets.get(request.catalogue_id)
+        if not cat or cat.get("dataframe") is None:
+            raise HTTPException(404, f"Unknown catalogue {request.catalogue_id!r}: "
+                                     "open it with /v1/catalogue/open first.")
+        frame = cat["dataframe"]
+        coords = cat.get("coordinate_fields") or {}
+        from .. import cube_catalogue as cc   # noqa: PLC0415
+        label = cc.label_column(frame)
+        stem_from = Path(str(cat.get("path", "") or "catalogue")).stem
+    else:
+        stem_from = f"{Path(str(entry.get('path', '') or 'cube')).stem}_sources"
+    stem = Path(request.output_basename.strip()).stem if request.output_basename.strip() else f"{stem_from}_vr_classified"
+    sources = [s.model_dump() for s in request.sources]
+    try:
+        table = await asyncio.to_thread(ccl.classified_table, sources, request.flag_column, frame,
+                                        coords, label, request.source_frame)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    try:
+        path = make_workspace_path(stem + ".xml", reserve=True)
+    except Exception as exc:   # noqa: BLE001 - said to the page
+        return ClassifiedVotableResponse(valid=False, error=str(exc))
+    meta = {"cube": Path(str(entry.get("path", ""))).name,
+            "flag_set": ", ".join(f.strip() for f in request.flag_set if f.strip()),
+            "made_in": "the VR headset (VisIVO Visual Analytics)"}
+    try:
+        await asyncio.to_thread(ccl.write_votable, table, str(path), meta)
+    except Exception as exc:   # noqa: BLE001 - the placeholder goes, the page is told
+        path.unlink(missing_ok=True)
+        logger.warning("[classified_votable] failed: %s", exc)
+        return ClassifiedVotableResponse(valid=False, error=str(exc))
+    flags = [s for s in sources if s.get("flag")]
+    return ClassifiedVotableResponse(
+        valid=True, output_path=str(path), workspace_filename=path.name, n_rows=len(table),
+        n_flagged=len(flags), n_user=sum(1 for s in sources if s.get("origin") == "user"),
+        columns=list(table.colnames))
 
 
 # ── Velocity fields ──────────────────────────────────────────────────────────

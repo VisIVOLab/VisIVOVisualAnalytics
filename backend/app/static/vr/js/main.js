@@ -19,6 +19,9 @@ import { pairingFallback, skyFields, skyOf } from './pairing.js';
 import { loadSettings, saveSettings, clampPanelOffset, thresholdSourceFor, WINDOW_IDS } from './settings.js';
 import * as P from './vr-panel.js';
 import { createLayers, pairedMode } from './layers.js';
+// The source list of a catalogue over the cube (issue #279).
+import { createSources } from './sources-ui.js';
+import * as SL from './source-list.js';
 import { createAnalysis } from './analysis.js';
 import { PLANE_SIZE } from './product-canvas.js';
 // The controls of issue #201: roles and modes, the hand menu, result windows, readout.
@@ -280,6 +283,7 @@ for (const name of COLORMAP_NAMES) {
 // Point tables, velocity fields, catalogues over a cube (issue #190): made
 // once the page's controls exist (below).
 let layers = null;
+let sources = null;
 
 /** The colour map, from the page, the secondary stick or the menu. */
 function setColormap(name) {
@@ -491,6 +495,7 @@ layers = createLayers({
   splatTarget: ['f32', 'f16', '8bit'].includes(query.get('splattarget')) ? query.get('splattarget')
     : (isHeadsetBrowser(navigator.userAgent) ? 'f16' : 'auto'),
   onLayer: (detail) => reportProduct(null, detail),   // issue #237: a catalogue over the cube
+  sourceDecor: () => (sources ? sources.decor() : null),   // issue #279: flags, culling, the current source
   // The next snapshot of a series is on show (#259): its path is the page's now.
   // A new snapshot: the steps of the one before (crops and boxes in its own
   // fractions) no longer apply, and a crop drag begun on it is dropped.
@@ -499,6 +504,35 @@ layers = createLayers({
     toast(`Snapshot: ${HUB.fileName(path)}`, 'snapshot');
   },
 });
+
+// The source list (issue #279): the catalogue's sources to browse, visit, classify and send.
+sources = createSources({
+  renderer: R, state, selection,
+  overlay: () => (layers.mode === 'cube' ? layers.state.overlay : null),
+  backend: () => { try { return ensureBackend(); } catch { return null; } },
+  settings: () => settings, storage: settingsStore,
+  onVisit: (row, src) => visitSource(row, src),
+  onChange: () => decorationsChanged(),
+  // False when no hub runs for this page (no session, or it stood down): nothing is sent.
+  report: (detail) => reportProduct(null, detail),
+});
+// The flags and notes offered, set on the page (kept in this browser; the defaults when empty).
+{
+  const sec = $('ly-catalogue');
+  if (sec) {
+    const field = (id, label, key, ph) => {
+      const input = Object.assign(document.createElement('input'), { id, type: 'text', spellcheck: false, placeholder: ph, value: settings[key] || '' });
+      input.addEventListener('change', () => { settings[key] = input.value.slice(0, 200); persist(); });
+      const l = document.createElement('label');
+      l.append(label, input);
+      return l;
+    };
+    const box = Object.assign(document.createElement('div'), { id: 'src-config' });
+    box.append(field('src-flags', 'Flags (comma-separated) ', 'flagSet', SL.DEFAULT_FLAGS.join(', ')),
+      field('src-notes', 'Notes ', 'noteSet', SL.DEFAULT_NOTES.join(', ')));
+    sec.append(box);
+  }
+}
 
 // Clipping box sliders (texture coordinates 0..1 per axis).
 const clipInputs = [];
@@ -1757,6 +1791,53 @@ function undo() {
   return true;
 }
 
+// ── The source list (issue #279) ───────────────────────────────────────────
+/** The Select tab's line about the source list. */
+function sourcesNote() {
+  const v = sources.view();
+  if (!v.total) return '';
+  const cur = v.currentRow;
+  return cur ? `${cur.label}: ${SL.positionText(cur).join(' ')}${cur.velocity !== null ? `, ${SL.velocityText(cur.velocity)} km/s` : ''}` : `${v.total} sources: List opens them`;
+}
+/** A press of the Select tab's Sources row. */
+function sourcesPress(id) {
+  if (id === 'src-list') { sources.setShown(!sources.state.shown); return; }
+  if (id === 'src-prev' || id === 'src-next') { sources.step(id === 'src-next' ? 1 : -1); return; }
+  if (id === 'src-add') {
+    sources.addFound().catch((e) => {
+      buzz('primary', 'error');
+      sources.setStatus(String(e.message || e), '#ff8a8a');
+    });
+  }
+}
+/**
+ * A source visited: the velocity range moved to hold its channel (one undo
+ * step), then in the headset the cube moved and scaled so the source sits
+ * 0.55 m ahead of the eyes, its region 0.25 m across, the cube's orientation
+ * kept; on the page the camera turns about it.
+ */
+let lastVisit = null;     // the last visit, for the checks (window.__vrVisit, ?debug)
+function visitSource(row, src) {
+  if (!state.info) return;
+  const shape = state.info.full_shape;
+  const slab = SL.slabFor(row.z, shape[2], state.clip);
+  if (slab) { pushUndo(); state.clip.min[2] = slab[0]; state.clip.max[2] = slab[1]; }
+  const p = SL.rowModel(row, shape, state.extent, state.clip);
+  const size = SL.rowSizeModel(src, shape, state.extent);
+  let target = null;
+  if (xr && xr.pose) {
+    target = SL.visitTarget(xr.pose.transform.matrix);
+    state.model = SL.visitModel(state.model, p, size, target);
+    xr.grab = null;
+  } else if (!xr) {
+    cam.target = p;
+    cam.dist = Math.max(0.3, Math.min(8, size * 3.2));
+  }
+  lastVisit = { key: row.key, target, world: M.transformPoint(state.model, p), size, slab, scale: SL.modelScale(state.model) };
+  decorationsChanged();
+  labelsChanged();
+}
+
 /** The view back to its start: in the headset the cube in front of you again
  *  (at its first size; the windows follow it), on the page the camera. */
 function resetView() {
@@ -1765,7 +1846,7 @@ function resetView() {
     state.model = placedModel(xr.place);
     xr.grab = null;
   } else if (!xr) {
-    Object.assign(cam, { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0 });
+    Object.assign(cam, { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0, target: [0, 0, 0] });
   }
 }
 
@@ -1864,6 +1945,7 @@ function menuContext() {
     cat: lc.cat, clipTool: ui.clipTool,
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
+    src: { total: sources.view().total, shown: sources.state.shown, canAdd: !!((s.lasso && !s.lasso.received) || s.spectrum || (s.pick && s.pick.seed)) },
     meas: { lasso, moment: av.moment, pvArmed: av.pvArmed, spectrum: !!s.spectrum, pinned: selection.hasPin() },
     pts: lc.pts, flow: lc.flow, sim: lc.sim,
     more: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud },
@@ -1911,6 +1993,7 @@ function menuView(ctx = menuContext()) {
     notes.tool = TOOL_NAMES[selection.sel.tool] ? `Trigger: ${TOOL_NAMES[selection.sel.tool]}` : '';
     const sum = selectionSummary();
     notes.selection = sum && sum.length ? sum[0] : '';
+    notes.sources = sourcesNote();
     notes.moment = ctx.meas.lasso ? 'Of the lasso object (its mask).'
       : 'Whole field over the velocity range, the desktop\'s automatic threshold mask.';
     notes.pv = analysis.pv.state.armed ? 'Trigger: the next point of the slice.' : '';
@@ -2096,7 +2179,7 @@ function closeMenu() {
 }
 // ── The result windows ──────────────────────────────────────────────────────
 const wins = Object.fromEntries(WINDOW_IDS.map((id) => [id, {
-  id, def: W.WINDOWS[id], pointer: new W.WindowPointer(), drag: null, closedKey: null, model: null, size: null,
+  id, def: W.WINDOWS[id], pointer: new W.WindowPointer(W.WINDOWS[id].contentPx ? [] : null), drag: null, closedKey: null, model: null, size: null,
   bar: Object.assign(document.createElement('canvas'), { width: W.BAR_PX[0], height: W.BAR_PX[1] }), barTex: null, barKey: '',
   offset: settings.windows[id] || { ...W.WINDOWS[id].place }, desktopOffset: { ...W.WINDOWS[id].desktop },
 }]));
@@ -2115,6 +2198,7 @@ function windowContent(w) {
     if (w.closedKey && k.every((v, i) => v === w.closedKey[i])) return null;
     return { tex: selection.panelTexture(), size: w.def.size };
   }
+  if (w.id === 'sources') return sources.state.shown ? { tex: sources.texture(), size: w.def.size } : null;
   const tex = analysis.productTexture(w.id);
   return tex ? { tex, size: PLANE_SIZE } : null;
 }
@@ -2125,6 +2209,7 @@ function resultKey() {
 }
 function closeWindow(w) {
   if (w.id === 'result') w.closedKey = resultKey();
+  else if (w.id === 'sources') sources.setShown(false);
   else analysis.setShown(w.id, false);
 }
 function windowAnchor() { return xr ? xr.place : DESKTOP_ANCHOR; }
@@ -2136,6 +2221,7 @@ function shownWindows() {
     const c = windowContent(w);
     if (!c) { w.model = null; continue; }
     w.size = c.size; w.tex = c.tex;
+    if (w.pointer.content && w.id === 'sources') w.pointer.content.layout = sources.layout();
     w.model = W.windowModel(windowAnchor(), xr ? w.offset : w.desktopOffset);
     out.push(w);
   }
@@ -2163,6 +2249,15 @@ function drawWindows(v, list) {
 }
 
 function applyWindow(w, a, ray, eye) {
+  // The Sources window's own widgets (issue #279).
+  if (a.content) {
+    if (a.type === 'press' && w.id === 'sources') {
+      if (a.widget && a.widget.disabled) { buzz('primary', 'error'); return; }
+      buzz('primary', 'press');
+      try { sources.press(a.id); } catch (e) { sources.setStatus(String(e.message || e), '#ff8a8a'); }
+    }
+    return;
+  }
   if (a.type === 'press' && a.id === 'close') { closeWindow(w); buzz('primary', 'press'); return; }
   if (a.type === 'drag-start') {
     w.drag = { t: a.hit.t, rel: M.sub(M.position(w.model), a.hit.point) };
@@ -2204,7 +2299,7 @@ function uiPointer(ray, pressed, eye) {
   }
   const list = shownWindows();
   for (const w of list) {
-    const h = W.windowHits(w.model, w.size, ray);
+    const h = W.windowHits(w.model, w.size, ray, w.def.contentPx);
     let hit = h.t !== null ? { t: h.t, point: h.point } : null;
     // The cube in front of a window takes the ray (a window held keeps it).
     if (hit && state.cube && !w.pointer.captured
@@ -2228,6 +2323,7 @@ function uiPointer(ray, pressed, eye) {
       takes = takes || palette.pointer.takesRay() || palette.pointer.owns;
     } else {
       for (const a of s.w.pointer.update(mine ? s.hits : { bar: null, content: null }, pressed)) applyWindow(s.w, a, ray, eye);
+      if (s.w.id === 'sources') sources.pointer.hover = s.w.pointer.content ? s.w.pointer.content.hover : null;
       if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.w.model };
       takes = takes || s.w.pointer.takesRay();
     }
@@ -2326,6 +2422,7 @@ function applyMenu(a, ray = null, eye = null) {
     return;
   }
   if (id === 'sel-clear') { selection.clear(); analysis.sync(); return; }
+  if (id.startsWith('src-')) { sourcesPress(id); return; }
   if (id === 'isolate' || id === 'remove' || id === 'show-applied') { analysis.press(id, w); return; }
   // Measure.
   if (w.group === 'moment' || id === 'moment-hide' || id.startsWith('pv-')) { analysis.press(id, w); return; }
@@ -2848,7 +2945,8 @@ function toolsBusy() {
 }
 
 // ── Desktop mode ────────────────────────────────────────────────────────────
-const cam = { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0 };   // turn: a head turn about the eye (debug)
+// turn: a head turn about the eye (debug); target: the point the camera turns about (a visited source, #279).
+const cam = { yaw: -0.5, pitch: 0.35, dist: 2.0, turn: 0, target: [0, 0, 0] };
 const DESKTOP_BG = [0.043, 0.051, 0.07];
 let dragging = null;
 let pressAt = null;
@@ -2985,6 +3083,7 @@ function desktopView() {
   camM = M.multiply(M.rotation([1, 0, 0], -cam.pitch), camM);
   camM = M.multiply(M.rotation([0, 1, 0], cam.yaw), camM);
   if (cam.turn) camM = M.multiply(camM, M.rotation([0, 1, 0], cam.turn));
+  if (cam.target) camM = M.multiply(M.translation(...cam.target), camM);
   return { proj: M.perspective(50 * Math.PI / 180, w / h, 0.02, 50), view: M.invert(camM) };
 }
 
@@ -3263,10 +3362,11 @@ setInterval(hubTick, 250);
 
 /** A product made here (or a catalogue over the cube): saved for the desktop and reported. */
 function reportProduct(recipe, detail) {
-  if (!detail || !single.active) return;
+  if (!detail || !single.active) return null;
   const path = state.openPath || '';
   const key = recipe ? `recipe:${recipe.product.id}:${path}` : `${detail.product}:${detail.path || detail.file || ''}:${performance.now()}`;
-  hub.product(detail, recipe, { cubePath: path, cubeName: HUB.fileName(path), stem: HUB.stemOf(path) }, key);
+  // A promise of its send ({file} once posted), or null when nothing was queued.
+  return hub.product(detail, recipe, { cubePath: path, cubeName: HUB.fileName(path), stem: HUB.stemOf(path) }, key);
 }
 
 /** The desktop's `show`: that cube in this page (in VR when in VR, #235). */
@@ -4482,6 +4582,8 @@ async function desktopBench() {
 // with ?debug in the address.
 if (query.has('debug')) {
   window.__vrLayers = layers;
+  window.__vrSources = sources;
+  window.__vrVisit = () => lastVisit;
   window.__vrStats = (hz = 0) => stats.summary(hz ? 1000 / hz : 0);
   window.__vrShell = shell;
   window.__vrMeasure = { measure, start: (opts) => startOrCancelRun(opts) };
@@ -4692,6 +4794,13 @@ if (query.has('debug')) {
       const c = at || widgetCentre(id);
       return c ? quadPagePixel(menuWorld(), menuSize(), HM.MENU_PX, c[0], c[1]) : null;
     },
+    /** The world point of content pixel (x, y) of window `id` (the Sources window's widgets, #279), or null. */
+    contentWorld(id, x, y) {
+      const w = wins[id];
+      if (!w.model || !w.def.contentPx) return null;
+      const [px, py] = w.def.contentPx;
+      return Array.from(M.transformPoint(w.model, [(x / px - 0.5) * w.size[0], (0.5 - y / py) * w.size[1], 0]));
+    },
     /** The page pixel of a window's bar widget ('drag' or 'close'), or null when it is not shown. */
     windowPixel(id, widget = 'close') {
       const w = wins[id];
@@ -4852,6 +4961,7 @@ function rebuildGraphics() {
     if (R.capacityError) shell.log('warning', 'capacity-failed', `after the context was restored: ${R.capacityError}`);
     releaseBench(true);              // the benchmark's cubes were on the lost context
     layers.restore();
+    sources.restore();
     refiner.draw = new RefineDraw(gl);
     refiner.weight = 0;
     menu.key = '';

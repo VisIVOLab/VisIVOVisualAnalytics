@@ -23,6 +23,8 @@ private slots:
     void theListIsCappedNewestFirst();
     void aRestartedBackendsEventsComeFirst();
     void productsOpenWhereTheyBelong();
+    void aClassificationOpensInTheCatalogueTable();
+    void aClassificationBecomesTableEntries();
     void productRecipeBecomesProvenance();
     void productIdIsStableAcrossOpens();
     void aMomentOfASelectionNamesItsMask();

@@ -230,7 +230,20 @@ void vtkWindowCube::loadCatalogueOverlay()
         return;
         }
     }
+    // A file of the desktop's own: no longer the headset's classification (#279).
+    this->m_headsetClassificationFile.clear();
+    if (this->m_saveClassificationButton)
+        this->m_saveClassificationButton->hide();
+    if (this->catalogueTableModel)
+        this->catalogueTableModel->setFrameLabel(QString());
+    if (this->catalogueDock)
+        this->catalogueDock->setWindowTitle(u"Catalogue"_s);
+    this->installCatalogueOverlay(parsed);
+}
 
+bool vtkWindowCube::installCatalogueOverlay(const CatalogueOverlayParseResult &parsed)
+{
+    this->catalogueOverlayExtraFields = parsed.extraFields;
     this->catalogueOverlayEntries.clear();
     this->catalogueOverlayPixels.clear();
     this->catalogueOverlayPolylines.clear();
@@ -255,6 +268,15 @@ void vtkWindowCube::loadCatalogueOverlay()
                     continue;
                 }
                 this->catalogueOverlayPolylines.push_back(std::move(ellipse));
+            } else if (entry.shape == CatalogueOverlayEntry::Shape::Marker) {
+                // A point placed in pixels (a source classified in the headset,
+                // #279): the same cross as a sky marker.
+                this->catalogueOverlayPolylines.push_back(
+                        { { anchor[0] - catalogueMarkerHalfSize, anchor[1] },
+                          { anchor[0] + catalogueMarkerHalfSize, anchor[1] } });
+                this->catalogueOverlayPolylines.push_back(
+                        { { anchor[0], anchor[1] - catalogueMarkerHalfSize },
+                          { anchor[0], anchor[1] + catalogueMarkerHalfSize } });
             }
         } else {
             if (!this->catalogueWorldToPixel(entry.raDeg, entry.decDeg, anchor)) {
@@ -287,7 +309,7 @@ void vtkWindowCube::loadCatalogueOverlay()
         this->refreshCatalogueTable();
         QMessageBox::warning(this, u"Catalogue Overlay"_s,
                              u"No sources could be projected onto the current cube WCS."_s);
-        return;
+        return false;
     }
 
     this->catalogueOverlayLoaded = true;
@@ -327,6 +349,7 @@ void vtkWindowCube::loadCatalogueOverlay()
     }
     this->sliceWin->Render();
     this->momentWin->Render();
+    return true;
 }
 
 void vtkWindowCube::clearCatalogueOverlay()
@@ -754,7 +777,22 @@ void vtkWindowCube::ensureCatalogueDock()
         this->catalogueTableView->header()->setStretchLastSection(true);
     this->catalogueTableView->setUniformRowHeights(true);
     this->catalogueTableView->setAllColumnsShowFocus(true);
-    this->catalogueDock->setWidget(this->catalogueTableView);
+    // Save VOTable above the table, shown while the table holds a catalogue
+    // classified in the headset (issue #279).
+    auto *box = new QWidget(this->catalogueDock);
+    auto *boxLayout = new QVBoxLayout(box);
+    boxLayout->setContentsMargins(0, 0, 0, 0);
+    boxLayout->setSpacing(2);
+    this->m_saveClassificationButton = new QPushButton(u"Save VOTable…"_s, box);
+    this->m_saveClassificationButton->setToolTip(
+            u"Save the catalogue classified in the headset as a VOTable: every original column "
+            u"and row, the flag column, the note and the sources found by eye."_s);
+    this->m_saveClassificationButton->setVisible(!this->m_headsetClassificationFile.isEmpty());
+    QObject::connect(this->m_saveClassificationButton, &QPushButton::clicked, this,
+                     &vtkWindowCube::saveHeadsetClassification);
+    boxLayout->addWidget(this->m_saveClassificationButton, 0, Qt::AlignLeft);
+    boxLayout->addWidget(this->catalogueTableView, 1);
+    this->catalogueDock->setWidget(box);
     // Bottom, not right: docks in one area share their width, so in the right
     // column this table was squeezed to the rail width whenever the Inspector
     // was collapsed - and a table wants width anyway.

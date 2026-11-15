@@ -583,6 +583,9 @@ export function createLayers(ctx) {
       const ov = await b._json('POST', '/v1/cube/catalogue_pixels', CT.overlayRequest(dataset, choice));
       if (stale()) return;
       ov.ms = performance.now() - t0;
+      // What the source list needs to report its classification (issue #279).
+      ov.catalogueId = choice.catalogueId || '';
+      ov.cataloguePath = src === 'catalogue' ? catPath.value.trim() : '';
       L.overlay = ov;
       rebuildOverlay();
       // A catalogue file over the cube is reported to the desktop (issue #237).
@@ -605,11 +608,16 @@ export function createLayers(ctx) {
   /** The overlay in the cube's current box (clipping box, depth): its lines
    *  uploaded; its labels go with the cube's (main.js rebuildDecorations). */
   function placeOverlay() {
+    // The source list (issue #279): the flags' colours, the markers and
+    // labels nearest the current source, the current source's bracket and
+    // the sources found by eye.
+    const deco = ctx.sourceDecor && state.info ? ctx.sourceDecor() : null;
     L.overlaySegs = L.overlay && state.info
       ? CT.overlaySegments(L.overlay, state.info.full_shape, state.extent, state.clip,
-        { labels: L.s.catLabels, pins: L.s.catPins })
+        { labels: L.s.catLabels, pins: L.s.catPins, ...(deco ? deco.opts : {}) })
       : null;
-    R.setLines(L.overlaySegs ? L.overlaySegs.segs : [], catLines);
+    L.listSegs = deco ? deco.segs : [];
+    R.setLines([...(L.overlaySegs ? L.overlaySegs.segs : []), ...L.listSegs], catLines);
   }
   function rebuildOverlay() { ctx.rebuild(); }
 
@@ -953,9 +961,9 @@ export function createLayers(ctx) {
       placeOverlay();
       return L.overlay && L.s.catShow && L.overlaySegs ? L.overlaySegs.labels : [];
     },
-    /** Over the cube, after its box: the catalogue. */
+    /** Over the cube, after its box: the catalogue (and the source list's marks, #279). */
     drawOverCube(view, model) {
-      if (L.overlay && L.s.catShow && catLines.count) R.drawLines(view, model, catLines);
+      if ((L.overlay || (L.listSegs && L.listSegs.length)) && L.s.catShow && catLines.count) R.drawLines(view, model, catLines);
     },
     /** The scene of a point table or a velocity field, for one eye. */
     drawScene(view, eye, viewportH) {

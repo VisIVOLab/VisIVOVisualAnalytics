@@ -179,7 +179,7 @@ export function clipPayload(box, datasetId) {
 }
 
 /** The product kinds the hub accepts (backend PRODUCT_KINDS). */
-export const PRODUCT_KINDS = ['moment', 'pv', 'spectrum', 'isolate', 'remove', 'catalogue', 'flow'];
+export const PRODUCT_KINDS = ['moment', 'pv', 'spectrum', 'isolate', 'remove', 'catalogue', 'flow', 'classification'];
 
 /**
  * How a product made here is saved for the desktop: {route, body} of the
@@ -198,6 +198,10 @@ export function savePlan(detail, stem = 'cube') {
   if (d.product === 'pv' && d.dataset_id) {
     return { route: '/v1/products/pv_fits',
       body: { dataset_id: d.dataset_id, vertices: req.vertices, width_pixels: req.width_pixels, output_basename: `${stem}_vr_pv.fits` } };
+  }
+  // A catalogue classified in the headset (#279): the VOTable of its rows and flags.
+  if (d.product === 'classification' && d.dataset_id && d.request) {
+    return { route: '/v1/catalogue/classified_votable', body: { ...req, dataset_id: d.dataset_id } };
   }
   if (d.product === 'spectrum' && d.dataset_id) {
     return { route: '/v1/products/spectrum_table',
@@ -220,6 +224,7 @@ export function productSummary(detail, cubeName, file) {
     case 'remove': s = `Cube${on} with the selection removed`; break;
     case 'catalogue': s = `Catalogue ${fileName(d.path) || ''} over ${cubeName || 'the cube'}`.replace(/\s+/g, ' '); break;
     case 'flow': s = `Velocity field ${fileName(d.path)}`; break;
+    case 'classification': s = String(d.label || 'Catalogue classified in the headset'); break;
     default: s = String(d.label || d.product || 'Product');
   }
   if (file) s += ` → ${file}`;
@@ -239,9 +244,12 @@ export function productPayload(detail, file, recipe) {
   if (file) p.file = String(file);
   else if (d.path) p.path = String(d.path);
   if (d.dataset_id) p.dataset_id = String(d.dataset_id);
-  if (d.request && typeof d.request === 'object') p.request = d.request;
+  // A classification's request is the whole VOTable's body: its file is what the desktop opens.
+  if (d.request && typeof d.request === 'object' && d.product !== 'classification') p.request = d.request;
   if (recipe) p.recipe = recipe;
   if (d.label) p.label = String(d.label).slice(0, 200);
+  // The classified sources for the desktop's catalogue table (#279; source-list.js hubClassification).
+  if (d.product === 'classification' && d.classification) p.classification = d.classification;
   return p;
 }
 
@@ -516,6 +524,7 @@ export function createHub(ctx) {
     const r = await post('/v1/vr/activity', { client: st.client, kind, cube_path: cubePath || null,
       summary: String(summary || '').slice(0, 300), payload: fit.payload });
     if (r) st.sent[kind]++;
+    return r;
   }
 
   /** One activity event, queued after the sends before it. */
@@ -579,18 +588,33 @@ export function createHub(ctx) {
    * path to settle.
    */
   function product(detail, recipe, where = {}, key = '') {
-    if (!detail || !PRODUCT_KINDS.includes(detail.product)) return;
+    if (!detail || !PRODUCT_KINDS.includes(detail.product)) return null;
     const k = key || `${detail.product}-${Date.now()}-${Math.random()}`;
     const old = products.get(k);
-    if (old) cancel(old.timer);
+    if (old) { cancel(old.timer); products.delete(k); old.settle(staleRun()); }
     // Fenced to this run of the hub and to the session it was made in: a
     // product of a page that stood down, or of another session, is not sent.
     const a = authNow();
-    if (!st.running || !a) return;
-    const entry = { detail, recipe, where, gen: runGen, session: a.session };
-    entry.timer = later(() => { products.delete(k); enqueue('product', () => sendProduct(entry)); },
-      detail.product === 'pv' ? PV_SETTLE_MS : 0);
+    if (!st.running || !a) return null;
+    // The caller may wait for it (the source list's Send, #279): resolves with
+    // {file, posted: true} once posted; with {file, posted: false, why} when
+    // the file was written (or given) but the desktop was not told (an older
+    // backend without the activity route, the page unknown after a second
+    // hello, the page stood down meanwhile): the file is there, so the caller
+    // must not write it again. Rejects with why nothing was saved (a newer one
+    // with the same key, the hub stopped: an Error with `stale`; a save refused).
+    let resolve, reject;
+    const done = new Promise((res, rej) => { resolve = res; reject = rej; });
+    done.catch(() => {});      // a caller that does not wait leaves no unhandled rejection
+    const entry = { detail, recipe, where, gen: runGen, session: a.session,
+      settle: (err, value) => (err ? reject(err) : resolve(value)) };
+    entry.timer = later(() => {
+      products.delete(k);
+      enqueue('product', () => sendProduct(entry).then((v) => entry.settle(v ? null : staleRun(), v),
+        (e) => { entry.settle(e); throw e; }));
+    }, detail.product === 'pv' ? PV_SETTLE_MS : 0);
     products.set(k, entry);
+    return done;
   }
 
   async function sendProduct({ detail, recipe, where, gen, session }) {
@@ -598,7 +622,7 @@ export function createHub(ctx) {
       const a = authNow();
       return gen === runGen && st.running && a && a.session === session ? a : null;
     };
-    if (!current()) return;
+    if (!current()) return null;
     let file = detail.file || '';
     const plan = file ? null : savePlan(detail, where.stem || 'cube');
     if (plan) {
@@ -606,12 +630,11 @@ export function createHub(ctx) {
       let r = null;
       for (let i = 0; ; i++) {
         const a = current();
-        if (!a) return;                   // stopped, or another session, meanwhile
+        if (!a) return null;              // stopped, or another session, meanwhile
         r = await call('POST', plan.route, plan.body, a, SAVE_TIMEOUT_MS);
         if (r.status !== 429 || i >= SAVE_RETRY_MS.length) break;
         await new Promise((res) => later(res, SAVE_RETRY_MS[i]));     // the heavy slots are busy: later
       }
-      if (!current()) return;
       if (r.status !== 200 || !r.body || !r.body.valid) {
         st.saveFailures++;
         const why = r.body && (r.body.error || r.body.detail) ? JSON.stringify(r.body.error || r.body.detail) : r.status;
@@ -622,7 +645,20 @@ export function createHub(ctx) {
     }
     const payload = productPayload(detail, file, recipe);
     // Posted here, inside this send (activity() would queue it behind itself).
-    await postActivity('product', where.cubePath || '', productSummary(detail, where.cubeName, file), payload);
+    let posted = null, why = '';
+    if (current()) {
+      try {
+        posted = await postActivity('product', where.cubePath || '', productSummary(detail, where.cubeName, file), payload);
+      } catch (e) {
+        why = e && e.message ? e.message : String(e);
+        noteError('product', why);
+      }
+    }
+    if (posted) return { file, posted: true };
+    // Not told, but a file is there: said with it, never as nothing saved (#279 review).
+    if (!file) return null;
+    if (!why) why = st.unsupported ? 'this backend has no headset hub' : 'the page stood down or moved to another session';
+    return { file, posted: false, why };
   }
 
   // ── Commands ────────────────────────────────────────────────────────────
@@ -707,7 +743,7 @@ export function createHub(ctx) {
     if (wake) { wake(); wake = null; }
     if (stateTimer !== null) { cancel(stateTimer); stateTimer = null; }
     // What was waiting to be sent belongs to the run that ends.
-    for (const e of products.values()) cancel(e.timer);
+    for (const e of products.values()) { cancel(e.timer); e.settle(staleRun()); }
     products.clear();
     for (const k of ['look', 'clip']) if (pending[k]) { cancel(pending[k].timer); pending[k] = null; }
     st.helloSession = '';

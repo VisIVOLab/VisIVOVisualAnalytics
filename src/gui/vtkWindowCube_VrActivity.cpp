@@ -16,8 +16,10 @@
 #include "vtkWindowCube.h"
 
 #include "ui_vtkWindowCube.h"
+#include "CatalogueTableModel.h"
 #include "ColorMaps.h"
 #include "HeadsetActivityList.h"
+#include "HeadsetClassification.h"
 #include "WorkspaceChrome.h"
 #include "app/BackendClient.h"
 #include "app/HeadsetHubLink.h"
@@ -35,6 +37,8 @@
 #include <QCheckBox>
 #include <QDockWidget>
 #include <QFile>
+#include <QFileDialog>
+#include <QPushButton>
 #include <QFileInfo>
 #include <QFontMetrics>
 #include <QFutureWatcher>
@@ -433,10 +437,78 @@ void vtkWindowCube::openHeadsetProduct(const VrHub::Event &event)
                     8000);
         }
         return;
+    case VrHub::OpenIn::CatalogueTable:
+        this->showHeadsetClassification(event, p);
+        return;
     case VrHub::OpenIn::Nothing:
         break;
     }
     this->statusBar()->showMessage(u"The headset sent nothing to open for this."_s, 5000);
+}
+
+void vtkWindowCube::showHeadsetClassification(const VrHub::Event &event, const VrHub::Product &product)
+{
+    // Placed by the backend in this cube's pixels: shown over another cube
+    // they would sit in the wrong place.
+    if (!VrHub::aboutCube(event, this->filepath, this->remoteDatasetId)) {
+        this->statusBar()->showMessage(
+                u"This catalogue was classified over %1: open it from that cube's window."_s.arg(
+                        event.cubePath.isEmpty() ? u"another cube"_s : QFileInfo(event.cubePath).fileName()),
+                8000);
+        return;
+    }
+    const VrHub::Classification c = VrHub::parseClassification(event.payload);
+    if (!c.valid || c.sources.isEmpty()) {
+        this->statusBar()->showMessage(u"The headset's classification lists no source."_s, 6000);
+        return;
+    }
+    CatalogueOverlayParseResult parsed;
+    parsed.valid = true;
+    parsed.entries = VrHub::classificationEntries(c);
+    parsed.extraFields = VrHub::classificationFields(c);
+    parsed.frameLabel = VrHub::classificationFrameLabel(c);
+    parsed.sourceLabel = c.catalogueName.isEmpty() ? u"the headset"_s : c.catalogueName;
+    this->ensureCatalogueDock();
+    if (!this->installCatalogueOverlay(parsed))
+        return;
+    this->m_headsetClassificationFile = product.workspaceFilename;
+    this->catalogueTableModel->setFrameLabel(parsed.frameLabel);
+    this->catalogueDock->setWindowTitle(VrHub::classificationTitle(c));
+    this->catalogueDock->show();
+    if (this->m_saveClassificationButton)
+        this->m_saveClassificationButton->setVisible(!this->m_headsetClassificationFile.isEmpty());
+    this->showPersistentStatusMessage(
+            u"%1: in the Catalogue table."_s.arg(VrHub::classificationTitle(c)), 6000);
+}
+
+void vtkWindowCube::saveHeadsetClassification()
+{
+    const QString file = this->m_headsetClassificationFile;
+    if (file.isEmpty())
+        return;
+    const QString target = QFileDialog::getSaveFileName(
+            this, u"Save the Classified Catalogue"_s, QFileInfo(file).completeBaseName() + u".xml"_s,
+            u"VOTable (*.xml *.vot);;All files (*)"_s);
+    if (target.isEmpty())
+        return;
+    const VrLink::Inputs in = this->vrHeadsetInputs();
+    this->statusBar()->showMessage(u"Saving the classified catalogue…"_s, 4000);
+    auto *watcher = new QFutureWatcher<QString>(this);
+    QObject::connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, target]() {
+        const QString error = watcher->result();
+        watcher->deleteLater();
+        this->statusBar()->showMessage(error.isEmpty() ? u"Saved %1"_s.arg(target)
+                                                       : u"Not saved: %1"_s.arg(error),
+                                       8000);
+    });
+    watcher->setFuture(QtConcurrent::run([in, file, target]() {
+        BackendClient client(in.baseUrl, in.token);
+        client.setSessionId(in.sessionId);
+        QString error;
+        if (!client.downloadExport(file, target, error) && error.isEmpty())
+            error = u"the backend did not send it"_s;
+        return error;
+    }));
 }
 
 void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::Product &product)

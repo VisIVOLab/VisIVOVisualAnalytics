@@ -121,6 +121,8 @@ export const WHY = {
   splatsOnly: 'Smooth (splats) and Ray-traced only.',
   noColour: 'Choose a column to colour by first.',
   noCatalogue: 'Place a catalogue over the cube on the page (or from the desktop).',
+  noSources: 'No sources: place a catalogue over the cube, or add one you found.',
+  foundFirst: 'Select the source first: a Kinematic Lasso or a Spectrum probe.',
   noSigma: 'No noise σ: these values are not noise about a median.',
   noHist: 'This cube keeps no values (a benchmark): no histogram.',
   powerOnly: 'The Power stretch only.',
@@ -132,6 +134,7 @@ export function defaultContext() {
     kind: 'none', debug: false, colormap: COLORMAP_NAMES[0], render: 0, spectralName: 'Velocity range',
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
+    src: { total: 0, shown: false, canAdd: false },
     meas: { lasso: false, moment: null, pvArmed: false, spectrum: false, pinned: false },
     lv: { sigma: false, hist: false, stretch: 'sqrt' },
     // A point table's simulation controls (#259): {axes, series, seriesIndex,
@@ -325,7 +328,7 @@ function rangePage(ctx) {
 function selectPage(ctx) {
   const cube = ctx.kind === 'cube';
   const s = ctx.sel;
-  const rows = [['tool', 'Tool'], ['lasso', 'Lasso'], ['selection', 'Selection'], ['result', 'Result']];
+  const rows = [['tool', 'Tool'], ['lasso', 'Lasso'], ['selection', 'Selection'], ['result', 'Result'], ['sources', 'Sources']];
   // A point table has the Box select (#259): a box drawn with the trigger, then
   // only its inside shown, or all but it.
   const pts = ctx.kind === 'points';
@@ -355,7 +358,15 @@ function selectPage(ctx) {
     w.push(btn('remove', span(3, 3, 1), 'Remove', { disabled: why }));
     w.push(btn('show-applied', span(3, 3, 2), 'Show result cube', { disabled: why || (s.applied ? '' : WHY.applyFirst), tip: 'Show result cube: the isolated or remaining cube' }));
   }
-  return { rows, widgets: w, status: 4, placeholder: { result: pts ? 'Show inside, Hide inside and Show all appear once a box is drawn.'
+  // The source list (#279): its window, a step through it, a source found by eye.
+  const src = ctx.src || {};
+  const noList = notCube || (src.total ? '' : WHY.noSources);
+  w.push(btn('src-list', span(4, 4, 0), 'List', { on: cube && !!src.shown, disabled: notCube, tip: 'List: the Sources window (sort, visit, flag)' }));
+  w.push(btn('src-prev', span(4, 4, 1), '◂ Prev', { disabled: noList, tip: 'The previous source, visited' }));
+  w.push(btn('src-next', span(4, 4, 2), 'Next ▸', { disabled: noList, tip: 'The next source, visited' }));
+  w.push(btn('src-add', span(4, 4, 3), '+ Found', { disabled: notCube || (src.canAdd ? '' : WHY.foundFirst),
+    tip: '+ Found: the selection as a source you found' }));
+  return { rows, widgets: w, status: 5, placeholder: { result: pts ? 'Show inside, Hide inside and Show all appear once a box is drawn.'
     : 'Isolate, Remove and Show result cube appear once something is selected.' } };
 }
 
