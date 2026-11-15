@@ -227,6 +227,28 @@ async def test_the_lease_ends_a_watch_the_desktop_left(client, auth_headers):
     assert r.json()["watched"] is False and r.json()["stored"] is False and feed.frame is None
 
 
+async def test_a_lapsed_watch_ends_its_frame_goes_and_no_read_revives_it(client, auth_headers):
+    h = await _session(client, auth_headers)
+    await _hello(client, h)
+    await _watch(client, h)
+    await _post_frame(client, h, _jpeg())
+    feed = _hub(h).pages["page-1"].feed
+    for probe in ("read", "snapshot"):
+        feed.lease_until = time.monotonic() - 0.1          # the desktop went away
+        if probe == "read":
+            # A later read does not bring the old watch (and its frame) back.
+            assert (await _read(client, h)).status_code == 409
+        else:
+            r = await client.post("/v1/vr/headset/spectator/snapshot", json={"client": "page-1"}, headers=h)
+            assert r.status_code == 409, "no stale frame saved"
+        assert feed.watching is False and feed.frame is None
+        # Watched again: a new frame is needed.
+        await _watch(client, h)
+        assert (await _read(client, h)).status_code == 204
+        _next_frame_allowed(h)
+        await _post_frame(client, h, _jpeg())
+
+
 async def test_reads_waiting_at_once_are_bounded_and_end_at_shutdown(client, auth_headers):
     h = await _session(client, auth_headers)
     await _hello(client, h)

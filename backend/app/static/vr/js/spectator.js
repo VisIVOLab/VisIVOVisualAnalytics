@@ -30,6 +30,10 @@
 //   queues them.
 // - No 3-D texture is made here (issue #229): a renderbuffer and a buffer,
 //   made at the first capture of a watch and freed when it ends.
+// - What can go wrong does not end the watch: a capture stuck in one stage
+//   for STALL_MS is dropped (its encoder replaced); after a WebGL context
+//   loss, contextLost() drops every GL object of the old context; failed
+//   posts pause the capture for PAUSE_MS.
 // - While watched, the headset shows a small badge (upper left of the view)
 //   and the 2-D page a line at its top.
 //
@@ -55,6 +59,8 @@ export const POST_TIMEOUT_MS = 5000;
  *  the watch; the backend's answer ends it when the desktop has gone). */
 export const MAX_FAILURES = 5;
 export const PAUSE_MS = 5000;
+/** A capture stage (fence, read, encode, post) older than this is given up. */
+export const STALL_MS = 2 * POST_TIMEOUT_MS;
 /** The badge's place in the head's frame (metres) and size. */
 export const BADGE_OFFSET = [-0.13, 0.1, -0.65];
 export const BADGE_SIZE = [0.085, 0.0213];
@@ -177,7 +183,10 @@ export function createEncoder({ makeWorker, makeCanvas } = {}) {
       } else if (m.error) p.reject(Object.assign(new Error(m.error), { buf: m.buf }));
       else p.resolve({ jpeg: m.jpeg, buf: m.buf, ms: m.ms, where: 'worker' });
     };
-    worker.onerror = () => { broken = true; for (const p of waiting.values()) p.reject(new Error('the encoder worker failed')); waiting.clear(); };
+    // A failed worker, or a message it could not take: the page's canvas from now on.
+    const failAll = (why) => { broken = true; for (const p of waiting.values()) p.reject(new Error(why)); waiting.clear(); };
+    worker.onerror = () => failAll('the encoder worker failed');
+    worker.onmessageerror = () => failAll('a message to or from the encoder worker could not be read');
   }
   let canvas = null;
   async function onPage(buf, w, h, quality) {
@@ -203,7 +212,13 @@ export function createEncoder({ makeWorker, makeCanvas } = {}) {
         worker.postMessage({ id, buf, w, h, quality }, [buf]);
       });
     },
-    close() { try { if (worker) worker.terminate(); } catch { /* gone */ } worker = null; },
+    /** Ends the worker; what waits on it is refused. */
+    close() {
+      try { if (worker) worker.terminate(); } catch { /* gone */ }
+      worker = null;
+      for (const p of waiting.values()) p.reject(new Error('the encoder was closed'));
+      waiting.clear();
+    },
   };
 }
 
@@ -227,7 +242,10 @@ export function createSpectator(ctx) {
     stage: '',                   // '' idle, 'gpu' (fence pending), 'read' (the copy out of the PBO), 'encode', 'post'
     sent: 0, stored: 0, dropped: 0, failures: 0, lastError: '', why: '',
     size: [0, 0], bytes: 0, eye: 'left', checked: false, pausedUntil: 0, pauses: 0,
+    stageAt: 0, stalls: 0, losses: 0,
   };
+  /** The stage, and when it began (a stage older than STALL_MS is reset). */
+  const setStage = (stage) => { st.stage = stage; st.stageAt = now(); };
   // Where the bytes are copied out of the PBO once the fence has passed (the
   // copy waits for the GPU process to reach it in its queue): 'idle', a task
   // of its own right after the frame; 'start', at the start of the next
@@ -323,6 +341,9 @@ export function createSpectator(ctx) {
     st.failures = 0;
     st.pausedUntil = 0;
     st.why = '';
+    // The desktop's watch again (it saw no frame for a while): a capture stuck
+    // on its way goes now, not at the next frame.
+    if (was) unstall();
     if (!was) {
       gen++;
       st.checked = false;
@@ -339,12 +360,52 @@ export function createSpectator(ctx) {
     st.why = why;
     gen++;
     pending = null;
-    st.stage = '';
+    setStage('');
     freeResources();
     showBadge(false);
     for (const r of [issueMs, readMs, encodeMs, postMs, gpuWaitFrames]) r.clear();
     sentTimes.length = 0;
     log('info', 'spectator-off', why);
+  }
+
+  /**
+   * A capture whose stage has not ended in STALL_MS (an encoder or a post
+   * that never settles: a worker's convertToBlob that hangs, a fetch over the
+   * pairing that ignores its abort) is given up: its work is dropped (gen),
+   * a stuck encoder replaced, and the next capture goes. True when it did.
+   */
+  function unstall() {
+    if (!st.stage || now() - st.stageAt <= STALL_MS) return false;
+    const stage = st.stage;
+    gen++;
+    st.stalls++;
+    pending = null;
+    if (fence) { try { gl.deleteSync(fence); } catch { /* lost */ } fence = null; }
+    if (stage === 'encode' && encoder) {
+      encoder.close();
+      encoder = createEncoder({ makeWorker: ctx.makeWorker, makeCanvas: ctx.makeCanvas });
+    }
+    setStage('');
+    log('warning', 'spectator-stalled', `a capture stuck at '${stage}' for over ${STALL_MS / 1000} s was dropped`);
+    return true;
+  }
+
+  /**
+   * The WebGL context was lost (or restored after a loss): every GL object of
+   * the capture and the badge's panel belonged to the old context. Dropped,
+   * the capture under way given up; the next capture makes new ones on the
+   * restored context (and is checked again for a GL error). Still watched.
+   */
+  function contextLost() {
+    gen++;
+    st.losses++;
+    res = null;
+    fence = null;
+    pending = null;
+    pool.length = 0;
+    if (badge) { try { R.releasePanel(badge.handle); } catch { /* lost */ } badge = null; }
+    setStage('');
+    st.checked = false;
   }
 
   /** The desktop's `watch` command. */
@@ -384,8 +445,13 @@ export function createSpectator(ctx) {
     // What the frame was drawing into, as it was.
     gl.bindFramebuffer(gl.FRAMEBUFFER, src.fbo);
     if (src.restoreViewport) gl.viewport(...src.restoreViewport);
+    if (!fence) {
+      // No fence (a lost context): no capture, rather than a stage that never ends.
+      fail('no fence for the capture (the WebGL context may be lost)');
+      return;
+    }
     pending = { w: r.w, h: r.h, eye: src.eye || 'left' };
-    st.stage = 'gpu';
+    setStage('gpu');
     if (!st.checked) {
       // Once per watch: a blit the browser refuses (an unexpected multisampled
       // source) would otherwise send black frames for ever.
@@ -402,7 +468,7 @@ export function createSpectator(ctx) {
   function startRead() {
     gl.deleteSync(fence);
     fence = null;
-    st.stage = 'read';
+    setStage('read');
     if (readAt === 'idle') {
       const p = pending, myGen = gen;
       setTimeout(() => {
@@ -426,7 +492,7 @@ export function createSpectator(ctx) {
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
     p.read = now() - t;
     readMs.push(p.read);
-    st.stage = 'encode';
+    setStage('encode');
     encodeAndPost(buf, p, gen);
   }
 
@@ -443,14 +509,14 @@ export function createSpectator(ctx) {
       if (out.buf && out.buf.byteLength === p.w * p.h * 4 && pool.length < 2) pool.push(out.buf);
       if (myGen !== gen) return;
       encodeMs.push(out.ms != null ? out.ms : now() - t0);
-      st.stage = 'post';
+      setStage('post');
       await post(out.jpeg, p, myGen);
     } catch (e) {
       if (e && e.buf && pool.length < 2) pool.push(e.buf);
       if (myGen !== gen) return;
       fail(e && e.message ? e.message : String(e));
     } finally {
-      if (myGen === gen) { st.stage = ''; pending = null; }
+      if (myGen === gen) { setStage(''); pending = null; }
     }
   }
 
@@ -509,6 +575,8 @@ export function createSpectator(ctx) {
     if (!st.watching || !gl) return;
     const t0 = now();
     try {
+      if (st.stage === 'gpu' && !fence) setStage('');   // its fence went (a context loss)
+      if (st.stage && unstall()) return;
       if (st.stage === 'gpu' && fence) {
         fenceFrames++;
         const s = gl.clientWaitSync(fence, 0, 0);
@@ -519,7 +587,7 @@ export function createSpectator(ctx) {
           fail('the capture fence failed');
           gl.deleteSync(fence);
           fence = null;
-          st.stage = '';
+          setStage('');
           pending = null;
         }
         return;
@@ -552,11 +620,11 @@ export function createSpectator(ctx) {
   function stats() {
     const r = (x) => ({ mean: x.mean, max: x.max, n: x.v.length });
     return { watching: st.watching, fps: st.fps, width: st.width, stage: st.stage, sent: st.sent, stored: st.stored,
-      dropped: st.dropped, failures: st.failures, pauses: st.pauses, lastError: st.lastError, why: st.why, bytes: st.bytes,
+      dropped: st.dropped, failures: st.failures, pauses: st.pauses, stalls: st.stalls, losses: st.losses, lastError: st.lastError, why: st.why, bytes: st.bytes,
       size: res ? [res.w, res.h] : null, rate: rateOf(sentTimes, now()), encoder: encoder ? encoder.where : '',
       readAt, issueMs: r(issueMs), readMs: r(readMs),
       encodeMs: r(encodeMs), postMs: r(postMs), fenceFrames: r(gpuWaitFrames) };
   }
 
-  return { st, command, stop, frame, frameStart, badge: badgeOverlay, hudLines, stats, get watching() { return st.watching; } };
+  return { st, command, stop, frame, frameStart, contextLost, badge: badgeOverlay, hudLines, stats, get watching() { return st.watching; } };
 }

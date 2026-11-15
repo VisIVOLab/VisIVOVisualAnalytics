@@ -76,8 +76,17 @@ public:
                     buffer->clear();
                     Answer a{ 404, R"({"detail":"Not Found"})" };
                     bool later = false;
+                    int delayMs = 50;
+                    bool isOn = false;
                     if (line.startsWith("POST /v1/vr/headset/spectator ")) {
                         a = { watchStatus, watchBody };
+                        isOn = QJsonDocument::fromJson(bodies.last()).object().value(u"on"_s).toBool();
+                        if (!isOn && watchOnDelayMs > 0 && !onAnswered)
+                            offBeforeOnAnswered = true;
+                        if (isOn && watchOnDelayMs > 0) {
+                            later = true;
+                            delayMs = watchOnDelayMs;
+                        }
                     } else if (line.startsWith("POST /v1/vr/headset/spectator/snapshot ")) {
                         a = { snapshotStatus, snapshotBody };
                     } else if (line.startsWith("GET /v1/vr/headset/spectator/frame?")) {
@@ -89,7 +98,9 @@ public:
                         }
                     }
                     QPointer<QTcpSocket> sock(s);
-                    auto send = [sock, a]() {
+                    auto send = [this, sock, a, isOn]() {
+                        if (isOn)
+                            onAnswered = true;
                         if (!sock)
                             return;
                         QByteArray out = "HTTP/1.1 " + QByteArray::number(a.code) + " X\r\nContent-Type: " + a.type
@@ -101,7 +112,7 @@ public:
                         sock->disconnectFromHost();
                     };
                     if (later)
-                        QTimer::singleShot(50, this, send);
+                        QTimer::singleShot(delayMs, this, send);
                     else
                         send();
                 });
@@ -146,6 +157,9 @@ public:
     int snapshotStatus{ 200 };
     QByteArray snapshotBody = R"({"valid":true,"workspace_filename":"headset_quest_3.png","output_path":"/ws/headset_quest_3.png","width":512,"height":540,"seq":3})";
     QList<Answer> frames;
+    int watchOnDelayMs{ 0 };            ///< an "on" answered this late
+    bool onAnswered{ false };
+    bool offBeforeOnAnswered{ false };  ///< an "off" came while an "on" was unanswered
 };
 
 QHash<QByteArray, QByteArray> frameHeaders(qint64 seq)
@@ -394,6 +408,31 @@ void TestVrSpectator::feedSendsTheWatchAgainWhenNothingComes()
     const int posts = fake.count(u"POST /v1/vr/headset/spectator "_s);
     QTest::qWait(150);
     QCOMPARE(fake.count(u"POST /v1/vr/headset/spectator "_s), posts);
+}
+
+void TestVrSpectator::anOffNeverOvertakesAnOnOnItsWay()
+{
+    // The window closed right after it opened: the "on" is still on its way
+    // (answered 400 ms later). The "off" must reach the backend after it, or
+    // the "on" handled last would start the watch again.
+    FakeSpectator fake;
+    fake.watchOnDelayMs = 400;
+    auto *feed = new VrSpectatorFeed(fake.url(), u"tok"_s, u"sess-1"_s, u"page-1"_s);
+    feed->start();
+    QTRY_COMPARE(fake.count(u"POST /v1/vr/headset/spectator "_s), 1);
+    delete feed;                          // stop(): the "off"
+    QTRY_COMPARE_WITH_TIMEOUT(fake.count(u"POST /v1/vr/headset/spectator "_s), 2, 5000);
+    QVERIFY(fake.onAnswered);
+    QVERIFY(!fake.offBeforeOnAnswered);
+    QCOMPARE(fake.lastBodyOf(u"POST /v1/vr/headset/spectator "_s).value(u"on"_s).toBool(), false);
+    // Nothing on its way: the "off" goes at once.
+    FakeSpectator quick;
+    VrSpectatorFeed feed2(quick.url(), u"tok"_s, u"sess-1"_s, u"page-1"_s);
+    QSignalSpy watching(&feed2, &VrSpectatorFeed::watching);
+    feed2.start();
+    QTRY_COMPARE(watching.size(), 1);
+    feed2.stop();
+    QTRY_COMPARE(quick.count(u"POST /v1/vr/headset/spectator "_s), 2);
 }
 
 void TestVrSpectator::bodiesMatchTheBackendsRequestModels()

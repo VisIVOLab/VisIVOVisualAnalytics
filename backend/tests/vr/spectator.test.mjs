@@ -125,7 +125,7 @@ async function untilEncoded(h, src, max = 12) {
   await flush();
 }
 
-function harness({ ack = { watched: true, stored: true, seq: 1, fps: 15, width: 512 }, status = 200, readAt = 'frame' } = {}) {
+function harness({ ack = { watched: true, stored: true, seq: 1, fps: 15, width: 512 }, status = 200, readAt = 'frame', hang = false } = {}) {
   const gl = fakeGL();
   const panels = [];
   const renderer = {
@@ -133,7 +133,8 @@ function harness({ ack = { watched: true, stored: true, seq: 1, fps: 15, width: 
     createPanel: () => ({ tex: { t: 1 }, version: 0 }), updatePanel: (h, c) => { h.canvas = c; h.version++; }, releasePanel: () => {},
   };
   const posts = [];
-  const h = { gl, panels, posts, logs: [], status, ack, t: 1000 };
+  const h = { gl, panels, posts, logs: [], status, ack, t: 1000, workers: [], released: [] };
+  renderer.releasePanel = (handle) => h.released.push(handle);
   const encodes = [];
   h.spectator = S.createSpectator({
     gl, renderer, client: () => 'vr-test', auth: () => ({ token: 'tok', session: 'sess-1' }), readAt,
@@ -141,16 +142,23 @@ function harness({ ack = { watched: true, stored: true, seq: 1, fps: 15, width: 
     now: () => h.t,
     // A document with a canvas for the badge (no body: no 2-D page line in node).
     document: { createElement: () => ({ width: 0, height: 0, getContext: () => new Proxy({}, { get: () => () => {} }) }) },
-    makeWorker: () => ({
-      postMessage(m) { encodes.push(m); queueMicrotask(() => this.onmessage({ data: { id: m.id, jpeg: new Uint8Array([0xff, 0xd8, 0xff, 1]).buffer, buf: m.buf, ms: 3 } })); },
-      terminate() {},
-    }),
+    // `hang`: the worker takes frames and never answers (a convertToBlob that hangs).
+    makeWorker: () => {
+      const w = {
+        terminated: false,
+        postMessage(m) { encodes.push(m); if (!h.hang) queueMicrotask(() => this.onmessage({ data: { id: m.id, jpeg: new Uint8Array([0xff, 0xd8, 0xff, 1]).buffer, buf: m.buf, ms: 3 } })); },
+        terminate() { this.terminated = true; },
+      };
+      h.workers.push(w);
+      return w;
+    },
     fetch: async (url, init) => {
       posts.push({ url, init });
       return { status: h.status, json: async () => h.ack };
     },
   });
   h.encodes = encodes;
+  h.hang = hang;
   return h;
 }
 
@@ -325,12 +333,105 @@ test('stop by command while a frame is on its way: its post is dropped, no stale
   assert.equal(h.spectator.st.stage, '');
 });
 
+test('a WebGL context loss: the capture under way is dropped, new GL objects on the restored context, still watched', async () => {
+  const h = harness();
+  h.spectator.command({ on: true, width: 320 });
+  const head = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  const badge = h.spectator.badge(head);
+  h.spectator.frame(SRC);
+  assert.equal(h.spectator.st.stage, 'gpu');
+  h.spectator.contextLost();
+  assert.equal(h.spectator.st.stage, '');
+  assert.equal(h.spectator.watching, true);
+  assert.deepEqual(h.released, [badge.handle], 'the badge\'s panel was the old context\'s');
+  assert.notEqual(h.spectator.badge(head).handle, badge.handle, 'a new one');
+  // The next capture makes its objects again, and is checked again for a GL error.
+  h.gl.reset();
+  h.t += 100;
+  h.spectator.frame(SRC);
+  assert.ok(h.gl.names().includes('createFramebuffer') && h.gl.names().includes('createBuffer'));
+  assert.ok(h.gl.names().includes('getError'));
+  assert.equal(h.spectator.st.stage, 'gpu');
+  assert.equal(h.spectator.stats().losses, 1);
+  // A frame that was on its way to the encoder before the loss is never posted.
+  h.gl.signal = h.gl.ALREADY_SIGNALED;
+  h.t += 14;
+  h.spectator.frame(SRC);            // read, to the encoder
+  h.spectator.contextLost();
+  await flush();
+  assert.equal(h.posts.length, 0);
+  // fenceSync gives null (the context is lost): no stage that never ends.
+  const g = harness();
+  g.spectator.command({ on: true });
+  g.gl.fenceSync = () => null;
+  g.spectator.frame(SRC);
+  assert.equal(g.spectator.st.stage, '');
+  assert.equal(g.spectator.st.failures, 1);
+  assert.match(g.spectator.st.lastError, /no fence/);
+});
+
+test('a stage that never ends (a worker that hangs) is given up after STALL_MS, its worker replaced', async () => {
+  const h = harness({ hang: true });
+  h.spectator.command({ on: true, width: 320 });
+  h.gl.signal = h.gl.ALREADY_SIGNALED;
+  h.spectator.frame(SRC);
+  h.t += 14;
+  h.spectator.frame(SRC);            // read, to the (hung) encoder
+  assert.equal(h.spectator.st.stage, 'encode');
+  h.t += S.STALL_MS - 100;
+  h.spectator.frame(SRC);
+  assert.equal(h.spectator.st.stage, 'encode', 'not yet');
+  h.t += 200;
+  h.spectator.frame(SRC);
+  assert.equal(h.spectator.st.stage, '');
+  assert.equal(h.spectator.stats().stalls, 1);
+  assert.ok(h.logs.some(([lvl, ev]) => lvl === 'warning' && ev === 'spectator-stalled'));
+  assert.equal(h.workers.length, 2, 'a new encoder');
+  assert.ok(h.workers[0].terminated);
+  // The next capture goes, on the new worker.
+  h.hang = false;
+  h.t += 100;
+  h.spectator.frame(SRC);
+  h.t += 14;
+  h.spectator.frame(SRC);
+  await flush();
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.encodes.length, 2);
+  // The desktop's watch again unsticks it at once, without waiting for a frame.
+  const g = harness({ hang: true });
+  g.spectator.command({ on: true });
+  g.gl.signal = g.gl.ALREADY_SIGNALED;
+  g.spectator.frame(SRC);
+  g.t += 14;
+  g.spectator.frame(SRC);
+  g.t += S.STALL_MS + 1;
+  g.spectator.command({ on: true });
+  assert.equal(g.spectator.st.stage, '');
+  // A message the worker cannot read: what waits on it fails, the page encodes from then on.
+  const k = harness({ hang: true });
+  k.spectator.command({ on: true });
+  k.gl.signal = k.gl.ALREADY_SIGNALED;
+  k.spectator.frame(SRC);
+  k.t += 14;
+  k.spectator.frame(SRC);
+  k.workers[0].onmessageerror();
+  await flush();
+  assert.equal(k.spectator.st.stage, '');
+  assert.equal(k.spectator.st.failures, 1);
+  assert.equal(k.spectator.stats().encoder, 'page');
+});
+
 test('the page hooks it up: hub onWatch, the left eye after the scene, the badge on top, the 2-D page', () => {
   const main = readFileSync(new URL('../../app/static/vr/js/main.js', import.meta.url), 'utf8');
   assert.match(main, /onWatch: \(cmd\) => spectator\.command\(cmd\)/);
   assert.match(main, /spectator\.badge\(pose\.transform\.matrix\)/);
   assert.match(main, /spectator\.frame\(\{ fbo: layer\.framebuffer/);
   assert.match(main, /spectator\.frame\(\{ fbo: null/);
+  // Both context handlers drop its GL objects.
+  const lost = main.slice(main.indexOf("addEventListener('webglcontextlost'"));
+  assert.ok(lost.indexOf('spectator.contextLost()') < lost.indexOf('});'));
+  const rebuild = main.slice(main.indexOf('function rebuildGraphics'));
+  assert.ok(rebuild.indexOf('spectator.contextLost()') < rebuild.indexOf('R.restore()'));
   // Captured before the frame's GPU timer ends, so its GPU time is counted.
   const xrPart = main.slice(main.indexOf('function onXRFrame'));
   assert.ok(xrPart.indexOf('spectator.frame(') < xrPart.indexOf('R.endFrame()'));

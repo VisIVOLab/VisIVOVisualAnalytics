@@ -144,6 +144,7 @@ async def spectator_frame_read(
     hub = H.hub_for(session)
     page = _known_page(hub, client)
     feed = S.feed_of(page)
+    S.lapse(feed)                     # a lease that ran out is not renewed by this read
     if not feed.watching:
         raise HTTPException(409, "This headset page is not watched: start with POST /v1/vr/headset/spectator.")
     after = S.cursor(feed, after)
@@ -217,6 +218,7 @@ async def spectator_frame_post(
         raise HTTPException(422, "The frame carries the backend token; it is never relayed.")
     page.seen()
     feed = S.feed_of(page)
+    S.lapse(feed)
     if not feed.live():
         return SpectatorFrameAck(watched=False, seq=feed.seq, stored=False, fps=feed.fps, width=feed.width)
     frame = S.add_frame(feed, data, w, h, eye, cost_ms)
@@ -262,6 +264,7 @@ async def spectator_snapshot(
     hub = H.hub_for(session)
     page = _known_page(hub, body.client)
     feed = S.feed_of(page)
+    S.lapse(feed)                     # never a frame of a watch that has ended
     frame = feed.frame if feed.watching else None
     if frame is None:
         raise HTTPException(409, "No frame of this headset page to save: watch it first.")

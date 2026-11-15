@@ -4327,6 +4327,7 @@ let contextTimer = null;
 let contextLostInVR = false;
 canvas.addEventListener('webglcontextlost', (e) => {
   e.preventDefault();
+  spectator.contextLost();     // #281: its GL objects went with the context
   const wasInVR = !!xr;
   shell.log('error', 'webgl-context-lost', wasInVR ? 'in VR' : 'on the page');
   shell.notify('context-lost');
@@ -4356,6 +4357,7 @@ canvas.addEventListener('webglcontextrestored', () => {
 function rebuildGraphics() {
   const t0 = performance.now();
   try {
+    spectator.contextLost();   // #281: nothing of the old context is used again
     R.restore();
     if (R.capacityError) shell.log('warning', 'capacity-failed', `after the context was restored: ${R.capacityError}`);
     releaseBench(true);              // the benchmark's cubes were on the lost context

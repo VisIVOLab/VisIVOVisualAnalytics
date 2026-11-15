@@ -10,9 +10,10 @@ the latest frame is kept: a slow reader skips frames, nothing queues.
   ``watch`` command for the page (the hub's command queue, so it reaches the
   page through its usual long poll), stopping it queues ``watch`` off.
 * A lease keeps it alive: every frame read renews it for ``LEASE_S``. A
-  desktop that goes away without saying so stops being served after that,
-  and the page, whose next frame post is answered ``watched: false``, stops
-  capturing.
+  desktop that goes away without saying so stops being served after that:
+  the watch ends (``lapse``: not watched, the frame dropped), a later read
+  answers 409 instead of reviving it, and the page, whose next frame post is
+  answered ``watched: false``, stops capturing.
 * A page that says hello again (a reload, a reconnect) while watched gets
   its ``watch`` command again.
 
@@ -85,6 +86,17 @@ class Feed:
         return {"on": True, "fps": self.fps, "width": self.width}
 
 
+def lapse(feed: Feed) -> bool:
+    """A watch whose lease ran out ends here: not watched, its frame dropped
+    (so no snapshot saves a stale one, and no read revives it). True when it
+    ended now."""
+    if feed.watching and not feed.live():
+        feed.watching, feed.lease_until, feed.frame = False, 0.0, None
+        feed.changed.notify()
+        return True
+    return False
+
+
 def feed_of(page: H.Page) -> Feed:
     if page.feed is None:
         page.feed = Feed()
@@ -147,7 +159,7 @@ async def wait_frame(hub: H.HeadsetHub, page: H.Page, after: int, timeout: float
     feed = feed_of(page)
     deadline = time.monotonic() + max(0.0, min(timeout, MAX_WAIT_S))
     while True:
-        if hub.pages.get(page.client) is not page or not feed.watching:
+        if hub.pages.get(page.client) is not page or lapse(feed) or not feed.watching:
             return None
         feed.renew()
         frame = feed.frame

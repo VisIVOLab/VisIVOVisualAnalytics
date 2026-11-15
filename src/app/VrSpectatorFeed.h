@@ -94,6 +94,7 @@ private:
     int m_rewatchMs{ kRewatchMs };   ///< m_clock at the start, the last frame or the last rewatch
     qint64 m_frames{ 0 };
     QPointer<QNetworkReply> m_read;
+    QPointer<QNetworkReply> m_pendingOn;   ///< the last "on" while it is on its way (an "off" waits for it)
     QTimer m_retry;
     VrSpectator::FrameReply m_info{ VrSpectator::FrameReply::Kind::None };
     VrSpectator::RateMeter m_rate;

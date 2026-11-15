@@ -21,6 +21,23 @@ int httpStatus(QNetworkReply *r)
     return r->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 }
 
+/// The watch's "off" on @p nam (a manager of its own, detached from the
+/// feed), which goes with its reply. Copies of everything: the feed may be
+/// gone by the time it is sent.
+void postOff(QNetworkAccessManager *nam, const QString &baseUrl, const QString &token,
+             const QString &session, const QJsonObject &body)
+{
+    QNetworkRequest req(QUrl(baseUrl + u"/v1/vr/headset/spectator"_s));
+    BackendClient::applySessionHeaders(req, baseUrl, token, session);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, u"application/json"_s);
+    req.setTransferTimeout(kPostTimeoutMs);
+    QNetworkReply *off = nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    QObject::connect(off, &QNetworkReply::finished, nam, [off, nam]() {
+        off->deleteLater();
+        nam->deleteLater();
+    });
+}
+
 /// The Qt error of a reply that got no HTTP answer, else empty.
 QString qtError(QNetworkReply *r)
 {
@@ -66,21 +83,32 @@ void VrSpectatorFeed::start(int fps, int width)
 
 void VrSpectatorFeed::sendWatch(bool on, bool thenRead)
 {
-    QNetworkReply *reply = post(u"/v1/vr/headset/spectator"_s,
-                                VrSpectator::watchBody(m_client, on, m_fps, m_width), kPostTimeoutMs);
+    const QString path = u"/v1/vr/headset/spectator"_s;
     if (!on) {
         // Best effort (the backend's lease ends it anyway), and it must outlive
         // this feed: a window closing deletes it right after. The manager that
-        // sends it leaves with its reply; a new one serves this feed.
+        // sends it leaves with its reply (and with an "on" still on its way);
+        // a new one serves this feed.
         QNetworkAccessManager *nam = m_nam;
         nam->setParent(nullptr);
-        connect(reply, &QNetworkReply::finished, nam, [reply, nam]() {
-            reply->deleteLater();
-            nam->deleteLater();
-        });
         m_nam = new QNetworkAccessManager(this);
+        const QJsonObject body = VrSpectator::watchBody(m_client, false);
+        const QString baseUrl = m_baseUrl, token = m_token, session = m_session;
+        // Sent only once an "on" still on its way has been answered: two
+        // requests on two connections may be handled in either order, and an
+        // "on" handled last would start the watch again. Not `this` as the
+        // context: the feed may be gone by then.
+        QNetworkReply *pendingOn = m_pendingOn;
+        m_pendingOn = nullptr;
+        if (pendingOn && pendingOn->isRunning())
+            connect(pendingOn, &QNetworkReply::finished, nam,
+                    [nam, baseUrl, token, session, body]() { postOff(nam, baseUrl, token, session, body); });
+        else
+            postOff(nam, baseUrl, token, session, body);
         return;
     }
+    QNetworkReply *reply = post(path, VrSpectator::watchBody(m_client, on, m_fps, m_width), kPostTimeoutMs);
+    m_pendingOn = reply;
     const quint64 gen = m_generation;
     m_lastProgressMs = m_clock.elapsed();
     connect(reply, &QNetworkReply::finished, this, [this, reply, gen, thenRead]() {

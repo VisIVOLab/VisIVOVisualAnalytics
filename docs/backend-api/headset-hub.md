@@ -133,8 +133,10 @@ Watching is off by default. Code: `backend/app/headset_spectator.py`,
 
 **Lease.** Watching lasts 10 s after the start and after every frame read.
 A desktop that goes away without saying so stops being served once the lease
-runs out. The page's next frame is then answered `watched: false`, and the
-page stops capturing. A page that says hello again while watched (after a
+runs out: the watch ends and its frame is dropped. A later frame read answers
+409 rather than reviving it, and a snapshot answers 409 rather than saving a
+stale frame. The page's next frame is answered `watched: false`, and the page
+stops capturing. A page that says hello again while watched (after a
 reload, say) gets its `watch` command again.
 
 **Bounds.** A frame is at most 512 KiB and 1920 pixels a side (413 beyond).

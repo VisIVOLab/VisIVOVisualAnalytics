@@ -22,5 +22,6 @@ private slots:
     void feedStartsAgainWhenTheWatchLapsedAndEndsWhenThePageGoes();
     void feedSavesASnapshot();
     void feedSendsTheWatchAgainWhenNothingComes();
+    void anOffNeverOvertakesAnOnOnItsWay();
     void bodiesMatchTheBackendsRequestModels();
 };
