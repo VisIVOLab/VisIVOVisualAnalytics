@@ -44,7 +44,8 @@ class FileClassifyResponse(BaseModel):
     valid: bool
     error: str = ""
     path: str = ""
-    #: image | cube | dynspec | fits-table | catalogue | vbt | directory | unknown
+    #: image | cube | dynspec | fits-table | catalogue | vbt | pluto | compressed |
+    #: directory | unknown
     kind: str = ""
     #: dataset | catalogue | vbt | ask | unsupported — the route that opens it
     opener: str = ""

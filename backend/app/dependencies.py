@@ -2004,15 +2004,19 @@ def _fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
     so the rest of the pipeline (preview / full image readers, region
     stats, …) reuses the standard FITS code path.
     """
-    from .volume_source import split_ref, vbt_fields  # noqa: PLC0415
-    base, field = split_ref(path)
-    if field is not None:
-        # A field of a VBT volume, read in place as a cube (issue #83).
+    from .volume_source import field_siblings, is_field_ref, raw_field  # noqa: PLC0415
+    if is_field_ref(path):
+        raw = raw_field(path)
+        # A field of a VBT volume (issue #83) or a PLUTO variable (issue
+        # #315), read in place as a cube, or as an image for a 2-D grid.
         dataset = ScientificFitsDataset(str(path))
         geometry = dataset.geometry_metadata()
         geometry["resolved_path"] = str(path)
-        geometry["fields"] = vbt_fields(base)
-        geometry["field_name"] = geometry["fields"][field]["name"]
+        geometry["fields"] = field_siblings(path)
+        if raw.kind == "vbt":
+            geometry["field_name"] = geometry["fields"][raw.index]["name"]
+        else:   # a PLUTO output: its variables present on disk, by name
+            geometry["field_name"] = str(dataset.header.get("PLUTOVAR", ""))
         return str(geometry["kind"]), geometry
     from .hdf5_dynspec import (  # noqa: PLC0415 (lazy h5py import)
         convert_hdf5_to_sidecar_fits, is_hdf5_path,

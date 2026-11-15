@@ -247,7 +247,7 @@ most one FITS header; nothing is opened, converted or registered.
 
 | Field | Meaning |
 |-------|---------|
-| `kind` | `image`, `cube`, `dynspec`, `velocity-field`, `fits-table`, `catalogue`, `vbt`, `compressed`, `directory`, `unknown` |
+| `kind` | `image`, `cube`, `dynspec`, `velocity-field`, `fits-table`, `catalogue`, `vbt`, `pluto`, `compressed`, `directory`, `unknown` |
 | `opener` | `dataset` → `/v1/datasets/open`; `catalogue` → `/v1/catalogue/open`; `vbt` → `/v1/vbt/open`; `velocity` → `/v1/velocity/open`; `ask` → the content is ambiguous, let the user choose; `unsupported` → nothing here opens it, say so |
 | `open_path` | The path to hand the opener when it differs from `path`: a VBT chosen by its `.bin` opens through the `.head` beside it. Empty means "use `path`". |
 | `confident` | `false` when the answer is a guess — a FITS whose header would not parse, for instance |
@@ -255,7 +255,11 @@ most one FITS header; nothing is opened, converted or registered.
 
 A VBT is classified by its header: a volume as `cube` / `dataset` (each field
 opens as a cube), a table of points as `vbt` / `catalogue` (opened with
-`format: "vbt"`). A gzip-compressed FITS is classified by what it holds
+`format: "vbt"`). A PLUTO output (a `dbl.out` / `flt.out`, or a data file with
+one beside it) is a `cube` or an `image` / `dataset` with `open_path` the
+reference of the variable to open (for the `.out`, the newest output's first
+variable present); one that cannot open (no `grid.out` beside it, files that
+do not match the grid, a 1-D run) is `pluto` / `unsupported` with the reason. A gzip-compressed FITS is classified by what it holds
 (read through the start of the gzip stream) and a tile-compressed one like
 any FITS, the `detail` adding that it is decompressed into the workspace cache
 when opened; `compressed` / `unsupported` is a compressed file that holds no

@@ -130,12 +130,28 @@ async def open_dataset(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> OpenDatasetResponse:
-    from ..volume_source import split_ref, vbt_dataset_path, with_order  # noqa: PLC0415
+    from ..pluto_source import pluto_dataset_path  # noqa: PLC0415
+    from ..volume_source import field_data_file, split_ref, vbt_dataset_path, with_order  # noqa: PLC0415
 
     # A field of a VBT volume: the file checked as any path, the field kept.
     base, field = split_ref(request.path)
     path = _normalize_path(base)
     vbt = vbt_dataset_path(path, field)
+    # A PLUTO output (issue #315), by a data file, its .out or a variable
+    # reference: the variable's reference, read in place. Its byte order is
+    # the one PLUTO wrote in the .out.
+    pluto = None
+    if vbt is None:
+        pluto_base = field_data_file(request.path)
+        # Off the event loop: grid.out of a 2048^3 run is 6144 lines.
+        pluto = await asyncio.to_thread(pluto_dataset_path, str(_normalize_path(pluto_base))
+                                        + request.path[len(pluto_base):])
+        if pluto is not None:
+            if request.byte_order is not None:
+                return OpenDatasetResponse(
+                    valid=False, error="byte_order does not apply to a PLUTO output: it is "
+                                       "read in the byte order its .out file gives.")
+            path, field = Path(pluto), None
     orders: dict = {}
     if vbt is not None:
         path = Path(vbt)
@@ -158,7 +174,8 @@ async def open_dataset(
             valid=False, error=("byte_order applies to a VisIVO Binary Table volume here; "
                                 "a VBT table of points opens with /v1/catalogue/open "
                                 "(format vbt)."))
-    if vbt is None and (field is not None or not _is_supported_dataset(path)):
+    if vbt is None and pluto is None and (field is not None
+                                          or not _is_supported_dataset(path)):
         return OpenDatasetResponse(
             valid=False,
             error="Unsupported file type. Expected FITS (.fits, .fit, also "

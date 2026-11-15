@@ -66,32 +66,39 @@ class SourceSignature:
     #: A VBT read against its header's byte order (issue #165): that order,
     #: else "". Its values differ, so its pyramid is another one.
     byte_order: str = ""
+    #: A PLUTO variable (issue #315): what its samples are read as
+    #: (``volume_source.RawField.layout``), from its line of the .out; else "".
+    #: Not the .out's size and time, which change at every output of a run.
+    layout: str = ""
 
     @property
     def key(self) -> str:
         """What the pyramid's file name is hashed from; a source read in its
         header's order keeps the name it always had."""
         text = f"{self.path}|{self.hdu}|{self.size}|{self.mtime_ns}"
-        return text + (f"|{self.byte_order}" if self.byte_order else "")
+        text += f"|{self.byte_order}" if self.byte_order else ""
+        return text + (f"|{self.layout}" if self.layout else "")
 
     @classmethod
     def of(cls, path: str | os.PathLike, hdu: int) -> "SourceSignature":
-        from .volume_source import byte_order_override, resolve_vbt, vbt_head  # noqa: PLC0415
+        from .volume_source import byte_order_override, raw_field  # noqa: PLC0415
 
-        order = byte_order_override(path) if resolve_vbt(path, hdu) is not None else ""
-        vbt = resolve_vbt(path, hdu)
-        if vbt is not None:
+        raw = raw_field(path, hdu)
+        order = byte_order_override(path) if raw is not None and raw.kind == "vbt" else ""
+        if raw is not None:
             # A field reference names the data and the field: the same
-            # pyramid as the VBT's own, whichever way it was opened.
-            path, hdu = vbt
+            # pyramid as the data file's own, whichever way it was opened.
+            path, hdu = raw.path, raw.index
         st = os.stat(path)
         size, mtime = int(st.st_size), int(st.st_mtime_ns)
-        if vbt is not None:
+        if raw is not None:
             # A VBT's values are read as its .head says (type, byte order,
             # grid): a header edited beside the same data is another source.
-            head = os.stat(vbt_head(path))
-            size, mtime = size + int(head.st_size), max(mtime, int(head.st_mtime_ns))
-        return cls(str(Path(path).resolve()), int(hdu), size, mtime, order)
+            for sidecar in raw.sidecars:
+                side = os.stat(sidecar)
+                size, mtime = size + int(side.st_size), max(mtime, int(side.st_mtime_ns))
+        layout = raw.layout if raw is not None and raw.kind == "pluto" else ""
+        return cls(str(Path(path).resolve()), int(hdu), size, mtime, order, layout)
 
 
 def default_brick(shape: tuple[int, int, int]) -> int:
@@ -262,21 +269,21 @@ class _SourceCube:
         import logging  # noqa: PLC0415
         from astropy.io import fits  # noqa: PLC0415
 
-        from .volume_source import ref_order, resolve_vbt, vbt_field  # noqa: PLC0415
+        from .volume_source import raw_field  # noqa: PLC0415
 
-        vbt = resolve_vbt(path, hdu)
-        if vbt is not None:
-            # A VBT volume: field ``hdu`` (or the field a reference names),
-            # memory-mapped in place, already (z, y, x) and unscaled
-            # (app/volume_source.py, issue #83).
+        raw = raw_field(path, hdu)
+        if raw is not None:
+            # A raw field (a VBT volume's field, a PLUTO variable): field
+            # ``hdu`` (or the one a reference names), memory-mapped in place,
+            # already (z, y, x) and unscaled (app/volume_source.py).
             self._hdul = None
-            self._read = vbt_field(*vbt, order=ref_order(path))
+            self._read = raw.memmap()
             self._axes, self._ndim = [0, 1, 2], 3
             self.shape = tuple(int(n) for n in self._read.shape)
             self._tile = None
             self._scale = (1.0, 0.0, None)
             return
-        # After the VBT: raw values may begin with any bytes, gzip's included.
+        # After the raw fields: raw values may begin with any bytes, gzip's included.
         _refuse_whole_file_compression(path)
         self._hdul = fits.open(path, memmap=True, mode="readonly", do_not_scale_image_data=True)
         try:
@@ -690,7 +697,7 @@ def build_pyramid(source: str | os.PathLike, out: str | os.PathLike | None = Non
                                else "mean of 2x2x2 over finite voxels"),
                 "source_path": sig.path, "source_hdu": sig.hdu,
                 "source_size": sig.size, "source_mtime_ns": sig.mtime_ns,
-                "source_byte_order": sig.byte_order,
+                "source_byte_order": sig.byte_order, "source_layout": sig.layout,
             })
             for level, shape in enumerate(shapes):
                 group = h5.create_group(f"level{level}")
@@ -801,7 +808,8 @@ class BrickPyramid:
             self.levels = int(attrs["levels"])
             self.source = SourceSignature(str(attrs["source_path"]), int(attrs["source_hdu"]),
                                           int(attrs["source_size"]), int(attrs["source_mtime_ns"]),
-                                          str(attrs.get("source_byte_order", "")))
+                                          str(attrs.get("source_byte_order", "")),
+                                          str(attrs.get("source_layout", "")))
             if source is not None:
                 current = SourceSignature.of(source, self.source.hdu)
                 if current.path != self.source.path:
@@ -811,6 +819,9 @@ class BrickPyramid:
                 if current.byte_order != self.source.byte_order:
                     raise StalePyramid(f"{self.path} was built from {source} read in another "
                                        "byte order.")
+                if current.layout != self.source.layout:
+                    raise StalePyramid(f"{self.path} was built from {source} read as "
+                                       f"{self.source.layout}, not {current.layout}.")
         except BaseException:
             self._h5.close()
             raise

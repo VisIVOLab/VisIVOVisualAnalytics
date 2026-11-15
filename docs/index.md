@@ -229,6 +229,7 @@ user-guide/cosmology
 user-guide/vlkb-archive
 user-guide/sed-fitting
 user-guide/simulations
+user-guide/pluto-output
 user-guide/skava-discovery
 user-guide/publication-output
 user-guide/copilot
