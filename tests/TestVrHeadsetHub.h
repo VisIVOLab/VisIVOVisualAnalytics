@@ -25,6 +25,7 @@ private slots:
     void productsOpenWhereTheyBelong();
     void aClassificationOpensInTheCatalogueTable();
     void aClassificationBecomesTableEntries();
+    void aLabelMaskGoesAsAMaskLayer();
     void productRecipeBecomesProvenance();
     void productIdIsStableAcrossOpens();
     void aMomentOfASelectionNamesItsMask();

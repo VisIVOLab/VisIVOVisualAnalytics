@@ -25,7 +25,12 @@ bottom would go past the screen's, and on a short screen its sections scroll
 while **Close** stays at the bottom.
 
 The cube window's **Tools → Views → Show on Headset** does the same in one
-click. It is enabled while a headset is connected to the session; its tooltip
+click. In the window of a file whose name ends in `mask` (SoFiA-2's
+`*_mask.fits`, the headset's refined `*_vr_mask.fits` and `*_vr_mask_1.fits`)
+it asks first: **Mask Layer** sends it as a layer over the headset's cube
+([Mask layers](analysis.md#mask-layers-show-compare-refine-and-save-a-mask)),
+drawn when that cube is on the mask's grid; **Show as Cube** shows it as a
+cube, as for any other file. It is enabled while a headset is connected to the session; its tooltip
 names the headset. With several pages open, the newest one is used.
 
 The status bar of a cube window says when a headset is connected: *Headset:
@@ -72,6 +77,7 @@ viewer:
 | Spectrum | a spectrum product of its cube's window (pane and Session Data), from its CSV or FITS table |
 | Isolate or Remove | a new cube window (the masked cube's FITS file) |
 | Catalogue or flow layer | its file, when it is a FITS file; otherwise it is named, to open from the Data Hub's Workspace Exports |
+| Refined mask (#282) | a new cube window (its FITS file, same grid and IDs) |
 | Classified catalogue (#279) | this cube's Catalogue table: the classified and found sources, at the backend's own pixels, with the flag, note, velocity, origin and catalogue row as columns; **Save VOTable…** above the table saves the full catalogue with the flag column |
 
 A product opened here is recorded in Session Data ▸ Provenance with the

@@ -234,6 +234,12 @@ export function createSelection(ctx) {
 
   async function runLasso(gen, pick) {
     needBackend();
+    // A mask layer's source being refined (issue #282): the press grows from
+    // this seed alone and New / Add / Subtract edit that source instead.
+    if (ctx.maskRefine && ctx.maskRefine.active()) {
+      await ctx.maskRefine.lasso(pick, sel.seedMode || 'new', sel.params, signalOf(gen), () => stale(gen));
+      return;
+    }
     const [x, y, z] = pick.seed;
     // Add and carve seeds join the selection shown (issue #191), as the
     // desktop's Shift and Alt double-clicks do; the seeds are kept only with
@@ -349,6 +355,8 @@ export function createSelection(ctx) {
    *  controller's tip in box coordinates (a box corner may be placed there). */
   async function act(ray, tip = null) {
     if (!st().cube) return;
+    // A press another tool takes first (a mask layer's Pick, issue #282).
+    if (ctx.rayOverride && ctx.rayOverride(ray)) return;
     const gen = ++sel.generation;
     newAction();
     sel.error = '';

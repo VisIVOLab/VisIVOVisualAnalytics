@@ -179,7 +179,7 @@ export function clipPayload(box, datasetId) {
 }
 
 /** The product kinds the hub accepts (backend PRODUCT_KINDS). */
-export const PRODUCT_KINDS = ['moment', 'pv', 'spectrum', 'isolate', 'remove', 'catalogue', 'flow', 'classification'];
+export const PRODUCT_KINDS = ['moment', 'pv', 'spectrum', 'isolate', 'remove', 'catalogue', 'flow', 'classification', 'mask'];
 
 /**
  * How a product made here is saved for the desktop: {route, body} of the
@@ -225,6 +225,7 @@ export function productSummary(detail, cubeName, file) {
     case 'catalogue': s = `Catalogue ${fileName(d.path) || ''} over ${cubeName || 'the cube'}`.replace(/\s+/g, ' '); break;
     case 'flow': s = `Velocity field ${fileName(d.path)}`; break;
     case 'classification': s = String(d.label || 'Catalogue classified in the headset'); break;
+    case 'mask': s = String(d.label || `Refined mask${on}`); break;
     default: s = String(d.label || d.product || 'Product');
   }
   if (file) s += ` → ${file}`;
@@ -283,9 +284,10 @@ export function commandsQuery(client, after, wait = POLL_WAIT_S) {
   return new URLSearchParams({ client, after: String(Math.max(0, Math.floor(after) || 0)), wait: String(wait) });
 }
 
-/** A command the page can act on: a `show` with a dataset id and a path. */
+/** A command the page can act on: a `show` (a cube) or a `mask` (a label
+ *  mask over the cube on show, #282) with a dataset id and a path. */
 export function commandUsable(cmd) {
-  return !!cmd && Number.isInteger(cmd.seq) && cmd.seq > 0 && cmd.type === 'show'
+  return !!cmd && Number.isInteger(cmd.seq) && cmd.seq > 0 && (cmd.type === 'show' || cmd.type === 'mask')
     && typeof cmd.dataset_id === 'string' && !!cmd.dataset_id && typeof cmd.path === 'string' && !!cmd.path;
 }
 

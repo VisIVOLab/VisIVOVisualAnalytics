@@ -69,7 +69,7 @@ MAX_WAIT_SECONDS = 25.0
 COALESCED_KINDS = ("look", "clip")
 #: Command types of which only the latest unacknowledged one is kept: the
 #: cube to show, and whether the desktop watches the page (#281).
-COALESCED_COMMANDS = ("show", "watch")
+COALESCED_COMMANDS = ("show", "watch", "mask")
 
 #: This backend process (seqs restart at 1 when it restarts).
 INSTANCE = uuid.uuid4().hex[:16]

@@ -22,6 +22,8 @@ import { createLayers, pairedMode } from './layers.js';
 // The source list of a catalogue over the cube (issue #279).
 import { createSources } from './sources-ui.js';
 import * as SL from './source-list.js';
+// Mask layers over the cube (issue #282).
+import { createMasks } from './mask-ui.js';
 import { createAnalysis } from './analysis.js';
 import { PLANE_SIZE } from './product-canvas.js';
 // The controls of issue #201: roles and modes, the hand menu, result windows, readout.
@@ -125,6 +127,9 @@ const selection = createSelection({
   onClear: () => share.dismiss(),   // only called after the share controller exists
   onRecord: (r, detail) => reportProduct(r, detail),   // issue #237: the product goes to the desktop
   noPanel: CUT.noselpanel,
+  // A mask layer (issue #282): Pick takes the trigger, a refined source takes the lasso's presses.
+  rayOverride: (ray) => !!(masks && masks.pickRay(ray)),
+  maskRefine: { active: () => !!(masks && masks.refining()), lasso: (...a) => masks.lasso(...a) },
 });
 // The selection's lines and the page's panel are rebuilt after a change or a
 // hover that moved, not at every hover update (issue #229).
@@ -190,6 +195,8 @@ function currentLook() {
 function refineFrame(t, eyes, centreView, background) {
   // A point table (issue #190) is refined by the backend's point session.
   if (!state.cube) { if (layers) layers.refineFrame(t, eyes, centreView, background); return; }
+  // Mask only and Residuals (issue #282) are the headset's own: the backend's frame shows the whole cube.
+  if (masks && masks.hidesRefined()) return;
   const look = currentLook();
   refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model,
     zStretch: state.zStretch, look: look.look, lookKey: look.key, background });
@@ -284,6 +291,9 @@ for (const name of COLORMAP_NAMES) {
 // once the page's controls exist (below).
 let layers = null;
 let sources = null;
+let masks = null;
+/** A mask the desktop sent while a cube was loading (issue #282): loaded once that cube is shown. */
+let pendingMask = null;
 
 /** The colour map, from the page, the secondary stick or the menu. */
 function setColormap(name) {
@@ -516,6 +526,17 @@ sources = createSources({
   // False when no hub runs for this page (no session, or it stood down): nothing is sent.
   report: (detail) => reportProduct(null, detail),
 });
+// Mask layers (issue #282): a label mask over the cube, refined with the lasso and saved back.
+masks = createMasks({
+  renderer: R, state,
+  backend: () => { try { return ensureBackend(); } catch { return null; } },
+  seedMode: () => selection.sel.seedMode || 'new',
+  setSeedMode: (m) => { setMode('select'); if (selection.sel.tool !== 'lasso') selection.setTool('lasso'); analysis.press(`seed:${m}`, { group: 'seed', value: m }); },
+  onVisit: (row, src) => visitSource(row, src),
+  onChange: () => { decorationsChanged(); labelsChanged(); },
+  report: (recipe, detail) => { if (!single.active || !hub.st.running) return false; reportProduct(recipe, detail); return true; },
+  buzz: (kind) => buzz('primary', kind),
+});
 // The flags and notes offered, set on the page (kept in this browser; the defaults when empty).
 {
   const sec = $('ly-catalogue');
@@ -531,6 +552,20 @@ sources = createSources({
     box.append(field('src-flags', 'Flags (comma-separated) ', 'flagSet', SL.DEFAULT_FLAGS.join(', ')),
       field('src-notes', 'Notes ', 'noteSet', SL.DEFAULT_NOTES.join(', ')));
     sec.append(box);
+    // A mask over the cube from a path on the backend (the desktop sends one with a `mask` command).
+    const mbox = Object.assign(document.createElement('div'), { id: 'mask-config' });
+    const mpath = Object.assign(document.createElement('input'), { id: 'mask-path', type: 'text', spellcheck: false, placeholder: '/path/to/cube_mask.fits (on the cube\'s grid)' });
+    const mload = Object.assign(document.createElement('button'), { id: 'mask-load', textContent: 'Load mask' });
+    const mstat = Object.assign(document.createElement('div'), { id: 'mask-status', className: 'muted' });
+    mload.addEventListener('click', () => {
+      mstat.textContent = 'Loading the mask…';
+      masks.load({ maskPath: mpath.value.trim() }).then((L) => { mstat.textContent = L ? masks.view().info : ''; })
+        .catch((e) => { mstat.textContent = String(e.message || e); });
+    });
+    const ml = document.createElement('label');
+    ml.append('Mask over the cube ', mpath);
+    mbox.append(ml, mload, mstat);
+    sec.append(mbox);
   }
 }
 
@@ -1376,6 +1411,10 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   state.open = open;
   state.openPath = open ? path : '';
   selection.clear();
+  // A mask layer belongs to its cube (issue #282): another cube's goes, and
+  // a mask the desktop sent while this cube loaded goes over it now.
+  if (masks) masks.onCube();
+  if (pendingMask) { const m = pendingMask; pendingMask = null; loadMaskCommand(m); }
   analysis.reset();
   if (open) share.start(open.dataset_id); else share.stop();
   refiner.setDataset(open ? open.dataset_id : null);
@@ -1486,6 +1525,7 @@ function rebuildDecorations() {
     labels.push({ pos: [0, h[1] + 4.6 * L, -h[2]], text: V.velocityScaleShort(info, state.zStretch), height: H * 0.9, anchor: 'center', color: '#c8ccd6' });
   }
   labels.push(...layers.cubeLabels());     // a catalogue over the cube (issue #190)
+  if (masks) labels.push(...masks.labels());   // a mask layer's sources at their centroids (issue #282)
   R.setLines(segs);
   R.setLabels(labels);
 }
@@ -1501,7 +1541,7 @@ function volParams(override = {}) {
     extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max,
     thr: state.thrNorm, cmin: state.thrNorm, cmax: Math.max(state.cmaxNorm, state.thrNorm + 1e-3),
     stretch: LV.STRETCH_CODE[state.stretch] || 0, stretchA: stretchA(), opacity: state.opacity, spv: effectiveSpv(),
-    mode: state.mode, skip: state.skip, maxSteps: 4096, texScale: state.texScale, ...override,
+    mode: state.mode, skip: state.skip, maxSteps: 4096, texScale: state.texScale, maskMode: masks ? masks.modeCode() : 0, ...override,
   };
 }
 
@@ -1516,7 +1556,7 @@ function drawScene(view, override, eye = 0) {
   // With a refined frame on show (fading in or out included) the selection is
   // left out of the headset's own volume and drawn once, over the refined
   // frame (the backend's frame has none); then the box, ticks and labels.
-  const refined = refineMode !== 'off' && refiner.showing;
+  const refined = refineMode !== 'off' && refiner.showing && !(masks && masks.hidesRefined());
   if (!CUT.novolume) { R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override)); cutCounts.volumeDraws++; }
   if (refined) {
     refiner.composite(view, state.model, eye);
@@ -1799,6 +1839,13 @@ function sourcesNote() {
   const cur = v.currentRow;
   return cur ? `${cur.label}: ${SL.positionText(cur).join(' ')}${cur.velocity !== null ? `, ${SL.velocityText(cur.velocity)} km/s` : ''}` : `${v.total} sources: List opens them`;
 }
+/** A press of the Select tab's Mask row (issue #282). */
+function masksPress(id) {
+  if (id === 'mask-window') { masks.setShown(!masks.state.shown); return; }
+  if (id === 'mask-pick') { masks.press('pick'); return; }
+  if (id === 'mask-undo') { masks.press('undo-edit'); return; }
+  if (id === 'mask-save') masks.press('save');
+}
 /** A press of the Select tab's Sources row. */
 function sourcesPress(id) {
   if (id === 'src-list') { sources.setShown(!sources.state.shown); return; }
@@ -1945,6 +1992,7 @@ function menuContext() {
     cat: lc.cat, clipTool: ui.clipTool,
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
+    mask: (() => { const v = masks.view(); return { loaded: v.loaded, shown: masks.state.shown, picking: v.picking, canUndo: v.canUndo, canSave: v.canSave }; })(),
     src: { total: sources.view().total, shown: sources.state.shown, canAdd: !!((s.lasso && !s.lasso.received) || s.spectrum || (s.pick && s.pick.seed)) },
     meas: { lasso, moment: av.moment, pvArmed: av.pvArmed, spectrum: !!s.spectrum, pinned: selection.hasPin() },
     pts: lc.pts, flow: lc.flow, sim: lc.sim,
@@ -1994,6 +2042,7 @@ function menuView(ctx = menuContext()) {
     const sum = selectionSummary();
     notes.selection = sum && sum.length ? sum[0] : '';
     notes.sources = sourcesNote();
+    notes.mask = masks.view().notes.source || masks.view().info;
     notes.moment = ctx.meas.lasso ? 'Of the lasso object (its mask).'
       : 'Whole field over the velocity range, the desktop\'s automatic threshold mask.';
     notes.pv = analysis.pv.state.armed ? 'Trigger: the next point of the slice.' : '';
@@ -2199,6 +2248,7 @@ function windowContent(w) {
     return { tex: selection.panelTexture(), size: w.def.size };
   }
   if (w.id === 'sources') return sources.state.shown ? { tex: sources.texture(), size: w.def.size } : null;
+  if (w.id === 'mask') return masks.state.shown ? { tex: masks.texture(), size: w.def.size } : null;
   const tex = analysis.productTexture(w.id);
   return tex ? { tex, size: PLANE_SIZE } : null;
 }
@@ -2210,6 +2260,7 @@ function resultKey() {
 function closeWindow(w) {
   if (w.id === 'result') w.closedKey = resultKey();
   else if (w.id === 'sources') sources.setShown(false);
+  else if (w.id === 'mask') masks.setShown(false);
   else analysis.setShown(w.id, false);
 }
 function windowAnchor() { return xr ? xr.place : DESKTOP_ANCHOR; }
@@ -2222,6 +2273,7 @@ function shownWindows() {
     if (!c) { w.model = null; continue; }
     w.size = c.size; w.tex = c.tex;
     if (w.pointer.content && w.id === 'sources') w.pointer.content.layout = sources.layout();
+    if (w.pointer.content && w.id === 'mask') w.pointer.content.layout = masks.layout();
     w.model = W.windowModel(windowAnchor(), xr ? w.offset : w.desktopOffset);
     out.push(w);
   }
@@ -2255,6 +2307,10 @@ function applyWindow(w, a, ray, eye) {
       if (a.widget && a.widget.disabled) { buzz('primary', 'error'); return; }
       buzz('primary', 'press');
       try { sources.press(a.id); } catch (e) { sources.setStatus(String(e.message || e), '#ff8a8a'); }
+    } else if (a.type === 'press' && w.id === 'mask') {
+      if (a.widget && a.widget.disabled) { buzz('primary', 'error'); return; }
+      buzz('primary', 'press');
+      try { masks.press(a.id); } catch (e) { masks.say(String(e.message || e), '#ff8a8a'); }
     }
     return;
   }
@@ -2324,6 +2380,7 @@ function uiPointer(ray, pressed, eye) {
     } else {
       for (const a of s.w.pointer.update(mine ? s.hits : { bar: null, content: null }, pressed)) applyWindow(s.w, a, ray, eye);
       if (s.w.id === 'sources') sources.pointer.hover = s.w.pointer.content ? s.w.pointer.content.hover : null;
+      if (s.w.id === 'mask') masks.pointer.hover = s.w.pointer.content ? s.w.pointer.content.hover : null;
       if (mine && s.hit) ui.hit = { point: s.hit.point, model: s.w.model };
       takes = takes || s.w.pointer.takesRay();
     }
@@ -2423,6 +2480,7 @@ function applyMenu(a, ray = null, eye = null) {
   }
   if (id === 'sel-clear') { selection.clear(); analysis.sync(); return; }
   if (id.startsWith('src-')) { sourcesPress(id); return; }
+  if (id.startsWith('mask-')) { masksPress(id); return; }
   if (id === 'isolate' || id === 'remove' || id === 'show-applied') { analysis.press(id, w); return; }
   // Measure.
   if (w.group === 'moment' || id === 'moment-hide' || id.startsWith('pv-')) { analysis.press(id, w); return; }
@@ -3277,7 +3335,7 @@ const hub = HUB.createHub({
   transport: HUB.transportOf(window.location, isPaired()),
   label: HUB.headsetLabel(navigator.userAgent),
   auth: hubAuth,
-  onCommand: (cmd) => showFromDesktop(cmd),
+  onCommand: (cmd) => (cmd.type === 'mask' ? maskFromDesktop(cmd) : showFromDesktop(cmd)),
   onWatch: (cmd) => spectator.command(cmd),
   launch: () => appLaunch.id,
   log: (level, event, message) => shell.log(level, event, message),
@@ -3367,6 +3425,32 @@ function reportProduct(recipe, detail) {
   const key = recipe ? `recipe:${recipe.product.id}:${path}` : `${detail.product}:${detail.path || detail.file || ''}:${performance.now()}`;
   // A promise of its send ({file} once posted), or null when nothing was queued.
   return hub.product(detail, recipe, { cubePath: path, cubeName: HUB.fileName(path), stem: HUB.stemOf(path) }, key);
+}
+
+/**
+ * The desktop's `mask` (issue #282): a label mask over the cube on show.
+ * Never awaited by the command poll. While a cube is loading (the desktop
+ * sends the cube, then its mask) the mask waits for that cube to be shown
+ * (showInstalled), so it is not loaded over the old cube and then dropped.
+ */
+function maskFromDesktop(cmd) {
+  const name = HUB.fileName(cmd.path) || cmd.dataset_id;
+  if (state.loading > 0) {
+    pendingMask = cmd;
+    shell.log('info', 'hub-mask-waits', `${name}, command ${cmd.seq}: after the cube being loaded`);
+    return;
+  }
+  loadMaskCommand(cmd);
+}
+function loadMaskCommand(cmd) {
+  const name = HUB.fileName(cmd.path) || cmd.dataset_id;
+  shell.log('info', 'hub-mask', `${name}, command ${cmd.seq}`);
+  masks.load({ maskDatasetId: cmd.dataset_id, maskPath: cmd.path })
+    .then((L) => { if (L) { masks.setShown(true); setStatus(`Mask ${name} over the cube: ${masks.view().info}`); } })
+    .catch((err) => {
+      shell.log('warning', 'hub-mask-failed', `${name}: ${err.message || err}`);
+      masks.say(`The desktop's mask could not be shown: ${err.message || err}`, '#ff8a8a');
+    });
 }
 
 /** The desktop's `show`: that cube in this page (in VR when in VR, #235). */
@@ -4584,6 +4668,7 @@ if (query.has('debug')) {
   window.__vrLayers = layers;
   window.__vrSources = sources;
   window.__vrVisit = () => lastVisit;
+  window.__vrMasks = masks;
   window.__vrStats = (hz = 0) => stats.summary(hz ? 1000 / hz : 0);
   window.__vrShell = shell;
   window.__vrMeasure = { measure, start: (opts) => startOrCancelRun(opts) };
@@ -4658,11 +4743,14 @@ if (query.has('debug')) {
     const px = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
     const bg = DESKTOP_BG.map((v) => Math.round(v * 255));
-    let n = 0;
+    let n = 0, ink = 0;
     for (let i = 0; i < px.length; i += 4) {
-      if (Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]) > 12) n++;
+      const dv = Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]);
+      if (dv > 12) n++;
+      ink += dv;
     }
-    return { fraction: n / (w * h), w, h, lost: gl.isContextLost() };
+    // ink: the light drawn, summed (a mask layer's modes change it more than the area, #282).
+    return { fraction: n / (w * h), ink: ink / (w * h), w, h, lost: gl.isContextLost() };
   };
   /**
    * Issue #235: the cube on show drawn from a corner of the capacity, with a
@@ -4962,6 +5050,7 @@ function rebuildGraphics() {
     releaseBench(true);              // the benchmark's cubes were on the lost context
     layers.restore();
     sources.restore();
+    masks.restore();
     refiner.draw = new RefineDraw(gl);
     refiner.weight = 0;
     menu.key = '';

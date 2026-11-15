@@ -391,6 +391,20 @@ export class Backend {
     };
   }
 
+  /** A label mask on the cube's grid (issue #282, mask_layer_bin): the wire
+   *  mask-layer.js parseLayer reads. `mask`: {maskPath} or {maskDatasetId}. */
+  async maskLayer(datasetId, mask, signal = undefined) {
+    const { buf } = await this._binary('/v1/cube/mask_layer_bin', JSON.stringify({ dataset_id: datasetId,
+      mask_path: mask.maskPath || '', mask_dataset_id: mask.maskDatasetId || '' }), 'application/json', signal);
+    return buf;
+  }
+
+  /** The refined mask saved (mask_layer_save): `body` mask-layer.js saveBody's. */
+  async maskLayerSave(body, signal = undefined) {
+    const { buf } = await this._binary('/v1/cube/mask_layer_save', body, 'application/octet-stream', signal);
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+
   /** Statistics of an explicit mask on the full cube (mask_stats_bin), with
    *  the HI measurements; `sigma` > 0 is the session's noise (the lasso's),
    *  else the backend measures it around the selection. */

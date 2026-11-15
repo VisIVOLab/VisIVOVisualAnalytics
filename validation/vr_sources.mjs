@@ -25,8 +25,11 @@ export async function runSourceListChecks({ c, check, waitFor, api, base, token,
     try { parsed = JSON.parse(r.body); } catch { /* text */ }
     return { status: r.status, body: parsed };
   };
-  await c.send('Page.navigate', { url: `${base}/vr/?debug&refine=0&xrfake#token=${encodeURIComponent(token)}` });
-  const up = await waitFor(c, `!!window.__vrShell && window.__vrShell.life.state === 'ok' && typeof window.__tex3dProbe === 'function'`, 30000);
+  // An address of its own: the previous check's (the same) would be a same-document
+  // navigation, no reload, the page still in its VR session.
+  await c.send('Page.navigate', { url: `${base}/vr/?debug&refine=0&xrfake&n=sources#token=${encodeURIComponent(token)}` });
+  const up = await waitFor(c, `!!window.__vrShell && window.__vrShell.life.state === 'ok' && typeof window.__tex3dProbe === 'function'
+    && location.search.includes('n=sources')`, 30000);
   if (!up.value) { check(`${L}: page up`, false); return {}; }
   await c.evaluate(`(() => { const $ = (id) => document.getElementById(id); $('encoding').value = 'uint8'; $('fxy').value = '1'; $('path').value = ${JSON.stringify(cube)}; $('load').click(); })()`);
   const loaded = await waitFor(c, `!!(window.__vrState.open && window.__vrState.cube && window.__vrState.loading === 0)`, 60000);

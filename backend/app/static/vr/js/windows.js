@@ -13,6 +13,7 @@ import { PanelPointer, rayPanel, panelModel } from './vr-panel.js';
 import { TOOL_NAMES } from './select-ui.js';
 import { fitText } from './text-fit.js';
 import { SRC_PX, SRC_SIZE } from './source-window.js';
+import { MASK_PX, MASK_SIZE } from './mask-window.js';
 
 export const BAR_PX = [768, 64];
 export const BAR_GAP = 0.004;
@@ -30,6 +31,9 @@ export const WINDOWS = {
   // The source list (issue #279): left of the cube, low, turned to the viewer.
   sources: { title: 'Sources', size: SRC_SIZE, contentPx: SRC_PX,
     place: { right: -0.6, up: 0.02, fwd: -0.2, yaw: 0.75 }, desktop: { right: 0.98, up: 0.3, fwd: -0.3, yaw: -0.45 } },
+  // A mask layer (issue #282): right of the cube, low, turned to the viewer.
+  mask: { title: 'Mask', size: MASK_SIZE, contentPx: MASK_PX,
+    place: { right: 0.62, up: -0.12, fwd: -0.2, yaw: -0.75 }, desktop: { right: 0.98, up: -0.2, fwd: -0.3, yaw: -0.45 } },
 };
 
 /**

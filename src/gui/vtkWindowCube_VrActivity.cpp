@@ -44,6 +44,7 @@
 #include <QFutureWatcher>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
@@ -199,17 +200,40 @@ void vtkWindowCube::showCubeOnHeadset()
     if (!this->m_headsetHub || this->m_headsetHub->headsets().isEmpty() || this->m_headsetShowing)
         return;
     const VrLink::Inputs in = this->vrHeadsetInputs();
-    const QJsonObject body = VrHub::showCommandBody(in, this->m_headsetHub->headsets().first().client);
+    // A label mask goes as a layer over the headset's cube (issue #282) when
+    // the user says so: the name only suggests it (a cube may be named so).
+    bool mask = false;
+    if (VrHub::isLabelMaskPath(this->filepath)) {
+        QMessageBox box(this);
+        box.setWindowTitle(u"Show on Headset"_s);
+        box.setText(u"This file's name says it is a label mask."_s);
+        box.setInformativeText(u"Show it as a mask layer over the cube the headset shows (on the same grid), "
+                               u"or as a cube of its own?"_s);
+        QPushButton *asMask = box.addButton(u"Mask Layer"_s, QMessageBox::AcceptRole);
+        QPushButton *asCube = box.addButton(u"Show as Cube"_s, QMessageBox::ActionRole);
+        box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(asMask);
+        box.exec();
+        if (box.clickedButton() == asMask)
+            mask = true;
+        else if (box.clickedButton() != asCube)
+            return;
+    }
+    const QString client = this->m_headsetHub->headsets().first().client;
+    const QJsonObject body = mask ? VrHub::maskCommandBody(in, client) : VrHub::showCommandBody(in, client);
     this->m_headsetShowing = true;
     this->refreshHeadsetPresence();
-    this->statusBar()->showMessage(u"Sending this cube to the headset…"_s, 4000);
+    this->statusBar()->showMessage(mask ? u"Sending this mask to the headset…"_s : u"Sending this cube to the headset…"_s, 4000);
     auto *watcher = new QFutureWatcher<BackendVrHubReply>(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendVrHubReply>::finished, this, [this, watcher]() {
+    QObject::connect(watcher, &QFutureWatcher<BackendVrHubReply>::finished, this, [this, watcher, mask]() {
         const BackendVrHubReply reply = watcher->result();
         watcher->deleteLater();
         this->m_headsetShowing = false;
         const VrHub::CommandResult r = VrHub::interpretCommand(reply.httpStatus, reply.body, reply.error);
-        if (r.outcome == VrHub::CommandResult::Outcome::Sent) {
+        if (r.outcome == VrHub::CommandResult::Outcome::Sent && mask) {
+            this->statusBar()->showMessage(
+                    u"Sent to the headset: drawn over its cube when that cube is on this mask's grid."_s, 8000);
+        } else if (r.outcome == VrHub::CommandResult::Outcome::Sent) {
             this->statusBar()->showMessage(u"Shown on the headset: it loads this cube now."_s, 6000);
             // Selections made there follow this cube from now on (issue #188).
             this->startSelectionShare();

@@ -123,6 +123,7 @@ export const WHY = {
   noCatalogue: 'Place a catalogue over the cube on the page (or from the desktop).',
   noSources: 'No sources: place a catalogue over the cube, or add one you found.',
   foundFirst: 'Select the source first: a Kinematic Lasso or a Spectrum probe.',
+  noMask: 'No mask: send one from the desktop, or load one on the page.',
   noSigma: 'No noise σ: these values are not noise about a median.',
   noHist: 'This cube keeps no values (a benchmark): no histogram.',
   powerOnly: 'The Power stretch only.',
@@ -135,6 +136,7 @@ export function defaultContext() {
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     src: { total: 0, shown: false, canAdd: false },
+    mask: { loaded: false, shown: false, picking: false, canUndo: false, canSave: false },
     meas: { lasso: false, moment: null, pvArmed: false, spectrum: false, pinned: false },
     lv: { sigma: false, hist: false, stretch: 'sqrt' },
     // A point table's simulation controls (#259): {axes, series, seriesIndex,
@@ -328,7 +330,7 @@ function rangePage(ctx) {
 function selectPage(ctx) {
   const cube = ctx.kind === 'cube';
   const s = ctx.sel;
-  const rows = [['tool', 'Tool'], ['lasso', 'Lasso'], ['selection', 'Selection'], ['result', 'Result'], ['sources', 'Sources']];
+  const rows = [['tool', 'Tool'], ['lasso', 'Lasso'], ['selection', 'Selection'], ['result', 'Result'], ['sources', 'Sources'], ['mask', 'Mask']];
   // A point table has the Box select (#259): a box drawn with the trigger, then
   // only its inside shown, or all but it.
   const pts = ctx.kind === 'points';
@@ -366,7 +368,14 @@ function selectPage(ctx) {
   w.push(btn('src-next', span(4, 4, 2), 'Next ▸', { disabled: noList, tip: 'The next source, visited' }));
   w.push(btn('src-add', span(4, 4, 3), '+ Found', { disabled: notCube || (src.canAdd ? '' : WHY.foundFirst),
     tip: '+ Found: the selection as a source you found' }));
-  return { rows, widgets: w, status: 5, placeholder: { result: pts ? 'Show inside, Hide inside and Show all appear once a box is drawn.'
+  // A mask layer (#282): its window, Pick a source, Undo an edit, Save to the desktop.
+  const m = ctx.mask || {};
+  const noMask = notCube || (m.loaded ? '' : WHY.noMask);
+  w.push(btn('mask-window', span(5, 4, 0), 'Mask', { on: cube && !!m.shown, disabled: notCube, tip: 'Mask: its window (show, pick, refine, save)' }));
+  w.push(btn('mask-pick', span(5, 4, 1), m.picking ? 'Picking' : 'Pick', { armed: !!m.picking, disabled: noMask, tip: 'Pick: the next trigger picks the source under the ray' }));
+  w.push(btn('mask-undo', span(5, 4, 2), 'Undo', { disabled: noMask || (m.canUndo ? '' : 'No edit of the mask to undo.'), tip: 'Undo the last edit of the mask' }));
+  w.push(btn('mask-save', span(5, 4, 3), 'Save', { disabled: noMask || (m.canSave ? '' : 'Nothing edited in the mask yet.'), tip: 'Save the refined mask to the desktop' }));
+  return { rows, widgets: w, status: 6, placeholder: { result: pts ? 'Show inside, Hide inside and Show all appear once a box is drawn.'
     : 'Isolate, Remove and Show result cube appear once something is selected.' } };
 }
 

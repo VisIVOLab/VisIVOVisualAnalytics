@@ -47,7 +47,7 @@ router = APIRouter(tags=["vr"])
 _auth = Depends(verify_token)
 
 #: What a product event's ``payload.product`` may name.
-PRODUCT_KINDS = ("moment", "pv", "spectrum", "isolate", "remove", "catalogue", "flow", "classification")
+PRODUCT_KINDS = ("moment", "pv", "spectrum", "isolate", "remove", "catalogue", "flow", "classification", "mask")
 #: Tokens shorter than this are not searched for in bodies (a hand-set test
 #: token of a letter or two would refuse every request).
 _MIN_TOKEN_SCAN = 8
@@ -145,7 +145,8 @@ class HeadsetRemoveResponse(BaseModel):
 
 class HeadsetCommandRequest(BaseModel):
     client: str | None = Field(None, pattern=_CLIENT_PATTERN)
-    type: Literal["show"]
+    # show: a cube; mask: a label mask over the cube on show (issue #282).
+    type: Literal["show", "mask"]
     dataset_id: str = Field(..., min_length=1, max_length=128)
     path: str = Field(..., min_length=1, max_length=4096)
     kind: str | None = Field(None, min_length=1, max_length=32)
@@ -373,7 +374,11 @@ async def headset_command(
     omitted. 404 when that page is not connected (the desktop then opens one
     the usual way). ``show``: show this cube (``dataset_id`` in this session;
     the page opens ``path`` again when it does not hold that id), optionally
-    its ``box``; it replaces an older ``show`` the page has not acknowledged."""
+    its ``box``; it replaces an older ``show`` the page has not acknowledged.
+    ``mask`` (issue #282): a label mask (a SoFiA-2 mask, a desktop mask) on
+    the cube's grid, shown over the cube the page shows (``dataset_id`` the
+    mask's in this session, ``path`` its file); a newer ``mask`` replaces an
+    older one not acknowledged."""
     body = await _read_body(request, HeadsetCommandRequest)
     _refuse_token(body.client, body.dataset_id, body.path, body.kind)
     cmd_body: dict[str, Any] = {"dataset_id": body.dataset_id, "path": body.path}
@@ -437,7 +442,7 @@ async def activity_post(
       null; the latest per cube replaces the previous;
     * ``product``: ``payload.product`` (moment, pv, spectrum, isolate, remove,
       catalogue, flow, classification: a catalogue classified in the headset,
-      issue #279), and what the desktop needs to open it: ``file`` (a
+      issue #279; mask: a label mask refined in the headset, issue #282), and what the desktop needs to open it: ``file`` (a
       Workspace Exports filename; its ``output_path`` is added) or
       ``dataset_id``, the ``request`` under the API's names, the ``recipe``;
     * ``cube``: the page switched cube (``payload.path``, ``payload.binning``).

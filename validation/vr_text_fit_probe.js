@@ -118,9 +118,9 @@
       if (w(`40px "${FORCE_FONT}", monospace`) === w('40px monospace')) throw new Error(`no font ${FORCE_FONT} here`);
     }
     const imp = (m) => import(`${base}${m}`);
-    const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU, CG, SL, SW] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
+    const [HM, TP, WR, NT, ON, LC, WN, PC, RO, CO, SU, CG, SL, SW, MW] = await Promise.all(['hand-menu.js', 'tool-palette.js', 'wrist.js',
       'notice.js', 'onboarding.js', 'lifecycle.js', 'windows.js', 'product-canvas.js', 'readout.js', 'controls.js', 'select-ui.js',
-      'crop-gizmo.js', 'source-list.js', 'source-window.js'].map(imp));
+      'crop-gizmo.js', 'source-list.js', 'source-window.js', 'mask-window.js'].map(imp));
     const [CB, CM] = await Promise.all(['colour-bar.js', 'colormaps.js'].map(imp));
     const report = { cases: 0, texts: 0, problems: [], ellipses: [], perCanvas: {}, snaps: [] };
     const snap = opts.snap ? new RegExp(opts.snap) : null;
@@ -162,6 +162,7 @@
             sizeField: 'SmoothingLength', style: 'splats', sel: { box: true, mode: 'outside' } },
           sel: { tool: 'lasso', seedMode: 'carve', lasso: true, box: true, applied: true },
           src: { total: 1234, shown: true, canAdd: true },
+          mask: { loaded: true, shown: true, picking: true, canUndo: true, canSave: true },
           meas: { lasso: true, moment: 2, pvArmed: true, spectrum: true, pinned: true },
           pts: { fields, field: 'velocity_z', log: true, style: 'splats', budget: '12.0 M', box: true, fieldPage: 1 },
           flow: { stream: true, arrows: true, box: true },
@@ -185,6 +186,7 @@
         pv: 'Trigger: the next point of the slice.', pvw: '3 px = 18.0″',
         cat: '⚠ 12 sources outside the cube (+2 more on the page)',
         sources: 'SoFiA J101723.73+214802.8: 10:17:23.73 +21:48:02.8, 1926.8 km/s',
+        mask: 'Source 12345 (new): 1,234,567 voxels',
       };
       if (kind === 'points') Object.assign(notes, {
         snapshot: 'snapshot_057_of_a_long_simulation_run.bin (58 of 120)', x: 'X = velocity_x_with_a_long_name [km/s]', y: 'Y = y [Mpc/h]',
@@ -381,6 +383,29 @@
         }
       }
       run('window bar', 'Sources', WN.BAR_PX, (c) => WN.drawBar(c, WN.windowTitle('sources'), {}), WN.barLayout());
+    }
+
+    // ── The Mask window (issue #282): empty, loaded, a source picked and edited, every widget hovered ──
+    {
+      const views = [
+        ['empty', { loaded: false, mode: 'outline', labels: true, selected: 0, picking: false, newSource: false, seedMode: 'new', canUndo: false, canSave: false,
+          nSources: 0, title: 'Mask', info: 'No mask over the cube.', notes: {}, status: [] }],
+        ['refining', { loaded: true, mode: 'residual', labels: true, selected: 12345, picking: false, newSource: false, seedMode: 'carve', canUndo: true, canSave: true,
+          nSources: 1234, title: `Mask: ${LONG_FILE.replace('.fits', '_mask.fits')}`, info: '1234 sources, highest ID 12346 (new from 12346)',
+          notes: { show: 'Residuals, labels at the centroids', source: 'Source 12345 (new): 1,234,567 voxels', refine: 'Trigger with the Kinematic Lasso (Select): the grow edits this source.',
+            save: `Last saved: ${LONG_FILE.replace('.fits', '_mask_vr_refined_12.fits')}` },
+          status: [['Source 12345 subtracted from: 1,234,567 voxels (grow of 2,345,678)', '#b9c2d0'],
+            ['Not saved: the backend answered 503 Service Unavailable while writing the mask, try again in a minute', '#ff8a8a']] }],
+        ['picking', { loaded: true, mode: 'only', labels: false, selected: 0, picking: true, newSource: true, seedMode: 'add', canUndo: false, canSave: false,
+          nSources: 17, title: 'Mask: hgc44-run5_mask.fits', info: '17 sources, highest ID 17', notes: { source: 'Trigger on the cube: the source under the ray.' }, status: [['loading the mask…', '#ffd27a']] }],
+      ];
+      for (const [label, v] of views) {
+        const layout = MW.maskLayout(v);
+        for (const hover of [null, ...layout.map((w) => w.id)]) {
+          run('mask window', `${label} hover=${hover || '-'}`, MW.MASK_PX, (c) => MW.drawMask(c, layout, v, { hover }), layout);
+        }
+      }
+      run('window bar', 'Mask', WN.BAR_PX, (c) => WN.drawBar(c, WN.windowTitle('mask'), {}), WN.barLayout());
     }
     // ── The colour bar of a point table or a field (#259) ──
     for (const bar of [

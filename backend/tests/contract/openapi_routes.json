@@ -106,6 +106,8 @@
     "POST /v1/cube/kinematic_select_bin",
     "POST /v1/cube/mask",
     "POST /v1/cube/mask_apply_bin",
+    "POST /v1/cube/mask_layer_bin",
+    "POST /v1/cube/mask_layer_save",
     "POST /v1/cube/mask_selection",
     "POST /v1/cube/mask_stats_bin",
     "POST /v1/cube/noise",
