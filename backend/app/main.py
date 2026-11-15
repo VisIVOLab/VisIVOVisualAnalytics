@@ -469,6 +469,9 @@ app.include_router(vr_layers.router, dependencies=[_auth])
 app.include_router(share.router, dependencies=[_auth])
 # The headset pages of a session: presence, commands and activity (issue #236).
 app.include_router(headset.router, dependencies=[_auth])
+# The headset's view on the desktop (issue #281).
+from .routers import headset_spectator as headset_spectator_routes  # noqa: E402
+app.include_router(headset_spectator_routes.router, dependencies=[_auth])
 app.include_router(vr_backend_check.router, dependencies=[_auth])
 # Headset pairing by code over WebRTC (issue #212).
 from .routers import vr_pair as vr_pair_routes  # noqa: E402

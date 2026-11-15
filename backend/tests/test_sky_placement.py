@@ -240,3 +240,27 @@ async def test_the_hub_show_and_the_launch_carry_the_sky(client, auth_headers):
     assert r.status_code == 200, r.text
     out = (await client.post("/v1/vr/launch/exchange", json={"ticket": r.json()["ticket"]})).json()
     assert out["cube"]["sky"] == sky
+
+
+def test_the_cz_flag_compares_the_cz_the_file_shows():
+    # Issue #298: a file's cz = 1000.0 becomes z = cz / c, and c z comes back
+    # a hair under 1000. With a cz column its value is compared; without one
+    # c z rounded to CZ_PRECISION_KMS, so 1000.0 is not below 1000.
+    z_at_1000 = 1000.0 / _C
+    while _C * z_at_1000 >= cp.UNCERTAIN_CZ_KMS:
+        z_at_1000 = np.nextafter(z_at_1000, 0.0)
+    assert _C * z_at_1000 < cp.UNCERTAIN_CZ_KMS        # the raw product would flag it
+    assert cp.recession_velocity_kms(z_at_1000) == 1000.0
+    z_only = pd.DataFrame({"Z": [z_at_1000, 999.99 / _C, 0.03]})
+    for mode in cp.DISTANCE_MODES:
+        assert cp.placement(z_only, distance_mode=mode).uncertain.tolist() == [False, True, False]
+    # The cz column wins where a row has one; a blank falls back to c z.
+    with_cz = pd.DataFrame({"Z": [990.0 / _C, 1001.0 / _C, z_at_1000],
+                            "cz": [1000.0, 999.0, np.nan]})
+    p = cp.placement(with_cz)
+    assert p.uncertain.tolist() == [False, True, False]
+    assert p.counts()["uncertain"] == 1
+    assert cp.cz_kms(with_cz).tolist() == [1000.0, 999.0, 1000.0]
+    # A bare VELOCITY or V is not a cz column.
+    assert cp._first(pd.DataFrame({"Z": [0.1], "VELOCITY": [1.0], "V": [12.0]}),
+                     cp._VELOCITY_ALIASES) == ""

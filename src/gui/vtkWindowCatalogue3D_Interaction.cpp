@@ -368,6 +368,21 @@ void vtkWindowCatalogue3D::setSelectedSource(int idx)
     }
 }
 
+void vtkWindowCatalogue3D::refreshSelectionAfterReplacement()
+{
+    if (this->selectedIndex >= static_cast<int>(this->entries.size()))
+        this->selectedIndex = -1;
+    // buildScene() made a new, hidden marker: put it back on the source.
+    this->updateHighlightSphere(this->selectSphere.Get(), this->selectActor.Get(),
+                                this->selectedIndex, 1.18);
+    // The distance lines follow the model and the mode.
+    this->updateInfoPanel();
+    this->updateDockSelectionDetails();
+    // The table was reset under the selection, so it is selected there again.
+    // Not through setSelectedSource(): SAMP already knows this row.
+    emit this->sourceSelectionChanged(this->selectedIndex);
+}
+
 QStringList vtkWindowCatalogue3D::pickDistanceLines(const Catalogue3DEntry &e) const
 {
     // The applied model, named as the cosmology line names it.

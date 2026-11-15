@@ -130,6 +130,15 @@ X_SEEDS = "X-Visivo-Seeds"
 X_SEED = "X-Visivo-Seed"
 X_BOX_MPC = "X-Visivo-Box-Mpc"
 
+# ── The headset's view on the desktop (issue #281): a spectator frame ──────
+X_FRAME_SEQ = "X-Visivo-Frame-Seq"
+X_FRAME_WIDTH = "X-Visivo-Frame-Width"
+X_FRAME_HEIGHT = "X-Visivo-Frame-Height"
+X_FRAME_EYE = "X-Visivo-Frame-Eye"
+X_FRAME_AGE_MS = "X-Visivo-Frame-Age-Ms"
+X_FRAME_COST_MS = "X-Visivo-Frame-Cost-Ms"
+X_INSTANCE = "X-Visivo-Instance"
+
 # ── Cross-cutting / infrastructure ──────────────────────────────────────────
 X_TOKEN = "X-Visivo-Token"
 X_SESSION = "X-Visivo-Session"

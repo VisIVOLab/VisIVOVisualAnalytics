@@ -41,6 +41,35 @@ are preserved here unedited; the branch names they refer to are historical.
   unit-tested). The look sent to the desktop carries the stretch's name. The
   integrated flux of a selection is #280's.
 
+- **VR: the headset's view on the desktop (#281).** **Headset Activity →
+  Watch the Headset** opens a window with what the person in the headset
+  sees, live: the left eye, cropped to the middle of the view, about
+  15 frames a second at 512 px, with the cube, the rays, the menu, the wrist
+  cards and the result windows. The composition layers are not in the
+  projection layer, so the page draws them into the copy. **Snapshot** saves
+  the view as a PNG in the Workspace Exports. Watching is off by default.
+  The headset shows a **Desktop watching** badge while it is watched, and
+  the watch ends 10 s after the desktop stops reading. The page captures
+  with a scaled blit and an async `readPixels` into a PBO behind a fence,
+  copies the bytes out right after the frame, and encodes the JPEG in a
+  worker, with one capture in flight. On a Quest 3 at 72 Hz the frame CPU
+  stayed at 1.3 ms, with no missed frames added and 14.4 fps delivered.
+  Backend: `POST /v1/vr/headset/spectator`, `GET|POST
+  /v1/vr/headset/spectator/frame`, `POST /v1/vr/headset/spectator/snapshot`,
+  and a `watch` command in the hub's queue
+  (docs/backend-api/headset-hub.md). Desktop: `src/app/VrSpectator.h`
+  (widget-free), `VrSpectatorFeed`, `src/gui/VrSpectatorWindow`.
+- **3-D sky catalogues: the selected source follows a model change, and the
+  cz < 1000 km/s flag reads the cz the file shows (#298).** Changing the
+  cosmology model, the distance mode or the frame now keeps the source
+  selected and rewrites its panel ("Distance …, from z (comoving, WMAP9)");
+  before, the selection was dropped while the panel kept the old text. After
+  a filter or Load more the source stays selected when it is still loaded
+  (found by its row in the table), and is deselected visibly otherwise. The
+  uncertain count compares the catalogue's cz column (km/s) when it has one,
+  otherwise c·z rounded to 10⁻⁶ km/s: rows with cz = 1000.0 in the file were
+  counted as below 1000 because z = cz/c rounds a hair low. The desktop and
+  the backend apply the same rule.
 - **VR: a spatial crop you can see and grab (#277).** While the *Spatial
   crop* tool is on, the crop box is drawn (edges, a faint fill) with a dot on
   each of its six faces; the dot under the ray, or near the controller,
