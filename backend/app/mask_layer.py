@@ -23,7 +23,6 @@ The page draws the mask on its reduced grid (static/vr/js/mask-layer.js).
 from __future__ import annotations
 
 import json
-import math
 import struct
 from typing import Any
 
@@ -34,8 +33,6 @@ MAX_LAYER_VOXELS = 16 * 1024 * 1024
 #: The most sources (IDs) a layer may have, and the largest ID (int32).
 MAX_SOURCES = 65535
 MAX_ID = 2 ** 31 - 1
-#: Header keys compared between the cube and the mask, per axis.
-_AXIS_KEYS = ("CTYPE", "CRVAL", "CDELT", "CRPIX")
 
 
 def _open(path: str):

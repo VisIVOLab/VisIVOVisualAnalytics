@@ -10,6 +10,7 @@ import { labelVertices, LABEL_STRIDE } from './labels.js';
 import { MESH_STRIDE } from './models.js';
 import { mulInto, imageUses } from './gltf.js';
 import { guardTex3D, tex3dInXRError } from './xr-gl-guard.js';
+import { composeMask, layerCells } from './mask-layer.js';
 
 /** The eye's position from a rigid view matrix (−Rᵀt), into `out`. */
 function eyeOf(v, out) {
@@ -1081,48 +1082,25 @@ export class Renderer {
     gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, d[0], d[1], d[2], gl.RED, gl.FLOAT, data);
   }
 
-  /** The layer and the selection (`sel`, reduceMask's answer or null) as one box in the mask storage. */
+  /** The layer and the selection (`sel`, reduceMask's answer or null) as one
+   *  box in the mask storage (mask-layer.js composeMask: an empty layer adds
+   *  nothing to the selection's box). */
   _composeMask(sel) {
     const s = this.slot, L = this._layer;
     if (!s || !s.maskTex) throw new Error('no volume with a selection mask on show');
-    const lo = L.origin.slice(), hi = L.origin.map((o, i) => o + L.dims[i] - 1);
-    if (sel) for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], sel.origin[i]); hi[i] = Math.max(hi[i], sel.origin[i] + sel.dims[i] - 1); }
-    const dims = [0, 1, 2].map((i) => hi[i] - lo[i] + 1);
+    const box = composeMask(L, sel);
+    const dims = box.dims;
     if (dims[0] > s.dims[0] || dims[1] > s.dims[1] || dims[2] > s.dims[2]) {
       throw new Error(`a mask of ${dims.join('×')} reduced voxels does not fit the cube's grid ${s.dims.join('×')}`);
     }
-    const out = new Uint8Array(dims[0] * dims[1] * dims[2]);
-    const copy = (src, o, sd, mark) => {
-      for (let z = 0; z < sd[2]; z++) {
-        for (let y = 0; y < sd[1]; y++) {
-          const from = (z * sd[1] + y) * sd[0];
-          const to = ((o[2] - lo[2] + z) * dims[1] + (o[1] - lo[1] + y)) * dims[0] + (o[0] - lo[0]);
-          if (!mark) { out.set(src.subarray(from, from + sd[0]), to); continue; }
-          for (let x = 0; x < sd[0]; x++) if (src[from + x]) out[to + x] = 255;
-        }
-      }
-    };
-    copy(L.data, L.origin, L.dims, false);
-    if (sel) copy(sel.data, sel.origin, sel.dims, true);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_3D, s.maskTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, dims[0], dims[1], dims[2], gl.RED, gl.UNSIGNED_BYTE, out);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, dims[0], dims[1], dims[2], gl.RED, gl.UNSIGNED_BYTE, box.data);
     this._maskInput = sel;
-    this.mask = { origin: lo, dims, bytes: out.length, layer: true };
+    this.mask = { origin: box.origin, dims, bytes: box.data.length, layer: true };
     // The skip grid's cells holding any of it, never skipped (the box test is off with a layer).
-    const md = s.macroDims, c = s.cell;
-    const cells = new Uint8Array(md[0] * md[1] * md[2]);
-    for (let z = 0; z < dims[2]; z++) {
-      const cz = Math.min(md[2] - 1, Math.floor((lo[2] + z) / c));
-      for (let y = 0; y < dims[1]; y++) {
-        const cy = Math.min(md[1] - 1, Math.floor((lo[1] + y) / c));
-        const row = (z * dims[1] + y) * dims[0];
-        for (let x = 0; x < dims[0]; x++) {
-          if (out[row + x]) cells[(cz * md[1] + cy) * md[0] + Math.min(md[0] - 1, Math.floor((lo[0] + x) / c))] = 1;
-        }
-      }
-    }
+    const cells = layerCells(box, s.macroDims, s.cell);
     this._patchMacro(cells);
     this.maskCells = cells.reduce((n, v) => n + v, 0);
   }

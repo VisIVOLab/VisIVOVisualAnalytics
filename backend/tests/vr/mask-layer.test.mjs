@@ -353,3 +353,40 @@ test('the Mask window\'s view is made again only when something it shows changed
   m.say('hello');
   assert.deepEqual(m.view().status, [['hello', '#b9c2d0']]);
 });
+
+test('review (#282): an empty layer adds nothing to the box: with a selection the box is the selection\'s alone', () => {
+  const empty = ML.emptyEncoding();
+  assert.equal(empty.empty, true);
+  // A lasso selection far from the grid's corner (reduceMask's answer).
+  const sel = { origin: [100, 80, 40], dims: [3, 2, 2], data: new Uint8Array(12).fill(1) };
+  sel.data[0] = 0;
+  const b0 = ML.composeMask(empty, sel);
+  assert.deepEqual(b0.origin, [100, 80, 40], 'not a union reaching back to (0, 0, 0)');
+  assert.deepEqual(b0.dims, [3, 2, 2]);
+  assert.equal(b0.data.length, 12, 'twelve voxels uploaded, not the grid up to the selection');
+  assert.equal(b0.data[0], ML.ENC.none);
+  assert.ok([...b0.data.subarray(1)].every((v) => v === ML.ENC.selected));
+  // Its skip cells: the selection's cell only.
+  const cells = ML.layerCells(b0, [16, 16, 8], 8);
+  assert.equal(cells.reduce((n, v) => n + v, 0), 1);
+  assert.equal(cells[(5 * 16 + 10) * 16 + 12], 1);
+  // An empty layer alone: one empty voxel (the layer and its mode are kept).
+  const alone = ML.composeMask(empty, null);
+  assert.deepEqual(alone.dims, [1, 1, 1]);
+  assert.equal(alone.data[0], 0);
+  // A layer with voxels and a selection: their union, the layer's ENC values, the selection on top.
+  const L = new ML.MaskLayer(ML.parseLayer(wire({ 5: box(2, 7, 1, 6, 1, 4) })));
+  const enc = ML.encodeLayer(L, [1, 1, 1], shape, 0);
+  const sel2 = { origin: [9, 7, 5], dims: [1, 1, 1], data: new Uint8Array([1]) };
+  const u = ML.composeMask(enc, sel2);
+  assert.deepEqual(u.origin, [2, 1, 1]);
+  assert.deepEqual(u.dims, [8, 7, 5]);
+  const at = (x, y, z) => u.data[((z - u.origin[2]) * u.dims[1] + (y - u.origin[1])) * u.dims[0] + (x - u.origin[0])];
+  assert.equal(at(4, 3, 2), ML.ENC.inside);
+  assert.equal(at(2, 3, 2), ML.ENC.shell);
+  assert.equal(at(9, 7, 5), ML.ENC.selected);
+  // The layer alone: its own box, unchanged.
+  const own = ML.composeMask(enc, null);
+  assert.deepEqual(own.origin, enc.origin);
+  assert.deepEqual([...own.data], [...enc.data]);
+});

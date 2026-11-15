@@ -312,9 +312,45 @@ export function encodeLayer(layer, factors, reduced, selected = 0) {
 }
 
 /** The layer of a mask with no voxel left: one empty voxel, so the renderer
- *  keeps the layer (and its mode: Mask only draws nothing) rather than none. */
+ *  keeps the layer (and its mode: Mask only draws nothing) rather than none.
+ *  Marked `empty`: it adds nothing to the box composeMask uploads. */
 export function emptyEncoding() {
-  return { data: new Uint8Array(1), origin: [0, 0, 0], dims: [1, 1, 1] };
+  return { data: new Uint8Array(1), origin: [0, 0, 0], dims: [1, 1, 1], empty: true };
+}
+
+/**
+ * The layer `enc` (encodeLayer, or emptyEncoding) and the lasso selection
+ * `sel` (reduceMask's answer {data, origin, dims}, or null) as one box of the
+ * mask storage: {data (ENC values, the selection's voxels SELECTED), origin,
+ * dims}. The box is the union of the two; an empty layer adds nothing, so
+ * with a selection the box is the selection's alone (#282 review: not a union
+ * reaching back to the grid's corner, the whole reduced grid uploaded and
+ * walked on the main thread), and with none it is the empty voxel.
+ */
+export function composeMask(enc, sel) {
+  const parts = [];
+  if (enc && !enc.empty) parts.push(enc);
+  if (sel) parts.push(sel);
+  if (!parts.length) return { data: new Uint8Array(1), origin: [0, 0, 0], dims: [1, 1, 1] };
+  const lo = parts[0].origin.slice(), hi = parts[0].origin.map((o, i) => o + parts[0].dims[i] - 1);
+  for (const p of parts.slice(1)) {
+    for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p.origin[i]); hi[i] = Math.max(hi[i], p.origin[i] + p.dims[i] - 1); }
+  }
+  const dims = [0, 1, 2].map((i) => hi[i] - lo[i] + 1);
+  const out = new Uint8Array(dims[0] * dims[1] * dims[2]);
+  const copy = (src, o, sd, mark) => {
+    for (let z = 0; z < sd[2]; z++) {
+      for (let y = 0; y < sd[1]; y++) {
+        const from = (z * sd[1] + y) * sd[0];
+        const to = ((o[2] - lo[2] + z) * dims[1] + (o[1] - lo[1] + y)) * dims[0] + (o[0] - lo[0]);
+        if (!mark) { out.set(src.subarray(from, from + sd[0]), to); continue; }
+        for (let x = 0; x < sd[0]; x++) if (src[from + x]) out[to + x] = ENC.selected;
+      }
+    }
+  };
+  if (enc && !enc.empty) copy(enc.data, enc.origin, enc.dims, false);
+  if (sel) copy(sel.data, sel.origin, sel.dims, true);
+  return { data: out, origin: lo, dims };
 }
 
 /** The skip grid's cells (`macroDims`, `cell` reduced voxels a side) holding
