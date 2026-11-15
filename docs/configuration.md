@@ -172,6 +172,21 @@ the H.264 stream (`h264-webrtc` in `/v1/render/diagnostics`) only where it
 did before, with aiortc's encoder patched for NVENC (the cluster image), or
 when `VISIVO_WEBRTC_H264=1` asks for it (then encoded in software).
 
+## VR headset app
+
+The VisIVO VR app opens the VR page full screen only when the backend lists
+it at `/.well-known/assetlinks.json` ([Headset app launch](backend-api/vr-launch.md));
+the desktop installs and starts it ([The headset app](user-guide/vr/headset-app.md)).
+The release app is listed by every backend without configuration.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_VR_APP_RELEASE_SHA256` | unset | More SHA-256 certificate fingerprints of the release app (`it.inaf.oact.visivo.vr`), comma-separated, added to those in `backend/app/vr_app.json`. |
+| `VISIVO_QUEST_APP_DIR` | `~/.visivo/quest-app` | Where `tools/quest-app/build.sh` keeps the development key; its `dev-sha256.txt` makes the backend list the development app (`it.inaf.oact.visivo.vr.dev`). |
+| `VISIVO_VR_ASSETLINKS_FILE` | unset | A JSON file of further statements (an array of objects, at most 64 KiB), served as they are. |
+
+The desktop client reads `VISIVO_QUEST_APK` (see [Desktop client](#desktop-client)).
+
 ## SRC node
 
 Settings for a backend that runs as a node of the SKA Regional Centre network
@@ -327,6 +342,7 @@ These variables are read by the desktop client, not by the backend.
 | `VISIVO_BACKEND_PYTHON` | unset | Python interpreter used to start the local backend, tried before an active virtual environment, the project's `.venv` and the bundled runtime. It must be Python 3.11 or newer. |
 | `VISIVO_PACKAGE_DIR` | set by the Linux launcher | The directory of the extracted Linux package; the client looks for the bundled backend runtime in its `python/` directory first. Set by `./VisIVOVisualAnalytics`, not by hand. |
 | `SAMP_HUB` | `~/.samp` | The standard SAMP variable: `std-lockurl:<url>` (a `file:` or `http(s):` URL) names the hub lockfile the client reads; otherwise it reads `~/.samp`. |
+| `VISIVO_QUEST_APK` | unset | The VisIVO VR app to install on a headset: the path to an `.apk` with its `.json` beside it, tried before the copy in the application's resources and a source tree's `tools/quest-app/out/`. See [The headset app](user-guide/vr/headset-app.md). |
 | `VISIVO_SUBVOLUME_PARALLEL` | `4` | Parallel requests a full-resolution cube or sub-cube load (`/v1/cube/subvolume_bin`) is split into, along the spectral axis (1 to 16). |
 
 ### The local backend ends with the client

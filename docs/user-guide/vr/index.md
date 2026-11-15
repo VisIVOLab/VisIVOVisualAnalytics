@@ -9,7 +9,7 @@ Lasso, spectra) still runs on the full cube on the backend.
 
 | | |
 |---|---|
-| **Where** | the *VisIVO VR* page your institute hosts, paired with the backend by a code; or `http://<backend>/vr/`, served by the backend itself (USB cable, a cluster's portal) |
+| **Where** | the *VisIVO VR* app on the headset, installed and started by the desktop over the USB cable; the *VisIVO VR* page your institute hosts, paired with the backend by a code; or `http://<backend>/vr/`, served by the backend itself (USB cable, a cluster's portal) |
 | **Headset** | Meta Quest 3 (Quest Browser, WebXR); any WebXR browser should work |
 | **Without a headset** | the same page in a desktop browser, with the mouse (for development and checks) |
 | **Data** | a FITS cube the backend can open; a point table, a catalogue over a cube, a velocity field |
@@ -81,13 +81,41 @@ made in the headset appears in the desktop's cube viewer and a desktop lasso
 can be sent to the headset
 ([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188), see
 [Selections shared with the desktop](analysis.md#selections-shared-with-the-desktop)).
+
+Later steps added:
+
+- the **VisIVO VR app**, which the desktop installs and starts over the USB
+  cable straight into VR, with a one-time launch ticket instead of the token
+  ([The headset app](headset-app.md));
+- **one headset page driven by the desktop**: *Show on Headset*, the
+  *Headset Activity* list with its products, a cube window that follows the
+  headset's look, and *Watch the Headset*, the headset's view live on the
+  desktop ([The headset from the desktop](desktop.md));
+- a **quieter interface**: the menu in front of you with the tabs Display,
+  Range, Select, Measure and More, opened and closed with X; the tool palette
+  on A; wrist cards shown only when you look at a wrist; toasts; texts that
+  always fit; a spatial crop you can see and grab
+  ([Controls and the hand menu](controls.md));
+- the **threshold in multiples of the noise σ** and a *Levels* page with a
+  histogram, σ and percentile presets and the desktop's stretches
+  ([The hand menu](controls.md#the-hand-menu));
+- **HI measurements** of a selection and **mask layers** to show, compare,
+  refine and save a mask ([Analysis in the headset](analysis.md));
+- **particles**: a ray-traced still view, tone-mapped splats that hold the
+  frame rate on the Quest 3, and controls for simulations (snapshots, X/Y/Z
+  columns, splats sized by a smoothing length, a colour bar with units, box
+  select); a **source list** over a catalogue to browse, visit, classify and
+  send to the desktop; sky catalogues placed with the desktop window's frame,
+  distance mode and cosmology
+  ([Point tables, catalogues and velocity fields](data-types.md)).
+
 What is not done yet is listed under [Known limits](#known-limits).
 
 ## What you see
 
 The cube is binned by an integer factor on each axis and drawn by ray marching
 in the browser (WebGL2): front to back, stopping when a ray is opaque, jumping
-over empty regions, with a colour map, a threshold and a clipping box. The
+over empty regions, with a colour map, a threshold and a spatial crop. The
 binning in use is written over the box (for example *binned 3×3×1 (mean),
 234×234×158 of 700×700×158*).
 
@@ -120,10 +148,13 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   The desktop's remote 3-D view still puts it in its WebSocket address
   (`/v1/render/<id>/ws?token=…`), and uvicorn's access log records that
   address, so the backend's log can hold the token: keep that log private.
-- **Checks on the headset are pending.** Everything in this guide was
+- **Some checks on the headset are pending.** Most numbers in this guide were
   measured in a desktop browser on the Mac (Chrome, the same code path with
-  the mouse); the frame rates, latencies, menu readability and controller
-  handling on a Quest 3 come from the checks listed under
+  the mouse). A few were measured on a Quest 3: the first session's findings
+  (#226), the app's launch times (#255), the particle splats' frame rate
+  (#295) and the cost of watching the headset from the desktop (#281). The
+  rest (latencies, menu readability, controller and hand handling, pairing
+  by code) come from the checks listed under
   [What to check on the Quest 3](reference.md#what-to-check-on-the-quest-3)
   and are not yet recorded here.
 - **One cube at a time**: at most 2048 reduced voxels on a side (the GPU's 3-D
@@ -133,7 +164,8 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   limit before asking. Choose a larger binning.
 - **Tools in the headset**: a spectrum, the Kinematic Lasso with Add and
   Subtract seeds, Isolate and Remove, the moment maps M0-M2 of the selection or of the whole field, a
-  PV slice along a path, and a box region. No hand refinement of the mask on
+  PV slice along a path, a box region, the HI measurements of a selection,
+  the source list of a catalogue and mask layers. No hand refinement of the mask on
   a channel (the desktop's polygon edit), no kinematic fit; the moment of a selection is
   always over the whole channel range with no threshold mask, the PV path
   is not edited point by point (*Undo* removes the last point), and the PV
@@ -173,9 +205,10 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   behind a proxy that strips the prefix. The link carries the token (see the
   [caution](quickstart.md#open-a-cube-from-the-desktop)). The settings kept in
   the browser are per browser: the Mac's and the headset's are separate.
-- **The hand menu** has the main controls only: the stretch, velocity stretch,
+- **The hand menu** has the main controls only: the velocity stretch,
   binning, texture, Kinematic Lasso parameters and eye-buffer settings are on
-  the page (before entering VR); see [The settings on the page](reference.md#the-settings-on-the-page).
+  the page (before entering VR; the colour stretch is on the page and on the
+  menu's *Levels* page); see [The settings on the page](reference.md#the-settings-on-the-page).
   **Hand tracking has not been tried on a headset**: the pinch and grip
   thresholds (pinch closes under 1.2 cm between the fingertips' surfaces,
   opens over 2.8 cm; grip under 0.72 of the palm's length, opens over 0.95)
@@ -197,10 +230,12 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
 - **Box statistics** (`mask_stats_bin`) are refused above 64 Mi voxels: on a
   large cube draw a smaller box.
 - **Point tables, catalogues, velocity fields** (#190): a point table is
-  refined in the headset's own colours only (no selections, no filters set on
-  the page; the desktop's filters are not carried over); the ray-traced
-  particle render is not used for refinement (seconds per frame on the CPU,
-  where a stereo frame must come in a few hundred milliseconds). A velocity
+  refined in the headset's own colours; the only selection it carries is the
+  *Box select* of the Select tab (#259), and the desktop's filters are not
+  carried over. The *Ray-traced* style refines a still view with the
+  backend's ray-traced particle renderer (#264): on an M-series Mac about
+  385 ms from the camera stopping to the frame shown for 3.9 M rows, 535 ms
+  for 11.5 M rows. A velocity
   field is not refined, its streamlines are lines one pixel wide (the
   desktop's are tubes), a later change of the desktop's *Box size* reaches
   the headset only with a new link, and

@@ -225,7 +225,7 @@ one, in amber);
 the status line also warns when the
 cube's or the catalogue's spectral frame calls for a frame change, which is
 not applied. A source without a spectral column is
-drawn on the back face of the clipping box with a faint line through every
+drawn on the back face of the spatial crop with a faint line through every
 channel (*through every channel* turns those lines off). VLKB ellipses are
 built as on the desktop (FWHM in pixels, major axis along +x turned by the
 PA), each band in the desktop's colour; filaments lie on the back face. The

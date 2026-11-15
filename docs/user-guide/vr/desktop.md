@@ -106,8 +106,9 @@ whether or not Headset Activity is open:
   the headset's *hot* has no counterpart, and the status bar says so);
 - the threshold, in the cube's units, as if typed in the threshold field;
 - the clip box crops the 3-D volume, also when the backend renders the view
-  (the slice views are not clipped). A slab set in the headset's Clip mode is
-  a clip box along the spectral axis, so it follows too.
+  (the slice views are not clipped). A velocity range set in the headset
+  (the menu's Range tab) is a clip box along the spectral axis, so it follows
+  too.
 
 Each change taken from the headset is said briefly in the status bar, for
 example *Colour map and threshold from the headset*.

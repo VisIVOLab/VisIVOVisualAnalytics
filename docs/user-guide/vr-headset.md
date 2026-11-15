@@ -8,10 +8,13 @@ This guide is now a section of its own: [Cubes in a VR headset](vr/index.md).
 
 - [Cubes in a VR headset](vr/index.md): overview, what you see, known limits
 - [Quickstart and pairing](vr/quickstart.md)
+- [The headset app](vr/headset-app.md)
+- [The headset from the desktop](vr/desktop.md)
 - [Controls and the hand menu](vr/controls.md)
 - [Analysis in the headset](vr/analysis.md)
 - [Point tables, catalogues and velocity fields](vr/data-types.md)
 - [Headset with a cluster backend](vr/cluster.md)
+- [How the public loader works](vr/public-loader.md)
 - [Troubleshooting](vr/troubleshooting.md)
 - [Technical reference](vr/reference.md)
 
