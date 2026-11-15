@@ -342,13 +342,19 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     cube, which is binned: with mean binning its noise is lower than σ, so a
     3σ threshold hides more of the faint emission than the desktop's 3σ on the
     full cube; the refined frames (the full cube) show what the desktop shows.
+  - *A point table's Data page* (from *Data ▸*, #259): **Snapshot** *◂
+    Previous*, *Next ▸* (the numbered files beside it); **X**, **Y**, **Z**:
+    *◂*, the column, *▸*; **Splat size**: *Uniform*, *By hsml* (a smoothing
+    length), *Column ▸*; *Default axes*, *◂ Display*. See
+    [Simulation controls](data-types.md#simulation-controls-259).
   - *A point table*: **Colour by** (one chip per column, *none* first, then the
     velocity columns such as *VX*, *VY*, *VZ*, then the others; *more ▸* when
     there are more than fit, and the menu opens on the first page); **Scale, range**: *Log* and the colour
     window (a range with two ends; its data values below); **Colour map**;
     **Style**: *Points* or *Smooth (splats)*, *Size −*, *Size +*;
     **Intensity** (splats); **Particles shown** (the next budget of rows),
-    *Sample again*, *Box and ticks*.
+    *Again* (sample again), *Box* (the box, its ticks and the colour bar),
+    *Data ▸*.
   - *A velocity field*: *Streamlines*, *Arrows*; **Arrow length**: *Shorter*,
     *Longer*; **Seed density**: *Fewer*, *More* (about ×1.4 a press, traced
     again at once), *Reseed streamlines*; **Colour by speed**: the colour
@@ -367,8 +373,11 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     *Spatial crop* trigger tool, as on a cube, and the sliders): the points
     and lines outside it are not drawn (a point table is not refined by the
     backend while it is cropped).
-- **Select** (a cube; greyed on point tables and velocity fields, whose
-  selections come with [#259](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/259))
+- **Select** (a cube; on a point table only the *Box select*, #259: drag a
+  box with the trigger, then *Show inside*, *Hide inside*, *Show all* under
+  **Result**, *Clear* to drop it, see
+  [Simulation controls](data-types.md#simulation-controls-259); greyed on
+  velocity fields)
   - **Tool**: *Kinematic Lasso*, *Spectrum probe*, *Box region*, with the palette's icons (the lasso is the tool on a
     first visit, so a galaxy is lassoed and isolated in two presses: Select,
     the trigger on it, *Isolate*; afterwards the last tool used, kept in the

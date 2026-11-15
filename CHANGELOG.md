@@ -8,6 +8,21 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: controls for simulation data (#259).** A point table's Display tab
+  gets *Data ▸*: *◂ Previous* / *Next ▸* step through the numbered snapshots
+  beside the file (new `/v1/points/series`; no time-series model, each
+  snapshot is a file opened as any table, keeping the columns, colour, crop,
+  selection and view), *X/Y/Z* choose the position columns, and *Splat size*
+  sizes each splat by a smoothing-length column (σ = h/√2, the ray-traced
+  renderer's kernel, light kept per splat; `sample_bin` gains `size_field`,
+  16-bit log codes). A colour bar beside the box carries the column's unit
+  (`/v1/points/info` gains `units` from the catalogue's file). The Select tab
+  has a *Box select* for particles (drawn and grabbed as the crop): *Show
+  inside*, *Hide inside*, *Show all*, tested in the point shader and sent to
+  the refined frames as a new `box` filter (`filters`, `set_filters`). Pure
+  logic in `sim-controls.js` and `colour-bar.js`, unit-tested; a headless
+  check in `validation/vr_sim_controls.mjs`.
+
 - **VR: the threshold in multiples of the noise, the cube's spectral
   information, stretches and a histogram (#258).** The headset now knows the
   full cube's noise σ, measured exactly as the desktop's *Estimate Noise*

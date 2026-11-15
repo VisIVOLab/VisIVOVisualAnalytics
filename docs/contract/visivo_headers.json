@@ -65,6 +65,8 @@
     "X-Visivo-Selection-Kind",
     "X-Visivo-Selection-Seq",
     "X-Visivo-Session",
+    "X-Visivo-Size-Field",
+    "X-Visivo-Size-Range",
     "X-Visivo-Source",
     "X-Visivo-Spacing",
     "X-Visivo-Spectral-Axis-Type",

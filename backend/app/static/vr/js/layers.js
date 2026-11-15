@@ -10,6 +10,7 @@ import * as M from './mat4.js';
 import * as PT from './points.js';
 import * as FL from './flow.js';
 import * as CT from './catalogue.js';
+import * as SC from './sim-controls.js';
 import { colormapTable } from './colormaps.js';
 import { niceTicks } from './volume.js';
 
@@ -81,6 +82,10 @@ export function createLayers(ctx) {
       // The menu (#257): the box and its ticks shown, the velocity field's
       // colour range (fractions of its speed range), the page of column chips.
       box: true, flC0: 0, flC1: 1, fieldPage: 0,
+      // Simulation controls (#259): splats sized by a column (a smoothing
+      // length), and the box selection ({min, max} fractions over the sample's
+      // bounds, as the crop) with what it shows: all, inside or outside.
+      sizeOn: false, sizeField: null, selBox: null, selMode: 'all',
     },
     box: null, info: null, load: {}, error: '',
   };
@@ -210,6 +215,7 @@ export function createLayers(ctx) {
     const body = { dataset_id: p.datasetId, max_points: L.s.budgetRows,
       color_field: L.s.colourField, color_log: L.s.autoLog ? null : L.s.colourLog,
       x: p.axes[0], y: p.axes[1], z: p.axes[2] };
+    if (L.s.sizeOn && L.s.sizeField) body.size_field = L.s.sizeField;
     // Through the page's Backend, as every request (api.js), so a prefix or
     // a change of address it learns applies here too.
     // A newer request (another budget, another column) cancels this one: the
@@ -230,10 +236,14 @@ export function createLayers(ctx) {
     const tBody = performance.now();
     const info = PT.sampleInfo((k) => resp.headers.get(k));
     const arr = PT.sampleArrays(buf, info);
+    // Each row's size (#259), after the colours.
+    const size = SC.sizeInfo((k) => resp.headers.get(k));
+    arr.size = size ? SC.sizeArray(buf, info.count, !!arr.colour) : null;
     load.check?.();
     load.commit?.();
     if (!cloud) cloud = new PT.PointCloud(gl, lut);
-    const up = cloud.upload(arr.positions, arr.colour);
+    const up = cloud.upload(arr.positions, arr.colour, arr.size);
+    p.size = arr.size ? size : null;
     L.s.autoLog = false;
     L.s.colourLog = info.colourLog;
     logBox.checked = info.colourLog;
@@ -248,7 +258,7 @@ export function createLayers(ctx) {
     ctx.refiner.setDataset(p.datasetId);
   }
 
-  async function openPoints(b, { datasetId, path }, load = {}) {
+  async function openPoints(b, { datasetId, path, keep = null }, load = {}) {
     if (!datasetId) {
       const fmt = catalogueFormat(path);
       if (fmt === 'vbt') {
@@ -265,18 +275,36 @@ export function createLayers(ctx) {
     load.check?.();
     const info = await b._json('POST', '/v1/points/info', { dataset_id: datasetId });
     load.check?.();
-    L.points = { datasetId, path, axes: info.axes, fields: info.fields, rows: info.num_rows };
+    L.points = { datasetId, path, axes: info.axes, defaultAxes: info.axes.slice(), fields: info.fields, rows: info.num_rows,
+      units: info.units || {}, series: null };
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
     const others = info.fields.filter((f) => !info.axes.includes(f) && !f.startsWith('@'));
-    L.s.colourField = others.length ? others[0] : null;
-    L.s.autoLog = true;
-    L.s.colourLog = false;
-    logBox.checked = false;
+    // The next snapshot of a series (#259) keeps the columns, the look, the
+    // crop and the selection of the one before, where it has those columns.
+    const kept = keep ? SC.carryOver(keep, info.fields, { axes: info.axes, colourField: others.length ? others[0] : null }) : null;
+    if (kept) L.points.axes = kept.axes;
+    if (!kept || kept.colourField !== keep.colourField) {
+      L.s.colourField = kept ? kept.colourField : others.length ? others[0] : null;
+      L.s.autoLog = true;
+      L.s.colourLog = false;
+    }
+    L.s.sizeField = kept ? kept.sizeField : SC.smoothingField(info.fields);
+    if (!L.s.sizeField) L.s.sizeOn = false;
+    if (!keep) { L.s.selBox = null; L.s.selMode = 'all'; }
+    logBox.checked = L.s.colourLog;
     fieldSel.value = L.s.colourField || '';
+    const clip = keep ? { min: [...state.clip.min], max: [...state.clip.max] } : null;
+    const pts = L.points;
     enter('points');
+    L.points = pts;
+    if (clip) state.clip = clip;
     await fetchSample(b, load);
+    // The snapshots beside it (#259): asked once, not waited for.
+    b._json('POST', '/v1/points/series', { dataset_id: datasetId })
+      .then((s) => { if (L.points === pts && s && s.valid) pts.series = s; })
+      .catch(() => {});
     return { kind: 'points', datasetId };
   }
 
@@ -507,8 +535,51 @@ export function createLayers(ctx) {
     else if (id === 'ct-show') { s.catShow = !s.catShow; ctShow.checked = s.catShow; }
     else if (id === 'ct-labels') { s.catLabels = !s.catLabels; ctLabels.checked = s.catLabels; rebuildOverlay(); }
     else if (id === 'ct-pins') { s.catPins = !s.catPins; ctPins.checked = s.catPins; rebuildOverlay(); }
-    else return /^(pt|fl|ct)-/.test(id);
+    else if (simPress(id, b)) return true;
+    else return /^(pt|fl|ct|psel|snap|axis|size)-/.test(id) || /^(axis|size):/.test(id);
     return true;
+  }
+
+  /** The simulation controls (#259): the Data page's snapshot, X/Y/Z and
+   *  size presses, and the box selection's (Select tab). */
+  function simPress(id, b) {
+    const s = L.s, p = L.points;
+    const ax = /^axis:([012])(:prev|:next)?$/.exec(id);
+    if (ax && p && b) {
+      const i = +ax[1];
+      p.axes = p.axes.slice();
+      p.axes[i] = SC.cycleField(SC.axisFields(p.fields), p.axes[i], ax[2] === ':prev' ? -1 : 1);
+      axesChanged(b);
+    } else if (id === 'axes-default' && p && b) {
+      p.axes = p.defaultAxes.slice();
+      axesChanged(b);
+    } else if ((id === 'size:uniform' || id === 'size:field') && p && b) {
+      const on = id === 'size:field' && !!s.sizeField;
+      if (on !== s.sizeOn) { s.sizeOn = on; fetchSample(b).catch(fail); }
+    } else if (id === 'size-next' && p && b) {
+      s.sizeField = SC.cycleField(SC.axisFields(p.fields), s.sizeField, 1);
+      if (s.sizeOn) fetchSample(b).catch(fail);
+    } else if ((id === 'snap-prev' || id === 'snap-next') && p && b) {
+      const next = SC.seriesStep(p.series, id === 'snap-next' ? 1 : -1);
+      if (!next) return true;
+      const keep = { axes: p.axes, colourField: s.colourField, sizeField: s.sizeField };
+      openPoints(b, { path: next.path, keep }).then(() => ctx.onSnapshot?.(next.path)).catch(fail);
+    } else if (id === 'psel-inside' || id === 'psel-outside' || id === 'psel-all') {
+      s.selMode = id.slice(5);
+    } else if (id === 'psel-clear') {
+      s.selBox = null;
+      s.selMode = 'all';
+    } else {
+      return false;
+    }
+    return true;
+  }
+  /** New X/Y/Z columns: a new box, so the crop and the selection start again. */
+  function axesChanged(b) {
+    L.s.selBox = null;
+    L.s.selMode = 'all';
+    state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
+    fetchSample(b).catch(fail);
   }
   /** A range dragged on the menu: the point table's colour window, or the
    *  velocity field's (fractions of its speed range). */
@@ -533,7 +604,7 @@ export function createLayers(ctx) {
   /** The look of a point table or field an undo step keeps: what changes the
    *  drawing only (a new column, budget or seeds asks the backend again). */
   const UNDO_KEYS = ['c0', 'c1', 'flC0', 'flC1', 'intensity', 'style', 'pointPx', 'splatSize', 'arrowScale', 'box',
-    'stream', 'arrows', 'catShow', 'catLabels', 'catPins'];
+    'stream', 'arrows', 'catShow', 'catLabels', 'catPins', 'selBox', 'selMode'];
   function undoState() { return Object.fromEntries(UNDO_KEYS.map((k) => [k, L.s[k]])); }
   function restoreUndo(o) {
     if (!o) return;
@@ -552,7 +623,7 @@ export function createLayers(ctx) {
   /** Does a press change only the drawing (one undo step before it)? */
   function undoable(id, w = {}) {
     return w.group === 'pt-style' || ['pt-smaller', 'pt-larger', 'pt-box', 'fl-box', 'fl-stream', 'fl-arrows', 'fl-shorter',
-      'fl-longer', 'ct-show', 'ct-labels', 'ct-pins'].includes(id);
+      'fl-longer', 'ct-show', 'ct-labels', 'ct-pins', 'psel-inside', 'psel-outside', 'psel-all', 'psel-clear'].includes(id);
   }
 
   /** The velocity field's colour range in its speed unit. */
@@ -573,6 +644,10 @@ export function createLayers(ctx) {
       pts: { fields: colourFields(L.points), field: s.colourField, log: s.colourLog, style: s.style,
         budget: `${(s.budgetRows / 1e6).toFixed(1)} M`, box: s.box, fieldPage: s.fieldPage },
       flow: { stream: s.stream, arrows: s.arrows, box: s.box },
+      // The simulation controls (#259).
+      sim: L.points ? { axes: L.points.axes.slice(), series: L.points.series ? L.points.series.count : 1,
+        seriesIndex: L.points.series ? L.points.series.index : 0, sizeOn: s.sizeOn, sizeField: s.sizeField,
+        style: s.style, sel: { box: !!s.selBox, mode: s.selMode } } : null,
     };
   }
   /** The values on the menu's rows ({rowKey: text}), its sliders and ranges, and status lines. */
@@ -593,6 +668,14 @@ export function createLayers(ctx) {
       notes.intensity = s.style === 'splats' ? `${s.intensity} %` : '';
       const drawn = s.govern ? L.points.drawRows : sm.count;
       notes.shown = `${(drawn / 1e6).toFixed(2)} M drawn of ${(sm.count / 1e6).toFixed(2)} M sampled, ${(sm.totalRows / 1e6).toFixed(2)} M rows`;
+      // The Data page and the box selection (#259).
+      const p = L.points;
+      notes.snapshot = p.series && p.series.count > 1 ? SC.seriesLabel(p.series) : 'One file: no numbered snapshots beside it.';
+      ['x', 'y', 'z'].forEach((a, i) => { notes[a] = `${a.toUpperCase()} = ${p.axes[i]}${SC.unitOf(p.units, p.axes[i]) ? ` [${SC.unitOf(p.units, p.axes[i])}]` : ''}`; });
+      notes.size = !s.sizeField ? 'No smoothing-length column (h, hsml, …): ▸ picks another.'
+        : s.sizeOn && p.size ? `σ = ${s.sizeField} / √2 × size, ${fmt(p.size.range[0])} to ${fmt(p.size.range[1])}`
+          : `Uniform: one size from the mean spacing; ${s.sizeField} on the right.`;
+      notes.selection = s.selBox ? `${s.selMode === 'inside' ? 'Inside shown' : s.selMode === 'outside' ? 'Inside hidden' : 'All shown'}: ${SC.boxText(p.axes, sm.bounds, s.selBox)}` : '';
     } else if (L.mode === 'flow' && L.flow && L.flow.info) {
       const i = L.flow.info;
       values['fl-range'] = [s.flC0, s.flC1];
@@ -621,7 +704,7 @@ export function createLayers(ctx) {
       lines = null;
       if (L.points?.arr) {
         cloud = new PT.PointCloud(gl, lut);
-        cloud.upload(L.points.arr.positions, L.points.arr.colour);
+        cloud.upload(L.points.arr.positions, L.points.arr.colour, L.points.arr.size || null);
       }
       if (L.flow?.arr) {
         lines = new FL.FlowLines(gl, lut);
@@ -691,29 +774,54 @@ export function createLayers(ctx) {
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
         const st = PT.splatStyle(pt.sample.bounds, pt.sample.totalRows, drawn, L.s.splatSize, L.s.intensity);
+        const size = L.s.sizeOn && pt.size ? SC.sizedSplat(pt.size.range, { splatSize: L.s.splatSize,
+          grow: Math.cbrt(Math.max(1, pt.sample.totalRows / Math.max(1, drawn))), radius: st.sampleRadius }) : null;
         cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
           opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
-          clip: state.clip });
+          clip: state.clip, size, sel: L.s.selBox && L.s.selMode !== 'all' ? { box: L.s.selBox, mode: L.s.selMode } : null });
       } else if (L.mode === 'flow' && lines && L.flow && L.flow.info) {
         const [s0, s1] = flowSpeedRange();
         lines.draw(view, model, { box: L.box, speedMin: s0, speedMax: s1,
           stream: L.s.stream, arrows: L.s.arrows, clip: state.clip });
       }
       // The backend's point session draws the whole table: no refined frame over a crop.
-      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing && !isCropped(state.clip)) ctx.refiner.composite(view, model, eye);
+      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing && !isCropped(state.clip) && !L.s.sizeOn) ctx.refiner.composite(view, model, eye);
       if (L.s.box) {
         R.drawLines(view, model);
         R.drawLabels(view, model, M.uniformScale(model));
       }
     },
     hasScene() { return L.mode !== 'cube' && !!L.box; },
+    /** The colour bar of a point table coloured by a column, or of a velocity
+     *  field (#259: with the column's unit): {lo, hi, log, title, ticks}, or null. */
+    colourBar() {
+      if (L.mode === 'points' && L.points && L.points.sample) {
+        const sm = L.points.sample;
+        if (!sm.colourField || !sm.colourRange) return null;
+        const at = (f) => PT.codeValue(f * 65535, sm.colourRange, sm.colourLog);
+        const lo = at(L.s.c0), hi = at(L.s.c1);
+        return { lo, hi, log: sm.colourLog, title: SC.colourBarTitle(sm.colourField, SC.unitOf(L.points.units, sm.colourField), sm.colourLog),
+          ticks: SC.colourBarTicks(lo, hi, sm.colourLog, niceTicks) };
+      }
+      if (L.mode === 'flow' && L.flow && L.flow.info) {
+        const [lo, hi] = flowSpeedRange();
+        return { lo, hi, log: false, title: SC.colourBarTitle('speed', L.flow.info.unit || ''), ticks: SC.colourBarTicks(lo, hi, false, niceTicks) };
+      }
+      return null;
+    },
+    /** The box selection of a point table (#259): its box, or null; set to a box (fractions) or null. */
+    get selBox() { return L.mode === 'points' ? L.s.selBox : null; },
+    setSelBox(box) { L.s.selBox = box; if (!box) L.s.selMode = 'all'; },
     /** Refinement of a point table (none for a velocity field). */
     refineFrame(t, eyes, centreView, background) {
-      if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip)) return;
+      // The session draws one splat size: no refined frame while the splats
+      // follow a column (#259; the headset's own picture stays).
+      if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip) || L.s.sizeOn) return;
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
-        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity });
+        splatSize: L.s.splatSize, pointPx: L.s.pointPx, intensity: L.s.intensity,
+        filters: SC.boxFilters(L.points.axes, sm.bounds, L.s.selBox, L.s.selMode) });
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.

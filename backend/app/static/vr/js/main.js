@@ -28,6 +28,7 @@ import * as TP from './tool-palette.js';
 import * as W from './windows.js';
 import * as RO from './readout.js';
 import * as CG from './crop-gizmo.js';
+import * as CB from './colour-bar.js';
 // The wrist cards and the toasts (issue #256).
 import * as WR from './wrist.js';
 import { HandTracker } from './hands.js';
@@ -480,6 +481,8 @@ layers = createLayers({
   rebuild: () => rebuildDecorations(),
   targetHz: () => (xr ? xr.targetHz : 60),
   onLayer: (detail) => reportProduct(null, detail),   // issue #237: a catalogue over the cube
+  // The next snapshot of a series is on show (#259): its path is the page's now.
+  onSnapshot: (path) => { state.openPath = path; finishSelBoxDrag(); toast(`Snapshot: ${HUB.fileName(path)}`, 'snapshot'); },
 });
 
 // Clipping box sliders (texture coordinates 0..1 per axis).
@@ -1616,6 +1619,7 @@ const ui = {
   pin: null,           // the pinned readout: {p} (box coordinates)
   sliding: null,       // the menu slider held: one undo step per drag
   crop: { hover: null, drag: null, key: '' },   // the Spatial crop tool's box (#277, crop-gizmo.js): pointed at, dragged
+  psel: { hover: null, drag: null, key: '' },   // a point table's box selection (#259): pointed at, dragged
   hit: null,           // where the primary ray meets the menu or a window: {point, model}
   busy: { busy: '', error: '' },   // the tools' state last frame, for the haptics
 };
@@ -1666,6 +1670,7 @@ function setMode(m) {
   ui.mode = m;
   $('ui-mode').value = m;
   finishCropDrag();
+  finishSelBoxDrag();
   ui.pin = null;
 }
 function setClipTool(t) { ui.clipTool = t; finishCropDrag(); }
@@ -1828,7 +1833,7 @@ function menuContext() {
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
     meas: { lasso, moment: av.moment, pvArmed: av.pvArmed, spectrum: !!s.spectrum, pinned: selection.hasPin() },
-    pts: lc.pts, flow: lc.flow,
+    pts: lc.pts, flow: lc.flow, sim: lc.sim,
     more: { leftHanded: settings.leftHanded, labels: settings.labels, haptics: settings.haptics, hud: state.hud },
     dbg: { governor: state.governorOn, refine: refiner.enabled, refineDepth: refiner.useDepth, refineScale: `${refiner.o.scale}×`,
       record: measure.recording, run: measure.running ? 'Cancel run' : 'Run protocol', thrSource: $('thr-source').value },
@@ -1923,6 +1928,7 @@ function menuLayout() {
   const ctx = menuContext();
   if (ui.page === 'debug' && !ctx.debug) ui.page = 'more';
   if (ui.page === 'levels' && ctx.kind !== 'cube') ui.page = 'display';
+  if (ui.page === 'data' && ctx.kind !== 'points') ui.page = 'display';
   menu.ctx = ctx;
   menu.spec = HM.pageSpec(ui.page, ctx);
   menu.pointer.layout = HM.menuLayout(ui.page, ctx);
@@ -2260,6 +2266,10 @@ function applyMenu(a, ray = null, eye = null) {
   }
   if (id === 'levels-page') { ui.page = 'levels'; return; }
   if (id === 'levels-back') { ui.page = 'display'; return; }
+  // A point table's Data page (#259) and its box selection's Clear.
+  if (id === 'pt-data') { ui.page = 'data'; return; }
+  if (id === 'data-back') { ui.page = 'display'; return; }
+  if (id === 'sel-clear' && dataKind() === 'points') { pushUndo(); finishSelBoxDrag(); layers.press('psel-clear', w); return; }
   // A point table's or a field's look (not a new sample or new lines): one undo step.
   if (layers.undoable(id, w)) pushUndo();
   if (layers.press(id, w)) return;
@@ -2578,6 +2588,103 @@ function cropPointer(worldRay, pressed, edge, tipWorld = null) {
   }
   return !!c.drag;
 }
+// ── A point table's box selection (issue #259) ──────────────────────────────
+// With Select → Box select on a point table the trigger draws a box across the
+// particles as a new crop is drawn (crop-gizmo.js: two corners across the
+// axes facing the ray, the crop's depth kept), and its dots and inside move
+// its faces and the box, as the crop's. The menu then shows only the inside,
+// all but it, or all (a test in the points' shader; the backend's frames get
+// the same box as a filter).
+
+/** Is the Box select on, over a point table? */
+function pointsBoxOn() { return ui.mode === 'select' && dataKind() === 'points' && !!cropFrame(); }
+
+/** The box selection under the ray this frame (as cropPointer). */
+function selBoxPointer(worldRay, pressed, edge, tipWorld = null) {
+  const c = ui.psel;
+  const f = cropFrame();
+  if (!f) { c.hover = null; c.drag = null; return false; }
+  const ray = worldRay ? CG.modelRay(state.model, worldRay) : null;
+  const tip = tipWorld ? M.transformPoint(M.invert(state.model), tipWorld) : null;
+  if (c.drag) {
+    if (pressed) {
+      if (ray) layers.setSelBox(CG.dragCrop(c.drag, ray, f, tip));
+      return true;
+    }
+    finishSelBoxDrag();
+  }
+  const box = layers.selBox;
+  // No box yet: anything starts a new one.
+  c.hover = ray ? (box ? CG.hitCrop(f, box, ray, { scale: M.uniformScale(state.model), tip }) : { kind: 'new' }) : null;
+  if (edge && ray && c.hover) {
+    // A new box keeps the crop's depth along the ray (its other axes drawn).
+    const d = CG.startDrag(c.hover, box || state.clip, ray, f, tip);
+    if (d) { d.undo = lookKind() ? lookSnapshot() : null; d.prev = box; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
+  }
+  return !!c.drag;
+}
+/** A box selection drag ends: a new box too small is dropped (the box before
+ *  stays), and the drag is one undo step when it changed the box. */
+function finishSelBoxDrag() {
+  const d = ui.psel.drag;
+  if (!d) return;
+  ui.psel.drag = null;
+  const now = layers.selBox;
+  const end = now ? CG.endDrag(d, now, cropFrame()) : null;
+  const dropped = d.kind === 'new' && end && !CG.clipChanged(end, d.clip0);
+  const box = dropped || !end ? d.prev : end;
+  layers.setSelBox(box ? { min: [...box.min], max: [...box.max] } : null);
+  if (d.undo && (!d.prev ? !!box : !box || CG.clipChanged(d.prev, box))) ui.undo.push(d.undo);
+  if (!d.prev && box) toast('Box drawn: Select → Show inside or Hide inside.', 'psel');
+}
+/** The box selection for one eye: its edges (green), and while the tool is on its dots. */
+function drawSelBox(v, eye) {
+  const box = layers.selBox;
+  const f = box ? cropFrame() : null;
+  if (!f) { if (ui.psel.key) { R.setLines([], R.pselLines); ui.psel.key = ''; } return; }
+  const on = pointsBoxOn();
+  const hover = on ? ui.psel.drag || ui.psel.hover : null;
+  const g = CG.gizmo(f, box, hover);
+  const key = JSON.stringify([box, hover && (hover.id || hover.kind), f, on]);
+  if (key !== ui.psel.key) {
+    const green = [0.45, 1.0, 0.55, 0.95];
+    const edges = ui.psel.drag && ui.psel.drag.kind === 'new' ? CG.previewEdges(f, box) : g.edges.map((e) => ({ ...e, color: hover && hover.kind !== 'new' ? e.color : green }));
+    R.setLines(edges, R.pselLines);
+    ui.psel.key = key;
+  }
+  R.drawLines(v, state.model, R.pselLines);
+  if (!on) return;
+  for (const h of g.handles) {
+    const p = M.transformPoint(state.model, h.point);
+    const s = h.hot ? CG.HANDLE_M * 1.5 : CG.HANDLE_M;
+    R.drawPanel(v, RO.faceEye(p, eye), cropTexture(h.hot ? 'dotHot' : 'dot'), [s, s]);
+  }
+}
+
+// ── The colour bar of a point table or a velocity field (issue #259) ────────
+const colourBar = { canvas: null, tex: null, key: '' };
+/** The bar beside the box's lower corner, turned to the eye; redrawn and
+ *  uploaded only when it changes (a 2-D texture). */
+function drawColourBar(v, eye) {
+  if (state.cube || !layers.hasScene() || !layers.state.s.box) return;
+  const bar = layers.colourBar();
+  if (!bar) return;
+  const key = CB.barKey(bar, state.colormap);
+  if (!colourBar.tex) {
+    colourBar.canvas = Object.assign(document.createElement('canvas'), { width: CB.BAR_PX[0], height: CB.BAR_PX[1] });
+    colourBar.tex = R.createPanel();
+  }
+  if (key !== colourBar.key) {
+    CB.drawColourBar(colourBar.canvas.getContext('2d'), { ...bar, lut: colormapTable(state.colormap) });
+    R.updatePanel(colourBar.tex, colourBar.canvas);
+    colourBar.key = key;
+  }
+  const e = layers.state.box.extent;
+  const corner = M.transformPoint(state.model, [e[0] / 2, -e[1] / 2, e[2] / 2]);
+  const m = M.multiply(RO.faceEye(corner, eye), M.translation(CB.BAR_SIZE[0] / 2 + 0.02, -CB.BAR_SIZE[1] / 2, 0));
+  R.drawPanel(v, m, colourBar.tex, CB.BAR_SIZE);
+}
+
 /** A crop drag ends (the trigger let go, or the tool, mode or data changed
  *  under it, #277 review): a new crop too small is dropped, and the drag is
  *  one undo step only when it changed the crop. */
@@ -2703,6 +2810,7 @@ let pressAt = null;
 let mouseOnPanel = false;      // a press on the menu or a window (?panel3d)
 let mouseOnCard = false;
 let mouseOnCrop = false;       // a press on the crop box (#277): the crop is dragged
+let mouseOnSel = false;        // a press on a point table's box selection (#259)
 /** The message card in the desktop view (?panel3d) takes the mouse first. */
 function cardMouse(e, pressed) {
   return !xr && ui.desktop && shell.cardPointer(mouseWorldRay(e), pressed);
@@ -2726,6 +2834,17 @@ canvas.addEventListener('pointerdown', (e) => {
       return;
     }
   }
+  if (!xr && pointsBoxOn()) {
+    // The box selection (#259) with the mouse, as the crop: Shift and a drag draw a new box.
+    const f = cropFrame(), ray = CG.modelRay(state.model, mouseWorldRay(e));
+    const box = layers.selBox;
+    const hit = box ? CG.hitCrop(f, box, ray, { scale: M.uniformScale(state.model) }) : { kind: 'new' };
+    if (hit.kind !== 'new' || e.shiftKey) {
+      mouseOnSel = true;
+      selBoxPointer(mouseWorldRay(e), true, true);
+      return;
+    }
+  }
   dragging = { x: e.clientX, y: e.clientY };
   pressAt = { x: e.clientX, y: e.clientY, t: performance.now() };
   state.moving = true;
@@ -2733,7 +2852,9 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (cardMouse(e, mouseOnCard) || mouseOnCard) return;
   if (mouseOnCrop) { cropPointer(mouseWorldRay(e), true, false); return; }
+  if (mouseOnSel) { selBoxPointer(mouseWorldRay(e), true, false); return; }
   if (!xr && !dragging && cropToolOn()) cropPointer(mouseWorldRay(e), false, false);
+  if (!xr && !dragging && pointsBoxOn()) selBoxPointer(mouseWorldRay(e), false, false);
   if (!xr && (mouseOnPanel || !dragging)) {
     const onPanel = uiPointer(mouseWorldRay(e), mouseOnPanel, camEye());
     if (mouseOnPanel) return;
@@ -2749,6 +2870,7 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   if (mouseOnCard) { mouseOnCard = false; cardMouse(e, false); cardMouse(e, false); return; }
   if (mouseOnCrop) { mouseOnCrop = false; cropPointer(mouseWorldRay(e), false, false); return; }
+  if (mouseOnSel) { mouseOnSel = false; selBoxPointer(mouseWorldRay(e), false, false); return; }
   if (mouseOnPanel) {
     mouseOnPanel = false;
     if (!xr) { uiPointer(mouseWorldRay(e), false, camEye()); uiPointer(mouseWorldRay(e), false, camEye()); }
@@ -2846,6 +2968,8 @@ function desktopFrame(time) {
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
   else if (layers.hasScene()) layers.drawScene(lastDesktopView, 0, h);
   drawCropGizmo(lastDesktopView, camEye());
+  drawSelBox(lastDesktopView, camEye());
+  drawColourBar(lastDesktopView, camEye());
   if (ui.desktop) {
     // The headset's menu and result windows (issue #201), used with the mouse.
     menuLayout();
@@ -3634,9 +3758,14 @@ function handleInput(frame, dtS) {
   if (act('primary', 'trigger') === 'clip-drag' && cropToolOn()) {
     // The crop (#277), on any data shown: a drag under way keeps the ray even over a panel.
     cropPointer(ui.crop.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
+  } else if (pointsBoxOn()) {
+    // A point table's box selection (#259), as the crop.
+    selBoxPointer(ui.psel.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
   } else {
     ui.crop.hover = null;
     finishCropDrag();
+    ui.psel.hover = null;
+    finishSelBoxDrag();
     if (trigEdge && boxRay) primaryAct(act('primary', 'trigger'), boxRay);
   }
 
@@ -3891,6 +4020,8 @@ function onXRFrame(time, frame) {
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
     drawCropGizmo(v, M.position(view.transform.matrix));
+    drawSelBox(v, M.position(view.transform.matrix));
+    drawColourBar(v, M.position(view.transform.matrix));
     if (!asLayers) for (const o of overlays) R.drawPanel(v, o.model, o.handle, o.size);
     R.drawModels(v, modelDraws, modelDrawCount);   // the real controller models
     R.drawMesh(v);            // the page's own controllers and the hands (models.js)
@@ -4311,7 +4442,9 @@ if (query.has('debug')) {
     gl.viewport(0, 0, w, h);
     gl.clearColor(...DESKTOP_BG, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    R.drawVolume(desktopView(), state.model, volParams());
+    // The cube; a point table or a field (#259) with its own drawing (the box too, when shown).
+    if (state.cube) R.drawVolume(desktopView(), state.model, volParams());
+    else if (layers.hasScene()) layers.drawScene(desktopView(), 0, h);
     const px = new Uint8Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
     const bg = DESKTOP_BG.map((v) => Math.round(v * 255));

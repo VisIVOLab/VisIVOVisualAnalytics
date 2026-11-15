@@ -1148,6 +1148,32 @@ the [report](#the-report) is made from.
    report's FPS and missed % with a record running should equal what the
    wrist shows without one.
 
+### Simulation controls (#259)
+
+Over USB, a numbered series of VBT snapshots (`run_001.bin`, `run_002.bin`,
+... with a smoothing-length column such as `hsml`), opened from the middle one.
+
+1. **Snapshots.** Display → *Data ▸* → *Next ▸*: the next file opens (a toast
+   names it); the view, the colour column, the X/Y/Z columns and the crop
+   stay. *◂ Previous* goes back; at either end the button is greyed with
+   *The first/last snapshot.* Note how long a step takes.
+2. **Columns.** *X ▸*: the particles are laid out along the next column, the
+   box and ticks follow; *Default axes* goes back.
+3. **Sizes.** Display → *Splats*, then Data → *By hsml*: dense regions (small
+   h) get small, bright splats and the outskirts large, faint ones; *Uniform*
+   goes back. Compare with the desktop's ray-traced still of the same
+   snapshot: the structure must look alike. With `?debug`, FPS and GPU ms with
+   *Uniform* and with *By hsml* (report both).
+4. **Colour bar.** Beside the box's lower corner: the map, ticks and the column
+   with its unit when the file has one (a catalogue with units), or *(no unit
+   in the file)* for a VBT. It must be readable at arm's length and turn to
+   you as you walk around.
+5. **Box select.** Select tab (the *Box select* lit): drag with the trigger
+   across the particles: a green box. Its dots move faces, its inside moves it.
+   *Show inside*: only the particles inside; *Hide inside*: all but those;
+   *Show all*. Stand still: the refined frame shows the same particles.
+   *Undo*, *Clear*.
+
 ### Threshold in σ, info line, Levels (#258)
 
 Over USB, HCG 44 (then a VBT density volume or any cube without noise for

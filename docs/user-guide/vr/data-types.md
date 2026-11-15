@@ -32,15 +32,55 @@ controls are on the same tabs of the menu as a cube's
 [The hand menu](controls.md#the-hand-menu)). On **Display**, for a point
 table: *Colour by* (a chip per column), *Log* and the colour window, the
 colour map, *Points* or *Smooth (splats)*, *Size −/+*, *Intensity*,
-*Particles shown* (the next budget of rows), *Sample again*, *Box and ticks*;
+*Particles shown* (the next budget of rows), *Again* (sample again), *Box*
+(the box and its ticks) and *Data ▸* (the snapshots, the X/Y/Z columns and the
+splat sizes, below);
 for a velocity field: *Streamlines*, *Arrows*, the arrow length, the seed
 density (*Fewer*, *More*) and *Reseed streamlines*, the colour window over the
 speed, the colour map, *Box and ticks* and the box size (read-only). On
 **Range**, both have the spatial crop (*Crop x/y/z*, *Reset crop*): the points
 and lines outside it are not drawn. A catalogue over a cube is a toggle on
-Display (*Overlay*, *Labels*, *Through velocity*). Select and Measure are
-greyed on point tables and velocity fields, with the reason under each
-control.
+Display (*Overlay*, *Labels*, *Through velocity*). On a point table Select
+has the *Box select* (below); Measure is greyed on point tables and velocity
+fields, and Select on velocity fields, with the reason under each control.
+
+### Simulation controls (#259)
+
+- **Snapshots.** *Data ▸ → Snapshot*: *◂ Previous* and *Next ▸* open the file
+  before or after this one among those beside it whose names differ only in
+  their number (`run_001.bin`, `run_002.bin`, ...; `/v1/points/series`). The
+  next snapshot keeps the X/Y/Z columns, the colour column, the splat sizes,
+  the crop and the box selection where it has those columns, and the view
+  stays where it is. There is no time-series data model: a snapshot is a file
+  opened as any table, so a step takes as long as opening that file (the
+  sample is fetched again).
+- **X, Y, Z.** *Data ▸ → X / Y / Z*: *◂* and *▸* (or the column's name) step
+  through the table's columns for that axis; *Default axes* goes back to the
+  table's own. A new column makes a new box: the crop and the box selection
+  start again.
+- **Splat sizes.** *Data ▸ → Splat size*: *Uniform* (one size from the mean
+  spacing of the rows, as before) or *By hsml* (a smoothing-length column,
+  found by its usual names: `h`, `hsml`, `sml`, `SmoothingLength`,
+  `smoothing_length`; *Column ▸* picks another). Each splat is then a Gaussian
+  of σ = h / √2 (the ray-traced renderer's kernel, exp(−d²/h²)) times the size
+  step, larger in proportion when only a sample is drawn, and keeps its light
+  (a splat twice as wide is a quarter as bright, within ×16). Splats only. The
+  backend's refined frames draw one size, so they are off while the splats
+  follow a column; the headset's own picture stays.
+- **Units on the colour bar.** A table coloured by a column, or a velocity
+  field, shows a colour bar beside the box's lower corner: the colour map over
+  the colour window, its ticks (decades on a log scale) and the column with
+  its unit (`mass [Msun]`) when the file declares it (a catalogue's VOTable,
+  FITS or IPAC units, or a unit in the column's name, `T (K)`); a VBT has no
+  units in its header, which the bar says. *Box* hides it with the box.
+- **Box select.** Select tab → *Box select*: drag with the trigger across the
+  particles to draw a box (as a new crop is drawn: the two corners across the
+  axes facing the ray, the crop's depth kept; with the mouse, Shift and drag);
+  its dots move a face, its inside moves it. Then *Show inside*, *Hide inside*
+  or *Show all*; *Clear* drops it, *Undo* takes back each press. The box is a
+  test in the headset's own point shader (the sample is not fetched again) and
+  goes to the backend's refined frames as a filter, in the table's units
+  (`filters` with a `box`).
 
 ## Point tables
 

@@ -105,8 +105,28 @@ async def points_info(request: PointInfoRequest, _: None = _auth,
         table = await asyncio.to_thread(_point_table, entry, spec)
     except _BAD_TABLE as exc:
         raise HTTPException(422, f"The table could not be read: {exc}") from exc
+    # A catalogue's column units, as its file declares them (issue #259: the
+    # colour bar's unit); a VBT's header carries none.
+    frame = entry.get("dataframe")
+    declared = ((getattr(frame, "attrs", None) or {}).get("units") or {}) if frame is not None else {}
+    units = {k: str(v) for k, v in dict(declared).items() if k in table.columns and v not in (None, "")}
     return {"valid": True, "num_rows": int(table.num_rows), "fields": list(table.columns),
-            "axes": list(table.axes), "sky": table.sky is not None}
+            "axes": list(table.axes), "sky": table.sky is not None, "units": units}
+
+
+@router.post("/v1/points/series", tags=["vr"])
+async def points_series(request: PointInfoRequest, _: None = _auth,
+                        session: Session = Depends(get_session)) -> dict:
+    """The snapshots beside the table's file (issue #259, app/snapshot_series.py):
+    the files in its folder whose names differ from it only in their number,
+    in order, and where this one is. Only names are read."""
+    from ..snapshot_series import snapshot_series   # noqa: PLC0415
+    entry = _require_dataset(session, request.dataset_id)
+    _point_spec(entry)                                  # a table of points, else 422
+    path = entry.get("head_path") if entry.get("kind") == "vbt" else entry.get("path")
+    if not path:
+        raise HTTPException(422, "The table has no file to step from.")
+    return {"valid": True, **await asyncio.to_thread(snapshot_series, str(path))}
 
 
 class PointSampleRequest(BaseModel):
@@ -120,6 +140,9 @@ class PointSampleRequest(BaseModel):
     color_max: float | None = None
     max_points: int = Field(2_000_000, ge=1, le=10_000_000)
     filters: list[dict] = []
+    # Each row's size from this column (a smoothing length, issue #259):
+    # 16-bit codes of its log10 after the colours, X-Visivo-Size-Range.
+    size_field: str | None = None
 
 
 @router.post("/v1/points/sample_bin", tags=["vr"])
@@ -139,7 +162,7 @@ async def points_sample_bin(request: PointSampleRequest, _: None = _auth,
         chosen = tuple(a or d for a, d in zip(axes, table.axes)) if axes else None
         s = sample_points(table, request.max_points, chosen, request.color_field,
                           request.color_log, request.color_min, request.color_max,
-                          request.filters)
+                          request.filters, request.size_field)
         return s.encode(), headers(s)
 
     try:

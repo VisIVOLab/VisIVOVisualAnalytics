@@ -70,8 +70,12 @@ test('the governor sheds rows when the GPU is late and takes them back slowly', 
 test('point look commands and box decorations', () => {
   const cmds = PT.pointLook({ axes: ['X', 'Y', 'Z'], colourField: null, colourRange: null, colourLog: false,
     lut: colormapTable('grey'), c0: 0, c1: 1, style: 'splats', splatSize: 2, pointPx: 3, intensity: 40 });
-  assert.deepEqual(cmds.map((c) => c.type), ['set_point_fields', 'set_color', 'set_point_style', 'set_show_outline']);
+  assert.deepEqual(cmds.map((c) => c.type), ['set_point_fields', 'set_color', 'set_point_style', 'set_show_outline', 'set_filters']);
   assert.equal(cmds[2].mode, 'gaussian');
+  // The box selection (#259) reaches the session as its filters; none: every row.
+  assert.deepEqual(cmds[4].filters, []);
+  const box = [{ box: { fields: ['X', 'Y', 'Z'], min: [0, 0, 0], max: [1, 1, 1] }, op: 'outside' }];
+  assert.deepEqual(PT.pointLook({ axes: ['X', 'Y', 'Z'], lut: colormapTable('grey'), style: 'points', filters: box })[4].filters, box);
   const { segs, labels } = PT.boxDecorations(PT.dataToModel([0, 10, 0, 5, 0, 1]), ['X', 'Y', 'Z'], niceTicks);
   assert.ok(segs.length >= 12 && labels.some((l) => l.text === '10'));
 });

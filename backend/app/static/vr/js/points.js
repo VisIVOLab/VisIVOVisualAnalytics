@@ -135,6 +135,8 @@ export function pointLook(p) {
     { type: 'set_point_style', mode: p.style === 'splats' ? 'gaussian' : 'points',
       size: p.style === 'splats' ? p.splatSize : Math.max(1, Math.round(p.pointPx)), intensity: p.intensity },
     { type: 'set_show_outline', visible: false },
+    // The box selection (issue #259), as the sample's filters.
+    { type: 'set_filters', filters: p.filters || [] },
   ];
 }
 
@@ -196,6 +198,7 @@ const VS = `#version 300 es
 precision highp float;
 in vec3 aPos;          // 0..1 over the bounds (normalised uint16)
 in float aVal;         // 0..1 colour code
+in float aSize;        // 0..1 size code (#259: log10 of a smoothing length)
 uniform mat4 uMV;
 uniform mat4 uP;
 uniform vec3 uLo;      // model space of code 0 and the span to code 1
@@ -207,18 +210,32 @@ uniform float uC0;
 uniform float uC1;
 uniform vec3 uClipMin; // the spatial crop (#257), box fractions: aPos itself
 uniform vec3 uClipMax;
+// Splats sized by a column (#259, sim-controls.js sizedSplat): x on, y log10
+// of the smallest size, z the log span; uSizeMul turns a size into a factor of
+// uRadius. Each splat's light is kept by 1 / factor² (clamped).
+uniform vec3 uSize;
+uniform float uSizeMul;
+// The box selection (#259), box fractions as the crop: 1 only inside, 2 all but inside.
+uniform vec3 uSelMin;
+uniform vec3 uSelMax;
+uniform int uSelMode;
 out float vT;
 out float vSplat;
+out float vLight;
 void main() {
-  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))) {
+  bool inSel = all(greaterThanEqual(aPos, uSelMin)) && all(lessThanEqual(aPos, uSelMax));
+  if (any(lessThan(aPos, uClipMin)) || any(greaterThan(aPos, uClipMax))
+      || (uSelMode == 1 && !inSel) || (uSelMode == 2 && inSel)) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // outside the view volume: culled
     gl_PointSize = 1.0;
-    vT = 0.0; vSplat = 0.0;
+    vT = 0.0; vSplat = 0.0; vLight = 0.0;
     return;
   }
   vec4 eye = uMV * vec4(uLo + aPos * uSpan, 1.0);
   gl_Position = uP * eye;
-  float px = uPx > 0.0 ? uPx : uRadius / max(1e-4, -eye.z);
+  float f = uSize.x > 0.5 ? pow(10.0, uSize.y + aSize * uSize.z) * uSizeMul : 1.0;
+  vLight = clamp(1.0 / max(f * f, 1e-12), 0.0625, 16.0);
+  float px = uPx > 0.0 ? uPx : uRadius * f / max(1e-4, -eye.z);
   gl_PointSize = clamp(px, 1.0, uMaxPx);
   vSplat = uPx > 0.0 ? 0.0 : clamp(px, 0.0, 1.0);   // sub-pixel splats: their light, not a pixel's
   vT = clamp((aVal - uC0) / max(1e-6, uC1 - uC0), 0.0, 1.0);
@@ -228,6 +245,7 @@ const FS = `#version 300 es
 precision mediump float;
 in float vT;
 in float vSplat;
+in float vLight;
 uniform sampler2D uLut;
 uniform float uSolid;
 uniform float uOpacity;
@@ -241,7 +259,7 @@ void main() {
     outColor = vec4(c, 1.0);
   } else {
     vec2 d = (gl_PointCoord - 0.5) * 6.0;      // out to 3 sigma, as the backend's splats
-    float g = exp(-0.5 * dot(d, d)) * uOpacity * max(vSplat, 0.25);
+    float g = exp(-0.5 * dot(d, d)) * uOpacity * max(vSplat, 0.25) * vLight;
     outColor = vec4(c * g, g);
   }
 }`;
@@ -257,6 +275,7 @@ function compile(gl, vs, fs) {
   }
   gl.bindAttribLocation(p, 0, 'aPos');
   gl.bindAttribLocation(p, 1, 'aVal');
+  gl.bindAttribLocation(p, 2, 'aSize');
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(`points link: ${gl.getProgramInfoLog(p)}`);
   const u = {};
@@ -274,14 +293,17 @@ export class PointCloud {
     this.vao = gl.createVertexArray();
     this.posBuf = gl.createBuffer();
     this.valBuf = gl.createBuffer();
+    this.sizeBuf = gl.createBuffer();
+    this.hasSize = false;
     this.count = 0;
     this.hasColour = false;
     this.maxPx = Math.min(64, gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1] || 64);
     this.bytes = 0;
   }
 
-  /** Uploads a sample; returns the milliseconds it took (CPU side). */
-  upload(positions, colour) {
+  /** Uploads a sample (`size`: its size codes, #259, or null); returns the
+   *  milliseconds it took (CPU side). */
+  upload(positions, colour, size = null) {
     const gl = this.gl, t0 = performance.now();
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuf);
@@ -292,17 +314,29 @@ export class PointCloud {
     gl.bufferData(gl.ARRAY_BUFFER, colour || new Uint16Array(positions.length / 3), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 1, gl.UNSIGNED_SHORT, true, 2, 0);
+    if (size) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.sizeBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, size, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 1, gl.UNSIGNED_SHORT, true, 2, 0);
+    } else {
+      gl.disableVertexAttribArray(2);
+    }
     gl.bindVertexArray(null);
+    if (!size) gl.vertexAttrib1f(2, 0);
     this.count = positions.length / 3;
     this.hasColour = !!colour;
-    this.bytes = positions.byteLength + (colour ? colour.byteLength : 2 * this.count);
+    this.hasSize = !!size;
+    this.bytes = positions.byteLength + (colour ? colour.byteLength : 2 * this.count) + (size ? size.byteLength : 0);
     return performance.now() - t0;
   }
 
   /**
    * One eye. `p`: {box (dataToModel), bounds, style 'points' | 'splats', pointPx,
    * radius (data units), opacity, c0, c1, viewportH, count (rows to draw),
-   * clip ({min, max} box fractions over the sample's bounds: the crop; none = all)}.
+   * clip ({min, max} box fractions over the sample's bounds: the crop; none = all),
+   * size (splats by a column, sim-controls.js sizedSplat: {log, mul}; none = uniform),
+   * sel ({box, mode 'inside' | 'outside'}: the box selection, #259; none = all)}.
    */
   draw(view, model, p) {
     const gl = this.gl;
@@ -330,6 +364,13 @@ export class PointCloud {
     gl.uniform3fv(u.uClipMax, p.clip ? p.clip.max : [1, 1, 1]);
     gl.uniform1f(u.uSolid, this.hasColour ? 0 : 1);
     gl.uniform1f(u.uOpacity, p.opacity);
+    const sized = splats && p.size && this.hasSize;
+    gl.uniform3fv(u.uSize, sized ? [1, p.size.log[0], p.size.log[1]] : [0, 0, 0]);
+    gl.uniform1f(u.uSizeMul, sized ? p.size.mul : 1);
+    const sel = p.sel && p.sel.box ? p.sel : null;
+    gl.uniform1i(u.uSelMode, sel ? (sel.mode === 'inside' ? 1 : sel.mode === 'outside' ? 2 : 0) : 0);
+    gl.uniform3fv(u.uSelMin, sel ? sel.box.min : [0, 0, 0]);
+    gl.uniform3fv(u.uSelMax, sel ? sel.box.max : [1, 1, 1]);
     gl.uniform1i(u.uMode, splats ? 1 : 0);
     // Squares up to 3 px (no discard: the early depth test stays on); discs above.
     gl.uniform1i(u.uRound, !splats && p.pointPx > 3 ? 1 : 0);

@@ -64,11 +64,18 @@ class PointSample:
     colour_log: bool = False
     data_range: tuple[float, float] | None = None     # of the colour column, finite rows
     names: list[str] = field(default_factory=list)
+    # Each row's size (issue #259: a smoothing length), 16-bit codes of its
+    # log10 over size_range (data units); after the colours in the body.
+    size: np.ndarray | None = None
+    size_field: str | None = None
+    size_range: tuple[float, float] | None = None
 
     def encode(self) -> bytes:
         parts = [np.ascontiguousarray(self.positions, dtype="<u2").tobytes()]
         if self.colour is not None:
             parts.append(np.ascontiguousarray(self.colour, dtype="<u2").tobytes())
+        if self.size is not None:
+            parts.append(np.ascontiguousarray(self.size, dtype="<u2").tobytes())
         return b"".join(parts)
 
 
@@ -340,9 +347,11 @@ def dequantise(codes: np.ndarray, lo: float, hi: float) -> np.ndarray:
 def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
                   colour_field: str | None = None, colour_log: bool | None = False,
                   colour_min: float | None = None, colour_max: float | None = None,
-                  filters: list[dict] | None = None) -> PointSample:
+                  filters: list[dict] | None = None, size_field: str | None = None) -> PointSample:
     """An even sample of at most ``limit`` placed rows of ``table`` (a
-    :class:`app.point_table.PointTable`)."""
+    :class:`app.point_table.PointTable`). ``size_field``: a column of sizes
+    (a smoothing length, data units), sent as 16-bit codes of its log10
+    (:func:`size_codes`)."""
     limit = max(1, min(int(limit), MAX_SAMPLE))
     axes = tuple(axes) if axes else tuple(table.axes)
     for name in axes:
@@ -350,6 +359,8 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
             raise ValueError(f"Unknown position field: {name!r}")
     if colour_field is not None and colour_field not in table.columns:
         raise ValueError(f"Unknown colour field: {colour_field!r}")
+    if size_field is not None and size_field not in table.columns:
+        raise ValueError(f"Unknown size field: {size_field!r}")
     if filters:
         candidates = filtered_rows(table, filters)
         rows = candidates[even_rows(len(candidates), limit)]
@@ -410,7 +421,34 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
         del values
         out.colour = codes[order]
         out.colour_field, out.colour_range, out.colour_log = colour_field, (cmin, cmax), log
+    if size_field is not None:
+        column = table.columns[size_field]
+        values = np.empty(len(rows), dtype=np.float64)
+        for start in range(0, len(rows), _STAT_CHUNK):
+            values[start:start + _STAT_CHUNK] = column[rows[start:start + _STAT_CHUNK]]
+        codes, srange = size_codes(values)
+        out.size = codes[order]
+        out.size_field, out.size_range = size_field, srange
     return out
+
+
+def size_codes(values: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
+    """Sizes (data units) as 16-bit codes of their log10 over ``(lo, hi)``,
+    the smallest and largest positive finite size: code c stands for
+    10 ** (log10 lo + c / 65535 (log10 hi - log10 lo)). A size that is not
+    positive and finite takes the median positive size (a particle is never
+    dropped for its size). Raises ValueError when no size is positive."""
+    v = np.asarray(values, dtype=np.float64)
+    ok = np.isfinite(v) & (v > 0)
+    if not ok.any():
+        raise ValueError("The size column has no positive value.")
+    lo, hi = float(v[ok].min()), float(v[ok].max())
+    if not hi > lo:
+        hi = lo * 1.0001
+    w = np.where(ok, v, float(np.median(v[ok])))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        logs = np.log10(w)
+    return _quantise_chunked(logs, math.log10(lo), math.log10(hi)), (lo, hi)
 
 
 def headers(s: PointSample) -> dict[str, str]:
@@ -430,4 +468,7 @@ def headers(s: PointSample) -> dict[str, str]:
         h["X-Visivo-Color-Log"] = "1" if s.colour_log else "0"
         if s.data_range is not None:
             h["X-Visivo-Data-Range"] = ",".join(repr(float(v)) for v in s.data_range)
+    if s.size_field is not None:
+        h["X-Visivo-Size-Field"] = s.size_field
+        h["X-Visivo-Size-Range"] = ",".join(repr(float(v)) for v in s.size_range)
     return h

@@ -192,7 +192,7 @@ test('lasso a galaxy and Isolate it: two presses in all, the trigger on the gala
 });
 
 test('choosing a tab sets the mode; the menu opens on the tab of the mode', () => {
-  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', debug: null });
+  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', debug: null });
   assert.equal(HM.pageOnOpen('display', 'select'), 'select', 'A changed the mode: its tab');
   assert.equal(HM.pageOnOpen('measure', 'explore'), 'measure', 'Measure keeps the explore mode');
   assert.equal(HM.pageOnOpen('more', 'clip'), 'more', 'More sets no mode');
@@ -460,6 +460,36 @@ test('the value scale (#258): 3σ and 5σ on Display, Levels one press from it, 
   assert.equal(why('display', sig, 'levels-page'), '');
 });
 
+test('simulation data (#259): the Data page one press from Display, the Box select on particles', () => {
+  const sim = { axes: ['x', 'y', 'z'], series: 5, seriesIndex: 0, sizeOn: false, sizeField: 'hsml', style: 'splats', sel: { box: false, mode: 'all' } };
+  const pts = { ...CONTEXTS.points, sim };
+  const why = (page, ctx, id) => HM.widgetById(HM.menuLayout(page, ctx), id).disabled;
+  assert.equal(why('display', pts, 'pt-data'), '');
+  assert.equal(HM.tabOf('data'), 'display');
+  assert.equal(HM.pressesTo('axis:0', 'display', pts), 2);
+  assert.equal(HM.pressesTo('axis:0', 'select', pts), 3);
+  assert.equal(HM.pressesTo('axis:0', 'data', pts), 1);
+  assert.equal(HM.widgetById(HM.menuLayout('data', pts), 'axis:1').label, 'y');
+  assert.equal(why('data', pts, 'snap-prev'), 'The first snapshot.');
+  assert.equal(why('data', pts, 'snap-next'), '');
+  assert.equal(why('data', { ...pts, sim: { ...sim, series: 1 } }, 'snap-next'), HM.WHY.noSeries);
+  assert.equal(why('data', pts, 'size:field'), '');
+  assert.equal(why('data', { ...pts, sim: { ...sim, sizeField: null } }, 'size:field'), HM.WHY.noSizeField);
+  assert.equal(why('data', { ...pts, sim: { ...sim, style: 'points' } }, 'size:field'), HM.WHY.splatsOnly);
+  assert.equal(why('data', CONTEXTS.cube, 'axis:0'), HM.WHY.pointsOnly);
+  // Select on particles: the Box select, the cube's tools greyed; the box's actions once drawn.
+  assert.equal(why('select', pts, 'tool:box'), '');
+  assert.equal(why('select', pts, 'tool:lasso'), HM.WHY.cubeTool);
+  assert.equal(why('select', pts, 'sel-clear'), '');
+  assert.equal(why('select', CONTEXTS.flow, 'tool:box'), HM.WHY.particlesSelect);
+  assert.ok(!HM.menuLayout('select', pts).some((w) => w.id === 'psel-inside'));
+  const drawn = { ...pts, sim: { ...sim, sel: { box: true, mode: 'inside' } } };
+  const L = HM.menuLayout('select', drawn);
+  for (const id of ['psel-inside', 'psel-outside', 'psel-all']) assert.equal(HM.widgetById(L, id).disabled, '', id);
+  assert.ok(HM.widgetById(L, 'psel-inside').on);
+  assert.equal(HM.pressesTo('tool:box', 'display', pts), 2, 'the box select: a tab away');
+});
+
 test('drawMenu draws every page of every kind on a 2-D context stand-in', () => {
   const calls = [];
   const target = { save() {}, restore() {}, translate(...a) { calls.push(['translate', a]); }, measureText: (t) => ({ width: String(t).length * 12 }),
@@ -470,7 +500,8 @@ test('drawMenu draws every page of every kind on a 2-D context stand-in', () => 
     status: ['busy', ['an error', '#ff8a8a'], 'a long line '.repeat(30)],
     hist: { density: Array.from({ length: 160 }, (_, k) => (k * 37) % 50), thr: 0.3, cmax: 0.8, marks: [{ at: 0.25, label: '3σ' }, { at: 0.33, label: '5σ' }] } };
   let n = 0;
-  for (const ctx of [...Object.values(CONTEXTS), { ...CONTEXTS.cube, lv: { sigma: true, hist: true, stretch: 'power' } }]) {
+  const sim = { axes: ['x', 'y', 'z'], series: 3, seriesIndex: 1, sizeOn: true, sizeField: 'hsml', style: 'splats', sel: { box: true, mode: 'outside' } };
+  for (const ctx of [...Object.values(CONTEXTS), { ...CONTEXTS.cube, lv: { sigma: true, hist: true, stretch: 'power' } }, { ...CONTEXTS.points, sim }]) {
     for (const page of HM.PAGES) { HM.drawMenu(c, page, HM.pageSpec(page, ctx), view, { hover: 'tab:range', active: 'thr' }, ctx); n++; }
   }
   assert.equal(calls.filter(([k]) => k === 'translate').length, n);
