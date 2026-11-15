@@ -70,9 +70,10 @@ export class EyeBufferGovernor {
     this.sinceUp = Infinity;
   }
 
-  /** The next larger step above `s`, up to the start, or s when there is none. */
+  /** The next larger step above `s`, up to the start (a candidate itself, a
+   *  chosen scale outside the steps), or s when there is none. */
   nextUp(s) {
-    const above = this.steps.filter((v) => v > s + 1e-6 && v <= this.start + 1e-6);
+    const above = [...this.steps, this.start].filter((v) => v > s + 1e-6 && v <= this.start + 1e-6);
     return above.length ? Math.min(...above) : s;
   }
 
@@ -83,12 +84,19 @@ export class EyeBufferGovernor {
   }
 
   /**
-   * One frame: its interval, the display's, and whether the samples per
-   * voxel are at their floor. Returns the eye-buffer scale to use (a change
-   * when it differs from the last one).
+   * One frame: its interval, the display's, whether the samples per voxel
+   * are at their floor, and whether it drew little (`idle`: splats under a
+   * refined frame). Returns the eye-buffer scale to use (a change when it
+   * differs from the last one).
    */
-  update(intervalMs, targetMs, spvAtFloor) {
+  update(intervalMs, targetMs, spvAtFloor, idle = false) {
     if (!(intervalMs > 0) || !(targetMs > 0) || intervalMs > 250) return this.scale;
+    if (idle) {
+      // A frame that drew little (splats under a refined frame, #295): not
+      // counted, and the clean run restarts after it.
+      this.windowMs = 0; this.missed = 0; this.frames = 0; this.cleanMs = 0;
+      return this.scale;
+    }
     this.windowMs += intervalMs;
     this.frames++;
     if (intervalMs > targetMs * 1.5) this.missed++;

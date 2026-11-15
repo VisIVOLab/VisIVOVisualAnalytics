@@ -303,3 +303,41 @@ test('row governor without a GPU timer (#295): frame intervals, ceiling, half-oc
   assert.equal(PT.quantizeRows(700_000, 600_000), 600_000);
   assert.equal(PT.HEADSET_SPLAT_ROWS, 200_000);
 });
+
+test('row governor review (#297): which governor, earned clean time, decaying backoff, step hysteresis', () => {
+  const hz = 72, P = 1000 / hz;
+  // 1, 6: the frame governor only in a VR session whose display rate has
+  // settled; a GPU timer wins; else the count is kept (a desktop browser
+  // without a timer may run at 30 or 50 Hz against an assumed 60).
+  assert.equal(PT.rowGovernorKind({ gpuMs: 3.2, inXR: false, rateSettled: false }), 'gpu');
+  assert.equal(PT.rowGovernorKind({ gpuMs: -1, inXR: true, rateSettled: true }), 'frames');
+  assert.equal(PT.rowGovernorKind({ gpuMs: -1, inXR: true, rateSettled: false }), 'none', 'settling 90 -> 72 Hz');
+  assert.equal(PT.rowGovernorKind({ gpuMs: -1, inXR: false, rateSettled: false }), 'none', 'Safari or Firefox');
+  const clean = { n: 18, meanMs: P, medianMs: P, missed: 0, slow: 0 };
+  const late = { n: 18, meanMs: 2 * P, medianMs: 2 * P, missed: 0.6, slow: 0.6 };
+  // 2: clean time is earned by consecutive updates only: a gap (splats not
+  // drawn under a refined frame) or interrupted() restarts it.
+  const g = new PT.FrameRowGovernor({ holdMs: 0, ceilingRiseMs: 1500 });
+  g.update(400_000, 1_000_000, late, hz, 0);                    // ceiling 400 k
+  g.update(340_000, 1_000_000, clean, hz, 250);
+  assert.equal(g.cleanSince, 250);
+  g.update(340_000, 1_000_000, clean, hz, 5000);               // 4.75 s not drawn
+  assert.equal(g.cleanSince, 5000, 'the gap is not clean time');
+  assert.equal(g.ceiling, 400_000, 'no unearned rise');
+  g.interrupted(5100);
+  assert.equal(g.cleanSince, null);
+  assert.equal(g.update(340_000, 1_000_000, clean, hz, 5300), 340_000, 'held after the frames come back');
+  // 3: the probing backoff decays with time: a cut long after the probes
+  // (a zoom into the box) is climbed back from at the fast pace.
+  const k = new PT.FrameRowGovernor({ holdMs: 0, ceilingRiseMs: 1500, decayMs: 20000 });
+  k.riseMs = 48000; k.lastBackoffAt = 0;
+  for (let t = 250; t <= 90_000; t += 250) k.update(300_000, 1_000_000, clean, hz, t);
+  assert.equal(k.riseMs, 3000, 'halved every 20 s: 48 -> 24 -> 12 -> 6 -> 3 s');
+  // 4: steps with hysteresis: a count hovering at a midpoint keeps its step.
+  const prev = PT.quantizeRows(200_000, 1_000_000);              // 185 364
+  for (const n of [215_000, 225_000, 240_000, 160_000, 141_000]) assert.equal(PT.quantizeRows(n, 1_000_000, prev), prev, String(n));
+  assert.equal(PT.quantizeRows(260_000, 1_000_000, prev), 262_144, 'more than 0.4 octave: the next step');
+  assert.equal(PT.quantizeRows(120_000, 1_000_000, prev), 131_072);
+  assert.equal(PT.quantizeRows(900_000, 1_000_000, 1_000_000), 1_000_000, 'the whole sample kept near it');
+  assert.equal(PT.quantizeRows(240_000, 200_000, prev), prev, 'clamped to the sample before comparing');
+});

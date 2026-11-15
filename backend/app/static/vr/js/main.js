@@ -477,6 +477,8 @@ layers = createLayers({
   // this is a headset and the splats' float target: half floats on a headset
   // (#295), ?splattarget=f32|f16|8bit to measure another.
   frames: () => stats.buf,
+  inXR: () => !!xr,
+  rateSettled: () => !!(xr && xr.rateLog && xr.rateLog.done),
   headset: isHeadsetBrowser(navigator.userAgent),
   splatTarget: ['f32', 'f16', '8bit'].includes(query.get('splattarget')) ? query.get('splattarget')
     : (isHeadsetBrowser(navigator.userAgent) ? 'f16' : 'auto'),
@@ -3662,15 +3664,21 @@ function onXRFrame(time, frame) {
   if (xr.bench) xr.bench.record(interval, cpu, R.gpuMs);
   else measure.frame(interval, cpu, R.gpuMs);
   if (state.governorOn && !xr.bench) {
-    governor.update(interval, 1000 / xr.targetHz);
+    // Under a refined frame the splats are not drawn: no clean time is
+    // earned from those frames, by either governor (#295).
+    const idle = layers.covered;
+    governor.update(interval, 1000 / xr.targetHz, idle);
     // Second stage (epic #166): samples per voxel at 0.5 or less and frames
     // still missed: a smaller eye buffer, one step at a time.
     // What is shown changed: the eye buffer may come back up sooner (#295).
-    const shown = state.cube ? `cube:${state.open ? state.open.dataset_id : ''}` : `${layers.mode}:${layers.state.s.style}`;
-    if (shown !== xr.shownKey) { xr.shownKey = shown; eyeGovernor.relax(); }
+    const shownCube = state.cube ? (state.open ? state.open.dataset_id : '') : null;
+    if (shownCube !== xr.shownCube || layers.mode !== xr.shownMode || layers.state.s.style !== xr.shownStyle) {
+      xr.shownCube = shownCube; xr.shownMode = layers.mode; xr.shownStyle = layers.state.s.style;
+      eyeGovernor.relax();
+    }
     // Applied when the governor moves (a scale set from elsewhere is kept).
     const prevScale = eyeGovernor.scale;
-    const scale = eyeGovernor.update(interval, 1000 / xr.targetHz, spvAtFloor(governor));
+    const scale = eyeGovernor.update(interval, 1000 / xr.targetHz, spvAtFloor(governor), idle);
     if (Math.abs(scale - prevScale) > 1e-6 && Math.abs(scale - xr.fbScale) > 1e-6) setEyeBufferScale(scale);
   }
   if (session.frameRate) xr.targetHz = session.frameRate;

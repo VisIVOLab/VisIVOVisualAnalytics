@@ -81,29 +81,48 @@ export function recentFrames(intervals, targetHz, windowMs = 500) {
  * (0.5 to 0.85); more than 5 % missed or 10 % slow cuts them by 8 %. A cut
  * remembers the count that was too many (the ceiling) and holds for
  * `holdMs`; clean windows (at most 2 % missed and 3 % slow, the median within
- * 1.04 periods) add 12 % a quarter second, up to 90 % of the ceiling, which rises by a
+ * add 12 % a quarter second, up to 90 % of the ceiling, which rises by a
  * half for every `ceilingRiseMs` of clean frames. A cut soon after a rise
- * (within 3 s) doubles that wait (up to a minute): the count settles just
- * under where it missed instead of probing it every few seconds, while the
- * cuts of a transient (entering VR, a load), which no rise preceded, are
- * climbed back from at the fast pace. A sparse miss (under 15 %) keeps the
- * count. Never below `min` nor above the sample.
+ * (within 3 s) doubles that wait (up to a minute), and every `decayMs`
+ * without such a cut halves it again: the count settles just under where it
+ * missed instead of probing it every few seconds, and a later cut that no
+ * probe caused (a zoom into the box) is not climbed back from at a wait
+ * left long by probes minutes ago. Clean time is earned by
+ * frames that drew the splats only: a gap of more than `gapMs` between
+ * updates (splats not drawn under a refined frame, a paused page) or an
+ * `interrupted()` call restarts it. Never below `min` nor above the sample.
  */
 export class FrameRowGovernor {
-  constructor({ min = 20_000, holdMs = 1500, ceilingRiseMs = 1500, maxRiseMs = 60_000 } = {}) {
+  constructor({ min = 20_000, holdMs = 1500, ceilingRiseMs = 1500, maxRiseMs = 60_000, gapMs = 500,
+    decayMs = 20_000 } = {}) {
     this.min = min; this.holdMs = holdMs; this.ceilingRiseMs = ceilingRiseMs; this.maxRiseMs = maxRiseMs;
+    this.gapMs = gapMs; this.decayMs = decayMs;
     this.reset();
   }
 
   reset() {
     this.ceiling = Infinity; this.holdUntil = 0; this.cleanSince = null;
-    this.riseMs = this.ceilingRiseMs; this.lastRiseAt = -Infinity;
+    this.riseMs = this.ceilingRiseMs; this.lastRiseAt = -Infinity; this.lastUpdate = -Infinity;
+    this.lastBackoffAt = -Infinity;
+  }
+
+  /** The splats were not drawn for a while (a refined frame over them): the
+   *  clean run restarts, and the first frames drawn again are waited for. */
+  interrupted(now) {
+    this.cleanSince = null;
+    this.holdUntil = Math.max(this.holdUntil, now + 750);
   }
 
   /** The rows to draw from `current`; `frame`: recentFrames; `now`: ms. */
   update(current, sampleRows, frame, targetHz, now) {
     const floor = Math.min(this.min, sampleRows);
     const clampRows = (v) => Math.round(Math.max(floor, Math.min(sampleRows, v)));
+    if (now - this.lastUpdate > this.gapMs) this.cleanSince = null;   // not drawn meanwhile
+    this.lastUpdate = now;
+    if (this.riseMs > this.ceilingRiseMs && now - this.lastBackoffAt >= this.decayMs) {
+      this.riseMs = Math.max(this.ceilingRiseMs, this.riseMs / 2);
+      this.lastBackoffAt = now;
+    }
     if (!(targetHz > 0) || !frame || frame.n < 4) return clampRows(current);
     const period = 1000 / targetHz;
     const median = frame.medianMs || frame.meanMs;
@@ -111,7 +130,10 @@ export class FrameRowGovernor {
     const hard = frame.missed > 0.15 || median > 1.12 * period;
     if (hard || frame.missed > 0.05 || slow > 0.1) {
       if (now < this.holdUntil && !hard) return clampRows(current);   // a gentle cut takes effect first
-      if (now - this.lastRiseAt < 3000) this.riseMs = Math.min(this.maxRiseMs, 2 * this.riseMs);
+      if (now - this.lastRiseAt < 3000) {
+        this.riseMs = Math.min(this.maxRiseMs, 2 * this.riseMs);
+        this.lastBackoffAt = now;
+      }
       this.ceiling = current;
       this.holdUntil = now + this.holdMs;
       this.cleanSince = null;
@@ -132,13 +154,29 @@ export class FrameRowGovernor {
 }
 
 /**
+ * Which row governor runs: 'gpu' (GPU time, where there is a timer), 'frames'
+ * (the frame intervals: only in a VR session once its display rate has
+ * settled, issue #295: a desktop browser without a timer, Firefox or Safari,
+ * may run at 30 or 50 Hz against an assumed 60, and a headset settles from
+ * 90 to 72 Hz in its first second), or 'none' (the count is kept).
+ */
+export function rowGovernorKind({ gpuMs, inXR, rateSettled }) {
+  if (gpuMs > 0) return 'gpu';
+  return inXR && rateSettled ? 'frames' : 'none';
+}
+
+/**
  * The rows drawn for a governor's count: half-octave steps (…, 141 k, 200 k,
  * 283 k, 400 k, …), or the whole sample. The splats are sized and refined for
  * the rows drawn, so a count that moved every quarter second would make
- * every refined frame stale; a step changes only when the governor crosses it.
+ * every refined frame stale; a step changes only when the governor crosses
+ * it. With `prev` (the step drawn now) the step is kept until the count is
+ * more than 0.4 octave from it (0.15 past the midpoint to the next step), so
+ * a count hovering at a midpoint does not flip between two steps.
  */
-export function quantizeRows(n, sampleRows) {
+export function quantizeRows(n, sampleRows, prev = null) {
   if (!(n > 0)) return Math.min(sampleRows, 1);
+  if (prev > 0 && prev <= sampleRows && Math.abs(Math.log2(Math.min(n, sampleRows) / prev)) <= 0.4) return prev;
   const q = Math.round(2 ** (Math.round(2 * Math.log2(n)) / 2));
   return Math.max(1, Math.min(sampleRows, q));
 }

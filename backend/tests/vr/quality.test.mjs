@@ -289,3 +289,28 @@ test('eye buffer (#295): back up after clean frames, a step taken back doubles t
   for (let k = 0; k < 6; k++) { for (let i = 0; i < 60; i++) h.update(i < 3 ? 40 : target, target, true); }
   assert.equal(h.scale, 0.85, 'more than 3 % missed in each window: not clean');
 });
+
+test('governors under a refined frame earn nothing (#297); a chosen scale outside the steps comes back', () => {
+  const target = 1000 / 72;
+  // 5: the eye buffer earns no clean time from frames that drew little.
+  const g = new Q.EyeBufferGovernor({ start: 1, holdMs: 1000, upAfterMs: 3000 });
+  for (let i = 0; i < 40; i++) g.update(40, target, true);
+  assert.equal(g.scale, 0.85);
+  for (let t = 0; t < 10000; t += target) g.update(target, target, true, true);   // covered: idle
+  assert.equal(g.scale, 0.85, 'idle frames are not clean time');
+  for (let t = 0; t < 4200; t += target) g.update(target, target, true);
+  assert.equal(g.scale, 1, 'clean frames that drew are');
+  // ... and neither do samples per voxel.
+  const s = new Governor({ min: 0.25, max: 2, start: 1, upAfterMs: 2000 });
+  for (let i = 0; i < 600; i++) s.update(target, target, true);
+  assert.equal(s.value, 1, 'no climb while idle');
+  for (let i = 0; i < 160; i++) s.update(target, target);
+  assert.ok(s.value > 1, 'climbs on frames that drew');
+  // 7: a chosen scale outside EYE_SCALE_STEPS (0.9) can come back to itself.
+  const h = new Q.EyeBufferGovernor({ start: 0.9, holdMs: 1000, upAfterMs: 2000 });
+  assert.equal(h.nextUp(0.85), 0.9);
+  for (let i = 0; i < 40; i++) h.update(40, target, true);
+  assert.equal(h.scale, 0.85);
+  for (let t = 0; t < 3200; t += target) h.update(target, target, true);
+  assert.equal(h.scale, 0.9);
+});

@@ -18,10 +18,17 @@ are preserved here unedited; the branch names they refer to are historical.
     period over the interval. Sustained sparse misses or slow frames cut them
     by 8 %. Clean frames add 12 % a quarter second, up to just under the count
     that missed. Pauses over 250 ms are not frames, and a cut soon after a
-    probe upward doubles the wait for the next one.
-  - **Half-octave steps.** The rows drawn move in half-octave steps, and
-    refined frames are drawn for those rows, so the governor rarely makes a
-    refined frame stale and its brightness matches the preview.
+    probe upward doubles the wait for the next one (halved again for every
+    20 s without such a cut). It runs only in a VR session whose display
+    rate has settled, so a desktop browser without a GPU timer keeps the
+    count. Time not spent drawing splats (under a refined frame, a pause)
+    earns no clean time, and neither do the samples-per-voxel and eye-buffer
+    governors.
+  - **Half-octave steps.** The rows drawn move in half-octave steps, kept
+    until the count is 0.4 octave away, and they do not grow while a still
+    view waits for its refined frame. Refined frames are drawn for those
+    rows, so the governor rarely makes a refined frame stale and its
+    brightness matches the preview.
   - **Headset defaults.** Splats go into half floats (about half the fill
     cost of float32; the f16 splat rule keeps its 1/512 floor) and start at
     200 k rows of the sample. `?splattarget=f32|f16|8bit` overrides the

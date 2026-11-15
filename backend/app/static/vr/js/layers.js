@@ -711,16 +711,27 @@ export function createLayers(ctx) {
         const covered = splats && ctx.refineOn() && !isCropped(state.clip) && ctx.refiner.showing
           && ctx.refiner.weight >= 1 && ctx.refiner.motion.state === 'still';
         if (eye === 0) {
-          if (pt.wasCovered && !covered) pt.frameGov.holdUntil = Math.max(pt.frameGov.holdUntil, now + 750);
+          if (pt.wasCovered && !covered) pt.frameGov.interrupted(now);   // the time under it was not earned
           pt.wasCovered = covered;
         }
         if (eye === 0 && L.s.govern && !covered && now - (pt.governedAt || 0) > 250) {
-          // The rows drawn follow the frame time (four times a second).
+          // The rows drawn follow the frame time (four times a second): GPU
+          // time where there is a timer, else the frame intervals in a VR
+          // session whose display rate has settled (PT.rowGovernorKind).
           pt.governedAt = now;
           const hz = ctx.targetHz();
-          pt.govRows = R.gpuMs > 0 ? PT.governRows(pt.govRows, count, R.gpuMs, hz)
-            : pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now);
-          pt.drawRows = PT.quantizeRows(pt.govRows, count);
+          if (hz !== pt.govHz) { pt.govHz = hz; pt.frameGov.reset(); }   // a new display rate: start over
+          const kind = PT.rowGovernorKind({ gpuMs: R.gpuMs, inXR: !!(ctx.inXR && ctx.inXR()),
+            rateSettled: !!(ctx.rateSettled && ctx.rateSettled()) });
+          let next = pt.govRows;
+          if (kind === 'gpu') next = PT.governRows(pt.govRows, count, R.gpuMs, hz);
+          else if (kind === 'frames') next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now);
+          // Still and waiting for a refined frame: no growth (a new step would
+          // make the frame asked for stale before it arrives).
+          const waiting = splats && ctx.refineOn() && ctx.refiner.motion.state === 'still'
+            && (ctx.refiner.status === 'waiting' || ctx.refiner.status === 'refined');
+          pt.govRows = waiting ? Math.min(next, pt.govRows) : next;
+          pt.drawRows = PT.quantizeRows(pt.govRows, count, pt.drawRows);
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
@@ -743,6 +754,9 @@ export function createLayers(ctx) {
       }
     },
     hasScene() { return L.mode !== 'cube' && !!L.box; },
+    /** True while a refined frame covers the splats (they are not drawn): the
+     *  frame-rate governors earn no clean time from those frames (#295). */
+    get covered() { return L.mode === 'points' && !!(L.points && L.points.wasCovered); },
     /** Refinement of a point table (none for a velocity field). */
     refineFrame(t, eyes, centreView, background) {
       if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip)) return;
