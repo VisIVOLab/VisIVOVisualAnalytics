@@ -47,6 +47,7 @@
 #include "TestSupportedFormats.h"
 #include "TestFilePreview.h"
 #include "TestMissingRoute.h"
+#include "TestWorkspaceExportsView.h"
 #include "TestBackendWebrtcEnv.h"
 #include "TestVrLink.h"
 #include "TestVrPair.h"
@@ -127,6 +128,7 @@ int main(int argc, char *argv[])
     { TestSupportedFormats t; status |= QTest::qExec(&t, argc, argv); }
     { TestFilePreview      t; status |= QTest::qExec(&t, argc, argv); }
     { TestMissingRoute     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestWorkspaceExportsView t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendWebrtcEnv t; status |= QTest::qExec(&t, argc, argv); }
     { TestVrLink           t; status |= QTest::qExec(&t, argc, argv); }
     { TestVrPair           t; status |= QTest::qExec(&t, argc, argv); }

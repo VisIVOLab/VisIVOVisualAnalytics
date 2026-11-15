@@ -4,6 +4,7 @@
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
 #include "app/ThumbnailCache.h"
+#include "app/WorkspaceExportsView.h"
 #include "theme/VisivoTheme.h"
 
 #include <QApplication>
@@ -185,6 +186,11 @@ void DataHubWidget::refreshWorkspaceExports()
 {
     if (!m_exportsItemsLayout) return;
     if (this->backendUrl.isEmpty()) return;   // nothing to call yet
+    if (m_exportsRefreshing) {                // one listing request at a time
+        m_exportsRefreshAgain = true;
+        return;
+    }
+    m_exportsRefreshing = true;
 
     const QString url = this->backendUrl;
     const QString tok = this->backendToken;
@@ -196,6 +202,19 @@ void DataHubWidget::refreshWorkspaceExports()
                          const auto listing = watcher->result();
                          watcher->deleteLater();
                          if (!self) return;
+                         self->m_exportsRefreshing = false;
+                         if (self->m_exportsRefreshAgain) {
+                             // Asked again while this one was on its way: the
+                             // newer answer is the one to show.
+                             self->m_exportsRefreshAgain = false;
+                             QTimer::singleShot(0, self.data(),
+                                                &DataHubWidget::refreshWorkspaceExports);
+                         }
+
+                         // Unchanged listing: the rows already show it (#312).
+                         const QByteArray signature = visivo::workspaceExportsSignature(listing);
+                         if (signature == self->m_exportsSignature) return;
+                         self->m_exportsSignature = signature;
 
                          // Wipe every old row (keep stretch + empty label).
                          QVBoxLayout *lay = self->m_exportsItemsLayout;
@@ -248,7 +267,12 @@ void DataHubWidget::refreshWorkspaceExports()
                              return;
                          }
 
-                         for (const auto &entry : listing.entries) {
+                         // The most recent exports only (newest first from
+                         // the backend): a row per export of thousands stalled
+                         // the app (#312).
+                         const int shown = visivo::workspaceExportRowsShown(listing.entries.size());
+                         for (int i = 0; i < shown; ++i) {
+                             const auto &entry = listing.entries.at(i);
                              auto *row = new QFrame();
                              row->setStyleSheet(QStringLiteral(
                                      "QFrame {"
@@ -392,6 +416,17 @@ void DataHubWidget::refreshWorkspaceExports()
                                               });
 
                              lay->addWidget(row);
+                         }
+                         const QString overflow =
+                                 visivo::workspaceExportsOverflowText(listing.entries.size());
+                         if (!overflow.isEmpty()) {
+                             auto *more = new QLabel(overflow);
+                             more->setWordWrap(true);
+                             more->setStyleSheet(
+                                     QStringLiteral("color: %1; font-size: 11px; "
+                                                    "background: transparent;")
+                                             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
+                             lay->addWidget(more);
                          }
                          lay->addStretch(1);
                      });

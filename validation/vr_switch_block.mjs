@@ -45,7 +45,7 @@ const done = (code) => { for (const p of procs) { try { p.kill('SIGKILL'); } cat
 setTimeout(() => { console.log('FAIL timed out'); done(2); }, 15 * 60000).unref();
 
 const backend = spawn(PY, ['-m', 'uvicorn', 'app.main:app', '--host', 'localhost', '--port', String(PORT), '--log-level', 'warning'],
-  { cwd: join(REPO, 'backend'), env: { ...process.env, VISIVO_TOKEN: token }, stdio: ['ignore', openSync(join(OUT, 'backend.log'), 'w'), 'inherit'] });
+  { cwd: join(REPO, 'backend'), env: { ...process.env, VISIVO_TOKEN: token, VISIVO_EXPORTS_DIR: mkdtempSync(join(tmpdir(), 'vr-switch-exports-')) }, stdio: ['ignore', openSync(join(OUT, 'backend.log'), 'w'), 'inherit'] });
 procs.push(backend);
 for (let i = 0; ; i++) {
   try { if ((await fetch(`${BASE}/v1/ping`)).ok) break; } catch { /* not yet */ }
