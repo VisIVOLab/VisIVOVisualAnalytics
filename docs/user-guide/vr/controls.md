@@ -207,8 +207,11 @@ the cropped pixels (*Moment 0 of the cropped field*, its x and y range under
 the title; the product saved for the desktop is the whole-field map of the
 same request). It is cut with the crop as it was when Moment was pressed, and
 cut again when the crop changes afterwards and stays still for a quarter of a
-second, with no new request (only while its window is shown; the colour
-range of that re-cut comes from a sample of 65 536 pixels). Box
+second, with no new request (only while its window is shown). The colour
+range of a re-cut is exact for Moments 0 and 2 (the lowest and highest
+finite pixel of the crop); the robust range of a velocity field (Moment 1)
+comes from at most 65 536 of the crop's finite pixels, or all of them when
+it has fewer, so a NaN-masked map with a compact source keeps its range. Box
 region and the PV slice take the velocity range. A lasso
 grows from its seed over the whole cube as on the desktop (its object is not
 cut at the crop), and a spectrum is the full band at its pixel. The crop of a

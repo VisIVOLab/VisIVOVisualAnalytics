@@ -275,3 +275,88 @@ test('refined splat frames: overscan, and whether a warped frame covers the view
   assert.ok(!F.coversViewport(frameEye, model, now(0), model, [0]));
   assert.ok(!F.coversViewport(frameEye, model, now(170), model, depths));
 });
+
+test('#300: coverage prepared once per shown frame and eye gives the same answers, with no allocation per call', () => {
+  const proj = M.perspective(Math.PI / 2, 1, 0.1, 100);
+  const o = F.overscanEye({ eye: 'left', view: M.identity(), proj, width: 1000, height: 1000 }, 0.06);
+  const model = M.translation(0, 0, -1.5);
+  const frameEye = { view: M.identity(), proj: o.proj };
+  const depths = [1.0, 2.0, 1.5];
+  const prep = F.prepareCover(frameEye, model, depths);
+  const s = F.coverScratch();
+  let agree = 0;
+  for (let deg = -8; deg <= 8; deg += 0.5) {
+    for (const dx of [0, 0.004, 0.02, 0.1]) {
+      for (const sc of [1, 1.3]) {
+        const view = { view: M.multiply(M.rotation([0, 1, 0], deg * Math.PI / 180), M.translation(-dx, 0, 0)), proj };
+        const m = M.multiply(model, M.scaling(sc));
+        const want = F.coversViewport(frameEye, model, view, m, depths);
+        assert.equal(F.coveredBy(prep, view, m, s), want, `${deg} deg, ${dx} m, scale ${sc}`);
+        agree += want;
+      }
+    }
+  }
+  assert.ok(agree > 10, `${agree} covered poses among the cases`);
+  assert.equal(F.prepareCover(frameEye, model, [1, 0]), null, 'a depth not above 0 never covers');
+  assert.equal(F.coveredBy(null, { view: M.identity(), proj }, model, s), false);
+  assert.equal(M.multiplyInto(new Float32Array(16), M.translation(1, 2, 3), M.scaling(2)).join(),
+    M.multiply(M.translation(1, 2, 3), M.scaling(2)).join());
+
+  // The cache: one preparation per shown frame and eye, however many display
+  // frames test it; a new frame (refine-gl makes a new object per upload) is prepared again.
+  const cache = F.createCoverCache();
+  const frame = { rec: { eyes: [frameEye, frameEye], model }, header: { depth: { z_near: 1, z_far: 2 } }, hasDepth: true };
+  const now = { view: M.identity(), proj };
+  for (let k = 0; k < 50; k++) {
+    assert.equal(cache.covers(frame, 0, now, model), true);
+    assert.equal(cache.covers(frame, 1, now, model), true);
+  }
+  assert.equal(cache.prepared, 2);
+  const next = { ...frame };
+  cache.covers(next, 0, now, model);
+  assert.equal(cache.prepared, 3);
+  assert.equal(cache.covers(null, 0, now, model), false);
+  assert.equal(cache.covers({ rec: { eyes: [] } }, 0, now, model), false);
+});
+
+test('#300: an empty depth image (z_near = z_far = 0) is tested at the centre plane the warp draws it at', () => {
+  assert.deepEqual(F.coverDepths(null, 1.5), [1.5]);
+  assert.deepEqual(F.coverDepths({ z_near: 0, z_far: 0 }, 1.5), [1.5], 'no sample on any ray');
+  assert.deepEqual(F.coverDepths({ z_near: 1, z_far: 2 }, 1.5), [1, 2, 1.5]);
+  // A particle at the eye (z_near 0, z_far beyond) is not an empty image: never covered.
+  assert.deepEqual(F.coverDepths({ z_near: 0, z_far: 2 }, 1.5), [0, 2, 1.5]);
+  const proj = M.perspective(Math.PI / 2, 1, 0.1, 100);
+  const o = F.overscanEye({ eye: 'left', view: M.identity(), proj, width: 1000, height: 1000 }, 0.06);
+  const model = M.translation(0, 0, -1.5);
+  const frameEye = { view: M.identity(), proj: o.proj };
+  const now = { view: M.identity(), proj };
+  const cache = F.createCoverCache();
+  // Before #300 the empty image's 0 depths failed the test on every frame:
+  // the splats were drawn under the frame, the speed-up lost.
+  const empty = { rec: { eyes: [frameEye], model }, header: { depth: { z_near: 0, z_far: 0 } }, hasDepth: true };
+  assert.equal(F.coversViewport(frameEye, model, now, model, [0, 0, 1.5]), false);
+  assert.equal(cache.covers(empty, 0, now, model), true);
+  assert.equal(cache.covers(empty, 1, now, model), true, 'one eye frame serves both');
+  // A turn past the margin still uncovers it.
+  const turned = { view: M.rotation([0, 1, 0], 5 * Math.PI / 180), proj };
+  assert.equal(cache.covers(empty, 0, turned, model), false);
+});
+
+test('#300 review: the cover cache keeps one slot per eye index', () => {
+  const proj = M.perspective(Math.PI / 2, 1, 0.1, 100);
+  const o = F.overscanEye({ eye: 'left', view: M.identity(), proj, width: 1000, height: 1000 }, 0.06);
+  const model = M.translation(0, 0, -1.5);
+  const left = { view: M.identity(), proj: o.proj };
+  const right = { view: M.translation(-0.5, 0, 0), proj: o.proj };   // far apart: only its own eye covers
+  const frame = { rec: { eyes: [left, right, left], model }, header: { depth: { z_near: 1, z_far: 2 } }, hasDepth: true };
+  const cache = F.createCoverCache();
+  const atLeft = { view: M.identity(), proj };
+  const atRight = { view: M.translation(-0.5, 0, 0), proj };
+  for (let k = 0; k < 3; k++) {
+    assert.equal(cache.covers(frame, 0, atLeft, model), true);
+    assert.equal(cache.covers(frame, 1, atRight, model), true);
+    assert.equal(cache.covers(frame, 2, atLeft, model), true, 'eye 2 is its own slot, not eye 1\'s');
+    assert.equal(cache.covers(frame, 1, atLeft, model), false);
+  }
+  assert.equal(cache.prepared, 3, 'one preparation per eye index');
+});
