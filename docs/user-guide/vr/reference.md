@@ -498,7 +498,17 @@ For reference, the same page on a Mac (Apple M5 Max, Chrome, two
 | 512³ | 2 | 1.3 ms | 8.8 ms | 63 / 524 |
 
 A Quest 3 is several times slower than this GPU; its own numbers come from the
-benchmark above. (`?bench` on the page URL reruns this desktop measurement.)
+benchmark above. (`?bench` on the page URL reruns this desktop measurement;
+`&stretch=linear|log|sqrt|square|power` measures it with that colour stretch,
+and `?stretch=` alone starts the page with it.)
+
+Colour stretches (#258), M5 Max, ANGLE Metal, two 1680×1760 eyes, 1
+sample/voxel, stereo frame ms, the worst case without empty-space skipping
+(all samples shaded): 256³ linear 2.85–2.96, log 2.93–2.95, sqrt 2.90, square
+3.07, power 2.95; 512³ linear 6.13–6.14, log 5.98–6.13, sqrt 6.17, square
+6.46, power 6.42. The stretch costs nothing measurable here (run-to-run
+spread about 5 %); the Quest's number is still to be measured (the check list
+below).
 
 ## Recording measurements
 

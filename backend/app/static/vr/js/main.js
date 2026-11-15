@@ -4679,6 +4679,9 @@ updateLabels();
 showGuideOnPage();
 if (query.has('record')) measure.startRecord('address');
 updateMeasureDom();
+// ?stretch=linear|log|sqrt|square|power: the colour stretch to start with (#258;
+// the desktop benchmark measures each one).
+if (query.has('stretch')) { state.stretch = LV.stretchOf(query.get('stretch')); $('stretch').value = state.stretch; }
 if (query.has('bench')) {
   desktopBench().catch((e) => { document.title = `BENCH FAILED ${e.message}`; console.error(e); });
 } else {
