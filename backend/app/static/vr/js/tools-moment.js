@@ -60,12 +60,25 @@ export function cropPixels(clip, fullShape) {
  * summary, cropped, cropKey}. `values` the full map (width × height of the
  * full cube's pixels, else not cut).
  */
-export function cutWhole(order, values, width, height, clip, fullShape) {
+export function cutWhole(order, values, width, height, clip, fullShape, { sample = 0 } = {}) {
   const crop = wholeCrop(width, height, clip, fullShape);
   const box = crop || [0, width - 1, 0, height - 1];
   const cut = crop ? PC.crop(values, width, box[0], box[1], box[2], box[3]) : values;
-  return { box, cut, range: colourRange(order, cut), summary: mapSummary(cut), cropped: !!crop, cropKey: JSON.stringify(crop) };
+  // A re-cut (the crop changed) takes its colour range from at most `sample`
+  // values, evenly strided: the robust range's two sorts stay a few ms.
+  const range = colourRange(order, sample ? strided(cut, sample) : cut);
+  return { box, cut, range, summary: mapSummary(cut), cropped: !!crop, cropKey: JSON.stringify(crop) };
 }
+/** At most n values of `a`, evenly strided (all of them when it is short). */
+export function strided(a, n) {
+  if (a.length <= n) return a;
+  const out = new Float32Array(n), step = a.length / n;
+  for (let i = 0; i < n; i++) out[i] = a[Math.floor(i * step)];
+  return out;
+}
+/** A re-cut waits for the crop to stay still this long (ms), and samples this many values for its range. */
+export const RECUT_MS = 250;
+export const RECUT_SAMPLE = 65536;
 /** The crop's pixels for a whole-field map of width × height, or null (cheap: the key of a cut). */
 export function wholeCrop(width, height, clip, fullShape) {
   return fullShape && width === fullShape[0] && height === fullShape[1] ? cropPixels(clip, fullShape) : null;
@@ -310,14 +323,29 @@ export function createMomentTool(ctx) {
   function recut() {
     const R = t.result;
     if (!R || !R.whole || !ctx.clip) return false;
-    // Called every frame the window is shown: only the key, until it changes.
     if (JSON.stringify(wholeCrop(R.width, R.height, ctx.clip(), R.fullShape)) === R.cropKey) return false;
-    const c = cutWhole(R.order, R.values, R.width, R.height, ctx.clip(), R.fullShape);
+    const c = cutWhole(R.order, R.values, R.width, R.height, ctx.clip(), R.fullShape, { sample: RECUT_SAMPLE });
     t.result = { ...R, ...c };
+    t.recutPending = null;
     draw();
     changed();
     return true;
   }
 
-  return { state: t, compute, clear, sync, lines, draw, recut };
+  /**
+   * Every frame (cheap: the crop's key only). A crop that changed is cut
+   * again once it has stayed still for RECUT_MS, and only while the window
+   * is `shown` (a hidden one is cut when it shows again). Returns whether it cut.
+   */
+  function tick(now, shown) {
+    const R = t.result;
+    if (!R || !R.whole || !ctx.clip) { t.recutPending = null; return false; }
+    const key = JSON.stringify(wholeCrop(R.width, R.height, ctx.clip(), R.fullShape));
+    if (key === R.cropKey) { t.recutPending = null; return false; }
+    if (!t.recutPending || t.recutPending.key !== key) { t.recutPending = { key, at: now }; return false; }
+    if (!shown || now - t.recutPending.at < RECUT_MS) return false;
+    return recut();
+  }
+
+  return { state: t, compute, clear, sync, lines, draw, recut, tick };
 }

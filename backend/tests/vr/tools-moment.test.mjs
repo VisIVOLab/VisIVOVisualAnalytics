@@ -480,3 +480,59 @@ test('review: the moment tool keeps the crop of its request and cuts again on re
   assert.equal(t.state.result.cropped, false);
   assert.equal(t.recut(), false, 'nothing changed: nothing done');
 });
+
+test('review: a crop change re-cuts the map once it stays still, only while the window is shown', async () => {
+  const TMm = await import('../../app/static/vr/js/tools-moment.js');
+  const W = 8, H = 6;
+  let clip = { min: [0.25, 0, 0], max: [0.75, 0.5, 1] };
+  const answer = { valid: true, width: W, height: H, moment_unit: 'Jy/beam km/s', bunit: 'Jy/beam',
+    data_base64: Buffer.from(Float32Array.from({ length: W * H }, (_, i) => i).buffer).toString('base64') };
+  let changes = 0;
+  const t = TMm.createMomentTool({
+    selection: { sel: { lasso: null }, record: () => ({ product: { id: 'p' } }) },
+    backend: () => ({ _json: async () => answer }), datasetId: () => 'd', info: () => ({ full_shape: [W, H, 4] }), onChange() { changes++; },
+    clipZ: () => [0, 1], clip: () => clip,
+  });
+  await t.compute(0);
+  assert.equal(t.tick(0, true), false, 'nothing changed');
+  // The crop is dragged: frame after frame a new key, never cut while it moves.
+  for (let k = 0; k < 10; k++) {
+    clip = { min: [0.05 * k, 0, 0], max: [0.75, 0.5, 1] };
+    assert.equal(t.tick(k * 16, true), false);
+  }
+  // Still for RECUT_MS: cut once.
+  assert.equal(t.tick(9 * 16 + TMm.RECUT_MS - 1, true), false);
+  const before = changes;
+  assert.equal(t.tick(9 * 16 + TMm.RECUT_MS, true), true);
+  assert.ok(changes > before, 'the change is marked (the page\'s copy refreshes through it)');
+  assert.deepEqual(t.state.result.box, [4, 5, 0, 2], 'the crop where it stopped (x from 0.45 of 8 pixels)');
+  assert.equal(t.tick(2000, true), false, 'and only once');
+  // Hidden: never cut, however long; shown again: cut on the next tick.
+  clip = { min: [0, 0, 0], max: [1, 1, 1] };
+  t.tick(3000, false);
+  assert.equal(t.tick(9000, false), false);
+  assert.equal(t.state.result.cropped, true);
+  assert.equal(t.tick(9016, true), true);
+  assert.equal(t.state.result.cropped, false);
+});
+
+test('review: a re-cut takes its colour range from a strided sample: close to the exact one, a few ms', async () => {
+  const TMm = await import('../../app/static/vr/js/tools-moment.js');
+  const W = 1024, H = 1024;
+  let s = 1;
+  const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+  const values = Float32Array.from({ length: W * H }, () => 100 * (rnd() + rnd() + rnd() - 1.5));
+  const clip = { min: [0.1, 0.1, 0], max: [0.95, 0.95, 1] };
+  const exact = TMm.cutWhole(1, values, W, H, clip, [W, H, 4]);
+  const t0 = performance.now();
+  const fast = TMm.cutWhole(1, values, W, H, clip, [W, H, 4], { sample: TMm.RECUT_SAMPLE });
+  const ms = performance.now() - t0;
+  const span = exact.range[1] - exact.range[0];
+  assert.ok(Math.abs(fast.range[0] - exact.range[0]) < 0.02 * span && Math.abs(fast.range[1] - exact.range[1]) < 0.02 * span,
+    `${fast.range} vs ${exact.range}`);
+  assert.deepEqual(fast.box, exact.box);
+  assert.equal(fast.summary.pixels, exact.summary.pixels, 'the numbers count every pixel');
+  assert.ok(ms < 100, `${ms.toFixed(1)} ms`);
+  assert.equal(TMm.strided(new Float32Array(10), 64).length, 10);
+  assert.equal(TMm.strided(new Float32Array(1000), 64).length, 64);
+});
