@@ -43,6 +43,7 @@ class SkeletonSettings;
 class CubeLodVolumes;
 
 #include "CubeViewportGeometry.h"
+#include "CubeLodAuto.h"
 #include "CubeLodGeometry.h"
 
 #include <vtkSmartPointer.h>
@@ -1421,6 +1422,55 @@ protected:
     std::shared_ptr<std::atomic<quint64>> m_lodLiveGeneration;
     /// The Refine Selected Box action, its settings and its gate (Lod.cpp).
     void setupLevelOfDetail();
+    /// Before the window goes: the camera observers, the timer, the blocks.
+    void teardownLevelOfDetail();
+    // Refining as the camera settles (phase 4): the end of every interaction
+    // restarts a short timer, and when it fires the view is planned again.
+    QPointer<QTimer> m_lodSettleTimer;
+    vtkWeakPointer<vtkRenderWindowInteractor> m_lodInteractor;
+    unsigned long m_lodStartTag{ 0 };
+    unsigned long m_lodEndTag{ 0 };
+    vtkWeakPointer<vtkRenderer> m_lodFrameRenderer;
+    unsigned long m_lodFrameTag{ 0 };
+    bool m_lodInteracting{ false };
+    bool m_lodTornDown{ false };   ///< teardownLevelOfDetail ran: install nothing again
+    /// Frames drawn during the current interaction, for the log: count, the
+    /// renderer's own time and the time between frames.
+    struct LodFrameStats
+    {
+        int frames{ 0 };
+        double renderSeconds{ 0. };
+        double worstRenderSeconds{ 0. };
+        QElapsedTimer sinceStart;
+    } m_lodFrames;
+    int m_lodMaxTextureSide{ 0 };   ///< GL_MAX_3D_TEXTURE_SIZE, asked once
+    /// The set on screen was chosen with Refine Selected Box: it stays until
+    /// cleared, whatever the camera does.
+    bool m_lodShownExplicit{ false };
+    /// What the camera's set on screen is (empty when none or explicit).
+    CubeLodAuto::Signature m_lodShownSignature;
+    /// Blocks already read, shared with the volumes that draw them; up to
+    /// twice the detail budget (plus the set shown, whose arrays outlive
+    /// their eviction while drawn).
+    struct LodCache;
+    std::shared_ptr<LodCache> m_lodCache;
+    QPointer<QAction> m_actClearRefinedBox;
+    void installLodCameraObservers();
+    void onLodInteractionStart();
+    void onLodInteractionEnd();
+    void onLodFrameDrawn();
+    /// The camera settled: plan the view and fetch, keep, or clear.
+    void maybeRefineLod();
+    /// The planner's inputs that do not depend on the camera; false when the
+    /// preview is not there to plan against.
+    bool lodPlanInputs(CubeLodPlan::Inputs &in);
+    /// The camera's part: the visible box, the focal point and the zoom.
+    bool lodViewInputs(CubeLodPlan::Inputs &in);
+    /// Read @p plan's blocks (from the cache where it has them) and swap them
+    /// in once every one is there.
+    void startLodFetch(const CubeLodPlan::Plan &plan, const CubeLodPlan::Inputs &in, bool automatic);
+    /// Drop the request in flight, if any; what is on screen stays.
+    void cancelLodFetch();
     /// The blocks of the request in flight, as they arrive.
     struct LodPending;
     std::shared_ptr<LodPending> m_lodPending;
@@ -1442,10 +1492,12 @@ protected:
     /// preview once every block has arrived.
     void refineBox(const std::array<int, 6> &cubeBox);
     /// Back to the plain preview volume; cancels a refine in flight.
-    /// @p why, when given, goes to the status line.
-    void clearLod(const QString &why = QString());
+    /// @p why, when given, goes to the status line. The blocks already read
+    /// stay cached when @p keepCache (the camera may want them again).
+    void clearLod(const QString &why = QString(), bool keepCache = false);
     /// One block of the request @p generation arrived (or failed).
-    void onLodBlock(quint64 generation, int index, const BackendRegionLevelResult &block);
+    struct LodBlock;
+    void onLodBlock(quint64 generation, int index, const LodBlock &block);
     /// Every block arrived: build the volumes and swap them in.
     void applyLodSet();
     /// Refresh the Refine action's enabled state and tooltip from the gate.

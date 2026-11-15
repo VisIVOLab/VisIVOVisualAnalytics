@@ -58,6 +58,7 @@ private:
     // Level of detail of the 3-D view of a large cube (issue #321).
     QCheckBox *m_lodEnabled{ nullptr };
     QSpinBox *m_lodBudget{ nullptr };
+    QCheckBox *m_lodAuto{ nullptr };
     QWidget *buildLargeCubesSection();   ///< build the group, pre-filled from Settings
     void buildTabs(QWidget *copilotSection, QWidget *vrPairingSection, QWidget *largeCubesSection);
 

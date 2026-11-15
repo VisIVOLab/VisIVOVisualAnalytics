@@ -18,6 +18,7 @@
 #include "TestCubeLodPlan.h"
 #include "TestCubeLodGate.h"
 #include "TestCubeLodAssembly.h"
+#include "TestCubeLodAuto.h"
 #include "TestToolResultRecord.h"
 #include "TestProductOrigin.h"
 #include "TestCatalogueCsv.h"
@@ -104,6 +105,7 @@ int main(int argc, char *argv[])
     { TestCubeLodPlan      t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodGate      t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodAssembly  t; status |= QTest::qExec(&t, argc, argv); }
+    { TestCubeLodAuto      t; status |= QTest::qExec(&t, argc, argv); }
     { TestToolResultRecord t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductOrigin   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCatalogueCsv    t; status |= QTest::qExec(&t, argc, argv); }

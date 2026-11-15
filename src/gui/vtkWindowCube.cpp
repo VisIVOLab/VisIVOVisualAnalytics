@@ -3324,8 +3324,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
-    // The refined box's blocks leave the renderer while it still exists.
-    this->clearLod();
+    // The refined box's blocks leave the renderer while it still exists, and
+    // the camera stops asking for new ones.
+    this->teardownLevelOfDetail();
     // Child widgets (PV diagram, probe/profile plots, …) are deleted later by ~QWidget, when
     // this object is already half destroyed — but their destroyed() lambdas use `this` as the
     // context and would still run (Qt drops receiver connections only in ~QObject, after the
@@ -4879,8 +4880,8 @@ public:
                       int fullWidth, int fullHeight, int fullDepth,
                       int defaultX0, int defaultX1, int defaultY0, int defaultY1,
                       int defaultZ0, int defaultZ1,
-                      const QString &extraLabel, QWidget *extraWidget)
-        : QDialog(parent)
+                      const QString &extraLabel, QWidget *extraWidget, bool zIsChannels = true)
+        : QDialog(parent), m_zBase(zIsChannels ? 1 : 0)
     {
         using namespace Qt::StringLiterals;
         setWindowTitle(title);
@@ -4915,9 +4916,11 @@ public:
         m_spX1 = makeSpin(0, xMax, defaultX1);
         m_spY0 = makeSpin(0, yMax, defaultY0);
         m_spY1 = makeSpin(0, yMax, defaultY1);
-        // Channels from 1, as on the channel bar; bounds() stays 0-based.
-        m_spZ0 = makeSpin(1, zMax + 1, defaultZ0 + 1);
-        m_spZ1 = makeSpin(1, zMax + 1, defaultZ1 + 1);
+        // Channels from 1, as on the channel bar; bounds() stays 0-based. A
+        // third axis that is not a spectrum (a simulation volume) counts
+        // from 0, like X and Y.
+        m_spZ0 = makeSpin(m_zBase, zMax + m_zBase, defaultZ0 + m_zBase);
+        m_spZ1 = makeSpin(m_zBase, zMax + m_zBase, defaultZ1 + m_zBase);
         auto makeRow = [this](QSpinBox *lo, QSpinBox *hi) {
             auto *w = new QWidget(this);
             auto *h = new QHBoxLayout(w);
@@ -4930,7 +4933,7 @@ public:
         };
         form->addRow(u"X (columns)"_s,  makeRow(m_spX0, m_spX1));
         form->addRow(u"Y (rows)"_s,     makeRow(m_spY0, m_spY1));
-        form->addRow(u"Z (channels)"_s, makeRow(m_spZ0, m_spZ1));
+        form->addRow(zIsChannels ? u"Z (channels)"_s : u"Z"_s, makeRow(m_spZ0, m_spZ1));
         if (extraWidget) {
             extraWidget->setParent(this);
             form->addRow(extraLabel, extraWidget);
@@ -4956,8 +4959,8 @@ public:
                  std::max(m_spX0->value(), m_spX1->value()),
                  std::min(m_spY0->value(), m_spY1->value()),
                  std::max(m_spY0->value(), m_spY1->value()),
-                 std::min(m_spZ0->value(), m_spZ1->value()) - 1,
-                 std::max(m_spZ0->value(), m_spZ1->value()) - 1 };
+                 std::min(m_spZ0->value(), m_spZ1->value()) - m_zBase,
+                 std::max(m_spZ0->value(), m_spZ1->value()) - m_zBase };
     }
 
     /// Runs @p onRun with this dialog as the owner of the run.
@@ -4993,6 +4996,7 @@ private:
     QSpinBox *m_spZ0{ nullptr };
     QSpinBox *m_spZ1{ nullptr };
     QPushButton *m_actionBtn{ nullptr };
+    int m_zBase{ 1 };   ///< what the Z boxes show for plane 0: channel 1, or 0
 };
 void previewBoxWhileEditing(vtkWindowCube *window, CubeBoxToolDialog *dialog)
 {
@@ -5081,7 +5085,7 @@ void vtkWindowCube::exportSubCubeAsFits()
             u"Export"_s,
             this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
             defX0, defX1, defY0, defY1, defZ0, defZ1,
-            u"Save as"_s, nameEdit);
+            u"Save as"_s, nameEdit, !CubeToolGate::isSpatialAxisType(this->remoteDatasetCtype[2]));
     m_subCubeDialog = dlg;
     previewBoxWhileEditing(this, dlg);
 
@@ -5187,7 +5191,7 @@ void vtkWindowCube::showRefineBoxDialog()
             u"Refine"_s,
             this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
             defX0, defX1, defY0, defY1, mz[0], mz[1],
-            QString(), nullptr);
+            QString(), nullptr, !CubeToolGate::isSpatialAxisType(this->remoteDatasetCtype[2]));
     m_refineBoxDialog = dlg;
     previewBoxWhileEditing(this, dlg);
     QPointer<vtkWindowCube> self(this);
@@ -5238,7 +5242,7 @@ void vtkWindowCube::maskCubeRegion3d()
             u"Mask"_s,
             this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
             defX0, defX1, defY0, defY1, defZ0, defZ1,
-            u"Mode"_s, modeCombo);
+            u"Mode"_s, modeCombo, !CubeToolGate::isSpatialAxisType(this->remoteDatasetCtype[2]));
     m_maskRegionDialog = dlg;
     previewBoxWhileEditing(this, dlg);
 
@@ -7978,6 +7982,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Views"_s, self->m_actHeadsetActivity);
     // Issue #321: a box of the 3-D preview at a finer level of the cube.
     add(u"Views"_s, self->m_actRefineBox);
+    add(u"Views"_s, self->m_actClearRefinedBox);
     return t;
 }
 
@@ -15748,6 +15753,19 @@ bool vtkWindowCube::pickVolumeAlongRay(vtkRenderer *renderer, const int displayP
     // there when the cube was sanitised. isfinite() lets them through, and for
     // MinIP they are the smallest thing on any ray that crosses one.
     const double visibleMin = this->currentCubeVisibleRange[0];
+
+    // A refined view (issue #321) draws blocks of its own: the ray is walked
+    // through them, on the fine grid inside the refined box and on the
+    // preview's pieces elsewhere, so the hit is the voxel the user sees.
+    if (this->m_lod && this->m_lod->active()) {
+        const CubeLodPick::Result lodHit = this->m_lod->pickAlong(
+                p0, p1, criterion, threshold, [visibleMin](double v) { return v < visibleMin; });
+        if (!lodHit.hit)
+            return false;
+        std::copy(lodHit.voxel.world, lodHit.voxel.world + 3, worldOut);
+        channelOut = std::max(0, static_cast<int>(std::lround(this->displayToCube(worldOut[2]))));
+        return true;
+    }
 
     const auto res = RayVoxelPick::along(
             grid, p0, p1, criterion, threshold,
