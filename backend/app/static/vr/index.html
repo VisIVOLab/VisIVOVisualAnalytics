@@ -61,7 +61,7 @@
       <label title="Where the backend reads the reduced cube from: a level of the cube's brick pyramid (built first if missing) or a pass over the whole cube. Auto: the pyramid for a cube the backend draws out of core, binned by the mean.">Read from <select id="source">
         <option value="auto" selected>auto</option><option value="pyramid">brick pyramid</option>
         <option value="cube">whole cube</option></select></label>
-      <label title="The values the 8- or 16-bit texture holds: log10 of the values (a simulation's density over many decades; values at or below zero are blank) or the values. Auto: log for positive values spanning more than three decades, linear otherwise (a radio cube).">Scale <select id="scale">
+      <label title="The values the 8- or 16-bit texture holds: log10 of the values (a simulation's density over many decades; values at or below zero are blank) or the values. Auto: log for a simulation volume whose values are positive and span more than three decades, linear for every other cube (a radio cube, masked or not).">Scale <select id="scale">
         <option value="auto" selected>auto</option><option value="log">log</option><option value="linear">linear</option></select></label>
     </div>
     <button id="load" class="primary">Open and load</button>

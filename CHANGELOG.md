@@ -8,13 +8,14 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
-- **VR: simulation volumes shown as simulations (part of #317).** A field
-  whose values are all positive and span more than three decades (a
-  simulation's density) now reaches the headset as codes of log10 of its
+- **VR: simulation volumes shown as simulations (part of #317).** A
+  simulation volume whose values are all positive and span more than three
+  decades (a density) now reaches the headset as codes of log10 of its
   values (`scale` on `/v1/cube/reduced_bin`, `auto` by default; headers
   `X-Visivo-Scale` and `X-Visivo-Log-Range`), so every decade keeps its
-  share of the 8-bit codes; radio cubes, with their negative noise, are
-  quantised exactly as before. `reduced_info` says when a cube is a
+  share of the 8-bit codes. Every other cube (radio, masked or
+  moment-derived) is quantised exactly as before under `auto`; `log` can
+  still be asked for on any cube. `reduced_info` says when a cube is a
   simulation volume (no spectral axis, linear axes) and gives its axes and
   grid spacing; its default threshold is then the 99th percentile instead of
   the noise rule. On the VR page such a volume's box is drawn to its grid

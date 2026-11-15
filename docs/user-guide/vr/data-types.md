@@ -26,7 +26,8 @@ backend says it is a *simulation volume* and the page treats it as one:
   linear scale would put all but the densest voxels in the first code, and no
   stretch on the headset brings them back. Values at or below zero have no
   logarithm and are blank. A signed field (a velocity component) stays
-  linear, as a radio cube does. *Scale* on the page (*auto*, *log*,
+  linear, and so does every cube that is not a simulation volume (radio,
+  masked or moment-derived) unless *log* is chosen. *Scale* on the page (*auto*, *log*,
   *linear*) overrides the choice. The threshold, the colour max, the
   readout, the info line and the colour bar beside the box always show
   values, never their logarithms. A log-scaled field starts with the

@@ -18,9 +18,10 @@ to run on a Quest 3.
 - **Scale**: *auto* (the default), *log* or *linear*: whether the texture
   holds the values or their base-10 logarithm
   ([#317](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/317)).
-  *auto* takes the log for a cube whose values are all positive and span
-  more than three decades (a simulation's density), and the values otherwise
-  (every radio cube: its noise is negative). On a log scale every decade gets
+  *auto* takes the log for a simulation volume whose values are all
+  positive and span more than three decades (a density), and the values for
+  every other cube (a radio cube, masked or moment-derived ones included,
+  even when all positive); *log* applies to any cube. On a log scale every decade gets
   the same number of codes (about 36 a decade for seven decades in 8 bits,
   values within 3.2 %), and values at or below zero are blank. See
   [Simulation volumes](data-types.md#simulation-volumes).

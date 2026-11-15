@@ -50,14 +50,20 @@ def vbt(tmp_path):
 
 # ── Quantisation ────────────────────────────────────────────────────────────
 
-def test_auto_scale_is_log_only_for_positive_values_over_three_decades():
-    assert cube_reduce.resolve_scale("auto", 1e-12, 2e-5) == "log"
-    assert cube_reduce.resolve_scale("auto", 1.0, 999.0) == "linear"       # under 3 decades
-    assert cube_reduce.resolve_scale("auto", -0.01, 1e6) == "linear"      # radio: negative noise
-    assert cube_reduce.resolve_scale("auto", 0.0, 1e6) == "linear"        # zeros: no log
-    assert cube_reduce.resolve_scale("auto", 0.0, 0.0) == "linear"        # an empty cube
-    assert cube_reduce.resolve_scale("log", -1.0, 1.0) == "log"           # asked for
-    assert cube_reduce.resolve_scale("linear", 1e-12, 1e-5) == "linear"
+def test_auto_scale_is_log_only_for_a_simulation_with_positive_values_over_three_decades():
+    sim = dict(simulation=True)
+    assert cube_reduce.resolve_scale("auto", 1e-12, 2e-5, **sim) == "log"
+    assert cube_reduce.resolve_scale("auto", 1.0, 999.0, **sim) == "linear"       # under 3 decades
+    assert cube_reduce.resolve_scale("auto", -0.01, 1e6, **sim) == "linear"      # signed field
+    assert cube_reduce.resolve_scale("auto", 0.0, 1e6, **sim) == "linear"        # zeros: no log
+    assert cube_reduce.resolve_scale("auto", 0.0, 0.0, **sim) == "linear"        # an empty cube
+    # Not a simulation (a radio cube, masked or moment-derived): auto stays linear.
+    assert cube_reduce.resolve_scale("auto", 1e-12, 2e-5) == "linear"
+    assert cube_reduce.resolve_scale("auto", 1e-12, 2e-5, simulation=False) == "linear"
+    # Asked for: on any cube.
+    assert cube_reduce.resolve_scale("log", -1.0, 1.0) == "log"
+    assert cube_reduce.resolve_scale("log", 1e-12, 2e-5) == "log"
+    assert cube_reduce.resolve_scale("linear", 1e-12, 1e-5, **sim) == "linear"
     with pytest.raises(ValueError):
         cube_reduce.resolve_scale("asinh", 1.0, 2.0)
 
@@ -186,6 +192,44 @@ def test_a_radio_cube_is_reduced_exactly_as_before(synthetic_fits_cube, encoding
     lo, hi = cube_reduce.finite_range(red)
     assert auto["raw_bytes"] == cube_reduce.quantise(red, lo, hi, encoding)
     assert (auto["range_min"], auto["range_max"]) == (lo, hi)
+
+
+def _masked_radio_cube(tmp_path) -> Path:
+    """An all-positive spectral cube over five decades, NaN outside its mask
+    (an Isolate or masked-cube output): RA, DEC, FREQ."""
+    rho = _density((16, 24, 32)).astype(np.float64) * 1e9      # 1e-3 .. 1e4 Jy/beam
+    rho[rho < 2e-3] = np.nan                                    # blanked outside the mask
+    h = fits.Header()
+    for k, v in dict(CTYPE1="RA---SIN", CRPIX1=16.0, CRVAL1=150.0, CDELT1=-0.002, CUNIT1="deg",
+                     CTYPE2="DEC--SIN", CRPIX2=12.0, CRVAL2=2.0, CDELT2=0.002, CUNIT2="deg",
+                     CTYPE3="FREQ", CRPIX3=1.0, CRVAL3=1.4e9, CDELT3=-1e5, CUNIT3="Hz",
+                     RESTFRQ=1.420405751768e9, BUNIT="Jy/beam").items():
+        h[k] = v
+    path = tmp_path / "masked_radio.fits"
+    fits.PrimaryHDU(rho.astype(np.float32), h).writeto(path)
+    return path
+
+
+@pytest.mark.parametrize("encoding", ["uint8", "float16"])
+@pytest.mark.parametrize("mode", ["mean", "max"])
+def test_an_all_positive_masked_radio_cube_stays_linear_under_auto(tmp_path, encoding, mode):
+    """Positive values over more than three decades, NaN-masked, with a
+    spectral axis: not a simulation, so auto is linear, byte for byte; a log
+    scale asked for still applies."""
+    path = str(_masked_radio_cube(tmp_path))
+    data = np.squeeze(fits.getdata(path))
+    fin = data[np.isfinite(data)]
+    assert fin.min() > 0 and math.log10(fin.max() / fin.min()) > 3 and np.isnan(data).any()
+    info = R.worker_cube_reduced_info(path, 2, 1, 256)
+    assert info["simulation"] is False
+    auto = R.worker_cube_reduced(path, 2, 1, 256, mode, encoding)
+    lin = R.worker_cube_reduced(path, 2, 1, 256, mode, encoding, scale="linear")
+    assert auto["scale"] == "linear" and auto["log_min"] is None
+    assert auto["raw_bytes"] == lin["raw_bytes"]
+    assert (auto["range_min"], auto["range_max"], auto["threshold"]) == \
+        (lin["range_min"], lin["range_max"], lin["threshold"])
+    log = R.worker_cube_reduced(path, 2, 1, 256, mode, encoding, scale="log")
+    assert log["scale"] == "log" and log["raw_bytes"] != lin["raw_bytes"]
 
 
 def test_the_pyramid_path_quantises_the_same_log_scale(tmp_path):

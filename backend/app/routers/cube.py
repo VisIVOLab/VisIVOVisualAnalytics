@@ -223,9 +223,10 @@ class CubeReducedRequest(BaseModel):
     source: Literal["auto", "pyramid", "cube"] = "auto"
     #: The value scale the voxels are quantised on (issue #317): ``linear``,
     #: ``log`` (log10 of the values; a value at or below zero is blank), or
-    #: ``auto``: log for positive values spanning more than three decades (a
-    #: simulation's density), linear otherwise (a radio cube, with its
-    #: negative noise). Only reduced_bin uses it.
+    #: ``auto``: log only for a simulation volume (reduced_info's
+    #: ``simulation``) whose values are positive and span more than three
+    #: decades (a density), linear for every other cube (radio, masked or
+    #: moment-derived ones included). Only reduced_bin uses it.
     scale: Literal["auto", "linear", "log"] = "auto"
 
 

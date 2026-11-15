@@ -519,9 +519,10 @@ def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
     revision of a request made earlier (or queued for a heavy slot).
 
     ``scale`` (issue #317): ``linear`` quantises the values, ``log`` their
-    log10 (a value at or below zero is then blank), ``auto`` the log for
-    positive values spanning more than ``cube_reduce.AUTO_LOG_DECADES``
-    decades. The reduction itself (block means or maxima) is on the values
+    log10 (a value at or below zero is then blank), ``auto`` the log only for
+    a simulation volume (:func:`is_simulation`) whose values are positive and
+    span more than ``cube_reduce.AUTO_LOG_DECADES`` decades: any other cube
+    stays linear under ``auto``, exactly as before #317. The reduction itself (block means or maxima) is on the values
     either way; only the quantisation of its result changes. ``range_min`` and
     ``range_max`` are values (on a log scale, the positive ones'), ``log_min``
     and ``log_max`` the log10 range the codes span (None on a linear scale)."""
@@ -554,7 +555,7 @@ def worker_cube_reduced(path: str, factor_xy: int, factor_z: int, max_dim: int,
     if file_identity(path) != identity:
         raise ValueError("The cube changed while it was being reduced: load it again.")
     lo, hi = cube_reduce.finite_range(reduced)
-    used = cube_reduce.resolve_scale(scale, lo, hi)
+    used = cube_reduce.resolve_scale(scale, lo, hi, simulation)
     log_min = log_max = None
     nonpositive = 0
     if used == "log":

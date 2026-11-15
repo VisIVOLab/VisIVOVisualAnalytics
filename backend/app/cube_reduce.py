@@ -585,23 +585,25 @@ def finite_range(volume: np.ndarray) -> tuple[float, float]:
 #: The value scales of a reduced cube: ``linear`` quantises the values,
 #: ``log`` their base-10 logarithm, ``auto`` picks one (:func:`resolve_scale`).
 SCALES = ("auto", "linear", "log")
-#: ``auto`` quantises the logarithm of a cube whose finite values are all
-#: positive and span more than this many decades. A simulation's density spans
-#: seven: linear 8-bit codes put all but its densest voxels in the first code,
-#: and no display stretch on the headset brings them back. A radio cube has
-#: negative noise and stays linear.
+#: ``auto`` quantises the logarithm of a simulation volume whose finite values
+#: are all positive and span more than this many decades. A simulation's
+#: density spans seven: linear 8-bit codes put all but its densest voxels in the
+#: first code, and no display stretch on the headset brings them back. Any
+#: other cube (radio, masked or moment-derived) stays linear under ``auto``.
 AUTO_LOG_DECADES = 3.0
 
 
-def resolve_scale(requested: str, lo: float, hi: float) -> str:
+def resolve_scale(requested: str, lo: float, hi: float, simulation: bool = False) -> str:
     """``linear`` or ``log`` for a cube whose finite values span ``lo..hi``.
-    ``auto`` is log for positive values spanning more than
-    :data:`AUTO_LOG_DECADES` decades, linear otherwise."""
+    ``auto`` is log only for a simulation volume (``simulation``) whose values
+    are positive and span more than :data:`AUTO_LOG_DECADES` decades; every
+    other cube (a radio cube, masked or moment-derived ones included) stays
+    linear under ``auto``. ``log`` asked for applies to any cube."""
     if requested not in SCALES:
         raise ValueError(f"scale must be one of {SCALES}, not {requested!r}.")
     if requested != "auto":
         return requested
-    if lo > 0.0 and math.isfinite(lo) and math.isfinite(hi) and \
+    if simulation and lo > 0.0 and math.isfinite(lo) and math.isfinite(hi) and \
             math.log10(hi) - math.log10(lo) > AUTO_LOG_DECADES:
         return "log"
     return "linear"
