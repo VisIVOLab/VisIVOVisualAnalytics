@@ -215,7 +215,12 @@ and pull the trigger to sort by it (again: the other way); *◂ Page* and
   writes a new file (`<catalogue>_vr_classified.xml`, then `_1`, `_2`…). The
   window's line says *sending* until the file is written and the desktop
   told, then *sent* with the file's name (or why it was not, in red), and
-  *changed since sent* when there is more to send. A VOTable keeps the
+  *changed since sent* when there is more to send. When the file was written
+  but the desktop could not be told (a backend older than the headset
+  activity, the page stood down meanwhile) it says *Saved as <file>, desktop
+  not told* and why, in amber: the VOTable is in the Exports, and Send again
+  (nothing changed) only tells the desktop about that file, without writing
+  another. A VOTable keeps the
   catalogue's units (an RA in hours stays in hours, found sources written in
   it). For an overlay with no catalogue file behind it (VLKB sources, a
   cross-match) every source goes, flagged or not.

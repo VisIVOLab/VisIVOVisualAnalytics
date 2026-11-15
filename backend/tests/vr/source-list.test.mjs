@@ -367,3 +367,36 @@ test('Send says sending, then sent only once the product is posted, or why it wa
   g.src.press('flag:real');
   assert.throws(() => g.src.press('send'), /No desktop session hub/);
 });
+
+test('review (#279): saved but the desktop not told: said with the file, and Send again tells that file without writing another', async () => {
+  let settle;
+  const details = [];
+  const f = fakeSources({ overlay: ov, report: (d) => { details.push(d); return new Promise((res, rej) => { settle = { res, rej }; }); } });
+  f.src.refresh();
+  f.src.choose('c:1', false);
+  f.src.press('flag:real');
+  f.src.press('send');
+  assert.equal(details[0].file, undefined, 'the first send writes the VOTable');
+  settle.res({ file: 'cube_vr_classified.xml', posted: false, why: 'this backend has no headset hub' });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(f.src.state.status[0], /^Saved as cube_vr_classified\.xml, desktop not told: this backend has no headset hub/);
+  assert.match(f.src.view().info, /, saved, desktop not told$/);
+  assert.ok(!/Not sent/.test(f.src.state.status[0]));
+  // Send again, nothing changed: the same file is told, not written again.
+  f.src.press('send');
+  assert.equal(details[1].file, 'cube_vr_classified.xml');
+  // That fails too (the hub stopped): the saved file is still remembered.
+  settle.rej(Object.assign(new Error('the hub was stopped'), { stale: true }));
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(f.src.view().info, /, saved, desktop not told$/);
+  f.src.press('send');
+  assert.equal(details[2].file, 'cube_vr_classified.xml');
+  settle.res({ file: 'cube_vr_classified.xml', posted: true });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(f.src.view().info, /, sent$/);
+  assert.match(f.src.state.status[0], /^Sent to the desktop: cube_vr_classified\.xml/);
+  // A change since: a new VOTable is written.
+  f.src.press('flag:doubtful');
+  f.src.press('send');
+  assert.equal(details[3].file, undefined);
+});

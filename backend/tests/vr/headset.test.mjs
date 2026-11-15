@@ -182,6 +182,8 @@ function fakeHub({ instance = 'inst-1' } = {}) {
     if (u.pathname === '/v1/vr/headset/hello') { s.forget = false; return resp(200, { client: body.client, server_time: 1, instance: s.instance }); }
     if (s.forget && u.pathname.startsWith('/v1/vr/')) return resp(404, { detail: 'Unknown headset client in this session: say hello first' });
     if (u.pathname === '/v1/vr/headset/state') return resp(200, { client: body.client, server_time: 1, instance: s.instance });
+    // An older backend without the route (404 Not Found), or one that forgets the page at every post.
+    if (u.pathname === '/v1/vr/activity' && s.activity) return resp(404, { detail: s.activity === 'none' ? 'Not Found' : 'Unknown headset client in this session: say hello first' });
     if (u.pathname === '/v1/vr/activity') return resp(200, { seq: calls.length });
     if (u.pathname === '/v1/vr/headset/commands') {
       const after = Number(u.searchParams.get('after'));
@@ -195,7 +197,7 @@ function fakeHub({ instance = 'inst-1' } = {}) {
       }
       return resp(200, { commands: cmds, next: Math.max(...cmds.map((c) => c.seq)), instance: s.instance });
     }
-    if (u.pathname.startsWith('/v1/products/')) {
+    if (u.pathname.startsWith('/v1/products/') || u.pathname === '/v1/catalogue/classified_votable') {
       const st = s.saveStatus.length ? s.saveStatus.shift() : 200;
       if (st !== 200) return resp(st, { detail: 'busy' });
       s.files++;
@@ -536,4 +538,39 @@ test('a stop while the first hello is on its way: its goodbye goes before the ne
   assert.deepEqual(order.slice(0, 3), ['POST hello', 'DELETE headset', 'POST hello']);
   assert.equal(hub.st.helloSession, 's', 'the running page is registered');
   hub.stop();
+});
+
+test('review (#279): a product saved but not posted resolves with its file (posted: false), never as nothing saved', async () => {
+  for (const kind of ['none', 'forget']) {
+    const t = clock(), fh = fakeHub();
+    const { hub, logs } = makeHub(t, fh);
+    hub.start();
+    await t.advance(10);
+    fh.s.activity = kind;
+    const detail = { product: 'classification', dataset_id: 'ds', request: { sources: [] }, label: 'x' };
+    const done = hub.product(detail, null, { cubePath: '/c.fits', stem: 'c' }, `k-${kind}`);
+    let got = null, err = null;
+    done.then((v) => { got = v; }, (e) => { err = e; });
+    await t.advance(50);
+    assert.equal(err, null, kind);
+    assert.equal(fh.posts('/v1/catalogue/classified_votable').length, 1, 'the VOTable was written once');
+    assert.equal(got.posted, false, kind);
+    assert.ok(got.file, 'the file it was saved as');
+    assert.ok(got.why, 'and why the desktop was not told');
+    if (kind === 'none') assert.match(got.why, /no headset hub/);
+    else {
+      assert.match(got.why, /second hello/);
+      assert.ok(logs.some(([lvl, ev, msg]) => lvl === 'warning' && ev === 'hub-failed' && /second hello/.test(msg)), 'still in the diagnostics');
+      // Told again with that file: no second VOTable.
+      fh.s.activity = '';
+      const again = hub.product({ ...detail, file: got.file }, null, { cubePath: '/c.fits', stem: 'c' }, 'k-again');
+      let got2 = null;
+      again.then((v) => { got2 = v; });
+      await t.advance(50);
+      assert.equal(fh.posts('/v1/catalogue/classified_votable').length, 1, 'not written a second time');
+      assert.deepEqual(got2, { file: got.file, posted: true });
+      assert.equal(fh.posts('/v1/vr/activity').at(-1).body.payload.file, got.file);
+    }
+    hub.stop();
+  }
 });
