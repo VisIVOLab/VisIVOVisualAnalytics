@@ -12,8 +12,10 @@ every update of it, still comes from the backend.
 | File | What it does |
 |---|---|
 | `build.sh` | The whole build: key, Bubblewrap, patches, Gradle, zipalign, apksigner. |
-| `app.json` | The app's identity: packages, names, `versionCode`, start path, icon. |
+| `app.json` | The app's identity: packages, names, `versionCode`, start path, icons. |
 | `make-twa.py` | Writes Bubblewrap's `twa-manifest.json` from `app.json`. |
+| `icon-512.png`, `icon-maskable-512.png` | The launcher icons, made from the VisIVO logo by `make-icons.py`. |
+| `make-icons.py` | Makes both icons from `icons/VisIVO_512.png` (below). |
 | `patch-project.py` | The changes to the generated Android project (below). |
 | `package.json`, `package-lock.json` | Pin `@meta-quest/bubblewrap-cli` 1.24.1. |
 
@@ -54,9 +56,40 @@ your local backend at once. Keep the key: an APK signed with another key
 cannot be installed over this one (`adb uninstall it.inaf.oact.visivo.vr.dev`
 first).
 
+### Icons
+
+The launcher icons are the VisIVO logo (`icons/VisIVO_512.png`, the desktop's
+own icon) on white, because the logo's dark-blue text would vanish on Horizon
+OS's dark panels:
+
+- `icon-512.png`: the logo on a white rounded square, shown as it is;
+- `icon-maskable-512.png`: the logo on a full white square, every visible
+  pixel inside the centre circle of 80% of the width, so any launcher mask
+  keeps all of it.
+
+They are committed; to make them again (Pillow needed, the logo file is never
+changed):
+
+```bash
+python3 tools/quest-app/make-icons.py
+```
+
+A new icon is a new wrapper: bump `versionCode` in `app.json`, so the desktop
+offers **Update** on headsets that have the older app.
+
 ### Release key
 
-Make it once, keep it safe (losing it means users must uninstall the app):
+The project's key exists (made 2026-11-14, alias `visivo-vr`); its secrets
+`QUEST_APP_KEYSTORE_B64` and `QUEST_APP_KEYSTORE_PASS` are set, and its
+certificate's SHA-256 is in `backend/app/vr_app.json`:
+
+```
+A1:54:C4:5B:54:20:5F:B9:6B:B9:80:28:6D:86:F3:A6:78:17:E1:32:2E:4F:68:AB:44:40:30:C0:43:04:D8:D4
+```
+
+The steps below are how it was made, for a fork with a key of its own or for
+a replacement. Make it once, keep it safe (losing it means users must
+uninstall the app):
 
 ```bash
 keytool -genkeypair -keystore visivo-vr-release.p12 -storetype PKCS12 \
@@ -72,9 +105,31 @@ build and in `visivo-vr.json`) in `backend/app/vr_app.json`
 (`release_sha256`), so every backend serves the release app's statement. A
 backend can also take it from `VISIVO_VR_APP_RELEASE_SHA256`.
 
-The workflow `.github/workflows/quest-app.yml` builds the release APK on every
-tag and on demand when the secrets exist, adds it to the tag's release, and
-otherwise ends with a notice and builds nothing.
+### In the releases
+
+`.github/workflows/quest-app.yml` builds and signs the release APK. It runs:
+
+- from `release.yml` (as a reusable workflow), once per release run, before
+  the desktop packages: every package bundles that APK, and on a tag it also
+  attaches `visivo-vr.apk` and `visivo-vr.json` to the release as assets of
+  their own (once: `quest-app.yml` has no tag trigger of its own);
+- on demand (**Actions → quest-app → Run workflow**), to check the signing:
+  the APK, its `.json` and `assetlinks.json` are a workflow artifact.
+
+It fails when the certificate it built is not in `vr_app.json`, so no package
+ships an app its backend does not list. Without the secrets (a fork) it ends
+with a notice, and the packages are built without the app; if its build
+fails, they are built without it, with a warning. It never holds a release.
+
+Where the APK ends up in each package, as `visivo-vr.apk` with
+`visivo-vr.json` beside it (where the desktop looks: `apkCandidates` in
+`src/app/VrHeadsetApp.h`):
+
+| Package | Folder |
+|---|---|
+| macOS `.dmg` | `VisIVOVisualAnalytics.app/Contents/Resources/quest-app/` (added before the bundle is signed) |
+| Linux `.tar.gz` | `VisIVOVisualAnalytics-linux-x86_64/app/usr/bin/quest-app/` |
+| Windows `.zip` | `VisIVOVisualAnalytics-windows-x86_64/bin/quest-app/` |
 
 ## Origin and port
 
@@ -130,5 +185,5 @@ The desktop looks for the APK (with its `.json` beside it) in
 `Contents/Resources` of the macOS app, beside the executable elsewhere),
 then in `tools/quest-app/out/` of the source tree its build directory is in
 (`visivo-vr-dev.apk` first). So for development, `build.sh` then a desktop
-started from `build/` is enough. Bundling `visivo-vr.apk` in the release
-packages is still a `release.yml` change to make.
+started from `build/` is enough. The release packages bundle the release APK
+(above).
