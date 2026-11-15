@@ -31,6 +31,7 @@ from .cube import (  # noqa: F401
     worker_image_preview,
     worker_image_tile,
     worker_cube_preview,
+    worker_cube_region_level_raw,
 )
 from .moment import (  # noqa: F401
     _n_moment_threads,
@@ -132,6 +133,7 @@ __all__ = [
     "worker_image_preview",
     "worker_image_tile",
     "worker_cube_preview",
+    "worker_cube_region_level_raw",
     "_n_moment_threads",
     "_moment1_numba",
     "_moment2_numba",
