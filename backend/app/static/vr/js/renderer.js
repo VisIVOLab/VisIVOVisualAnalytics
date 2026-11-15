@@ -497,6 +497,7 @@ export class Renderer {
     this.boxLines = lineVao();     // box, ticks: rebuilt when the clip box changes
     this.tmpLines = lineVao();     // controllers: rebuilt every frame
     this.selLines = lineVao();     // selections (model space): rebuilt when they change
+    this.cropLines = lineVao();    // the spatial crop's box (#277, model space): rebuilt when it changes
 
     this.labelVao = gl.createVertexArray();
     this.labelBuf = gl.createBuffer();
@@ -1026,7 +1027,7 @@ export class Renderer {
   /** Segments: array of {a: [x,y,z], b: [x,y,z], color: [r,g,b,a]} in model space. */
   setLines(segments, target = this.boxLines) {
     const gl = this.gl;
-    for (const name of ['boxLines', 'tmpLines', 'selLines']) if (this[name] === target) this._lineSegs[name] = segments;
+    for (const name of ['boxLines', 'tmpLines', 'selLines', 'cropLines']) if (this[name] === target) this._lineSegs[name] = segments;
     const arr = new Float32Array(segments.length * 14);
     segments.forEach((s, i) => {
       arr.set([...s.a, ...s.color, ...s.b, ...s.color], i * 14);

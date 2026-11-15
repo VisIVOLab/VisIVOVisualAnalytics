@@ -167,11 +167,17 @@ def test_splats_after_points_cover_the_cloud(tmp_path, can_render):
     the points mapper's vertex buffer shifted and scaled (a million points or
     more), the splats were drawn as a single dot."""
     s, run, loop = _session(_table(tmp_path, n=1_000_000))
+
+    def lit(jpeg):     # above the dark grey background (about 16)
+        return (np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float) > 30).sum()
     try:
-        points_px = _image(run(s.render_frame())).sum()
+        points_px = lit(run(s.render_frame()))
+        # Without a colour column the splats take their opacity since issue
+        # #263 (before, every intensity drew at full opacity): fainter, so
+        # counted above the background rather than above 80.
         run(s.apply_command({"type": "set_point_style", "mode": "gaussian", "size": 3,
-                             "intensity": 35}))
-        assert _image(run(s.render_frame())).sum() > points_px
+                             "intensity": 100}))
+        assert lit(run(s.render_frame())) > 0.5 * points_px     # a single dot: a few
     finally:
         run(s.close())
         loop.close()

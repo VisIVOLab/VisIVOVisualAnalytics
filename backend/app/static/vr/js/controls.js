@@ -9,6 +9,8 @@
 // Pure: unit-tested by node (backend/tests/vr/controls.test.mjs).
 
 export const MODES = ['explore', 'select', 'clip'];
+/** The trigger with the Spatial crop tool, as the wrist legend says it (#277). */
+export const CROP_LEGEND = 'drag: dot, inside, or new';
 /** The modes: Explore (set by the menu's Display and Measure tabs), Select, and Range (the clip mode). */
 export const MODE_NAMES = { explore: 'Explore', select: 'Select', clip: 'Range' };
 /** The tools of each mode (the secondary stick's left/right steps through them), the lasso first. */
@@ -71,7 +73,7 @@ export function controlMap({ mode = 'explore', sub = null, leftHanded = false, p
   const trig = pvArmed ? ['pv-point', 'PV slice point'] : {
     explore: ['pin-readout', 'pin the readout'],
     select: sub === 'lasso' ? ['select', 'lasso seed'] : sub === 'box' ? ['select', 'box corner'] : ['select', 'spectrum probe here'],
-    clip: sub === 'box' ? ['clip-drag', 'hold: drag a crop face'] : ['slab-at', 'range to this channel'],
+    clip: sub === 'box' ? ['clip-drag', CROP_LEGEND] : ['slab-at', 'range to this channel'],
   }[mode];
   const stickY = { explore: ['threshold', 'threshold'], select: ['threshold', 'threshold'],
     clip: sub === 'box' ? ['clip-size', 'crop size'] : ['slab-move', 'range position'] }[mode];
@@ -89,7 +91,8 @@ export function controlMap({ mode = 'explore', sub = null, leftHanded = false, p
     { control: 'upper', name: P.upper, action: 'undo', label: 'undo' },
   ];
   const secondary = [
-    { control: 'lower', name: `Hold ${S.lower}`, action: 'menu', label: 'menu' },
+    // X opens the menu and, pressed again, closes it (#276).
+    { control: 'lower', name: S.lower, action: 'menu', label: 'menu: open, close' },
     { control: 'upper', name: S.upper, action: 'reset-view', label: 'reset view' },
     { control: 'grip', name: 'Grip', action: 'grab', label: 'grab (both: turn, scale)' },
     // The palette's tools in its order, one per flick (the colour map is on the menu's Display tab).

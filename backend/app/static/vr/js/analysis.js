@@ -24,7 +24,7 @@ export function createAnalysis(ctx) {
   const changed = () => { dirty = true; ctx.onChange && ctx.onChange(); };
   const base = { selection: ctx.selection, backend: ctx.backend, datasetId, info, onChange: changed };
   const lasso = createLassoTools({ ...base, showDataset: ctx.showDataset, path: () => st().openPath || '', cube: () => st().cube });
-  const moment = createMomentTool({ ...base, lassoTools: lasso, clipZ: () => [st().clip.min[2], st().clip.max[2]] });
+  const moment = createMomentTool({ ...base, lassoTools: lasso, clipZ: () => [st().clip.min[2], st().clip.max[2]], clip: () => st().clip });
   const pv = createPvTool({ ...base, state: st });
   const show = { moment: true, pv: true };
 
@@ -189,6 +189,11 @@ export function createAnalysis(ctx) {
     return out.length ? [out.join('  ')] : [];
   }
 
-  return { lasso, moment, pv, sync, act, segments, press, view, productTexture, setShown,
+  /** Every frame, headset and desktop alike (main.js syncSelection): the
+   *  moment map cut again when the crop changed and stayed still (#277). Its
+   *  change marks the page's refresh, which redraws the page's copy too. */
+  function tick(now) { return moment.tick(now, !!show.moment); }
+
+  return { lasso, moment, pv, sync, act, segments, press, view, productTexture, setShown, tick,
     shown: (which) => !!show[which], reset, refreshDom, hudLines, layout, isDirty: () => dirty };
 }

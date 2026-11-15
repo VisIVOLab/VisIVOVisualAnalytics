@@ -41,7 +41,8 @@ test('the layout fits, its cells do not overlap, each is hit and pressed at its 
 
 test('tools that do not apply are greyed, with the reason in the tooltip; the one in use is lit', () => {
   const pts = TP.paletteLayout({ kind: 'points', active: 'explore' });
-  assert.deepEqual(pts.filter((w) => w.tool && !w.disabled).map((w) => w.tool), ['explore']);
+  // The crop works on every kind of data (#277).
+  assert.deepEqual(pts.filter((w) => w.tool && !w.disabled).map((w) => w.tool), ['explore', 'crop']);
   assert.ok(TP.paletteLayout({ kind: 'none', active: 'explore' }).filter((w) => w.tool).every((w) => w.disabled));
   const cube = TP.paletteLayout({ kind: 'cube', active: 'probe' });
   assert.ok(cube.filter((w) => w.tool).every((w) => !w.disabled));
@@ -84,7 +85,8 @@ test('the secondary stick steps through the same list, in the same order, skippi
   };
   assert.deepEqual(walk(1), ['lasso', 'probe', 'box', 'slab', 'crop', 'moment', 'pv', 'explore', 'lasso']);
   assert.deepEqual(walk(-1), ['pv', 'moment', 'crop', 'slab', 'box', 'probe', 'lasso', 'explore', 'pv']);
-  assert.equal(TP.stepTool('explore', 'points'), 'explore', 'a point table: only Explore');
+  assert.equal(TP.stepTool('explore', 'points'), 'crop', 'a point table: Explore and the crop');
+  assert.equal(TP.stepTool('crop', 'flow'), 'explore');
   assert.equal(TP.stepTool('explore', 'none'), null);
   assert.equal(TP.stepFrom('crop', { id: 'moment', active: 'crop' }), 'moment');
   assert.equal(TP.stepFrom('lasso', { id: 'moment', active: 'crop' }), 'lasso', 'the tool changed since: from it');
