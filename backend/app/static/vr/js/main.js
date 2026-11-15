@@ -26,6 +26,7 @@ import * as HM from './hand-menu.js';
 import * as TP from './tool-palette.js';
 import * as W from './windows.js';
 import * as RO from './readout.js';
+import * as CG from './crop-gizmo.js';
 // The wrist cards and the toasts (issue #256).
 import * as WR from './wrist.js';
 import { HandTracker } from './hands.js';
@@ -1273,7 +1274,7 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
   ui.undo.clear();
   ui.pin = null;
-  ui.clipDrag = null;
+  ui.crop.drag = null;
   applyExtent();
   $('thr-source').value = currentThresholdSource();
   resetThreshold();
@@ -1413,7 +1414,7 @@ function drawScene(view, override, eye = 0) {
 }
 
 /** Rebuild what changes with the selections, when it changed (selSync). */
-function syncSelection() { selSync.sync(); }
+function syncSelection() { analysis.tick(performance.now()); selSync.sync(); }
 /** Rebuild what changes with the selections: their lines, the page's panel. */
 function syncSelectionNow() {
   const own = CUT.noseloutline ? [] : selection.segments();
@@ -1562,7 +1563,7 @@ const ui = {
   undo: new C.UndoStack(),
   pin: null,           // the pinned readout: {p} (box coordinates)
   sliding: null,       // the menu slider held: one undo step per drag
-  clipDrag: null,      // a face of the clipping box dragged (Range, Spatial crop tool)
+  crop: { hover: null, drag: null, key: '' },   // the Spatial crop tool's box (#277, crop-gizmo.js): pointed at, dragged
   hit: null,           // where the primary ray meets the menu or a window: {point, model}
   busy: { busy: '', error: '' },   // the tools' state last frame, for the haptics
 };
@@ -1612,10 +1613,10 @@ function setMode(m) {
   if (!C.MODES.includes(m) || m === ui.mode) return;
   ui.mode = m;
   $('ui-mode').value = m;
-  ui.clipDrag = null;
+  finishCropDrag();
   ui.pin = null;
 }
-function setClipTool(t) { ui.clipTool = t; ui.clipDrag = null; }
+function setClipTool(t) { ui.clipTool = t; finishCropDrag(); }
 
 /** Haptics on the hand in `role` (issue #201): 'press', 'done' or 'error'. */
 function buzz(role, kind) {
@@ -1637,11 +1638,12 @@ function lookSnapshot() {
 }
 function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
+  // A crop drag under way ends first (#277 review): its step is the one undone.
+  finishCropDrag();
   const s = ui.undo.pop();
   if (!s) { buzz('primary', 'error'); return false; }
   // A step of other data (a history left from before a switch) is not applied.
   if ((s.kind || 'cube') !== lookKind()) { ui.undo.clear(); buzz('primary', 'error'); return false; }
-  ui.clipDrag = null;
   if ((s.kind || 'cube') !== 'cube') {
     state.clip = { min: [...s.clip.min], max: [...s.clip.max] };
     setColormap(s.colormap);
@@ -1808,7 +1810,7 @@ function menuView(ctx = menuContext()) {
     notes.opacity = state.opacity.toFixed(2);
     notes.render = state.mode === 1 ? 'MIP: the brightest value along each ray' : 'Emission: the voxels add up along each ray';
     notes.slab = slabNote();
-    notes.trigger = ui.clipTool === 'box' ? 'Trigger held near a face of the crop: drag it.' : 'Trigger: the range centred on the emission it meets.';
+    notes.trigger = ui.clipTool === 'box' ? 'Trigger on a dot: a face; inside: the crop moves; elsewhere: a new crop.' : 'Trigger: the range centred on the emission it meets.';
     notes.crop = 'Reset crop keeps the range.';
     notes.tool = TOOL_NAMES[selection.sel.tool] ? `Trigger: ${TOOL_NAMES[selection.sel.tool]}` : '';
     const sum = selectionSummary();
@@ -2119,6 +2121,8 @@ function setPage(page) {
   ui.page = page;
   const m = HM.TAB_MODE[page];
   if (m) setMode(m);
+  // A point table or a velocity field has no velocity range: Range is the crop (#277).
+  if (page === 'range' && !state.cube && layers.hasScene() && ui.clipTool !== 'box') setClipTool('box');
 }
 
 /** The menu moved by its title bar (headset only: the desktop view keeps it beside the cube). */
@@ -2357,7 +2361,8 @@ function wristOverlays(now, dtS) {
   syncWristSession();
   const ml = modeText();
   // A change of mode or tool, told (the label above the controller is gone).
-  if (ml !== toastMode) { toast(ml, 'mode'); toastMode = ml; }
+  // The Spatial crop tool says how it is used (#277), in one line.
+  if (ml !== toastMode) { toast(ui.mode === 'clip' && ui.clipTool === 'box' && cropFrame() ? CG.CROP_TOAST : ml, 'mode'); toastMode = ml; }
   for (const card of Object.values(wristCards)) {
     const handedness = r[card.role];
     const h = xr.hands[handedness];
@@ -2426,16 +2431,108 @@ function primaryAct(action, boxRay) {
     pushUndo();
     setSlab({ c: r.peak.p[2], w: slabOf().w });
     buzz('primary', 'press');
-  } else if (action === 'clip-drag') {
-    const tip = boxRay.o;
-    const inside = tip.every((v, i) => v >= state.clip.min[i] && v <= state.clip.max[i]);
-    let point = inside ? tip : null;
-    if (!point) { const r = selection.pickBox(boxRay, 0.6); if (r) point = r.hit.p; }
-    if (!point) { buzz('primary', 'error'); return; }
-    const face = C.nearestFace(point, state.clip);
-    pushUndo();
-    ui.clipDrag = { face, start: tip[face.axis], v0: state.clip[face.end][face.axis] };
-    buzz('primary', 'press');
+  }
+}
+
+// ── The spatial crop, seen and grabbed (issue #277) ─────────────────────────
+// With the Spatial crop tool the crop box is drawn with a dot on each face
+// (crop-gizmo.js). The trigger on a dot drags that face, on the inside of a
+// crop moves the crop, elsewhere draws a new one from two corners. The same
+// on a cube, a point table and a velocity field (state.clip is each one's
+// box fractions); the cube's third axis is its velocity range.
+
+/** The box of what is shown in model space (crop-gizmo frame), or null. */
+function cropFrame() {
+  if (state.cube) return state.extent ? CG.cubeFrame(state.extent) : null;
+  const b = layers.hasScene() ? layers.state.box : null;
+  return b && b.lo && b.hi ? CG.sceneFrame(b) : null;
+}
+/** Is the Spatial crop tool on, over something to crop? */
+function cropToolOn() { return ui.mode === 'clip' && ui.clipTool === 'box' && !!cropFrame(); }
+
+/**
+ * The crop under the ray this frame (world ray, null when the menu or a
+ * window takes it), the trigger held (`pressed`) and just pressed (`edge`),
+ * the controller's tip (world, or null). Returns whether a crop drag holds
+ * the trigger.
+ */
+function cropPointer(worldRay, pressed, edge, tipWorld = null) {
+  const c = ui.crop;
+  const f = cropFrame();
+  if (!f) { c.hover = null; c.drag = null; return false; }
+  const ray = worldRay ? CG.modelRay(state.model, worldRay) : null;
+  const tip = tipWorld ? M.transformPoint(M.invert(state.model), tipWorld) : null;
+  if (c.drag) {
+    if (pressed) {
+      if (ray) { state.clip = CG.dragCrop(c.drag, ray, f, tip); decorationsChanged(); }
+      return true;
+    }
+    finishCropDrag();
+  }
+  c.hover = ray ? CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model), tip }) : null;
+  if (edge && ray && c.hover) {
+    const d = CG.startDrag(c.hover, state.clip, ray, f, tip);
+    // The look before the drag, kept: an undo step only if the drag changes the crop.
+    if (d) { d.undo = lookKind() ? lookSnapshot() : null; c.drag = d; buzz('primary', 'press'); } else buzz('primary', 'error');
+  }
+  return !!c.drag;
+}
+/** A crop drag ends (the trigger let go, or the tool, mode or data changed
+ *  under it, #277 review): a new crop too small is dropped, and the drag is
+ *  one undo step only when it changed the crop. */
+function finishCropDrag() {
+  const d = ui.crop.drag;
+  if (!d) return;
+  ui.crop.drag = null;
+  const f = cropFrame();
+  const end = CG.endDrag(d, state.clip, f);
+  if (d.undo && CG.clipChanged(d.clip0, end)) ui.undo.push(d.undo);
+  state.clip = end;
+  decorationsChanged();
+  labelsChanged();
+}
+
+/** The crop's look: a faint fill (brighter while its inside is pointed at), the dots. */
+const cropTex = { fill: null, fillHot: null, dot: null, dotHot: null };
+function cropTexture(name) {
+  if (cropTex[name]) return cropTex[name];
+  const dot = name.startsWith('dot');
+  const cv = Object.assign(document.createElement('canvas'), { width: dot ? 64 : 4, height: dot ? 64 : 4 });
+  const c = cv.getContext('2d');
+  if (dot) {
+    c.beginPath(); c.arc(32, 32, 26, 0, 2 * Math.PI);
+    c.fillStyle = name === 'dotHot' ? '#ffd94a' : '#9fd0ff'; c.fill();
+    c.lineWidth = 6; c.strokeStyle = 'rgba(8, 11, 18, 0.9)'; c.stroke();
+  } else {
+    c.fillStyle = name === 'fillHot' ? 'rgba(255, 217, 74, 0.16)' : 'rgba(110, 170, 255, 0.07)';
+    c.fillRect(0, 0, 4, 4);
+  }
+  // A 2-D texture, uploaded once (issue #229: nothing 3-D during a session).
+  const h = R.createPanel();
+  R.updatePanel(h, cv);
+  cropTex[name] = h;
+  return h;
+}
+/** The crop box for one eye (`eye` its position, for the dots facing it). */
+function drawCropGizmo(v, eye) {
+  if (!cropToolOn()) return;
+  const f = cropFrame();
+  const hover = ui.crop.drag || ui.crop.hover;
+  const g = CG.gizmo(f, state.clip, hover);
+  // The lines only when the box or what is pointed at changed.
+  const key = JSON.stringify([state.clip, hover && (hover.id || hover.kind), f]);
+  if (key !== ui.crop.key) {
+    // (A planar table's flat axis has no dots: gizmo() leaves them out.)
+    R.setLines(ui.crop.drag && ui.crop.drag.kind === 'new' ? CG.previewEdges(f, state.clip) : g.edges, R.cropLines);
+    ui.crop.key = key;
+  }
+  const fill = cropTexture(g.fillHot ? 'fillHot' : 'fill');
+  for (const face of g.faces) if (face.size[0] > 0 && face.size[1] > 0) R.drawPanel(v, M.multiply(state.model, face.m), fill, face.size);
+  R.drawLines(v, state.model, R.cropLines);
+  for (const h of g.handles) {
+    const p = M.transformPoint(state.model, h.point);
+    const s = h.hot ? CG.HANDLE_M * 1.5 : CG.HANDLE_M;
+    R.drawPanel(v, RO.faceEye(p, eye), cropTexture(h.hot ? 'dotHot' : 'dot'), [s, s]);
   }
 }
 
@@ -2504,6 +2601,7 @@ let dragging = null;
 let pressAt = null;
 let mouseOnPanel = false;      // a press on the menu or a window (?panel3d)
 let mouseOnCard = false;
+let mouseOnCrop = false;       // a press on the crop box (#277): the crop is dragged
 /** The message card in the desktop view (?panel3d) takes the mouse first. */
 function cardMouse(e, pressed) {
   return !xr && ui.desktop && shell.cardPointer(mouseWorldRay(e), pressed);
@@ -2516,12 +2614,25 @@ canvas.addEventListener('pointerdown', (e) => {
     mouseOnPanel = true;
     return;
   }
+  if (!xr && cropToolOn()) {
+    // The crop (#277) with the mouse: a dot or the inside is dragged; with
+    // Shift held a drag elsewhere draws a new crop; any other drag turns the view.
+    const f = cropFrame(), ray = CG.modelRay(state.model, mouseWorldRay(e));
+    const hit = CG.hitCrop(f, state.clip, ray, { scale: M.uniformScale(state.model) });
+    if (hit.kind !== 'new' || e.shiftKey) {
+      mouseOnCrop = true;
+      cropPointer(mouseWorldRay(e), true, true);
+      return;
+    }
+  }
   dragging = { x: e.clientX, y: e.clientY };
   pressAt = { x: e.clientX, y: e.clientY, t: performance.now() };
   state.moving = true;
 });
 canvas.addEventListener('pointermove', (e) => {
   if (cardMouse(e, mouseOnCard) || mouseOnCard) return;
+  if (mouseOnCrop) { cropPointer(mouseWorldRay(e), true, false); return; }
+  if (!xr && !dragging && cropToolOn()) cropPointer(mouseWorldRay(e), false, false);
   if (!xr && (mouseOnPanel || !dragging)) {
     const onPanel = uiPointer(mouseWorldRay(e), mouseOnPanel, camEye());
     if (mouseOnPanel) return;
@@ -2536,6 +2647,7 @@ canvas.addEventListener('pointermove', (e) => {
 });
 canvas.addEventListener('pointerup', (e) => {
   if (mouseOnCard) { mouseOnCard = false; cardMouse(e, false); cardMouse(e, false); return; }
+  if (mouseOnCrop) { mouseOnCrop = false; cropPointer(mouseWorldRay(e), false, false); return; }
   if (mouseOnPanel) {
     mouseOnPanel = false;
     if (!xr) { uiPointer(mouseWorldRay(e), false, camEye()); uiPointer(mouseWorldRay(e), false, camEye()); }
@@ -2632,6 +2744,7 @@ function desktopFrame(time) {
   refineFrame(time, desktopEyes(lastDesktopView, w, h), lastDesktopView.view, DESKTOP_BG);
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
   else if (layers.hasScene()) layers.drawScene(lastDesktopView, 0, h);
+  drawCropGizmo(lastDesktopView, camEye());
   if (ui.desktop) {
     // The headset's menu and result windows (issue #201), used with the mouse.
     menuLayout();
@@ -3318,7 +3431,7 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
     palette.pointer.update(null, false); palette.pointer.update(null, false);
     palette.open = false;
     for (const w of Object.values(wins)) { w.pointer.update({ bar: null, content: null }, false); w.drag = null; }
-    ui.hit = null; ui.clipDrag = null; ui.sliding = null;
+    ui.hit = null; finishCropDrag(); ui.crop.hover = null; ui.sliding = null;
     Object.assign(ui.menu, { open: false, wasHeld: false });
     ui.menuPalm.reset();
     if (b) showBench(b);
@@ -3389,7 +3502,7 @@ function handleInput(frame, dtS) {
     // What the hands hold at the swap is not a new press in their new roles.
     xr.buttons = { pTrig: btn(Ph, 'trigger'), pLower: btn(Ph, 'lower'), pUpper: btn(Ph, 'upper'), sUpper: btn(Sh, 'upper') };
     xr.roles = roles;
-    ui.clipDrag = null;
+    finishCropDrag();
     // Nor is a menu button held at the swap a press of the new one.
     ui.menu.wasHeld = btn(Sh, 'lower');
     ui.menuPalm.reset(btn(Sh, 'lower'), performance.now());
@@ -3428,17 +3541,14 @@ function handleInput(frame, dtS) {
   }
   // The trigger on the cube, by the mode. The pick runs on the reduced cube in
   // this frame; what it asks of the backend never holds a frame back.
-  if (pressedEdge('pTrig', pTrig) && boxRay) primaryAct(act('primary', 'trigger'), boxRay);
-  if (ui.clipDrag) {
-    // A face of the clipping box follows the controller while the trigger is held.
-    if (pTrig && pRay && state.cube && act('primary', 'trigger') === 'clip-drag') {
-      const tip = selection.worldRayToBox(state.model, pRay.o, pRay.d).o;
-      const d = ui.clipDrag;
-      state.clip = C.moveFace(state.clip, d.face, d.v0 + tip[d.face.axis] - d.start);
-      decorationsChanged();
-    } else {
-      ui.clipDrag = null;
-    }
+  const trigEdge = pressedEdge('pTrig', pTrig);
+  if (act('primary', 'trigger') === 'clip-drag' && cropToolOn()) {
+    // The crop (#277), on any data shown: a drag under way keeps the ray even over a panel.
+    cropPointer(ui.crop.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
+  } else {
+    ui.crop.hover = null;
+    finishCropDrag();
+    if (trigEdge && boxRay) primaryAct(act('primary', 'trigger'), boxRay);
   }
 
   if (L && Rr) {
@@ -3691,6 +3801,7 @@ function onXRFrame(time, frame) {
     const v = { proj: view.projectionMatrix, view: view.transform.inverse.matrix };
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
+    drawCropGizmo(v, M.position(view.transform.matrix));
     if (!asLayers) for (const o of overlays) R.drawPanel(v, o.model, o.handle, o.size);
     R.drawModels(v, modelDraws, modelDrawCount);   // the real controller models
     R.drawMesh(v);            // the page's own controllers and the hands (models.js)
@@ -4232,6 +4343,21 @@ if (query.has('debug')) {
     return w ? [w.rect[0] + w.rect[2] / 2, w.rect[1] + w.rect[3] / 2] : null;
   };
   // The tool palette (#257), for the checks: opened, closed, its widgets and their page pixels.
+  // The crop (#277), for checks: its state, and a box fraction as a world point.
+  window.__vrCrop = {
+    get: () => ({ on: cropToolOn(), clip: JSON.parse(JSON.stringify(state.clip)), hover: ui.crop.hover ? ui.crop.hover.id || ui.crop.hover.kind : null,
+      drag: ui.crop.drag ? ui.crop.drag.kind : null, lines: R.cropLines.count, sentClip: hub.st && hub.st.sent ? hub.st.sent.clip || 0 : 0 }),
+    world: (t) => { const f = cropFrame(); return f ? Array.from(M.transformPoint(state.model, CG.toModel(f, t))) : null; },
+    /** A box fraction as a page pixel in the desktop view. */
+    screen: (t) => {
+      const f = cropFrame();
+      if (!f) return null;
+      const v = lastDesktopView || desktopView();
+      const q = M.transformPoint(M.multiply(v.proj, M.multiply(v.view, state.model)), CG.toModel(f, t));
+      const rect = canvas.getBoundingClientRect();
+      return [rect.left + (q[0] + 1) / 2 * rect.width, rect.top + (1 - q[1]) / 2 * rect.height];
+    },
+  };
   window.__vrPalette = {
     state: palette,
     open: () => setPalette(true),

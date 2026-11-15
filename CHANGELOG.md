@@ -8,6 +8,33 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: a spatial crop you can see and grab (#277).** While the *Spatial
+  crop* tool is on, the crop box is drawn (edges, a faint fill) with a dot on
+  each of its six faces; the dot under the ray, or near the controller,
+  lights up before the trigger. Trigger on a dot and drag: that face follows
+  the ray along its axis. On the inside: the whole crop moves, its size kept.
+  Elsewhere: a drag draws a new crop from two corners across the axes facing
+  the ray, its depth kept (`crop-gizmo.js`, pure and unit-tested; a 2-D
+  texture for the fill and the dots, uploaded once, lines rebuilt only when
+  the box or what is pointed at changes). The same on a cube, a point table
+  and a velocity field (the tool is no longer cubes only), with the mouse in
+  the desktop view (Shift for a new crop). A toast and the wrist legend
+  (*drag: dot, inside, or new*) say how. Verified end to end: the crop limits
+  what is drawn (cube, refined frames through `set_crop`, points, lines,
+  catalogue) and where every pick lands, and a cube's crop reaches the
+  desktop as clip activity (#268). Fixed: the moment of the whole field now
+  shows and counts only the cropped pixels (*Moment N of the cropped field*;
+  it was the whole field whatever the crop). A lasso still grows over the
+  whole cube, as on the desktop. An xrfake check lights a dot, resizes, moves
+  and draws a crop with the controller. After review: a ray nearly along a
+  face's axis leaves the face in place; a face taken with the controller's
+  tip follows the tip; a flat axis of a planar table gets no dots and no
+  NaN; a drag is an undo step only when it changes the crop, and a tool or
+  mode change mid-drag ends it properly, and B mid-drag undoes that drag; the
+  moment map is cut with the crop of its request and cut again when the crop
+  changes and stays still for 0.25 s (only while shown, its colour range from
+  a sample, in the headset and the desktop view alike).
+
 - **VR: X toggles the menu above the controller, and no text is clipped or
   overlapping (#276).** X (the secondary controller's lower button) now
   opens the menu and, pressed again, closes it; the × at the right of its

@@ -157,13 +157,64 @@ spectral axis; *Spectral range* on a cube without a velocity axis) or the
 
 | Control | Velocity range | Spatial crop |
 |---|---|---|
-| Primary trigger | centres the range on the channel of the emission the ray meets (along every channel, so you can point at emission the range hides) | hold: the face nearest to the controller (or to the point the ray picks) follows the controller |
+| Primary trigger | centres the range on the channel of the emission the ray meets (along every channel, so you can point at emission the range hides) | on a **dot**: drag that face; on the **inside** of the crop: drag the whole crop; **elsewhere**: drag diagonally to draw a new crop |
 | Primary stick ↕ | moves the range along the velocity axis | shrinks or grows the crop about its centre |
 | Primary stick ↔ | widens or narrows the range | — |
 | Secondary stick ←/→ | next tool | next tool |
 
 *Full band*, *Reset crop*, the range's two ends and the crop's are on the
 Range tab.
+
+**The crop you can see and grab** ([#277](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/277)).
+While the Spatial crop tool is on, the crop box is drawn: its twelve edges
+(light blue), a faint fill, and a **dot on each of its six faces**. The dot
+under the ray, or within 6 cm of the controller, turns yellow and grows
+before you pull the trigger, so you can see which face will move. Then:
+
+- **Trigger on a dot and drag**: that face follows the ray along its own axis
+  (never past the opposite face, never out of the box). With the ray almost
+  along that axis (within about 13°) the face stays where it is rather than
+  racing away. A dot taken with the controller's tip (no ray on it) follows
+  the tip instead.
+- **Trigger on the inside of the crop and drag**: the whole crop moves, its
+  size kept, inside the box. The edges and the fill turn yellow while the
+  inside is pointed at.
+- **Trigger anywhere else and drag diagonally**, then let go: a new crop with
+  those two points as opposite corners, as Box region does in Select. It spans
+  the two axes across the ray; along the axis the ray looks down, the crop
+  keeps its depth (on a cube seen along the velocity axis: the velocity range).
+  A trigger pulled without a drag changes nothing. On a box not cropped yet
+  (or cropped only along the ray) a trigger on the box draws a new crop.
+
+A toast says this in one line when the tool is picked, and the right wrist's
+legend says *Trigger: drag: dot, inside, or new*. It works the same on a cube,
+a point table and a velocity field (their points and lines outside the crop
+are culled in the shaders). On a cube the faces across the velocity axis are
+the velocity range's ends. In a desktop browser the mouse drags a dot or the
+inside; with Shift held a drag elsewhere draws a new crop (any other drag
+turns the view). A drag that changes the crop is one undo step; a pull that
+changes nothing leaves none. Changing the tool or the mode in the middle of a
+drag ends it where it is; B (undo) in the middle of a drag undoes that drag. A flat point table (all its points in one plane)
+has no dots on its flat axis, which is never cropped.
+
+**What the crop changes.** What is drawn: the cube (the headset's own
+rendering and the refined frames from the computer, whose render session gets
+the same box), a point table's points and a velocity field's lines, the
+catalogue over a cube. What the tools take: every pick (readout, Spectrum
+probe, a lasso's seed, Box region's corners, PV points) lands only on what is
+drawn inside the crop; the moment of the whole field shows, and counts, only
+the cropped pixels (*Moment 0 of the cropped field*, its x and y range under
+the title; the product saved for the desktop is the whole-field map of the
+same request). It is cut with the crop as it was when Moment was pressed, and
+cut again when the crop changes afterwards and stays still for a quarter of a
+second, with no new request (only while its window is shown; the colour
+range of that re-cut comes from a sample of 65 536 pixels). Box
+region and the PV slice take the velocity range. A lasso
+grows from its seed over the whole cube as on the desktop (its object is not
+cut at the crop), and a spectrum is the full band at its pixel. The crop of a
+cube is sent to the desktop as clip activity (voxels of the full cube) half a
+second after the last change; a point table's or a velocity field's is not
+(they have no voxels).
 
 ## The tool palette
 
@@ -287,7 +338,8 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
   - **Crop x**, **Crop y**, **Crop z**: the spatial crop, one range per axis
     (pixels of the full cube below; on a cube *Crop z* is greyed, the third
     axis being the velocity range); *Reset crop*.
-  - A point table or a velocity field has only the spatial crop: the points
+  - A point table or a velocity field has only the spatial crop (the
+    *Spatial crop* trigger tool, as on a cube, and the sliders): the points
     and lines outside it are not drawn (a point table is not refined by the
     backend while it is cropped).
 - **Select** (a cube; greyed on point tables and velocity fields, whose
