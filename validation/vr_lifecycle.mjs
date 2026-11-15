@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--sources] [--masks] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -73,7 +73,9 @@ const XRFAKE = (!!args.xrfake || !!args.regressions) && !args.paired;
 const SOURCES = !!args.sources && !XRFAKE && !args.paired;
 // --masks (issue #282): the mask layers' checks alone (also part of --xrfake and --regressions).
 const MASKS = !!args.masks && !XRFAKE && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks;
+// --entry (issues #237/#291/#305): the ways into VR alone (auto-enter, offerSession, a pending offer) (also part of --xrfake and --regressions).
+const ENTRY = !!args.entry && !XRFAKE && !args.paired;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -581,9 +583,9 @@ try {
   // WebGL objects and their bytes, counted from before the page's scripts run.
   if (ALLOC) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: GL_PROBE });
   // A WebXR stand-in, active only on an address with ?xrfake.
-  if (XRFAKE || SOURCES || MASKS) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
+  if (XRFAKE || SOURCES || MASKS || ENTRY) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
   // Texture calls split by the VR session (issue #229), before the page's scripts.
-  if (XRFAKE || SOURCES || MASKS) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
+  if (XRFAKE || SOURCES || MASKS || ENTRY) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
   if (PAIRED) {
@@ -678,6 +680,7 @@ try {
 
   if (SOURCES) results.sources = await runSourceListChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
   if (MASKS) results.masks = await runMaskChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube, python: PY });
+  if (ENTRY) await runEntryChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────

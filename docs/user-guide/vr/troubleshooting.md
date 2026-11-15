@@ -32,6 +32,10 @@ The card is redrawn only when its text changes (at most once per check, every
 | **Open in another window** (a page that showed a cube) | a newer page with a cube was opened (another *Open on Headset*, a second loader window) | use the newer one; or *Use this window* here |
 | **Opening ngc3137.fits from the computer…** | the desktop sent that cube to this page (#237) | nothing: it is shown when loaded (in VR if you are in VR) |
 | *press Enter VR* beside the WebXR status, after a launch from the app's icon | the page tried to enter VR by itself and the browser wanted a press (#237) | press **Enter VR** once; the cubes the desktop sends then come into the same session |
+| *The browser keeps its own Enter VR for this page and refused the page's button* | the page was opened with `?offer`, and the browser refused the page's own session while its offer was pending (#291) | press the browser's *Enter VR* (the headset button in its address bar), or reload the page without `?offer` and press **Enter VR**; the page makes no further offer |
+| *The browser's own Enter VR started a session at the same moment* | with `?offer`, the browser's *Enter VR* and the page's were pressed together; the page closed the browser's session (never two) | press **Enter VR** again |
+| *The browser has another VR session open* | another tab or app holds the headset's VR session | leave it, then press **Enter VR** again |
+| *The browser does not allow VR for this site* | VR was refused for this address in the browser's site settings | allow it there, then press **Enter VR** |
 | **This cube is too large for this device** | the reduced cube would not fit the [memory budget](reference.md#the-settings-on-the-page) | a larger *Spatial bin* or *Spectral bin*, or a smaller *Max side* |
 | Refine: *lost: retrying in N s, the headset's own rendering meanwhile* | the render session's connection dropped | nothing: the headset shows its own rendering, and the page reconnects (2, 4, 8 … 30 s) and refines again; if the backend no longer holds the cube, the page opens it again first |
 
@@ -111,8 +115,11 @@ Two lines of the diagnostics are about the desktop driving the page
 - `entering VR:` how *Enter VR* is reached on this page: *launched as an app*
   (from the installed app's icon) with what happened when it tried to enter by
   itself (*entered*, or *refused without a press*), and *offerSession*:
-  *offered* (the browser shows its own Enter VR), *not in this browser*, or
-  *stopped* with the browser's reason.
+  *not used* (the page's own Enter VR is the way in; `?offer` asks for the
+  browser's), *offered* (the browser shows its own Enter VR), *not in this
+  browser*, or *stopped* with the reason; then *last Enter VR failure* with
+  its kind and the browser's error, when a press failed (the event
+  `xr-enter-failed` is in the last events).
 
 What has been checked so far, and what to check on a Quest 3, are under
 [Recovery from failures](reference.md#recovery-from-failures) and

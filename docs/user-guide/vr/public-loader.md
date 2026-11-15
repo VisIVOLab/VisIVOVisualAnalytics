@@ -40,8 +40,11 @@ Quest Browser, https://vr.example.org/visivo/
   launch from the icon is its own decision. The page therefore treats a
   refusal as the normal fallback: *Enter VR* stays, and is pressed once per
   headset session, since the desktop then sends further cubes into the same
-  page and session. Where the browser has `navigator.xr.offerSession`, the page
-  offers the session, so the browser's own *Enter VR* is at hand as well.
+  page and session. The page offers the session to the browser
+  (`navigator.xr.offerSession`, the browser's own *Enter VR*) only when its
+  address has `?offer`: the page always shows its own button, and an offer
+  cannot be taken back once made
+  ([#291](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/291)).
 - **One page.** Two loader windows share the loader's origin, so their pages
   meet on one channel: the one with a cube stays in use, an empty one pauses
   and names the cube in the other (see

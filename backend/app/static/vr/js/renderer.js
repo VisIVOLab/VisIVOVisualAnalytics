@@ -474,6 +474,7 @@ export class Renderer {
     // then (issue #229, xr-gl-guard.js). The guard is on the context itself,
     // so the layers' and any other code's 3-D allocations are refused too.
     this.xrActive = false;
+    this.xrSession = null;         // the session that owns the flag (issue #305, main.js xrFlag)
     this.onTex3DInXR = null;       // (call name) => void: the page logs it
     this.tex3dGuard = guardTex3D(gl, () => this.xrActive, (name) => { if (this.onTex3DInXR) this.onTex3DInXR(name); });
     this._panels = new Set();      // createPanel() handles, re-made by restore()

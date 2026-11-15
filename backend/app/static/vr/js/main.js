@@ -221,7 +221,7 @@ const shell = createShell({
     inVR: () => !!xr,
     immersiveApp: () => APP_IMMERSIVE,
     exitVR: () => endXR('the user'),
-    enterVR: () => { if (!$('enter-vr').disabled) enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)); },
+    enterVR: () => { if (!$('enter-vr').disabled) enterXR('immersive-vr', false).catch(enterFailed); },
     recoverDataset: (reason) => recoverDataset(reason),
     hasBackendCube: () => !!(state.open && state.openPath),
     loading: () => state.loading > 0,
@@ -3517,20 +3517,25 @@ function applyCommandBox(cmd) {
 
 // ── Fewer Enter VR presses (issue #237) ─────────────────────────────────────
 // Launched as an installed app, the page enters VR by itself once its first
-// cube is on show (the browser may refuse without a press: the button stays);
-// where the browser offers sessions, its own Enter VR is always at hand.
+// cube is on show (the browser may refuse without a press: the button stays).
+// The page's own Enter VR is the way in; the browser's (offerSession) only
+// when the address asks for it (?offer, issue #291: an offer cannot be taken
+// back, and a browser holding one may refuse the page's button).
 const entry = {
   immersive: APP_IMMERSIVE,
   launched: XE.launchedAsApp(window.location.search, typeof window.matchMedia === 'function' ? (q) => window.matchMedia(q) : null),
-  tried: false, outcome: '', offered: false, offerStopped: false, offerOutcome: '', offers: 0,
+  offerWanted: XE.offerWanted(window.location.search),
+  tried: false, outcome: '', offered: false, offerStopped: false, offerOutcome: '', offers: 0, lastFailure: '',
 };
 function entryLine() {
   const parts = [entry.immersive ? `the headset app (#255): ${entry.tried ? `entered by itself, ${entry.outcome || 'waiting for the browser'}` : 'enters VR at load'}`
     + `${appLaunch.exchangeMs !== null ? `; ticket exchanged in ${appLaunch.exchangeMs.toFixed(0)} ms` : ''}${appLaunch.error ? `; launch: ${appLaunch.error.message}` : ''}`
     : entry.launched ? `launched as an app: ${entry.tried ? `tried by itself, ${entry.outcome || 'waiting for the browser'}` : 'tries by itself once a cube is on show'}`
     : 'opened as a page: Enter VR is pressed once (the desktop then sends cubes into the session)'];
-  parts.push(XE.canOffer(navigator.xr) ? `offerSession: ${entry.offerStopped ? `stopped (${entry.offerOutcome})` : entry.offered ? 'offered (the browser shows its Enter VR)' : entry.offerOutcome || 'not offered yet'}`
-    : 'offerSession: not in this browser');
+  parts.push(!XE.canOffer(navigator.xr) ? 'offerSession: not in this browser'
+    : !entry.offerWanted && !entry.offers ? 'offerSession: not used (the page\'s Enter VR is the way in; ?offer asks for it)'
+      : `offerSession: ${entry.offerStopped ? `stopped (${entry.offerOutcome})` : entry.offered ? 'offered (the browser shows its Enter VR)' : entry.offerOutcome || 'not offered yet'}`);
+  if (entry.lastFailure) parts.push(`last Enter VR failure: ${entry.lastFailure}`);
   return parts.join('; ');
 }
 function maybeAutoEnter() {
@@ -3554,8 +3559,8 @@ function maybeAutoEnter() {
 function maybeOffer() {
   // The headset app enters by itself (#255): an offer could only race it.
   if (entry.immersive) return;
-  if (entry.offerStopped || !XE.shouldOffer({ offerable: XE.canOffer(navigator.xr), vrSupported: xrSupport.vr, active: single.active,
-    inXR: !!xr || R.xrActive || entering, offered: entry.offered })) return;
+  if (!XE.shouldOffer({ offerable: XE.canOffer(navigator.xr), wanted: entry.offerWanted, vrSupported: xrSupport.vr, active: single.active,
+    inXR: !!xr || R.xrActive || entering, offered: entry.offered, stopped: entry.offerStopped })) return;
   // The capacity the cubes are written into in VR, now, on the 2-D page
   // (issue #229/#235): the offered session may start at any time.
   ensureCapacity(state.cube, { page: true });
@@ -3572,14 +3577,26 @@ function maybeOffer() {
   shell.log('info', 'xr-offer', 'the browser\'s own Enter VR is offered');
   Promise.resolve(offer).then((session) => {
     entry.offered = false;
-    entry.offerOutcome = 'accepted';
-    shell.log('info', 'xr-offer-accepted', 'entered with the browser\'s Enter VR');
-    return enterXR('immersive-vr', false, session).catch((e) => setStatus(`XR: ${e.message}`));
+    // Stopped after a conflict (#291): the reason stays in the diagnostics.
+    entry.offerOutcome = entry.offerStopped ? `${entry.offerOutcome}; the browser's Enter VR used after` : 'accepted';
+    // The page's own session runs or is being made (its Enter VR pressed
+    // while the offer was pending): the offered one is ended, never a second
+    // session (enterXR refuses it; #305: it holds the flag until its end).
+    const pageHasOne = !!xr || R.xrActive || entering;
+    // Answered while the page's own request was under way: if the browser
+    // then refuses that request, the page says why (enterFailed).
+    if (entering) entry.offerRaced = true;
+    shell.log('info', 'xr-offer-accepted', pageHasOne ? 'the browser\'s Enter VR answered while the page had its own session: ended'
+      : 'entered with the browser\'s Enter VR');
+    return enterXR('immersive-vr', false, session).catch((e) => {
+      if (pageHasOne) shell.log('info', 'xr-offer-ended', String(e.message || e).slice(0, 100)); else enterFailed(e);
+    });
   }, (err) => {
     entry.offered = false;
     entry.offerOutcome = `${err && err.name ? err.name : 'ended'}`;
-    // Withdrawn because the page entered by itself: offered again after that
-    // session; any other refusal stops the offers (no loop of offers).
+    // Ended while the page was in VR: offered again after that session; any
+    // other refusal stops the offers (no loop of offers). (A Quest Browser
+    // keeps an offer pending across the page's own sessions: measured, #291.)
     if (!(xr || R.xrActive || entering)) entry.offerStopped = true;
     shell.log('info', 'xr-offer-ended', `${entry.offerOutcome}: ${String(err && err.message ? err.message : err).slice(0, 100)}`);
   });
@@ -3708,15 +3725,37 @@ function appTick() {
   if (r) shell.notify(r.kind, r.ctx); else shell.clearNotice('app-room');
 }
 
-$('enter-vr').addEventListener('click', () => enterXR('immersive-vr', false).catch((e) => setStatus(`XR: ${e.message}`)));
-$('enter-ar').addEventListener('click', () => enterXR('immersive-ar', false).catch((e) => setStatus(`XR: ${e.message}`)));
+/** Enter VR failed: the page says what happened and what to do instead
+ *  (issue #291), on the status line and beside the WebXR status, and logs
+ *  it for the diagnostics. A refusal caused by the browser's pending offer
+ *  stops the offers: the page's button is the way in from then on. */
+function enterFailed(err) {
+  const f = XE.enterFailure(err, { offerPending: entry.offered, inXR: !!xr || (R.xrActive && !!R.xrSession), offerRaced: entry.offerRaced });
+  entry.offerRaced = false;
+  if (f.kind === 'offer-conflict') {
+    entry.offerStopped = true;
+    entry.offerOutcome = 'the browser refused the page\'s Enter VR while its offer was pending';
+  }
+  entry.lastFailure = `${f.kind}: ${err && err.name ? `${err.name}: ` : ''}${String((err && err.message) || err).slice(0, 100)}`;
+  setStatus(f.text);
+  $('xr-status').textContent = `${$('xr-status').textContent.split(' · ')[0]} · ${f.text}`;
+  shell.log('warning', 'xr-enter-failed', entry.lastFailure);
+  measure.event('xr-enter-failed', { kind: f.kind, name: String((err && err.name) || '') });
+}
+/** A session started: an earlier failure's or auto-enter's hint beside the WebXR status is stale. */
+function clearEnterHint() {
+  entry.offerRaced = false;
+  $('xr-status').textContent = $('xr-status').textContent.split(' · ')[0];
+}
+$('enter-vr').addEventListener('click', () => enterXR('immersive-vr', false).catch(enterFailed));
+$('enter-ar').addEventListener('click', () => enterXR('immersive-ar', false).catch(enterFailed));
 // The headset benchmark: its cubes are prepared on the 2-D page first (one
 // press), then the second press enters VR (issue #229: no 3-D texture can be
 // allocated during the session).
 $('bench-xr').addEventListener('click', () => {
   if (!benchPrep || (!benchPrep.busy && !benchReady())) { releaseBench(true); prepareBench().catch((e) => setStatus(`Benchmark: ${e.message || e}`)); return; }
   if (benchPrep.busy) return;
-  enterXR('immersive-vr', true).catch((e) => setStatus(`XR: ${e.message}`));
+  enterXR('immersive-vr', true).catch(enterFailed);
 });
 
 /** The session's WebGL layer. Always with an alpha channel: Quest Browser 154
@@ -3735,18 +3774,24 @@ function xrSessionInit(wantLayers) {
 
 /** A session being requested (requestSession not answered yet). */
 let entering = false;
+/** Who holds R.xrActive (issue #305): the session the page renders
+ *  (R.xrSession) and any refused session not ended yet. A late `end` of one
+ *  never clears the flag under another (xr-entry.js SessionFlag). */
+const xrFlag = new XE.SessionFlag((active, owner) => { R.xrActive = active; R.xrSession = owner; });
 
 /** `given`: a session the browser already made (offerSession, #237). */
 async function enterXR(mode, bench, given = null) {
   const refuse = (msg) => {
     if (given) {
       // A session the browser made that this page cannot use: ended, and no
-      // 3-D texture is allocated until it has (issue #229).
-      if (!R.xrActive) {
-        R.xrActive = true;
-        given.addEventListener('end', () => { R.xrActive = false; setTimeout(() => afterXREnd(false), 0); });
-      }
-      given.end().catch(() => {});
+      // 3-D texture is allocated until it has (issue #229). It holds the flag
+      // as refused, never as its owner (#305): its end, even after the
+      // page's own session started, lets go of itself only. Released on the
+      // end event or when end() settles, whichever comes first.
+      xrFlag.holdRefused(given);
+      const release = () => { if (xrFlag.ended(given)) setTimeout(() => afterXREnd(false), 0); };
+      given.addEventListener('end', release);
+      Promise.resolve().then(() => given.end()).then(release, release);
     }
     throw new Error(msg);
   };
@@ -3769,8 +3814,8 @@ async function enterXR(mode, bench, given = null) {
   // #229): loads wait for the end (installCube), the benchmark's cubes were
   // prepared before. Registered first, so it is cleared before any other
   // 'end' listener runs; what waited is done after them.
-  R.xrActive = true;
-  session.addEventListener('end', () => { R.xrActive = false; setTimeout(() => afterXREnd(!!bench), 0); });
+  xrFlag.own(session);
+  session.addEventListener('end', () => { if (xrFlag.ended(session)) setTimeout(() => afterXREnd(!!bench), 0); });
   try {
     await startSession(session, mode, bench, startGen, wantLayers);
   } catch (err) {
@@ -3780,6 +3825,7 @@ async function enterXR(mode, bench, given = null) {
     if (!xr) session.end().catch(() => {});
     throw err;
   }
+  clearEnterHint();
 }
 
 /** The rest of enterXR, once the session exists. */
@@ -4703,6 +4749,8 @@ if (query.has('debug')) {
   // Issue #229: the 3-D allocation guard (calls, refusals), the session flag,
   // a cube waiting for the session's end, the benchmark's preparation.
   window.__vrTex3D = () => ({ calls: { ...R.tex3dGuard.calls }, refused: R.tex3dGuard.refused, xrActive: R.xrActive,
+    // Issue #305: who holds the flag (the page's own session, and refused ones not ended yet).
+    owner: R.xrSession ? (R.xrSession === (xr && xr.session) ? 'shown' : 'starting') : null, refusedHeld: xrFlag.refused.size,
     staged: stagedCube ? { dims: stagedCube.cube.dims, factors: stagedCube.cube.factors } : null,
     capacity: R.cap ? { dims: R.cap.dims.slice(), encoding: R.cap.encoding, bytes: R.cap.totalBytes, onShow: !!(R.slot && R.slot.cap === R.cap), bank: R.slot ? R.slot.bank ?? null : null } : null,
     bench: benchPrep ? { busy: benchPrep.busy, ready: benchReady(), sizes: benchPrep.cubes.map((e) => e.n), bytes: benchPrep.bytes } : null });
