@@ -443,6 +443,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          // and the Inspector both named the expired one until
                          // this was added.
                          this->refreshViewerChrome();
+                         // So did an open headset dialog: its link, code
+                         // and hub requests carried the expired session.
+                         this->pushSessionToVrDialog();
                          if (this->filterStatusLabel)
                              this->filterStatusLabel->setText({});
                          this->loadMoreEntries();

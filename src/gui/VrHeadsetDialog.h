@@ -99,6 +99,12 @@ public:
     /// next link, pairing, launch and `show` carry the new one. What a headset
     /// already shows is not changed.
     void setSky(const VrLink::Sky &sky);
+    /// The window reopened its dataset in a new backend session (a catalogue
+    /// whose session expired, issue #305): the link, the pairing client and
+    /// the redaction list are rebuilt for @p inputs, answers still out are
+    /// dropped, an unused code is revoked and a new one asked for, and the
+    /// hub of the new session is asked again. The backend is the same.
+    void setInputs(const VrLink::Inputs &inputs);
 
 protected:
     /// After every relayout, growToFit(): a label's new text may need more lines.
@@ -234,6 +240,7 @@ private:
     bool m_pairAnotherAsked{ false };    ///< the user pressed Pair Another Headset
     QTimer *m_hubTimer{ nullptr };       ///< asks the hub again: a page may connect later
     bool m_hubCheckOut{ false };         ///< one hub check at a time
+    int m_hubCheckSerial{ -1 };          ///< the m_pairSerial of the check out
     bool m_codeWasShown{ false };        ///< the code area's visibility, as last fitted
 
     // Pairing by code

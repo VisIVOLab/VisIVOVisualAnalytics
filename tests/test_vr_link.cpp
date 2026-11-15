@@ -609,3 +609,29 @@ void TestVrLink::prefersTheLastHeadset()
     QCOMPARE(AdbHeadset::homeShortened(u"/Users/johnny/adb"_s, u"/Users/john"_s), u"/Users/johnny/adb"_s);
     QCOMPARE(AdbHeadset::homeShortened(u"C:\\Users\\Ann\\AppData\\adb.exe"_s, u"C:/Users/Ann"_s), u"~/AppData/adb.exe"_s);
 }
+
+void TestVrLink::aReopenedSessionIsAnotherTarget()
+{
+    // A catalogue whose session expired reopens its dataset in a new one: its
+    // headset dialog must rebuild, while a new sky placement alone does not.
+    VrLink::Inputs a;
+    a.baseUrl = u"http://127.0.0.1:8000"_s;
+    a.token = u"tok"_s;
+    a.sessionId = u"sess-1"_s;
+    a.datasetId = u"ds-1"_s;
+    a.path = u"/d/cat.fits"_s;
+    a.kind = u"points"_s;
+    VrLink::Inputs b = a;
+    b.sky.frame = u"galactic"_s;
+    QVERIFY(VrLink::sameTarget(a, b));
+    b = a;
+    b.sessionId = u"sess-2"_s;
+    b.datasetId = u"ds-2"_s;
+    QVERIFY(!VrLink::sameTarget(a, b));
+    b = a;
+    b.token = u"refreshed"_s;
+    QVERIFY(!VrLink::sameTarget(a, b));
+    b = a;
+    b.datasetId = u"ds-2"_s;
+    QVERIFY(!VrLink::sameTarget(a, b));
+}

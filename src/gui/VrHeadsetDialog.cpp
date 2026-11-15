@@ -87,6 +87,75 @@ void VrHeadsetDialog::setSky(const VrLink::Sky &sky)
         newCode();
 }
 
+void VrHeadsetDialog::setInputs(const VrLink::Inputs &inputs)
+{
+    if (VrLink::sameTarget(m_inputs, inputs)) {
+        setSky(inputs.sky);
+        return;
+    }
+    // A code nobody has used yet would put a headset in the old session:
+    // revoked with the identity it was issued under, before that one goes.
+    if (m_pair.codeOutstanding(QDateTime::currentMSecsSinceEpoch()))
+        revoke({ m_pair.code().code });
+    // Every answer still out is about the old session: dropped (the hub
+    // check and a show from the USB section clear their own flags when
+    // their answers come back as obsolete).
+    ++m_pairSerial;
+    m_pollGate.reset();
+    if (m_showing) {
+        m_showing = false;
+        m_hubResult->setText(u"The backend session of this window was renewed: press Show on "
+                             u"Headset again."_s);
+    }
+    // A launch under way carries a ticket for the old session.
+    if (m_launcher && m_launcher->busy()) {
+        m_launcher->cancel();
+        setResult(u"The backend session of this window was renewed: press Open on Headset "
+                  u"again."_s,
+                  false);
+    }
+
+    m_inputs = inputs;
+    m_link = VrLink::build(m_inputs);
+    // The old token and session stay in the list: output about them may
+    // still arrive.
+    for (const QString &secret : { inputs.token, inputs.sessionId })
+        if (!secret.isEmpty() && !m_secrets.contains(secret))
+            m_secrets.append(secret);
+    m_token = inputs.token;
+    m_pairClient = BackendClient(inputs.baseUrl, inputs.token);
+    m_pairClient.setSessionId(inputs.sessionId);
+    // The headsets paired before were on the old dataset: forgotten with it.
+    m_pair = VrPair::Tracker(inputs.datasetId);
+    m_pairTimer->stop();
+    m_headsets.clear();
+    m_showButton->setVisible(false);
+    m_pairAnotherToggle->setVisible(false);
+    showPairing();
+    setBusy(m_process && !m_backgroundRun);
+
+    // Hidden: showEvent() looks at the new session's hub, then pairs.
+    const bool pairingOnShow = !m_pairSection->isHidden();
+    m_pairingStarted = false;
+    if (m_closed)
+        return;
+    if (pairingOnShow) {
+        // The code on screen was for the old session: a new one, now.
+        m_hubPanel->setVisible(false);
+        m_pairingStarted = true;
+        newCode();
+    } else {
+        m_hubLabel->setText(u"Looking for a headset already connected to this session…"_s);
+        m_hubPanel->setVisible(true);
+    }
+    // A check of the old session still out is dropped by the serial and does
+    // not hold this one up. The hub timer runs again (an old 404 may have
+    // stopped it): a page that connects to the new session shows up.
+    m_hubTimer->start();
+    checkHeadsets(/*quiet=*/pairingOnShow);
+    fitHeight();
+}
+
 VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     : QDialog(parent), m_link(VrLink::build(inputs)), m_secrets{ inputs.token, inputs.sessionId },
       m_token(inputs.token), m_inputs(inputs), m_pairClient(inputs.baseUrl, inputs.token),
@@ -453,9 +522,13 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
 
 void VrHeadsetDialog::checkHeadsets(bool quiet)
 {
-    if (m_closed || m_hubCheckOut)
+    // One check at a time, but a check out under an older serial (a new code,
+    // a renewed session) is already dropped and holds nothing up.
+    if (m_closed || (m_hubCheckOut && m_hubCheckSerial == m_pairSerial))
         return;
     m_hubCheckOut = true;
+    m_hubCheckSerial = m_pairSerial;
+    const int serial = m_pairSerial;
     QPointer<VrHeadsetDialog> self(this);
     runPairRequest(
             [](const BackendClient &c) {
@@ -477,8 +550,10 @@ void VrHeadsetDialog::checkHeadsets(bool quiet)
                     m_headsets = p.headsets;
                 else if (p.unsupported)
                     m_headsets.clear();
-                if (p.unsupported)
-                    m_hubTimer->stop();   // an older backend: no page will ever show up
+                // An older backend (FastAPI's own 404): no page will ever
+                // show up. A proxy's 404 may pass: asked again at the next tick.
+                if (p.unsupportedForGood)
+                    m_hubTimer->stop();
                 if (!m_headsets.isEmpty()) {
                     // A page that connected while pairing was shown: the
                     // connected-headset view, as a dialog opened now shows.
@@ -496,10 +571,10 @@ void VrHeadsetDialog::checkHeadsets(bool quiet)
                 m_hubPanel->setVisible(false);
                 startPairing();
             },
-            [self](const BackendVrPairReply &, const BackendClient &) {
+            [self, serial](const BackendVrPairReply &, const BackendClient &) {
                 // Dropped (closed, or a new code asked for meanwhile): the
-                // next check may go.
-                if (self)
+                // next check may go, unless a newer one is out already.
+                if (self && self->m_hubCheckSerial == serial)
                     self->m_hubCheckOut = false;
             });
 }

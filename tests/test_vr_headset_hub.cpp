@@ -68,6 +68,9 @@ public:
                     QByteArray payload = R"({"detail":"Not Found"})";
                     if (oldBackend) {
                         // as it is
+                    } else if (proxyNotFound) {
+                        // A tunnel's or proxy's own page, the backend unseen behind it.
+                        payload = "<html><body>404 Not Found</body></html>";
                     } else if (line.startsWith("GET /v1/vr/headset ")) {
                         code = 200;
                         payload = headsets;
@@ -104,6 +107,7 @@ public:
     QList<QByteArray> heads;
     QList<QByteArray> bodies;
     bool oldBackend{ false };
+    bool proxyNotFound{ false };
     QByteArray headsets = R"({"headsets":[]})";
     int commandStatus{ 200 };
     QByteArray commandBody = R"({"seq":1,"client":"page-1"})";
@@ -1052,7 +1056,81 @@ void TestVrHeadsetHub::linkStopsQuietlyOnAnOldBackend()
     const int requests = fake.lines.size();
     QTest::qWait(300);
     QVERIFY(fake.lines.size() <= requests + 1);   // nothing more is asked
+    // Not even by a probe later, nor by a window that joins: FastAPI said it.
+    link->setReprobeInterval(50);
+    QObject late;
+    link->addUser(&late);
+    QTest::qWait(300);
+    QVERIFY(fake.lines.size() <= requests + 1);
+    QVERIFY(!link->running());
     QPointer<HeadsetHubLink> watch(link);
+    link->removeUser(&late);
+    link->removeUser(&user);
+    QTRY_VERIFY(!watch);
+}
+
+void TestVrHeadsetHub::onlyFastApisOwn404IsForGood()
+{
+    // Both are "no hub" for now; only FastAPI's own JSON answer is for good.
+    QVERIFY(VrHub::parsePresence(404, R"({"detail":"Not Found"})").unsupportedForGood);
+    QVERIFY(VrHub::parseActivity(405, R"({"detail":"Method Not Allowed"})").unsupportedForGood);
+    for (const QByteArray &body : { QByteArray("<html>404 Not Found</html>"), QByteArray(),
+                                    QByteArray(R"({"error":"Not Found"})") }) {
+        const VrHub::Presence p = VrHub::parsePresence(404, body);
+        QVERIFY(p.unsupported);
+        QVERIFY(!p.unsupportedForGood);
+        QVERIFY(!VrHub::parseActivity(404, body).unsupportedForGood);
+    }
+    // A route's own 404 is neither.
+    const VrHub::Presence own = VrHub::parsePresence(404, R"({"detail":"Unknown session."})");
+    QVERIFY(!own.unsupported && !own.unsupportedForGood);
+    QVERIFY(!visivo::isFastApiMissingRouteReply(405, R"({"detail":"Not Found"})"));
+    QVERIFY(!visivo::isFastApiMissingRouteReply(200, R"({"detail":"Not Found"})"));
+}
+
+void TestVrHeadsetHub::linkAsksAgainAfterAnAmbiguous404()
+{
+    // A tunnel answers its own HTML 404 while the backend restarts behind it:
+    // the link stops, but asks again later and comes back with the hub.
+    FakeHub fake;
+    QVERIFY(fake.server.isListening());
+    fake.proxyNotFound = true;
+    fake.headsets = R"({"headsets":[{"client":"p1","transport":"pair","in_vr":true}]})";
+    QObject user;
+    HeadsetHubLink *link = HeadsetHubLink::forSession(fake.url(), u"tok"_s, u"sess-proxy"_s);
+    link->setReprobeInterval(400);
+    QSignalSpy stopped(link, &HeadsetHubLink::stopped);
+    QSignalSpy presence(link, &HeadsetHubLink::headsetsChanged);
+    link->addUser(&user);
+    QTRY_COMPARE(stopped.count(), 1);
+    QVERIFY(!link->supported());
+    QVERIFY(!link->running());
+    // Still the proxy at the next probe: asked, and said only once.
+    const int requests = fake.lines.size();
+    QTRY_VERIFY_WITH_TIMEOUT(fake.lines.size() > requests, 2000);
+    QTest::qWait(100);
+    QCOMPARE(stopped.count(), 1);
+    QVERIFY(!link->supported());
+    // The backend is back: the next probe finds the hub and the windows hear it.
+    fake.proxyNotFound = false;
+    QTRY_VERIFY_WITH_TIMEOUT(link->supported(), 3000);
+    QVERIFY(link->running());
+    QTRY_COMPARE(link->headsets().size(), 1);
+    QVERIFY(presence.count() >= 1);
+    QCOMPARE(stopped.count(), 1);
+
+    // Taken for missing again; a window that joins asks at once, not a
+    // probe interval later.
+    fake.proxyNotFound = true;
+    link->setReprobeInterval(HeadsetHubLink::kReprobeIntervalMs);
+    QTRY_VERIFY_WITH_TIMEOUT(!link->supported(), HeadsetHubLink::kPresenceIntervalMs + 3000);
+    QTRY_VERIFY(!link->running());
+    fake.proxyNotFound = false;
+    QObject late;
+    link->addUser(&late);
+    QTRY_VERIFY_WITH_TIMEOUT(link->supported(), 2000);
+    QPointer<HeadsetHubLink> watch(link);
+    link->removeUser(&late);
     link->removeUser(&user);
     QTRY_VERIFY(!watch);
 }

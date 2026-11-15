@@ -406,6 +406,12 @@ private:
     CataloguePlacement::HeadsetSky headsetSky() const;
     /// An open headset dialog follows a change of them (its next show).
     void pushSkyToVrDialog();
+    /// What the headset dialog is given: this window's backend identity,
+    /// dataset and sky placement as they are now.
+    VrLink::Inputs vrHeadsetInputs() const;
+    /// The dataset was reopened in a new session: an open headset dialog
+    /// drops the expired one and pairs with the new one (issue #305).
+    void pushSessionToVrDialog();
     /// The custom model the positions on screen were computed with (valid
     /// when m_appliedCosmologyModel is "Custom").
     visivo::cosmology::Model m_appliedCustomCosmology;

@@ -126,6 +126,9 @@ struct Presence
 {
     bool ok{ false };            ///< the hub answered
     bool unsupported{ false };   ///< the backend has no hub (older than this client)
+    /// FastAPI itself said so (its JSON "Not Found"): not a proxy's HTML 404
+    /// while the backend restarts, so it will not change.
+    bool unsupportedForGood{ false };
     QList<Headset> headsets;     ///< newest first, as the hub lists them
     QString error;
 };
@@ -135,6 +138,7 @@ inline Presence parsePresence(int httpStatus, const QByteArray &body, const QStr
     Presence p;
     if (visivo::isMissingRouteReply(httpStatus, body)) {
         p.unsupported = true;
+        p.unsupportedForGood = visivo::isFastApiMissingRouteReply(httpStatus, body);
         return p;
     }
     if (httpStatus != 200) {
@@ -396,6 +400,7 @@ struct ActivityPage
 {
     bool ok{ false };
     bool unsupported{ false };
+    bool unsupportedForGood{ false };   ///< as Presence::unsupportedForGood
     QList<Event> events;
     qint64 next{ 0 };
     bool lost{ false };   ///< events were dropped by the ring before they were read
@@ -408,6 +413,7 @@ inline ActivityPage parseActivity(int httpStatus, const QByteArray &body, const 
     ActivityPage page;
     if (visivo::isMissingRouteReply(httpStatus, body)) {
         page.unsupported = true;
+        page.unsupportedForGood = visivo::isFastApiMissingRouteReply(httpStatus, body);
         return page;
     }
     if (httpStatus != 200) {

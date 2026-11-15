@@ -66,6 +66,18 @@ void vtkWindowCatalogue3D::openInVrHeadset()
         m_vrHeadsetDialog->activateWindow();
         return;
     }
+    m_vrHeadsetDialog = new VrHeadsetDialog(this->vrHeadsetInputs(), this);
+    m_vrHeadsetDialog->show();
+}
+
+void vtkWindowCatalogue3D::pushSessionToVrDialog()
+{
+    if (m_vrHeadsetDialog)
+        m_vrHeadsetDialog->setInputs(this->vrHeadsetInputs());
+}
+
+VrLink::Inputs vtkWindowCatalogue3D::vrHeadsetInputs() const
+{
     const QString url = this->backendUrl;
     const QString token = BackendClient::effectiveToken(url, BackendClient(url, this->backendToken).token());
     VrLink::Inputs inputs;
@@ -78,6 +90,5 @@ void vtkWindowCatalogue3D::openInVrHeadset()
     inputs.path = this->filepath;
     inputs.kind = QStringLiteral("points");
     inputs.sky = this->vrSky();
-    m_vrHeadsetDialog = new VrHeadsetDialog(inputs, this);
-    m_vrHeadsetDialog->show();
+    return inputs;
 }

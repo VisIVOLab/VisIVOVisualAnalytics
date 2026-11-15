@@ -34,6 +34,24 @@ inline bool isMissingRouteReply(int httpStatus, const QByteArray &body)
     return text == u"Not Found" || text == u"Method Not Allowed";
 }
 
+/// A missing route that only FastAPI itself can have said: its own JSON
+/// {"detail":"Not Found"} (404) or {"detail":"Method Not Allowed"} (405).
+/// An HTML or empty 404 also counts as missing above, but it may come from a
+/// proxy or tunnel while the backend restarts behind it, so a caller that
+/// gives up on a feature for good waits for this one.
+inline bool isFastApiMissingRouteReply(int httpStatus, const QByteArray &body)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (!doc.isObject())
+        return false;
+    const QJsonValue detail = doc.object().value(u"detail");
+    if (!detail.isString())
+        return false;
+    const QString text = detail.toString();
+    return (httpStatus == 404 && text == u"Not Found")
+            || (httpStatus == 405 && text == u"Method Not Allowed");
+}
+
 /// What to tell the user when the backend has no route for a feature:
 /// `backendName` as visivo::backendDisplayName gives it ("Local" for the
 /// local backend), `feature` as a plural noun phrase ("ray-traced views").

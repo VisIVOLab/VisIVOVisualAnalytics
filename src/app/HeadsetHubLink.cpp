@@ -71,6 +71,9 @@ HeadsetHubLink::HeadsetHubLink(const QString &baseUrl, const QString &token, con
     connect(&m_activityRetry, &QTimer::timeout, this, &HeadsetHubLink::pollActivity);
     m_presenceTimer.setInterval(kPresenceIntervalMs);
     connect(&m_presenceTimer, &QTimer::timeout, this, &HeadsetHubLink::refreshPresence);
+    m_reprobe.setSingleShot(true);
+    m_reprobe.setInterval(kReprobeIntervalMs);
+    connect(&m_reprobe, &QTimer::timeout, this, &HeadsetHubLink::reprobe);
 }
 
 HeadsetHubLink::~HeadsetHubLink()
@@ -87,7 +90,9 @@ void HeadsetHubLink::addUser(QObject *user)
         return;
     m_users.insert(user);
     connect(user, &QObject::destroyed, this, [this, user]() { removeUser(user); });
-    if (!m_running && !m_unsupported)
+    // A hub taken for missing on an ambiguous answer is asked again now: the
+    // new window must not inherit a stale "no hub" for a whole minute.
+    if (!m_running && !m_unsupportedForGood)
         start();
 }
 
@@ -98,6 +103,7 @@ void HeadsetHubLink::removeUser(QObject *user)
     disconnect(user, &QObject::destroyed, this, nullptr);
     if (m_users.isEmpty()) {
         stop();
+        m_reprobe.stop();
         // Gone from the registry now, so a window opened meanwhile gets a
         // fresh link rather than this one on its way out.
         registry().remove(keyOf(m_baseUrl, m_session));
@@ -137,18 +143,43 @@ QNetworkReply *HeadsetHubLink::get(const QUrl &url, int transferTimeoutMs)
     return m_nam->get(req);
 }
 
-void HeadsetHubLink::markUnsupported()
+void HeadsetHubLink::markUnsupported(bool forGood)
 {
+    stop();
+    if (forGood) {
+        m_unsupportedForGood = true;
+        m_reprobe.stop();
+    } else if (!m_users.isEmpty()) {
+        // Maybe a proxy's page while the backend restarts behind it.
+        m_reprobe.start();
+    }
+    // Said once: a probe that finds no hub again stays quiet.
     if (m_unsupported)
         return;
     m_unsupported = true;
-    stop();
     const bool hadHeadsets = !m_headsets.isEmpty();
     m_headsets.clear();
     m_presenceKey.clear();
     if (hadHeadsets)
         emit headsetsChanged();
     emit stopped(u"this backend has no headset hub"_s);
+}
+
+void HeadsetHubLink::markSupported()
+{
+    if (!m_unsupported)
+        return;
+    m_unsupported = false;
+    m_reprobe.stop();
+    // The windows read supported() again: their "no hub" goes.
+    emit headsetsChanged();
+}
+
+void HeadsetHubLink::reprobe()
+{
+    if (m_running || m_unsupportedForGood || m_users.isEmpty())
+        return;
+    start();
 }
 
 // ── Presence ────────────────────────────────────────────────────────────────
@@ -174,13 +205,14 @@ void HeadsetHubLink::onPresence(QNetworkReply *reply)
     const VrHub::Presence p = VrHub::parsePresence(httpStatus(reply), reply->readAll(),
                                                    reply->errorString());
     if (p.unsupported) {
-        markUnsupported();
+        markUnsupported(p.unsupportedForGood);
         return;
     }
     // A failed read changes nothing: a headset is not taken for gone because
     // one poll was lost (the hub itself forgets a page after 45 s).
     if (!p.ok)
         return;
+    markSupported();
     const QString key = presenceKey(p.headsets);
     m_headsets = p.headsets;
     if (key != m_presenceKey) {
@@ -226,13 +258,14 @@ void HeadsetHubLink::onActivity(QNetworkReply *reply)
     VrHub::ActivityPage page =
             VrHub::parseActivity(httpStatus(reply), reply->readAll(), reply->errorString());
     if (page.unsupported) {
-        markUnsupported();
+        markUnsupported(page.unsupportedForGood);
         return;
     }
     if (!page.ok) {
         retryActivityLater();
         return;
     }
+    markSupported();
     m_fails = 0;
     const bool newInstance = !m_instance.isEmpty() && !page.instance.isEmpty()
             && page.instance != m_instance;
