@@ -17,11 +17,16 @@ are preserved here unedited; the branch names they refer to are historical.
   source gave [10, 16] for all three orders instead of [5, 17] (Moments 0
   and 2) and [-6.8, 28.8] (Moment 1), and a sample with no finite value gave
   [0, 1]. A re-cut of a 2048² map takes 2.5–10 ms for Moments 0 and 2 and
-  11–36 ms for Moment 1 on an M-series Mac. The splat row governor now
-  stops raising the rows only while a still view's refined frame is on its
-  way or fading in. A frame shown in full that does not cover the view (a
-  particle close to the eye) used to hold the rows at their last cut until
-  the user moved. A frame whose depth image is empty (no particle in its
+  11–36 ms for Moment 1 on an M-series Mac. While a still view is refined,
+  the splat row governor still cuts at once, but its ceiling no longer rises
+  and the rows do not grow while a refined frame is on its way or fading in.
+  Under a frame shown in full that does not cover the view (a particle close
+  to the eye), the rows rise at most one step per frame, after it has been
+  shown for 5 s. Each step drops the frame on show, because the frame is
+  drawn for the same rows. Before, the rows stayed at their last cut until
+  the user moved. Simply lifting that hold would have dropped the refined
+  frame every 20 s for good, 26 times in 120 s in the modelled case, against
+  5 times in the first 20 s now. A frame whose depth image is empty (no particle in its
   view) is tested for coverage at the centre plane, where it is warped, so
   the splats under it are skipped as under any other covering frame. The
   coverage test is prepared once per shown frame and eye (about 470 → 144 ns

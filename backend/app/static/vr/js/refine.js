@@ -379,13 +379,13 @@ export function coverDepths(depth, centre) {
  * preparations (for the tests).
  */
 export function createCoverCache() {
-  const slots = [{ frame: null, prep: null }, { frame: null, prep: null }];
+  const slots = [];   // one per eye index, made on its first use
   const s = coverScratch();
   const cache = {
     prepared: 0,
     covers(f, eye, view, model) {
       if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
-      const slot = slots[eye ? 1 : 0];
+      const slot = slots[eye] || (slots[eye] = { frame: null, prep: null });
       if (slot.frame !== f) {
         const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
         const depths = coverDepths(f.hasDepth ? f.header.depth : null, centreDistance(fe.view, f.rec.model));

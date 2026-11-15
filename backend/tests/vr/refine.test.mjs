@@ -341,3 +341,22 @@ test('#300: an empty depth image (z_near = z_far = 0) is tested at the centre pl
   const turned = { view: M.rotation([0, 1, 0], 5 * Math.PI / 180), proj };
   assert.equal(cache.covers(empty, 0, turned, model), false);
 });
+
+test('#300 review: the cover cache keeps one slot per eye index', () => {
+  const proj = M.perspective(Math.PI / 2, 1, 0.1, 100);
+  const o = F.overscanEye({ eye: 'left', view: M.identity(), proj, width: 1000, height: 1000 }, 0.06);
+  const model = M.translation(0, 0, -1.5);
+  const left = { view: M.identity(), proj: o.proj };
+  const right = { view: M.translation(-0.5, 0, 0), proj: o.proj };   // far apart: only its own eye covers
+  const frame = { rec: { eyes: [left, right, left], model }, header: { depth: { z_near: 1, z_far: 2 } }, hasDepth: true };
+  const cache = F.createCoverCache();
+  const atLeft = { view: M.identity(), proj };
+  const atRight = { view: M.translation(-0.5, 0, 0), proj };
+  for (let k = 0; k < 3; k++) {
+    assert.equal(cache.covers(frame, 0, atLeft, model), true);
+    assert.equal(cache.covers(frame, 1, atRight, model), true);
+    assert.equal(cache.covers(frame, 2, atLeft, model), true, 'eye 2 is its own slot, not eye 1\'s');
+    assert.equal(cache.covers(frame, 1, atLeft, model), false);
+  }
+  assert.equal(cache.prepared, 3, 'one preparation per eye index');
+});

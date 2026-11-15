@@ -361,36 +361,86 @@ test('row governor review (#297): which governor, earned clean time, decaying ba
   assert.equal(PT.quantizeRows(240_000, 200_000, prev), prev, 'clamped to the sample before comparing');
 });
 
-test('#300: the row governor freezes growth only while a refined frame is on its way, not under one shown that leaves the view uncovered', () => {
-  const still = { splats: true, refineOn: true, motion: 'still' };
-  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'waiting', weight: 0 }), true, 'asked for, not shown yet');
-  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'refined', weight: 0.4 }), true, 'shown, fading in');
-  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'refined', weight: 1 }), false,
-    'shown whole: the governor runs only when it does not cover the view, and then may raise');
-  assert.equal(LY.rowGrowthFrozen({ ...still, motion: 'moving', status: 'waiting', weight: 0 }), false);
-  assert.equal(LY.rowGrowthFrozen({ ...still, refineOn: false, status: 'waiting', weight: 0 }), false);
-  assert.equal(LY.rowGrowthFrozen({ ...still, splats: false, status: 'waiting', weight: 0 }), false, 'points');
-  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'off', weight: 0 }), false);
-  assert.equal(LY.rowGrowthFrozen({ ...still, status: 'unavailable', weight: 0 }), false);
+test('#300: the row gate: cuts always; still under refined splats no ceiling rise, growth only after a frame stays shown whole', () => {
+  const g = new LY.RowGrowthGate(5000);
+  const st = (now, motion, status, weight, splats = true, refineOn = true) => ({ ...g.step(now, splats, refineOn, motion, status, weight) });
+  assert.deepEqual(st(0, 'moving', 'waiting', 0), { grow: true, riseCeiling: true }, 'moving');
+  assert.deepEqual(st(0, 'still', 'waiting', 0, false), { grow: true, riseCeiling: true }, 'points');
+  assert.deepEqual(st(0, 'still', 'waiting', 0, true, false), { grow: true, riseCeiling: true }, 'refine off');
+  assert.deepEqual(st(0, 'still', 'connecting', 0), { grow: true, riseCeiling: true }, 'no frame to come');
+  assert.deepEqual(st(0, 'still', 'unavailable', 0), { grow: true, riseCeiling: true });
+  assert.deepEqual(st(0, 'still', 'waiting', 0), { grow: false, riseCeiling: false }, 'a frame on its way');
+  assert.deepEqual(st(100, 'still', 'refined', 0.5), { grow: false, riseCeiling: false }, 'fading in');
+  assert.deepEqual(st(200, 'still', 'refined', 1), { grow: false, riseCeiling: false }, 'shown whole: from now');
+  assert.deepEqual(st(5199, 'still', 'refined', 1), { grow: false, riseCeiling: false });
+  assert.deepEqual(st(5200, 'still', 'refined', 1), { grow: true, riseCeiling: false }, 'shown whole for 5 s: one step');
+  assert.deepEqual(st(5300, 'still', 'refined', 0.9), { grow: false, riseCeiling: false }, 'that step dropped it');
+  assert.deepEqual(st(5400, 'still', 'refined', 1), { grow: false, riseCeiling: false }, 'and the time starts again');
+  assert.equal(g.step(1, true, true, 'still', 'waiting', 0), g.step(2, true, true, 'moving', 'off', 0), 'one object, reused');
+  // The governor: no clean time and no ceiling rise when told so.
+  const hz = 72, P = 1000 / hz;
+  const clean = { n: 18, meanMs: P, medianMs: P, missed: 0, slow: 0 };
+  const late = { n: 18, meanMs: 2 * P, medianMs: 2 * P, missed: 0.6, slow: 0.6 };
+  const f = new PT.FrameRowGovernor({ holdMs: 0, ceilingRiseMs: 1500 });
+  f.update(400_000, 1_000_000, late, hz, 0);
+  let r = 200_000;
+  for (let t = 250; t <= 20_000; t += 250) r = f.update(r, 1_000_000, clean, hz, t, { riseCeiling: false });
+  assert.equal(f.ceiling, 400_000);
+  assert.equal(r, 360_000, 'up to 90 % of the ceiling, not past it');
+  assert.equal(f.cleanSince, null);
+});
 
-  // drawScene's loop, four times a second: still, a refined frame shown whole
-  // that does not cover the view (a particle close to the eye). A hitch cuts
-  // the rows; clean frames then bring them back. Before #300 ('refined'
-  // froze growth) they stayed at the cut until the user moved.
-  const hz = 72, P = 1000 / hz, count = 1_000_000;
+/**
+ * drawScene's governor under a still view whose refined frames never cover
+ * it (a particle close to the eye), with the refiner modelled: a row step
+ * changes the look, so the frame on show is dropped (it fades out in 60 ms),
+ * the next one is asked for and arrives `latencyMs` later, then fades in over
+ * 120 ms (refine-client.js frame() / tick()). A hitch at t = 0 cuts 400 k
+ * rows; later the frames are late while more than `capacity` rows are drawn,
+ * clean otherwise. `rule(gateOut, status, weight)` returns {grow, riseCeiling}.
+ */
+function simulateStillUncovered(rule, { seconds = 120, latencyMs = 200, capacity = 300_000 } = {}) {
+  const hz = 72, P = 1000 / hz, count = 1_000_000, dt = 1000 / hz;
   const late = { n: 18, meanMs: 2 * P, medianMs: 2 * P, missed: 0.6, slow: 0.6 };
   const clean = { n: 18, meanMs: P, medianMs: P, missed: 0, slow: 0 };
-  const run = (status, weight) => {
-    const gov = new PT.FrameRowGovernor();
-    let govRows = 400_000, drawRows = PT.quantizeRows(govRows, count);
-    for (let now = 0; now <= 12_000; now += 250) {
-      const next = gov.update(govRows, count, now === 0 ? late : clean, hz, now);
-      govRows = LY.rowGrowthFrozen({ ...still, status, weight }) ? Math.min(next, govRows) : next;
+  const gov = new PT.FrameRowGovernor();
+  const gate = new LY.RowGrowthGate();
+  let govRows = 400_000, drawRows = PT.quantizeRows(govRows, count);
+  let version = 0, shown = 0, weight = 1, pending = null, key = drawRows, governedAt = -Infinity;
+  const drops = [];
+  for (let now = 0; now <= seconds * 1000; now += dt) {
+    if (drawRows !== key) { key = drawRows; version++; drops.push(now); }       // a new look: the frame on show is stale
+    if (pending && now >= pending.at) { if (pending.version === version) shown = pending.version; pending = null; }
+    const usable = shown === version;
+    weight = usable ? Math.min(1, weight + dt / 120) : Math.max(0, weight - dt / 60);
+    if (!usable && weight <= 0 && !pending) pending = { version, at: now + latencyMs };
+    const status = weight > 0 ? 'refined' : 'waiting';
+    const g = rule(gate.step(now, true, true, 'still', status, weight), status, weight);
+    if (now - governedAt >= 250) {
+      governedAt = now;
+      const next = gov.update(govRows, count, now === 0 || drawRows > capacity ? late : clean, hz, now, g);
+      govRows = g.grow ? next : Math.min(next, govRows);
       drawRows = PT.quantizeRows(govRows, count, drawRows);
     }
-    return drawRows;
-  };
-  assert.equal(PT.quantizeRows(200_000, count), 185_364, 'the cut: 400 k halved');
-  assert.ok(run('refined', 1) >= 370_000, `${run('refined', 1)}: back near where it missed`);
-  assert.equal(run('waiting', 0), 185_364, 'a frame on its way: held at the cut');
+  }
+  return { drops, drawRows, ceiling: gov.ceiling };
+}
+
+test('#300 review: under an uncovered refined frame the rows recover from a cut in a few steps, without the frame flickering', () => {
+  const gated = simulateStillUncovered((g) => g);
+  // The cut, then at most one step per frame shown whole for 5 s; a step
+  // past what the headset holds is cut again, and below the ceiling that cut
+  // left (no rise while still) the rows settle: 5 dropped frames in the
+  // first 20 s (cut, step, step, cut, step), none in the 100 s after.
+  assert.ok(gated.drawRows >= 262_144, `${gated.drawRows}: back above the cut`);
+  assert.ok(gated.ceiling <= 400_000, 'the ceiling did not rise while still');
+  assert.ok(gated.drops.length <= 5, `${gated.drops.length} refined frames dropped in 120 s`);
+  assert.equal(gated.drops.filter((t) => t > 20_000).length, 0, `drops at ${gated.drops.map((t) => t.toFixed(0))} ms`);
+  // The first #301 rule (grow whenever a frame is shown whole, the ceiling
+  // free to rise): 26 dropped frames in 120 s, three every 20 s for good as
+  // it probes above where it missed.
+  const naive = simulateStillUncovered((g, status, weight) => ({
+    grow: !(status === 'waiting' || (status === 'refined' && weight < 1)), riseCeiling: true }));
+  assert.ok(naive.drops.length > 3 * gated.drops.length, `${naive.drops.length} drops against ${gated.drops.length}`);
+  assert.ok(naive.drops.filter((t) => t > 60_000).length >= 3, 'still probing after a minute');
 });
