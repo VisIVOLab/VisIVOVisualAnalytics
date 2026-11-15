@@ -492,7 +492,12 @@ layers = createLayers({
     : (isHeadsetBrowser(navigator.userAgent) ? 'f16' : 'auto'),
   onLayer: (detail) => reportProduct(null, detail),   // issue #237: a catalogue over the cube
   // The next snapshot of a series is on show (#259): its path is the page's now.
-  onSnapshot: (path) => { state.openPath = path; finishSelBoxDrag(); toast(`Snapshot: ${HUB.fileName(path)}`, 'snapshot'); },
+  // A new snapshot: the steps of the one before (crops and boxes in its own
+  // fractions) no longer apply, and a crop drag begun on it is dropped.
+  onSnapshot: (path) => {
+    state.openPath = path; ui.crop.drag = null; finishSelBoxDrag(); ui.undo.clear();
+    toast(`Snapshot: ${HUB.fileName(path)}`, 'snapshot');
+  },
 });
 
 // Clipping box sliders (texture coordinates 0..1 per axis).
