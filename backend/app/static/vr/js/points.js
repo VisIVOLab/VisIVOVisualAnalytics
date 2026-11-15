@@ -36,6 +36,151 @@ export function governRows(current, sampleRows, gpuMs, targetHz, { share = 0.6, 
   return Math.round(Math.max(Math.min(min, sampleRows), Math.min(sampleRows, current * f)));
 }
 
+/**
+ * Splats a headset starts with (issue #295): measured on a Quest 3 (Adreno
+ * 740) splats are fill-rate bound, and at size 1 about 200 k hold 72 Hz on
+ * the half-float target (50 k on float32), where points hold a million. The
+ * sample stays the budget's (points, refinement); the splats draw a prefix of
+ * it, which the row governor then moves.
+ */
+export const HEADSET_SPLAT_ROWS = 200_000;
+
+/**
+ * The frame intervals of the last `windowMs` (the newest at the end of
+ * `intervals`): {n, meanMs, medianMs, missed (share above 1.5 periods),
+ * slow (share above 1.1 periods)}.
+ * Pauses longer than 250 ms (a load, a dialog, entering VR) are not frames,
+ * as for the cube's governor: one of them must not read as a slow scene.
+ */
+export function recentFrames(intervals, targetHz, windowMs = 500) {
+  const period = 1000 / targetHz;
+  const v = [];
+  let sum = 0, missed = 0, slow = 0;
+  for (let i = intervals.length - 1; i >= 0 && sum < windowMs; i--) {
+    const x = intervals[i];
+    if (!(x > 0) || x > 250) continue;
+    v.push(x); sum += x;
+    if (x > period * 1.5) missed++;
+    if (x > period * 1.1) slow++;
+  }
+  const n = v.length;
+  v.sort((a, b) => a - b);
+  return { n, meanMs: n ? sum / n : 0, medianMs: n ? v[(n - 1) >> 1] : 0,
+    missed: n ? missed / n : 0, slow: n ? slow / n : 0 };
+}
+
+/**
+ * The row governor without a GPU timer (issue #295: the Quest Browser has no
+ * EXT_disjoint_timer_query_webgl2, and governRows kept its count): from the
+ * frame intervals, as the cube's samples-per-voxel governor works. Late
+ * frames are intervals over 1.5 periods ("missed"), but a GPU-bound Quest 3
+ * also paces frames between one and 1.5 periods (63 fps at 72 Hz with under
+ * 1 % missed), so the median interval and the share of slow frames (over 1.1
+ * periods) count too. More than 15 % missed, or a median above 1.12 periods,
+ * cuts the rows at once, by the period over the slower of mean and median
+ * (0.5 to 0.85); more than 5 % missed or 10 % slow cuts them by 8 %. A cut
+ * remembers the count that was too many (the ceiling) and holds for
+ * `holdMs`; clean windows (at most 2 % missed and 3 % slow, the median within
+ * add 12 % a quarter second, up to 90 % of the ceiling, which rises by a
+ * half for every `ceilingRiseMs` of clean frames. A cut soon after a rise
+ * (within 3 s) doubles that wait (up to a minute), and every `decayMs`
+ * without such a cut halves it again: the count settles just under where it
+ * missed instead of probing it every few seconds, and a later cut that no
+ * probe caused (a zoom into the box) is not climbed back from at a wait
+ * left long by probes minutes ago. Clean time is earned by
+ * frames that drew the splats only: a gap of more than `gapMs` between
+ * updates (splats not drawn under a refined frame, a paused page) or an
+ * `interrupted()` call restarts it. Never below `min` nor above the sample.
+ */
+export class FrameRowGovernor {
+  constructor({ min = 20_000, holdMs = 1500, ceilingRiseMs = 1500, maxRiseMs = 60_000, gapMs = 500,
+    decayMs = 20_000 } = {}) {
+    this.min = min; this.holdMs = holdMs; this.ceilingRiseMs = ceilingRiseMs; this.maxRiseMs = maxRiseMs;
+    this.gapMs = gapMs; this.decayMs = decayMs;
+    this.reset();
+  }
+
+  reset() {
+    this.ceiling = Infinity; this.holdUntil = 0; this.cleanSince = null;
+    this.riseMs = this.ceilingRiseMs; this.lastRiseAt = -Infinity; this.lastUpdate = -Infinity;
+    this.lastBackoffAt = -Infinity;
+  }
+
+  /** The splats were not drawn for a while (a refined frame over them): the
+   *  clean run restarts, and the first frames drawn again are waited for. */
+  interrupted(now) {
+    this.cleanSince = null;
+    this.holdUntil = Math.max(this.holdUntil, now + 750);
+  }
+
+  /** The rows to draw from `current`; `frame`: recentFrames; `now`: ms. */
+  update(current, sampleRows, frame, targetHz, now) {
+    const floor = Math.min(this.min, sampleRows);
+    const clampRows = (v) => Math.round(Math.max(floor, Math.min(sampleRows, v)));
+    if (now - this.lastUpdate > this.gapMs) this.cleanSince = null;   // not drawn meanwhile
+    this.lastUpdate = now;
+    if (this.riseMs > this.ceilingRiseMs && now - this.lastBackoffAt >= this.decayMs) {
+      this.riseMs = Math.max(this.ceilingRiseMs, this.riseMs / 2);
+      this.lastBackoffAt = now;
+    }
+    if (!(targetHz > 0) || !frame || frame.n < 4) return clampRows(current);
+    const period = 1000 / targetHz;
+    const median = frame.medianMs || frame.meanMs;
+    const slow = frame.slow ?? 0;
+    const hard = frame.missed > 0.15 || median > 1.12 * period;
+    if (hard || frame.missed > 0.05 || slow > 0.1) {
+      if (now < this.holdUntil && !hard) return clampRows(current);   // a gentle cut takes effect first
+      if (now - this.lastRiseAt < 3000) {
+        this.riseMs = Math.min(this.maxRiseMs, 2 * this.riseMs);
+        this.lastBackoffAt = now;
+      }
+      this.ceiling = current;
+      this.holdUntil = now + this.holdMs;
+      this.cleanSince = null;
+      const f = hard ? Math.max(0.5, Math.min(0.85, period / Math.max(frame.meanMs, median))) : 0.92;
+      return clampRows(current * f);
+    }
+    if (frame.missed > 0.02 || slow > 0.03 || median > 1.04 * period) { this.cleanSince = null; return clampRows(current); }
+    if (this.cleanSince === null) this.cleanSince = now;
+    if (Number.isFinite(this.ceiling) && now - this.cleanSince >= this.riseMs) {
+      this.ceiling *= 1.5;
+      this.cleanSince = now;
+      this.lastRiseAt = now;
+    }
+    if (now < this.holdUntil) return clampRows(current);
+    const cap = Number.isFinite(this.ceiling) ? Math.max(current, 0.9 * this.ceiling) : Infinity;
+    return clampRows(Math.min(cap, current * 1.12));
+  }
+}
+
+/**
+ * Which row governor runs: 'gpu' (GPU time, where there is a timer), 'frames'
+ * (the frame intervals: only in a VR session once its display rate has
+ * settled, issue #295: a desktop browser without a timer, Firefox or Safari,
+ * may run at 30 or 50 Hz against an assumed 60, and a headset settles from
+ * 90 to 72 Hz in its first second), or 'none' (the count is kept).
+ */
+export function rowGovernorKind({ gpuMs, inXR, rateSettled }) {
+  if (gpuMs > 0) return 'gpu';
+  return inXR && rateSettled ? 'frames' : 'none';
+}
+
+/**
+ * The rows drawn for a governor's count: half-octave steps (…, 141 k, 200 k,
+ * 283 k, 400 k, …), or the whole sample. The splats are sized and refined for
+ * the rows drawn, so a count that moved every quarter second would make
+ * every refined frame stale; a step changes only when the governor crosses
+ * it. With `prev` (the step drawn now) the step is kept until the count is
+ * more than 0.4 octave from it (0.15 past the midpoint to the next step), so
+ * a count hovering at a midpoint does not flip between two steps.
+ */
+export function quantizeRows(n, sampleRows, prev = null) {
+  if (!(n > 0)) return Math.min(sampleRows, 1);
+  if (prev > 0 && prev <= sampleRows && Math.abs(Math.log2(Math.min(n, sampleRows) / prev)) <= 0.4) return prev;
+  const q = Math.round(2 ** (Math.round(2 * Math.log2(n)) / 2));
+  return Math.max(1, Math.min(sampleRows, q));
+}
+
 /** The page's box for the bounds [xmin, xmax, ymin, ymax, zmin, zmax]:
  *  {centre, side, extent (box sides), matrix: data -> model, column-major}. */
 export function dataToModel(bounds) {
@@ -461,7 +606,11 @@ function compile(gl, vs, fs, attribs) {
 
 /** The sample on the GPU and its drawing. */
 export class PointCloud {
-  constructor(gl, lutTexture) {
+  /** `target`: the splats' float target, 'auto' (float32 where it can be
+   *  blended, else half floats), 'f16' (a headset's default, issue #295: half
+   *  the fill cost of float32 on a Quest 3; still views are refined anyway),
+   *  'f32', or '8bit' (none: added onto the frame). */
+  constructor(gl, lutTexture, { target = 'auto' } = {}) {
     this.gl = gl;
     this.lut = lutTexture;
     this.prog = compile(gl, VS, FS, ['aPos', 'aVal']);
@@ -482,12 +631,13 @@ export class PointCloud {
     // The splats. float target (made on first use, at the viewport.s size).
     this.acc = null;
     const cbf = gl.getExtension('EXT_color_buffer_float');
-    this.hdr = !!(cbf || gl.getExtension('EXT_color_buffer_half_float'));
+    this.target = target;
+    this.hdr = target !== '8bit' && !!(cbf || gl.getExtension('EXT_color_buffer_half_float'));
     // Float32 where it can be blended: a half float's 11 bits drop the
     // additions below half its step (at 1, under 0.0005), and large faint
     // splats (opacity over size²) are made of such additions: at size 4 the
     // preview was 15 % darker than the refined frame in half floats.
-    this.float32 = !!(cbf && gl.getExtension('EXT_float_blend'));
+    this.float32 = target !== 'f16' && target !== '8bit' && !!(cbf && gl.getExtension('EXT_float_blend'));
   }
 
   /** True while splats are tone-mapped (a renderable float target). */

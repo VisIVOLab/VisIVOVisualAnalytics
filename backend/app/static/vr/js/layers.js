@@ -8,6 +8,7 @@
 
 import * as M from './mat4.js';
 import * as PT from './points.js';
+import * as RF from './refine.js';
 import * as FL from './flow.js';
 import * as CT from './catalogue.js';
 import { colormapTable } from './colormaps.js';
@@ -67,6 +68,10 @@ function fmt(v) {
   const a = Math.abs(v);
   return a !== 0 && (a < 1e-2 || a >= 1e5) ? v.toExponential(2) : String(+v.toPrecision(4));
 }
+
+/** The margin splat frames are asked for with (#297): 6 % of the field of
+ *  view on every side (about 3° on a Quest 3 eye), 12 % more pixels. */
+export const REFINE_OVERSCAN = 0.06;
 
 export function createLayers(ctx) {
   const { gl, R, state, $ } = ctx;
@@ -237,7 +242,7 @@ export function createLayers(ctx) {
     const arr = PT.sampleArrays(buf, info);
     load.check?.();
     load.commit?.();
-    if (!cloud) cloud = new PT.PointCloud(gl, lut);
+    if (!cloud) cloud = new PT.PointCloud(gl, lut, { target: ctx.splatTarget || 'auto' });
     const up = cloud.upload(arr.positions, arr.colour);
     L.s.autoLog = false;
     L.s.colourLog = info.colourLog;
@@ -246,6 +251,11 @@ export function createLayers(ctx) {
     p.arr = arr; // Keep the packed sample so a lost WebGL context can be rebuilt.
     p.drawRows = info.count;
     p.governedAt = 0;
+    // The row governor's own count (drawRows is it in half-octave steps), by
+    // GPU time where there is a timer, else by the frame intervals (#295).
+    p.govRows = info.count;
+    p.govSplats = null;           // set on the first frame (the style's start)
+    p.frameGov = new PT.FrameRowGovernor();
     L.box = PT.dataToModel(info.bounds);
     L.load = { requestMs: tBody - t1, uploadMs: up, mb: buf.byteLength / 1e6, totalMs: performance.now() - t0 };
     state.extent = L.box.extent;
@@ -626,6 +636,17 @@ export function createLayers(ctx) {
     if (L.error) status.push([L.error, '#ff8a8a']);
     return { notes, values, status };
   }
+  /** Whether the refined frame on show, warped to this eye, covers its whole
+   *  viewport (RF.coversViewport at the depths the warp uses). */
+  function refinedCovers(view, model, eye) {
+    const f = ctx.refiner.draw && ctx.refiner.draw.shown;
+    if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
+    const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
+    const centre = RF.centreDistance(fe.view, f.rec.model);
+    const d = f.hasDepth && f.header.depth ? [f.header.depth.z_near, f.header.depth.z_far, centre] : [centre];
+    return RF.coversViewport(fe, f.rec.model, view, model, d);
+  }
+
   // ── Hooks for main.js ────────────────────────────────────────────────
   const api = {
     // R.restore() rebuilds its own handles; these layer-specific GPU objects
@@ -637,7 +658,7 @@ export function createLayers(ctx) {
       cloud = null;
       lines = null;
       if (L.points?.arr) {
-        cloud = new PT.PointCloud(gl, lut);
+        cloud = new PT.PointCloud(gl, lut, { target: ctx.splatTarget || 'auto' });
         cloud.upload(L.points.arr.positions, L.points.arr.colour);
       }
       if (L.flow?.arr) {
@@ -700,19 +721,52 @@ export function createLayers(ctx) {
     drawScene(view, eye, viewportH) {
       const model = state.model;
       if (L.mode === 'points' && cloud && L.points && L.points.sample) {
-        const pt = L.points, now = performance.now();
-        if (eye === 0 && L.s.govern && now - (pt.governedAt || 0) > 250) {
-          // The rows drawn follow the frame time (four times a second).
+        const pt = L.points, now = performance.now(), count = pt.sample.count;
+        const splats = PT.isSplats(L.s.style);
+        if (pt.govSplats !== splats) {
+          // Splats on a headset start at what it holds at 72 Hz (#295),
+          // points (and splats elsewhere) at the whole sample.
+          pt.govSplats = splats;
+          pt.govRows = splats && ctx.headset ? Math.min(count, PT.HEADSET_SPLAT_ROWS) : count;
+          pt.frameGov.reset();
+          pt.drawRows = PT.quantizeRows(pt.govRows, count);
+        }
+        // A refined frame fully shown over a still view replaces the page's
+        // whole picture: the splats under it are not drawn (#295), and the
+        // governor waits (those frames say nothing about the splats' cost).
+        const covered = splats && ctx.refineOn() && !isCropped(state.clip) && ctx.refiner.showing
+          && ctx.refiner.weight >= 1 && refinedCovers(view, model, eye);
+        if (eye === 0) {
+          if (pt.wasCovered && !covered) pt.frameGov.interrupted(now);   // the time under it was not earned
+          pt.wasCovered = covered;
+        }
+        if (eye === 0 && L.s.govern && !covered && now - (pt.governedAt || 0) > 250) {
+          // The rows drawn follow the frame time (four times a second): GPU
+          // time where there is a timer, else the frame intervals in a VR
+          // session whose display rate has settled (PT.rowGovernorKind).
           pt.governedAt = now;
-          pt.drawRows = PT.governRows(pt.drawRows, pt.sample.count, R.gpuMs, ctx.targetHz());
+          const hz = ctx.targetHz();
+          if (hz !== pt.govHz) { pt.govHz = hz; pt.frameGov.reset(); }   // a new display rate: start over
+          const kind = PT.rowGovernorKind({ gpuMs: R.gpuMs, inXR: !!(ctx.inXR && ctx.inXR()),
+            rateSettled: !!(ctx.rateSettled && ctx.rateSettled()) });
+          let next = pt.govRows;
+          if (kind === 'gpu') next = PT.governRows(pt.govRows, count, R.gpuMs, hz);
+          else if (kind === 'frames') next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now);
+          // Still and waiting for a refined frame: no growth (a new step would
+          // make the frame asked for stale before it arrives).
+          const waiting = splats && ctx.refineOn() && ctx.refiner.motion.state === 'still'
+            && (ctx.refiner.status === 'waiting' || ctx.refiner.status === 'refined');
+          pt.govRows = waiting ? Math.min(next, pt.govRows) : next;
+          pt.drawRows = PT.quantizeRows(pt.govRows, count, pt.drawRows);
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.
         const drawn = L.s.govern ? pt.drawRows : pt.sample.count;
         const st = PT.splatStyle(pt.sample.bounds, pt.sample.placedRows, drawn, L.s.splatSize, L.s.intensity,
           cloud.splatRule);
-        cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
-          opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
-          clip: state.clip });
+        if (!covered) {
+          cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
+            opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: drawn, clip: state.clip });
+        }
       } else if (L.mode === 'flow' && lines && L.flow && L.flow.info) {
         const [s0, s1] = flowSpeedRange();
         lines.draw(view, model, { box: L.box, speedMin: s0, speedMax: s1,
@@ -726,9 +780,16 @@ export function createLayers(ctx) {
       }
     },
     hasScene() { return L.mode !== 'cube' && !!L.box; },
+    /** True while a refined frame covers the splats (they are not drawn): the
+     *  frame-rate governors earn no clean time from those frames (#295). */
+    get covered() { return L.mode === 'points' && !!(L.points && L.points.wasCovered); },
     /** Refinement of a point table (none for a velocity field). */
-    refineFrame(t, eyes, centreView, background) {
+    refineFrame(t, eyes0, centreView, background) {
       if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip)) return;
+      // Splat frames are asked for with a margin, so a turn warps them
+      // without uncovering the view (refinedCovers: the splats under a
+      // covering frame are not drawn).
+      const eyes = PT.isSplats(L.s.style) ? eyes0.map((e) => RF.overscanEye(e, REFINE_OVERSCAN)) : eyes0;
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
@@ -737,13 +798,16 @@ export function createLayers(ctx) {
       // The splats are refined for the whole sample (not the governor's part
       // of it, which changes four times a second and would make every refined
       // frame stale): never darker than the preview, the same when it is drawn whole.
-      const key = JSON.stringify([commands, sm.bounds, sm.count]);
+      // Refined for the rows the page draws (in half-octave steps, so the
+      // governor rarely makes a frame stale): the same splat size and light.
+      const drawn = L.s.govern ? L.points.drawRows : sm.count;
+      const key = JSON.stringify([commands, sm.bounds, sm.count, drawn]);
       ctx.refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model, zStretch: 1,
         look: { commands, cropError: '' }, lookKey: key, background,
         // A backend drawing by another splat rule (one from before #263): its
         // frames are not shown (refine-client.js accept).
         accept: (h) => PT.acceptFrame(h, L.s.style, commands.find((c) => c.type === 'set_point_style').splat_rule),
-        poseExtra: PT.refinePoseExtra(L.box, L.s.style, sm.count, eyes) });
+        poseExtra: PT.refinePoseExtra(L.box, L.s.style, drawn, eyes) });
     },
     hudLines() {
       const out = [];
