@@ -56,10 +56,19 @@ async def cube_preview(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CubePreviewResponse:
+    """The cube every ``downsample`` voxels along each axis: block means from
+    its brick pyramid when one is ready (issue #320), else a strided sample."""
     from ..compute import worker_cube_preview
+    from ..preview_pyramid import ready_pyramid
     try:
         path = _require_cube_path(session, request.dataset_id)
-        result = await _run_with_limit(session, worker_cube_preview, path, request.downsample)
+        # Found here, where the pyramid directory is this backend's own (not
+        # in a pool or Dask worker); only looked for, never built.
+        pyramid_path = None
+        if request.source == "auto" and request.downsample > 1:
+            pyramid_path = await asyncio.to_thread(ready_pyramid, path)
+        result = await _run_with_limit(session, worker_cube_preview, path,
+                                       request.downsample, pyramid_path)
     except HTTPException:
         raise
     except Exception as exc:

@@ -8,6 +8,27 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: the preview of a large cube from its brick pyramid (#320).**
+  When a cube's brick pyramid is already built (for the headset or remote
+  rendering), the desktop's preview of a large cube is made of block means
+  from the matching pyramid level instead of every N-th voxel: thin or noisy
+  structures no longer alias or vanish, and the source file is not read. On a
+  2048³ PLUTO density at stride 8 it takes 1.0 s against 1.5 s (4.1 s cold)
+  and equals the exact block mean. Without a pyramid the preview is the
+  strided one as before; opening a cube never starts a pyramid build. The
+  answer of `/v1/cube/preview` says which source it used (`source`, `level`,
+  `factors`, `voxel_offset`).
+
+- **PLUTO simulation output opens as volumes (#315).** The native binary
+  output of the PLUTO code (`data.NNNN.dbl/.flt` or `<var>.NNNN.dbl/.flt`,
+  described by `dbl.out`/`flt.out` and `grid.out`) opens in the cube viewer
+  and in VR, from the data file or from the `.out` file. Each variable present
+  is a field, memory-mapped in place: a 2048³ float32 density (32 GB) opens in
+  under 0.1 s. A uniform Cartesian grid gets physical X/Y/Z axes; a
+  non-uniform or non-Cartesian one opens on cell indices with a notice; a
+  2-D output opens as an image. VBT volumes and PLUTO variables now share one
+  raw-field reader for the pyramid, moments, render sessions and caches.
+
 - **VR: simulation volumes shown as simulations (part of #317).** A
   simulation volume whose values are all positive and span more than three
   decades (a density) now reaches the headset as codes of log10 of its

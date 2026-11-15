@@ -7,9 +7,19 @@ need the token and the session that opened the dataset.
 ## `POST /v1/cube/preview`
 Downsampled cube for fast initial display.
 ```json
-{ "dataset_id": "...", "downsample": 4 }
+{ "dataset_id": "...", "downsample": 4, "source": "auto" }
 ```
-Returns `valid`, `error`, `scalar_type`, `width`, `height`, `depth`, `range_min`, `range_max`, `compression` (`qt-zlib`) + `data_base64` (float32, zlib-compressed in Qt's `qCompress` framing, then base64), and `default_threshold`: the cube's default 3-D threshold, from its noise ([The default threshold](../user-guide/cube-viewer.md#the-default-threshold)), computed on the preview (a stride sample, so its noise is the cube's) for the number of voxels of the whole cube; `null` when the preview has no finite value. The desktop starts its local view from it, and a remote view of the same cube starts from the same rule.
+The preview has `ceil(n / downsample)` voxels along each axis. With `source`
+`auto` (the default) and `downsample` above 1, a cube whose
+[brick pyramid](../brick-pyramid.md#the-desktop-preview-from-the-pyramid) is
+already complete and current is previewed from it: each voxel is the mean of
+its `downsample`-sized cell over the finite voxels, read from one pyramid level
+without reading the cube's file. Otherwise, or with `source: "strided"`, each
+voxel is every `downsample`-th voxel of the cube (`data[::s, ::s, ::s]`), as
+before. Opening or previewing a cube never starts a pyramid build.
+Returns `valid`, `error`, `scalar_type`, `width`, `height`, `depth`, `range_min`, `range_max`, `compression` (`qt-zlib`) + `data_base64` (float32, zlib-compressed in Qt's `qCompress` framing, then base64), and `default_threshold`: the cube's default 3-D threshold, from its noise ([The default threshold](../user-guide/cube-viewer.md#the-default-threshold)), computed on the preview (a stride sample, so its noise is the cube's) for the number of voxels of the whole cube, or from a sample of level-0 bricks for a preview from the pyramid (block means have less noise than the cube); `null` when the preview has no finite value. The desktop starts its local view from it, and a remote view of the same cube starts from the same rule.
+
+Which preview it is: `source` (`strided` or `pyramid`), `factors` (`[s, s, s]`, x y z), and for `pyramid` the `level` read, the pyramid's `levels` and `level_factors` (cube voxels per level voxel, x y z; the level is the coarsest whose factor is at most `downsample`, and a stride that is not a power of two weights each level voxel by the cube voxels it shares with the cell). `voxel_offset` places the grid: preview voxel `i` stands for cube voxel `i * s + voxel_offset`, `0` for `strided` and `(s - 1) / 2`, the centre of a whole cell, for `pyramid`.
 
 ## `POST /v1/cube/slice`
 Single 2-D slice.

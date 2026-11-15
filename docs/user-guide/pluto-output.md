@@ -53,7 +53,9 @@ number (`PLUTONUM`) and geometry (`PLUTOGEO`); *File ▸ Header* shows them.
 As for a [VBT volume](vbt-viewer.md#volume-tables), the axes are space, so the
 tools that need a spectral axis or sky coordinates are not shown; everything
 that treats the grid as a 3-D field works, and a large variable is drawn on the
-backend from its brick pyramid, built once the first time.
+backend from its brick pyramid, built once the first time. Once that pyramid
+exists, the desktop's preview of the variable is read from it too, as block
+means ([Preview → full-resolution flow](cube-viewer.md)).
 
 ## See also
 
