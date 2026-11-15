@@ -57,22 +57,83 @@ export async function qtUncompress(bytes) {
   return out;
 }
 
-/** Finite min and max, or null. */
+/** Finite min and max, or null (one indexed pass: no sort). */
 export function finiteRange(values) {
   let lo = Infinity, hi = -Infinity;
-  for (const v of values) if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  }
   return lo <= hi ? [lo, hi] : null;
 }
 
+/** The most values a robust range sorts (#300, #302): 65 536, so its two
+ *  sorts take a few ms on any map, the first time as on a re-cut. */
+export const RANGE_SAMPLE = 65536;
+
+/** The k-th finite value finiteSample takes for its j-th, of `count` in
+ *  strata of `step`, after the pick `prev`: one per stratum, at an offset
+ *  that moves by the golden ratio (#302), and always after `prev` (two
+ *  offsets can floor to one value when step < 2). Pushed or not, the j-th
+ *  pick stays in [floor(j step), (j + 1) step): its own stratum, so the
+ *  last is below `count`. A fixed stride that divides the row width would
+ *  take the same few columns of every row and bias the median of a map
+ *  with a gradient along x (a rotating disc). Deterministic, so the same
+ *  map always gives the same sample. */
+function pickOf(j, step, count, prev) {
+  if (step === 1) return j;
+  const u = (j * 0.6180339887498949) % 1;
+  return Math.max(prev + 1, Math.min(count - 1, Math.floor((j + u) * step)));
+}
+
+/**
+ * At most n of the finite values of `a`, one in each of n equal strata of
+ * them (#300, #302): all of them when there are n or fewer, so a sparse
+ * map (a NaN-masked field with a compact source) is never sampled into too
+ * few values, nor into none. `count` the finite values of `a` when known
+ * (mapStats), else counted: one or two passes over `a`, no sort. Float64,
+ * so plain numbers are kept as they are.
+ */
+export function finiteSample(a, n, count = null) {
+  if (count === null) {
+    count = 0;
+    for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i])) count++;
+  }
+  const out = new Float64Array(Math.min(count, n));
+  if (!out.length) return out;
+  const step = count <= n ? 1 : count / n;
+  if (count === a.length) {             // every value finite: the same picks, without the walk
+    for (let j = 0, k = -1; j < out.length; j++) { k = pickOf(j, step, count, k); out[j] = a[k]; }
+    return out;
+  }
+  let k = 0, j = 0, next = pickOf(0, step, count, -1);
+  for (let i = 0; i < a.length && j < out.length; i++) {
+    const v = a[i];
+    if (!Number.isFinite(v)) continue;
+    if (k === next) { out[j++] = v; next = pickOf(j, step, count, next); }
+    k++;
+  }
+  return out;
+}
+
+/** The median of `a`, sorted in place (a typed array: numeric order). */
+function medianInPlace(a) {
+  a.sort();
+  const m = a.length;
+  return m % 2 ? a[m >> 1] : 0.5 * (a[m / 2 - 1] + a[m / 2]);
+}
+
 /** The desktop's range for a velocity field (robustSymmetricMomentRange):
- *  the median ± 4 robust sigma (1.4826 MAD), or null with fewer than 8 values. */
-export function robustSymmetricRange(values) {
-  const v = [];
-  for (const x of values) if (Number.isFinite(x)) v.push(x);
+ *  the median ± 4 robust sigma (1.4826 MAD), or null with fewer than 8
+ *  finite values. Measured on at most RANGE_SAMPLE of them (finiteSample:
+ *  all of them on a map with fewer), never on a sort of the whole map
+ *  (#302); `count` the finite values when known (mapStats). */
+export function robustSymmetricRange(values, count = null) {
+  const v = finiteSample(values, RANGE_SAMPLE, count);
   if (v.length < 8) return null;
-  const median = (a) => { a.sort((p, q) => p - q); const m = a.length; return m % 2 ? a[m >> 1] : 0.5 * (a[m / 2 - 1] + a[m / 2]); };
-  const med = median(v);
-  const sigma = 1.4826 * median(v.map((x) => Math.abs(x - med)));
+  const med = medianInPlace(v);
+  for (let i = 0; i < v.length; i++) v[i] = Math.abs(v[i] - med);
+  const sigma = 1.4826 * medianInPlace(v);
   if (!(sigma > 0)) return null;
   return [med - 4 * sigma, med + 4 * sigma];
 }

@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: the first velocity moment of the whole field no longer sorts every
+  pixel (#302).** The colour range of a Moment 1 map (median ± 4 robust
+  sigma) is now measured on up to 65 536 of the map's finite pixels, all of
+  them when there are fewer, the first time the map is shown as when its crop
+  changes, and for a moment of a selection too. Before, the first range
+  sorted every finite value on the page's main thread: 1.4 s for a dense
+  2048² map on an M-series Mac, several seconds on a Quest 3. It now takes
+  15 ms (30 ms for a NaN-masked map with 30 % of the pixels finite). The
+  sample takes one value in each equal share of the finite pixels, at an
+  offset that moves from share to share. A fixed stride of 64 took the same
+  32 columns of every row of a 2048-wide map, which moved the range of a
+  velocity gradient along x by 0.65 % of its width; the error is now 0.1 %.
+  Moments 0 and 2 keep their exact minimum and maximum.
+
 - **VR: mask layers (#282).** A label mask on the cube's grid (a SoFiA-2 mask,
   a desktop mask) is drawn over the cube in the headset: *Outline* (the
   sources' surface as a faint skin), *Mask only*, *Residuals* (the cube
