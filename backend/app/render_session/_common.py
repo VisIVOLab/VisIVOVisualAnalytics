@@ -252,6 +252,33 @@ def _parse_tf_points(points, width: int) -> list[tuple[float, ...]]:
     return sorted(out)
 
 
+def log_floor(values) -> float:
+    """The code a log-scaled session gives a value with no logarithm (at or
+    below zero, NaN): one decade below the smallest positive value, so it is
+    below every threshold and the scalar range VTK samples its lookup tables
+    over stays a few decades wide (issue #328). 0 when nothing is positive."""
+    import numpy as np  # noqa: PLC0415
+    v = np.asarray(values)
+    with np.errstate(invalid="ignore"):
+        m = np.min(v, initial=np.inf, where=np.isfinite(v) & (v > 0))   # no cube-sized copy
+    return float(np.log10(m)) - 1.0 if np.isfinite(m) else 0.0
+
+
+def to_log10(values, floor: float):
+    """log10 of ``values`` as a new float32 array, ``floor`` where there is
+    none: a log-scaled cube drawn in log10, so the transfer functions'
+    points, evenly spread in log10, are evenly spread in what VTK samples.
+    Drawn in values, a range over seven decades needs a lookup texture of
+    millions of texels; VTK falls back to 16384 and the faint decades share
+    one texel (measured: a third of a density's halo lost)."""
+    import numpy as np  # noqa: PLC0415
+    v = np.asarray(values, dtype=np.float32)
+    out = np.full(v.shape, np.float32(floor), dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        np.log10(v, out=out, where=np.isfinite(v) & (v > 0))
+    return out
+
+
 def _build_explicit_tfs(color_points, opacity_points):
     """vtkColorTransferFunction and vtkPiecewiseFunction from client points."""
     import vtk
@@ -379,6 +406,11 @@ class SessionViewState:
     # ``set_lut`` or ``set_threshold``; a viewer whose scale is not the
     # cube's (log, sqrt, power) draws remotely what it draws locally.
     explicit_tf: tuple[list, list] | None = None
+    # The explicit transfer functions' points are in log10 of the values, and
+    # the volume is drawn in log10 (``set_transfer_functions`` with
+    # ``scale: "log"``, issue #328); off again with ``set_lut`` or
+    # ``set_threshold``, or with a linear ``set_transfer_functions``.
+    log_scalars: bool = False
     vmin: float | None = None
     vmax: float | None = None
     # Backward-compat: still honoured by ``opacity`` command for older

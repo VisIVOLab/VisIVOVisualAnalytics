@@ -1756,6 +1756,42 @@ Desktop and headset together:
    compare the flow's structure, the attractors and the speeds' colours). Note
    FPS and GPU ms with streamlines and arrows on.
 
+### The crop in more detail (#328)
+
+A binned cube shows its crop in more detail. When the spatial crop (Range ▸
+*Spatial crop*) has stayed still for 0.7 s, the page asks the backend for the
+cropped region (`POST /v1/cube/region_level_bin`) at the finest level of
+detail whose region fits the room kept for cubes (*Max side*, 256³ by
+default). It codes the region on the whole cube's codes, so the scale,
+threshold and colours stay continuous. It writes the region into the room's
+spare half (in VR too: no new 3-D texture, #229) and draws it in the crop's
+place. The label over the box adds *the crop binned 2× (level 1)*. Outside the
+crop nothing is drawn, as before. Clearing the crop, or moving it out of the
+region, shows the coarse cube again at once (it stays in its own half). A
+crop that settles elsewhere brings its own region.
+
+Measured on the 2048³ PLUTO density (binned 8× as 256³), loopback, M-series
+Mac: a quarter of each axis comes from pyramid level 1 (2× binning, four times
+finer than the cube) as 256³. That is 67 MB of float32 read in 74 to 101 ms,
+coded in 160 ms (in slices, the frames drawn in between) and written in
+140 ms, about 0.4 s after the crop settles.
+
+While the crop's region is on show, a selection and a mask layer are kept
+but not drawn: they are on the coarse cube's grid, and they come back with
+it. The region comes from the cube's brick pyramid. Without a ready pyramid
+only level 0, the cube's own voxels, is used, because a strided level is a
+sample, not a block mean. The detail is offered for a cube binned by the mean
+(the pyramid's levels are means), and never at a level coarser than the cube
+on any axis. A request that fails is not repeated until the crop changes.
+*?nodetail* turns the detail off.
+
+**Max side 384.** For a cube read from its brick pyramid, the binning is a
+power of two: 2048³ at Max side 384 still arrives as 256³ (8×), while the
+room for cubes grows from 51 MB to 171 MB (two 384³ banks and the mask). Keep
+256 for such cubes and let the crop bring the detail. 384 pays only when the
+cube's own binning is not a power of two, or for a crop of up to 3/8 of each
+axis at the finer level.
+
 ### Large cube (out of core), with the headset
 
 1. Open a cube above 6 GiB on the desktop (or make one with
