@@ -116,14 +116,9 @@ def _spectral_axis(dataset: ScientificFitsDataset, shape_zyx, centres) -> dict[s
     vel_full, vunit, mode = velocity_axis_kms(coords, unit, ctype, float(rest))
     if mode == "velocity":
         out["velocity_kms"] = _finite_list(np.interp(centres, channels, vel_full))
-        is_freq = False
-        try:
-            import astropy.units as u  # noqa: PLC0415
-            is_freq = u.Unit(unit).is_equivalent(u.Hz)
-        except Exception:  # noqa: BLE001
-            is_freq = False
-        out["velocity_convention"] = ("optical (cz), from frequency and RESTFRQ" if is_freq
-                                      else f"as in the cube ({ctype or unit})")
+        # The label the selection statistics and the kinematic fit give.
+        from .kinematic_fit import velocity_convention_label  # noqa: PLC0415
+        out["velocity_convention"] = velocity_convention_label(unit, ctype, dataset.header)[1]
         finite = vel_full[np.isfinite(vel_full)]
         if finite.size > 1:
             out["channel_width_kms"] = float(np.mean(np.abs(np.diff(finite))))

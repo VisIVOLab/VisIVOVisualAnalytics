@@ -121,6 +121,86 @@ are preserved here unedited; the branch names they refer to are historical.
   (448 → 274 ms for a 3.9 M-particle 1280 × 720 still), and the page's
   frame conversion (`page_frame`) went from 34 to 11 ms per eye.
 
+- **3-D sky catalogues: sources without a distance are no longer put on a
+  300 Mpc shell (#265).** In a catalogue that has a redshift or a distance
+  column, a row with no usable distance and a redshift that is ≤ 0, zero or
+  missing has no position: it is left out of the scene (and of the
+  server-side, ray-traced and headset views) and counted, in every distance
+  mode. A catalogue with no redshift and no distance column at all (positions
+  only) keeps a view: its sources are shown on the celestial sphere (radius
+  300 Mpc, not a distance), which the status line, the pick and the headset's
+  status line say. The 3-D catalogue window shows "N placed · M unplaced (no
+  distance) · K with cz < 1000 km/s (distance uncertain: peculiar
+  velocities)", an **Unplaced Sources…** table (Name, RA, Dec, cz, Reason),
+  and the selected source's readout names where its distance came from
+  ("Distance 12.3 Mpc, from z (comoving, Planck18)", "… from column DIST")
+  with "cz < 1000 km/s: uncertain" when that applies. A measured distance
+  column now wins under every cosmology; before, any model other than
+  Planck18 replaced it with the distance of the redshift, on the desktop and
+  on the backend alike.
+- **VR: a sky catalogue is placed with the desktop window's frame, distance
+  mode and cosmology (#260).** The link, the pairing code, the app launch and
+  the hub's `show` carry the window's applied settings; `/v1/points/info` and
+  `/v1/points/sample_bin` take them as `sky` and apply them as the ray-traced
+  view does, and answer the counts (`sky_settings`, `X-Visivo-Sky`,
+  `X-Visivo-Unplaced`). Samples skip the rows with no position, so the
+  budget, `X-Visivo-Step` and the splat size count the placed rows
+  (`X-Visivo-Placed-Rows`). A custom cosmology is refused as for the
+  ray-traced view (the window goes back to Planck18 and says so), also when
+  it is chosen while the headset window is open; a pairing code still unused
+  is renewed when the placement changes. The page's status line
+  shows the placement and the unplaced count. Redshift-space mode now uses
+  the chosen model's H₀ (WMAP9: 69.32) instead of a fixed 67.66, on the
+  desktop and on the backend.
+- **VR: standard HI measurements of a selection (#280).**
+  `/v1/cube/mask_stats_bin` answers, under `hi`, what an HI catalogue quotes
+  for a lasso or box selection: the integrated flux in Jy km/s with its
+  uncertainty from the noise (corrected for the channel correlation measured
+  around the selection, lags 1-3: ×1.5-1.8 on HCG 44; the independent value
+  and ρ1 are returned too), the peak, peak S/N and integrated S/N, W20 and W50
+  from the integrated spectrum (flagged as lower limits when the line reaches
+  the selection's edge), the systemic velocity (W20 midpoint) with the
+  velocity convention and a readable frame named (SPECSYS, else the AIPS CTYPE
+  suffix; topocentric cubes are flagged), the flux-weighted centroid (pixels,
+  ICRS RA/Dec, velocity) and the size (semi-axes of the moment-0 footprint,
+  not deconvolved, and its PA east of north from the WCS). The
+  definitions are SoFiA-2's (`app/compute/hi_measures.py`). New query
+  parameter `sigma`: the session's noise; without it the noise is measured
+  around the selection with SoFiA-2's local rule, from a frame read thinned
+  to at most 4 M voxels. The velocity-convention label is now one for
+  `reduced_info`, the kinematic fit and the statistics (a bare `VELOCITY`
+  CTYPE says *convention not stated*). The VR page shows the
+  numbers in the selection window, the flux ± error, Vsys and W50 on the
+  secondary wrist card, and records them in the selection's Provenance; the
+  page and the shared-selection publish pass the grow's σ, and the replay
+  records it. The desktop's note for a shared selection adds the uncertainty
+  with its correlation label, peak S/N, Vsys with its convention and frame,
+  W20 and W50. Validated against SoFiA-2 2.7.0 on HCG 44
+  (18 sources) and WALLABY (12): the same mask gives the catalogue's values
+  (local noise within 7 %, see `backend/tests/test_hi_measurements.py`).
+  **Definition change:** the kinematic comparator's w20/w50 now use the same
+  interpolated definition, so they change by up to two channels (wider) from
+  before. The pixel-to-sky conversion moved to
+  `fits_dataset.pixel_to_icrs`, shared by `/v1/datasets/pixel_to_sky` and the
+  centroid.
+- **The release packages carry the VisIVO VR headset app (#255).** The
+  project's release key now signs the app: its certificate
+  (`A1:54:C4:5B:…:43:04:D8:D4`) is in `backend/app/vr_app.json`, so every
+  backend, local or on a cluster, lists `it.inaf.oact.visivo.vr` at
+  `/.well-known/assetlinks.json` and the desktop's precheck passes for the
+  release app. `release.yml` calls `quest-app.yml` once per run and bundles
+  `visivo-vr.apk` + `visivo-vr.json` where the desktop looks: macOS
+  `Contents/Resources/quest-app/` (before the bundle is signed), Linux
+  `app/usr/bin/quest-app/`, Windows `bin\quest-app\`; the packaged smoke test
+  checks they are there. On a tag the APK is also attached to the release
+  once (`quest-app.yml` lost its own tag trigger). Without the signing
+  secrets (a fork) the packages are built without the app, with a notice; a
+  failed app build gives a warning and never holds the release. The app
+  build fails when its certificate is not in `vr_app.json`. The app's icon is
+  now the VisIVO logo (plain and maskable launcher icons on white, made by
+  `tools/quest-app/make-icons.py`); `versionCode` 2 (1.0.1), so the desktop
+  offers **Update** on headsets with the first build.
+
 - **Desktop: Open on Headset installs and starts the VisIVO VR app (#255).**
   In **Open in VR Headset… → Advanced (USB cable)** the desktop says whether
   the headset app is installed and current (`pm list packages

@@ -112,9 +112,14 @@ case "$(uname -s)" in Darwin) JDK_PATH="${JAVA_HOME%/Contents/Home}" ;; esac
 python3 -c 'import json,sys; print(json.dumps({"jdkPath": sys.argv[1], "androidSdkPath": sys.argv[2]}))' \
   "$JDK_PATH" "$ANDROID_HOME" > "$WORK/home/.bubblewrap/config.json"
 
-# Bubblewrap fetches the icon over HTTP: a server on loopback for the build.
+# Bubblewrap fetches the icons over HTTP: a server on loopback for the build,
+# serving the plain icon's directory (the maskable one must sit beside it).
 ICON="$REPO/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["icon"])' "$HERE/app.json")"
+MASKABLE="$REPO/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["maskableIcon"])' "$HERE/app.json")"
 [ -f "$ICON" ] || die "icon not found: $ICON"
+[ -f "$MASKABLE" ] || die "maskable icon not found: $MASKABLE"
+[ "$(cd "$(dirname "$ICON")" && pwd)" = "$(cd "$(dirname "$MASKABLE")" && pwd)" ] \
+  || die "app.json's icon and maskableIcon must be in the same directory"
 ICON_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 python3 -m http.server "$ICON_PORT" --bind 127.0.0.1 --directory "$(dirname "$ICON")" >/dev/null 2>&1 &
 ICON_PID=$!
@@ -126,7 +131,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 
 ORIGIN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["defaultOrigin"])' "$HERE/app.json")"
-python3 -I "$HERE/make-twa.py" "$WORK/proj" "$MODE" "http://127.0.0.1:$ICON_PORT/$(basename "$ICON")" "$KS" "$ALIAS"
+python3 -I "$HERE/make-twa.py" "$WORK/proj" "$MODE" "http://127.0.0.1:$ICON_PORT/$(basename "$ICON")" \
+  "http://127.0.0.1:$ICON_PORT/$(basename "$MASKABLE")" "$KS" "$ALIAS"
 (cd "$WORK/proj" && HOME="$WORK/home" node "$BW" update --skipVersionUpgrade --manifest="$WORK/proj/twa-manifest.json" \
   < /dev/null > "$WORK/bubblewrap.log" 2>&1) || { tail -30 "$WORK/bubblewrap.log"; die "bubblewrap failed"; }
 python3 -I "$HERE/patch-project.py" "$WORK/proj" "$ORIGIN"

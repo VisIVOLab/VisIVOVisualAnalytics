@@ -31,7 +31,7 @@ What the desktop may say instead:
 |---|---|
 | *Put the headset on, then press Open again.* | The headset was asleep (or took the headset off before the app started): wear it and press **Open on Headset** again. Nothing was started. |
 | *VisIVO VR started but could not connect to this computer.* | The app opened but never reached the backend: check the cable and the backend, then press **Open on Headset** again. |
-| *This backend does not list the VisIVO VR app…* | The backend does not serve the app's statement at `/.well-known/assetlinks.json`: a development build needs the backend on the same computer (restart it after the first build); a release build needs an up-to-date backend. Nothing was started. |
+| *This backend does not list the VisIVO VR app…* | The backend does not serve the app's statement at `/.well-known/assetlinks.json`: a development build needs the backend on the same computer (restart it after the first build); the release app needs a backend as recent as the desktop that bundles it (an older one does not list it yet; on a cluster, update the backend too, or start it with `VISIVO_VR_APP_RELEASE_SHA256` set to the certificate in `tools/quest-app/README.md`). Nothing was started. |
 | *Another VisIVO VR is installed* (a question) | The headset has a build of the app signed by another key (someone's own development build). **Yes** uninstalls it and installs this one; **No** leaves it alone. The desktop never uninstalls without asking. |
 
 While the app runs, **Open on Headset** and **Show on Headset** send the
@@ -39,8 +39,12 @@ cube to it: the app is never started a second time, so you stay in VR and
 the new cube replaces the old one. **Open in Browser** opens the page in the
 Quest Browser instead (then press Enter VR, as before).
 
-Without an APK with this build of the desktop, **Open on Headset** opens the
-page in the Quest Browser as before.
+The release packages of the desktop (macOS, Linux, Windows) carry the app,
+signed with the project's key, and every backend lists it: there is nothing
+to download or configure. A desktop with no APK (built from source without
+`tools/quest-app/build.sh`, or a package built without the signing key)
+opens the page in the Quest Browser instead, as before. The APK is also on
+each release's page (`visivo-vr.apk`), to install by hand.
 
 ### Where the desktop finds the app
 
@@ -50,7 +54,9 @@ In this order:
    (`visivo-vr.apk` and `visivo-vr.json`, as `tools/quest-app/build.sh`
    writes them);
 2. the desktop's own resources: `quest-app/visivo-vr.apk` (in
-   `Contents/Resources` of the macOS app, beside the executable elsewhere);
+   `Contents/Resources` of the macOS app, beside the executable elsewhere:
+   `app/usr/bin/quest-app/` in the Linux package, `bin\quest-app\` in the
+   Windows one), where the release packages put it;
 3. a source tree the desktop was built in: `tools/quest-app/out/`
    (`visivo-vr-dev.apk` first, then `visivo-vr.apk`).
 

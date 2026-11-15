@@ -112,6 +112,19 @@ SharedSelectionInfo parseSharedSelectionInfo(const QByteArray &json)
     r.hasVelocity = s.value("velocity_min_kms"_L1).isDouble() && s.value("velocity_max_kms"_L1).isDouble();
     r.velocityMin = s.value("velocity_min_kms"_L1).toDouble();
     r.velocityMax = s.value("velocity_max_kms"_L1).toDouble();
+    r.hi = s.value("hi"_L1).toObject();
+    r.hasFluxError = r.hi.value("flux_err_jy_kms"_L1).isDouble();
+    r.fluxError = r.hi.value("flux_err_jy_kms"_L1).toDouble();
+    r.hasVsys = r.hi.value("vsys_kms"_L1).isDouble() && r.hi.value("w20_kms"_L1).isDouble()
+                && r.hi.value("w50_kms"_L1).isDouble();
+    r.vsys = r.hi.value("vsys_kms"_L1).toDouble();
+    r.w20 = r.hi.value("w20_kms"_L1).toDouble();
+    r.w50 = r.hi.value("w50_kms"_L1).toDouble();
+    r.hasPeakSnr = r.hi.value("peak_snr"_L1).isDouble();
+    r.peakSnr = r.hi.value("peak_snr"_L1).toDouble();
+    r.velocityConvention = r.hi.value("velocity_convention_name"_L1).toString();
+    r.velocityFrame = r.hi.value("velocity_frame"_L1).toString();
+    r.channelCorrelation = r.hi.value("channel_correlation"_L1).toString();
     r.meta = o.value("meta"_L1).toObject();
     r.nonce = r.meta.value("nonce"_L1).toString();
     if (r.meta.value("grow"_L1).isObject())
@@ -208,10 +221,22 @@ QString sharedSelectionNote(const SharedSelectionInfo &info)
     const QString who = info.source == "headset"_L1 ? u"the headset"_s : u"another desktop"_s;
     const QString what = info.kind == "box"_L1 ? u"Box"_s : u"Kinematic Lasso"_s;
     QString t = u"%1 from %2: %3 voxels"_s.arg(what, who).arg(info.count);
-    if (info.hasFlux) t += u", flux %1 Jy km/s"_s.arg(fmtNumber(info.flux));
+    if (info.hasFlux && info.hasFluxError) {
+        t += u", flux %1 ± %2 Jy km/s"_s.arg(fmtNumber(info.flux), QString::number(info.fluxError, 'g', 2));
+        if (!info.channelCorrelation.isEmpty()) t += u" (%1)"_s.arg(info.channelCorrelation);
+    } else if (info.hasFlux) t += u", flux %1 Jy km/s"_s.arg(fmtNumber(info.flux));
     else if (info.hasSum) t += u", sum %1 %2"_s.arg(fmtNumber(info.sum), info.bunit).trimmed();
+    if (info.hasPeakSnr) t += u", peak S/N %1"_s.arg(info.peakSnr, 0, 'f', 1);
     if (info.hasVelocity)
         t += u", %1 to %2 km/s"_s.arg(info.velocityMin, 0, 'f', 1).arg(info.velocityMax, 0, 'f', 1);
+    // The backend's HI measurements (#280), the same numbers the headset shows.
+    // Vsys says its convention and frame: a velocity without them is not a number.
+    if (info.hasVsys) {
+        const QString conv = info.velocityConvention.isEmpty() ? u"convention unknown"_s : info.velocityConvention;
+        const QString frame = info.velocityFrame.isEmpty() ? u"frame unknown"_s : info.velocityFrame;
+        t += u", Vsys %1 km/s (%2, %3), W20 %4, W50 %5 km/s"_s.arg(info.vsys, 0, 'f', 1)
+                     .arg(conv, frame).arg(info.w20, 0, 'f', 1).arg(info.w50, 0, 'f', 1);
+    }
     return t;
 }
 
