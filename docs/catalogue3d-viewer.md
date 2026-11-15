@@ -229,7 +229,14 @@ NaN; which rows these are does not depend on the frame, the mode or the model.
 The window keeps them in `unplacedEntries` for the *Unplaced Sources* table, and
 `CataloguePlacement.h` (widget-free) builds the status line, the table's rows
 and the pick readout's "Distance …, from …" lines. A source placed from a
-redshift with 0 < cz < 1000 km/s is flagged `uncertain()`.
+redshift with 0 < cz < 1000 km/s is flagged `uncertain()`. The cz is
+`EntryDistance::czKms`: the row's cz column (`detectedVelocityField()`, km/s)
+when it has a finite value, else `recessionVelocityKms(z)`, c·z rounded half up
+to `kCzPrecisionKms` = 10⁻⁶ km/s, so z = cz/c from a file's 1000.0 is not
+counted below 1000 (#298). The backend's `catalogue_positions.cz_kms()` applies
+the same aliases and rounding. `recomputeScenePositionsAndRebuild()` keeps the
+selected source and rewrites its panels (`refreshSelectionAfterReplacement()`),
+so the readout follows a model or distance-mode change.
 
 `comovingDistanceMpc(z)` is a 1000-step trapezoid over a flat **Planck 2018**
 model (H₀ = 67.66, Ωm = 0.3111, ΩΛ = 1 − Ωm, no radiation term). It returns 0

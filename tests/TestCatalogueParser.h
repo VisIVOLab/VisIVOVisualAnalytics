@@ -46,6 +46,7 @@ private slots:
     void entryDist_negativeRedshift_isUnplaced();
     void entryDist_negativeRedshift_withDistanceColumn_isPlaced();
     void entryDist_lowCz_isFlaggedUncertain();
+    void entryDist_czBoundary_comparesTheCzTheFileShows();
 
     // ── issue #265: unplaced rows, the status line, the pick readout ──────────
     void parse_unplacedRowsAreKeptApart();

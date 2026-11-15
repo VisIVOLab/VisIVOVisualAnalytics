@@ -91,11 +91,17 @@ distance mode change nothing. The headset shows it the same way.
 Sources with 0 < cz < 1000 km/s are placed from their redshift but flagged:
 typical peculiar velocities are about 300 km/s (Strauss & Willick 1995,
 Phys. Rep. 261, 271), so the distance is uncertain by 30 % or more. A measured
-distance is not flagged.
+distance is not flagged. The cz compared is the catalogue's own cz column (in
+km/s: *cz*, *czhel*, *czcmb*, *vhel*, *vhelio*, *vcmb*, *vrad*, *radial
+velocity*) when it has one, otherwise c·z rounded to 10⁻⁶ km/s, so a source
+whose file says cz = 1000.0 is not counted as below 1000 because z = cz/c
+rounds a hair low. The same rule applies to the server-side and headset views.
 
 Selecting a source says where its distance came from, for example
 *Distance 12.3 Mpc, from z (comoving, Planck18)* or *Distance 3.6 Mpc, from
-column DIST*, followed by *cz < 1000 km/s: uncertain* when that applies.
+column DIST*, followed by *cz < 1000 km/s: uncertain* when that applies. The
+panel and the details follow a change of model or distance mode, and the
+source stays selected.
 
 ### Cosmology models
 

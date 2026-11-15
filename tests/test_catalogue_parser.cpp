@@ -333,6 +333,58 @@ void TestCatalogueParser::entryDist_lowCz_isFlaggedUncertain()
     QVERIFY(entryDistance(measured, s).uncertain());
 }
 
+void TestCatalogueParser::entryDist_czBoundary_comparesTheCzTheFileShows()
+{
+    // Issue #298: a file's cz = 1000.0 becomes z = cz/c, and c·z comes back a
+    // hair under 1000. The flag compares the file's cz when there is a cz
+    // column, else c·z rounded to kCzPrecisionKms: 1000.0 is not below 1000.
+    using namespace Catalogue3DParser::detail;
+    double zAt1000 = 1000.0 / kSpeedOfLightKms;
+    while (kSpeedOfLightKms * zAt1000 >= kUncertainCzKms)
+        zAt1000 = std::nextafter(zAt1000, 0.0);
+    QVERIFY(kSpeedOfLightKms * zAt1000 < kUncertainCzKms);   // the raw product would flag it
+    QCOMPARE(recessionVelocityKms(zAt1000), 1000.0);
+
+    // No cz column: the rounded c·z.
+    auto zOnly = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z") });
+    const auto boundary = makeEntry(zOnly, { { QStringLiteral("z"), QVariant(zAt1000) } });
+    const auto below = makeEntry(zOnly, { { QStringLiteral("z"), QVariant(999.99 / kSpeedOfLightKms) } });
+    for (const auto mode : { CatalogueDistanceMode::Comoving, CatalogueDistanceMode::RedshiftSpace }) {
+        zOnly.distanceMode = mode;
+        QVERIFY(entryDistance(boundary, zOnly).placed());
+        QVERIFY(!entryDistance(boundary, zOnly).uncertain());
+        QVERIFY(entryDistance(below, zOnly).uncertain());
+    }
+
+    // A cz column: the file's value, whatever c·z says; a row without one
+    // falls back to the rounded c·z.
+    auto withCz = makeSchema({ QStringLiteral("RA"), QStringLiteral("Dec"), QStringLiteral("z"),
+                               QStringLiteral("cz") });
+    QCOMPARE(detectedVelocityField(withCz), QStringLiteral("cz"));
+    const auto fileSays1000 = makeEntry(withCz, { { QStringLiteral("z"), QVariant(990.0 / kSpeedOfLightKms) },
+                                                  { QStringLiteral("cz"), QVariant(1000.0) } });
+    const auto fileSays999 = makeEntry(withCz, { { QStringLiteral("z"), QVariant(1001.0 / kSpeedOfLightKms) },
+                                                 { QStringLiteral("cz"), QVariant(999.0) } });
+    const auto blankCz = makeEntry(withCz, { { QStringLiteral("z"), QVariant(zAt1000) },
+                                             { QStringLiteral("cz"), QVariant(QString()) } });
+    QVERIFY(!entryDistance(fileSays1000, withCz).uncertain());
+    QCOMPARE(entryDistance(fileSays1000, withCz).czKms, 1000.0);
+    QVERIFY(entryDistance(fileSays999, withCz).uncertain());
+    QVERIFY(!entryDistance(blankCz, withCz).uncertain());
+    QCOMPARE(entryDistance(blankCz, withCz).czKms, 1000.0);
+
+    // The status line counts by the same rule.
+    const std::vector<Catalogue3DEntry> rows{ fileSays1000, fileSays999, blankCz };
+    QCOMPARE(CataloguePlacement::count(rows, {}, withCz).uncertain, qsizetype(1));
+
+    // A bare VELOCITY (a peculiar velocity?) or V (a magnitude?) is not a cz.
+    QVERIFY(detectedVelocityField(makeSchema({ QStringLiteral("z"), QStringLiteral("VELOCITY"),
+                                               QStringLiteral("V") }))
+                    .isEmpty());
+    QCOMPARE(detectedVelocityField(makeSchema({ QStringLiteral("z"), QStringLiteral("V_helio") })),
+             QStringLiteral("V_helio"));
+}
+
 // ── issue #265: unplaced rows, the status line, the pick readout ──────────────
 
 namespace {
