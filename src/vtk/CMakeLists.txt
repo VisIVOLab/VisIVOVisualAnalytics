@@ -24,6 +24,9 @@ add_library(visivo_shared_vtk STATIC
         ${PROJECT_SOURCE_DIR}/src/vtk/ImageLayer.h
         ${PROJECT_SOURCE_DIR}/src/vtk/ImageLod.cpp
         ${PROJECT_SOURCE_DIR}/src/vtk/ImageLod.h
+        ${PROJECT_SOURCE_DIR}/src/vtk/CubeLodGeometry.h
+        ${PROJECT_SOURCE_DIR}/src/vtk/CubeLodPlan.cpp
+        ${PROJECT_SOURCE_DIR}/src/vtk/CubeLodPlan.h
         ${PROJECT_SOURCE_DIR}/src/vtk/ImageLayerLoadTask.cpp
         ${PROJECT_SOURCE_DIR}/src/vtk/ImageLayerLoadTask.h
         ${PROJECT_SOURCE_DIR}/src/vtk/ImageLayerSet.cpp

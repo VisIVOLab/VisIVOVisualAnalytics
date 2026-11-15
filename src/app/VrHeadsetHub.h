@@ -32,6 +32,7 @@
 #include "MissingRoute.h"
 #include "ProductRegistry.h"
 #include "VrLink.h"
+#include "../vtk/CubeLodGeometry.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -890,10 +891,11 @@ inline QVariant cropCommandBox(const Clip &clip, const std::array<int, 3> &full)
 /// extent, (p - o) / ((n - 1) s), but draws it on the cells' extent, one
 /// sample longer and half a sample earlier: d = o - s/2 + (p - o) n / (n - 1)
 /// (measured on VTK 9.3.1 and 9.6.2; the render session inverts it the same
-/// way, render_session/_ooc.py _vtk_crop_planes).
+/// way, render_session/_ooc.py _vtk_crop_planes). The level of detail's blocks
+/// use the same inverse, so it lives in one place.
 inline double gpuCropPlane(double drawn, double origin, double spacing, int n)
 {
-    return n > 1 ? origin + (drawn - origin + spacing / 2.0) * (n - 1) / n : origin;
+    return CubeLodGeometry::cropPlaneFor(drawn, origin, spacing, n);
 }
 
 // ── A catalogue classified in the headset (issue #279) ─────────────────────
