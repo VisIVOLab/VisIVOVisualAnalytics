@@ -13,7 +13,7 @@
 // Prints one line per switch and a summary (median and max); exit code 0
 // when the page ran. The token is random, made here, and never printed.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, openSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, openSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,11 +41,12 @@ const token = randomBytes(24).toString('base64url');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const procs = [];
-const done = (code) => { for (const p of procs) { try { p.kill('SIGKILL'); } catch { /* gone */ } } process.exit(code); };
+const EXPORTS = mkdtempSync(join(tmpdir(), 'vr-switch-exports-'));   // never the user's workspace (#312)
+const done = (code) => { for (const p of procs) { try { p.kill('SIGKILL'); } catch { /* gone */ } } rmSync(EXPORTS, { recursive: true, force: true }); process.exit(code); };
 setTimeout(() => { console.log('FAIL timed out'); done(2); }, 15 * 60000).unref();
 
 const backend = spawn(PY, ['-m', 'uvicorn', 'app.main:app', '--host', 'localhost', '--port', String(PORT), '--log-level', 'warning'],
-  { cwd: join(REPO, 'backend'), env: { ...process.env, VISIVO_TOKEN: token, VISIVO_EXPORTS_DIR: mkdtempSync(join(tmpdir(), 'vr-switch-exports-')) }, stdio: ['ignore', openSync(join(OUT, 'backend.log'), 'w'), 'inherit'] });
+  { cwd: join(REPO, 'backend'), env: { ...process.env, VISIVO_TOKEN: token, VISIVO_EXPORTS_DIR: EXPORTS }, stdio: ['ignore', openSync(join(OUT, 'backend.log'), 'w'), 'inherit'] });
 procs.push(backend);
 for (let i = 0; ; i++) {
   try { if ((await fetch(`${BASE}/v1/ping`)).ok) break; } catch { /* not yet */ }

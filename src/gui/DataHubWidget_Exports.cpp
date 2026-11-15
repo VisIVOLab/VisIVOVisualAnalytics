@@ -155,6 +155,7 @@ QFrame *DataHubWidget::buildWorkspaceExportsPanel()
     auto *itemContainer = new QWidget(scroll);
     itemContainer->setStyleSheet(u"background: transparent;"_s);
     m_exportsItemsLayout = new QVBoxLayout(itemContainer);
+    m_exportsSignature.clear();   // new, empty rows: the next listing fills them
     m_exportsItemsLayout->setContentsMargins(0, 0, 0, 0);
     m_exportsItemsLayout->setSpacing(6);
 
@@ -198,18 +199,22 @@ void DataHubWidget::refreshWorkspaceExports()
     auto *watcher = new QFutureWatcher<BackendWorkspaceExportsList>(this);
     QPointer<DataHubWidget> self(this);
     QObject::connect(watcher, &QFutureWatcher<BackendWorkspaceExportsList>::finished, this,
-                     [self, watcher]() {
+                     [self, watcher, url, tok]() {
                          const auto listing = watcher->result();
                          watcher->deleteLater();
                          if (!self) return;
                          self->m_exportsRefreshing = false;
-                         if (self->m_exportsRefreshAgain) {
+                         // The answer of a backend the hub has since left is
+                         // not shown: the new one is asked instead.
+                         const bool stale = url != self->backendUrl || tok != self->backendToken;
+                         if (self->m_exportsRefreshAgain || stale) {
                              // Asked again while this one was on its way: the
                              // newer answer is the one to show.
                              self->m_exportsRefreshAgain = false;
                              QTimer::singleShot(0, self.data(),
                                                 &DataHubWidget::refreshWorkspaceExports);
                          }
+                         if (stale) return;
 
                          // Unchanged listing: the rows already show it (#312).
                          const QByteArray signature = visivo::workspaceExportsSignature(listing);

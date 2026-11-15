@@ -149,7 +149,7 @@ let backendLog = join(OUT, 'backend.log');
 // The products the page saves (spectra, moments, masks, classified tables) go
 // to this run's own workspace, never the user's ~/.visivo/exports (#312). Kept
 // across the backend restarts of one run, emptied when the next run starts.
-const EXPORTS = join(OUT, 'exports');
+const EXPORTS = join(OUT, 'vr_lifecycle_exports');   // a name of its own: an --out may hold anything
 rmSync(EXPORTS, { recursive: true, force: true });
 mkdirSync(EXPORTS, { recursive: true });
 async function startBackend(token) {
