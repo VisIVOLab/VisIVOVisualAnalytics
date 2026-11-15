@@ -26,7 +26,9 @@ The rules are those of ``Catalogue3DParser::detail::entryDistance`` and
 
 A source placed from a redshift with 0 < cz < 1000 km/s is flagged: peculiar
 velocities of about 300 km/s (Strauss & Willick 1995) make its distance 30 %
-uncertain or worse.
+uncertain or worse. The cz compared is the row's cz column (km/s) when the
+catalogue has one, else c z rounded to CZ_PRECISION_KMS, so that a z computed
+from a file's cz = 1000.0 is not counted below 1000 (issue #298).
 """
 from __future__ import annotations
 
@@ -40,6 +42,10 @@ _C_KMS = 2.99792458e5
 _OMEGA_M = 0.3111
 
 _REDSHIFT_ALIASES = ("Z", "REDSHIFT", "REDSHIFTZ", "ZSPEC", "ZMEAN", "ZPHOT", "ZPHOTOZ")
+# A recession-velocity (cz) column, km/s: the uncertain flag only (the
+# desktop's detectedVelocityField). A bare VELOCITY or V is left out on purpose.
+_VELOCITY_ALIASES = ("CZ", "CZKMS", "CZHEL", "CZHELIO", "CZCMB", "VHEL", "VHELIO",
+                     "VCMB", "VRAD", "RADIALVELOCITY")
 _DISTANCE_ALIASES = ("COMOVINGDISTANCE", "COMOVINGDIST", "DC", "DCMPC", "DISTANCE", "DIST",
                      "DMPC", "DISTMPC", "DL", "DLMPC", "LUMINOSITYDISTANCE", "DA", "DAMPC",
                      "ANGULARDIAMETERDISTANCE")
@@ -118,6 +124,26 @@ CUSTOM_COSMOLOGY = "Custom"
 #: peculiar velocities are about 300 km/s (Strauss & Willick 1995, Phys. Rep.
 #: 261, 271), 30 % of it or more.
 UNCERTAIN_CZ_KMS = 1000.0
+#: The precision c z is compared at when the catalogue has no cz column: far
+#: finer than any measured cz, coarser than floating-point noise (issue #298).
+CZ_PRECISION_KMS = 1.0e-6
+
+
+def recession_velocity_kms(z: np.ndarray) -> np.ndarray:
+    """c z in km/s rounded to CZ_PRECISION_KMS, half up, as the desktop's
+    ``recessionVelocityKms`` rounds it (np.round would round half to even)."""
+    return np.floor(_C_KMS * np.asarray(z, dtype=float) / CZ_PRECISION_KMS + 0.5) \
+        * CZ_PRECISION_KMS
+
+
+def cz_kms(frame: pd.DataFrame) -> np.ndarray:
+    """The cz of each row in km/s: its cz column where it has a finite one,
+    else c z rounded (``recession_velocity_kms``); NaN with neither."""
+    z = _numeric(frame, _first(frame, _REDSHIFT_ALIASES))
+    with np.errstate(invalid="ignore"):
+        from_z = recession_velocity_kms(z)
+    v = _numeric(frame, _first(frame, _VELOCITY_ALIASES))
+    return np.where(np.isfinite(v), v, from_z)
 
 #: Where a source's distance came from (``Placement.origin``).
 FROM_NOTHING, FROM_REDSHIFT_SPACE, FROM_COLUMN, FROM_REDSHIFT, FROM_SKY_SPHERE = 0, 1, 2, 3, 4
@@ -227,7 +253,7 @@ def placement(frame: pd.DataFrame, distance_mode: str = "comoving",
     reason[none & ~np.isfinite(z)] = 3
     from_z = (origin == FROM_REDSHIFT_SPACE) | (origin == FROM_REDSHIFT)
     with np.errstate(invalid="ignore"):
-        uncertain = from_z & (_C_KMS * z < UNCERTAIN_CZ_KMS)
+        uncertain = from_z & (cz_kms(frame) < UNCERTAIN_CZ_KMS)
     return Placement(d, origin, reason, uncertain)
 
 

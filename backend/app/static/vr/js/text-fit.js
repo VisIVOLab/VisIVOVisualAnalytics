@@ -58,3 +58,73 @@ export function fitText(measure, text, maxWidth) {
   if (lo > 0) return s.slice(0, lo).trimEnd() + ELLIPSIS;
   return measure(ELLIPSIS) <= maxWidth ? ELLIPSIS : '';
 }
+
+// ── Shrinking a little before cutting (issue #276) ──────────────────────────
+// Every text drawn on the VR page's canvases goes through these: it wraps
+// inside its box, or shrinks a little (to 85 % of its size at most), and only
+// then is cut with an ellipsis. `measureIn(font, text)` is the width of
+// `text` in CSS font `font` (measureWith(ctx) for a 2-D context).
+
+/** The sizes a text may shrink to, as fractions of its own. */
+export const SHRINK = [1, 0.92, 0.85];
+
+/** CSS font `font` with its pixel size times `f` ("bold 28px X" → "bold 25.8px X"). */
+export function scaleFont(font, f) {
+  if (f === 1) return font;
+  return String(font).replace(/(\d+(?:\.\d+)?)px/, (_, n) => `${Math.round(Number(n) * f * 10) / 10}px`);
+}
+
+/** measureIn for a 2-D context: sets its font, measures. */
+export function measureWith(c) {
+  return (font, text) => { c.font = font; return c.measureText(text).width; };
+}
+
+/**
+ * One line of `text` in at most `maxWidth`: {text, font, cut}. As it is when
+ * it fits, else at the first smaller size of `steps` that fits, else cut with
+ * an ellipsis at the smallest.
+ */
+export function fitLine(measureIn, font, text, maxWidth, steps = SHRINK) {
+  const s = String(text ?? '');
+  for (const f of steps) {
+    const ft = scaleFont(font, f);
+    if (measureIn(ft, s) <= maxWidth) return { text: s, font: ft, cut: false };
+  }
+  const ft = scaleFont(font, steps[steps.length - 1]);
+  const t = fitText((x) => measureIn(ft, x), s, maxWidth);
+  return { text: t, font: ft, cut: t !== s };
+}
+
+/**
+ * Paragraphs (a string, or an array of them; '\n' also breaks) wrapped to
+ * `maxWidth` in at most `maxLines` lines: {lines, font, cut}, at the first
+ * size of `steps` where everything fits, else at the smallest with the last
+ * line cut with an ellipsis.
+ */
+export function wrapFit(measureIn, font, paras, maxWidth, maxLines = Infinity, steps = SHRINK) {
+  const list = (Array.isArray(paras) ? paras : [paras]).flatMap((p) => String(p ?? '').split('\n'));
+  const wrapAt = (ft) => list.flatMap((p) => wrapText((x) => measureIn(ft, x), p, maxWidth));
+  for (const f of steps) {
+    const ft = scaleFont(font, f);
+    const lines = wrapAt(ft);
+    if (lines.length <= maxLines) return { lines, font: ft, cut: false };
+  }
+  const ft = scaleFont(font, steps[steps.length - 1]);
+  const all = wrapAt(ft);
+  if (!(maxLines > 0)) return { lines: [], font: ft, cut: all.some(Boolean) };
+  const lines = all.slice(0, maxLines);
+  lines[lines.length - 1] = fitText((x) => measureIn(ft, x), `${lines[lines.length - 1]}${ELLIPSIS}`, maxWidth);
+  return { lines, font: ft, cut: true };
+}
+
+/**
+ * Draws one line of `text` at (x, y) in at most `maxWidth` (the context's
+ * textAlign and textBaseline apply): shrunk a little or cut, as fitLine.
+ * Returns what was drawn.
+ */
+export function drawFit(c, text, x, y, maxWidth, font, steps = SHRINK) {
+  const r = fitLine(measureWith(c), font, text, maxWidth, steps);
+  c.font = r.font;
+  c.fillText(r.text, x, y);
+  return r;
+}

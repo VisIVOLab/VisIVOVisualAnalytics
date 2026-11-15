@@ -14,6 +14,7 @@
 
 import * as M from './mat4.js';
 import { drawIcon } from './tool-icons.js';
+import { drawFit, wrapFit, measureWith } from './text-fit.js';
 
 export const PALETTE_PX = [1024, 380];
 /** About 1.1 m from the eyes (0.8 m beyond a hand held 0.3-0.4 m out):
@@ -39,8 +40,8 @@ export const TOOLS = [
     desc: 'Statistics of the voxels between two corners you place.' },
   { id: 'slab', group: 'range', short: 'Velocity', name: 'Velocity range', mode: 'clip', sub: 'slab', kinds: ['cube'],
     desc: 'The trigger centres the channel range on the emission you point at.' },
-  { id: 'crop', group: 'range', short: 'Crop', name: 'Spatial crop', mode: 'clip', sub: 'box', kinds: ['cube'],
-    desc: 'Hold the trigger near a face of the crop to drag it.' },
+  { id: 'crop', group: 'range', short: 'Crop', name: 'Spatial crop', mode: 'clip', sub: 'box', kinds: ['cube', 'points', 'flow'],
+    desc: 'Drag a dot (a face), the inside (move), elsewhere (a new crop).' },
   { id: 'moment', group: 'measure', short: 'Moment', name: 'Moment', measure: 'moment', kinds: ['cube'],
     desc: 'The intensity map (M0) of the selection, or of the whole field.' },
   { id: 'pv', group: 'measure', short: 'PV slice', name: 'PV slice', measure: 'pv', kinds: ['cube'],
@@ -173,12 +174,6 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 
-function fit(c, text, maxW) {
-  if (c.measureText(text).width <= maxW) return text;
-  let t = text;
-  while (t.length > 1 && c.measureText(`${t}…`).width > maxW) t = t.slice(0, -1);
-  return `${t}…`;
-}
 
 /** Draws the palette for `ctx` {kind, active}; ui {hover}. */
 export function drawPalette(c, layout, ctx, ui = {}) {
@@ -192,16 +187,16 @@ export function drawPalette(c, layout, ctx, ui = {}) {
   c.fill();
   c.textBaseline = 'middle';
   c.fillStyle = C.fg;
-  c.font = `bold 30px ${FONT}`;
-  c.fillText('Tools', 20, TITLE_H / 2 + 2);
-  c.font = `22px ${FONT}`;
+  const close = layout.find((w) => w.id === 'palette-close');
+  const titleEnd = close ? close.rect[0] - 16 : W - 20;
+  const t = drawFit(c, 'Tools', 20, TITLE_H / 2 + 2, 160, `bold 30px ${FONT}`);
   c.fillStyle = C.muted;
-  c.fillText('A or × closes', 120, TITLE_H / 2 + 2);
+  const tx = 20 + c.measureText(t.text).width + 24;
+  drawFit(c, 'A or × closes', tx, TITLE_H / 2 + 2, titleEnd - tx, `22px ${FONT}`);
   for (const [, label, x0, x1] of groupSpans(layout)) {
-    c.font = `24px ${FONT}`;
     c.fillStyle = C.muted;
     c.textAlign = 'center';
-    c.fillText(label, (x0 + x1) / 2, Y_GROUP + 14);
+    drawFit(c, label, (x0 + x1) / 2, Y_GROUP + 14, x1 - x0 - 8, `24px ${FONT}`);
     c.textAlign = 'left';
     c.fillStyle = 'rgba(159, 208, 255, 0.35)';
     c.fillRect(x0 + 4, Y_GROUP + 30, x1 - x0 - 8, 2);
@@ -214,9 +209,8 @@ export function drawPalette(c, layout, ctx, ui = {}) {
       roundRect(c, x, y, ww, hh, 10);
       c.fill();
       c.fillStyle = C.fg;
-      c.font = `34px ${FONT}`;
       c.textAlign = 'center';
-      c.fillText('×', x + ww / 2, y + hh / 2 + 1);
+      drawFit(c, '×', x + ww / 2, y + hh / 2 + 1, ww - 8, `34px ${FONT}`);
       c.textAlign = 'left';
       continue;
     }
@@ -226,16 +220,16 @@ export function drawPalette(c, layout, ctx, ui = {}) {
     if (hover || w.on) { c.strokeStyle = w.on ? '#ffffff' : C.edge; c.lineWidth = w.on ? 4 : 2; c.stroke(); }
     drawIcon(c, w.tool, x + 14, y + 10, CELL - 28, off ? C.off : '#ffffff');
     c.fillStyle = off ? C.off : C.fg;
-    c.font = `22px ${FONT}`;
     c.textAlign = 'center';
-    c.fillText(fit(c, w.label, ww - 8), x + ww / 2, y + CELL - 2);
+    drawFit(c, w.label, x + ww / 2, y + CELL - 2, ww - 10, `22px ${FONT}`);
     c.textAlign = 'left';
   }
+  // The tooltip: the name, then what it does on up to two lines (#276).
   const tip = tooltip(ui.hover, ctx);
   c.fillStyle = C.fg;
-  c.font = `bold 30px ${FONT}`;
-  c.fillText(fit(c, tip.title, W - 40), 20, TOOLTIP_Y + 20);
+  drawFit(c, tip.title, 20, TOOLTIP_Y + 20, W - 40, `bold 30px ${FONT}`);
   c.fillStyle = tip.greyed ? C.why : C.muted;
-  c.font = `26px ${FONT}`;
-  c.fillText(fit(c, tip.text, W - 40), 20, TOOLTIP_Y + 62);
+  const body = wrapFit(measureWith(c), `26px ${FONT}`, tip.text, W - 40, 2);
+  c.font = body.font;
+  body.lines.forEach((l, i) => c.fillText(l, 20, TOOLTIP_Y + 58 + i * 32));
 }

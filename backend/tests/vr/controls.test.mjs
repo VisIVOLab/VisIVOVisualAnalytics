@@ -70,8 +70,9 @@ test('left-handed: the same map on the other hands, with their buttons\' names',
   assert.deepEqual(left.secondary.map((c) => c.action), right.secondary.map((c) => c.action));
   assert.deepEqual(C.labelLines(right, 'primary').filter(([n]) => n.length === 1), [['A', 'tools'], ['B', 'undo']]);
   assert.deepEqual(C.labelLines(left, 'primary').filter(([n]) => n.length === 1), [['X', 'tools'], ['Y', 'undo']]);
-  assert.deepEqual(C.labelLines(left, 'secondary').slice(0, 2), [['Hold A', 'menu'], ['B', 'reset view']]);
-  assert.deepEqual(C.labelLines(right, 'secondary').slice(0, 2), [['Hold X', 'menu'], ['Y', 'reset view']]);
+  // #276: X opens the menu and closes it (no longer held).
+  assert.deepEqual(C.labelLines(left, 'secondary').slice(0, 2), [['A', 'menu: open, close'], ['B', 'reset view']]);
+  assert.deepEqual(C.labelLines(right, 'secondary').slice(0, 2), [['X', 'menu: open, close'], ['Y', 'reset view']]);
 });
 
 test('tracked hands: pinch acts, fist grabs, the secondary palm up opens the menu; nothing else', () => {
@@ -110,7 +111,7 @@ test('modes and tools step around; the mode line names both', () => {
   const h = C.helpLines({ mode: 'clip', sub: 'slab' });
   assert.equal(h[0], 'RANGE · Velocity range');
   assert.match(h[1], /Primary hand \(right\).*Stick ↕: range position/);
-  assert.match(h[2], /Secondary hand \(left\).*Hold X: menu/);
+  assert.match(h[2], /Secondary hand \(left\).*X: menu: open, close/);
 });
 
 test('a flick steps once per push, and re-arms only near the centre', () => {

@@ -51,7 +51,7 @@ export async function runMenuChecks({ c, check, waitFor, results = {} }) {
   check('menu: drawn in the desktop view with its five tabs (Display, Range, Select, Measure, More)',
     tabs.join(',') === 'tab:display,tab:range,tab:select,tab:measure,tab:more', tabs.join(','));
   const footer = await ids();
-  check('menu: the footer (Undo, Reset view, Keep open) and the title bar', ['undo', 'reset-view', 'menu-pin', 'menu-drag'].every((id) => footer.includes(id)));
+  check('menu: the footer (Undo, Reset view) and the title bar with its ×', ['undo', 'reset-view', 'menu-close', 'menu-drag'].every((id) => footer.includes(id)));
 
   // A tab sets the mode; Select's tools and Range's trigger tools.
   await press('tab:select');

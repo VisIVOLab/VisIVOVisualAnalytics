@@ -9,13 +9,19 @@
 // (backend/tests/vr/notice.test.mjs); drawCard needs only a 2-D context.
 
 import * as M from './mat4.js';
+import { fitLine, wrapFit, measureWith } from './text-fit.js';
 
 export const CARD_PX = [1120, 640];
 /** Metres: 2000 px/m, so the 26-36 px text is 1.3-1.8 cm high (about 1-1.4° at 0.8 m). */
 export const CARD_SIZE = [0.56, 0.32];
 
 const PAD = 36, TITLE_Y = 56, BODY_Y = 120, LINE_H = 38, BTN_H = 76, BTN_GAP = 20;
+/** The footer hint (#276): a row of its own above the buttons, never beside them. */
+const FOOTER_H = 34;
 export const BODY_FONT = '28px -apple-system, system-ui, sans-serif';
+const TITLE_FONT = 'bold 36px -apple-system, system-ui, sans-serif';
+const BUTTON_FONT = '30px -apple-system, system-ui, sans-serif';
+const FOOTER_FONT = '22px -apple-system, system-ui, sans-serif';
 export const MAX_ACTIONS = 4;
 
 /** Lower value = shown first. A guide never hides an error. */
@@ -62,9 +68,9 @@ export function wrapText(text, maxW, measure) {
   return out;
 }
 
-/** How many body lines fit above the buttons. */
-export function bodyCapacity() {
-  return Math.floor((CARD_PX[1] - PAD - BTN_H - 16 - BODY_Y) / LINE_H) + 1;
+/** How many body lines fit above the buttons (and the footer's row, when there is one). */
+export function bodyCapacity(footer = false) {
+  return Math.floor((CARD_PX[1] - PAD - BTN_H - 16 - (footer ? FOOTER_H : 0) - BODY_Y) / LINE_H) + 1;
 }
 
 /**
@@ -258,16 +264,15 @@ export function drawCard(c, notice, layout, ui = {}) {
   c.textBaseline = 'middle';
   c.textAlign = 'left';
   c.fillStyle = '#ffffff';
-  c.font = 'bold 36px -apple-system, system-ui, sans-serif';
-  c.fillText(notice.title || '', PAD, TITLE_Y - 8);
-  c.font = BODY_FONT;
-  const measure = (t) => c.measureText(t).width;
-  const lines = [];
-  for (const l of notice.lines || []) lines.push(...wrapText(l, W - 2 * PAD, measure));
-  const cap = bodyCapacity();
-  const shown = lines.length > cap ? [...lines.slice(0, cap - 1), `${lines[cap - 1]}…`] : lines;
+  // Every text fits its place (#276): shrunk a little, wrapped, cut last.
+  const measureIn = measureWith(c);
+  const title = fitLine(measureIn, TITLE_FONT, notice.title || '', W - 2 * PAD);
+  c.font = title.font;
+  c.fillText(title.text, PAD, TITLE_Y - 8);
+  const body = wrapFit(measureIn, BODY_FONT, notice.lines || [], W - 2 * PAD, bodyCapacity(!!notice.footer));
+  c.font = body.font;
   c.fillStyle = '#e6e9ef';
-  shown.forEach((l, i) => c.fillText(l, PAD, BODY_Y + i * LINE_H));
+  body.lines.forEach((l, i) => c.fillText(l, PAD, BODY_Y + i * LINE_H));
   for (const w of layout) {
     const [x, y, ww, hh] = w.rect;
     const hov = ui.hover === w.id;
@@ -278,15 +283,18 @@ export function drawCard(c, notice, layout, ui = {}) {
     c.lineWidth = 2;
     c.stroke();
     c.fillStyle = '#ffffff';
-    c.font = '30px -apple-system, system-ui, sans-serif';
     c.textAlign = 'center';
-    c.fillText(w.label, x + ww / 2, y + hh / 2 + 1);
+    const label = fitLine(measureIn, BUTTON_FONT, w.label, ww - 20);
+    c.font = label.font;
+    c.fillText(label.text, x + ww / 2, y + hh / 2 + 1);
     c.textAlign = 'left';
   }
   if (notice.footer) {
+    // Its own row between the body and the buttons (#276: it was drawn over them).
     c.fillStyle = '#9aa3b2';
-    c.font = '22px -apple-system, system-ui, sans-serif';
-    c.fillText(notice.footer, PAD, H - PAD - BTN_H / 2);
+    const f = fitLine(measureIn, FOOTER_FONT, notice.footer, W - 2 * PAD);
+    c.font = f.font;
+    c.fillText(f.text, PAD, H - PAD - BTN_H - 8 - FOOTER_H / 2);
   }
 }
 

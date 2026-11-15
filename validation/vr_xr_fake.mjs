@@ -12,6 +12,87 @@
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * The spatial crop seen and grabbed (#277): with the Spatial crop tool the
+ * right ray on a face's dot lights it, a drag moves that face; a drag on the
+ * inside moves the crop; a drag elsewhere draws a new crop; the box is drawn.
+ * That a clip change reaches the desktop is runHeadsetHubChecks' (#268).
+ */
+async function runCropChecks({ c, check, label }) {
+  const get = () => c.evaluate('window.__vrCrop.get()');
+  const world = (t) => c.evaluate(`window.__vrCrop.world(${JSON.stringify(t)})`);
+  const aim = async (p) => { await c.evaluate(`window.__xrfake.aimRight = ${JSON.stringify(p)}`); await sleep(150); };
+  const trigger = async (on) => { await c.evaluate(`window.__xrfake.buttons.right[0].pressed = ${on}`); await sleep(150); };
+  const aim0 = await c.evaluate('window.__xrfake.aimRight.slice()');
+  await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'tab:range' }); window.__vrMenu.act({ type: 'press', id: 'sub:clip:box' })`);
+  await sleep(200);
+  const s0 = await get();
+  check(`xrfake ${label}: crop: the Spatial crop tool draws the crop box`, s0.on && s0.lines >= 24, JSON.stringify(s0));
+  // A pull without a drag on the box (nothing cropped: a new crop) changes
+  // nothing and leaves no undo step (#277 review).
+  const undoSize = () => c.evaluate('window.__vrMenu.ui.undo.size');
+  const undo0 = await undoSize();
+  await aim(await world([0.3, 0.3, 0.5]));
+  await trigger(true);
+  await trigger(false);
+  const sc = await get();
+  check(`xrfake ${label}: crop: a pull without a drag changes nothing and leaves no undo step`,
+    (await undoSize()) === undo0 && sc.clip.min.every((v) => v === 0) && sc.clip.max.every((v) => v === 1), JSON.stringify({ undo0, now: await undoSize(), clip: sc.clip }));
+  // B (undo) during a drag undoes that drag, not the step before it (#277 review).
+  await aim(await world([1, 0.5, 0.5]));
+  await trigger(true);
+  for (const f of [0.9, 0.8]) await aim(await world([f, 0.5, 0.5]));
+  const during = await get();
+  await c.evaluate('window.__xrfake.buttons.right[5].pressed = true');
+  await sleep(150);
+  await c.evaluate('window.__xrfake.buttons.right[5].pressed = false');
+  await sleep(150);
+  await trigger(false);
+  const su = await get();
+  check(`xrfake ${label}: crop: B during a drag undoes that drag, nothing before it`,
+    during.drag === 'face' && during.clip.max[0] < 0.9 && (await undoSize()) === undo0 && su.clip.max[0] === 1 && su.drag === null,
+    JSON.stringify({ during: during.clip.max[0], undo0, now: await undoSize(), after: su.clip.max[0], drag: su.drag }));
+  // Resize: the dot on the x-max face, then the ray swung towards the box's centre along x.
+  await aim(await world([1, 0.5, 0.5]));
+  const hov = await get();
+  check(`xrfake ${label}: crop: the dot under the ray lights up before the trigger`, hov.hover === 'x-max', JSON.stringify(hov.hover));
+  await trigger(true);
+  for (const f of [0.9, 0.8, 0.7]) await aim(await world([f, 0.5, 0.5]));
+  await trigger(false);
+  const s1 = await get();
+  check(`xrfake ${label}: crop: dragging the x-max dot moves that face only`,
+    Math.abs(s1.clip.max[0] - 0.7) < 0.03 && s1.clip.min[0] === 0 && s1.clip.max[1] === 1 && s1.clip.min[1] === 0, JSON.stringify(s1.clip));
+  check(`xrfake ${label}: crop: that drag is one undo step`, (await undoSize()) === undo0 + 1, `${undo0} → ${await undoSize()}`);
+  // Move: the inside (off the dots), dragged towards -x.
+  const inside = [0.25, 0.3, 0.55];
+  await aim(await world(inside));
+  const hin = await get();
+  await trigger(true);
+  for (const dx of [0.05, 0.1, 0.15]) await aim(await world([inside[0] + dx, inside[1], inside[2]]));
+  await trigger(false);
+  const s2 = await get();
+  const w1 = s1.clip.max[0] - s1.clip.min[0], w2 = s2.clip.max[0] - s2.clip.min[0];
+  check(`xrfake ${label}: crop: dragging the inside moves the whole crop, its size kept`,
+    hin.hover === 'inside' && Math.abs(w1 - w2) < 1e-6 && s2.clip.min[0] > 0.03, JSON.stringify({ hover: hin.hover, before: s1.clip, after: s2.clip }));
+  // New: from a point in the part cropped away, dragged diagonally in the
+  // view (the eyes look along -z: right is +x, up +y in the world).
+  const p0 = await world([0.03, 0.15, 0.5]);
+  await aim(p0);
+  const hnew = await get();
+  await trigger(true);
+  for (const f of [0.03, 0.06, 0.09]) await aim([p0[0] + f, p0[1] + f, p0[2]]);
+  const mid = await get();
+  await trigger(false);
+  const s3 = await get();
+  const changed = [0, 1, 2].filter((i) => Math.abs(s3.clip.min[i] - s2.clip.min[i]) > 1e-3 || Math.abs(s3.clip.max[i] - s2.clip.max[i]) > 1e-3);
+  check(`xrfake ${label}: crop: a drag elsewhere draws a new crop from two corners (two axes change, the third kept)`,
+    hnew.hover === 'new' && changed.length === 2 && s3.clip.max[0] - s3.clip.min[0] > 0.05,
+    JSON.stringify({ hover: hnew.hover, changed, clip: s3.clip, during: mid.drag }));
+  // Put back: the whole box, Explore, the ray as before.
+  await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'crop-reset' }); window.__vrMenu.act({ type: 'press', id: 'slab-all' }); window.__vrMenu.act({ type: 'press', id: 'tab:display' })`);
+  await aim(aim0);
+}
+
 export const XR_FAKE = `(() => {
   if (!/[?&]xrfake/.test(location.search)) return;
   const noLayers = /[?&]xrfake=nolayers/.test(location.search);
@@ -97,7 +178,13 @@ export const XR_FAKE = `(() => {
       // Applied at the next frame, as in a browser.
       pendingLayers = s.layers || (s.baseLayer ? [s.baseLayer] : pendingLayers);
     },
-    async requestReferenceSpace() { return { kind: 'ref' }; },
+    // A reference space that can be recentred (S.recentre(): its 'reset' event, #276).
+    async requestReferenceSpace() {
+      const ls = [];
+      const ref = { kind: 'ref', addEventListener(type, fn) { if (type === 'reset') ls.push(fn); } };
+      S.recentre = () => ls.forEach((fn) => fn({ type: 'reset' }));
+      return ref;
+    },
     requestAnimationFrame(cb) { return requestAnimationFrame((t) => { if (!this.ended) { if (pendingLayers) { activeLayers = pendingLayers; pendingLayers = null; } S.frames++; cb(t, frame); } }); },
     async end() { if (this.ended) return; this.ended = true; S.ended++; (listeners.end || []).forEach((f) => f({})); },
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
@@ -196,14 +283,44 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
       !st.overlaysAsLayers && !st.quads && rs.some((s) => s.base) && !rs.some((s) => s.layers), st.layersNote);
   }
   await runControllerModelChecks({ c, check, waitFor, label });
-  // The menu: the secondary (left) hand's lower button held.
-  await c.evaluate('window.__xrfake.buttons.left[4].pressed = true');
-  await sleep(400);
+  // The menu (#276): X (the secondary, left, hand's lower button) pressed
+  // and let go opens it just above and beyond that hand; it stays open; X
+  // again closes it; its × too.
+  const pressX = async () => {
+    await c.evaluate('window.__xrfake.buttons.left[4].pressed = true');
+    await sleep(200);
+    await c.evaluate('window.__xrfake.buttons.left[4].pressed = false');
+    await sleep(300);
+  };
+  await pressX();
   const withMenu = await c.evaluate('window.__vrXR()');
-  if (expectLayers) check(`xrfake ${label}: the menu opens as a quad`, (withMenu.quads.shown || []).includes('menu'), JSON.stringify(withMenu.quads.shown));
-  else check(`xrfake ${label}: the menu opens (in the scene)`, await c.evaluate('window.__vrMenu.ui.menu.open'));
-  await c.evaluate('window.__xrfake.buttons.left[4].pressed = false');
-  await sleep(300);
+  if (expectLayers) check(`xrfake ${label}: X opens the menu as a quad, and it stays open once X is let go`, (withMenu.quads.shown || []).includes('menu'), JSON.stringify(withMenu.quads.shown));
+  else check(`xrfake ${label}: X opens the menu (in the scene), and it stays open once X is let go`, await c.evaluate('window.__vrMenu.ui.menu.open'));
+  // The left grip is at (-0.2, 1.3, -0.35), the eyes at the fake's head.
+  const place = await c.evaluate(`(() => { const m = window.__vrMenu.ui.menuModel, h = window.__xrfake.head || [0, 1.6, 0];
+    return { p: [m[12], m[13], m[14]], head: h }; })()`);
+  const hand = [-0.2, 1.3, -0.35];
+  const dirOf = (v) => Math.atan2(v[0] - place.head[0], -(v[2] - place.head[2]));
+  const dist = Math.hypot(place.p[0] - place.head[0], place.p[2] - place.head[2]);
+  check(`xrfake ${label}: the menu opens above and beyond the left controller, 0.95 m from the eyes`,
+    Math.abs(dist - 0.95) < 0.01 && Math.abs(dirOf(place.p) - dirOf(hand)) < 0.01 && place.p[1] > hand[1] + 0.3,
+    JSON.stringify({ menu: place.p.map((v) => +v.toFixed(3)), dist: +dist.toFixed(3) }));
+  await pressX();
+  // A recentre (#276 review): the open menu, left behind by it, is placed again above the hand.
+  await pressX();
+  const placed = await c.evaluate('Array.from(window.__vrMenu.ui.menuModel.slice(12, 15))');
+  await c.evaluate('window.__vrMenu.ui.menuModel[12] += 3; window.__vrMenu.ui.menuModel[14] += 3');
+  await c.evaluate('window.__xrfake.recentre()');
+  await sleep(200);
+  const again = await c.evaluate('({ open: window.__vrMenu.ui.menu.open, p: Array.from(window.__vrMenu.ui.menuModel.slice(12, 15)) })');
+  check(`xrfake ${label}: a recentre places the open menu again above the hand`,
+    again.open && again.p.every((v, i) => Math.abs(v - placed[i]) < 1e-3), JSON.stringify({ placed, again }));
+  await pressX();
+  check(`xrfake ${label}: X again closes the menu`, !(await c.evaluate('window.__vrMenu.ui.menu.open')));
+  await pressX();
+  await c.evaluate(`window.__vrMenu.act({ type: 'press', id: 'menu-close' })`);
+  await sleep(200);
+  check(`xrfake ${label}: the menu's × closes it`, !(await c.evaluate('window.__vrMenu.ui.menu.open')));
   // The tool palette (#257): A (the right hand's lower button) opens it in front of that hand; A again closes it.
   await c.evaluate('window.__xrfake.buttons.right[4].pressed = true');
   await sleep(200);
@@ -217,6 +334,7 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   await c.evaluate('window.__xrfake.buttons.right[4].pressed = false');
   await sleep(300);
   check(`xrfake ${label}: A again closes it`, !(await c.evaluate('window.__vrPalette.state.open')));
+  await runCropChecks({ c, check, label });
   // The readout: the primary ray on the cube's emission.
   const hover = await waitFor(c, '!!window.__vrSelection.sel.hover', 4000);
   const ro = await c.evaluate('window.__vrXR()');

@@ -14,6 +14,7 @@
 import * as M from './mat4.js';
 import { boxToFullPixel, worldOfPixel, formatRA, formatDec, sampleNorm } from './selection.js';
 import { normToData } from './volume.js';
+import { drawFit } from './text-fit.js';
 
 function fmt(v, digits = 4) {
   if (v === null || v === undefined || !Number.isFinite(v)) return 'n/a';
@@ -131,8 +132,9 @@ export function drawReadout(c, lines, pinned = false) {
   c.textBaseline = 'middle';
   lines.slice(0, 4).forEach((l, i) => {
     c.fillStyle = rgb(i === 0 ? READOUT_COLORS.title : READOUT_COLORS.text);
-    c.font = i === 0 ? `bold ${F.title}px -apple-system, system-ui, sans-serif` : `600 ${F.body}px ui-monospace, Menlo, monospace`;
-    c.fillText(l, 16, F.top + i * F.pitch, W - 32);
+    // Shrunk (to 75 % at most: the font is large) rather than squeezed (#276).
+    drawFit(c, l, 16, F.top + i * F.pitch, W - 32,
+      i === 0 ? `bold ${F.title}px -apple-system, system-ui, sans-serif` : `600 ${F.body}px ui-monospace, Menlo, monospace`, [1, 0.92, 0.85, 0.8, 0.75]);
   });
 }
 

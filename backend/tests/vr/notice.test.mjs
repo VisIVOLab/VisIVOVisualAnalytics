@@ -42,9 +42,11 @@ test('text wraps at word boundaries, cuts only words longer than a line', () => 
     assert.ok(lines.length <= N.bodyCapacity(), `${k}: ${lines.length} lines > ${N.bodyCapacity()}`);
   }
   for (let i = 0; i < G.GUIDE_PAGES.length; i++) {
+    // The guide has a footer hint: a row of its own above the buttons (#276).
     const lines = G.guideNotice(i).lines.flatMap((l) => N.wrapText(l, N.CARD_PX[0] - 72, est));
-    assert.ok(lines.length <= N.bodyCapacity(), `guide page ${i}: ${lines.length} lines`);
+    assert.ok(lines.length <= N.bodyCapacity(true), `guide page ${i}: ${lines.length} lines`);
   }
+  assert.equal(N.bodyCapacity(true), N.bodyCapacity() - 1, 'the footer\'s row takes one body line');
 });
 
 test('the card stands in front of the viewer, facing them, and moves when they turn away', () => {
@@ -128,7 +130,7 @@ test('the guide: pages, buttons, first time only', () => {
   assert.ok(!G.shouldShowGuide({ guideSeen: true }));
   assert.ok(!G.shouldShowGuide({ guideSeen: false }, { bench: true }));
   assert.match(G.guideText(), /grip/);
-  assert.match(G.guideText({ leftHanded: true }), /Hold A \(right hand\)/);
+  assert.match(G.guideText({ leftHanded: true }), /Press A \(right hand\)/);
 });
 
 test('the guide names the buttons of the control map, for either hand', async () => {
@@ -140,7 +142,8 @@ test('the guide names the buttons of the control map, for either hand', async ()
     const r = C.roles(leftHanded), P = C.buttonNames(r.primary), S = C.buttonNames(r.secondary);
     // The menu button, the tool palette, undo and reset view: as the map binds them.
     assert.equal(C.actionFor(map, 'secondary', 'lower'), 'menu');
-    assert.match(text, new RegExp(`Hold ${S.lower} \\(${r.secondary} hand\\)`));
+    assert.match(text, new RegExp(`Press ${S.lower} \\(${r.secondary} hand\\)`));
+    assert.match(text, new RegExp(`${S.lower} again, or its ×, closes it`));
     assert.match(text, new RegExp(`${P.lower}: tools`));
     assert.match(text, new RegExp(`${P.upper}: undo`));
     assert.match(text, new RegExp(`${S.upper}: reset the view`));

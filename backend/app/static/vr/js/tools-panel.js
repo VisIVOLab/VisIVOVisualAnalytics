@@ -7,6 +7,7 @@
 
 import * as M from './mat4.js';
 import { PANEL_SIZE } from './vr-panel.js';
+import { fitText } from './text-fit.js';
 
 export const TOOLS_PX = [1024, 480];
 /** Metres, at the control panel's 2133 px/m. */
@@ -80,12 +81,8 @@ function roundRect(c, x, y, w, h, r) {
   c.closePath();
 }
 
-function fit(c, text, maxW) {
-  if (c.measureText(text).width <= maxW) return text;
-  let t = text;
-  while (t.length > 1 && c.measureText(`${t}…`).width > maxW) t = t.slice(0, -1);
-  return `${t}…`;
-}
+/** `text` cut to maxW in the context's font (text-fit.js, #276). */
+const fit = (c, text, maxW) => fitText((t) => c.measureText(t).width, text, maxW);
 
 /** view: {seedMode, moment (order shown or null), pvArmed, canApply, canShow,
  *  pvWidth, status: [lines], error}; ui: {hover}. */
