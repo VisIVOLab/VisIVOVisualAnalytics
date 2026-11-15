@@ -12,7 +12,8 @@ tab or the LAN page all use the desktop's session, #172):
 * commands, desktop to page: queued per page and handed to its long poll; kept
   until the page acknowledges them by polling with a later ``after``; a
   ``show`` replaces an older ``show`` not yet acknowledged (only the latest
-  cube matters);
+  cube matters), and so does a ``watch`` (the spectator view, #281,
+  ``headset_spectator.py``);
 * activity, page to desktop: a ring of events the desktop long-polls; a
   ``look`` or a ``clip`` replaces the previous one of the same cube (only the
   latest state matters), the rest (products, cube switches) are kept in order.
@@ -66,6 +67,9 @@ MAX_WAITERS_PER_SESSION = 8
 MAX_WAIT_SECONDS = 25.0
 #: Event kinds of which only the latest per cube is kept.
 COALESCED_KINDS = ("look", "clip")
+#: Command types of which only the latest unacknowledged one is kept: the
+#: cube to show, and whether the desktop watches the page (#281).
+COALESCED_COMMANDS = ("show", "watch")
 
 #: This backend process (seqs restart at 1 when it restarts).
 INSTANCE = uuid.uuid4().hex[:16]
@@ -149,6 +153,7 @@ class Page:
     cube: dict[str, Any] | None = None
     staged_cube: dict[str, Any] | None = None
     launch: str = ""                  # the app launch (#255) its hello named, '' none
+    feed: Any = None                  # its spectator view (headset_spectator.Feed, #281), None unwatched
     commands: list[Command] = field(default_factory=list)
     poll_gen: int = 0                 # the latest command poll's number
     polling: int = 0                  # command polls waiting now
@@ -197,6 +202,7 @@ class HeadsetHub:
         self.lost_up_to = 0
         self.command_waiters = 0
         self.activity_waiters = 0
+        self.frame_waiters = 0        # the desktop's spectator frame reads waiting (#281)
         self._changed = _Changed()
 
     def notify(self) -> None:
@@ -274,8 +280,8 @@ class HeadsetHub:
             target = next((p for p in present if p.client == client), None)
         if target is None:
             return None
-        if type_ == "show":
-            target.commands = [c for c in target.commands if c.type != "show"]
+        if type_ in COALESCED_COMMANDS:
+            target.commands = [c for c in target.commands if c.type != type_]
         cmd = Command(seq=next_seq(), type=type_, body=body)
         target.commands.append(cmd)
         del target.commands[:-MAX_COMMANDS_PER_PAGE]
@@ -380,6 +386,9 @@ def shutdown() -> None:
     _closing = True
     for hub in list(_HUBS.values()):
         hub.notify()
+        for page in list(hub.pages.values()):
+            if page.feed is not None:      # a spectator frame read (#281)
+                page.feed.changed.notify()
 
 
 def reopen() -> None:

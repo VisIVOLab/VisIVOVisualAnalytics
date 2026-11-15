@@ -113,6 +113,99 @@ seconds (0 to 25) for one:
 Pass `next` as the next `after` once the commands are applied: a command is
 handed again until acknowledged. 404 for a client that did not say hello.
 
+The queue also carries `watch` commands, which the desktop never posts here:
+the [spectator view](#spectator-view-the-headsets-view-on-the-desktop)
+queues them (`{"seq": 42, "type": "watch", "on": true, "fps": 15,
+"width": 512}`, or `{"on": false}`). Like a `show`, a `watch` replaces an
+older `watch` the page has not acknowledged. A page older than the
+spectator view ignores it.
+
+## Spectator view: the headset's view on the desktop
+
+The desktop watches one headset page of its session
+([#281](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/281)).
+The page sends a small JPEG of what its user sees a few times a second: the
+left eye, cropped to the middle 80 % of the view around the line of sight,
+with the menu, the wrist cards and the windows drawn in. The backend keeps
+only the latest frame, so a slow reader skips frames and nothing queues.
+Watching is off by default. Code: `backend/app/headset_spectator.py`,
+`backend/app/routers/headset_spectator.py`.
+
+**Lease.** Watching lasts 10 s after the start and after every frame read.
+A desktop that goes away without saying so stops being served once the lease
+runs out: the watch ends and its frame is dropped. A later frame read answers
+409 rather than reviving it, and a snapshot answers 409 rather than saving a
+stale frame. The page's next frame is answered `watched: false`, and the page
+stops capturing. A page that says hello again while watched (after a
+reload, say) gets its `watch` command again.
+
+**Bounds.** A frame is at most 512 KiB and 1920 pixels a side (413 beyond).
+At most 30 frames a second are stored: a sooner frame is answered
+`stored: false` and dropped. A frame read waits at most 5 s. At most 8 reads
+wait at once per session (429 beyond). The feed lives on its hub page, so a
+page that is forgotten or removed takes its frame along.
+
+### `POST /v1/vr/headset/spectator`
+The desktop starts, retunes or stops watching.
+```json
+{ "client": "q3-7f2a", "on": true, "fps": 15, "width": 512 }
+```
+`client` is optional: without it, the newest connected page. `fps` 1 to 30
+(default 15), `width` 160 to 960 px (default 512). The page gets a `watch`
+command through its command poll. 404 when that page is not connected.
+Response:
+```json
+{ "client": "q3-7f2a", "on": true, "fps": 15, "width": 512, "lease_s": 10.0, "instance": "9c1e…" }
+```
+
+### `GET /v1/vr/headset/spectator/frame?client=&after=&wait=`
+For the desktop: the latest frame above `after`, waiting up to `wait`
+seconds (0 to 5) for one. The answer is `image/jpeg`, with these headers:
+
+| Header | Meaning |
+|---|---|
+| `X-Visivo-Frame-Seq` | the frame's number, the next `after` (per page; it restarts with the backend) |
+| `X-Visivo-Frame-Width`, `X-Visivo-Frame-Height` | its size in pixels, read from the JPEG |
+| `X-Visivo-Frame-Eye` | `left` (a headset in VR) or `mono` (the 2-D page) |
+| `X-Visivo-Frame-Age-Ms` | how long the backend has held it |
+| `X-Visivo-Frame-Cost-Ms` | what capturing it cost the headset's page thread in its worst frame, as the page measured it (absent when it did not say) |
+| `X-Visivo-Instance` | the backend process: a new one numbers its frames from 1 again |
+
+The answer is 204 when no newer frame came in time, 409 when the page is not
+watched (start watching first), and 404 for an unknown page. Every read
+renews the lease. A cursor above the last frame (one from before a backend
+restart) counts as 0.
+
+### `POST /v1/vr/headset/spectator/frame?client=&eye=&cost_ms=`
+For the page: one frame, the body `image/jpeg`. `eye` is `left`, `right` or
+`mono`; `cost_ms` is optional, 0 to 1000. Response:
+```json
+{ "watched": true, "seq": 12, "stored": true, "fps": 15, "width": 512 }
+```
+With `watched: false`, nobody watches and the frame is not kept: the page
+stops. With `stored: false`, the frame came sooner than 30 a second allow.
+The other answers are 404 for a client that did not say hello, 413 when the
+frame is too large, 415 when the body is not a JPEG with exactly one frame
+header before its first scan (or when Pillow reads another size from it than
+that header gives), and 422 when the frame carries the token.
+
+### `POST /v1/vr/headset/spectator/snapshot`
+The latest frame, saved as a PNG in the Workspace Exports.
+```json
+{ "client": "q3-7f2a", "basename": "" }
+```
+Without a `basename` the file is `headset_<label>_<YYYYmmdd-HHMMSS>.png`. A
+name that is taken gets a suffix. Response:
+```json
+{ "valid": true, "workspace_filename": "headset_quest_3_20261114-201940.png",
+  "output_path": "/…/exports/headset_quest_3_20261114-201940.png",
+  "width": 512, "height": 572, "seq": 12 }
+```
+The answer is 404 for an unknown page and 409 when there is no frame (the
+page is not watched, or no frame came yet). It is 422 when the frame would
+decode to another size than the one it was accepted with. That is checked on
+the header, before anything is decoded.
+
 ## Activity (page to desktop)
 
 ### `POST /v1/vr/activity`

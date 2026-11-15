@@ -5,7 +5,8 @@
 //   then tells the hub what it shows (in VR or not, the cube on show, the
 //   cube staged for the end of the session) whenever that changes.
 // - Commands: one long poll at a time for the page's commands, acknowledged
-//   with `after` once applied; a `show` loads that cube into this page.
+//   with `after` once applied; a `show` loads that cube into this page, a
+//   `watch` turns the spectator view on or off (spectator.js, #281).
 // - Activity: look and clip (debounced, the latest of each per cube), each
 //   product made here (saved first in the Workspace Exports, so the desktop
 //   can open it), and the cube when it switches.
@@ -150,11 +151,15 @@ const finite = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 /**
  * A `look` event's payload, under the names the desktop reads
  * (VrHeadsetHub.h parseLook): colormap; threshold and colour_max as data
- * values of the cube (not the page's 0..1); opacity; gamma; mode (0 emission,
- * 1 maximum intensity); z_stretch (the velocity axis stretch); dataset_id.
+ * values of the cube (not the page's 0..1); opacity; gamma (the Power
+ * stretch's exponent); stretch (the colour scale's stretch name, issue #258:
+ * linear, log, sqrt, square, power, the desktop's LutScale modes); mode (0
+ * emission, 1 maximum intensity); z_stretch (the velocity axis stretch);
+ * dataset_id.
  */
-export function lookPayload({ colormap, threshold, colourMax, opacity, gamma, mode, zStretch, datasetId }) {
+export function lookPayload({ colormap, threshold, colourMax, opacity, gamma, stretch, mode, zStretch, datasetId }) {
   const p = { colormap: String(colormap || '') };
+  if (stretch) p.stretch = String(stretch);
   const put = (k, v) => { const f = finite(v); if (f !== null) p[k] = f; };
   put('threshold', threshold);
   put('colour_max', colourMax);
@@ -281,6 +286,7 @@ export function commandUsable(cmd) {
  *   auth() -> {token, session} | null (no session yet: nothing is sent),
  *   transport ('adb' | 'pair' | 'lan'), label, client,
  *   onCommand(cmd) -> void|Promise (started, not finished: the load runs on),
+ *   onWatch?(cmd) (a `watch` command {on, fps, width}: the spectator view, #281),
  *   log(level, event, message) (the diagnostics), onClient(id) (a new client id to keep),
  *   launch() -> the headset app's launch id (#255) or '' (named in the hello),
  *   fetch?, setTimeout?, clearTimeout? (tests) }.
@@ -641,6 +647,11 @@ export function createHub(ctx) {
       next = Math.max(next, cmd.seq);
       if (cmd.seq <= st.after || applied.has(cmd.seq)) continue;
       applied.add(cmd.seq);
+      if (cmd.type === 'watch' && typeof cmd.on === 'boolean' && ctx.onWatch) {
+        // The desktop watches this page, or stops (the spectator view, #281): at once.
+        try { ctx.onWatch(cmd); } catch (e) { noteError('watch', e && e.message ? e.message : String(e)); }
+        continue;
+      }
       if (!commandUsable(cmd)) { log('warning', 'hub-command-ignored', `#${cmd.seq} ${String(cmd.type)}`); continue; }
       st.commands++;
       try { await ctx.onCommand(cmd); } catch (e) { noteError('command', e && e.message ? e.message : String(e)); }

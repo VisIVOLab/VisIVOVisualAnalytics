@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 
 from .. import cube_reduce
-from ..noise_threshold import default_threshold, stride_for
+from ..noise_threshold import channel_noise_sigma, default_threshold, flat_noise_sigma, stride_for
 from ..product_cache import file_identity
 from ._common import ScientificFitsDataset, logger
 
@@ -156,13 +156,42 @@ def _factors(shape_zyx, factor_xy: int, factor_z: int, max_dim: int,
 def _full_threshold(data: np.ndarray) -> float | None:
     """The cube's default 3-D threshold, the rule the desktop's view starts from
     (issue #93): on a stride sample, for the voxels of the WHOLE cube."""
+    return _full_noise(data)[0]
+
+
+def _full_noise(data: np.ndarray) -> tuple[float | None, float | None]:
+    """(:func:`_full_threshold`, the desktop's Noise σ) from one stride sample
+    of the whole cube: σ per sampled channel as the desktop's Estimate Noise
+    measures it over the whole field (``noise_threshold.channel_noise_sigma``),
+    their median (issue #258)."""
     n_voxels = int(np.prod(data.shape))
     st = stride_for(n_voxels)
     sample = np.asarray(data[::st, ::st, ::st], dtype=np.float32)
     if not np.isfinite(sample).any():
-        return None
+        return None, None
     t = default_threshold(sample, n_voxels)
-    return float(t) if t is not None and math.isfinite(t) else None
+    return (float(t) if t is not None and math.isfinite(t) else None,
+            channel_noise_sigma(sample))
+
+
+#: The rest frequency of the HI line (Hz), to name it in the info line.
+HI_REST_HZ = 1420405751.768
+
+
+def _beam(dataset: ScientificFitsDataset, depth: int) -> dict[str, Any] | None:
+    """The restoring beam (BMAJ/BMIN/BPA, issue #258) in arcsec and degrees,
+    or None. A cube with one beam per channel (a BEAMS table) and no header
+    beam gives its central channel's, flagged ``per_channel``."""
+    b = dataset.beam
+    per_channel = False
+    if not (b.major and b.minor) and dataset.has_per_channel_beam:
+        b = dataset.beam_for_channel(max(0, int(depth) // 2))
+        per_channel = True
+    if not (b.major and b.minor) or not (math.isfinite(b.major) and math.isfinite(b.minor)):
+        return None
+    pa = float(b.pa) if b.pa is not None and math.isfinite(float(b.pa)) else None
+    return {"major_arcsec": float(b.major) * 3600.0, "minor_arcsec": float(b.minor) * 3600.0,
+            "pa_deg": pa, "per_channel": per_channel}
 
 
 def binning_threshold(data: np.ndarray, reduced: np.ndarray, mode: str) -> float | None:
@@ -243,12 +272,26 @@ class _Pyramid:
     def threshold(self, n_voxels: int) -> float | None:
         """The cube's default threshold from level-0 bricks, as the out-of-core
         render session takes it (:func:`app.render_session._ooc.level0_sample`)."""
+        return self.noise(n_voxels)[0]
+
+    def noise(self, n_voxels: int) -> tuple[float | None, float | None]:
+        """(:meth:`threshold`, σ) from one level-0 sample. The sample has no
+        channel structure, so σ is 1.4826 x MAD about ONE median over all its
+        channels together (``noise_threshold.flat_noise_sigma``), not the
+        desktop's median of per-channel σ, each about its own channel's
+        median. The two agree only for a flat baseline (every channel's
+        median the same, the noise the same along the band). Where channel
+        medians vary (continuum left in, a baseline ripple, a frequency-
+        dependent noise) the spread of the medians adds to this σ, and it is
+        larger than the desktop's; ``noise_sigma_method`` says which rule was
+        used."""
         from ..render_session._ooc import level0_sample  # noqa: PLC0415
         sample = level0_sample(self.pyr)
         if not sample.size:
-            return None
+            return None, None
         t = default_threshold(sample, n_voxels)
-        return float(t) if t is not None and math.isfinite(t) else None
+        return (float(t) if t is not None and math.isfinite(t) else None,
+                flat_noise_sigma(sample))
 
     def reduce(self) -> np.ndarray:
         h5 = self.pyr._h5  # noqa: SLF001
@@ -288,12 +331,22 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
             pyramid = _Pyramid(pyramid_path, path, shape, factor_xy, factor_z, max_dim)
             factors = pyramid.factors
             _check_limit(shape, factors, encoding, limit)
-            threshold = pyramid.threshold(int(np.prod(shape)))
+            threshold, sigma = pyramid.noise(int(np.prod(shape)))
+            sigma_method = ("1.4826 x MAD about the median of a sample of level-0 bricks "
+                            "of the brick pyramid, all channels together: the desktop's "
+                            "per-channel rule only for a flat baseline, larger where "
+                            "channel medians vary")
             plan = pyramid.describe()
         else:
             factors = _factors(shape, factor_xy, factor_z, max_dim, encoding, limit)
-            threshold = _full_threshold(data)
+            threshold, sigma = _full_noise(data)
+            st = stride_for(int(np.prod(shape)))
+            sigma_method = ("the desktop's Estimate Noise over the whole field: median over "
+                            "channels of 1.4826 x MAD about each channel's median"
+                            + ("" if st == 1 else f", on every {st}th voxel along each axis"))
             plan = None
+        beam = _beam(dataset, shape[0])
+        rest_hz = dataset._rest_freq_hz()  # noqa: SLF001
     finally:
         if pyramid is not None:
             pyramid.close()
@@ -322,6 +375,14 @@ def worker_cube_reduced_info(path: str, factor_xy: int, factor_z: int,
         "factors": [fx, fy, fz],
         "reduced_shape": [rw, rh, rd],
         "default_threshold": threshold,
+        # The noise σ of the full cube (BUNIT), for the threshold in multiples
+        # of σ (issue #258), and how it was measured; null when unmeasurable.
+        "noise_sigma": sigma,
+        "noise_sigma_method": sigma_method if sigma is not None else "",
+        # The cube's spectral information for the info line (issue #258).
+        "rest_frequency_hz": float(rest_hz) if rest_hz and math.isfinite(float(rest_hz)) else None,
+        "rest_line": ("HI" if rest_hz and abs(float(rest_hz) - HI_REST_HZ) < 1e6 else ""),
+        "beam": beam,
         "bunit": dataset.bunit or "",
         "pixel_scale_arcsec": pixel_arcsec if pixel_arcsec and math.isfinite(pixel_arcsec) else None,
         "axes": axes,

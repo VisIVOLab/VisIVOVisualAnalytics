@@ -226,7 +226,23 @@ header and byte order for a VBT volume; not a content checksum),
 [the desktop's view](../user-guide/cube-viewer.md#the-default-threshold), from a
 stride sample; from the pyramid, from a sample of full-resolution bricks, as
 the out-of-core render session takes it; `null` when the cube has no finite
-value), `bunit`,
+value), `noise_sigma` (the full cube's noise σ in `bunit`, the headset's
+threshold in multiples of σ, issue #258: the desktop's *Estimate Noise* rule
+over its default region, the whole field and every channel, that is the median
+over channels of 1.4826 × the median absolute deviation about each channel's
+median, exact zeros left out of a channel where they are more than half of it;
+measured on the same stride sample as the threshold, so equal to
+`/v1/cube/noise` over the whole cube when the cube is small enough to be read
+whole; from the pyramid, 1.4826 × MAD of the level-0 brick sample about one
+median over all channels together, which equals the desktop's per-channel rule
+only for a flat baseline and is larger where channel medians vary, continuum
+left in or a baseline ripple; `null` when it cannot be measured, for example on
+constant data),
+`noise_sigma_method` (how, in words; empty with no σ), `rest_frequency_hz`
+(RESTFRQ or RESTFREQ, `null` without one), `rest_line` (`"HI"` within 1 MHz of
+the HI line, else empty), `beam` (`null`, or `major_arcsec`, `minor_arcsec`,
+`pa_deg` from BMAJ/BMIN/BPA; with a BEAMS table and no header beam, the central
+channel's, `per_channel: true`), `bunit`,
 `pixel_scale_arcsec`, `render_out_of_core` (`true` when a render session draws
 this cube out of core from its brick pyramid, above
 `VISIVO_RENDER_OUT_OF_CORE_BYTES` as 32-bit floats; its stereo frames then

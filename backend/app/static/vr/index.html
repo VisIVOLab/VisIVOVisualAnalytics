@@ -69,6 +69,7 @@
   <section id="layers"></section>
 
   <section id="view">
+    <div id="cube-info" class="muted" title="Rest frequency, channel width and restoring beam from the cube's header (issue #258)"></div>
     <label>Threshold <span id="thr-value" class="value"></span>
       <input id="thr" type="range" min="0" max="1000" value="100"></label>
     <div class="row">
@@ -77,12 +78,19 @@
         <option value="cube" selected>full cube (as on the desktop)</option></select></label>
       <button id="thr-reset">Reset</button>
     </div>
+    <div class="row" title="The threshold at a multiple of the full cube's noise σ (the desktop's Estimate Noise over the whole field)">
+      <span class="muted">Threshold at</span>
+      <button class="sig" data-k="1">1σ</button><button class="sig" data-k="3">3σ</button>
+      <button class="sig" data-k="5">5σ</button><button class="sig" data-k="10">10σ</button>
+    </div>
     <label>Colour max <span id="cmax-value" class="value"></span>
       <input id="cmax" type="range" min="1" max="1000" value="1000"></label>
     <div class="row">
       <label>Colour map <select id="cmap"></select></label>
-      <label>Stretch <select id="gamma">
-        <option value="1">linear</option><option value="0.5" selected>sqrt</option><option value="0.3">strong</option></select></label>
+      <label>Stretch <select id="stretch">
+        <option value="linear">linear</option><option value="log">log</option><option value="sqrt" selected>sqrt</option>
+        <option value="square">square</option><option value="power">power</option></select></label>
+      <label title="The Power stretch's exponent γ (t^γ)">γ <input id="gamma" type="number" min="0.1" max="10" step="0.1" value="2" style="width:4em"></label>
     </div>
     <label>Opacity <input id="opacity" type="range" min="1" max="200" value="40"></label>
     <div class="row">
