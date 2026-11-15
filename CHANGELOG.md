@@ -8,6 +8,17 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **3-D sky catalogues: the selected source follows a model change, and the
+  cz < 1000 km/s flag reads the cz the file shows (#298).** Changing the
+  cosmology model, the distance mode or the frame now keeps the source
+  selected and rewrites its panel ("Distance …, from z (comoving, WMAP9)");
+  before, the selection was dropped while the panel kept the old text. After
+  a filter or Load more the source stays selected when it is still loaded
+  (found by its row in the table), and is deselected visibly otherwise. The
+  uncertain count compares the catalogue's cz column (km/s) when it has one,
+  otherwise c·z rounded to 10⁻⁶ km/s: rows with cz = 1000.0 in the file were
+  counted as below 1000 because z = cz/c rounds a hair low. The desktop and
+  the backend apply the same rule.
 - **VR: a spatial crop you can see and grab (#277).** While the *Spatial
   crop* tool is on, the crop box is drawn (edges, a faint fill) with a dot on
   each of its six faces; the dot under the ray, or near the controller,

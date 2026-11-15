@@ -46,6 +46,7 @@ private slots:
     void entryDist_negativeRedshift_isUnplaced();
     void entryDist_negativeRedshift_withDistanceColumn_isPlaced();
     void entryDist_lowCz_isFlaggedUncertain();
+    void entryDist_czBoundary_comparesTheCzTheFileShows();
 
     // ── issue #265: unplaced rows, the status line, the pick readout ──────────
     void parse_unplacedRowsAreKeptApart();
@@ -54,6 +55,8 @@ private slots:
     void placement_statusLineCounts();
     void placement_pickLinesNameTheOrigin();
     void placement_unplacedRows();
+    void selection_followsTheSourceAcrossAFilter();
+    void selection_byNameWithoutRows();
     void placement_headsetSkyRefusesCustom();
 
     // ── distance-type (comoving / luminosity / angular-diameter) ──────────────

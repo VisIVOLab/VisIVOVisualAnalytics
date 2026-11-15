@@ -156,7 +156,11 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     this->shellActors.clear();
     this->mappedPositions.clear();
     this->hoveredIndex  = -1;
-    this->selectedIndex = -1;
+    // Same rows in the same order, only moved: the selected source stays
+    // selected (issue #298). It used to be dropped in silence, while its panel
+    // kept the old model's "Distance …, from …" until another row was picked.
+    // A click while a large scene is built (it pumps the event loop) still
+    // selects or deselects as usual: the marker hides until its point exists.
     if (!this->entries.empty()) {
         this->buildScene();
         this->buildLabels();
@@ -169,6 +173,7 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     // positions — refresh it so it doesn't show stale distances after the recompute.
     this->refreshCatalogueTable();
     this->refreshViewerChrome();
+    this->refreshSelectionAfterReplacement();
     // The headset's next show places the sources as they are placed here.
     this->pushSkyToVrDialog();
     this->renderWindow->Render();
