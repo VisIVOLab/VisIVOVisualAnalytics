@@ -922,6 +922,78 @@ def _cube_preview_from_pyramid(path: str, stride: int, pyramid_path: str) -> dic
     return _preview_answer(preview, threshold, info)
 
 
+def worker_cube_region_level_raw(path: str, level: int, x0: int, x1: int, y0: int, y1: int,
+                                 z0: int, z1: int, ghost: int, pyramid_path: str | None,
+                                 source: str = "auto") -> dict[str, Any]:
+    """A box of one level of detail of the cube with ``ghost`` samples on every
+    side, as raw little-endian float32 (z, y, x) bytes (issue #321; the rules
+    are in ``app.region_level``). The box is inclusive and in voxels of the
+    level; outside the level it is refused (ValueError).
+
+    Level 0 is read from the cube's file as :func:`worker_cube_subvolume_raw`
+    reads it. A higher level comes from ``pyramid_path`` (the cube's brick
+    pyramid, complete and current when it was looked for) unless ``source``
+    is ``strided``; with no pyramid, or one that has turned stale since, it is
+    a strided read of the cube, except with ``source`` ``pyramid``, which
+    refuses (``region_level.NoPyramid``)."""
+    from ..region_level import (NoPyramid, check_level, default_level_shapes,  # noqa: PLC0415
+                                level_region, strided_region, voxel_offset)
+    import time as _time
+    t0 = _time.perf_counter()
+    level, ghost = int(level), int(ghost)
+    box = (x0, x1, y0, y1, z0, z1)
+    block = None
+    used = "cube" if level == 0 else "strided"
+    if level > 0 and source != "strided":
+        if pyramid_path:
+            from ..brick_pyramid import BrickPyramid, StalePyramid  # noqa: PLC0415
+            try:
+                with BrickPyramid(pyramid_path, source=path) as pyr:
+                    shapes = [pyr.shape(k) for k in range(pyr.levels)]
+                    region = level_region(box, check_level(level, shapes))
+                    block = pyr.read_region(level, region, ghost=ghost, edge="repeat")
+                    used = "pyramid"
+            except (StalePyramid, OSError) as exc:
+                if source == "pyramid":
+                    raise NoPyramid(f"The cube's brick pyramid cannot be read: {exc}") from exc
+                logger.warning("[region-level] the brick pyramid of %s was not used: %s",
+                               path, exc)
+        elif source == "pyramid":
+            raise NoPyramid("The cube has no complete and current brick pyramid.")
+    if block is None:
+        dataset = ScientificFitsDataset(path)
+        hdul, raw = dataset.open_memmap()
+        try:
+            data = dataset.squeeze_to_3d(raw)
+            if data.ndim != 3:
+                raise ValueError("A level of detail requires a 3D cube.")
+            shapes = default_level_shapes(data.shape)
+            region = level_region(box, check_level(level, shapes))
+            block = strided_region(data, level, region, ghost)
+        finally:
+            hdul.close()
+    range_min, range_max = _finite_range(block)
+    raw_bytes = np.ascontiguousarray(block, dtype="<f4").tobytes()
+    print("[region-level-timing] level={} source={} box=({},{},{},{},{},{}) ghost={} "
+          "shape=({},{},{}) raw={:.1f}MB total_s={:.3f}".format(
+              level, used, *box, ghost, *block.shape, len(raw_bytes) / 1e6,
+              _time.perf_counter() - t0), flush=True)
+    return {
+        "width": int(block.shape[2]),
+        "height": int(block.shape[1]),
+        "depth": int(block.shape[0]),
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "level": level,
+        "source": used,
+        # The level index of sample 0 (x, y, z), ghost included: -ghost at the
+        # cube's low border, where the sample repeats the edge.
+        "level_origin": (int(x0) - ghost, int(y0) - ghost, int(z0) - ghost),
+        "voxel_offset": voxel_offset(level, used),
+        "raw_bytes": raw_bytes,
+    }
+
+
 def _preview_answer(preview: np.ndarray, threshold, info: dict[str, Any]) -> dict[str, Any]:
     range_min, range_max = _finite_range(preview)
     # zlib level 1 — same speed-vs-ratio rationale as worker_cube_subvolume.
