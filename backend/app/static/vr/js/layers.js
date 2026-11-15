@@ -73,6 +73,52 @@ function fmt(v) {
  *  view on every side (about 3° on a Quest 3 eye), 12 % more pixels. */
 export const REFINE_OVERSCAN = 0.06;
 
+/** How long a refined splat frame stays shown whole over a still view
+ *  before the rows may rise one step (#300): each step changes the look, so
+ *  the frame on show is dropped and asked for again. */
+export const STILL_GROW_MS = 5000;
+
+/**
+ * When the splat row governor may raise the rows and its ceiling (#297,
+ * #300), from the refiner's state each display frame: `step(now, splats,
+ * refineOn, motion, status, weight)` returns {grow, riseCeiling} (one
+ * object, reused: no allocation per frame). Moving,
+ * with points, or with no refined frame to come (refinement off, not
+ * connected): both. Still and refining splats, cuts always apply but:
+ * - the ceiling never rises: the count does not probe above where it last
+ *   missed while a still view is being refined;
+ * - no growth while a frame is on its way ('waiting') or fading in or out
+ *   (weight < 1): a row step changes the look (lookKey, the refiner's
+ *   version) and drops that frame;
+ * - with a frame shown whole that does not cover the view (a particle close
+ *   to the eye), growth only after STILL_GROW_MS of it: at most one step per
+ *   frame shown (the step drops it, and the time starts again), so the rows
+ *   recover from a cut without the refined frame flickering away four times a
+ *   second, nor staying at the cut until the user moves.
+ */
+export class RowGrowthGate {
+  constructor(growMs = STILL_GROW_MS) {
+    this.growMs = growMs;
+    this.fullSince = null;
+    this.out = { grow: true, riseCeiling: true };
+  }
+
+  step(now, splats, refineOn, motion, status, weight) {
+    const whole = status === 'refined' && weight >= 1;
+    if (!whole) this.fullSince = null;
+    else if (this.fullSince === null) this.fullSince = now;
+    const o = this.out;
+    if (!(splats && refineOn && motion === 'still') || (status !== 'waiting' && status !== 'refined')) {
+      o.grow = true;
+      o.riseCeiling = true;
+    } else {
+      o.grow = whole && now - this.fullSince >= this.growMs;
+      o.riseCeiling = false;
+    }
+    return o;
+  }
+}
+
 export function createLayers(ctx) {
   const { gl, R, state, $ } = ctx;
   let lut = gl.createTexture();
@@ -92,6 +138,9 @@ export function createLayers(ctx) {
     box: null, info: null, load: {}, error: '',
   };
   let cloud = null, lines = null;
+  // Whether the refined frame on show covers each eye, its warp prepared once
+  // per shown frame and eye (#300: no allocation per display frame).
+  const coverCache = RF.createCoverCache();
   let scene = 0, linesRequest = 0, overlayRequest = 0;
   let linesAbort = null;
   function invalidateRequests() {
@@ -256,6 +305,7 @@ export function createLayers(ctx) {
     p.govRows = info.count;
     p.govSplats = null;           // set on the first frame (the style's start)
     p.frameGov = new PT.FrameRowGovernor();
+    p.growGate = new RowGrowthGate();
     L.box = PT.dataToModel(info.bounds);
     L.load = { requestMs: tBody - t1, uploadMs: up, mb: buf.byteLength / 1e6, totalMs: performance.now() - t0 };
     state.extent = L.box.extent;
@@ -645,14 +695,9 @@ export function createLayers(ctx) {
     return { notes, values, status };
   }
   /** Whether the refined frame on show, warped to this eye, covers its whole
-   *  viewport (RF.coversViewport at the depths the warp uses). */
+   *  viewport (RF.coversViewport at the depths the warp uses: RF.coverDepths). */
   function refinedCovers(view, model, eye) {
-    const f = ctx.refiner.draw && ctx.refiner.draw.shown;
-    if (!f || !f.rec || !f.rec.eyes || !f.rec.eyes.length) return false;
-    const fe = f.rec.eyes[Math.min(eye, f.rec.eyes.length - 1)];
-    const centre = RF.centreDistance(fe.view, f.rec.model);
-    const d = f.hasDepth && f.header.depth ? [f.header.depth.z_near, f.header.depth.z_far, centre] : [centre];
-    return RF.coversViewport(fe, f.rec.model, view, model, d);
+    return coverCache.covers(ctx.refiner.draw && ctx.refiner.draw.shown, eye, view, model);
   }
 
   // ── Hooks for main.js ────────────────────────────────────────────────
@@ -744,9 +789,13 @@ export function createLayers(ctx) {
         // governor waits (those frames say nothing about the splats' cost).
         const covered = splats && ctx.refineOn() && !isCropped(state.clip) && ctx.refiner.showing
           && ctx.refiner.weight >= 1 && refinedCovers(view, model, eye);
+        let gate = null;
         if (eye === 0) {
           if (pt.wasCovered && !covered) pt.frameGov.interrupted(now);   // the time under it was not earned
           pt.wasCovered = covered;
+          // Every display frame, so the time a refined frame is shown whole counts.
+          gate = pt.growGate.step(now, splats, ctx.refineOn(), ctx.refiner.motion.state,
+            ctx.refiner.status, ctx.refiner.weight);
         }
         if (eye === 0 && L.s.govern && !covered && now - (pt.governedAt || 0) > 250) {
           // The rows drawn follow the frame time (four times a second): GPU
@@ -759,12 +808,13 @@ export function createLayers(ctx) {
             rateSettled: !!(ctx.rateSettled && ctx.rateSettled()) });
           let next = pt.govRows;
           if (kind === 'gpu') next = PT.governRows(pt.govRows, count, R.gpuMs, hz);
-          else if (kind === 'frames') next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now);
-          // Still and waiting for a refined frame: no growth (a new step would
-          // make the frame asked for stale before it arrives).
-          const waiting = splats && ctx.refineOn() && ctx.refiner.motion.state === 'still'
-            && (ctx.refiner.status === 'waiting' || ctx.refiner.status === 'refined');
-          pt.govRows = waiting ? Math.min(next, pt.govRows) : next;
+          else if (kind === 'frames') {
+            next = pt.frameGov.update(pt.govRows, count, PT.recentFrames(ctx.frames ? ctx.frames() : [], hz), hz, now,
+              gate);   // {riseCeiling}
+          }
+          // Still under refined frames: cuts at once, growth by RowGrowthGate
+          // (a step drops the frame on show, #300).
+          pt.govRows = gate.grow ? next : Math.min(next, pt.govRows);
           pt.drawRows = PT.quantizeRows(pt.govRows, count, pt.drawRows);
         }
         // Sized for the rows drawn now (the governor's), so fewer cover as much.

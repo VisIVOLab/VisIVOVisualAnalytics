@@ -113,8 +113,11 @@ export class FrameRowGovernor {
     this.holdUntil = Math.max(this.holdUntil, now + 750);
   }
 
-  /** The rows to draw from `current`; `frame`: recentFrames; `now`: ms. */
-  update(current, sampleRows, frame, targetHz, now) {
+  /** The rows to draw from `current`; `frame`: recentFrames; `now`: ms.
+   *  `riseCeiling` false (still under refined splat frames, #300): no clean
+   *  time is earned and the ceiling does not rise, so the count does not
+   *  probe above where it last missed. */
+  update(current, sampleRows, frame, targetHz, now, { riseCeiling = true } = {}) {
     const floor = Math.min(this.min, sampleRows);
     const clampRows = (v) => Math.round(Math.max(floor, Math.min(sampleRows, v)));
     if (now - this.lastUpdate > this.gapMs) this.cleanSince = null;   // not drawn meanwhile
@@ -141,8 +144,9 @@ export class FrameRowGovernor {
       return clampRows(current * f);
     }
     if (frame.missed > 0.02 || slow > 0.03 || median > 1.04 * period) { this.cleanSince = null; return clampRows(current); }
-    if (this.cleanSince === null) this.cleanSince = now;
-    if (Number.isFinite(this.ceiling) && now - this.cleanSince >= this.riseMs) {
+    if (!riseCeiling) this.cleanSince = null;
+    else if (this.cleanSince === null) this.cleanSince = now;
+    if (riseCeiling && Number.isFinite(this.ceiling) && now - this.cleanSince >= this.riseMs) {
       this.ceiling *= 1.5;
       this.cleanSince = now;
       this.lastRiseAt = now;
