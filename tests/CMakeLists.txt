@@ -206,6 +206,8 @@ add_executable(VisIVOTests
     test_task_quit_drain.cpp
     TestVelocityLodGeometry.h
     test_velocity_lod_geometry.cpp
+    TestSolidSplats.h
+    test_solid_splats.cpp
     TestSystemQuitRedirect.h
     test_system_quit_redirect.cpp
     TestSupportedFormats.h

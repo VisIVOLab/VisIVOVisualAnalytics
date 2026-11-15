@@ -121,8 +121,10 @@ class PointInfoRequest(BaseModel):
 @router.post("/v1/points/info", tags=["vr"])
 async def points_info(request: PointInfoRequest, _: None = _auth,
                       session: Session = Depends(get_session)) -> dict:
-    """The table's numeric columns, its default X/Y/Z and its row count; for
-    a sky catalogue, how it is placed and how many sources have no distance."""
+    """The table's numeric columns, its default X/Y/Z, its row count and
+    its format: ``vbt`` (a simulation's particles, which the page opens
+    ray-traced, issue #264) or ``catalogue``; for a sky catalogue, how it is
+    placed and how many sources have no distance."""
     entry = _require_dataset(session, request.dataset_id)
     spec = _point_spec(entry)
     try:
@@ -135,7 +137,9 @@ async def points_info(request: PointInfoRequest, _: None = _auth,
     declared = ((getattr(frame, "attrs", None) or {}).get("units") or {}) if frame is not None else {}
     units = {k: str(v) for k, v in dict(declared).items() if k in table.columns and v not in (None, "")}
     out = {"valid": True, "num_rows": int(table.num_rows), "fields": list(table.columns),
-           "axes": list(table.axes), "sky": table.sky is not None, "units": units}
+           "axes": list(table.axes), "sky": table.sky is not None, "units": units,
+           # point_table_spec: a VBT's header path, a catalogue's JSON spec.
+           "format": "catalogue" if spec.lstrip().startswith("{") else "vbt"}
     if table.sky is not None:
         # Its frame, distance mode and cosmology, and the sources placed, left
         # out for want of a distance, and placed from cz < 1000 km/s (#265).
