@@ -591,8 +591,12 @@ export function createHub(ctx) {
     const a = authNow();
     if (!st.running || !a) return null;
     // The caller may wait for it (the source list's Send, #279): resolves with
-    // {file} once posted, rejects with why it was not (a newer one with the
-    // same key, the hub stopped: an Error with `stale`).
+    // {file, posted: true} once posted; with {file, posted: false, why} when
+    // the file was written (or given) but the desktop was not told (an older
+    // backend without the activity route, the page unknown after a second
+    // hello, the page stood down meanwhile): the file is there, so the caller
+    // must not write it again. Rejects with why nothing was saved (a newer one
+    // with the same key, the hub stopped: an Error with `stale`; a save refused).
     let resolve, reject;
     const done = new Promise((res, rej) => { resolve = res; reject = rej; });
     done.catch(() => {});      // a caller that does not wait leaves no unhandled rejection
@@ -625,7 +629,6 @@ export function createHub(ctx) {
         if (r.status !== 429 || i >= SAVE_RETRY_MS.length) break;
         await new Promise((res) => later(res, SAVE_RETRY_MS[i]));     // the heavy slots are busy: later
       }
-      if (!current()) return null;
       if (r.status !== 200 || !r.body || !r.body.valid) {
         st.saveFailures++;
         const why = r.body && (r.body.error || r.body.detail) ? JSON.stringify(r.body.error || r.body.detail) : r.status;
@@ -636,8 +639,20 @@ export function createHub(ctx) {
     }
     const payload = productPayload(detail, file, recipe);
     // Posted here, inside this send (activity() would queue it behind itself).
-    const posted = await postActivity('product', where.cubePath || '', productSummary(detail, where.cubeName, file), payload);
-    return posted ? { file } : null;
+    let posted = null, why = '';
+    if (current()) {
+      try {
+        posted = await postActivity('product', where.cubePath || '', productSummary(detail, where.cubeName, file), payload);
+      } catch (e) {
+        why = e && e.message ? e.message : String(e);
+        noteError('product', why);
+      }
+    }
+    if (posted) return { file, posted: true };
+    // Not told, but a file is there: said with it, never as nothing saved (#279 review).
+    if (!file) return null;
+    if (!why) why = st.unsupported ? 'this backend has no headset hub' : 'the page stood down or moved to another session';
+    return { file, posted: false, why };
   }
 
   // ── Commands ────────────────────────────────────────────────────────────

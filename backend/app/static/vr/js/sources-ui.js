@@ -109,8 +109,9 @@ export function createSources(ctx) {
     const title = ov ? `${ov.name || ov.source}: ${(ov.sources || []).length} sources` : 'Sources you found';
     const flagged = c.flagged ? `${c.flagged} flagged (${S.cls.flagSet.map((f) => `${c.byFlag[f] || 0} ${f}`).join(', ')})` : 'none flagged yet';
     const found = S.user.length ? `, ${S.user.length} found by eye` : '';
+    const unchanged = S.sent.version === S.cls.version + S.user.length * 1e6;
     const sentNote = S.sent.file === 'pending' ? ', sending' : S.sent.file
-      ? (S.sent.version === S.cls.version + S.user.length * 1e6 ? ', sent' : ', changed since sent') : '';
+      ? (!unchanged ? ', changed since sent' : S.sent.posted === false ? ', saved, desktop not told' : ', sent') : '';
     return {
       title, info: `${flagged}${found}${sentNote}`,
       page: S.page, pages: SL.pageCount(S.sorted.length, per), total: S.sorted.length,
@@ -213,23 +214,34 @@ export function createSources(ctx) {
       catalogue: { name: ov ? (ov.cataloguePath || '').split('/').pop() || ov.name || '' : '', path: ov ? ov.cataloguePath || '' : '',
         dataset_id: ov ? ov.catalogueId || '' : '' } });
     const label = SL.classificationSummary(classification);
-    const done = ctx.report({ product: 'classification', dataset_id: id, request, classification, label });
-    if (!done) throw new Error('No desktop session hub for this page: nothing was sent.');
     const version = S.cls.version + S.user.length * 1e6, overlay = S.overlay, cubeAt = S.cubeId;
+    // Saved before but the desktop not told, nothing changed since: that file
+    // is told again, not written a second time (#279 review).
+    const file = S.sent.posted === false && S.sent.version === version && S.sent.file ? S.sent.file : '';
+    const done = ctx.report({ product: 'classification', dataset_id: id, request, classification, label, ...(file ? { file } : {}) });
+    if (!done) throw new Error('No desktop session hub for this page: nothing was sent.');
     const same = () => S.overlay === overlay && S.cubeId === cubeAt;     // the answer is for the work on show
+    const before = S.sent;
     S.sent = { version: -1, file: 'pending' };
-    S.status = ['Sending: writing the VOTable…', '#ffd27a'];
+    S.status = [file ? `Sending: telling the desktop about ${file}…` : 'Sending: writing the VOTable…', '#ffd27a'];
     changed();
     // Marked sent only once saved and posted; a failure says why.
     Promise.resolve(done).then((r) => {
       if (!same()) return;
-      S.sent = { version, file: (r && r.file) || 'sent' };
-      S.status = [`Sent to the desktop: ${(r && r.file) || 'the VOTable'}`, '#b9c2d0'];
+      if (r && r.posted === false) {
+        // Written to Exports, but the desktop does not know (#279 review).
+        S.sent = { version, file: r.file, posted: false };
+        S.status = [`Saved as ${r.file}, desktop not told${r.why ? `: ${r.why}` : ''}`, '#ffd27a'];
+      } else {
+        S.sent = { version, file: (r && r.file) || 'sent', posted: true };
+        S.status = [`Sent to the desktop: ${(r && r.file) || 'the VOTable'}`, '#b9c2d0'];
+      }
       texKey = '';
       changed();
     }, (e) => {
       if (!same()) return;
-      S.sent = { version: -1, file: '' };
+      // Nothing saved this time: a file saved before (not told) is still there.
+      S.sent = before.posted === false && before.version === version ? before : { version: -1, file: '' };
       S.status = [`Not sent: ${e && e.stale ? 'the page stood down or sent again' : (e && e.message) || e}`, '#ff8a8a'];
       texKey = '';
       changed();
