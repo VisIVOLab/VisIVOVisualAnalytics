@@ -8,6 +8,12 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **One brick pyramid per file, whatever the letter case of its path
+  (#325).** On macOS (and Windows) the same file opened as
+  `.../step62/rho.0000.flt` and `.../STEP62/rho.0000.flt` got two pyramids
+  (39 GB each for a 2048³ density), and the headset waited for the second
+  build. Pyramids, decompressed copies and tile pyramids are now keyed on the
+  name the file system stores.
 - **Backend: levels of detail for large cubes (part of #321).** Two routes are
   the groundwork for the desktop to refine the part of a large cube it looks
   at.
