@@ -123,7 +123,7 @@ struct UnplacedRow
     QString name;
     double raDeg{ 0.0 };
     double decDeg{ 0.0 };
-    double czKms{ std::nan("") };   ///< NaN: no redshift
+    double czKms{ std::nan("") };   ///< NaN: no redshift and no cz
     QString reason;
 };
 
@@ -139,8 +139,7 @@ inline std::vector<UnplacedRow> unplacedRows(const std::vector<Catalogue3DEntry>
         r.name = Catalogue3DParser::detail::entryDisplayName(e, schema);
         r.raDeg = e.raDeg;
         r.decDeg = e.decDeg;
-        if (std::isfinite(d.redshift))
-            r.czKms = Catalogue3DParser::detail::kSpeedOfLightKms * d.redshift;
+        r.czKms = d.czKms;   // the file's cz column when it has one (issue #298)
         r.reason = Catalogue3DParser::detail::unplacedReasonText(d.reason);
         rows.push_back(r);
     }
