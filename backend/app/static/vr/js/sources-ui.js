@@ -47,13 +47,9 @@ export function createSources(ctx) {
   }
   S.cls = new SL.Classification(sets().flags, sets().notes);
 
-  /** The storage key of the work on this catalogue over this cube. */
-  function storeKey() {
-    const ov = S.overlay;
-    const cube = (ctx.state.openPath || '').split('/').pop();
-    const what = ov ? (ov.cataloguePath || ov.name || ov.source || '') : '';
-    return `${STORE_PREFIX}${cube}|${what}`;
-  }
+  /** The storage key of the work on this catalogue over this cube: the
+   *  cube's full path and the catalogue's fingerprint (its sources). */
+  const storeKey = () => SL.storageKey(ctx.state.openPath || '', S.overlay, STORE_PREFIX);
   function save() {
     try {
       if (!ctx.storage) return;
@@ -65,9 +61,11 @@ export function createSources(ctx) {
       const text = ctx.storage && ctx.storage.getItem(storeKey());
       const saved = text ? JSON.parse(text) : null;
       if (!saved) return 0;
-      S.user = Array.isArray(saved.user) ? saved.user.filter((u) => u && typeof u.key === 'string' && Number.isFinite(u.x)) : [];
+      S.user = Array.isArray(saved.user) ? saved.user.filter((u) => u && typeof u.key === 'string' && /^u:\d+$/.test(u.key) && Number.isFinite(u.x)) : [];
       S.nextUser = Number.isInteger(saved.nextUser) ? saved.nextUser : S.user.length + 1;
-      return S.cls.restore(saved.cls, null);
+      // Only the marks of sources listed now: the overlay's and the found ones read back.
+      const keys = new Set(SL.sourceRows(S.overlay, ctx.state.info, S.user).map((r) => r.key));
+      return S.cls.restore(saved.cls, keys);
     } catch { return 0; }
   }
 

@@ -144,6 +144,31 @@ export function velocityText(v) {
 /** The column names of the position for a frame. */
 export const positionNames = (frame) => (frame === 'galactic' ? ['GLON', 'GLAT'] : ['RA', 'Dec']);
 
+// ── The work kept in the browser ────────────────────────────────────────────
+
+/**
+ * A fingerprint of an overlay's sources: their count and an FNV-1a hash of
+ * their labels and positions (pixels to 0.01), so the flags kept for one
+ * catalogue are never read back onto another of the same name.
+ */
+export function overlayFingerprint(ov) {
+  const srcs = ov && ov.valid ? ov.sources || [] : [];
+  let h = 0x811c9dc5;
+  const mix = (text) => {
+    for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  };
+  for (const s of srcs) {
+    const z = s.z === null || s.z === undefined ? '-' : Number(s.z).toFixed(2);
+    mix(`${s.label || ''}|${Number(s.x).toFixed(2)}|${Number(s.y).toFixed(2)}|${z};`);
+  }
+  return `${srcs.length}:${h.toString(16).padStart(8, '0')}`;
+}
+
+/** The storage key of the work on overlay `ov` over the cube at `cubePath` (its full path). */
+export function storageKey(cubePath, ov, prefix = 'visivo-vr-sources:') {
+  return `${prefix}${cubePath || ''}|${ov ? overlayFingerprint(ov) : 'none'}`;
+}
+
 // ── Classification ──────────────────────────────────────────────────────────
 
 /**

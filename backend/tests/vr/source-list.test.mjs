@@ -11,6 +11,7 @@ import * as HM from '../../app/static/vr/js/hand-menu.js';
 import * as CT from '../../app/static/vr/js/catalogue.js';
 import * as M from '../../app/static/vr/js/mat4.js';
 import { PanelPointer } from '../../app/static/vr/js/vr-panel.js';
+import { createSources } from '../../app/static/vr/js/sources-ui.js';
 import { readFileSync } from 'node:fs';
 import { classificationFixture } from './classification_fixture.mjs';
 import { parseProduct, openIn, parseClassification } from './desktop_hub_parser.mjs';
@@ -265,4 +266,33 @@ test('the Select tab has the Sources row, two presses from opening, greyed until
   assert.equal(HM.pressesTo('src-list', 'select', busy), 1);
   assert.ok(HM.widgetById(HM.menuLayout('select', busy), 'src-list').on);
   assert.equal(HM.pageSpec('select', busy).status, 5);
+});
+
+test('the work kept in the browser belongs to this cube and this catalogue only', () => {
+  // Same name, other sources (a re-run of the finder): another key.
+  const moved = { ...ov, sources: ov.sources.map((x, i) => (i === 0 ? { ...x, x: x.x + 1 } : x)) };
+  const fewer = { ...ov, sources: ov.sources.slice(0, 2) };
+  const k = SL.storageKey('/data/a/cube.fits', ov);
+  assert.equal(k, SL.storageKey('/data/a/cube.fits', JSON.parse(JSON.stringify(ov))));
+  assert.notEqual(k, SL.storageKey('/data/a/cube.fits', moved));
+  assert.notEqual(k, SL.storageKey('/data/a/cube.fits', fewer));
+  assert.notEqual(k, SL.storageKey('/data/b/cube.fits', ov), 'the full path, not the file name');
+  assert.match(SL.overlayFingerprint(ov), /^3:[0-9a-f]{8}$/);
+  // Read back: only the marks of sources listed now (a stale key is dropped), found sources kept.
+  const store = new Map();
+  const storage = { getItem: (key) => store.get(key) ?? null, setItem: (key, v) => store.set(key, v) };
+  store.set(SL.storageKey('/data/a/cube.fits', ov), JSON.stringify({
+    cls: { marks: [['c:0', { flag: 'real', note: '' }], ['c:99', { flag: 'spurious', note: '' }], ['u:1', { flag: 'doubtful', note: '' }]] },
+    user: [{ key: 'u:1', label: 'VR-1', x: 3, y: 4, z: 5, lon: null, lat: null, frame: 'icrs', velocity: 1025 }, { key: 'bad', x: 1 }], nextUser: 2 }));
+  let overlay = ov;
+  const src = createSources({ renderer: { createPanel: () => ({}), updatePanel() {} }, state: { info, openPath: '/data/a/cube.fits', clip: { min: [0, 0, 0], max: [1, 1, 1] }, extent: [1, 1, 0.625] },
+    overlay: () => overlay, backend: () => null, selection: { sel: {} }, settings: () => ({}), storage, onVisit() {}, onChange() {}, report: () => true });
+  src.refresh();
+  assert.deepEqual([...src.state.cls.marks.keys()].sort(), ['c:0', 'u:1']);
+  assert.deepEqual(src.state.user.map((u) => u.key), ['u:1']);
+  // Another catalogue of the same name over the same cube: nothing read back.
+  overlay = moved;
+  src.refresh();
+  assert.equal(src.state.cls.marks.size, 0);
+  assert.equal(src.state.user.length, 0);
 });
