@@ -35,6 +35,8 @@ class AngularPowerSettings;
 class SharedSelectionLink;
 class HeadsetHubLink;
 class HeadsetActivityList;
+class VrSpectatorWindow;
+class QPushButton;
 class QCheckBox;
 class QListWidget;
 class SkeletonSettings;
@@ -890,6 +892,9 @@ private:
     QPointer<QLabel> m_headsetActivityState;
     QPointer<HeadsetActivityList> m_headsetActivityList;
     QPointer<QCheckBox> m_headsetFollowLook;
+    /// Watch: the headset's view in a window of its own (issue #281).
+    QPointer<QPushButton> m_headsetWatch;
+    QPointer<VrSpectatorWindow> m_headsetSpectator;
     QPointer<QLabel> m_headsetStatusLabel;
     bool m_headsetShowing{ false };
     /// Follow the headset's look (issue #268): on unless the user unticked
@@ -907,6 +912,7 @@ private:
     void refreshHeadsetActivity();
     void ensureHeadsetActivityPanel();
     void showCubeOnHeadset();
+    void watchHeadset();
     void openHeadsetProduct(const VrHub::Event &event);
     void openHeadsetSpectrum(const VrHub::Event &event, const VrHub::Product &product);
     /// A catalogue classified in the headset (issue #279): its sources in the

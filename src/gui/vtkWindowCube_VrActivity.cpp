@@ -26,6 +26,7 @@
 #include "app/VrLink.h"
 #include "PvController.h"
 #include "RemoteLevels.h"
+#include "VrSpectatorWindow.h"
 
 #include <vtkGPUVolumeRayCastMapper.h>
 #include <vtkGenericOpenGLRenderWindow.h>
@@ -44,6 +45,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSettings>
 #include <QStatusBar>
 #include <QTemporaryDir>
@@ -152,6 +154,15 @@ void vtkWindowCube::refreshHeadsetPresence()
                           : u"No VR headset is connected to this session: open one with Open in "
                             u"VR Headset…"_s);
     }
+    if (this->m_headsetWatch) {
+        const bool connected = !headsets.isEmpty() && (!this->m_headsetHub || this->m_headsetHub->supported());
+        this->m_headsetWatch->setEnabled(connected);
+        this->m_headsetWatch->setToolTip(
+                connected ? u"Show what the headset's user sees, live, in a window of its own (one eye, "
+                            u"with the menu and the wrist cards). The headset shows a small badge while "
+                            u"it is watched."_s
+                          : u"No VR headset is connected to this session."_s);
+    }
     if (this->m_headsetActivityState) {
         QString state = headsets.isEmpty() ? u"No headset is connected to this session."_s
                                            : VrHub::headsetLine(headsets.first()) + u'.';
@@ -240,6 +251,30 @@ void vtkWindowCube::showCubeOnHeadset()
     }));
 }
 
+void vtkWindowCube::watchHeadset()
+{
+    if (!this->m_headsetHub || this->m_headsetHub->headsets().isEmpty())
+        return;
+    const VrHub::Headset headset = this->m_headsetHub->headsets().first();
+    // One window per headset page: pressed again, it comes to the front.
+    if (this->m_headsetSpectator && this->m_headsetSpectator->client() == headset.client) {
+        this->m_headsetSpectator->show();
+        this->m_headsetSpectator->raise();
+        this->m_headsetSpectator->activateWindow();
+        return;
+    }
+    if (this->m_headsetSpectator)
+        this->m_headsetSpectator->close();
+    const VrLink::Inputs in = this->vrHeadsetInputs();
+    auto *w = new VrSpectatorWindow(in.baseUrl, in.token, in.sessionId, headset.client,
+                                    headset.label.isEmpty() ? headset.client : headset.label, this);
+    QObject::connect(w, &VrSpectatorWindow::snapshotSaved, this, [this](const QString &filename) {
+        this->statusBar()->showMessage(u"Headset view saved as %1 in the Workspace Exports."_s.arg(filename), 6000);
+    });
+    this->m_headsetSpectator = w;
+    w->show();
+}
+
 void vtkWindowCube::ensureHeadsetActivityPanel()
 {
     if (this->m_headsetActivitySettings)
@@ -276,6 +311,10 @@ void vtkWindowCube::ensureHeadsetActivityPanel()
         }
     });
     layout->addWidget(this->m_headsetFollowLook);
+    this->m_headsetWatch = new QPushButton(u"Watch the Headset"_s, panel);
+    this->m_headsetWatch->setEnabled(false);
+    QObject::connect(this->m_headsetWatch, &QPushButton::clicked, this, &vtkWindowCube::watchHeadset);
+    layout->addWidget(this->m_headsetWatch, 0, Qt::AlignLeft);
     this->m_headsetActivityList = new HeadsetActivityList(panel);
     this->m_headsetActivityList->setMinimumHeight(220);
     QObject::connect(this->m_headsetActivityList, &HeadsetActivityList::openRequested, this,

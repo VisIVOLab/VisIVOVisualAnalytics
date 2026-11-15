@@ -196,7 +196,7 @@ test('lasso a galaxy and Isolate it: two presses in all, the trigger on the gala
 });
 
 test('choosing a tab sets the mode; the menu opens on the tab of the mode', () => {
-  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, debug: null });
+  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', debug: null });
   assert.equal(HM.pageOnOpen('display', 'select'), 'select', 'A changed the mode: its tab');
   assert.equal(HM.pageOnOpen('measure', 'explore'), 'measure', 'Measure keeps the explore mode');
   assert.equal(HM.pageOnOpen('more', 'clip'), 'more', 'More sets no mode');
@@ -429,6 +429,42 @@ test('the menu opens just above and beyond the hand that opened it, at the same 
   assert.deepEqual([...HM.menuAbove(null, head)], [...HM.menuFront(head)]);
 });
 
+test('the value scale (#258): 3σ and 5σ on Display, Levels one press from it, greyed without σ or values', () => {
+  const sig = { ...CONTEXTS.cube, lv: { sigma: true, hist: true, stretch: 'sqrt' } };
+  const noSig = { ...CONTEXTS.cube, lv: { sigma: false, hist: false, stretch: 'sqrt' } };
+  const why = (page, ctx, id) => HM.widgetById(HM.menuLayout(page, ctx), id).disabled;
+  assert.equal(why('display', sig, 'sig:3'), '');
+  assert.equal(why('display', sig, 'sig:5'), '');
+  assert.equal(why('display', noSig, 'sig:3'), HM.WHY.noSigma);
+  assert.equal(why('levels', noSig, 'pct:99'), HM.WHY.noHist);
+  assert.equal(why('levels', noSig, 'hist'), HM.WHY.noHist);
+  assert.equal(why('levels', noSig, 'stretch:log'), '', 'a stretch needs neither');
+  assert.equal(why('levels', sig, 'gamma-up'), HM.WHY.powerOnly);
+  assert.equal(why('levels', { ...sig, lv: { ...sig.lv, stretch: 'power' } }, 'gamma-up'), '');
+  // The stretch lit is the one chosen; every stretch, σ and percentile preset is there.
+  const L = HM.menuLayout('levels', sig);
+  assert.deepEqual(L.filter((w) => w.group === 'stretch' && w.on).map((w) => w.value), ['sqrt']);
+  for (const id of ['stretch:linear', 'stretch:log', 'stretch:sqrt', 'stretch:square', 'stretch:power',
+    'sig:1', 'sig:3', 'sig:5', 'pct:99.9', 'levels-back']) assert.ok(HM.widgetById(L, id), id);
+  // The histogram is the threshold slider's track, two rows high.
+  const h = HM.widgetById(L, 'hist');
+  assert.equal(h.kind, 'slider');
+  assert.ok(h.rect[3] > 150);
+  // Levels lights Display's tab and keeps the explore mode.
+  assert.equal(HM.tabOf('levels'), 'display');
+  assert.ok(HM.widgetById(L, 'tab:display').on);
+  assert.equal(HM.pageOnOpen('levels', 'explore'), 'levels');
+  // Presses: 3σ like the threshold; a stretch two from Display, three elsewhere.
+  assert.equal(HM.pressesTo('sig:3', 'display', sig), 1);
+  assert.equal(HM.pressesTo('sig:3', 'more', sig), 2);
+  assert.equal(HM.pressesTo('stretch:log', 'display', sig), 2);
+  assert.equal(HM.pressesTo('stretch:log', 'range', sig), 3);
+  assert.equal(HM.pressesTo('stretch:log', 'levels', sig), 1);
+  assert.equal(HM.pressesTo('stretch:log', 'display', CONTEXTS.points), Infinity, 'a cube only');
+  // Display reaches Levels.
+  assert.equal(why('display', sig, 'levels-page'), '');
+});
+
 test('drawMenu draws every page of every kind on a 2-D context stand-in', () => {
   const calls = [];
   const target = { save() {}, restore() {}, translate(...a) { calls.push(['translate', a]); }, measureText: (t) => ({ width: String(t).length * 12 }),
@@ -436,9 +472,10 @@ test('drawMenu draws every page of every kind on a 2-D context stand-in', () => 
   const c = new Proxy(target, { get: (t, k) => (k in t ? t[k] : () => {}), set: (t, k, v) => { t[k] = v; return true; } });
   const view = { title: 'VisIVO VR · HCG44.fits', notes: { thr: '0.0021 Jy/beam', slab: '4000 to 4800 km/s (radio) · ch 1–100 of 120' },
     values: { thr: 0.2, cmax: 0.8, opacity: 0.2, slab: [0.1, 0.9], 'crop:0': [0, 1], 'pt-range': [0.1, 0.7] },
-    status: ['busy', ['an error', '#ff8a8a'], 'a long line '.repeat(30)] };
+    status: ['busy', ['an error', '#ff8a8a'], 'a long line '.repeat(30)],
+    hist: { density: Array.from({ length: 160 }, (_, k) => (k * 37) % 50), thr: 0.3, cmax: 0.8, marks: [{ at: 0.25, label: '3σ' }, { at: 0.33, label: '5σ' }] } };
   let n = 0;
-  for (const ctx of Object.values(CONTEXTS)) {
+  for (const ctx of [...Object.values(CONTEXTS), { ...CONTEXTS.cube, lv: { sigma: true, hist: true, stretch: 'power' } }]) {
     for (const page of HM.PAGES) { HM.drawMenu(c, page, HM.pageSpec(page, ctx), view, { hover: 'tab:range', active: 'thr' }, ctx); n++; }
   }
   assert.equal(calls.filter(([k]) => k === 'translate').length, n);

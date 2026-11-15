@@ -12,6 +12,7 @@
 // - transferFunction / cropBox: the page's look, as the session's commands.
 
 import * as M from './mat4.js';
+import { stretchInverse } from './levels.js';
 
 // ── The wire ────────────────────────────────────────────────────────────────
 
@@ -350,7 +351,9 @@ export function poseChanged(aSent, aNow, minDeg = 0.05, minMetres = 0.0005) {
 /**
  * The page's colour and opacity mapping as `set_transfer_functions` points
  * on the full cube's values, so the backend's full-resolution frame looks
- * like the headset's reduced one. `p`: thrNorm, cmaxNorm, gamma, opacity, mode
+ * like the headset's reduced one. `p`: thrNorm, cmaxNorm, stretch and
+ * stretchA (levels.js: the stretch and its parameter, issue #258; without a
+ * stretch, `gamma` as a power t^gamma), opacity, mode
  * (0 emission, 1 maximum), lo, hi (the reduced cube's normalisation), factors
  * (binning), lut (256 x RGBA8). The page's emission sample over one reduced
  * voxel has opacity 1 - exp(-opacity (0.04 + x)); a full-resolution voxel is
@@ -369,12 +372,14 @@ export function transferFunction(p, n = 48) {
     const i = Math.min(254, Math.floor(x)), t = x - i;
     return [0, 1, 2].map((c) => ((1 - t) * p.lut[i * 4 + c] + t * p.lut[(i + 1) * 4 + c]) / 255);
   };
+  // The value whose stretched position is L: points spread where the stretch is steepest.
+  const inv = p.stretch ? (L) => stretchInverse(L, p.stretch, p.stretchA) : (L) => Math.pow(L, 1 / p.gamma);
   const color = [], opacity = [];
   const x0 = toData(thr);
   opacity.push([x0 - eps, 0]);
   for (let j = 0; j <= n; j++) {
     const L = j / n;
-    const x = toData(thr + Math.pow(L, 1 / p.gamma) * (cmax - thr));
+    const x = toData(thr + inv(L) * (cmax - thr));
     const a = p.mode === 1 ? 0.25 + 0.75 * L : 1 - Math.exp(-p.opacity * (0.04 + L) / f);
     color.push([x, ...lutAt(L)]);
     opacity.push([x, Math.min(1, a)]);

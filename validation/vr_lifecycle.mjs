@@ -54,6 +54,7 @@ import { runControllerShadingChecks } from './vr_controller_shading.mjs';
 import { runHeadsetHubChecks, runEntryChecks } from './vr_headset_hub.mjs';
 import { runSourceListChecks } from './vr_sources.mjs';
 import { runMaskChecks } from './vr_masks.mjs';
+import { runSpectatorChecks } from './vr_spectator.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -664,6 +665,8 @@ try {
     results.sources = await runSourceListChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
     // Issue #282: mask layers (load, modes, the desktop's mask command, pick, refine, undo, save).
     results.masks = await runMaskChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube, python: PY });
+    // Issue #281: the headset's view on the desktop (the menu quad drawn in, the capture's cost).
+    results.spectator = await runSpectatorChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
     const hubPages = async () => {
       const s = await c.evaluate('window.__vrRefine.refiner.backend().session');
       const r = await api('GET', '/v1/vr/headset', tokenA, { session: s });

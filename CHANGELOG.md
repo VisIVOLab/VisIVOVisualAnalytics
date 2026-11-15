@@ -47,6 +47,42 @@ are preserved here unedited; the branch names they refer to are historical.
   check drives it with the controller; `catalogue_pixels` now also answers
   `source_frame` and each source's `row`.
 
+- **VR: the threshold in multiples of the noise, the cube's spectral
+  information, stretches and a histogram (#258).** The headset now knows the
+  full cube's noise σ, measured exactly as the desktop's *Estimate Noise*
+  measures it over its default region (the median over channels of 1.4826 ×
+  MAD about each channel's median; one helper, `noise_threshold.plane_mad`,
+  now serves both `/v1/cube/noise` and `/v1/cube/reduced_info`, which gains
+  `noise_sigma`, `noise_sigma_method`, `rest_frequency_hz`, `rest_line` and
+  `beam`). The menu's threshold line reads *= 3.2 σ*, with *3σ* and *5σ* next
+  to the slider; an info line under the Display rows gives the rest frequency,
+  the channel width in km/s and the restoring beam. A new *Levels* page
+  (*Levels ▸*) holds a histogram of the drawn cube's values on the threshold
+  slider's scale (σ lines, drag to set the threshold), σ presets, percentile
+  presets for data with no noise to measure, and the desktop's stretches
+  (Linear, Log, Sqrt, Square, Power with γ), applied in the headset's shader
+  and in the refined frames' transfer function alike (`levels.js`, pure and
+  unit-tested). The look sent to the desktop carries the stretch's name. The
+  integrated flux of a selection is #280's.
+
+- **VR: the headset's view on the desktop (#281).** **Headset Activity →
+  Watch the Headset** opens a window with what the person in the headset
+  sees, live: the left eye, cropped to the middle of the view, about
+  15 frames a second at 512 px, with the cube, the rays, the menu, the wrist
+  cards and the result windows. The composition layers are not in the
+  projection layer, so the page draws them into the copy. **Snapshot** saves
+  the view as a PNG in the Workspace Exports. Watching is off by default.
+  The headset shows a **Desktop watching** badge while it is watched, and
+  the watch ends 10 s after the desktop stops reading. The page captures
+  with a scaled blit and an async `readPixels` into a PBO behind a fence,
+  copies the bytes out right after the frame, and encodes the JPEG in a
+  worker, with one capture in flight. On a Quest 3 at 72 Hz the frame CPU
+  stayed at 1.3 ms, with no missed frames added and 14.4 fps delivered.
+  Backend: `POST /v1/vr/headset/spectator`, `GET|POST
+  /v1/vr/headset/spectator/frame`, `POST /v1/vr/headset/spectator/snapshot`,
+  and a `watch` command in the hub's queue
+  (docs/backend-api/headset-hub.md). Desktop: `src/app/VrSpectator.h`
+  (widget-free), `VrSpectatorFeed`, `src/gui/VrSpectatorWindow`.
 - **3-D sky catalogues: the selected source follows a model change, and the
   cz < 1000 km/s flag reads the cz the file shows (#298).** Changing the
   cosmology model, the distance mode or the frame now keeps the source

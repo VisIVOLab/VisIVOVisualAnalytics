@@ -49,8 +49,11 @@ uniform vec3 uCamTex, uBoxMin, uBoxMax, uVoxDims, uCellDims, uTexScale;
 // linear filtering never reads past the cube's last voxel. For a storage of
 // the cube's own size this is what CLAMP_TO_EDGE does.
 uniform vec3 uSampleScale, uStoreLo, uStoreHi;
-uniform float uCell, uThr, uCmin, uCmax, uGamma, uOpacity, uSpv;
+uniform float uCell, uThr, uCmin, uCmax, uStretchA, uOpacity, uSpv;
 uniform int uEnc, uMaxSteps, uMode, uSkip;
+// The colour scale's stretch (issue #258, levels.js stretchValue): 0 linear,
+// 1 log(1 + a t) / log(1 + a), 2 sqrt, 3 square, 4 t^a.
+uniform int uStretch;
 // A selection on the drawn grid (issue #171): 255 where a reduced voxel holds a
 // selected full-resolution voxel, over the box [uMaskOrigin, uMaskOrigin + uMaskDims).
 uniform highp sampler3D uMask;
@@ -69,6 +72,14 @@ const vec3 MASK_COLOR = vec3(0.25, 1.0, 0.45);
 uniform int uMaskMode;
 uniform int uMaskCells;
 const vec3 OUTLINE_COLOR = vec3(1.0, 0.78, 0.3);
+
+float stretchFn(float x) {
+  if (uStretch == 1) return log(1.0 + uStretchA * x) / log(1.0 + uStretchA);
+  if (uStretch == 2) return sqrt(x);
+  if (uStretch == 3) return x * x;
+  if (uStretch == 4) return pow(x, uStretchA);
+  return x;
+}
 
 float maskAt(vec3 p, vec3 vox) {
   ivec3 iv = ivec3(floor(p * vox)) - uMaskOrigin;
@@ -142,8 +153,7 @@ void main() {
       acc.a += (1.0 - acc.a) * a;
     } else if (allowed && ((uMaskOnly == 0 && (v >= uThr || (uMaskMode == 2 && inMask))) || sel > 0.5
         || (uMaskOnly == 1 && uMaskMode == 1 && shell))) {
-      float x = clamp((v - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0);
-      x = pow(x, uGamma);
+      float x = stretchFn(clamp((v - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0));
       vec3 col = texture(uLut, vec2(x, 0.5)).rgb;
       float a = 1.0 - exp(-uOpacity * (0.04 + x) * stepVox);
       if (sel > 0.5) {
@@ -165,7 +175,7 @@ void main() {
   }
   if (uMode == 1) {
     if (best < uThr) discard;
-    float x = pow(clamp((best - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0), uGamma);
+    float x = stretchFn(clamp((best - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0));
     float a = clamp(0.25 + 0.75 * x, 0.0, 1.0);
     vec3 col = texture(uLut, vec2(x, 0.5)).rgb;
     if (bestMask > 0.5) col = mix(col, MASK_COLOR, 0.7);
@@ -1544,7 +1554,8 @@ export class Renderer {
     gl.uniform1f(u.uThr, p.thr);
     gl.uniform1f(u.uCmin, p.cmin);
     gl.uniform1f(u.uCmax, p.cmax);
-    gl.uniform1f(u.uGamma, p.gamma);
+    gl.uniform1i(u.uStretch, p.stretch | 0);
+    gl.uniform1f(u.uStretchA, Number.isFinite(p.stretchA) ? p.stretchA : 1);
     gl.uniform1f(u.uOpacity, p.opacity);
     gl.uniform1f(u.uSpv, p.spv);
     gl.uniform1i(u.uEnc, this.encoding === 'uint8' ? 0 : 1);
