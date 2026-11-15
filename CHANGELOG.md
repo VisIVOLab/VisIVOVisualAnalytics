@@ -14,6 +14,21 @@ are preserved here unedited; the branch names they refer to are historical.
   (39 GB each for a 2048³ density), and the headset waited for the second
   build. Pyramids, decompressed copies and tile pyramids are now keyed on the
   name the file system stores.
+- **Backend: levels of detail for large cubes (part of #321).** Two routes are
+  the groundwork for the desktop to refine the part of a large cube it looks
+  at.
+  - `/v1/cube/region_level_bin` returns one box of one level with a
+    one-sample ghost. Level 0 is read from the file, with no pyramid, for
+    FITS, VBT and PLUTO alike. Higher levels come from a ready brick pyramid,
+    or from a strided read when there is none. It never starts a build.
+    Headers give the level, the source, the level origin and the voxel offset.
+  - `/v1/cube/pyramid_status` reports the pyramid's state and the shapes of its
+    levels, and builds only when asked.
+
+  On the 2048³ PLUTO density, a 256³ box takes 0.03 to 0.07 s from the
+  pyramid at levels 1 and 2. The server's out-of-core renderer now reads its
+  blocks through the same `BrickPyramid.read_region`, with no change in
+  behaviour.
 
 - **Desktop: the preview of a large cube from its brick pyramid (#320).**
   When a cube's brick pyramid is already built (for the headset or remote

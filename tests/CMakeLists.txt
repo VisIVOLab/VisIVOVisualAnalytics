@@ -66,6 +66,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/skava/NodeSoda.cpp
     ${VISIVO_ROOT}/src/skava/BrokerClient.cpp
     ${VISIVO_ROOT}/src/vtk/ImageLod.cpp
+    ${VISIVO_ROOT}/src/vtk/CubeLodPlan.cpp
     ${VISIVO_ROOT}/src/gui/PvPathGeometry.cpp
     ${VISIVO_ROOT}/src/gui/OrbitPath.cpp
     ${VISIVO_ROOT}/src/gui/ParticleFrame.cpp
@@ -122,6 +123,12 @@ add_executable(VisIVOTests
     test_tool_result_record.cpp
     TestCubeToolGate.h
     test_cube_tool_gate.cpp
+    TestCubeLodGeometry.h
+    test_cube_lod_geometry.cpp
+    TestCubeLodPlan.h
+    test_cube_lod_plan.cpp
+    TestCubeLodGate.h
+    test_cube_lod_gate.cpp
     TestSpectralAxisInfer.h
     test_spectral_axis_infer.cpp
     TestKinematicLevelField.h

@@ -225,6 +225,58 @@ class CubePreviewResponse(BaseModel):
     voxel_offset: float = 0.0
 
 
+class CubeRegionLevelRequest(BaseModel):
+    """A box of one level of detail of a cube (issue #321, app/region_level.py)."""
+    dataset_id: str
+    #: 0 is the cube itself; level ``l`` the cube halved ``l`` times per axis.
+    level: int = Field(ge=0, le=62)
+    #: The box, inclusive, in voxels of the level.
+    x0: int
+    x1: int
+    y0: int
+    y1: int
+    z0: int
+    z1: int
+    #: Samples of the neighbours added on every side (the edge repeated
+    #: outside the cube).
+    ghost: Literal[0, 1] = 0
+    #: ``auto``: a level >= 1 from the cube's brick pyramid when one is
+    #: complete and current, else a strided read (never a build);
+    #: ``pyramid``: from the pyramid only (409 without one); ``strided``:
+    #: every ``2^level``-th voxel of the cube. Level 0 is always the cube.
+    source: Literal["auto", "pyramid", "strided"] = "auto"
+
+
+class PyramidStatusRequest(BaseModel):
+    dataset_id: str
+    #: Start the build when the pyramid is missing, stale or failed long
+    #: enough ago; ``false`` only reports.
+    build: bool = False
+
+
+class PyramidStatusResponse(BaseModel):
+    valid: bool = True
+    #: ``ready``, ``building``, ``missing``, ``failed`` or ``unsupported``
+    #: (a cube no pyramid holds: a Stokes cube, a cube with an axis of one
+    #: plane).
+    state: str
+    #: 0..1 while building; 1 when ready.
+    progress: float = 0.0
+    #: The pyramid's levels, brick and per-level (z, y, x) shapes when ready,
+    #: else those a default build would have: the levels region_level_bin
+    #: answers (strided without a pyramid).
+    levels: int = 0
+    brick: int = 0
+    shapes: list[list[int]] = Field(default_factory=list)
+    #: The pyramid file's size when ready, else about what a build writes.
+    bytes_estimate: int = 0
+    #: Why the last build failed, or why a pyramid found ready could not be
+    #: opened.
+    error: str = ""
+    #: True while building (the 202 answers' convention).
+    preparing: bool = False
+
+
 class CubeSliceRequest(BaseModel):
     dataset_id: str
     axis: str
