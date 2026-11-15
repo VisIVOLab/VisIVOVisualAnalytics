@@ -345,8 +345,13 @@ async def test_a_large_cube_is_reduced_from_its_pyramid(client, auth_headers, bi
     from app.noise_threshold import default_threshold
     from app.render_session._ooc import level0_sample
     with BrickPyramid(default_pyramid_path(path, 0)) as pyr:
-        want = default_threshold(level0_sample(pyr), data.size)
+        sample = level0_sample(pyr)
+        want = default_threshold(sample, data.size)
     assert info["default_threshold"] == pytest.approx(want, rel=1e-6)
+    # Its noise σ (issue #258) from the same bricks, all channels together.
+    from app.noise_threshold import flat_noise_sigma
+    assert info["noise_sigma"] == pytest.approx(flat_noise_sigma(sample), rel=1e-6)
+    assert "level-0 bricks" in info["noise_sigma_method"]
 
     r = await client.post("/v1/cube/reduced_bin", json=body, headers=headers)
     assert r.status_code == 200, r.text

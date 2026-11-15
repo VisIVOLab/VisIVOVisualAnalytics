@@ -310,11 +310,48 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
 - **Display** (the tab the menu starts on)
   - *A cube*: **Colour map** as swatches (the name of the one in use below);
     **Threshold** first, a slider (fine steps near the noise) with its value
-    in the cube's unit and *Reset* (the default threshold and colour range);
-    **Colour max** (its value in the cube's unit); **Opacity**;
+    in the cube's unit and in multiples of the noise (*= 3.2 σ*, with σ), *3σ*
+    and *5σ*, and *Reset* (the default threshold and colour range);
+    **Colour max** (its value in the cube's unit) and *Levels ▸*; **Opacity**;
     **Rendering**: *Emission* or *MIP*; **Catalogue**: *Overlay*, *Labels*,
     *Through velocity*, with the catalogue's summary or its first warning
     (greyed until a catalogue is placed, on the page or from the desktop).
+    Under the rows, the cube's **info line**: the rest frequency (*HI rest
+    1420.406 MHz*), the channel width in km/s (and the drawn channel's when
+    the cube is binned along the band, *drawn ×2*) and the restoring beam
+    (*beam 15.0″ × 12.0″, PA 33°*) when the header has BMAJ/BMIN/BPA.
+  - *Levels* (a cube, from *Levels ▸*; the Display tab stays lit, *◂ Display*
+    goes back): **Values**, a histogram of the drawn cube's values on the
+    threshold slider's scale, counts on a log scale, yellow lines at 1, 3, 5
+    and 10 σ, white lines at the threshold and the colour max; drag on it to
+    set the threshold. **Threshold**: *1σ* *2σ* *3σ* *5σ* *10σ*. **Percentile**:
+    *90%* *99%* *99.9%* *99.99%*, the threshold at that percentile of the
+    drawn cube's values (for data with no noise to measure, a simulation's
+    density for example), with the share of values above the threshold
+    written below. **Stretch**: *Linear*, *Log*, *Sqrt* (the default, the look
+    the page always had), *Square*, *Power*, the desktop's stretches, from the
+    threshold to the colour max; they shape both the colour and the opacity
+    of each sample. The log is the desktop's, log10(v / threshold) /
+    log10(colour max / threshold) (a = 1000 when the threshold is not above
+    zero). **Power γ**: *γ −*, *γ +* (×1.25 a press, 0.1 to 10). The info line,
+    the velocity convention and where σ comes from are under the rows.
+    σ is the full cube's noise measured as the desktop's *Estimate Noise*
+    measures it over its default region (the whole field, every channel), so
+    *3σ* in the headset is the same value as 3 × the desktop's σ from an
+    unchanged dialog; a σ measured on the desktop over a chosen emission-free
+    region is not sent to the headset yet. n σ means the value n × σ (about
+    zero, as the desktop's 3σ moment mask). The threshold applies to the drawn
+    cube, which is binned: with mean binning of N = fx·fy·fz voxels its noise
+    is about σ/√N, so a 3σ threshold hides more of the faint emission than the
+    desktop's 3σ on the full cube; the menu says both, *= 3.0 σ full-resolution
+    (≈17σ drawn)* (an upper estimate where the beam correlates
+    neighbouring pixels). With max binning the drawn noise is not σ scaled,
+    and the menu says so. The refined frames (the full cube) show what the
+    desktop shows. A cube read from its brick pyramid takes σ from level-0
+    bricks about one median over all channels: the desktop's number only for
+    a flat baseline. The percentile presets come from a sorted sample of a
+    million of the drawn cube's values, so they are right on data spanning
+    many decades too (the histogram's bins are only its picture).
   - *A point table*: **Colour by** (one chip per column, *none* first, then the
     velocity columns such as *VX*, *VY*, *VZ*, then the others; *more ▸* when
     there are more than fit, and the menu opens on the first page); **Scale, range**: *Log* and the colour
@@ -421,9 +458,9 @@ ones.
 | new seeds | Reseed streamlines |
 | M rows | Particles shown |
 
-The stretch, the velocity stretch, the binning, the texture, the Kinematic
+The velocity stretch, the binning, the texture, the Kinematic
 Lasso parameters and the eye-buffer settings are set on the page before
-entering VR (see [The settings on the page](reference.md#the-settings-on-the-page)).
+entering VR (the colour stretch is also on the menu's Levels page) (see [The settings on the page](reference.md#the-settings-on-the-page)).
 
 ## Wrist cards, toasts, readout and haptics
 

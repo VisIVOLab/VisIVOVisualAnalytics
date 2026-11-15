@@ -151,11 +151,15 @@ const finite = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 /**
  * A `look` event's payload, under the names the desktop reads
  * (VrHeadsetHub.h parseLook): colormap; threshold and colour_max as data
- * values of the cube (not the page's 0..1); opacity; gamma; mode (0 emission,
- * 1 maximum intensity); z_stretch (the velocity axis stretch); dataset_id.
+ * values of the cube (not the page's 0..1); opacity; gamma (the Power
+ * stretch's exponent); stretch (the colour scale's stretch name, issue #258:
+ * linear, log, sqrt, square, power, the desktop's LutScale modes); mode (0
+ * emission, 1 maximum intensity); z_stretch (the velocity axis stretch);
+ * dataset_id.
  */
-export function lookPayload({ colormap, threshold, colourMax, opacity, gamma, mode, zStretch, datasetId }) {
+export function lookPayload({ colormap, threshold, colourMax, opacity, gamma, stretch, mode, zStretch, datasetId }) {
   const p = { colormap: String(colormap || '') };
+  if (stretch) p.stretch = String(stretch);
   const put = (k, v) => { const f = finite(v); if (f !== null) p[k] = f; };
   put('threshold', threshold);
   put('colour_max', colourMax);

@@ -13,6 +13,9 @@
 // moves. Choosing a tab sets the mode (Display and Measure: explore; Range:
 // clip; Select: select). The footer (Undo, Reset view) is always there. The
 // technical settings are a page of their own, reachable only with ?debug.
+// The cube's value scale (issue #258: histogram, threshold in σ and by
+// percentile, stretch) is a page of its own too, Levels, one press from
+// Display (its tab stays lit); 3σ and 5σ are on Display itself.
 //
 // The layout is a pure function of a context (what is shown and chosen), so
 // the hit tests, the greying and the "two presses from opening" rule are
@@ -26,6 +29,7 @@ import * as M from './mat4.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { drawIcon } from './tool-icons.js';
 import { fitLine, wrapFit, measureWith } from './text-fit.js';
+import { STRETCHES, STRETCH_LABELS, STRETCH_TIPS, SIGMA_PRESETS, PERCENTILE_PRESETS } from './levels.js';
 
 export const TITLE_H = 64;
 export const TAB_H = 88;
@@ -59,16 +63,19 @@ export const MENU_BEHIND = (90 * Math.PI) / 180;
 export const TABS = [
   ['display', 'Display'], ['range', 'Range'], ['select', 'Select'], ['measure', 'Measure'], ['more', 'More'],
 ];
-/** Every page: the tabs', and the technical settings (?debug only, under More). */
-export const PAGES = [...TABS.map((t) => t[0]), 'debug'];
+/** Every page: the tabs', the cube's Levels (under Display) and the
+ *  technical settings (?debug only, under More). */
+export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'debug'];
+/** The sub-pages and the tab each belongs to. */
+export const SUB_PAGES = { levels: 'display', debug: 'more' };
 /** The mode a tab sets (null: the mode stays). */
-export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, debug: null };
+export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', debug: null };
 /** The tab of a mode, for the page shown when the menu opens. */
 export const MODE_TAB = { explore: 'display', clip: 'range', select: 'select' };
 export const KINDS = ['cube', 'points', 'flow', 'none'];
 
-/** The tab lit for a page (the technical page belongs to More). */
-export const tabOf = (page) => (page === 'debug' ? 'more' : page);
+/** The tab lit for a page (Levels belongs to Display, the technical page to More). */
+export const tabOf = (page) => SUB_PAGES[page] || page;
 
 /** The page shown when the menu opens: the last one, unless the mode was
  *  changed since (A on the primary hand), then that mode's tab. */
@@ -109,6 +116,9 @@ export const WHY = {
   splatsOnly: 'Smooth (splats) and Ray-traced only.',
   noColour: 'Choose a column to colour by first.',
   noCatalogue: 'Place a catalogue over the cube on the page (or from the desktop).',
+  noSigma: 'No noise σ: these values are not noise about a median.',
+  noHist: 'This cube keeps no values (a benchmark): no histogram.',
+  powerOnly: 'The Power stretch only.',
 };
 
 /** The default context: nothing shown, nothing chosen. main.js fills it. */
@@ -118,6 +128,7 @@ export function defaultContext() {
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     meas: { lasso: false, moment: null, pvArmed: false, spectrum: false, pinned: false },
+    lv: { sigma: false, hist: false, stretch: 'sqrt' },
     pts: { fields: [], field: null, log: false, style: 'points', budget: '', box: true, fieldPage: 0 },
     flow: { stream: true, arrows: true, box: true },
     more: { leftHanded: false, labels: true, haptics: true, hud: true },
@@ -139,11 +150,18 @@ function displayCube(ctx) {
     ['render', 'Rendering'], ['cat', 'Catalogue']];
   const c = ctx.cat;
   const noCat = c.loaded ? '' : WHY.noCatalogue;
+  const lv = ctx.lv || {};
+  const noSigma = lv.sigma ? '' : WHY.noSigma;
+  // The threshold: the slider, 3σ and 5σ (the noise σ of the full cube, #258), Reset.
+  const bw = 110, gap = 10, sl = RIGHT - X0 - 3 * (bw + gap);
   const w = [
     ...swatches(0, ctx),
-    { id: 'thr', kind: 'slider', rect: [X0, rowY(1), 560, WH] },
-    btn('thr-reset', [X0 + 570, rowY(1), RIGHT - X0 - 570, WH], 'Reset'),
-    { id: 'cmax', kind: 'slider', rect: [X0, rowY(2), RIGHT - X0, WH] },
+    { id: 'thr', kind: 'slider', rect: [X0, rowY(1), sl, WH] },
+    btn('sig:3', [X0 + sl + gap, rowY(1), bw, WH], '3σ', { group: 'sig', value: 3, disabled: noSigma, tip: 'Threshold at 3 σ of the full-resolution noise' }),
+    btn('sig:5', [X0 + sl + gap + (bw + gap), rowY(1), bw, WH], '5σ', { group: 'sig', value: 5, disabled: noSigma, tip: 'Threshold at 5 σ of the full-resolution noise' }),
+    btn('thr-reset', [X0 + sl + gap + 2 * (bw + gap), rowY(1), bw, WH], 'Reset', { tip: 'Reset: the threshold the cube opened with' }),
+    { id: 'cmax', kind: 'slider', rect: [X0, rowY(2), 560, WH] },
+    btn('levels-page', [X0 + 570, rowY(2), RIGHT - X0 - 570, WH], 'Levels ▸', { tip: 'Levels: histogram, σ, percentiles, stretch' }),
     { id: 'opacity', kind: 'slider', rect: [X0, rowY(3), RIGHT - X0, WH] },
     btn('render:0', span(4, 2, 0), 'Emission', { group: 'render', value: 0, on: ctx.render === 0, tip: 'Emission: the voxels add up along each ray' }),
     btn('render:1', span(4, 2, 1), 'MIP', { group: 'render', value: 1, on: ctx.render === 1, tip: 'MIP: the brightest value along each ray' }),
@@ -215,6 +233,31 @@ function displayFlow(ctx) {
     ...swatches(4, ctx),
     btn('fl-box', [X0, rowY(5), 300, WH], 'Box and ticks', { on: !!f.box, tip: 'The box and its ticks' }),
   ];
+  return { rows, widgets: w, status: 6 };
+}
+
+/** The cube's value scale (#258): the histogram of the drawn cube's values
+ *  (dragged: the threshold, on the threshold slider's scale), the threshold in
+ *  σ and by percentile, the stretch and the Power exponent. */
+function levelsPage(ctx) {
+  const lv = ctx.lv || {};
+  const cube = ctx.kind === 'cube';
+  const notCube = cube ? '' : WHY.cubeOnly;
+  const noSigma = notCube || (lv.sigma ? '' : WHY.noSigma);
+  const noHist = notCube || (lv.hist ? '' : WHY.noHist);
+  const rows = [['hist', 'Values'], ['histx', ''], ['sigma', 'Threshold'], ['pct', 'Percentile'], ['stretch', 'Stretch'], ['gamma', 'Power γ']];
+  // The histogram spans two rows: the track of a slider (the drag sets the threshold).
+  const w = [{ id: 'hist', kind: 'slider', hist: true, rect: [X0, rowY(0), RIGHT - X0, rowY(1) + WH - rowY(0)], disabled: noHist }];
+  SIGMA_PRESETS.forEach((k, i) => w.push(btn(`sig:${k}`, span(2, SIGMA_PRESETS.length, i), `${k}σ`,
+    { group: 'sig', value: k, disabled: noSigma, tip: `Threshold at ${k} σ of the full-resolution noise` })));
+  PERCENTILE_PRESETS.forEach((q, i) => w.push(btn(`pct:${q}`, span(3, PERCENTILE_PRESETS.length, i), `${q}%`,
+    { group: 'pct', value: q, disabled: noHist, tip: `Threshold at the ${q}th percentile: ${(100 - q).toPrecision(2)}% of the values above it` })));
+  STRETCHES.forEach((st, i) => w.push(btn(`stretch:${st}`, span(4, STRETCHES.length, i), STRETCH_LABELS[st],
+    { group: 'stretch', value: st, on: cube && lv.stretch === st, disabled: notCube, tip: STRETCH_TIPS[st] })));
+  const noPow = notCube || (lv.stretch === 'power' ? '' : WHY.powerOnly);
+  w.push(btn('gamma-down', [X0, rowY(5), 150, WH], 'γ −', { disabled: noPow, tip: 'A smaller exponent: faint emission lifted' }));
+  w.push(btn('gamma-up', [X0 + 160, rowY(5), 150, WH], 'γ +', { disabled: noPow, tip: 'A larger exponent: the brightest emission' }));
+  w.push(btn('levels-back', [RIGHT - 250, rowY(5), 250, WH], '◂ Display'));
   return { rows, widgets: w, status: 6 };
 }
 
@@ -336,6 +379,7 @@ function debugPage(ctx) {
 export function pageSpec(page, ctx = defaultContext()) {
   let s;
   if (page === 'display') s = ctx.kind === 'points' ? displayPoints(ctx) : ctx.kind === 'flow' ? displayFlow(ctx) : displayCube(ctx);
+  else if (page === 'levels') s = levelsPage(ctx);
   else if (page === 'range') s = rangePage(ctx);
   else if (page === 'select') s = selectPage(ctx);
   else if (page === 'measure') s = measurePage(ctx);
@@ -398,8 +442,8 @@ export const widgetById = (layout, id) => layout.find((w) => w.id === id) || nul
  * The presses that reach widget `id` from a menu just opened on `start`:
  * 1 when it is on that page, 2 when it is one tab away (the tabs are always
  * shown), Infinity when it is on no page or greyed there. `ctx` the context
- * at that moment. The pages a tab leads to are the tabs' own (the technical
- * page is one press further, under More).
+ * at that moment. The pages a tab leads to are the tabs' own (Levels is one
+ * press further, under Display; the technical page under More).
  */
 export function pressesTo(id, start, ctx) {
   const usable = (page) => {
@@ -408,6 +452,8 @@ export function pressesTo(id, start, ctx) {
   };
   if (usable(start)) return 1;
   if (TABS.some(([t]) => usable(t))) return 2;
+  // A sub-page is one press from its tab's page: two when the menu opens there.
+  if (usable('levels')) return start === 'display' ? 2 : 3;
   if (ctx.debug && usable('debug')) return 3;
   return Infinity;
 }
@@ -650,6 +696,54 @@ function drawTrack(c, w, value, hover, active) {
   knob(b);
 }
 
+/**
+ * The histogram (Levels, #258), drawn over a slider's track so a drag on it
+ * sets the threshold where the ray is: `h` {density (columns over the
+ * slider's 0..1), thr, cmax (slider fractions), marks [{at, label}] (the σ
+ * multiples)}. Counts on a log scale; the part above the threshold (drawn) in
+ * the fill colour, the rest muted.
+ */
+function drawHist(c, w, h, hover, active) {
+  const [x, y, ww, hh] = w.rect;
+  const x0 = x + TRACK_PAD, len = ww - 2 * TRACK_PAD;
+  const top = y + 30, base = y + hh - 8, bh = base - top;
+  c.fillStyle = (hover || active) && !w.disabled ? '#202838' : '#151b27';
+  roundRect(c, x, y, ww, hh, 10);
+  c.fill();
+  if (w.disabled || !h || !h.density || !h.density.length) return;
+  const d = h.density, n = d.length;
+  let max = 0;
+  for (let k = 0; k < n; k++) if (d[k] > max) max = d[k];
+  const scale = max > 0 ? 1 / Math.log10(1 + max) : 0;
+  const thr = clamp01(h.thr), cmax = clamp01(h.cmax);
+  for (let k = 0; k < n; k++) {
+    if (!(d[k] > 0)) continue;
+    const v = Math.log10(1 + d[k]) * scale;
+    const f = (k + 0.5) / n;
+    c.fillStyle = f >= thr ? (f <= cmax ? C.fill : '#9fd0ff') : '#4a5670';
+    const bx = x0 + (k / n) * len;
+    c.fillRect(bx, base - v * bh, Math.max(1, len / n), v * bh);
+  }
+  // The σ multiples: thin lines and their labels along the top.
+  const LW = 56;
+  for (const m of h.marks || []) {
+    if (!(m.at >= 0 && m.at <= 1)) continue;
+    const mx = x0 + m.at * len;
+    c.fillStyle = C.warn;
+    c.fillRect(mx - 1, top, 2, bh);
+    text(c, m.label, Math.max(x + LW / 2 + 2, Math.min(x + ww - LW / 2 - 2, mx)), y + 15, LW,
+      { color: C.warn, font: `20px ${FONT}`, align: 'center' });
+  }
+  // The threshold (a knob, as on its slider) and the colour max (a line).
+  c.fillStyle = '#ffffff';
+  c.fillRect(x0 + cmax * len - 1, top, 2, bh);
+  c.fillRect(x0 + thr * len - 2, top, 4, bh);
+  c.beginPath();
+  c.arc(x0 + thr * len, base, 12, 0, 2 * Math.PI);
+  c.fillStyle = '#e6e9ef';
+  c.fill();
+}
+
 /** One line in at most maxW: shrunk a little, cut last (text-fit.js). */
 function text(c, s, x, y, maxW, { color = C.muted, font = `22px ${FONT}`, align = 'left' } = {}) {
   const r = fitLine(measureWith(c), font, String(s || ''), maxW);
@@ -686,7 +780,8 @@ function drawPage(c, spec, view, ui) {
   });
   for (const w of spec.widgets) {
     const hover = ui.hover === w.id;
-    if (w.kind === 'slider' || w.kind === 'range') drawTrack(c, w, (view.values || {})[w.id], hover, ui.active === w.id);
+    if (w.hist) drawHist(c, w, view.hist, hover, ui.active === w.id);
+    else if (w.kind === 'slider' || w.kind === 'range') drawTrack(c, w, (view.values || {})[w.id], hover, ui.active === w.id);
     else if (w.kind === 'toggle') drawToggle(c, w, hover);
     else if (w.kind === 'swatch') drawSwatch(c, w, hover);
     else drawButton(c, w, hover);

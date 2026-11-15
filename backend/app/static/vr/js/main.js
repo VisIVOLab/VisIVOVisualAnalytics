@@ -8,6 +8,7 @@ import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, keepPairing, requestHooks } from './api.js';
 import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState, pageFetch } from './transport.js';
 import * as V from './volume.js';
+import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { createSelection, createSelectionSync, TOOLS, TOOL_NAMES } from './select-ui.js';
@@ -91,7 +92,9 @@ if (isHeadsetBrowser(navigator.userAgent) || query.has('xrfake')) setTimeout(() 
 const state = {
   info: null,          // /v1/cube/reduced_info answer (or the synthetic one)
   cube: null,          // {data, dims, encoding, lo, hi, factors, mode, reducedThreshold, ...}
-  thrNorm: 0.1, cmaxNorm: 1, gamma: 0.5, opacity: 0.4,
+  // The colour scale's stretch and the Power exponent (issue #258, levels.js);
+  // sqrt is the look the page had before (gamma 0.5).
+  thrNorm: 0.1, cmaxNorm: 1, stretch: LV.DEFAULT_STRETCH, gamma: LV.DEFAULT_GAMMA, opacity: 0.4,
   spv: 1, skip: true, governorOn: true, mode: 0, zStretch: 1,
   colormap: 'viridis',
   clip: { min: [0, 0, 0], max: [1, 1, 1] },
@@ -162,13 +165,13 @@ let lookCache = { key: null, look: null };
  *  makes every refined frame stale). */
 function currentLook() {
   const c = state.cube;
-  const key = JSON.stringify([state.thrNorm, state.cmaxNorm, state.gamma, state.opacity, state.mode,
+  const key = JSON.stringify([state.thrNorm, state.cmaxNorm, state.stretch, state.gamma, state.opacity, state.mode,
     state.colormap, state.clip, state.zStretch, c ? [c.lo, c.hi, c.factors] : null]);
   if (lookCache.key !== key && c) {
     lookCache = {
       key,
       look: {
-        tf: transferFunction({ thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, gamma: state.gamma,
+        tf: transferFunction({ thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, stretch: state.stretch, stretchA: stretchA(),
           opacity: state.opacity, mode: state.mode, lo: c.lo, hi: c.hi, factors: c.factors,
           lut: colormapTable(state.colormap) }),
         crop: cropBox(state.clip),
@@ -375,7 +378,9 @@ $('thr-source').addEventListener('change', () => {
 });
 $('thr-reset').addEventListener('click', () => resetThreshold());
 $('cmap').addEventListener('change', () => setColormap($('cmap').value));
-$('gamma').addEventListener('change', () => { state.gamma = readNumber('gamma'); });
+$('stretch').addEventListener('change', () => { state.stretch = LV.stretchOf($('stretch').value); labelsChanged(); });
+$('gamma').addEventListener('change', () => { state.gamma = LV.clampGamma(readNumber('gamma')); $('gamma').value = String(state.gamma); labelsChanged(); });
+for (const b of document.querySelectorAll('button.sig')) b.addEventListener('click', () => { pushUndo(); setSigmaThreshold(Number(b.dataset.k)); });
 $('opacity').addEventListener('input', () => { state.opacity = readNumber('opacity') / 100; });
 $('rmode').addEventListener('change', () => { state.mode = readNumber('rmode'); });
 $('spv').addEventListener('change', () => {
@@ -511,8 +516,8 @@ for (const [i, axis] of ['x', 'y', 'z'].entries()) {
 }
 
 // Threshold and colour range sliders are quadratic: fine steps near the noise.
-function sliderToNorm(s) { return (s / 1000) ** 2; }
-function normToSlider(n) { return Math.round(Math.sqrt(Math.max(0, Math.min(1, n))) * 1000); }
+const sliderToNorm = LV.sliderToNorm;
+const normToSlider = LV.normToSlider;
 
 function fmt(v) {
   if (!Number.isFinite(v)) return 'n/a';
@@ -528,7 +533,12 @@ function dataValue(norm) {
 function updateLabels() {
   const c = state.cube;
   const unit = c && c.bunit ? ` ${c.bunit}` : '';
-  $('thr-value').textContent = `${fmt(dataValue(state.thrNorm))}${unit}`;
+  const sig = c ? sigmaLine(c, true) : '';
+  $('thr-value').textContent = `${fmt(dataValue(state.thrNorm))}${unit}${sig ? ` ${sig}` : ''}`;
+  $('cube-info').textContent = c ? LV.infoLine(state.info) : '';
+  for (const b of document.querySelectorAll('button.sig')) b.disabled = !(c && LV.sigmaOf(state.info));
+  $('stretch').value = state.stretch;
+  $('gamma').value = String(state.gamma);
   $('cmax-value').textContent = `${fmt(dataValue(state.cmaxNorm))}${unit}`;
   $('zs-value').textContent = `×${state.zStretch.toFixed(2)}`;
   $('thr').value = normToSlider(state.thrNorm);
@@ -557,6 +567,60 @@ function resetThreshold() {
   state.thrNorm = n.thrNorm;
   state.cmaxNorm = n.cmaxNorm;
   updateLabels();
+}
+
+/** The threshold set to `n` (0..1); the colour max follows when it is no
+ *  longer above it: the 99th percentile of what is above the new threshold,
+ *  its default rule, from the cube's histogram (issue #258). */
+function setThresholdNorm(n) {
+  const c = state.cube;
+  if (!c || !Number.isFinite(n)) return;
+  state.thrNorm = Math.max(0, Math.min(1, n));
+  if (state.cmaxNorm <= state.thrNorm + 1e-3) {
+    const s = c.prep && c.prep.sorted;
+    const q = s ? LV.sampleQuantile(s, CMAX_QUANTILE, state.thrNorm) : null;
+    state.cmaxNorm = Math.min(1, Math.max(state.thrNorm + 0.01, q ?? 1));
+  }
+  labelsChanged();
+}
+
+/** The threshold at k σ of the full cube's noise (#258); false without σ. */
+function setSigmaThreshold(k) {
+  const c = state.cube;
+  const t = c && LV.sigmaThreshold(k, LV.sigmaOf(state.info), c.lo, c.hi);
+  if (!t) return false;
+  setThresholdNorm(t.norm);
+  if (t.clamped) setStatus(`${k} σ lies outside the drawn cube's values: the threshold is at its ${t.norm > 0.5 ? 'top' : 'bottom'}.`);
+  return true;
+}
+
+/** The threshold at percentile p of the drawn cube's values (#258); false without a histogram. */
+function setPercentileThreshold(p) {
+  const c = state.cube;
+  const n = c && c.prep && c.prep.sorted ? LV.percentileThreshold(c.prep.sorted, p) : null;
+  if (n === null) return false;
+  setThresholdNorm(n);
+  return true;
+}
+
+/** The threshold in σ (#258): '= 3.2 σ full-resolution (≈17σ drawn)', with
+ *  σ itself unless `short`; '' without σ. */
+function sigmaLine(c, short = false) {
+  const sigma = LV.sigmaOf(state.info);
+  if (!c || !sigma) return '';
+  const thr = dataValue(state.thrNorm);
+  const drawn = LV.drawnSigmaText(LV.sigmaMultiple(thr, sigma), c.factors, c.mode, true);
+  return `${LV.sigmaText(thr, sigma)} full-resolution${drawn ? ` (${drawn})` : ''}${short ? '' : `; σ ${fmt(sigma)}${c.bunit ? ` ${c.bunit}` : ''}`}`;
+}
+
+/** The histogram's columns of the cube on show, worked out once a cube. */
+let histCache = { cube: null, density: null };
+function histDensity(c) {
+  if (histCache.cube !== c) {
+    const h = c && c.prep && c.prep.hist;
+    histCache = { cube: c, density: h && h.n ? Array.from(LV.sliderDensity(h, 160), (v) => Math.round(v)) : null };
+  }
+  return histCache.density;
 }
 
 /** The threshold and the top of the colour range (0..1) of cube `c` for threshold source `src`. */
@@ -1393,9 +1457,16 @@ function volParams(override = {}) {
   return {
     extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max,
     thr: state.thrNorm, cmin: state.thrNorm, cmax: Math.max(state.cmaxNorm, state.thrNorm + 1e-3),
-    gamma: state.gamma, opacity: state.opacity, spv: effectiveSpv(),
+    stretch: LV.STRETCH_CODE[state.stretch] || 0, stretchA: stretchA(), opacity: state.opacity, spv: effectiveSpv(),
     mode: state.mode, skip: state.skip, maxSteps: 4096, texScale: state.texScale, ...override,
   };
+}
+
+/** The stretch's parameter (levels.js stretchParam): the log's a from the
+ *  threshold and the colour max in data units, or the Power exponent. */
+function stretchA() {
+  return LV.stretchParam(state.stretch, { gamma: state.gamma, thrData: dataValue(state.thrNorm),
+    cmaxData: dataValue(Math.max(state.cmaxNorm, state.thrNorm + 1e-3)) });
 }
 
 function drawScene(view, override, eye = 0) {
@@ -1636,7 +1707,7 @@ function lookSnapshot() {
   const clip = { min: [...state.clip.min], max: [...state.clip.max] };
   if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState() };
   return { kind, thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
-    mode: state.mode, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState() };   // the catalogue's toggles too
+    mode: state.mode, stretch: state.stretch, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState() };   // the catalogue's toggles too
 }
 function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
@@ -1657,13 +1728,15 @@ function undo() {
     $('thr-source').value = s.thrSource;
     settings.thrSource = s.thrSource; persist();
   }
-  Object.assign(state, { thrNorm: s.thrNorm, cmaxNorm: s.cmaxNorm, opacity: s.opacity, mode: s.mode, gamma: s.gamma,
+  Object.assign(state, { thrNorm: s.thrNorm, cmaxNorm: s.cmaxNorm, opacity: s.opacity, mode: s.mode,
+    stretch: LV.stretchOf(s.stretch), gamma: LV.clampGamma(s.gamma),
     clip: { min: [...s.clip.min], max: [...s.clip.max] } });
   setColormap(s.colormap);
   if (s.layer) layers.restoreUndo(s.layer);
   $('rmode').value = String(state.mode);
   $('opacity').value = Math.round(state.opacity * 100);
   $('gamma').value = String(state.gamma);
+  $('stretch').value = state.stretch;
   decorationsChanged();
   labelsChanged();
   return true;
@@ -1774,6 +1847,7 @@ function menuContext() {
     ...HM.defaultContext(),
     kind, debug: DEBUG_HUD, colormap: state.colormap, render: state.mode, spectralName: spectralName(),
     cat: lc.cat, clipTool: ui.clipTool,
+    lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
     meas: { lasso, moment: av.moment, pvArmed: av.pvArmed, spectrum: !!s.spectrum, pinned: selection.hasPin() },
     pts: lc.pts, flow: lc.flow,
@@ -1807,7 +1881,12 @@ function menuView(ctx = menuContext()) {
     values.slab = [state.clip.min[2], state.clip.max[2]];
     notes.cmap = state.colormap;
     const src = $('thr-source').value === 'cube' ? 'the full cube\'s noise, as on the desktop' : 'this binning\'s noise';
-    notes.thr = `${fmt(dataValue(state.thrNorm))}${unit} (starts from ${src})`;
+    const sigma = LV.sigmaOf(state.info);
+    const thrData = dataValue(state.thrNorm);
+    // The threshold in σ of the full cube's noise (#258), else where it started from.
+    // Display: the multiples (σ itself is on Levels and in the 2-D page's line).
+    notes.thr = sigma ? `${fmt(thrData)}${unit} ${sigmaLine(c, true)}`
+      : `${fmt(thrData)}${unit} (starts from ${src})`;
     notes.cmax = `${fmt(dataValue(state.cmaxNorm))}${unit}`;
     notes.opacity = state.opacity.toFixed(2);
     notes.render = state.mode === 1 ? 'MIP: the brightest value along each ray' : 'Emission: the voxels add up along each ray';
@@ -1822,6 +1901,10 @@ function menuView(ctx = menuContext()) {
     notes.pv = analysis.pv.state.armed ? 'Trigger: the next point of the slice.' : '';
     notes.pvw = pvWidthNote();
     const info = (t) => [t, '#b9c2d0'];
+    // The cube's info line (#258): after work and errors on Display, first on Levels.
+    const infoText = page === 'display' || page === 'levels' ? LV.infoLine(state.info) : '';
+    if (infoText) { if (page === 'levels') status.unshift(info(infoText)); else status.push(info(infoText)); }
+    if (page === 'levels') levelsView(c, notes, status, info);
     if (page === 'select') status.push(...[...(sum || []).slice(1), ...analysis.lasso.lines()].map(info));
     if (page === 'measure') {
       const av = analysis.view();
@@ -1830,14 +1913,39 @@ function menuView(ctx = menuContext()) {
     }
   }
   if (page === 'debug') status.push(`Refinement: ${refineShort()}`);
-  return { title: `VisIVO VR · ${ctx.kind === 'points' || ctx.kind === 'flow' ? (state.openPath || '').split('/').pop() || ctx.kind : cubeName()}`,
+  const hist = page === 'levels' && c ? {
+    density: histDensity(c), thr: normToSlider(state.thrNorm) / 1000, cmax: normToSlider(state.cmaxNorm) / 1000,
+    marks: LV.sigmaMarks(LV.sigmaOf(state.info), c.lo, c.hi).map(({ at, label }) => ({ at, label })),
+  } : null;
+  return { hist, title: `VisIVO VR · ${ctx.kind === 'points' || ctx.kind === 'flow' ? (state.openPath || '').split('/').pop() || ctx.kind : cubeName()}`,
     notes, values, status };
+}
+
+/** The Levels page's notes and status lines (#258). */
+function levelsView(c, notes, status, info) {
+  const unit = c.bunit ? ` ${c.bunit}` : '';
+  const sigma = LV.sigmaOf(state.info);
+  const h = c.prep && c.prep.hist;
+  notes.histx = h ? 'Drag: the threshold. Yellow: σ multiples; white: threshold, colour max.' : '';
+  notes.sigma = sigma ? `${fmt(dataValue(state.thrNorm))}${unit} ${sigmaLine(c)}` : '';
+  const above = c.prep && c.prep.sorted ? LV.fractionAbove(c.prep.sorted, state.thrNorm) : null;
+  notes.pct = above === null ? '' : `Of the drawn cube's values: ${(100 * above).toPrecision(2)}% are above the threshold now.`;
+  const ratio = dataValue(state.cmaxNorm) / dataValue(state.thrNorm);
+  notes.stretch = state.stretch === 'log'
+    ? (dataValue(state.thrNorm) > 0 ? `Log over threshold to colour max (×${ratio.toPrecision(3)}), as the desktop's.` : 'Log with a = 1000: the threshold is not above zero.')
+    : LV.STRETCH_TIPS[state.stretch];
+  notes.gamma = `γ ${state.gamma.toFixed(2)}`;
+  const conv = LV.conventionLine(state.info);
+  if (conv) status.push(info(conv));
+  if (sigma) status.push(info(state.info.source === 'pyramid' ? 'σ from level-0 bricks of the brick pyramid, all channels together.'
+    : 'σ as the desktop\'s Estimate Noise over the whole field.'));
 }
 
 /** The menu's widgets for the page on show; the page and the context kept for the drawing. */
 function menuLayout() {
   const ctx = menuContext();
   if (ui.page === 'debug' && !ctx.debug) ui.page = 'more';
+  if (ui.page === 'levels' && ctx.kind !== 'cube') ui.page = 'display';
   menu.ctx = ctx;
   menu.spec = HM.pageSpec(ui.page, ctx);
   menu.pointer.layout = HM.menuLayout(ui.page, ctx);
@@ -2162,6 +2270,19 @@ function applyMenu(a, ray = null, eye = null) {
   if (w.group === 'cmap') { pushUndo(); setColormap(w.value); return; }
   if (w.group === 'render') { pushUndo(); state.mode = w.value; $('rmode').value = String(state.mode); return; }
   if (id === 'thr-reset') { pushUndo(); resetThreshold(); return; }
+  // The value scale (#258): the threshold in σ or by percentile, the stretch, Levels.
+  if (w.group === 'sig') { pushUndo(); if (!setSigmaThreshold(w.value)) buzz('primary', 'error'); return; }
+  if (w.group === 'pct') { pushUndo(); if (!setPercentileThreshold(w.value)) buzz('primary', 'error'); return; }
+  if (w.group === 'stretch') { pushUndo(); state.stretch = LV.stretchOf(w.value); $('stretch').value = state.stretch; labelsChanged(); return; }
+  if (id === 'gamma-down' || id === 'gamma-up') {
+    pushUndo();
+    state.gamma = LV.stepGamma(state.gamma, id === 'gamma-up' ? 1 : -1);
+    $('gamma').value = String(state.gamma);
+    labelsChanged();
+    return;
+  }
+  if (id === 'levels-page') { ui.page = 'levels'; return; }
+  if (id === 'levels-back') { ui.page = 'display'; return; }
   // A point table's or a field's look (not a new sample or new lines): one undo step.
   if (layers.undoable(id, w)) pushUndo();
   if (layers.press(id, w)) return;
@@ -2221,7 +2342,8 @@ function applyMenu(a, ray = null, eye = null) {
 function menuSlide(a) {
   if (ui.sliding !== a.id) { pushUndo(); ui.sliding = a.id; }
   if (a.type === 'slide') {
-    if (a.id === 'thr') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));
+    // The histogram is drawn on the threshold slider's scale (#258).
+    if (a.id === 'thr' || a.id === 'hist') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'cmax') state.cmaxNorm = Math.max(state.thrNorm + 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
     else layers.slide(a.id, a.value);
@@ -2951,7 +3073,7 @@ function hubLook(id) {
   const c = state.cube;
   if (!c || !state.open) return null;
   return HUB.lookPayload({ colormap: state.colormap, threshold: dataValue(state.thrNorm), colourMax: dataValue(state.cmaxNorm),
-    opacity: state.opacity, gamma: state.gamma, mode: state.mode, zStretch: state.zStretch, datasetId: id });
+    opacity: state.opacity, gamma: state.gamma, stretch: state.stretch, mode: state.mode, zStretch: state.zStretch, datasetId: id });
 }
 function hubClip(id) {
   if (!state.cube || !state.open || !state.info || !state.info.full_shape) return null;
@@ -4640,6 +4762,9 @@ updateLabels();
 showGuideOnPage();
 if (query.has('record')) measure.startRecord('address');
 updateMeasureDom();
+// ?stretch=linear|log|sqrt|square|power: the colour stretch to start with (#258;
+// the desktop benchmark measures each one).
+if (query.has('stretch')) { state.stretch = LV.stretchOf(query.get('stretch')); $('stretch').value = state.stretch; }
 if (query.has('bench')) {
   desktopBench().catch((e) => { document.title = `BENCH FAILED ${e.message}`; console.error(e); });
 } else {
