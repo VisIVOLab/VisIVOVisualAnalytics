@@ -37,7 +37,8 @@ def test_a_large_catalogue_gets_the_same_distances_from_the_grid():
     frame = pd.DataFrame({"Z": z})
     w = distances_mpc(frame, cosmology="WMAP9")
     assert np.max(np.abs(w[2:] - WMAP9.comoving_distance(z[2:]).to("Mpc").value)) < 1e-4
-    assert w[0] == 300.0 and w[1] == 300.0
+    # z = 0 and no redshift: no distance at all (issue #265).
+    assert np.isnan(w[0]) and np.isnan(w[1])
     # One far outlier does not coarsen the grid for the nearby sources.
     z[2] = 1000.0
     near = (z > 0) & (z < 0.2)
@@ -55,17 +56,19 @@ def test_distances_follow_the_desktops_order():
     assert d[0] == pytest.approx(planck18_comoving_mpc(np.array([0.05]))[0])
     # A luminosity distance and a redshift: D_L / (1 + z), before the redshift.
     assert d[1] == pytest.approx(210.0 / 1.05)
-    # A distance without a redshift: as is; nothing at all: 300 Mpc.
-    assert d[2] == 50.0 and d[3] == 300.0
+    # A distance without a redshift: as is; nothing at all: no distance (#265).
+    assert d[2] == 50.0 and np.isnan(d[3])
     # Redshift space: c z / H0 for every source with a redshift.
     rs = distances_mpc(frame, distance_mode="redshift_space")
     assert rs[1] == pytest.approx(2.99792458e5 * 0.05 / 67.66)
     assert rs[2] == 50.0
-    # Another cosmology overrides the distance column where a redshift exists.
+    # A measured distance wins under every cosmology (issue #265): another
+    # model only places the sources that have a redshift alone.
     from astropy.cosmology import WMAP9
     w = distances_mpc(frame, cosmology="WMAP9")
-    assert w[1] == pytest.approx(WMAP9.comoving_distance(0.05).to("Mpc").value)
-    assert w[2] == 50.0
+    assert w[0] == pytest.approx(WMAP9.comoving_distance(0.05).to("Mpc").value)
+    assert w[1] == pytest.approx(210.0 / 1.05)
+    assert w[2] == 50.0 and np.isnan(w[3])
 
 
 def test_positions_on_the_sky_and_in_other_frames():

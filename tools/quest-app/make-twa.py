@@ -2,7 +2,7 @@
 """Writes the twa-manifest.json that Meta's Bubblewrap turns into the VisIVO
 VR headset app's Android project (issue #255).
 
-Usage: make-twa.py <project_dir> <dev|release> <icon_url> <keystore> <alias>
+Usage: make-twa.py <project_dir> <dev|release> <icon_url> <maskable_icon_url> <keystore> <alias>
 
 Everything else comes from app.json next to this script. The origin is
 app.json's defaultOrigin: what an icon launch opens. The desktop's launch
@@ -19,7 +19,7 @@ from urllib.parse import urlsplit
 HERE = Path(__file__).resolve().parent
 
 
-def manifest(mode: str, icon_url: str, keystore: str, alias: str, app: dict) -> dict:
+def manifest(mode: str, icon_url: str, maskable_url: str, keystore: str, alias: str, app: dict) -> dict:
     origin = app["defaultOrigin"].rstrip("/")
     u = urlsplit(origin)
     color = app["themeColor"]
@@ -41,7 +41,7 @@ def manifest(mode: str, icon_url: str, keystore: str, alias: str, app: dict) -> 
         "enableNotifications": False,
         "startUrl": app["startPath"],
         "iconUrl": icon_url,
-        "maskableIconUrl": icon_url,
+        "maskableIconUrl": maskable_url,
         "splashScreenFadeOutDuration": 300,
         "signingKey": {"path": keystore, "alias": alias},
         "appVersionCode": int(app["versionCode"]),
@@ -68,14 +68,14 @@ def manifest(mode: str, icon_url: str, keystore: str, alias: str, app: dict) -> 
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 6 or argv[2] not in ("dev", "release"):
+    if len(argv) != 7 or argv[2] not in ("dev", "release"):
         print(__doc__, file=sys.stderr)
         return 2
-    out_dir, mode, icon_url, keystore, alias = Path(argv[1]), argv[2], argv[3], argv[4], argv[5]
+    out_dir, mode, icon_url, maskable_url, keystore, alias = Path(argv[1]), *argv[2:7]
     app = json.loads((HERE / "app.json").read_text(encoding="utf-8"))
     key = "development" if mode == "dev" else "release"
     app = {**app, "packages": {mode: app["packages"][key]}, "names": {mode: app["names"][key]}}
-    m = manifest(mode, icon_url, keystore, alias, app)
+    m = manifest(mode, icon_url, maskable_url, keystore, alias, app)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "twa-manifest.json").write_text(json.dumps(m, indent=2) + "\n", encoding="utf-8")
     print(f"twa-manifest.json: {m['packageId']} {m['appVersion']} ({m['appVersionCode']}), start {m['startUrl']}")

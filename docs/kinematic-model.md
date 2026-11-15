@@ -156,7 +156,11 @@ What it returns, in order of derivation:
    Jy/beam), a moment-1 velocity field kept only where a pixel's summed emission
    clears 3σ√(channels summed), the integrated spectrum, the flux (each channel
    weighted by its own width), the w20 and w50 widths and the systemic velocity
-   at the w20 midpoint.
+   at the w20 midpoint. The widths are SoFiA-2's (from each end of the
+   spectrum inwards to 20 % or 50 % of its peak, the crossing interpolated
+   between channels), the same definition as the selection statistics' HI
+   measurements (`mask_stats_bin`, #280); before #280 they were the extreme
+   channel centres above the level, up to two channels narrower.
 2. **Geometry from moment 0:** centre, position angle and axis ratio from the
    second moments of the light; inclination from cos i = b/a; disc radius
    2.5 σ of the light.

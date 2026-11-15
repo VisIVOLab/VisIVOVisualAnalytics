@@ -181,16 +181,14 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     """Positions, sizes, colours and light of the particles drawn."""
     from ..particle_raytrace import smoothing_lengths  # noqa: PLC0415
     from ..point_sample import place_rows  # noqa: PLC0415
-    from ..point_table import filter_mask, open_point_table  # noqa: PLC0415
+    from ..point_table import filter_mask, open_point_table, sky_arguments  # noqa: PLC0415
     from .render import point_table_spec  # noqa: PLC0415
     spec = point_table_spec(entry)
     if spec is None:
         raise ValueError("Ray-traced rendering needs a table of points.")
     table = open_point_table(spec)
     if req.sky and table.sky is not None:
-        table.set_sky_positions(str(req.sky.get("frame", "fk5")),
-                                str(req.sky.get("distance_mode", "comoving")),
-                                str(req.sky.get("cosmology", "Planck18")))
+        table.set_sky_positions(*sky_arguments(req.sky))
     axes = (req.x or table.axes[0], req.y or table.axes[1], req.z or table.axes[2])
     for name in axes:
         if name not in table.columns:

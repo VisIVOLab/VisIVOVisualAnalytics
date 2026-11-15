@@ -20,6 +20,21 @@ the velocity viewer's controls; the link then carries `kind=points` or
 the desktop's dataset in the same session, or its path again when the session
 no longer holds it, as for a cube (see
 [Open a cube from the desktop](quickstart.md#open-a-cube-from-the-desktop)).
+
+A sky catalogue (RA/Dec with a redshift or a distance) is placed as the
+desktop window places it: the link, the pairing code, the app launch and the
+desktop's *Show on headset* carry the window's frame (FK5, galactic,
+supergalactic), distance mode (comoving or redshift space) and named
+cosmology, and the backend computes the positions with them. A **Custom**
+cosmology is not sent: the backend knows Planck18, Planck15, Planck13 and
+WMAP9 only, so opening the headset puts the window back on Planck18 and says
+so, as the ray-traced view does. Sources with no distance (no usable
+distance value and a redshift ≤ 0 or missing) are left out, as on the
+desktop. The page's status line names the placement and counts them, for
+example *supergalactic · comoving · Planck18 · 26 unplaced*. A catalogue with
+no redshift and no distance column (positions only) is drawn on the
+celestial sphere, and the line reads *fk5 · celestial sphere (no distances)*. Changing the placement
+in the headset comes later.
 On the page: type the path, choose
 **Data kind** (*auto* goes by the name: `.head`, `.bin`, `.csv`, `.xml`… are
 point tables, a FITS whose name says `velocity` or `flow` a velocity field),

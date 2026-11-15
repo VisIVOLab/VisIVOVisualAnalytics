@@ -22,7 +22,8 @@
 //
 // Everything the page needs rides the fragment (#token=…&session=…&dataset=…
 // &path=…, and &kind=points|velocity&box=… for a point table or a velocity
-// field, issue #190): a browser never sends the fragment to the server, so the token is
+// field, issue #190; &sky_frame=…&distance_mode=…&cosmology=… for a sky
+// catalogue placed as the desktop window places it, issue #260): a browser never sends the fragment to the server, so the token is
 // in no access log, and the page removes it from the address bar. Every value
 // is percent-encoded completely, so the link holds no character a shell or
 // the fragment parser would read as syntax ('&', '#', '=', quotes, spaces).
@@ -36,6 +37,24 @@
 
 namespace VrLink {
 
+/// How a sky catalogue is placed (issue #260): the 3-D catalogue window's
+/// APPLIED frame ("fk5", "galactic", "supergalactic"), distance mode
+/// ("comoving", "redshift_space") and named cosmology ("Planck18"…; never
+/// "Custom", which the backend does not know). Empty for anything else: the
+/// page then asks the backend's defaults (fk5, comoving, Planck18).
+struct Sky
+{
+    QString frame;
+    QString distanceMode;
+    QString cosmology;
+    bool isSet() const { return !frame.isEmpty() || !distanceMode.isEmpty() || !cosmology.isEmpty(); }
+    bool operator==(const Sky &o) const
+    {
+        return frame == o.frame && distanceMode == o.distanceMode && cosmology == o.cosmology;
+    }
+    bool operator!=(const Sky &o) const { return !(*this == o); }
+};
+
 struct Inputs
 {
     QString baseUrl;     ///< the client's backend base URL (http://127.0.0.1:8000, a tunnel…)
@@ -48,6 +67,8 @@ struct Inputs
     QString kind;
     /// A velocity field's box size in Mpc, to open its path again ("" = grid units).
     QString boxMpc;
+    /// A sky catalogue's placement, the window's (issue #260).
+    Sky sky;
     /// Not the desktop's local backend (BackendClient::isLocalBackendUrl):
     /// a cluster's, reached through a local tunnel. Only labels the link.
     bool remote{ false };
@@ -164,6 +185,12 @@ inline Link build(const Inputs &in)
         fragment << u"kind="_s + encodeValue(in.kind);
     if (!in.boxMpc.isEmpty())
         fragment << u"box="_s + encodeValue(in.boxMpc);
+    if (!in.sky.frame.isEmpty())
+        fragment << u"sky_frame="_s + encodeValue(in.sky.frame);
+    if (!in.sky.distanceMode.isEmpty())
+        fragment << u"distance_mode="_s + encodeValue(in.sky.distanceMode);
+    if (!in.sky.cosmology.isEmpty())
+        fragment << u"cosmology="_s + encodeValue(in.sky.cosmology);
     // Appended by hand: QUrl::setFragment would re-encode the '%' of the
     // values (or decode them, depending on the mode) and the page decodes once.
     link.url = link.pageUrl + u'#' + fragment.join(u'&');

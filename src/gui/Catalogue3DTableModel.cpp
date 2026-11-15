@@ -53,8 +53,14 @@ QVariant Catalogue3DTableModel::data(const QModelIndex &index, int role) const
         return QString::number(entry.raDeg, 'f', 4);
     case DecColumn:
         return QString::number(entry.decDeg, 'f', 4);
-    case DistanceColumn:
-        return QString::number(Catalogue3DParser::detail::entryDistanceMpc(entry, *this->schema), 'f', 1);
+    case DistanceColumn: {
+        // On the sky sphere (a catalogue of positions only) the radius is not
+        // a distance (issue #265): none is shown.
+        const auto d = Catalogue3DParser::detail::entryDistance(entry, *this->schema);
+        if (d.origin == Catalogue3DParser::detail::DistanceOrigin::SkySphere)
+            return QStringLiteral("—");
+        return QString::number(d.mpc, 'f', 1);
+    }
     case XColumn:
         return QString::number(entry.sceneX, 'f', 3);
     case YColumn:

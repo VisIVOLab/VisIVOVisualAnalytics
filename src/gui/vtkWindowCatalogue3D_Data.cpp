@@ -169,6 +169,8 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     // positions — refresh it so it doesn't show stale distances after the recompute.
     this->refreshCatalogueTable();
     this->refreshViewerChrome();
+    // The headset's next show places the sources as they are placed here.
+    this->pushSkyToVrDialog();
     this->renderWindow->Render();
 }
 
@@ -240,6 +242,19 @@ Catalogue3DCosmologyTaskResult computeCustomCosmologyDistances(
 
 }   // namespace
 
+void vtkWindowCatalogue3D::applyHubbleConstant()
+{
+    // The redshift-space distance cz/H0 takes the applied model's H0: a custom
+    // model's own, a preset's as astropy has it. A name not known here keeps
+    // Planck18's, the local integrator's.
+    double h0 = this->m_appliedCosmologyModel == visivo::cosmology::customName()
+            ? this->m_appliedCustomCosmology.h0
+            : visivo::cosmology::presetH0(this->m_appliedCosmologyModel);
+    if (!(std::isfinite(h0) && h0 > 0.0))
+        h0 = visivo::cosmology::presetH0(u"Planck18"_s);
+    this->schema.hubbleH0 = h0;
+}
+
 visivo::cosmology::Model vtkWindowCatalogue3D::selectedCosmology() const
 {
     if (this->m_cosmologyModel == visivo::cosmology::customName())
@@ -290,6 +305,7 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     // just clear overrides so entryDistanceMpc() falls back to local values.
     if (this->m_cosmologyModel == QStringLiteral("Planck18")) {
         this->m_appliedCosmologyModel = this->m_cosmologyModel;
+        this->applyHubbleConstant();
         for (auto &e : this->entries)
             e.distanceMpc = std::numeric_limits<double>::quiet_NaN();
         this->recomputeScenePositionsAndRebuild();
@@ -447,7 +463,7 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
         // NaN = the backend refused that redshift, i.e. this row has no usable one.
         // CLEAR the override rather than skipping: leaving the previous value would
         // keep a stale distance from an earlier model, when what this row should do
-        // is fall back to its catalogue distance, or to the 300 Mpc default.
+        // is fall back to its catalogue distance or to the local Planck18 integral.
         if (!std::isfinite(d)) {
             ++refused;
             this->entries[static_cast<size_t>(i)].distanceMpc =
@@ -459,6 +475,7 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     this->m_appliedCosmologyModel = result.model.isEmpty() ? this->m_cosmologyModel : result.model;
     if (this->m_appliedCosmologyModel == visivo::cosmology::customName())
         this->m_appliedCustomCosmology = result.custom;
+    this->applyHubbleConstant();
     // Recompute positions from the applied overrides and rebuild — the shared
     // helper also reapplies the shells toggle and refreshes the table, so a
     // backend cosmology change keeps them consistent (R-14 follow-up).
@@ -585,19 +602,22 @@ void vtkWindowCatalogue3D::applyFilter()
                 }
 
                 out.entries = parsed.entries;
+                out.unplaced = parsed.unplaced;
                 out.totalRows = subset.totalRows;
                 out.returnedRows = subset.returnedRows > 0 ? subset.returnedRows
                                                            : static_cast<int>(subset.rows.size());
                 out.step = subset.step;
                 out.limit = pageSize;
+                // Rows loaded, the unplaced ones too (they are listed apart).
+                const auto loaded = out.entries.size() + out.unplaced.size();
                 out.statusMsg =
                         filters.empty()
                                 ? QStringLiteral("Loaded %1 of %2 sources.")
-                                          .arg(out.entries.size())
+                                          .arg(loaded)
                                           .arg(subset.totalRows)
                                 : QStringLiteral("%1 filter(s) active, %2 of %3 sources.")
                                           .arg(numFilters)
-                                          .arg(out.entries.size())
+                                          .arg(loaded)
                                           .arg(subset.totalRows);
                 out.valid = true;
                 return out;
@@ -701,6 +721,7 @@ void vtkWindowCatalogue3D::loadMoreEntries()
                 }
 
                 out.entries = parsed.entries;
+                out.unplaced = parsed.unplaced;
                 out.totalRows = subset.totalRows;
                 out.returnedRows = subset.returnedRows > 0 ? subset.returnedRows
                                                            : static_cast<int>(subset.rows.size());
