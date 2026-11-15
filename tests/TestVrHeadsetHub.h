@@ -42,5 +42,7 @@ private slots:
     void clientCallsTheHubRoutes();
     void linkFollowsPresenceAndActivity();
     void linkStopsQuietlyOnAnOldBackend();
+    void onlyFastApisOwn404IsForGood();
+    void linkAsksAgainAfterAnAmbiguous404();
     void bodiesMatchTheBackendsRequestModels();
 };

@@ -60,44 +60,23 @@ export function cropPixels(clip, fullShape) {
  * summary, cropped, cropKey}. `values` the full map (width × height of the
  * full cube's pixels, else not cut).
  */
-export function cutWhole(order, values, width, height, clip, fullShape, { sample = 0 } = {}) {
+export function cutWhole(order, values, width, height, clip, fullShape) {
   const crop = wholeCrop(width, height, clip, fullShape);
   const box = crop || [0, width - 1, 0, height - 1];
   const cut = crop ? PC.crop(values, width, box[0], box[1], box[2], box[3]) : values;
-  // One pass for the numbers shown and the exact finite range; a re-cut (the
-  // crop changed) takes a velocity field's robust range from at most `sample`
-  // of its finite values: its two sorts stay a few ms (#300).
+  // One pass for the numbers shown and the exact finite range; a velocity
+  // field's robust range from at most PC.RANGE_SAMPLE of its finite values,
+  // the first cut as every re-cut (#300, #302): its two sorts stay a few ms.
   const st = mapStats(cut);
-  const range = colourRange(order, cut, sample, st);
+  const range = colourRange(order, cut, st);
   return { box, cut, range, summary: { pixels: st.pixels, sum: st.sum }, cropped: !!crop, cropKey: JSON.stringify(crop) };
 }
-/**
- * At most n of the finite values of `a`, evenly strided among them (#300):
- * all of them when there are n or fewer, so a sparse map (a NaN-masked
- * field with a compact source) is never sampled into too few values, nor
- * into none. `count` the finite values of `a` when known (mapStats), else
- * counted: one or two passes over `a`, no sort.
- */
-export function finiteSample(a, n, count = null) {
-  if (count === null) {
-    count = 0;
-    for (let i = 0; i < a.length; i++) if (Number.isFinite(a[i])) count++;
-  }
-  const out = new Float32Array(Math.min(count, n));
-  if (!out.length) return out;
-  const step = count <= n ? 1 : count / n;
-  let k = 0, j = 0, next = 0;
-  for (let i = 0; i < a.length && j < out.length; i++) {
-    const v = a[i];
-    if (!Number.isFinite(v)) continue;
-    if (k === next) { out[j++] = v; next = Math.floor(j * step); }
-    k++;
-  }
-  return out;
-}
-/** A re-cut waits for the crop to stay still this long (ms), and samples this many values for its range. */
+/** At most n of the finite values of `a` (product-canvas.js finiteSample). */
+export const finiteSample = PC.finiteSample;
+/** The most values a robust range sorts (product-canvas.js). */
+export const RANGE_SAMPLE = PC.RANGE_SAMPLE;
+/** A re-cut waits for the crop to stay still this long (ms). */
 export const RECUT_MS = 250;
-export const RECUT_SAMPLE = 65536;
 /** The crop's pixels for a whole-field map of width × height, or null (cheap: the key of a cut). */
 export function wholeCrop(width, height, clip, fullShape) {
   return fullShape && width === fullShape[0] && height === fullShape[1] ? cropPixels(clip, fullShape) : null;
@@ -170,16 +149,16 @@ export function cropBox(bbox, w, h, pad = null) {
 /** The colour range of an order: the desktop's robust symmetric range for a
  *  velocity field, the finite range otherwise. The finite range is always
  *  exact (one pass, no sort; `stats` mapStats of `values` when already
- *  made); with `sample` (#300) the robust range is measured on at most that
- *  many finite values (finiteSample: all of them on a map with fewer), its
- *  median and MAD sorts being the slow part. */
-export function colourRange(order, values, sample = 0, stats = null) {
+ *  made); the robust range is measured on at most PC.RANGE_SAMPLE finite
+ *  values (#300, #302: all of them on a map with fewer), its median and MAD
+ *  sorts being the slow part. No sort of the whole map, ever. */
+export function colourRange(order, values, stats = null) {
+  const st = stats || mapStats(values);
   if (order === 1) {
-    const r = PC.robustSymmetricRange(sample ? finiteSample(values, sample, stats ? stats.pixels : null) : values);
+    const r = PC.robustSymmetricRange(values, st.pixels);
     if (r) return r;
   }
-  if (stats) return stats.pixels ? [stats.lo, stats.hi] : [0, 1];
-  return PC.finiteRange(values) || [0, 1];
+  return st.pixels ? [st.lo, st.hi] : [0, 1];
 }
 
 /** mapSummary and the finite range [lo, hi] in one pass (#300):
@@ -199,9 +178,8 @@ export function mapStats(values) {
 /** Map statistics shown under the title: the number of finite pixels and
  *  their sum (in the map's unit). */
 export function mapSummary(values) {
-  let n = 0, sum = 0;
-  for (const v of values) if (Number.isFinite(v)) { n++; sum += v; }
-  return { pixels: n, sum };
+  const { pixels, sum } = mapStats(values);
+  return { pixels, sum };
 }
 
 /**
@@ -379,7 +357,7 @@ export function createMomentTool(ctx) {
     const R = t.result;
     if (!R || !R.whole || !ctx.clip) return false;
     if (cropKeyOf(R) === R.cropKey) return false;
-    const c = cutWhole(R.order, R.values, R.width, R.height, ctx.clip(), R.fullShape, { sample: RECUT_SAMPLE });
+    const c = cutWhole(R.order, R.values, R.width, R.height, ctx.clip(), R.fullShape);
     t.result = { ...R, ...c };
     t.recutPending = null;
     draw();

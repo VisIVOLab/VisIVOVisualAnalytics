@@ -361,9 +361,13 @@ tools by task, together with the page that documents their scientific use.
   - **Inspector ▸ Analysis ▸ SPECTRUM ▸ Fit Gaussian** (**Clear Fit** to remove)
   - Gaussian + linear baseline, peak / centre / FWHM / ∫ with 1σ errors
   - [Spectral tools · Gaussian line fit](user-guide/spectral-tools.md#gaussian-line-fit)
-* - Open the cube in a VR headset (Windows / Linux, opt-in build)
-  - **Tools → Open in VR**
-  - OpenXR stereo render — LUT / threshold / opacity TF synced live
+* - Explore the cube in a Meta Quest headset
+  - **Tools → Views → Open in VR Headset…** (pair by code, or the VisIVO VR app over USB); **Show on Headset**, **Headset Activity**
+  - The cube in the headset, analysed on the full cube by the backend; what is made there opens on the desktop
+  - [Cubes in a VR headset](user-guide/vr/index.md)
+* - Open the cube in an OpenXR headset (Windows / Linux, opt-in build)
+  - **Tools → Views → Open in VR**
+  - OpenXR stereo render: LUT, threshold and opacity transfer function synced live
   - [Cube viewer · Open in VR](user-guide/cube-viewer.md#open-in-vr)
 * - **ANALYSIS tools**
   -

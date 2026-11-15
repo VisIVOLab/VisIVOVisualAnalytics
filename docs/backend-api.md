@@ -23,6 +23,10 @@ answered 401. The exceptions:
 | `GET /v1/node/status`, `GET /v1/metrics` | Open by default; require the token when `VISIVO_NODE_STATUS_PUBLIC=0` |
 | `GET /soda/capabilities`, `GET /soda/availability` | Open |
 | `GET /v1/samp/files/{token}` | Open (the file token is the credential) |
+| `GET /vr/`, `GET /vr/b/{build}/{path}` | Open: the VR page and its assets (the page asks for the token itself) |
+| `GET /v1/vr/info` | Open; with a token it also says whether the token is accepted ([Meta, sessions, files and diagnostics](backend-api/meta-files.md)) |
+| `GET /.well-known/assetlinks.json` | Open: the headset app's asset links ([Headset app launch](backend-api/vr-launch.md)) |
+| `POST /v1/vr/launch/exchange` | Open: the one-time launch ticket is the credential ([Headset app launch](backend-api/vr-launch.md)) |
 | `WebSocket /v1/render/{session_id}/ws` | Token in the `token` query parameter or the header; a bad token closes the socket with code 1008 |
 
 A few server-wide routes (`/v1/sessions`, `/v1/diagnostics/events`, the
@@ -120,9 +124,9 @@ rendering, remote-service allowlists, limits) is documented in the
 | Server-side rendering | `/v1/render/*` | [Server-side rendering](backend-api/render.md) |
 | Ray-traced particles | `/v1/particle_render/*`, `/v1/tasks/particle_render` | [Ray-traced particle rendering](backend-api/particle-render.md) |
 | Ray-traced volumes | `/v1/volume_render/*`, `/v1/tasks/volume_render` | [Ray-traced volume rendering](backend-api/volume-render.md) |
-| VR headset layers | `/v1/points/*`, `/v1/cube/catalogue_pixels`, `/v1/velocity/lines_bin` | [Points, catalogues and flows for the headset](backend-api/vr-layers.md) |
+| VR headset layers | `/v1/points/*`, `/v1/cube/catalogue_pixels`, `/v1/catalogue/classified_votable`, `/v1/cube/mask_layer_bin`, `/v1/cube/mask_layer_save`, `/v1/velocity/lines_bin` | [Points, catalogues and flows for the headset](backend-api/vr-layers.md) |
 | Headset pairing | `/v1/vr/pair` | [Headset pairing by code](backend-api/vr-pair.md) |
-| Headset hub (presence, commands, activity) | `/v1/vr/headset*`, `/v1/vr/activity` | [Headset hub](backend-api/headset-hub.md) |
+| Headset hub (presence, commands, activity, spectator view) | `/v1/vr/headset*`, `/v1/vr/activity` | [Headset hub](backend-api/headset-hub.md) |
 | Headset app launch (tickets, asset links) | `/v1/vr/launch*`, `/.well-known/assetlinks.json` | [Headset app launch](backend-api/vr-launch.md) |
 | SRC node and SODA | `/v1/ping`, `/v1/node/status`, `/v1/metrics`, `/soda/*` | [SRC node and SODA](backend-api/node-soda.md) |
 | Assistant | `/v1/assistant/*` | [Assistant](backend-api/assistant.md) |

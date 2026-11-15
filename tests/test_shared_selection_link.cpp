@@ -122,7 +122,84 @@ private:
     }
 };
 
+// A hub that refuses one token (401, as a restarted backend refuses the token
+// of the process before it) and answers the other: 204 to a read, and the
+// long poll held open. Each request's token is recorded.
+class TokenHub : public QObject
+{
+public:
+    TokenHub()
+    {
+        server.listen(QHostAddress::LocalHost);
+        QObject::connect(&server, &QTcpServer::newConnection, this, [this]() {
+            while (QTcpSocket *s = server.nextPendingConnection()) {
+                QObject::connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
+                auto received = std::make_shared<QByteArray>();
+                QObject::connect(s, &QTcpSocket::readyRead, this, [this, s, received]() {
+                    *received += s->readAll();
+                    const qsizetype end = received->indexOf("\r\n\r\n");
+                    if (end < 0) return;
+                    QByteArray token;
+                    for (const QByteArray &line : received->left(end).split('\n')) {
+                        if (line.toLower().startsWith("x-visivo-token:"))
+                            token = line.mid(15).trimmed();
+                    }
+                    const QByteArray requestLine = received->left(received->indexOf("\r\n"));
+                    received->clear();
+                    tokens << QString::fromUtf8(token);
+                    if (token == refused) {
+                        reply(s, "401 Unauthorized", R"({"detail":"Invalid token"})");
+                        return;
+                    }
+                    if (requestLine.contains("wait=0")) {
+                        reply(s, "204 No Content", {});
+                        return;
+                    }
+                    // The long poll: held open until the link stops.
+                });
+            }
+        });
+    }
+    QString url() const { return u"http://127.0.0.1:%1"_s.arg(server.serverPort()); }
+
+    QTcpServer server;
+    QByteArray refused;
+    QStringList tokens;
+
+private:
+    static void reply(QTcpSocket *s, const QByteArray &status, const QByteArray &body)
+    {
+        s->write("HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: "
+                 + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+        s->disconnectFromHost();
+    }
+};
+
 } // namespace
+
+void TestSharedSelectionLink::aRefreshedTokenIsTakenAtOnce()
+{
+    // The local backend restarted with a new token: every request with the
+    // old one is refused, and the link backs off further each time. Started
+    // again for the same cube with the new token, it must use it at once,
+    // not keep the old one until the window is reopened.
+    TokenHub hub;
+    hub.refused = "old";
+    SharedSelectionLink link;
+    link.start(hub.url(), u"old"_s, u"s"_s, u"ds_a"_s, 10, 12, 8);
+    QTRY_VERIFY_WITH_TIMEOUT(hub.tokens.size() >= 2, 5000);   // refused, and backing off
+    QVERIFY(!hub.tokens.contains(u"new"_s));
+    link.start(hub.url(), u"new"_s, u"s"_s, u"ds_a"_s, 10, 12, 8);
+    QVERIFY(link.running());
+    // Well before the next backoff step (2 s, then 5 s): read again now, then
+    // the long poll, both with the new token.
+    QTRY_VERIFY_WITH_TIMEOUT(hub.tokens.count(u"new"_s) >= 2, 900);
+    const qsizetype settled = hub.tokens.size();
+    QTest::qWait(300);
+    QCOMPARE(hub.tokens.size(), settled);   // on the long poll, nothing refused
+    QVERIFY(hub.tokens.lastIndexOf(u"old"_s) < hub.tokens.indexOf(u"new"_s));
+    link.stop();
+}
 
 void TestSharedSelectionLink::theDelayedRetryOfAnOlderSelectionIsDropped()
 {

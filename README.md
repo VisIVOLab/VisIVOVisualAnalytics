@@ -56,6 +56,12 @@ rotation-measure synthesis over the frequency axis.
 overlays, SED fitting, and SAMP with TOPCAT, Aladin and DS9: images and
 catalogues are sent and received, and selected rows are linked both ways.
 
+**VR headset**: a cube, a simulation snapshot, a catalogue or a velocity
+field explored in a Meta Quest, opened from the desktop by a pairing code or
+over the USB cable with the VisIVO VR app; selections, moments, PV slices and
+HI measurements are computed on the full cube by the backend, and what is
+made in the headset opens on the desktop.
+
 **Scientific Copilot** — ask questions in natural language; every number is
 produced by a real backend tool rather than generated text, with provenance and
 a reproducibility script. Works with a hosted model or one you run yourself.

@@ -47,8 +47,20 @@ SharedSelectionLink::~SharedSelectionLink()
 void SharedSelectionLink::start(const QString &baseUrl, const QString &token, const QString &session,
                                 const QString &datasetId, int fullW, int fullH, int fullD)
 {
-    if (m_running && baseUrl == m_baseUrl && session == m_session && datasetId == m_datasetId)
+    if (m_running && baseUrl == m_baseUrl && session == m_session && datasetId == m_datasetId) {
+        if (token.isEmpty() || token == m_token)
+            return;
+        // The same hub with a refreshed token (the local backend restarted
+        // with a new one): what is on screen and the cursors stay, the
+        // requests out carry the old token and would only get 401, so they go
+        // and the link reads the hub again at once. A publish out keeps its
+        // own answer (it is not tied to the poll).
+        m_token = token;
+        restartRequests();
+        m_fails = 0;
+        reconcile();
         return;
+    }
     stop();
     m_baseUrl = baseUrl;
     m_token = token;
@@ -73,6 +85,12 @@ void SharedSelectionLink::stop()
 {
     m_running = false;
     ++m_generation;
+    restartRequests();
+}
+
+void SharedSelectionLink::restartRequests()
+{
+    ++m_readGeneration;
     m_reconciling = m_reconcileAgain = false;
     m_retry.stop();
     for (QPointer<QNetworkReply> *p : { &m_poll, &m_rec }) {
@@ -124,10 +142,10 @@ void SharedSelectionLink::poll()
     req.setTransferTimeout(kTransferTimeoutMs);
     QNetworkReply *reply = m_nam->get(req);
     m_poll = reply;
-    const quint64 gen = m_generation;
+    const quint64 gen = m_readGeneration;
     connect(reply, &QNetworkReply::finished, this, [this, reply, gen]() {
         reply->deleteLater();
-        if (gen != m_generation) return;     // stopped or restarted meanwhile
+        if (gen != m_readGeneration) return;     // stopped or restarted meanwhile
         m_poll = nullptr;
         onPollFinished(reply);
     });
@@ -187,10 +205,10 @@ void SharedSelectionLink::reconcile()
     m_reconcileAgain = false;
     QNetworkReply *reply = getLatest();
     m_rec = reply;
-    const quint64 gen = m_generation;
+    const quint64 gen = m_readGeneration;
     connect(reply, &QNetworkReply::finished, this, [this, reply, gen]() {
         reply->deleteLater();
-        if (gen != m_generation) return;
+        if (gen != m_readGeneration) return;
         m_rec = nullptr;
         reconcileStep1(reply, gen);
     });
@@ -256,7 +274,7 @@ void SharedSelectionLink::reconcileStep1(QNetworkReply *reply, quint64 gen)
     m_rec = mr;
     connect(mr, &QNetworkReply::finished, this, [this, mr, gen, latest, t, own, shownBefore, floorBefore]() {
         mr->deleteLater();
-        if (gen != m_generation) return;
+        if (gen != m_readGeneration) return;
         m_rec = nullptr;
         const int ms = httpStatus(mr);
         const QByteArray mask = mr->readAll();
@@ -281,7 +299,7 @@ void SharedSelectionLink::reconcileStep1(QNetworkReply *reply, quint64 gen)
         m_rec = cr;
         connect(cr, &QNetworkReply::finished, this, [this, cr, gen, latest, mask, t, own, shownBefore, floorBefore]() {
             cr->deleteLater();
-            if (gen != m_generation) return;
+            if (gen != m_readGeneration) return;
             m_rec = nullptr;
             const int cs = httpStatus(cr);
             const QByteArray cbody = cr->readAll();
@@ -300,7 +318,7 @@ void SharedSelectionLink::reconcileStep1(QNetworkReply *reply, quint64 gen)
             m_view.shownNonce = latest.nonce;
             m_lastSeq = std::max(m_lastSeq, latest.seq);
             emit received(latest, mask, t.elapsed(), own);
-            if (gen == m_generation) reconcileDone();
+            if (gen == m_readGeneration) reconcileDone();
         });
     });
 }

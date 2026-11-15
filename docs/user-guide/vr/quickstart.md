@@ -10,7 +10,8 @@ Quest:
 - **[Advanced: USB cable](#advanced-usb-cable)**: adb and a cable (or adb over
   Wi-Fi). It works offline, so it is the way for a computer without internet,
   for demos on a network you do not control, and when no pairing server is
-  configured.
+  configured. Over the cable the desktop installs and starts the
+  [VisIVO VR headset app](headset-app.md), which puts you straight in VR.
 
 Both open the cube in the same backend session as the desktop, and the page in
 the headset is the same.
@@ -91,7 +92,7 @@ Once a headset page is open, it is the one the desktop uses
   from the app's icon says the same, except a refusal for want of a press,
   which only adds *press Enter VR*.
 - **What you do in the headset reaches the desktop.** The colour map and
-  threshold you choose, the clipping box, and every product (a spectrum, a
+  threshold you choose, the spatial crop and velocity range, and every product (a spectrum, a
   moment map, a PV slice, an isolated or removed cube, a catalogue or a
   velocity field opened on the page) are reported to the desktop, about half
   a second after the last change of a slider. Each product is first saved in
@@ -195,8 +196,12 @@ Headset…* dialog it is under **Advanced (USB cable)**.
    cable)**. The dialog says what is missing, step by step; the first time,
    put the headset on and accept **Allow USB debugging** (tick *Always allow
    from this computer*).
-4. Press **Open on Headset**, put the headset on: the cube loads in the Quest
-   Browser. Press **Enter VR**.
+4. Put the headset on and press **Open on Headset**. With the release
+   packages, the desktop installs the VisIVO VR app when needed and starts it
+   straight in VR with the cube: no browser window and no Enter VR (see
+   [The headset app](headset-app.md)). A desktop without the app (built from
+   source without it), or **Open in Browser**, opens the page in the Quest
+   Browser instead: press **Enter VR** there.
 5. The first time, a short controls guide is on the 2-D page before you enter
    VR (*Got it* hides it; in VR the hand menu's More → Guide shows it beside
    the cube). The grips move the cube,
@@ -261,10 +266,14 @@ sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
    When a step fails, **Copy Error** copies the error, the state and the adb
    found (never the token) for a support request.
 3. Press **Open on Headset**. The application forwards the backend's port to
-   the headset (`adb reverse tcp:<port> tcp:<port>`) and opens the page in
-   the Quest Browser (`am start` with a view intent; in the headset's default
-   browser if the Quest Browser is not installed). The cube loads on the
-   page; press **Enter VR**.
+   the headset (`adb reverse tcp:<port> tcp:<port>`). When it has the
+   VisIVO VR app, it installs or updates the app when needed and starts it
+   in VR with the cube, with a one-time launch ticket instead of the token
+   (see [The headset app](headset-app.md)). Without the app, or with
+   **Open in Browser**, it opens the page in the Quest Browser (`am start`
+   with a view intent; in the headset's default browser if the Quest Browser
+   is not installed): the cube loads on the page; press **Enter VR**. The
+   rest of this section describes that browser page.
 
 Repeat *Open on Headset* after unplugging the cable or restarting the
 headset: the port forwarding ends then.

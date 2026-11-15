@@ -342,3 +342,14 @@ test('a frame drawn by another splat rule is dropped and said why (#263)', () =>
   assert.equal(uploads.length, 1, 'the page\'s own rule is shown');
   assert.equal(r.error, '', 'and the reason cleared');
 });
+
+test('review (#305): lastSwitch is the newest setDataset\'s promise; datasetId changes at once', async () => {
+  const r = new Refiner(null, () => slowBackend(), { draw: stubDraw });
+  await r.lastSwitch;                         // settled before any switch
+  const p = r.setDataset('A');
+  assert.equal(r.lastSwitch, p, 'the promise returned is the one kept');
+  assert.equal(r.datasetId, 'A', 'the id at once, the old session closed when it settles');
+  const q = r.setDataset('B');
+  assert.equal(r.lastSwitch, q);
+  await Promise.all([p, q]);
+});

@@ -15,8 +15,11 @@
 // - activity, a long poll of GET /v1/vr/activity (as SharedSelectionLink
 //   follows the selection hub), kept in a VrHub::ActivityLog and announced by
 //   activityChanged().
-// A backend without the hub (FastAPI's bare 404) stops both for good, quietly:
-// the windows then offer nothing headset-related.
+// A backend without the hub (FastAPI's bare JSON 404) stops both for good,
+// quietly: the windows then offer nothing headset-related. A 404 that FastAPI
+// did not write (a proxy's or tunnel's HTML page, or an empty one, as while
+// the backend restarts behind it) stops them too, but only for a while: the
+// link asks again after kReprobeIntervalMs, and at once when a window joins.
 //
 // The requests carry the session's token and id in their headers
 // (BackendClient::applySessionHeaders); nothing here logs either.
@@ -53,7 +56,7 @@ public:
     QString token() const { return m_token; }
     QString session() const { return m_session; }
     bool running() const { return m_running; }
-    /// False once the backend said it has no hub.
+    /// False once the backend said it has no hub (until a later probe finds it).
     bool supported() const { return !m_unsupported; }
     const QList<VrHub::Headset> &headsets() const { return m_headsets; }
     const VrHub::ActivityLog &activity() const { return m_log; }
@@ -65,12 +68,18 @@ public:
     static constexpr int kPresenceIntervalMs = 5000;
     /// The long poll's wait (s; the hub caps it at 25).
     static constexpr int kWaitS = 20;
+    /// How long after an ambiguous "no hub" (a 404 FastAPI did not write) the
+    /// link asks again (ms).
+    static constexpr int kReprobeIntervalMs = 60000;
+    /// Shortens that wait, for the tests.
+    void setReprobeInterval(int ms) { m_reprobe.setInterval(ms); }
 
 signals:
     void headsetsChanged();
     /// New events were listed (the log changed).
     void activityChanged();
-    /// The backend has no hub: nothing more will come.
+    /// The backend has no hub: nothing more will come (or, when it was not
+    /// sure, not before a later probe finds the hub: headsetsChanged then).
     void stopped(const QString &why);
 
 private:
@@ -85,7 +94,12 @@ private:
     void onActivity(QNetworkReply *reply);
     void retryActivityLater();
     void onPresence(QNetworkReply *reply);
-    void markUnsupported();
+    /// @p forGood: FastAPI's own 404, never asked again; otherwise asked
+    /// again after kReprobeIntervalMs.
+    void markUnsupported(bool forGood);
+    /// The hub answered: a link that had taken it for missing says it is back.
+    void markSupported();
+    void reprobe();
     QNetworkReply *get(const QUrl &url, int transferTimeoutMs);
 
     QNetworkAccessManager *m_nam{ nullptr };
@@ -93,6 +107,8 @@ private:
     QSet<QObject *> m_users;
     bool m_running{ false };
     bool m_unsupported{ false };
+    bool m_unsupportedForGood{ false };
+    QTimer m_reprobe;   ///< the next probe after an ambiguous "no hub"
     quint64 m_generation{ 0 };
     // Activity
     VrHub::ActivityLog m_log;

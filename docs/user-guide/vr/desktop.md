@@ -20,6 +20,14 @@ feature, the dialog is the pairing dialog described in
 headset page that connects later (by code or over the USB cable) switches it
 to the connected-headset view by itself, and a code nobody used stops working.
 
+A catalogue window whose backend session expired opens its catalogue again in
+a new session when it needs it (for example on **Load more**). An open dialog
+follows it: a code shown and not yet used stops working and a new one, for
+the new session, takes its place; a show or a launch still under way is
+dropped (press the button again); and the dialog asks the new session for a
+headset page already open. A headset that was paired with the old session
+stays on it: pair it again with the new code.
+
 The dialog grows with its text but stays on the screen: it moves up when its
 bottom would go past the screen's, and on a short screen its sections scroll
 while **Close** stays at the bottom.
@@ -67,6 +75,13 @@ of what was done in the headset of this session, newest first, each line with
 its time and a summary (wrapped to the panel's width): the cube it switched to, changes of the look and of
 the clip box (the latest of each per cube), and the products made there.
 
+A backend older than this feature has no headset hub, and the panel says so.
+When the answer is ambiguous (a 404 page from a proxy or tunnel rather than
+the backend's own, as while a remote backend restarts behind its tunnel), the
+windows ask again a minute later, and at once when another cube window of the
+session opens: once the hub answers, **Show on Headset**, the activity list
+and following the headset's look come back by themselves.
+
 Each product has an **Open** button, which opens it in the desktop's own
 viewer:
 
@@ -106,8 +121,9 @@ whether or not Headset Activity is open:
   the headset's *hot* has no counterpart, and the status bar says so);
 - the threshold, in the cube's units, as if typed in the threshold field;
 - the clip box crops the 3-D volume, also when the backend renders the view
-  (the slice views are not clipped). A slab set in the headset's Clip mode is
-  a clip box along the spectral axis, so it follows too.
+  (the slice views are not clipped). A velocity range set in the headset
+  (the menu's Range tab) is a clip box along the spectral axis, so it follows
+  too.
 
 Each change taken from the headset is said briefly in the status bar, for
 example *Colour map and threshold from the headset*.

@@ -759,10 +759,11 @@ rotating disk — without exporting each one and replotting externally.
 Open the current cube in a VR headset and explore the volume in stereo.
 
 ```{note}
-For a Meta Quest connected to a Mac (or any computer with adb), use
-**Tools → Views → Open in VR Headset…** instead: it needs no OpenXR runtime
-and opens the cube in the headset's browser, in the same backend session. See
-[Open a cube from the desktop](vr/quickstart.md#open-a-cube-from-the-desktop).
+For a Meta Quest, use **Tools → Views → Open in VR Headset…** instead: it
+needs no OpenXR runtime. It pairs the headset by a code, or over the USB cable
+installs and starts the VisIVO VR app straight in VR, in the same backend
+session as the desktop. See [Cubes in a VR headset](vr/index.md) and
+[The headset app](vr/headset-app.md).
 ```
 The same `vtkVolume` actor used by the desktop renderer is shared with
 the OpenXR render window, so the LUT, threshold and opacity transfer

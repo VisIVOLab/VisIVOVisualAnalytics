@@ -418,3 +418,44 @@ test('review (#279): a found source removed then another added since the save: S
   f.src.press('send');
   assert.equal(details[1].file, undefined, 'the changed work is written, not the old file told again');
 });
+
+test('review (#305): a found source whose cube or catalogue changed during the sky lookup is not added to the new work', async () => {
+  for (const change of ['cube', 'catalogue']) {
+    let answer;
+    const store = new Map();
+    const state = { info, openPath: '/data/a/cube.fits', open: { dataset_id: 'd1' }, clip: { min: [0, 0, 0], max: [1, 1, 1] }, extent: [1, 1, 0.625] };
+    let ovNow = ov;
+    const backend = { pixelToSky: () => new Promise((res) => { answer = res; }) };
+    const src = createSources({ renderer: { createPanel: () => ({}), updatePanel() {} }, state, overlay: () => ovNow, backend: () => backend,
+      selection: { sel: { lasso: null, spectrum: { x: 5, y: 6, channel: 7 }, pick: null } }, settings: () => ({}),
+      storage: { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) }, onVisit() {}, onChange() {}, report: () => null });
+    src.refresh();
+    const going = src.addFound();
+    if (change === 'cube') { state.openPath = '/data/b/other.fits'; state.open = { dataset_id: 'd2' }; } else ovNow = { ...ov };
+    src.refresh();                          // the page drew the new work meanwhile
+    answer({ valid: true, ra_deg: 150, dec_deg: 2 });
+    await assert.rejects(going, /changed during the sky lookup/, change);
+    assert.equal(src.state.user.length, 0, `${change}: nothing in the new work`);
+    assert.equal(src.state.nextUser, 1, `${change}: no number taken`);
+    assert.equal([...store.values()].filter((v) => JSON.parse(v).user.length).length, 0, `${change}: nothing stored`);
+  }
+  // Unchanged: added as before.
+  const f = fakeSources({ overlay: ov });
+  const u = await f.src.addFound();
+  assert.equal(u.label, 'VR-1');
+});
+
+test('review (#305): a restored context keeps the Sources window\'s panel handle (no new texture each time)', () => {
+  let made = 0;
+  const renderer = { createPanel: () => { made++; return { id: made }; }, updatePanel() {} };
+  const state = { info, openPath: '/data/a/cube.fits', open: { dataset_id: 'd1' }, clip: { min: [0, 0, 0], max: [1, 1, 1] }, extent: [1, 1, 0.625] };
+  const w = createSources({ renderer, state, overlay: () => ov, backend: () => null, selection: { sel: {} }, settings: () => ({}), storage: null,
+    onVisit() {}, onChange() {}, report: () => null });
+  const t1 = w.texture();
+  w.restore();
+  const t2 = w.texture();
+  w.restore();
+  w.texture();
+  assert.equal(made, 1, 'one panel for the window\'s life');
+  assert.equal(t2, t1, 'the same handle (R.restore() made its texture again)');
+});

@@ -237,7 +237,7 @@ the pyramid, the finest within its GPU budget (`VISIVO_RENDER_OOC_BUDGET_BYTES`,
 the first pose arrives (0.4 to 0.7 s here), and keeps it for every pose, so a
 moving head never makes the backend read other blocks; after the headset's
 session stops, its mono view chooses its own blocks again. The placement,
-threshold, colours, clipping box, velocity slab and depth image are those of
+threshold, colours, spatial crop, velocity range and depth image are those of
 an in-core cube, and the ray step is in voxels of the level drawn; the HUD's
 *server* line adds *pyramid level 1*. At 1680 pixels per eye a level of about
 1000 voxels across already gives about one voxel per pixel for a cube at
@@ -267,7 +267,7 @@ the motion alone.
 
 **What is refined.** The backend draws with the page's own look: the colour
 map, threshold, colour maximum, stretch, opacity, emission or maximum
-intensity, the clipping box and the velocity slab, and the velocity stretch.
+intensity, the spatial crop and the velocity range, and the velocity stretch.
 The page sends them as the session's transfer function and crop on the full
 cube's values (`set_transfer_functions`, `set_crop`), so a refined frame
 differs from the headset's only by what the binning and the headset's ray
@@ -349,7 +349,7 @@ the backend's idle timeout closes it. A synthetic cube has no session
 (*refine unavailable: no backend cube*). A cube the backend draws out of core
 (larger than its in-core limit, `VISIVO_RENDER_OUT_OF_CORE_BYTES`) is refined
 too, from one level of its brick pyramid: see [Large cubes](#large-cubes-from-the-brick-pyramid).
-A clipping box the backend would refuse is not sent (nor any
+A crop the backend would refuse is not sent (nor any
 pose with it), and the menu says why.
 
 **Settings** (on the page, section above *Selection tool*; with `?debug` also
@@ -893,7 +893,7 @@ on its [numbers on the wrist](controls.md#the-numbers-on-the-wrist).
 **Timings of the analysis** (Apple M5 Max, Chrome, HCG 44, the mouse on the
 page): a grow with seeds 0.6-0.7 s as before, Isolate 0.18 s, Remove 0.12 s, a
 moment 0.13-0.38 s (isolate reused), a PV of 50 samples × 158 channels 0.06 s.
-The drawing cost of the menu's Analysis page and the result windows is under
+The drawing cost of the menu and the result windows is under
 [Menu and panel drawing cost](#menu-and-panel-drawing-cost).
 
 ### Shared selections
@@ -1175,8 +1175,9 @@ the [report](#the-report) is made from.
    tcp:8000 tcp:8000`) and open the page with `?record` added to its address
    (or tick *record measurements*), load HCG 44 with auto binning, leave
    *Refresh* at 72 Hz, *Resolution* 1 and *Foveation* as it is, and note them.
-2. Enter VR. Open the hand menu's **Settings**: *Record measurements* is on.
-   Press **Run protocol** on the same row. Follow the card: hold still, turn
+2. Enter VR. Open the hand menu's **More → Technical settings ▸** (the page
+   needs `?debug` in its address): *Record measurements* is on. Press **Run
+   protocol** on the same row. Follow the card: hold still, turn
    slowly, turn and stop at the pulses; read each prompt during its 3 s
    lead-in (the card then moves aside). The run takes about 3 min 12 s plus
    the refined conditions' connection; don't open the menu during it. If a
@@ -1327,26 +1328,26 @@ matching canvases as PNG files.
 
 Over USB (`adb reverse`) or Wi-Fi, with the HCG 44 cube and then a simulation
 snapshot (a VBT point table), the page opened **without** `?debug`, then with
-it for the last step. Count the presses from opening the menu (the hold of X
+it for the last step. Count the presses from opening the menu (the press of X
 does not count). The menu asks for 0.77 × 0.72 m at 0.95 m (about 44° wide);
 the work on [#267](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/267)
 suspects the Quest Browser draws composition layers twice as large as asked,
 so note in step 1 how wide the menu looks (about half the view's width is as
 asked; wider than the view means doubled) and whether #267's fix is in.
 
-1. **Where it opens.** Look at the cube and hold X. The menu must stand about
-   a metre in front of you, a little below your eyes, facing you, with its
-   text as easy to read as the old menu by the wrist (about 1° high). Turn
-   your head and move your left hand while holding X: the menu must not move.
+1. **Where it opens.** Look at the cube and press X. The menu must stand
+   about a metre from your eyes, just above and beyond the left controller
+   (see [#276](#x-toggles-the-menu-and-every-text-fits-276)), facing you,
+   with its text as easy to read as the old menu by the wrist (about 1°
+   high). Turn your head and move your left hand: the menu must not move.
    Report whether the distance is comfortable for the ray (too far, too near).
 2. **Moving it.** Point at the title bar (top strip), hold the trigger and
    swing the ray: the menu follows at the same distance, turned to you. Let
    go: it stays.
-3. **Keep open.** Footer → *Keep open*, let go of X: the menu stays; your left
-   hand is free. The next press of X closes it. (Gone since #276: X now opens
-   and closes the menu, see above.)
+3. **Closing.** Press X again, or pull the trigger on the × at the right of
+   the title bar: the menu closes.
 4. **The tabs.** Display, Range, Select, Measure, More, and the footer (Undo,
-   Reset view, Keep open) under every tab. No Help tab, no Mode page, no
+   Reset view) under every tab. No Help tab, no Mode page, no
    refinement, governor, recording or threshold-source row anywhere.
 5. **The Done list, HCG 44** (each at most two presses): faint emission
    (Display → a colour map swatch; Display → drag Threshold, its value in
@@ -1389,62 +1390,60 @@ asked; wider than the view means doubled) and whether #267's fix is in.
 
 ### Controls and the hand menu (#201)
 
-The menu's names here are those before #257 (see the table in
+These checks began with #201; they are written here with the controls and
+names in use since #257 and #276 (the old names are in the table in
 [The hand menu](controls.md#the-hand-menu)).
 
 Over USB (`adb reverse`), the cube of your choice (HCG 44 if you have it), the
 settings left at their defaults the first time.
 
 1. **First entry.** Clear the page's storage first (or use a new browser
-   profile) and press **Enter VR**: the guide must stand in front of you with
-   four pages (*Your two hands*, *The menu*, *Three modes*, *Hands without
-   controllers*), *Next*, *Back*, *Close*. Labels must float above both
-   controllers. Report whether you understood what to do without this page.
-2. **Labels.** Above the right controller: *EXPLORE*, then *Trigger: pin the
-   readout*, *Grip: grab*, *Stick ↕: threshold*, *Stick ↔: opacity*,
-   *A: next mode*, *B: undo*. Above the left: *Hold X: menu*, *Y: reset view*,
-   *Grip: grab (both: turn, scale)*, *Stick ↔: colour map*, *Stick ↕: colour
-   max*. Are they readable from where you hold the controllers? Do they cover
-   anything you need to see?
-3. **The menu.** Hold **X**: the menu opens above the left hand, toward the
-   middle, facing you, with a pulse in the left controller. Point the right
-   ray at it: the yellow cross follows; pull the trigger on each tab (Mode,
-   Look, Analysis, Layers, Settings, Help): a short pulse in the right
-   controller each time. Let go of X: it closes. Is the text sharp enough
-   (the smallest is about 1° high)? Does the menu move with the hand without
-   jitter? Note the numbers' **menu redraw … ms + upload … ms**.
-4. **Keep open.** Mode tab → *Keep open*, let go of X: the menu stays where it
-   was. Press X once more and let go: it closes.
-5. **Modes.** Press **A** three times: the mode above the right controller,
-   and in the readout, goes EXPLORE → SELECT → CLIP → EXPLORE, with the labels
-   changing to match. In each mode check what the labels say against what
-   happens:
-   - Explore: stick up/down changes the threshold, left/right the opacity;
-     left stick flicked left/right steps the colour map once per flick;
-     left stick up/down the colour max. Trigger on the emission pins a
-     readout (amber background) there.
-   - Select: left stick flicked steps *spectrum → Kinematic Lasso → box
-     region*; the trigger takes a spectrum, a lasso, two box corners. Results
-     open in the *Selection* window right of the cube.
-   - Clip, *velocity slab*: right stick up/down moves the slab along the
+   profile) and open the page: the guide must be on the 2-D page with four
+   parts (*Your two hands*, *The menu*, *What the trigger does*, *Hands
+   without controllers*) and *Got it*. Enter VR: nothing stands in view but
+   the cube (no cards above the controllers). Report whether you understood
+   what to do without this page.
+2. **The wrist legend.** Turn the right wrist towards your eyes, as to read a
+   watch: the card must read *EXPLORE*, then *Trigger: pin the readout*,
+   *Stick ↕: threshold*, *Stick ↔: opacity*, *A: tools*, *B: undo*, *X: menu:
+   open, close*, *L stick ↔: next tool*, *L stick ↕: colour max*. Is it
+   readable? Does it cover anything you need to see?
+3. **The menu.** Press **X**: the menu opens above and beyond the left
+   controller, facing you, with a pulse in the left controller. Point the
+   right ray at it: the yellow cross follows; pull the trigger on each tab
+   (Display, Range, Select, Measure, More): a short pulse in the right
+   controller each time. Press X again: it closes. Is the text sharp enough
+   (the smallest is about 1° high)? With `?debug`, note the numbers' **menu
+   redraw … ms + upload … ms**.
+4. **Tools.** Press **A**: the tool palette opens; pick *Kinematic Lasso*,
+   then *Velocity range*, then *Explore*, each with the trigger. The mode on
+   the wrist cards, in the toast and in the readout follows (*SELECT ·
+   Kinematic Lasso*, *RANGE · Velocity range*, *EXPLORE*), and so does the
+   legend. In each mode check what the legend says against what happens:
+   - Explore: right stick up/down changes the threshold, left/right the
+     opacity; left stick up/down the colour max. Trigger on the emission
+     pins a readout (amber background) there.
+   - Select: the left stick pushed left or right and held a moment steps to
+     the next tool, in the palette's order; the trigger takes a lasso, a
+     spectrum, two box corners. Results open in the selection window right
+     of the cube.
+   - Range, *Velocity range*: right stick up/down moves the range along the
      velocity axis, left/right widens or narrows it; the trigger on emission
-     outside the slab centres the slab on that emission. Clip, *clipping box*
-     (left stick flick): hold the trigger with the controller on (or pointing
-     at) a face of the box and move: that face follows; right stick up/down
-     shrinks or grows the box.
-6. **Undo and reset.** After a few threshold, colour map and slab changes,
-   press **B** repeatedly: each press takes back one change (a whole stick
-   push is one change); with nothing left, a double pulse. Grab the cube and
-   carry it away, then press **Y**: it comes back in front of you at its first
-   size, the windows with it.
-7. **The cursor readout.** Point the right ray at the emission: a card above
+     outside the range centres it on that emission. Range, *Spatial crop*:
+     see [#277](#a-spatial-crop-you-can-see-and-grab-277).
+5. **Undo and reset.** After a few threshold, colour map and velocity range
+   changes, press **B** repeatedly: each press takes back one change (a whole
+   stick push is one change); with nothing left, a double pulse. Grab the
+   cube and carry it away, then press **Y**: it comes back in front of you at
+   its first size, the windows with it.
+6. **The cursor readout.** Point the right ray at the emission: a card above
    the point shows the mode, *RA hh:mm:ss.ss Dec ±dd:mm:ss.s*, *v … km/s
    (convention) ch …* and the value with its unit (and the binning). Compare
    one position with the desktop's cube viewer at the same pixel: RA, Dec and
    velocity must agree to the binning's precision. Does the frame rate change
    while the readout follows the ray (FPS, missed %)?
-8. **Result windows.** Take a spectrum, then (Analysis tab) *M0* and a PV
-   path: three windows. Each title bar is above its window, never over the
+7. **Result windows.** Take a spectrum, then (Measure tab) *M0* and a PV
+   slice: three windows. Each title bar is above its window, never over the
    text, and names it (*Spectrum probe*, *Moment 0*, *PV diagram*); the
    velocity line wraps inside the window
    ([#267](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/267)).
@@ -1453,40 +1452,38 @@ settings left at their defaults the first time.
    window's title bar, hold the trigger and
    move: it follows and turns to face you. × closes it; a new result opens it
    again. Leave VR and enter again: the windows are where you left them.
-9. **Haptics.** A short pulse on every press (menu, trigger on the cube),
+8. **Haptics.** A short pulse on every press (menu, trigger on the cube),
    a stronger one when a spectrum, lasso or box result arrives, two pulses on
    an error (for example a trigger in Select mode pointing at empty space).
-10. **Left-handed.** Settings tab → *Left-handed*: the roles swap at once:
-    the button legend is now on the left wrist (*X: next mode*, *Y: undo*,
-    *Hold A: menu*), the cube card on the right wrist; the left ray acts.
-    Reload the page and enter again: still left-handed. Turn it back.
-11. **Wrist cards ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)).**
+9. **Left-handed.** More → *Handedness* → *Left-handed*: the roles swap at
+   once: the button legend is now on the left wrist (*X: tools*, *Y: undo*,
+   *A: menu: open, close*), the cube card on the right wrist; the left ray
+   acts. Reload the page and enter again: still left-handed. Turn it back.
+10. **Wrist cards ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)).**
     Without `?debug`, nothing stands in view but the cube (no numbers, no
-    card above the controllers, no Selection window in Select mode before a
-    result). Raise the left forearm in front of the chest, the back of the
-    wrist towards your eyes, as to read a watch: the cube card fades in on the
-    wrist (cube, size, mode, the selection's numbers) and is readable. Turn
-    the wrist away: it fades out. Do the same with the right wrist: the
-    button legend of the tool in use; change the tool (left stick) and the
-    legend follows. Hold the wrist at the edge of the gesture and turn it
+    card above the controllers, no selection window before a result). Raise
+    the left forearm in front of the chest, the back of the wrist towards
+    your eyes, as to read a watch: the cube card fades in on the wrist (cube,
+    size, mode, the selection's numbers) and is readable. Turn the wrist
+    away: it fades out. Hold the wrist at the edge of the gesture and turn it
     slowly: does the card flicker (report how often)? Point at the cube with
     the arm out and grab it: does a card appear by accident? With tracked
-    hands, turn the left palm up: the menu opens and no card shows. Settings
-    → *Button legend on the wrist* and *Cube card on the wrist* off: the
-    cards no longer show. Take a spectrum: a toast low in the view says its
-    numbers and goes after about 2 s; press **A**: a toast says the new
-    mode.
-12. **Hands.** Put the controllers down. Pinch with the right hand on the
-    cube in Select mode: a spectrum. Turn the left palm up: the menu opens by
-    the left hand; pinch with the right on a tab; turn the palm down: it
-    closes. Make a fist with either hand: the cube is grabbed; both fists:
+    hands, turn the left palm up: the menu opens and no card shows. More →
+    *Button labels* and *Wrist readout* off: the cards no longer show. Take a
+    spectrum: a toast low in the view says its numbers and goes after about
+    2 s; pick another tool: a toast names it.
+11. **Hands.** Put the controllers down. Pinch with the right hand on the
+    cube with the Spectrum probe: a spectrum. Turn the left palm up: the menu
+    opens; pinch with the right on a tab; turn the palm down and up again:
+    it closes. Make a fist with either hand: the cube is grabbed; both fists:
     turn and scale. Does the palm-up gesture open the menu by accident while
     you grab or point (report how often)?
-13. **Nothing lost.** From the menu alone, check that you can reach:
-    emission or maximum intensity, threshold source and *Reset*, all
-    channels, the clipping box reset, refinement on and off, *Hold the frame
-    rate*, *Cube card on the wrist*, the guide, the Layers tab's buttons with a
-    point table and with a catalogue over a cube.
+12. **Nothing lost.** From the menu alone, check that you can reach:
+    Emission or MIP, the threshold's *Reset*, *Full band*, *Reset crop*,
+    *Wrist readout*, the guide, and the Display tab's controls with a point
+    table and with a catalogue over a cube. With `?debug`, More →
+    *Technical settings ▸*: refinement on and off, *Hold the frame rate*,
+    *Threshold from*.
 
 ### Refinement, with the headset
 
@@ -1513,9 +1510,9 @@ settings left at their defaults the first time.
    which looks steadier.
 6. Make a Kinematic Lasso selection, then hold still: the green mask must
    stay visible over the refined frame; the box outline and labels too.
-7. Move the velocity slab (the Clip mode's slab, see [Modes](controls.md#modes)),
-   then hold still: the refined frame must show the same slab (no emission
-   outside it).
+7. Move the velocity range (the Range tab, or the Range mode, see
+   [Modes](controls.md#modes)), then hold still: the refined frame must show
+   the same range (no emission outside it).
 8. Repeat 2 and 4 over Wi-Fi (adb connected wirelessly) and note
    **pose->frame** and **stop->refined**.
 9. Over Wi-Fi, compare JPEG and video: open the page with
@@ -1536,7 +1533,9 @@ settings left at their defaults the first time.
 1. **Pairing over USB.** On the Mac, open HCG 44 in the desktop application.
    Connect the Quest 3 with a USB-C cable, choose *Tools → Views → Open in VR
    Headset…*: the dialog must say *Ready* with the headset's model. Press
-   *Open on Headset* and put the headset on. Within about 10 s the Quest
+   *Open in Browser* (with the VisIVO VR app, *Open on Headset* starts the
+   app instead: see [The headset app](headset-app.md#what-to-check-on-the-quest-3))
+   and put the headset on. Within about 10 s the Quest
    Browser must show the page with the cube loaded and the status ending in
    *in the desktop's session*, without typing anything. Note the time from
    the press to the cube drawn.
@@ -1548,17 +1547,17 @@ settings left at their defaults the first time.
    which is not.
 4. **Pointing.** Point the primary controller at the menu: a yellow cross must
    follow the ray on it and the widget under it must light up; the cube's
-   white pick cross must disappear meanwhile. On the Look tab press ▶ (next
-   colour map), *max intensity* then *emission*, *Reset*, *full cube
-   (desktop)*; drag the *Threshold* and *Opacity* sliders and the two ends of
-   *Channels*: the cube must change at once, the slider follow the controller
-   without visible lag, and the velocities under *Channels* match the slab on
-   the cube's axis. Note the numbers' **FPS**, **missed %** and **menu redraw
+   white pick cross must disappear meanwhile. On the Display tab press a
+   colour map swatch, *MIP* then *Emission*, the threshold's *Reset*; drag
+   the *Threshold* and *Opacity* sliders, then on the Range tab the two ends
+   of *Velocity range*: the cube must change at once, the slider follow the
+   controller without visible lag, and the velocities under *Velocity range*
+   match the range on the cube's axis. Note the numbers' **FPS**, **missed %** and **menu redraw
    … ms + upload … ms** while dragging a slider, and FPS with the menu closed:
    they should be the same.
-5. **Selections.** Choose *spectrum* (Select mode) and pull the trigger on
-   NGC 3187: the spectrum must appear in the results window. Choose *lasso*
-   and select the galaxy: the green mask and the numbers must appear;
+5. **Selections.** Choose *Spectrum probe* (Select tab) and pull the trigger
+   on NGC 3187: the spectrum must appear in the results window. Choose
+   *Kinematic Lasso* and select the galaxy: the green mask and the numbers must appear;
    *Clear* must remove them. A trigger pulled on the menu must never start a
    selection on the cube behind it.
 6. **Same session.** Back on the Mac (headset still on, or after), *Download
@@ -1644,7 +1643,7 @@ keep the `transport:` line.
 ### Recovery and diagnostics, with the headset
 
 1. Open the page for the first time: the controls guide is on the 2-D page
-   with *Got it*; Enter VR does not show it. In VR, the hand menu's Help →
+   with *Got it*; Enter VR does not show it. In VR, the hand menu's More →
    Guide shows it beside the cube (see [#226](#the-first-quest-3-session-226));
    *Next*, *Back* and *Close* work with the primary trigger.
 2. In VR, unplug the USB cable: within 5 s the card says *Backend not
@@ -1653,7 +1652,7 @@ keep the `transport:` line.
    the Mac: the card goes by itself (how many seconds?).
 3. Quit and restart the desktop application while in VR: *The backend
    restarted*, the cube stays, a spectrum works afterwards; refinement comes
-   back (the *Refine* line on the menu's Look tab).
+   back (the *refine* line of the numbers, with `?debug`).
 4. Press the Quest's system button and quit the VR session: the 2-D page says
    *The VR session ended* with *Enter VR*.
 5. Load a large cube (*Max side* 512, 16-bit) and stay still, then move:
@@ -1664,26 +1663,26 @@ keep the `transport:` line.
 
 ### Analysis and hands (#191)
 
-1. Load HCG 44 and enter VR. Lasso tool, seed mode *new*: pull the trigger on
-   NGC 3187. The results window says 13 216 voxels and 6.06 Jy km/s.
-2. Seed mode *add* (the menu's Analysis tab), trigger on
+1. Load HCG 44 and enter VR. Kinematic Lasso, Select tab, *Lasso* row → *New*: pull the trigger
+   on NGC 3187. The results window says 13 216 voxels and 6.06 Jy km/s.
+2. Select tab, *Lasso* row → *Add*, trigger on
    NGC 3190 (the source left of NGC 3187 at the same velocity): about 23 900
-   voxels, a green cross at the added seed. *carve*, trigger inside NGC 3187:
+   voxels, a green cross at the added seed. *Subtract*, trigger inside NGC 3187:
    the count drops, a red cross. Report the counts and the lasso ms on the
    numbers on the wrist.
-3. *Isolate*, then *M0*: a map appears above the cube's right side. Read its
-   title, colour bar and unit (JY/BEAM km/s): are the labels readable from
-   where you stand? *M1*, *M2*. Then *Show that cube*: the isolated cube
-   replaces the cube.
+3. *Isolate*, then Measure → *M0*: a map appears above the cube's right
+   side. Read its title, colour bar and unit (JY/BEAM km/s): are the labels
+   readable from where you stand? *M1*, *M2*. Then *Show result cube*: the
+   isolated cube replaces the cube.
 4. *Draw*, then trigger at three places across NGC 3187: the orange path on
    the cube and the PV diagram above the cube's left side, velocity up
-   (888 at the bottom, 2183 at the top for HCG 44). *w +* twice, *Undo*.
+   (888 at the bottom, 2183 at the top for HCG 44). *PV width +* twice, *Undo*.
 5. *Download recipes* afterwards (on the page, out of VR): one record per
    seed press, Isolate, moment and PV path.
 6. Hands (see [Hand tracking](controls.md#hand-tracking)): put the
    controllers down. Pinch with the primary hand while pointing at the
-   Analysis tab's buttons: does one pinch press once, and only once? Drag the
-   threshold slider on the Look tab with a held pinch. Point at the cube and
+   Select tab's buttons: does one pinch press once, and only once? Drag the
+   threshold slider on the Display tab with a held pinch. Point at the cube and
    pinch: does the cross stay where you pointed? Close a hand on the cube and
    move it; close both hands and pull them apart. Pick a controller up again
    mid-way: the ray and grip go on without reloading. Report any missed or
@@ -1724,19 +1723,21 @@ Desktop and headset together:
 1. **A point table from the desktop.** Open a large VBT (at least 10⁷ rows,
    for example the snapshot under DemoData converted to VBT) in the desktop,
    *Tools → Open in VR Headset…*, put the headset on: the table must load
-   with nothing typed. Enter VR; on the numbers on the wrist note **FPS**,
+   with nothing typed. Enter VR; on the numbers (`?debug`) note **FPS**,
    **missed %**, **GPU ms** and the line *points … drawn of … sampled*, at
-   *quest-low*, *quest* and *quest-high* (the menu's Layers tab → *rows*),
-   with *hold the frame rate* on and then off (on the page before entering
-   VR). Move your head quickly: the points must never lag.
-2. **Splats.** Press *points/splats* on the Layers tab: note the same numbers.
+   *quest-low*, *quest* and *quest-high* (the menu's Display tab →
+   *Particles shown*), with *hold the frame rate* on and then off (on the
+   page before entering VR). Move your head quickly: the points must never
+   lag.
+2. **Splats.** Display tab → *Style*: *Splats*, then *Ray-traced*: note the
+   same numbers.
 3. **Refinement of a point table.** Hold still: within about a second the
    denser image of every row must fade in, on the same place as the headset's
    points; note **pose->frame** and **stop->refined**.
 4. **A catalogue.** Open HCG 44 from the desktop; on the page (before entering
    VR) place `sofia_hgc44_cat.xml` (catalogue file); in VR, check that every
-   cross sits on a galaxy's emission at its velocity, and that *labels* and
-   *catalogue* on the Layers tab work. If the VLKB is reachable, open a Hi-GAL
+   cross sits on a galaxy's emission at its velocity, and that *Overlay* and
+   *Labels* under *Catalogue* on the Display tab work. If the VLKB is reachable, open a Hi-GAL
    or CHIMPS cutout and place *VLKB compact sources*: the ellipses must sit on
    the compact emission.
 5. **A velocity field.** Open one in the desktop's velocity viewer, *Open in
@@ -1752,14 +1753,15 @@ Desktop and headset together:
    Headset*. Without a pyramid, the page must show *Building the cube's brick
    pyramid… N %* rising, then the cube; note the build time and the time to
    the cube drawn. Close and open it again: note the time (no build now).
-2. The status line and the menu's Look tab must say *pyramid level K* in the binning.
+2. The status line and the binning label over the box must say *pyramid level
+   K*.
    Note the headset's **FPS** and **missed %** with the reduced cube.
-3. Set the threshold source to *full cube (as on the desktop)*, hold still:
+3. With the threshold from the full cube (the default), hold still:
    the menu must show *refined* and the wrist numbers' *server* line must
    say *pyramid level 1* (or the level the backend can hold). Note
    **pose->frame** (p50 and p95) and **stop->refined** over USB and over
    Wi-Fi, and compare with HCG 44 in the same session.
-4. Move the clipping box and the channel slab: the refined frame must clip
+4. Move the spatial crop and the velocity range: the refined frame must clip
    where the headset's own picture does. Lean into the cube: the refined
    image must stay aligned with the reduced one (no shift while you hold still).
 5. Pick a spectrum and run the lasso on a source: the results must arrive

@@ -42,7 +42,7 @@ import { RefineDraw } from './refine-gl.js';
 // Lifecycle, notices, guide, diagnostics, quality (epic #166).
 import { createShell } from './shell.js';
 import { CARD_PX, CARD_SIZE } from './notice.js';
-import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen } from './lifecycle.js';
+import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen, pendingMaskVerdict } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
 import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy, textureLimitBytes, planCapacity, sameCapacity } from './quality.js';
 // The first Quest 3 session's fixes (issue #226): composition layers for the
@@ -292,8 +292,23 @@ for (const name of COLORMAP_NAMES) {
 let layers = null;
 let sources = null;
 let masks = null;
-/** A mask the desktop sent while a cube was loading (issue #282): loaded once that cube is shown. */
+/** A mask the desktop sent while a cube was loading (issue #282): loaded once
+ *  that cube is shown, dropped when it fails or another is shown instead
+ *  (#305). {cmd, path} (path: the cube's, the newest load's when it came). */
 let pendingMask = null;
+/** The pending mask, against what is on show now (lifecycle.js pendingMaskVerdict). */
+function settlePendingMask(shown = null) {
+  if (!pendingMask) return;
+  const v = pendingMaskVerdict(pendingMask, { shown, loading: state.loading, staged: stagedCube ? stagedCube.path || '' : '',
+    current: state.cube ? state.openPath || '' : '' });
+  if (v === 'wait') return;
+  const m = pendingMask;
+  pendingMask = null;
+  if (v === 'apply') { loadMaskCommand(m.cmd); return; }
+  const name = HUB.fileName(m.cmd.path) || m.cmd.dataset_id;
+  shell.log('warning', 'hub-mask-dropped', `${name}, command ${m.cmd.seq}: its cube was not shown`);
+  if (masks) masks.say(`The desktop's mask ${name} was not shown: its cube could not be opened.`, '#ffd27a');
+}
 
 /** The colour map, from the page, the secondary stick or the menu. */
 function setColormap(name) {
@@ -491,7 +506,8 @@ window.addEventListener('pageshow', (e) => { if (e.persisted) refiner.resume(); 
 
 layers = createLayers({
   gl, R, state, $, refiner, ensureBackend,
-  onNonCube: () => { selection.clear(); analysis.reset(); share.stop(); ui.undo.clear(); },
+  // A mask layer belongs to a cube (#305): it goes with it.
+  onNonCube: () => { selection.clear(); analysis.reset(); share.stop(); ui.undo.clear(); if (masks) masks.forget(); },
   colormap: () => state.colormap, refineOn: () => refineMode !== 'off',
   rebuild: () => rebuildDecorations(),
   targetHz: () => (xr ? xr.targetHz : 60),
@@ -532,9 +548,11 @@ masks = createMasks({
   backend: () => { try { return ensureBackend(); } catch { return null; } },
   seedMode: () => selection.sel.seedMode || 'new',
   setSeedMode: (m) => { setMode('select'); if (selection.sel.tool !== 'lasso') selection.setTool('lasso'); analysis.press(`seed:${m}`, { group: 'seed', value: m }); },
+  armPick: () => setMode('select'),
   onVisit: (row, src) => visitSource(row, src),
   onChange: () => { decorationsChanged(); labelsChanged(); },
-  report: (recipe, detail) => { if (!single.active || !hub.st.running) return false; reportProduct(recipe, detail); return true; },
+  // The hub's promise of the send ({file, posted}), or null when no hub runs (#305).
+  report: (recipe, detail) => (!single.active || !hub.st.running ? null : reportProduct(recipe, detail)),
   buzz: (kind) => buzz('primary', kind),
 });
 // The flags and notes offered, set on the page (kept in this browser; the defaults when empty).
@@ -738,7 +756,7 @@ async function withLoading(fn) {
   // installed nothing, and a recovery started after it is still valid.
   state.loading++;
   state.loadGen++;
-  try { return await measuredLoad(fn); } finally { state.loading--; }
+  try { return await measuredLoad(fn); } finally { state.loading--; settlePendingMask(); }
 }
 
 /** A load's start and end in the measurement record (issue #224), with the
@@ -1251,6 +1269,7 @@ async function installStaged() {
   shell.clearNotice('cube-waiting');
   if (!loads.isCurrent(s.ticket)) {
     shell.log('info', 'cube-waits-dropped', 'a newer load began after it');
+    settlePendingMask();
     return;
   }
   state.load = s.load;
@@ -1263,6 +1282,9 @@ async function installStaged() {
   } catch (err) {
     setStatus(`Failed: ${err.message || err}`);
     shell.log('error', 'cube-install-failed', String(err.message || err));
+  } finally {
+    // A desktop mask that waited for this cube and was not laid over it (#305).
+    settlePendingMask();
   }
 }
 
@@ -1423,7 +1445,7 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   // A mask layer belongs to its cube (issue #282): another cube's goes, and
   // a mask the desktop sent while this cube loaded goes over it now.
   if (masks) masks.onCube();
-  if (pendingMask) { const m = pendingMask; pendingMask = null; loadMaskCommand(m); }
+  settlePendingMask(path || '');
   analysis.reset();
   if (open) share.start(open.dataset_id); else share.stop();
   refiner.setDataset(open ? open.dataset_id : null);
@@ -2723,6 +2745,9 @@ function handCards(now, dtS = 0) {
 /** The primary trigger (or a click on the page) on the cube, by the mode. */
 function primaryAct(action, boxRay) {
   if (!state.cube || !boxRay) return;
+  // A mask's Pick armed (#282): the trigger picks the source under the ray,
+  // whatever the mode, before a PV path or the readout takes it (#305).
+  if (masks && masks.state.picking && masks.pickRay(boxRay)) return;
   if (action === 'pin-readout') {
     const r = selection.pickBox(boxRay, 0.6);
     ui.pin = r ? { p: r.hit.p } : null;
@@ -3444,8 +3469,11 @@ function reportProduct(recipe, detail) {
  */
 function maskFromDesktop(cmd) {
   const name = HUB.fileName(cmd.path) || cmd.dataset_id;
-  if (state.loading > 0) {
-    pendingMask = cmd;
+  if (state.loading > 0 || stagedCube) {
+    // For the newest load's cube: the desktop sends the cube, then its mask.
+    // A load already over whose cube waits for the end of the VR session:
+    // for that cube, laid over it when it is shown (#305).
+    pendingMask = { cmd, path: stagedCube && !state.loading ? stagedCube.path || '' : loads.path };
     shell.log('info', 'hub-mask-waits', `${name}, command ${cmd.seq}: after the cube being loaded`);
     return;
   }
@@ -3483,6 +3511,7 @@ function showFromDesktop(cmd) {
     loads.begin(cmd.path);
     if (stagedCube) {
       stagedCube = null;
+      settlePendingMask();      // a mask that waited for the dropped cube is dropped now, and said so
       shell.clearNotice('cube-waiting');
       shell.log('info', 'cube-waits-dropped', 'the desktop sent the cube on show again');
     }

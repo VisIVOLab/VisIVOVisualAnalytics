@@ -11,6 +11,7 @@ import { createMasks } from '../../app/static/vr/js/mask-ui.js';
 import { commandUsable, PRODUCT_KINDS, productSummary } from '../../app/static/vr/js/headset.js';
 import { WINDOWS, WindowPointer } from '../../app/static/vr/js/windows.js';
 import * as HM from '../../app/static/vr/js/hand-menu.js';
+import { readFileSync } from 'node:fs';
 
 const shape = [10, 8, 6];
 const lin = (x, y, z) => (z * shape[1] + y) * shape[0] + x;
@@ -257,6 +258,107 @@ test('the controller: load, pick, a lasso press edits the source, undo, save bod
   state.open = { dataset_id: 'c2' };
   m.onCube();
   assert.equal(m.state.layer, null);
+});
+
+test('review (#305): Pick arms Select; the save sends the path with the id; the report says sent only once posted; forget and restore', async () => {
+  const bodies = [];
+  const backend = {
+    session: 's1',
+    maskLayer: async () => wire({ 5: box(3, 5, 2, 3, 1, 2), 2: [lin(8, 6, 4)] }),
+    kinematicSelect: async () => ({ mask: new Float32Array([1, 1]), dims: [2, 1, 1], origin: [6, 2, 1] }),
+    maskLayerSave: async (body) => { bodies.push(body); return { valid: true, workspace_filename: 'm_vr_mask.fits', output_path: '/w/m_vr_mask.fits', edited: [5], removed: [], n_sources: 2, n_voxels: 15 }; },
+  };
+  const state = { info: { factors: [1, 1, 1], reduced_shape: shape, full_shape: shape }, open: { dataset_id: 'c1' }, clip: { min: [0, 0, 0], max: [1, 1, 1] },
+    extent: [1, 0.8, 0.6], openPath: '/d/cube.fits' };
+  let armed = 0, made = 0, report = () => null;
+  const buzzes = [];
+  const m = createMasks({ renderer: { setMaskLayer() {}, createPanel: () => ({ id: ++made }), updatePanel() {} }, state, backend: () => backend,
+    seedMode: () => 'add', setSeedMode() {}, armPick: () => { armed++; }, onVisit() {}, onChange() {}, report: (r, d) => report(r, d), buzz: (k) => buzzes.push(k) });
+  // Pick: nothing to arm without a mask; with one, Select is asked for (the trigger picks there), not when disarmed.
+  m.press('pick');
+  assert.equal(m.state.picking, false);
+  assert.equal(armed, 0);
+  await m.load({ maskDatasetId: 'mask-ds', maskPath: '/d/m_mask.fits' });
+  m.press('pick');
+  assert.equal(m.state.picking, true);
+  assert.equal(armed, 1);
+  m.press('pick');
+  assert.equal(m.state.picking, false);
+  assert.equal(armed, 1);
+  // Opened by its dataset id: the save still names its file (that session may be gone).
+  m.select(5);
+  await m.lasso({ seed: [6, 2, 1] }, 'add', {}, undefined, () => false);
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  const head = (b) => JSON.parse(new TextDecoder().decode(b.subarray(4, 4 + new DataView(b.buffer, b.byteOffset).getUint32(0, true))));
+  await m.save();
+  assert.equal(head(bodies[0]).mask_dataset_id, 'mask-ds');
+  assert.equal(head(bodies[0]).mask_path, '/d/m_mask.fits');
+  assert.match(m.state.status[0][0], /no desktop session: not reported/);
+  // The hub's send: "telling", then sent once posted; saved but not told; a rejection.
+  let settle;
+  report = () => new Promise((res, rej) => { settle = { res, rej }; });
+  await m.save();
+  assert.match(m.state.status[0][0], /telling the desktop/);
+  settle.res({ file: 'm_vr_mask.fits', posted: true });
+  await tick();
+  assert.match(m.state.status[0][0], /sent to the desktop$/);
+  await m.save();
+  settle.res({ file: 'm_vr_mask.fits', posted: false, why: 'this backend has no headset hub' });
+  await tick();
+  assert.match(m.state.status[0][0], /desktop not told: this backend has no headset hub/);
+  assert.ok(!/sent to/.test(m.state.status[0][0]));
+  await m.save();
+  settle.rej(new Error('503 busy'));
+  await tick();
+  assert.match(m.state.status[0][0], /desktop not told: 503 busy/);
+  assert.deepEqual(buzzes.slice(-1), ['error']);
+  // A newer mask meanwhile: the old save's answer does not overwrite its status.
+  await m.save();
+  m.forget();
+  settle.res({ file: 'm_vr_mask.fits', posted: true });
+  await tick();
+  assert.deepEqual(m.state.status, [], 'forget clears the status');
+  assert.equal(m.state.saved, null);
+  assert.equal(m.view().loaded, false);
+  // A restored context: the same panel handle, no new texture.
+  const t1 = m.texture();
+  m.restore();
+  assert.equal(m.texture(), t1);
+  assert.equal(made, 1);
+});
+
+test('review (#305): the page wires the mask fixes (Pick in any mode, the report\'s promise, a mask goes with its cube)', () => {
+  const main = readFileSync(new URL('../../app/static/vr/js/main.js', import.meta.url), 'utf8');
+  const prim = main.slice(main.indexOf('function primaryAct('), main.indexOf('function primaryAct(') + 600);
+  assert.match(prim, /masks\.state\.picking && masks\.pickRay\(boxRay\)/, 'the trigger picks before the mode\'s action');
+  assert.ok(prim.indexOf('masks.pickRay') < prim.indexOf("'pin-readout'"));
+  assert.match(main, /armPick: \(\) => setMode\('select'\)/);
+  assert.match(main, /report: \(recipe, detail\) => \(!single\.active \|\| !hub\.st\.running \? null : reportProduct\(recipe, detail\)\)/);
+  assert.match(main, /onNonCube: \(\) => \{[^}]*masks\.forget\(\)/);
+  // A mask that comes after its cube was staged for the end of the VR session waits for that cube.
+  const mfd = main.slice(main.indexOf('function maskFromDesktop('), main.indexOf('function loadMaskCommand('));
+  assert.match(mfd, /if \(state\.loading > 0 \|\| stagedCube\)/);
+  assert.match(mfd, /path: stagedCube && !state\.loading \? stagedCube\.path \|\| '' : loads\.path/);
+  // installStaged settles it whatever becomes of the staged cube.
+  const inst = main.slice(main.indexOf('async function installStaged('), main.indexOf('async function installStaged(') + 1200);
+  assert.ok((inst.match(/settlePendingMask\(\)/g) || []).length >= 2, 'on a dropped and on any installed or failed staged cube');
+});
+
+test('review (#305): a staged cube\'s mask goes over it when it is shown, not over the cube on show; forget leaves no layer call without a layer', async () => {
+  // The verdicts the page asks for: the mask came after the load ended, its cube staged.
+  const { pendingMaskVerdict } = await import('../../app/static/vr/js/lifecycle.js');
+  const pending = { cmd: {}, path: '/d/staged.fits' };
+  assert.equal(pendingMaskVerdict(pending, { shown: null, loading: 0, staged: '/d/staged.fits', current: '/d/old.fits' }), 'wait',
+    'not laid over the cube on show');
+  assert.equal(pendingMaskVerdict(pending, { shown: '/d/staged.fits', loading: 0, staged: '' }), 'apply', 'over the staged cube once shown');
+  assert.equal(pendingMaskVerdict(pending, { shown: null, loading: 0, staged: '', current: '/d/old.fits' }), 'drop', 'a staged cube dropped: the mask too');
+  // forget() with no layer leaves the volume's mask alone (it runs on every switch to a point table).
+  let calls = 0;
+  const state = { info: null, open: null, clip: { min: [0, 0, 0], max: [1, 1, 1] }, extent: [1, 1, 1], openPath: '' };
+  const m = createMasks({ renderer: { setMaskLayer() { calls++; }, createPanel: () => ({}), updatePanel() {} }, state, backend: () => null,
+    seedMode: () => 'new', setSeedMode() {}, onVisit() {}, onChange() {}, report: () => null, buzz() {} });
+  m.forget();
+  assert.equal(calls, 0);
 });
 
 test('free voxels among thousands of sources: only the ones near the grow are looked at, the same answer', () => {

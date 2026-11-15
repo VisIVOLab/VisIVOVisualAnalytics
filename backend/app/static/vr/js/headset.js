@@ -327,6 +327,7 @@ export function createHub(ctx) {
   let waitTimer = null;
   let wake = null;                 // resolves the loop's backoff wait early (start, a new session)
   const inFlight = new Set();      // AbortControllers (stop() aborts them)
+  let pollAc = null;               // the command poll's: the only one resync() aborts (#305)
   let chain = Promise.resolve();   // the sends, one after the other (order kept)
   let stateWanted = null, stateKeySent = '', stateTimer = null;
   const pending = { look: null, clip: null };   // {key, cubePath, summary, payload, timer}
@@ -371,12 +372,14 @@ export function createHub(ctx) {
     return h;
   }
 
-  /** A request with its own deadline; stop() aborts it. {status, body (parsed or text)}. */
-  async function call(method, path, body, a, ms = REQUEST_TIMEOUT_MS) {
+  /** A request with its own deadline; stop() aborts it, resync() only the
+   *  command poll (`poll`). {status, body (parsed or text)}. */
+  async function call(method, path, body, a, ms = REQUEST_TIMEOUT_MS, poll = false) {
     const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
     let expired = false;
     const t = later(() => { expired = true; if (ac) ac.abort(); }, ms);
     if (ac) inFlight.add(ac);
+    if (ac && poll) pollAc = ac;
     try {
       const resp = await doFetch(apiUrl(path), { method, headers: headers(a, body !== undefined),
         body: body === undefined ? undefined : JSON.stringify(body), signal: ac ? ac.signal : undefined });
@@ -389,6 +392,7 @@ export function createHub(ctx) {
     } finally {
       cancel(t);
       if (ac) inFlight.delete(ac);
+      if (ac && pollAc === ac) pollAc = null;
     }
   }
 
@@ -407,15 +411,17 @@ export function createHub(ctx) {
   }
 
   /** A 404 of the hub: no hub on this backend (stop for good), or this page
-   *  is unknown to it (said hello again at the next request). */
-  function on404(r) {
+   *  is unknown to it (said hello again at the next request). `a`: the
+   *  request's auth; a 404 of a session the page has left since leaves the
+   *  registration in the new one alone (#305). */
+  function on404(r, a = null) {
     if (isUnsupported(r.status, r.text)) {
       st.unsupported = true;
       st.running = false;
       log('info', 'hub-unsupported', 'this backend has no headset hub (older than the page)');
       return 'unsupported';
     }
-    st.helloSession = '';
+    if (!a || st.helloSession === a.session) st.helloSession = '';
     return 'hello';
   }
 
@@ -439,9 +445,16 @@ export function createHub(ctx) {
       if (helloPending === mine) helloPending = null;
     }
     if (gen !== runGen || !st.running) throw staleRun();
-    if (r.status === 404 || r.status === 405) { on404(r); throw new Error(`hello: ${r.status}`); }
+    if (r.status === 404 || r.status === 405) { on404(r, a); throw new Error(`hello: ${r.status}`); }
     if (r.status !== 200) throw new Error(`hello: ${r.status} ${String(r.text).slice(0, 80)}`);
     noteInstance(r.body && r.body.instance);
+    const now = authNow();
+    if (!now || now.session !== a.session) {
+      // The page moved to another session while this hello was on its way
+      // (resync() lets it finish, #305): that session forgets the page again.
+      call('DELETE', `/v1/vr/headset?client=${encodeURIComponent(st.client)}`, undefined, a).catch(() => {});
+      throw staleRun();
+    }
     st.helloSession = a.session;
     stateKeySent = '';           // the state goes again in the new session
     log('info', 'hub-hello', `${ctx.transport}, client ${st.client}`);
@@ -451,10 +464,15 @@ export function createHub(ctx) {
   /** Hello when this page is not known in the session yet. */
   async function ensureHello(a) {
     if (st.helloSession === a.session) return;
+    // Work of a session the page has left (a post retrying after a 404) says
+    // nothing more: its goodbye below would go in the new session and remove
+    // the live registration (#305).
+    const inSession = () => { const now = authNow(); return !!now && now.session === a.session; };
+    if (!inSession()) throw staleRun();
     // A goodbye still on its way would remove the registration this hello makes.
     const gen = runGen;
     await goodbye;
-    if (gen !== runGen || !st.running) throw staleRun();
+    if (gen !== runGen || !st.running || !inSession()) throw staleRun();
     if (goodbyeUnconfirmed) {
       goodbyeUnconfirmed = false;
       st.client = newHubClient();
@@ -480,7 +498,7 @@ export function createHub(ctx) {
       const t0 = Date.now();
       const r = await call('POST', path, body, a);
       if (r.status === 404 || r.status === 405) {
-        if (on404(r) === 'unsupported') return null;
+        if (on404(r, a) === 'unsupported') return null;
         continue;
       }
       if (r.status !== 200) throw new Error(`${r.status} ${typeof r.body === 'object' && r.body && r.body.detail ? JSON.stringify(r.body.detail).slice(0, 120) : String(r.text).slice(0, 120)}`);
@@ -672,9 +690,9 @@ export function createHub(ctx) {
     // The state goes before the first poll of a session (it may have changed meanwhile).
     flushState();
     const q = commandsQuery(st.client, st.after);
-    const r = await call('GET', `/v1/vr/headset/commands?${q}`, undefined, a, (POLL_WAIT_S + 15) * 1000);
+    const r = await call('GET', `/v1/vr/headset/commands?${q}`, undefined, a, (POLL_WAIT_S + 15) * 1000, true);
     if (id !== loopId) return 'stop';
-    if (r.status === 404 || r.status === 405) return on404(r) === 'unsupported' ? 'stop' : 'again';
+    if (r.status === 404 || r.status === 405) return on404(r, a) === 'unsupported' ? 'stop' : 'again';
     if (r.status === 429) throw new Error('the hub\'s waiting polls are all taken');
     if (r.status !== 200 || !r.body) throw new Error(`${r.status} ${String(r.text).slice(0, 80)}`);
     // A restart: the cursor sent was the old process's, so its `next` is not one of this one.
@@ -741,6 +759,7 @@ export function createHub(ctx) {
     st.running = false;
     for (const ac of inFlight) { try { ac.abort(); } catch { /* done */ } }
     inFlight.clear();
+    pollAc = null;
     if (waitTimer !== null) { cancel(waitTimer); waitTimer = null; }
     if (wake) { wake(); wake = null; }
     if (stateTimer !== null) { cancel(stateTimer); stateTimer = null; }
@@ -771,12 +790,12 @@ export function createHub(ctx) {
 
   /** The page's session changed: the poll in flight (in the old session)
    *  ends now and a new one starts with a hello in the new session (the old
-   *  one forgets the page: ensureHello). */
+   *  one forgets the page: ensureHello). Only the poll: a product save or a
+   *  post on its way finishes (each checks its own session), #305. */
   function resync() {
     if (!st.running) return;
     loopId++;
-    for (const ac of inFlight) { try { ac.abort(); } catch { /* done */ } }
-    inFlight.clear();
+    if (pollAc) { const ac = pollAc; pollAc = null; inFlight.delete(ac); try { ac.abort(); } catch { /* done */ } }
     if (waitTimer !== null) { cancel(waitTimer); waitTimer = null; }
     if (wake) { wake(); wake = null; }
     loop(++loopId);

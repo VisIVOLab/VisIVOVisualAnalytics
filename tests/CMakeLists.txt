@@ -216,6 +216,8 @@ add_executable(VisIVOTests
     test_file_preview.cpp
     TestMissingRoute.h
     test_missing_route.cpp
+    TestBackendWebrtcEnv.h
+    test_backend_webrtc_env.cpp
     ${VISIVO_ROOT}/src/gui/BackendLocality.cpp
     TestBusyFeedback.h
     test_busy_feedback.cpp

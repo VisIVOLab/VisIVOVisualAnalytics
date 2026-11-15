@@ -40,6 +40,12 @@ The card is redrawn only when its text changes (at most once per check, every
 | **This cube is too large for this device** | the reduced cube would not fit the [memory budget](reference.md#the-settings-on-the-page) | a larger *Spatial bin* or *Spectral bin*, or a smaller *Max side* |
 | Refine: *lost: retrying in N s, the headset's own rendering meanwhile* | the render session's connection dropped | nothing: the headset shows its own rendering, and the page reconnects (2, 4, 8 … 30 s) and refines again; if the backend no longer holds the cube, the page opens it again first |
 
+In the [VisIVO VR app](headset-app.md) there is no 2-D page and no *Enter VR*:
+leaving VR quits the app, and its cards offer **Quit VisIVO VR** instead.
+Where a row above says *Enter VR*, press **Open on Headset** on the computer
+again. What the desktop says when it starts the app is in
+[The headset app](headset-app.md#from-the-desktop).
+
 Problems of the USB way (adb not found, the headset not authorised, no
 headset on USB) are named by the *Open in VR Headset…* dialog itself, with the
 way out: see [Open a cube from the desktop](quickstart.md#open-a-cube-from-the-desktop).

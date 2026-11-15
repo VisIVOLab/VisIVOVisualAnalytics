@@ -36,6 +36,8 @@ public:
     ~SharedSelectionLink() override;
 
     /// Follows the hub for @p datasetId of the cube @p fullW x @p fullH x @p fullD.
+    /// Called again for the same hub with another token, it takes the token
+    /// and reads the hub again, keeping what is on screen.
     void start(const QString &baseUrl, const QString &token, const QString &session,
                const QString &datasetId, int fullW, int fullH, int fullD);
     void stop();
@@ -73,6 +75,9 @@ signals:
 
 private:
     void poll();
+    /// Drops the poll and the reconcile out (and the retry timer); their
+    /// answers are ignored. Publishes out are not dropped.
+    void restartRequests();
     void onPollFinished(QNetworkReply *reply);
     void retryLater();
     QNetworkReply *getLatest();
@@ -93,7 +98,8 @@ private:
     bool m_reconciling{ false };
     bool m_reconcileAgain{ false };
     int m_fails{ 0 };
-    quint64 m_generation{ 0 };
+    quint64 m_generation{ 0 };       ///< bumped by stop(): every answer out is stale
+    quint64 m_readGeneration{ 0 };   ///< bumped by stop() and a new token: the poll's and reconcile's
     QPointer<QNetworkReply> m_poll;
     QPointer<QNetworkReply> m_rec;
     QTimer m_retry;
