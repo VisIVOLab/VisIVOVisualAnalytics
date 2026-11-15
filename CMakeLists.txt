@@ -435,6 +435,7 @@ set(PROJECT_SOURCES
         src/app/SharedSelection.cpp
         src/app/SharedSelectionLink.cpp
         src/app/HeadsetHubLink.cpp
+        src/app/VrSpectatorFeed.cpp
         src/app/VrAppLauncher.cpp
         src/app/SofiaSuggest.cpp
         src/app/FinderTaskRun.cpp
@@ -446,6 +447,8 @@ set(PROJECT_SOURCES
         src/app/SharedSelectionLink.h
         src/app/HeadsetHubLink.h
         src/app/VrHeadsetHub.h
+        src/app/VrSpectator.h
+        src/app/VrSpectatorFeed.h
         src/app/VrHeadsetFollow.h
         src/app/SofiaSuggest.h
         src/app/FinderTaskRun.h
@@ -531,6 +534,8 @@ set(PROJECT_SOURCES
         src/gui/VrHeadsetDialog.h
         src/gui/HeadsetActivityList.cpp
         src/gui/HeadsetActivityList.h
+        src/gui/VrSpectatorWindow.cpp
+        src/gui/VrSpectatorWindow.h
         src/app/VrLink.h
         src/app/VrPair.h
         src/app/VrPairQr.h
