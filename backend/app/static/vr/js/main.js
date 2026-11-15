@@ -46,6 +46,7 @@ import { controllerMesh, handMesh } from './models.js';
 import { ControllerModels } from './controller-models.js';
 import { SinglePage, CHANNEL_NAME, stoodDownText, PINNED_ENTERING, PINNED_IN_VR } from './single-page.js';
 import * as HUB from './headset.js';
+import { createSpectator } from './spectator.js';
 import * as XE from './xr-entry.js';
 import * as APP from './app-launch.js';
 import { apiUrl } from './base-path.js';
@@ -1508,6 +1509,7 @@ function hudLines(targetHz) {
   lines.push(...analysis.hudLines());
   lines.push(...share.hudLines());
   lines.push(...hub.hudLines());
+  lines.push(...spectator.hudLines());
   const qn = currentQualityNote();
   if (qn) lines.push(qn.slice(0, 60));
   if (state.cube || layers.mode === 'points') lines.push(...refiner.hudLines());
@@ -2756,6 +2758,8 @@ function desktopFrame(time) {
   // The headset's message card, in front of the desktop camera (?panel3d).
   const card = ui.desktop ? shell.cardForFrame(M.invert(lastDesktopView.view)) : null;
   if (card) R.drawPanel(lastDesktopView, card.model, card.tex, card.size);
+  // The whole view for the desktop's spectator window (#281).
+  if (spectator.watching) spectator.frame({ fbo: null, vp: { x: 0, y: 0, width: w, height: h }, proj: null, eye: 'mono', crop: 1, restoreViewport: [0, 0, w, h] });
   R.endFrame();
   const interval = lastDesktop ? time - lastDesktop : 0;
   lastDesktop = time;
@@ -2906,9 +2910,18 @@ const hub = HUB.createHub({
   label: HUB.headsetLabel(navigator.userAgent),
   auth: hubAuth,
   onCommand: (cmd) => showFromDesktop(cmd),
+  onWatch: (cmd) => spectator.command(cmd),
   launch: () => appLaunch.id,
   log: (level, event, message) => shell.log(level, event, message),
   onClient: (id) => { try { if (hubStore) hubStore.setItem(HUB.CLIENT_KEY, id); } catch { /* this load only */ } },
+});
+// The headset's view on the desktop, while it watches (issue #281): spectator.js.
+const spectator = createSpectator({
+  gl, renderer: R, auth: hubAuth, client: () => hub.st.client,
+  readAt: query.has('debug') ? query.get('specread') || undefined : undefined,
+  log: (level, event, message) => shell.log(level, event, message),
+  makeWorker: typeof Worker !== 'undefined' ? () => new Worker(new URL('./spectator-worker.js', import.meta.url), { type: 'module' }) : null,
+  makeCanvas: (w, h) => (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : Object.assign(document.createElement('canvas'), { width: w, height: h })),
 });
 
 /** The dataset on show (a cube, a point table or a velocity field), '' none. */
@@ -3721,6 +3734,7 @@ function onXRFrame(time, frame) {
   session.requestAnimationFrame(onXRFrame);
   const pose = frame.getViewerPose(xr.ref);
   if (!pose) return;
+  spectator.frameStart();     // #281: a capture's bytes, read before this frame draws (?specread=start)
   const interval = xr.last ? time - xr.last : 0;
   xr.last = time;
   const dtS = Math.min(0.1, interval / 1000);
@@ -3778,7 +3792,9 @@ function onXRFrame(time, frame) {
   // layers where the browser has them (sharp at any eye-buffer scale), else
   // drawn in the scene below in the same order.
   const overlays = overlayList(card, winList, hm, cards, menuM, menuTex);
-  const asLayers = !!(xr.quads && xr.quads.frame(frame, overlays));
+  const watchedBadge = spectator.badge(pose.transform.matrix);     // #281: on top of the rest
+  const asLayers = !!(xr.quads && xr.quads.frame(frame, watchedBadge ? [...overlays, watchedBadge] : overlays));
+  if (watchedBadge && !asLayers) overlays.push(watchedBadge);
   xr.overlaysAsLayers = asLayers;
   // No refinement during the benchmark, nor in passthrough: the backend's frame
   // has no alpha (it is composited over black), so over the room it would
@@ -3806,6 +3822,12 @@ function onXRFrame(time, frame) {
     R.drawModels(v, modelDraws, modelDrawCount);   // the real controller models
     R.drawMesh(v);            // the page's own controllers and the hands (models.js)
     R.drawWorldLines(v);      // and their rays, over the panels drawn in the scene
+  }
+  if (spectator.watching) {
+    // The left eye for the desktop (#281), with the composition layers drawn in.
+    const view = pose.views.find((x) => x.eye === 'left') || pose.views[0];
+    spectator.frame({ fbo: layer.framebuffer, vp: layer.getViewport(view), proj: view.projectionMatrix, eye: 'left',
+      view: { proj: view.projectionMatrix, view: view.transform.inverse.matrix }, overlays: asLayers ? overlays : null });
   }
   R.endFrame();
   const cpu = performance.now() - t0;
@@ -4220,6 +4242,7 @@ if (query.has('debug')) {
   window.__vrSingle = single;
   // Issue #237: the headset hub's controller and how Enter VR is reached.
   window.__vrHub = hub;
+  window.__vrSpectator = spectator;   // #281
   window.__vrEntry = () => ({ ...entry, line: entryLine() });
   window.__vrCuts = () => ({ active: activeCuts.slice(), counts: { ...cutCounts } });
   window.__vrSetEyeScale = (s) => { if (xr) { setEyeBufferScale(s); eyeGovernor.scale = xr.fbScale; } };
@@ -4505,6 +4528,7 @@ let contextTimer = null;
 let contextLostInVR = false;
 canvas.addEventListener('webglcontextlost', (e) => {
   e.preventDefault();
+  spectator.contextLost();     // #281: its GL objects went with the context
   const wasInVR = !!xr;
   shell.log('error', 'webgl-context-lost', wasInVR ? 'in VR' : 'on the page');
   shell.notify('context-lost');
@@ -4534,6 +4558,7 @@ canvas.addEventListener('webglcontextrestored', () => {
 function rebuildGraphics() {
   const t0 = performance.now();
   try {
+    spectator.contextLost();   // #281: nothing of the old context is used again
     R.restore();
     if (R.capacityError) shell.log('warning', 'capacity-failed', `after the context was restored: ${R.capacityError}`);
     releaseBench(true);              // the benchmark's cubes were on the lost context
