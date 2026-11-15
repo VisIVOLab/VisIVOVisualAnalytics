@@ -259,6 +259,60 @@ export function centreDistance(viewFrame, modelFrame) {
   return Math.max(1e-3, -c[2]);
 }
 
+/**
+ * An eye asked for with a margin (#297): its field of view wider by
+ * `margin` on every side (the projection's x and y scaled by 1 / (1 +
+ * margin)) and its pixels as many more, so the frame has the eye's pixel
+ * density and, warped to a pose a little turned, still covers the view.
+ */
+export function overscanEye(eye, margin) {
+  const k = 1 / (1 + margin);
+  const proj = Float32Array.from(eye.proj);
+  for (const i of [0, 4, 8, 12]) proj[i] *= k;     // row 0 (column-major)
+  for (const i of [1, 5, 9, 13]) proj[i] *= k;     // row 1
+  return { ...eye, proj, width: Math.round(eye.width * (1 + margin)), height: Math.round(eye.height * (1 + margin)) };
+}
+
+/**
+ * Does a frame of eye `frameEye` ({view, proj}, the pose it was drawn for,
+ * the cube's model `frameModel` then), warped to the current eye `view`
+ * ({view, proj}) and `model`, cover the whole viewport? Its four corners
+ * are unprojected at each of `depths` (metres: the depth image's range, and
+ * the plane the warp falls back to) and projected again; the viewport's
+ * corners must lie inside each warped quad (#297: the page stops drawing
+ * its splats only under a frame that covers the eye, else a turn exposes an
+ * edge strip of background).
+ */
+export function coversViewport(frameEye, frameModel, view, model, depths) {
+  const invProj = M.invert(frameEye.proj);
+  const E = reprojectionMatrix(frameEye.view, frameModel, view.view, model);
+  if (!invProj || !E) return false;
+  const PE = M.multiply(view.proj, E);
+  const uv = [[0, 0], [1, 0], [1, 1], [0, 1]];
+  for (const d of depths) {
+    if (!(d > 0)) return false;
+    const q = [];
+    for (const [u, v] of uv) {
+      const x = unprojectPixel(invProj, u, v, d);
+      const w = PE[3] * x[0] + PE[7] * x[1] + PE[11] * x[2] + PE[15];
+      if (!(w > 0)) return false;
+      q.push(M.transformPoint(PE, x));
+    }
+    // Convex quad (a homography of a rectangle): each viewport corner on the
+    // inner side of every edge.
+    for (const [cx, cy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      let sign = 0;
+      for (let i = 0; i < 4; i++) {
+        const a = q[i], b = q[(i + 1) % 4];
+        const c = (b[0] - a[0]) * (cy - a[1]) - (b[1] - a[1]) * (cx - a[0]);
+        if (sign === 0) sign = Math.sign(c);
+        if (c === 0 || Math.sign(c) !== sign) return false;
+      }
+    }
+  }
+  return true;
+}
+
 // ── Whether a frame may be shown ─────────────────────────────────────────────
 
 export const SHOW_DEFAULTS = {

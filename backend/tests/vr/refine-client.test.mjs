@@ -323,3 +323,22 @@ test('a video header that arrives after the video was given up asks again too', 
   assert.equal(poses().length, asked + 1, 'the still view asks again');
   r.setEnabled(false);
 });
+
+test('a frame drawn by another splat rule is dropped and said why (#263)', () => {
+  const uploads = [];
+  const draw = { ...stubDraw, upload(f) { uploads.push(f); return 0; } };
+  const r = new Refiner(null, () => null, { draw });
+  const closed = [];
+  const ctx = (accept) => ({ t: 1000, aCentre: new Float32Array(16), model: new Float32Array(16), eyes: [],
+    look: { commands: [], cropError: '' }, lookKey: r.key, background: [0, 0, 0], accept });
+  r.incoming = { bitmap: { close() { closed.push(1); } }, header: {} };
+  r.frame(ctx((h) => h.splat_rule === 'v2-f32'));       // an older backend: no rule in the header
+  assert.equal(r.incoming, null);
+  assert.equal(uploads.length, 0, 'not shown');
+  assert.equal(closed.length, 1, 'its image released');
+  assert.match(r.error, /older rule/);
+  r.incoming = { bitmap: { close() {} }, header: { splat_rule: 'v2-f32' } };
+  r.frame(ctx((h) => h.splat_rule === 'v2-f32'));
+  assert.equal(uploads.length, 1, 'the page\'s own rule is shown');
+  assert.equal(r.error, '', 'and the reason cleared');
+});

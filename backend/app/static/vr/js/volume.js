@@ -451,9 +451,12 @@ export class Governor {
     this.goodMs = 0; this.missed = 0;
   }
 
-  /** Feed one frame interval; returns the samples-per-voxel to use. */
-  update(intervalMs, targetMs) {
+  /** Feed one frame interval; returns the samples-per-voxel to use. `idle`:
+   *  the frame drew little of the scene (splats under a refined frame, #295),
+   *  so it says nothing about the room there is: no clean time earned. */
+  update(intervalMs, targetMs, idle = false) {
     if (!(intervalMs > 0) || !(targetMs > 0) || intervalMs > 250) return this.value;
+    if (idle) { this.goodMs = 0; return this.value; }
     if (intervalMs > targetMs * 1.5) {
       this.missed++;
       this.goodMs = 0;
