@@ -82,29 +82,29 @@ can be sent to the headset
 ([#188](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/188), see
 [Selections shared with the desktop](analysis.md#selections-shared-with-the-desktop)).
 
-Later steps added:
+Since then these have been added:
 
-- the **VisIVO VR app**, which the desktop installs and starts over the USB
+- the VisIVO VR app, which the desktop installs and starts over the USB
   cable straight into VR, with a one-time launch ticket instead of the token
   ([The headset app](headset-app.md));
-- **one headset page driven by the desktop**: *Show on Headset*, the
+- one headset page driven by the desktop: *Show on Headset*, the
   *Headset Activity* list with its products, a cube window that follows the
   headset's look, and *Watch the Headset*, the headset's view live on the
   desktop ([The headset from the desktop](desktop.md));
-- a **quieter interface**: the menu in front of you with the tabs Display,
+- a new menu and palette: the menu, opened above the left controller, with the tabs Display,
   Range, Select, Measure and More, opened and closed with X; the tool palette
   on A; wrist cards shown only when you look at a wrist; toasts; texts that
   always fit; a spatial crop you can see and grab
   ([Controls and the hand menu](controls.md));
-- the **threshold in multiples of the noise σ** and a *Levels* page with a
+- the threshold in multiples of the noise σ and a *Levels* page with a
   histogram, σ and percentile presets and the desktop's stretches
   ([The hand menu](controls.md#the-hand-menu));
-- **HI measurements** of a selection and **mask layers** to show, compare,
+- HI measurements of a selection and mask layers to show, compare,
   refine and save a mask ([Analysis in the headset](analysis.md));
-- **particles**: a ray-traced still view, tone-mapped splats that hold the
+- particles: a ray-traced still view, tone-mapped splats that hold the
   frame rate on the Quest 3, and controls for simulations (snapshots, X/Y/Z
   columns, splats sized by a smoothing length, a colour bar with units, box
-  select); a **source list** over a catalogue to browse, visit, classify and
+  select); a source list over a catalogue to browse, visit, classify and
   send to the desktop; sky catalogues placed with the desktop window's frame,
   distance mode and cosmology
   ([Point tables, catalogues and velocity fields](data-types.md)).

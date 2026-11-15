@@ -1661,9 +1661,9 @@ keep the `transport:` line.
 
 ### Analysis and hands (#191)
 
-1. Load HCG 44 and enter VR. Kinematic Lasso, *Lasso: New*: pull the trigger
+1. Load HCG 44 and enter VR. Kinematic Lasso, Select tab, *Lasso* row → *New*: pull the trigger
    on NGC 3187. The results window says 13 216 voxels and 6.06 Jy km/s.
-2. *Lasso: Add* (the menu's Select tab), trigger on
+2. Select tab, *Lasso* row → *Add*, trigger on
    NGC 3190 (the source left of NGC 3187 at the same velocity): about 23 900
    voxels, a green cross at the added seed. *Subtract*, trigger inside NGC 3187:
    the count drops, a red cross. Report the counts and the lasso ms on the

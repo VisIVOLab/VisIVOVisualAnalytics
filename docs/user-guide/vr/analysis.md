@@ -15,7 +15,7 @@ The primary controller casts a ray (a thin white line); a small white cross
 shows where the trigger would land. On the Mac the same tools work with the
 mouse: a click (press and release without dragging) is the trigger, a drag
 still turns the cube. The tool is chosen on the tool palette (A), on the
-menu's Select tab (Spectrum probe, Kinematic Lasso, Box region; see
+menu's Select tab (Kinematic Lasso, Spectrum probe, Box region; see
 [Modes](controls.md#modes)) or on the page (*Selection tool*).
 
 **Where a pick lands.** The ray is marched through the reduced cube the
