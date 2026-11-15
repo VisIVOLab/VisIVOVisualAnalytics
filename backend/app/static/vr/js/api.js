@@ -385,12 +385,15 @@ export class Backend {
     };
   }
 
-  /** Statistics of an explicit mask on the full cube (mask_stats_bin). */
-  maskStats(datasetId, maskBytes, origin, dims, signal = undefined) {
+  /** Statistics of an explicit mask on the full cube (mask_stats_bin), with
+   *  the HI measurements; `sigma` > 0 is the session's noise (the lasso's),
+   *  else the backend measures it around the selection. */
+  maskStats(datasetId, maskBytes, origin, dims, signal = undefined, sigma = 0) {
     const q = new URLSearchParams({
       dataset_id: datasetId, origin_x: origin[0], origin_y: origin[1], origin_z: origin[2],
       width: dims[0], height: dims[1], depth: dims[2],
     });
+    if (sigma > 0) q.set('sigma', String(sigma));
     return this._binary(`/v1/cube/mask_stats_bin?${q}`, maskBytes, 'application/octet-stream', signal)
       .then(({ buf }) => JSON.parse(new TextDecoder().decode(buf)));
   }
