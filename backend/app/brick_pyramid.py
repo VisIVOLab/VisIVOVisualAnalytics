@@ -98,7 +98,11 @@ class SourceSignature:
                 side = os.stat(sidecar)
                 size, mtime = size + int(side.st_size), max(mtime, int(side.st_mtime_ns))
         layout = raw.layout if raw is not None and raw.kind == "pluto" else ""
-        return cls(str(Path(path).resolve()), int(hdu), size, mtime, order, layout)
+        # Keyed on the stored name: on a case-insensitive file system the
+        # same file named in another case is the same pyramid (#325).
+        from .canonical_path import canonical_path  # noqa: PLC0415
+
+        return cls(str(canonical_path(path)), int(hdu), size, mtime, order, layout)
 
 
 def default_brick(shape: tuple[int, int, int]) -> int:

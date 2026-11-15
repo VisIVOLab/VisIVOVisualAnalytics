@@ -62,6 +62,8 @@ from typing import Callable, Iterator
 
 import numpy as np
 
+from .canonical_path import canonical_path
+
 logger = logging.getLogger("visivo.backend")
 
 GZIP_MAGIC = b"\x1f\x8b"
@@ -388,7 +390,7 @@ def _in_use() -> set[str]:
     if in_use_provider is None:
         return set()
     try:
-        return {str(Path(p).resolve()) for p in in_use_provider()}
+        return {str(canonical_path(p)) for p in in_use_provider()}
     except Exception:  # noqa: BLE001 — never let bookkeeping break an open
         logger.debug("[decompress] in-use lookup failed", exc_info=True)
         return set()
@@ -408,7 +410,7 @@ _ADMISSION = threading.Lock()
 def _held(directory: Path) -> bool:
     in_use = _in_use()
     try:
-        return any(str(f.resolve()) in in_use for f in directory.iterdir())
+        return any(str(canonical_path(f)) in in_use for f in directory.iterdir())
     except OSError:
         return False
 
@@ -759,7 +761,7 @@ def cached_copy(path: str | Path) -> Materialized | None:
         stat = resolved.stat()
     except OSError:
         return None
-    key = _key(resolved, stat)
+    key = _key(canonical_path(resolved), stat)
     entry = cache_dir() / key
     with _entry_lock(key, blocking=False) as held:
         if not held:
@@ -783,7 +785,7 @@ def materialize(path: str | Path, progress: Callable[[float], None] | None = Non
         return None
     resolved = source.resolve()
     stat = resolved.stat()
-    key = _key(resolved, stat)
+    key = _key(canonical_path(resolved), stat)
     entry = cache_dir() / key
     target = entry / _decompressed_name(source)
     with _entry_lock(key, should_stop):
