@@ -62,22 +62,22 @@ BackendPyramidStatus BackendClient::parsePyramidStatus(const QJsonObject &object
 
 BackendPyramidStatus BackendClient::requestPyramidStatus(const QString &datasetId, bool build) const
 {
-    QString error;
-    int status = 0;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("build"), build } });
-    const QByteArray payload =
-            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/pyramid_status")), body, error,
-                        nullptr, &status);
-    // 202 is "building", with the same body: an answer, not an error.
-    if (status != 200 && status != 202) {
+    // Asked before every preview of a cube. Sent like the binary routes, not
+    // through performPost: an older backend without the route answers 404,
+    // which is an answer here (no levels of detail), not an error to publish
+    // in the diagnostics on every cube opened.
+    const BinaryReply reply = this->binaryPoster()(
+            QStringLiteral("/v1/cube/pyramid_status"),
+            QJsonObject{ { QStringLiteral("dataset_id"), datasetId }, { QStringLiteral("build"), build } });
+    // 202 is "building", with the same body.
+    if (reply.status != 200 && reply.status != 202) {
         BackendPyramidStatus s;
-        s.httpStatus = status;
-        s.error = error.isEmpty() ? QStringLiteral("HTTP %1 on pyramid_status").arg(status) : error;
+        s.httpStatus = reply.status;
+        s.error = reply.error;
         return s;
     }
-    BackendPyramidStatus s = parsePyramidStatus(QJsonDocument::fromJson(payload).object());
-    s.httpStatus = status;
+    BackendPyramidStatus s = parsePyramidStatus(QJsonDocument::fromJson(reply.body).object());
+    s.httpStatus = reply.status;
     return s;
 }
 

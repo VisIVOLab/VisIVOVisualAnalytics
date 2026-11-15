@@ -25,18 +25,18 @@ CubeLodVolumes::~CubeLodVolumes()
     this->clear();
 }
 
-void CubeLodVolumes::replace(vtkRenderer *renderer, std::vector<Block> blocks, OrderFunction order)
+bool CubeLodVolumes::replace(vtkRenderer *renderer, std::vector<Block> blocks, OrderFunction order)
 {
     this->clear();
-    if (!renderer)
-        return;
+    if (!renderer || blocks.empty())
+        return false;
     // The order function indexes the blocks as given: a block that cannot be
     // drawn makes the whole set unusable, rather than shifting the indices.
     for (const Block &b : blocks) {
         const CubeLodAssembly::Dims &d = b.geometry.dims;
         if (d[0] < 1 || d[1] < 1 || d[2] < 1
             || b.samples.size() != size_t(d[0]) * size_t(d[1]) * size_t(d[2]))
-            return;
+            return false;
     }
     m_renderer = renderer;
     m_orderFunction = std::move(order);
@@ -80,6 +80,7 @@ void CubeLodVolumes::replace(vtkRenderer *renderer, std::vector<Block> blocks, O
     m_startObserver->SetClientData(this);
     m_startTag = renderer->AddObserver(vtkCommand::StartEvent, m_startObserver);
     this->sortForCamera();
+    return true;
 }
 
 void CubeLodVolumes::clear()
@@ -119,9 +120,6 @@ void CubeLodVolumes::copySettingsFrom(vtkGPUVolumeRayCastMapper *mapper)
         return;
     m_blendMode = mapper->GetBlendMode();
     m_jitter = mapper->GetUseJittering() != 0;
-    m_autoAdjust = mapper->GetAutoAdjustSampleDistances() != 0;
-    m_sampleDistance = mapper->GetSampleDistance();
-    m_imageSampleDistance = mapper->GetImageSampleDistance();
     for (Entry &e : m_entries)
         this->apply(e);
 }
@@ -153,11 +151,16 @@ void CubeLodVolumes::apply(Entry &e) const
 {
     e.mapper->SetBlendMode(m_blendMode);
     e.mapper->SetUseJittering(m_jitter ? 1 : 0);
-    e.mapper->SetAutoAdjustSampleDistances(m_autoAdjust ? 1 : 0);
-    if (!m_autoAdjust) {
-        e.mapper->SetSampleDistance(float(m_sampleDistance));
-        e.mapper->SetImageSampleDistance(float(m_imageSampleDistance));
-    }
+    // Fixed distances, not the renderer's time-driven ones: the renderer
+    // splits a frame's time budget between its props, so up to 22 blocks
+    // would each get a sliver of it and draw at the coarsest image sample
+    // distance while the camera moves. Half a sample of the block along the
+    // ray, as the mapper's own default for one volume; the opacity is
+    // corrected per unit distance (the shared property), so blocks of
+    // different spacings still composite to the same colours.
+    e.mapper->SetAutoAdjustSampleDistances(0);
+    e.mapper->SetSampleDistance(float(e.geometry.placement.spacing / 2.0));
+    e.mapper->SetImageSampleDistance(1.0f);
     const std::optional<CubeLodAssembly::Crop> drawn = CubeLodAssembly::clipped(e.geometry, m_userCrop);
     if (drawn) {
         const CubeLodAssembly::Crop planes = CubeLodAssembly::cropPlanes(e.geometry, *drawn);

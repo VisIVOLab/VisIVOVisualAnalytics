@@ -15,8 +15,8 @@
 //   - the blocks are drawn back to front, re-sorted before every frame by
 //     reordering the renderer's props (RemoveVolume would release the GPU
 //     textures and upload every block again each frame);
-//   - the blend mode, jittering and sample-distance settings of the window's
-//     mapper are copied to every block.
+//   - the blend mode and jittering of the window's mapper are copied to
+//     every block; each block samples at half its own spacing.
 //
 // Each block owns its samples (a vtkFloatArray of its own), so the arrays the
 // blocks were built from can go as soon as they are handed over.
@@ -61,8 +61,9 @@ public:
     CubeLodVolumes &operator=(const CubeLodVolumes &) = delete;
 
     /// Draw exactly @p blocks in @p renderer, in the order @p order gives;
-    /// what was shown before is removed (its GPU textures released).
-    void replace(vtkRenderer *renderer, std::vector<Block> blocks, OrderFunction order);
+    /// what was shown before is removed (its GPU textures released). False,
+    /// with nothing shown, when a block's samples do not fill its dims.
+    bool replace(vtkRenderer *renderer, std::vector<Block> blocks, OrderFunction order);
     /// Remove every block from the renderer and release them.
     void clear();
     /// True while blocks are shown in a renderer.
@@ -71,8 +72,9 @@ public:
     /// GPU bytes of the blocks' samples (float32).
     long long bytes() const;
 
-    /// The blend mode, jittering and sample distances of @p mapper, applied to
-    /// every block now and to the blocks of later replace() calls.
+    /// The blend mode and jittering of @p mapper, applied to every block now
+    /// and to the blocks of later replace() calls. Sample distances are the
+    /// blocks' own (apply()).
     void copySettingsFrom(vtkGPUVolumeRayCastMapper *mapper);
     void setVisible(bool visible);
     bool visible() const { return m_visible; }
@@ -109,9 +111,6 @@ private:
     // The window's mapper settings (copySettingsFrom).
     int m_blendMode{ 0 };
     bool m_jitter{ true };
-    bool m_autoAdjust{ true };
-    double m_sampleDistance{ 1.0 };
-    double m_imageSampleDistance{ 1.0 };
 };
 
 #endif   // CUBE_LOD_VOLUMES_H

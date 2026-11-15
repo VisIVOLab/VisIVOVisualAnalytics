@@ -2713,7 +2713,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                      u"preview to load and try again."_s);
                 return;
             }
-            // The headset shows the window's single volume: no refined box.
+            // The headset shows the window's single volume, which must be the
+            // one on screen to open: the refined box goes first.
             this->clearLod(u"Refined box removed: the cube is shown in VR."_s);
             if (!m_vrController) {
                 m_vrController = new CubeVRController(this);
@@ -3889,7 +3890,10 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
         this->m_previewStride = int(result.sampling.scale);
         this->m_previewSource = result.source;
         this->m_previewLevel = result.level;
-        if (result.pyramid.valid)
+        // An answer, or a backend without the route (404): either decides
+        // what Refine Selected Box can do. A transient failure keeps what
+        // was known.
+        if (result.pyramid.valid || result.pyramid.httpStatus == 404)
             this->m_lodPyramid = result.pyramid;
         this->setDisplaySampling(result.sampling);
     }
@@ -6859,8 +6863,6 @@ bool vtkWindowCube::requestHighResCube()
     if (this->usingHighResCube || this->remoteHighResCubeWatcher.isRunning()) {
         return false;
     }
-    // Full-resolution data replaces the preview a refined box was drawn on.
-    this->clearLod(u"Refined box removed: loading full-resolution data."_s);
 
     const auto roi = this->computeVisibleROI();
     // What the load will hold at its peak: the volume as it arrives (the slabs),
@@ -6889,6 +6891,9 @@ bool vtkWindowCube::requestHighResCube()
         // caller that cleared a flag ahead of this call puts it back.
         return false;
     }
+    // Full-resolution data replaces the preview a refined box was drawn on
+    // (only once the load really starts: a refused one keeps the box).
+    this->clearLod(u"Refined box removed: loading full-resolution data."_s);
     this->currentRemoteRoi = roi;
     qDebug().noquote()
             << QStringLiteral("[remote-roi] mode=%1 request x=%2..%3 y=%4..%5 z=%6..%7")
@@ -15476,7 +15481,13 @@ void vtkWindowCube::refresh3dWcsAxes()
     // The bounds are the displayed image's: a preview spans its own samples,
     // which stand for cube voxels by its sampling, while the full-resolution
     // or ROI cube is laid out in the cube's own voxels.
-    const auto toCubeVoxel = [this](int /*axis*/, double b) { return this->displayToCube(b); };
+    // Clamped to the cube: a block-mean preview whose last block is partial
+    // has its last sample placed as if the block were whole, past n - 1.
+    const int fullDims[3] = { this->remoteDatasetWidth, this->remoteDatasetHeight,
+                              this->remoteDatasetDepth };
+    const auto toCubeVoxel = [this, &fullDims](int axis, double b) {
+        return std::clamp(this->displayToCube(b), 0.0, double(std::max(0, fullDims[axis] - 1)));
+    };
     const auto setRange = [this, bounds, &toCubeVoxel](int axis, vtkCubeAxesActor *a) {
         const int idxMin = axis * 2;
         const int idxMax = idxMin + 1;

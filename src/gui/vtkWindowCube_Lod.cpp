@@ -365,7 +365,7 @@ void vtkWindowCube::applyLodSet()
     // The fine blocks, as the backend sent them.
     for (size_t i = 0; i < pending->fine.size(); ++i) {
         CubeLodAssembly::Block b = pending->fine[i];
-        const BackendRegionLevelResult &r = pending->results[i];
+        BackendRegionLevelResult &r = pending->results[i];
         const CubeLodGeometry::Dims got{ r.width, r.height, r.depth };
         if (got != CubeLodAssembly::dims(b) || r.levelOrigin != b.samples.lo) {
             this->statusBar()->showMessage(
@@ -393,6 +393,7 @@ void vtkWindowCube::applyLodSet()
         vb.geometry = CubeLodAssembly::geometryOf(b, pending->cubeShape, preview);
         const auto *src = reinterpret_cast<const float *>(r.data.constData());
         vb.samples.assign(src, src + r.data.size() / qsizetype(sizeof(float)));
+        QByteArray().swap(r.data);   // one copy of the block at a time, not two
         // Blanks as the preview has them: the same invisible value, never a
         // NaN the ray caster would spread through its interpolation. The
         // visible range stays the preview's, so colours match across the face.
@@ -436,7 +437,13 @@ void vtkWindowCube::applyLodSet()
         this->m_lod = std::make_unique<CubeLodVolumes>(this->volume->GetProperty());
     this->m_lod->copySettingsFrom(this->volumeMapper);
     this->m_lod->setVisible(this->m_show3dRendering);
-    this->m_lod->replace(renderer, std::move(blocks), std::move(order));
+    if (!this->m_lod->replace(renderer, std::move(blocks), std::move(order))) {
+        // Nothing was swapped in: the preview volume stays as it was.
+        this->clearLod();
+        this->statusBar()->showMessage(u"Refine Selected Box failed: a block could not be built."_s,
+                                       10000);
+        return;
+    }
     this->applyLodUserCrop();
     this->volume->SetVisibility(0);   // the pieces and blocks draw the whole cube now
 
