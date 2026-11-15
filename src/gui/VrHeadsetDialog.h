@@ -95,6 +95,10 @@ class VrHeadsetDialog : public QDialog
 public:
     VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent = nullptr);
     ~VrHeadsetDialog() override;
+    /// A sky catalogue's placement changed in its window (issue #260): the
+    /// next link, pairing, launch and `show` carry the new one. What a headset
+    /// already shows is not changed.
+    void setSky(const VrLink::Sky &sky);
 
 protected:
     /// After every relayout, growToFit(): a label's new text may need more lines.

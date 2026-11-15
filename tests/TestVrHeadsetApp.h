@@ -19,6 +19,7 @@ private slots:
     void installStateComparesVersions();
     void installOutputIsUnderstood();
     void assetlinksMustListPackageAndCertificate();
+    void releaseAppIsListedByTheShippedConfig();
     void assetlinksAreAskedAtTheOrigin();
     void wakefulnessIsRead();
     void launchBodyCarriesTheCubeButNoToken();

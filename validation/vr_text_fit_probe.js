@@ -135,6 +135,18 @@
       return recs;
     };
     const LONG_FILE = 'WALLABY_Hydra_TR2_chan_v1.0_cube_with_a_long_survey_name.fits';
+    // The HI measurements (#285, hi-lines.js) with wide numbers: every digit the lines can show.
+    const HI_WIDE = {
+      flux_jy_kms: 1234.5678, flux_err_jy_kms: 123.456, flux_err_indep_jy_kms: 98.765, flux_err_factor: 1.8, channel_rho: [0.74, 0.3, 0.08],
+      channel_correlation: 'channels correlated (ρ1 0.74): error corrected ×1.8', snr_integrated: 1234.56,
+      noise_sigma: 2.3478e-4, noise_unit: 'JY/BEAM', noise_source: 'local: 1.4826 x median |value| of the unselected voxels', noise_voxels: 123456789,
+      peak: 0.0047522, peak_unit: 'JY/BEAM', peak_snr: 1234.56, w20_kms: 1062.17, w50_kms: 1042.318, vsys_kms: -12926.602,
+      vsys_definition: 'midpoint of the two W20 crossings of the integrated spectrum', velocity_convention: 'optical (AIPS VELO-HEL, no VELREF)',
+      velocity_convention_name: 'optical', velocity_frame: 'barycentric', velocity_frame_source: 'SPECSYS BARYCENT',
+      centroid_ra_deg: 154.348875, centroid_dec_deg: -21.800778, centroid_frame: 'ICRS', centroid_velocity_kms: -12926.805,
+      major_axis_arcsec: 1051.63, minor_axis_arcsec: 1043.08, pa_deg: 171.61, pa_grid_deg: 171.77, size_definition: 'semi-axes',
+      notes: ['width is a lower limit: the line reaches the selection\'s edge'],
+    };
 
     // ── The menu: every page, data kind and state, every widget hovered ──
     const fields = ['x', 'y', 'z', 'velocity_x', 'velocity_y', 'velocity_z', 'temperature_kelvin', 'stellar_mass_msun', 'metallicity', 'density'];
@@ -245,7 +257,10 @@
     }
     const bigSel = [
       { tool: 'lasso', lasso: { count: 1234567, shared: { source: 'desktop' }, stats: { flux_jy_kms: 1234.5678, velocity_min_kms: -1234.5, velocity_max_kms: 4321.9 } } },
+      { tool: 'lasso', lasso: { count: 1234567, stats: { flux_jy_kms: 1234.5678, velocity_min_kms: -1234.5, velocity_max_kms: 4321.9, hi: HI_WIDE } } },
+      { tool: 'lasso', lasso: { count: 13216, stats: { flux_jy_kms: 0.46542, hi: { ...HI_WIDE, vsys_kms: null } } } },
       { tool: 'box', box: { stats: { valid_voxels: 9876543, mean: 1.23e-4, rms: 4.56e-5, flux_jy_kms: 0.000123 } } },
+      { tool: 'box', box: { stats: { valid_voxels: 9876543, mean: 1.23e-4, rms: 4.56e-5, flux_jy_kms: 1234.5678, hi: HI_WIDE } } },
       { tool: 'probe', spectrum: { x: 1234, y: 2345, channel: 3, unit: 'Jy/beam', values: [1, 2, 3, 4e-5, 5] } },
       { tool: 'probe', error: 'The backend answered: 503 Service Unavailable while computing the spectrum' },
       { tool: 'box', corner: [0.1, 0.2, 0.3] },
@@ -316,9 +331,9 @@
       ['lasso', { lasso: { count: 1234567, reduced: { count: 34567 }, ms: 712, request: { seed: [1, 2, 3] },
         stats: { flux_jy_kms: 6.061, sum: 1234.5, bunit: 'Jy/beam', velocity_min_kms: -1234.5, velocity_max_kms: 4321.9, channel_min: 12, channel_max: 108,
           max: 0.0123, peak_voxel: [1234, 2345, 67], flux_note: 'Flux in Jy km/s: the sum times the channel width over the beam area (BMAJ, BMIN from the header).',
-          spectrum: spec(97), spectrum_velocity_kms: vel(97), spectrum_unit: 'Jy' } } }],
+          spectrum: spec(97), spectrum_velocity_kms: vel(97), spectrum_unit: 'Jy', hi: HI_WIDE } } }],
       ['box', { box: { range: [[12, 187], [0, 279], [3, 106]], depth: 'full cube', ms: 158,
-        stats: { valid_voxels: 9876543, selected_voxels: 9999999, blank_voxels: 123456, mean: 1.23e-4, rms: 4.56e-5, min: -0.0123, max: 0.456, sum: 1234.5, flux_jy_kms: 0.000123 } } }],
+        stats: { valid_voxels: 9876543, selected_voxels: 9999999, blank_voxels: 123456, mean: 1.23e-4, rms: 4.56e-5, min: -0.0123, max: 0.456, sum: 1234.5, flux_jy_kms: 0.000123, hi: HI_WIDE } } }],
       ['probe', { busy: 'Spectrum of the full cube at (1234, 2345)…', error: 'The backend answered: 503 Service Unavailable while computing the spectrum of the full cube' }],
     ];
     for (const [tool, fields2] of panels) {

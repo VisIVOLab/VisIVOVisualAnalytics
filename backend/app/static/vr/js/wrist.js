@@ -25,6 +25,7 @@
 
 import * as M from './mat4.js';
 import { drawFit, wrapFit, measureWith } from './text-fit.js';
+import { wristLines as hiWristLines, fluxText as hiFluxText } from './hi-lines.js';
 
 // ── The watch gesture ───────────────────────────────────────────────────────
 
@@ -188,7 +189,10 @@ export function selectionLines(sel, { bunit = '' } = {}) {
     if (k === 'lasso' && sel.lasso) {
       const L = sel.lasso, s = L.stats;
       const out = [`Lasso ${count(L.count)} voxels${L.shared ? ` (${L.shared.source})` : ''}`];
-      if (s) {
+      // The HI measurements (#280): flux with its uncertainty, Vsys and W50.
+      const hi = s ? hiWristLines(s) : null;
+      if (hi) out.push(...hi);
+      else if (s) {
         out.push(`flux ${fmt(s.flux_jy_kms)} Jy km/s`);
         out.push(Number.isFinite(s.velocity_min_kms) && Number.isFinite(s.velocity_max_kms)
           ? `v ${s.velocity_min_kms.toFixed(1)} to ${s.velocity_max_kms.toFixed(1)} km/s`
@@ -199,7 +203,7 @@ export function selectionLines(sel, { bunit = '' } = {}) {
     if (k === 'box' && sel.box && sel.box.stats) {
       const s = sel.box.stats;
       return [`Box ${count(s.valid_voxels)} voxels`, `mean ${fmt(s.mean)} rms ${fmt(s.rms)} ${bunit}`.trim(),
-        `flux ${fmt(s.flux_jy_kms)} Jy km/s`];
+        hiFluxText(s)];
     }
     if (k === 'spectrum' && sel.spectrum) {
       const sp = sel.spectrum;

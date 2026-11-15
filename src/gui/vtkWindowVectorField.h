@@ -31,6 +31,7 @@ struct CatalogueOverlayData
     bool cartesian = false;                  // schema.isCartesian() after XYZ forcing
     Catalogue3DSchema schema;
     std::vector<Catalogue3DEntry> entries;
+    int unplaced = 0;                        // rows with no distance, not drawn (issue #265)
 };
 
 class QCheckBox;
