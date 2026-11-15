@@ -501,6 +501,7 @@ for (const [i, axis] of ['x', 'y', 'z'].entries()) {
         if (end === 'min') state.clip.min[i] = state.clip.max[i] - 0.01;
         else state.clip.max[i] = state.clip.min[i] + 0.01;
       }
+      layers.clipChanged();       // a crop carried empty from another snapshot is gone (#259)
       rebuildDecorations();
       updateLabels();
     });
@@ -2360,6 +2361,7 @@ function menuSlide(a) {
 
 /** The clipping box changed: its lines and labels (throttled in VR). */
 function decorationsChanged() {
+  layers.clipChanged();         // an empty crop carried from another snapshot is gone (#259)
   if (xr) { xr.slabDirty = true; xr.labelsDirty = true; } else { rebuildDecorations(); updateLabels(); }
 }
 function labelsChanged() {

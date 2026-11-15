@@ -53,12 +53,17 @@ fields, and Select on velocity fields, with the reason under each control.
   the crop and the box selection where it has those columns, and the view
   stays where it is. The crop and the box keep their place in the table's
   units (the same region of space), not their fraction of a box whose bounds
-  changed; a region wholly outside the new snapshot's box is dropped. There
+  changed. A crop wholly outside the new snapshot's box draws nothing and the
+  menu says so (*Reset crop* shows it all); a box wholly outside it shows
+  nothing with *Show inside* and everything with *Hide inside*, also said;
+  neither is replaced by the whole table, and both come back on a snapshot
+  that holds them. *None* (one colour) stays one colour. Quick presses take
+  the crop and the box from the snapshot on show when they began. There
   is no time-series data model: a snapshot is a file opened as any table, so
   a step takes as long as opening that file (the sample is fetched again).
   Quick presses go on from the step under way (the last one wins; one
-  overtaken is not shown), and a press made before the series is known waits
-  for it. The snapshot left behind is closed on the backend when the page
+  overtaken is not shown), a press made before the series is known waits for
+  it, and a cube, a field or another table opened meanwhile cancels the step. The snapshot left behind is closed on the backend when the page
   opened it itself; the table the desktop sent is never closed by the page.
 - **X, Y, Z.** *Data ▸ → X / Y / Z*: *◂* and *▸* (or the column's name) step
   through the table's columns for that axis; *Default axes* goes back to the

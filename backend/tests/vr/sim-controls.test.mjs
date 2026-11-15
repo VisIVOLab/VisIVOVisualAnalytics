@@ -21,6 +21,8 @@ test('snapshots: a step within the series, its label, what the next one keeps', 
   const prev = { axes: ['x', 'y', 'z'], colourField: 'rho', sizeField: 'hsml' };
   assert.deepEqual(SC.carryOver(prev, ['x', 'y', 'z', 'rho', 'hsml'], { axes: ['X', 'Y', 'Z'], colourField: null }),
     { axes: ['x', 'y', 'z'], colourField: 'rho', sizeField: 'hsml' });
+  // One colour (none) was chosen: it stays none (#259 review), not the default column.
+  assert.equal(SC.carryOver({ ...prev, colourField: null }, ['x', 'y', 'z', 'rho', 'hsml'], { axes: ['X', 'Y', 'Z'], colourField: 'rho' }).colourField, null);
   // A snapshot without those columns takes its own.
   assert.deepEqual(SC.carryOver(prev, ['X', 'Y', 'Z', 'T'], { axes: ['X', 'Y', 'Z'], colourField: 'T' }),
     { axes: ['X', 'Y', 'Z'], colourField: 'T', sizeField: null });

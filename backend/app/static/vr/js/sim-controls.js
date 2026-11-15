@@ -33,7 +33,8 @@ export function carryOver(prev, fields, defaults) {
   const axes = prev.axes && prev.axes.every(has) ? prev.axes.slice() : defaults.axes.slice();
   return {
     axes,
-    colourField: has(prev.colourField) ? prev.colourField : defaults.colourField,
+    // One colour (null) is a choice, kept as such.
+    colourField: prev.colourField === null ? null : has(prev.colourField) ? prev.colourField : defaults.colourField,
     sizeField: has(prev.sizeField) ? prev.sizeField : smoothingField(fields),
   };
 }

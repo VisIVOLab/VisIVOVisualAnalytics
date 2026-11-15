@@ -46,6 +46,8 @@ for k in (1, 2, 3):
     rho = np.exp(rng.normal(0, 1.5, n))
     np.stack([x, y, z, vx, h, rho, np.zeros(n)]).astype('<f4').tofile(f"{out}/run_{k:03d}.bin")
     open(f"{out}/run_{k:03d}.bin.head", "w").write(f"float\\n7\\n{n}\\nlittle\\nx\\ny\\nz\\nvx\\nhsml\\nrho\\nzero\\n")
+from astropy.io import fits
+fits.PrimaryHDU(np.random.default_rng(9).normal(0, 1, (16, 24, 24)).astype('<f4')).writeto(f"{out}/cube.fits")
 `, OUT], { encoding: 'utf8' });
 if (made.status !== 0) { console.log(`FAIL could not write the snapshots: ${made.stderr}`); process.exit(1); }
 
@@ -183,6 +185,57 @@ try {
   check('Clear drops the box', (await ev(`${L}.s.selBox`)) === null);
   const bar = await ev('window.__vrLayers.colourBar()');
   check('the colour bar names its column and says when the file has no unit', !!bar && /no unit in the file/.test(bar.title), bar && bar.title);
+
+  // A crop and an inside-only box wholly outside the next snapshot: nothing
+  // drawn and said, never the whole table; back on a snapshot that holds them,
+  // they are there again (they are kept in table units).
+  const xRange = (bb, c) => [bb[0] + c.min[0] * (bb[1] - bb[0]), bb[0] + c.max[0] * (bb[1] - bb[0])];
+  await ev(`window.__vrState.clip = { min: [0.995, 0, 0], max: [1, 1, 1] }`);
+  await ev(`window.__vrLayers.setSelBox({ min: [0.995, 0, 0], max: [1, 1, 1] })`);
+  await act({ type: 'press', id: 'psel-inside' });
+  const edge = xRange(await ev(`${L}.points.sample.bounds`), await ev('window.__vrState.clip'));
+  await act({ type: 'press', id: 'snap-prev' });
+  check('a crop outside the next snapshot: nothing drawn, said, not the whole table', await waitFor(`${L}.points.series.index === 1 && ${L}.stepTarget === null
+    && !!${L}.cropEmpty && !!${L}.selEmpty && ${L}.s.selMode === 'inside'`, 60000),
+    JSON.stringify(await ev(`({ crop: ${L}.cropEmpty, sel: ${L}.selEmpty, mode: ${L}.s.selMode })`)));
+  await sleep(400);
+  const empty = await ev('window.__vrDrawnFraction()');
+  const notes = await ev(`window.__vrLayers.menuView().status.map((x) => x[0]).join(' | ')`);
+  check('… the picture is empty and the menu says why', empty.fraction === 0 && /outside this snapshot/.test(notes), `${(100 * empty.fraction).toFixed(2)} %; ${notes}`);
+  await act({ type: 'press', id: 'snap-next' });
+  await waitFor(`${L}.points.series.index === 2 && ${L}.stepTarget === null && !!${L}.points.sample`, 60000);
+  const back = xRange(await ev(`${L}.points.sample.bounds`), await ev('window.__vrState.clip'));
+  check('… and back on a snapshot that holds them, the same crop again', !(await ev(`${L}.cropEmpty`)) && Math.abs(back[0] - edge[0]) < 1e-3 && Math.abs(back[1] - edge[1]) < 1e-3,
+    `${edge.map((v) => v.toFixed(4))} -> ${back.map((v) => v.toFixed(4))}`);
+  await act({ type: 'press', id: 'crop-reset' });
+  await act({ type: 'press', id: 'sel-clear' });
+  // Two quick presses (Previous, Previous): the crop comes from the snapshot on
+  // show when they began, not from the one half loaded between them.
+  await ev(`window.__vrState.clip = { min: [0.3, 0, 0], max: [0.6, 1, 1] }`);
+  const want = xRange(await ev(`${L}.points.sample.bounds`), await ev('window.__vrState.clip'));
+  await act({ type: 'press', id: 'snap-prev' });
+  await act({ type: 'press', id: 'snap-prev' });
+  await waitFor(`${L}.points.series.index === 0 && ${L}.stepTarget === null && !!${L}.points.sample && /run_001/.test(${L}.points.path)`, 60000);
+  const got = xRange(await ev(`${L}.points.sample.bounds`), await ev('window.__vrState.clip'));
+  check('quick steps keep the crop of the snapshot on show when they began', Math.abs(got[0] - want[0]) < 1e-3 && Math.abs(got[1] - want[1]) < 1e-3,
+    `${want.map((v) => v.toFixed(4))} -> ${got.map((v) => v.toFixed(4))}`);
+  // One colour (none) stays one colour on the next snapshot.
+  await act({ type: 'press', id: 'tab:display' });
+  await act({ type: 'press', id: 'pt-field:' });
+  await waitFor(`${L}.s.colourField === null && ${L}.points.sample && !${L}.points.sample.colourField`);
+  await act({ type: 'press', id: 'snap-next' });
+  await waitFor(`${L}.points.series.index === 1 && ${L}.stepTarget === null && !!${L}.points.sample`, 60000);
+  check('one colour (none) is kept on the next snapshot', (await ev(`${L}.s.colourField`)) === null);
+  // A cube opened while a step is under way: the cube stays, the step installs
+  // nothing. The step's table info is held back 4 s, so it ends after the cube.
+  await ev(`(() => { const b = window.__vrBackend(); const orig = b._json.bind(b);
+    b._json = (m, p, body) => (p === '/v1/points/info' ? new Promise((r) => setTimeout(r, 4000)).then(() => orig(m, p, body)) : orig(m, p, body)); })()`);
+  await act({ type: 'press', id: 'snap-next' });
+  await ev(`(() => { const $ = (id) => document.getElementById(id); $('path').value = ${JSON.stringify(join(OUT, 'cube.fits'))}; $('load').click(); })()`);
+  await waitFor('!!(window.__vrState.cube && window.__vrState.open)', 60000);
+  await sleep(6000);
+  check('a cube opened during a step stays on show', await ev(`!!window.__vrState.cube && window.__vrLayers.mode === 'cube' && !${L}.points`),
+    await ev(`window.__vrLayers.mode + ' ' + !!window.__vrState.cube`));
   check('no page error', !pageErrors.length, pageErrors.join(' / '));
   sock.close();
 } catch (err) {

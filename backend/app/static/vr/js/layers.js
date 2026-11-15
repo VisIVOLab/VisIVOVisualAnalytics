@@ -91,6 +91,10 @@ export function createLayers(ctx) {
     // Snapshot steps (#259): the newest step's token, the series it moves to,
     // a press waiting for the series; size columns with no positive value.
     stepToken: 0, stepTarget: null, pendingStep: 0, badSize: new Set(),
+    // carry: the crop and box (table units) a burst of steps takes from the
+    // last snapshot on show; cropEmpty / selEmpty: a crop or box (table
+    // units) that lies wholly outside the snapshot on show.
+    carry: null, cropEmpty: null, selEmpty: null,
   };
   let cloud = null, lines = null;
   // The colour bar's description, kept while what it shows is the same (#259).
@@ -275,11 +279,14 @@ export function createLayers(ctx) {
    * opened). A dataset the page opened itself is `own`: when a step replaces
    * it, it is closed (DELETE), never one the desktop opened.
    */
-  async function openPoints(b, { datasetId, path, keep = null, series = null, token = 0 }, load = {}) {
+  async function openPoints(b, { datasetId, path, keep = null, series = null, token = 0, gen = 0 }, load = {}) {
     const own = !datasetId;
     // A table opened afresh (not a step) overtakes any step under way.
-    if (!token) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; }
-    const stale = () => token && token !== L.stepToken;
+    if (!token) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; L.carry = null; }
+    // A step is stale once a newer step was pressed, any other load began
+    // (state.loadGen: a cube, a field, another table) or the scene left the
+    // point table (enter): it then installs nothing.
+    const stale = () => token && (token !== L.stepToken || state.loadGen !== gen || L.mode !== 'points');
     const drop = () => { if (own && datasetId) closeDataset(b, datasetId); };
     if (!datasetId) {
       const fmt = catalogueFormat(path);
@@ -300,11 +307,10 @@ export function createLayers(ctx) {
     if (stale()) { drop(); return null; }
     load.check?.();
     const prevShown = L.points;
-    // The crop and the box in the table's units, to be placed on the new
-    // snapshot's own box (its bounds differ) once its sample is in.
-    const prevBounds = keep && prevShown && prevShown.sample ? prevShown.sample.bounds : null;
-    const keptData = prevBounds ? { axes: prevShown.axes.slice(), clip: SC.toData(state.clip, prevBounds),
-      sel: L.s.selBox ? SC.toData(L.s.selBox, prevBounds) : null } : null;
+    // The crop and the box in the table's units, taken from the last snapshot
+    // fully on show when the burst of steps began (L.carry, simPress): an
+    // intermediate step has no sample to take them from.
+    const carry = token ? L.carry : null;
     L.points = { datasetId, path, own, axes: info.axes, defaultAxes: info.axes.slice(), fields: info.fields, rows: info.num_rows,
       units: info.units || {}, series };
     fieldSel.innerHTML = '';
@@ -322,25 +328,35 @@ export function createLayers(ctx) {
     }
     L.s.sizeField = kept ? kept.sizeField : SC.smoothingField(info.fields);
     if (!L.s.sizeField) L.s.sizeOn = false;
-    if (!keep) { L.s.selBox = null; L.s.selMode = 'all'; L.badSize = new Set(); }
+    if (!keep) { L.s.selBox = null; L.s.selMode = 'all'; L.badSize = new Set(); L.selEmpty = null; L.cropEmpty = null; }
     logBox.checked = L.s.colourLog;
     fieldSel.value = L.s.colourField || '';
     const pts = L.points;
-    const selMode = L.s.selMode;
-    enter('points');
+    enter('points', true);
     L.points = pts;
     await fetchSample(b, load);
     if (stale() || L.points !== pts) { drop(); return null; }
     // Placed again in the table's units: the same region of space, not the
     // same fraction of a box that changed (only on the same X/Y/Z columns).
-    if (keptData && pts.sample && keptData.axes.join() === pts.axes.join()) {
-      state.clip = SC.toFrac(keptData.clip, pts.sample.bounds) || { min: [0, 0, 0], max: [1, 1, 1] };
-      L.s.selBox = keptData.sel ? SC.toFrac(keptData.sel, pts.sample.bounds) : null;
-      L.s.selMode = L.s.selBox ? selMode : 'all';
+    // A region wholly outside this snapshot stays as it is, in table units,
+    // and is shown as such: nothing drawn (an empty crop, Show inside of an
+    // empty box) with a note, never the whole table instead.
+    if (carry && pts.sample && carry.axes.join() === pts.axes.join()) {
+      const bounds = pts.sample.bounds;
+      const clip = SC.toFrac(carry.clip, bounds);
+      state.clip = clip || { min: [0, 0, 0], max: [1, 1, 1] };
+      L.cropEmpty = clip ? null : carry.clip;
+      if (carry.sel) {
+        L.s.selBox = SC.toFrac(carry.sel, bounds);
+        L.selEmpty = L.s.selBox ? null : carry.sel;
+        L.s.selMode = carry.selMode;
+      } else {
+        L.s.selBox = null; L.selEmpty = null; L.s.selMode = 'all';
+      }
     } else if (keep) {
-      L.s.selBox = null; L.s.selMode = 'all';
+      L.s.selBox = null; L.s.selMode = 'all'; L.selEmpty = null; L.cropEmpty = null;
     }
-    if (token) L.stepTarget = null;
+    if (token) { L.stepTarget = null; L.carry = null; }
     // The table on show before, when the page opened it, is closed once the
     // refiner has left it.
     if (prevShown && prevShown !== pts && prevShown.own && prevShown.datasetId !== datasetId) {
@@ -437,8 +453,10 @@ export function createLayers(ctx) {
   }
 
   // ── Modes ────────────────────────────────────────────────────────────
-  function enter(mode) {
+  function enter(mode, forStep = false) {
     invalidateRequests();
+    // Another scene (a cube, a field) or another table: no snapshot step goes on.
+    if (mode !== 'points' || !forStep) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; L.carry = null; }
     L.mode = mode;
     if (mode !== 'cube') {
       ctx.onNonCube?.();
@@ -627,25 +645,41 @@ export function createLayers(ctx) {
       const next = SC.seriesStep(from, dir);
       if (!next) return true;
       const series = { ...from, index: next.index };
+      // The first step of a burst takes the crop and the box, in table units,
+      // from the snapshot on show; the later ones keep that until the newest
+      // step is installed.
+      if (!L.carry && p.sample) L.carry = carryOf(p);
       const token = ++L.stepToken;
       L.stepTarget = series;
       const keep = { axes: p.axes, colourField: s.colourField, sizeField: s.sizeField };
-      openPoints(b, { path: next.path, keep, series, token })
+      openPoints(b, { path: next.path, keep, series, token, gen: state.loadGen })
         .then((r) => { if (r && token === L.stepToken) ctx.onSnapshot?.(next.path); })
-        .catch((e) => { if (token === L.stepToken) { L.stepTarget = null; fail(e); } });
+        .catch((e) => { if (token === L.stepToken) { L.stepTarget = null; L.carry = null; fail(e); } });
     } else if (id === 'psel-inside' || id === 'psel-outside' || id === 'psel-all') {
       s.selMode = id.slice(5);
     } else if (id === 'psel-clear') {
       s.selBox = null;
+      L.selEmpty = null;
       s.selMode = 'all';
     } else {
       return false;
     }
     return true;
   }
+  /** The crop and the box selection of the snapshot on show, in table units
+   *  (an empty one carried as it was). */
+  function carryOf(p) {
+    const bounds = p.sample.bounds;
+    return { axes: p.axes.slice(), clip: L.cropEmpty || SC.toData(state.clip, bounds),
+      sel: L.selEmpty || (L.s.selBox ? SC.toData(L.s.selBox, bounds) : null), selMode: L.s.selMode };
+  }
+  /** Nothing to draw: a crop or an inside-only box wholly outside this snapshot. */
+  const drawsNothing = () => !!(L.cropEmpty || (L.selEmpty && L.s.selMode === 'inside'));
   /** New X/Y/Z columns: a new box, so the crop and the selection start again. */
   function axesChanged(b) {
     L.s.selBox = null;
+    L.selEmpty = null;
+    L.cropEmpty = null;
     L.s.selMode = 'all';
     state.clip = { min: [0, 0, 0], max: [1, 1, 1] };
     fetchSample(b).catch(fail);
@@ -678,6 +712,7 @@ export function createLayers(ctx) {
   function restoreUndo(o) {
     if (!o) return;
     for (const k of UNDO_KEYS) if (k in o) L.s[k] = o[k];
+    L.selEmpty = null;            // the box restored is this snapshot's own (#259)
     const s = L.s;
     styleSel.value = s.style;
     sizeIn.value = s.style === 'splats' ? s.splatSize : s.pointPx;
@@ -717,7 +752,7 @@ export function createLayers(ctx) {
       sim: L.points ? { axes: L.points.axes.slice(), series: L.points.series ? L.points.series.count : 1,
         seriesIndex: (L.stepTarget || L.points.series || { index: 0 }).index, seriesPending: !L.points.series,
         sizeOn: s.sizeOn, sizeField: s.sizeField,
-        style: s.style, sel: { box: !!s.selBox, mode: s.selMode } } : null,
+        style: s.style, sel: { box: !!(s.selBox || L.selEmpty), mode: s.selMode } } : null,
     };
   }
   /** The values on the menu's rows ({rowKey: text}), its sliders and ranges, and status lines. */
@@ -746,7 +781,12 @@ export function createLayers(ctx) {
         : !s.sizeField ? 'No smoothing-length column (h, hsml, …): ▸ picks another.'
         : s.sizeOn && p.size ? `σ = ${s.sizeField} / √2 × size, ${fmt(p.size.range[0])} to ${fmt(p.size.range[1])}`
           : `Uniform: one size from the mean spacing; ${s.sizeField} on the right.`;
-      notes.selection = s.selBox ? `${s.selMode === 'inside' ? 'Inside shown' : s.selMode === 'outside' ? 'Inside hidden' : 'All shown'}: ${SC.boxText(p.axes, sm.bounds, s.selBox)}` : '';
+      if (L.cropEmpty) status.push(['The crop lies outside this snapshot: nothing is drawn. Reset crop to see it all.', '#ffd27a']);
+      if (L.selEmpty) {
+        status.push([s.selMode === 'inside' ? 'The box lies outside this snapshot: nothing inside it to show.'
+          : 'The box lies outside this snapshot: nothing inside it here.', '#ffd27a']);
+      }
+      notes.selection = L.selEmpty ? `Outside this snapshot: ${SC.boxText(p.axes, [L.selEmpty.min[0], L.selEmpty.max[0], L.selEmpty.min[1], L.selEmpty.max[1], L.selEmpty.min[2], L.selEmpty.max[2]], { min: [0, 0, 0], max: [1, 1, 1] })}` : s.selBox ? `${s.selMode === 'inside' ? 'Inside shown' : s.selMode === 'outside' ? 'Inside hidden' : 'All shown'}: ${SC.boxText(p.axes, sm.bounds, s.selBox)}` : '';
     } else if (L.mode === 'flow' && L.flow && L.flow.info) {
       const i = L.flow.info;
       values['fl-range'] = [s.flC0, s.flC1];
@@ -849,14 +889,15 @@ export function createLayers(ctx) {
           grow: Math.cbrt(Math.max(1, pt.sample.totalRows / Math.max(1, drawn))), radius: st.sampleRadius }) : null;
         cloud.draw(view, model, { box: L.box, style: L.s.style, pointPx: L.s.pointPx, radius: st.sampleRadius,
           opacity: st.opacity, c0: L.s.c0, c1: L.s.c1, viewportH, count: L.s.govern ? pt.drawRows : pt.sample.count,
-          clip: state.clip, size, sel: L.s.selBox && L.s.selMode !== 'all' ? { box: L.s.selBox, mode: L.s.selMode } : null });
+          clip: state.clip, size, sel: L.s.selBox && L.s.selMode !== 'all' ? { box: L.s.selBox, mode: L.s.selMode } : null,
+          ...(drawsNothing() ? { count: 0 } : {}) });
       } else if (L.mode === 'flow' && lines && L.flow && L.flow.info) {
         const [s0, s1] = flowSpeedRange();
         lines.draw(view, model, { box: L.box, speedMin: s0, speedMax: s1,
           stream: L.s.stream, arrows: L.s.arrows, clip: state.clip });
       }
       // The backend's point session draws the whole table: no refined frame over a crop.
-      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing && !isCropped(state.clip) && !L.s.sizeOn) ctx.refiner.composite(view, model, eye);
+      if (L.mode === 'points' && ctx.refineOn() && ctx.refiner.showing && !isCropped(state.clip) && !L.s.sizeOn && !drawsNothing()) ctx.refiner.composite(view, model, eye);
       if (L.s.box) {
         R.drawLines(view, model);
         R.drawLabels(view, model, M.uniformScale(model));
@@ -894,12 +935,15 @@ export function createLayers(ctx) {
     },
     /** The box selection of a point table (#259): its box, or null; set to a box (fractions) or null. */
     get selBox() { return L.mode === 'points' ? L.s.selBox : null; },
-    setSelBox(box) { L.s.selBox = box; if (!box) L.s.selMode = 'all'; },
+    setSelBox(box) { L.s.selBox = box; L.selEmpty = null; if (!box) L.s.selMode = 'all'; },
+    /** The crop changed on the page or the menu: an empty crop carried from
+     *  another snapshot is gone (#259). */
+    clipChanged() { L.cropEmpty = null; },
     /** Refinement of a point table (none for a velocity field). */
     refineFrame(t, eyes, centreView, background) {
       // The session draws one splat size: no refined frame while the splats
       // follow a column (#259; the headset's own picture stays).
-      if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip) || L.s.sizeOn) return;
+      if (L.mode !== 'points' || !L.points || !L.points.sample || isCropped(state.clip) || L.s.sizeOn || drawsNothing()) return;
       const sm = L.points.sample;
       const commands = PT.pointLook({ axes: L.points.axes, colourField: sm.colourField, colourRange: sm.colourRange,
         colourLog: sm.colourLog, lut: colormapTable(ctx.colormap()), c0: L.s.c0, c1: L.s.c1, style: L.s.style,
