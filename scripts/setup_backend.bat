@@ -14,6 +14,10 @@ setlocal EnableExtensions EnableDelayedExpansion
 set "VENV_DIR=%APPDATA%\VisIVO\.venv"
 set "SCRIPT_DIR=%~dp0"
 set "REQ_FILE=%SCRIPT_DIR%requirements.txt"
+rem WebRTC (headset pairing, stereo video): next to this script, else in the
+rem backend the package carries.
+set "WEBRTC_REQ=%SCRIPT_DIR%requirements-webrtc.txt"
+if not exist "%WEBRTC_REQ%" set "WEBRTC_REQ=%SCRIPT_DIR%bin\backend\requirements-webrtc.txt"
 
 if not exist "%REQ_FILE%" (
     echo Error: requirements.txt not found at:
@@ -77,6 +81,21 @@ if errorlevel 1 (
     echo Error: dependency installation failed. See messages above.
     pause
     exit /b 1
+)
+
+rem This venv is preferred over the bundled Python, so without these packages
+rem headset pairing and stereo video would be missing. Wheels only, and not
+rem fatal: the rest of the backend works without them.
+if exist "%WEBRTC_REQ%" (
+    echo.
+    echo Installing WebRTC packages ^(headset pairing, stereo video^)...
+    "%VENV_DIR%\Scripts\pip.exe" install --only-binary=:all: -r "%WEBRTC_REQ%"
+    if errorlevel 1 (
+        echo Warning: the WebRTC packages could not be installed on this Python.
+        echo          The backend works; headset pairing and stereo video are not available.
+    )
+) else (
+    echo Warning: requirements-webrtc.txt was not found: headset pairing and stereo video are not installed.
 )
 
 echo.

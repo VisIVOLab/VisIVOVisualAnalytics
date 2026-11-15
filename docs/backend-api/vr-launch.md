@@ -30,7 +30,9 @@ Links statements of:
    `<VISIVO_QUEST_APP_DIR or ~/.visivo/quest-app>/dev-sha256.txt`, written by
    `tools/quest-app/build.sh`;
 3. the statements in the file `VISIVO_VR_ASSETLINKS_FILE` (a JSON array), as
-   they are.
+   they are. A file that cannot be read or is not a JSON array of objects
+   (larger than 64 KiB, NaN, too deep) is skipped with a warning in the log;
+   the release and development statements are still served.
 
 ```json
 [{ "relation": ["delegate_permission/common.handle_all_urls"],
@@ -39,9 +41,8 @@ Links statements of:
 ```
 
 404 when there is no statement (a backend whose `vr_app.json` names no
-release certificate and that has no development key says nothing) or
-when `VISIVO_VR_ASSETLINKS_FILE` names something that is not a JSON array of
-objects (larger than 64 KiB, NaN, too deep). `Cache-Control: no-cache`.
+release certificate, that has no development key and no readable extra file
+says nothing). `Cache-Control: no-cache`.
 
 ## `POST /v1/vr/launch`
 
@@ -68,7 +69,9 @@ The launch address is `http://localhost:<port><prefix><page>#ticket=<ticket>`
 
 A ticket is single use, valid for `expires_in` seconds (60), and the backend
 keeps only its SHA-256 and the SHA-256 of the caller's token; at most 32 wait
-at a time (the oldest go). Tickets live in memory: a backend restart forgets
+at a time per token (that token's oldest go), and 64 launches are remembered
+per token, so with several users (`VISIVO_TOKENS`) one user's launches never
+evict another's. Tickets live in memory: a backend restart forgets
 them.
 
 ## `POST /v1/vr/launch/exchange`
@@ -93,8 +96,11 @@ Response, once (`Cache-Control: no-store`):
 - **415** for a body that is not `application/json` (a form another page
   could post without a preflight).
 - **413** above 1 KiB, **422** for a body without `ticket`.
-- **429** (`Retry-After: 60`) beyond 20 exchanges a minute per client and 120
-  in all.
+- **429** (`Retry-After: 60`) beyond 20 exchanges a minute per client, and
+  for a refused ticket once more than 120 were refused in the last minute in
+  all. A valid ticket is never held by the global limit: it spends a 256-bit
+  ticket and tells a guesser nothing, so junk from many addresses cannot keep
+  a user's launch at 429.
 
 ## `GET /v1/vr/launch/{launch}`
 

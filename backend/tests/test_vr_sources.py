@@ -116,6 +116,27 @@ def test_the_votable_reads_back(tmp_path):
     assert list(back["name"]) == ["SoFiA A", "SoFiA B", "SoFiA C"]
 
 
+def test_masked_and_numeric_columns_take_the_found_rows_without_touching_the_frame():
+    """Whole-column building: null cells stay null (masked), the found rows
+    are null except the sky columns and the name, a numeric name column takes
+    the found source's label as text, and the session's frame is unchanged."""
+    df = pd.DataFrame({"id": [7, 8, 9], "ra": [10.0, 11.0, 12.0], "dec": [1, 2, 3],
+                       "n": pd.array([1, None, 3], dtype="Int64"), "tag": ["a", None, "c"]})
+    before = df.copy()
+    sources = [{"origin": "catalogue", "row": 2, "flag": "real", "x": 4},
+               {"origin": "user", "label": "found 1", "lon": 10.25, "lat": 1.5, "flag": "doubtful"}]
+    t = ccl.classified_table(sources, "vr_flag", df, {"system": "sky", "ra": "ra", "dec": "dec"}, "id", "icrs")
+    pd.testing.assert_frame_equal(df, before)
+    assert len(t) == 4
+    assert list(t["id"]) == ["7", "8", "9", "found 1"]
+    assert list(t["dec"].filled(np.nan)[:3]) == [1.0, 2.0, 3.0] and t["dec"][3] == 1.5   # int -> float
+    assert list(np.ma.getmaskarray(t["n"])) == [False, True, False, True]
+    assert list(np.ma.getmaskarray(t["tag"])) == [False, True, False, True]
+    assert list(t["vr_flag"]) == ["", "", "real", "doubtful"]
+    assert list(t["vr_origin"]) == ["catalogue"] * 3 + ["user"]
+    assert t["vr_x"][2] == 4 and math.isnan(t["vr_x"][0]) and math.isnan(t["vr_x"][3])
+
+
 def _cube(tmp_path):
     h = fits.Header()
     for k, v in dict(CTYPE1="RA---SIN", CRPIX1=16, CRVAL1=150.0, CDELT1=-0.002, CUNIT1="deg",

@@ -217,6 +217,14 @@ def parse_edits(body: bytes) -> tuple[dict[str, Any], dict[int, np.ndarray]]:
     if n > len(body) - 4 or n > 1_000_000:
         raise ValueError("The body's header length is wrong.")
     head = json.loads(body[4:4 + n].decode("utf-8"))
+    # Shape checks first, so a malformed header is a ValueError (422), never
+    # an AttributeError/TypeError further on (500).
+    if not isinstance(head, dict):
+        raise ValueError("The header must be a JSON object.")
+    if not isinstance(head.get("edits", []), list) or not all(isinstance(e, dict) for e in head.get("edits", [])):
+        raise ValueError("'edits' must be a list of objects.")
+    if not isinstance(head.get("history", []), list) or not all(isinstance(h, str) for h in head.get("history", [])):
+        raise ValueError("'history' must be a list of strings.")
     pos = 4 + n
     pos += (4 - pos % 4) % 4
     data = np.frombuffer(body, dtype="<u4", offset=pos) if pos < len(body) else np.zeros(0, "<u4")

@@ -5,5 +5,13 @@
 # EGL image adds its own aiortc build (apptainer/backend-egl-h265-overlay.def).
 # Without these packages pairing answers "not-configured" and nothing else
 # changes.
-aiortc>=1.9
+#
+# Pinned: a release installs these with --only-binary=:all: into CPython 3.12
+# on linux x86_64, macOS arm64, macOS x86_64 and Windows x86_64, so a new
+# PyAV without one of those wheels must not turn up on release day. Checked
+# with `pip download --only-binary=:all: --platform ... --python-version 3.12`
+# for the four. av 18.1 is the last series built for CPython 3.11 (19.x needs
+# 3.12), which the setup scripts and source installs still accept.
+aiortc==1.16.0
+av==18.1.0
 websockets>=12

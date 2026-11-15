@@ -350,7 +350,9 @@ ssh tunnels arrive, so they cannot be used to pick a fresh bucket. Locally
 all clients are loopback, so the limit is in effect shared by all of them;
 that is harmless, since a skipped check answers `null` and the page keeps the
 state it knew.
-`backend_version` is present only for an accepted token. A token with
+`backend_version` is present only for an accepted token: `VISIVO_VERSION`
+when set, else the application's version from `backend/app/VERSION` (the
+file CMakeLists.txt also reads). A token with
 non-ASCII characters is refused like any wrong token (401 on the other
 routes), never an error.
 

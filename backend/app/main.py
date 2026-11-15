@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import verify_token
 from .tasks import TASKS
+from .version import __version__
 from .routers import (
     meta,
     node,
@@ -177,7 +178,7 @@ async def _shutdown(push_task) -> None:
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
     title="VisIVO Backend",
-    version="1.0.0",
+    version=__version__,                 # app/VERSION, which CMakeLists.txt also reads
     description="Compute service of VisIVO Visual Analytics, developed by VisIVOLab "
                 "(https://visivolab.oact.inaf.it) at INAF - Osservatorio Astrofisico di Catania.",
     docs_url="/v1/docs",

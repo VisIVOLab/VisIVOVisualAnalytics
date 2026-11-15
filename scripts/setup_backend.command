@@ -77,6 +77,21 @@ echo "Installing backend dependencies (this can take several minutes)..."
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r "$REQ_FILE"
 
+# This venv is preferred over the bundled Python, so without these packages
+# headset pairing and stereo video would be missing. Wheels only, and not
+# fatal: the rest of the backend works without them.
+WEBRTC_REQ="$APP_BUNDLE/Contents/Resources/backend/requirements-webrtc.txt"
+if [ -f "$WEBRTC_REQ" ]; then
+  echo
+  echo "Installing WebRTC packages (headset pairing, stereo video)..."
+  if ! "$VENV_DIR/bin/pip" install --only-binary=:all: -r "$WEBRTC_REQ"; then
+    echo "Warning: the WebRTC packages could not be installed on this Python/Mac."
+    echo "         The backend works; headset pairing and stereo video are not available."
+  fi
+else
+  echo "Warning: requirements-webrtc.txt was not found in the app: headset pairing and stereo video are not installed."
+fi
+
 echo
 echo "Done. The backend is ready."
 echo "Launch VisIVOVisualAnalytics.app normally; it will use this venv."

@@ -92,14 +92,29 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
         lat_col = (coordinates or {}).get("dec" if system == "sky" else "glat")
         want = "icrs" if system == "sky" else "galactic" if system == "galactic" else None
         same_frame = [want is not None and (s.get("frame") or source_frame) == want for s in rest]
+        nr = len(rest)
         cols = []
-        for name in base.colnames:
+        for name in list(base.colnames):
+            # Whole-column numpy work: the catalogue may hold millions of rows,
+            # and only the nr appended rows are built one value at a time. Each
+            # column leaves `base` once copied, so one table's worth is held.
             c = base[name]
-            data = list(c) + [None] * len(rest)
-            mask = list(np.ma.getmaskarray(c)) + [True] * len(rest)
+            kind = c.info.dtype.kind
             unit = c.info.unit if c.info.unit is not None else declared.get(name)
             sky = name in (lon_col, lat_col)
-            if sky:
+            label = bool(label_field) and name == label_field
+            dtype = c.info.dtype if kind in "iufb" else np.dtype(str)
+            if sky and kind in "iub":
+                dtype = np.dtype(np.float64)  # a whole-degree column takes a found source's fraction
+            if label and kind in "iufb":
+                dtype = np.dtype(str)         # a numeric name column takes a found source's label
+            head_mask = np.ma.getmaskarray(c)
+            head = np.asarray(np.ma.getdata(c)).astype(dtype, copy=False)
+            if head_mask.any():           # a new array: never written into the session's frame
+                head = np.where(head_mask, "" if dtype.kind == "U" else dtype.type(0), head)
+            tail = [None] * nr
+            tail_mask = np.ones((nr,) + head.shape[1:], dtype=bool)
+            if sky and head.ndim == 1:
                 # A found source's position (degrees) in the column's own unit
                 # (hours of RA, radians...), as the catalogue's rows are.
                 import astropy.units as u   # noqa: PLC0415
@@ -111,20 +126,28 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
                     if math.isfinite(v):
                         if q is not None:
                             v = float((v * u.deg).to_value(q))
-                        data[n0 + k], mask[n0 + k] = v, False
-            elif label_field and name == label_field:
+                        tail[k], tail_mask[k] = v, False
+            elif label and head.ndim == 1:
                 for k, s in enumerate(rest):
-                    data[n0 + k], mask[n0 + k] = str(s.get("label", "")), False
-            filled = [d if not m else (c.info.dtype.type(0) if c.info.dtype.kind in "iufb"
-                                       else "") for d, m in zip(data, mask)]
-            dtype = c.info.dtype if c.info.dtype.kind in "iufb" else str
-            if sky and c.info.dtype.kind in "iub":
-                dtype = np.float64            # a whole-degree column takes a found source's fraction
-            cols.append(MaskedColumn(np.array(filled, dtype=dtype), name=name, mask=mask,
-                                     unit=unit, description=c.info.description))
-        out = Table(cols, masked=True)
-        rows = [by_row.get(i) for i in range(n0)] + rest
-        origins = ["catalogue"] * n0 + [str(s.get("origin") or "user") for s in rest]
+                    tail[k], tail_mask[k] = str(s.get("label", "")), False
+            if dtype.kind == "U" and head.ndim == 1:
+                tail_data = np.array(["" if t is None else str(t) for t in tail], dtype=str)
+            else:                             # numbers, or a vector column (never set)
+                tail_data = np.zeros((nr,) + head.shape[1:], dtype=head.dtype)
+                for k, t in enumerate(tail):
+                    if t is not None:
+                        tail_data[k] = t
+            data = np.concatenate([head, tail_data])
+            cols.append(MaskedColumn(data, name=name, mask=np.concatenate([head_mask, tail_mask]),
+                                     unit=unit, description=c.info.description, copy=False))
+            base.remove_column(name)
+            del c, head, head_mask
+        out = Table(cols, masked=True, copy=False)
+        # Only the classified rows are visited: the others keep the defaults.
+        placed = list(by_row.items()) + [(n0 + k, s) for k, s in enumerate(rest)]
+        tail_origins = [str(s.get("origin") or "user") for s in rest]
+        origin = np.full(n0 + nr, "catalogue", dtype=f"<U{max([9] + [len(o) for o in tail_origins])}")
+        origin[n0:] = tail_origins
     else:
         lon_name, lat_name = ("ra", "dec") if source_frame == "icrs" else ("glon", "glat")
         # A source given in the other frame (a found source's ICRS position
@@ -135,14 +158,26 @@ def classified_table(sources: list[dict], flag_column: str = "vr_flag", frame=No
         out[lon_name] = np.array([_num(s.get("lon")) if m else math.nan for s, m in zip(rest, mine)], dtype=float)
         out[lat_name] = np.array([_num(s.get("lat")) if m else math.nan for s, m in zip(rest, mine)], dtype=float)
         out[lon_name].unit = out[lat_name].unit = "deg"
-        rows = list(rest)
-        origins = [str(s.get("origin") or "overlay") for s in rest]
-    get = lambda key: [("" if s is None else str(s.get(key) or "")) for s in rows]  # noqa: E731
-    numb = lambda key: np.array([math.nan if s is None else _num(s.get(key))  # noqa: E731
-                                 for s in rows], dtype=float)
+        placed = list(enumerate(rest))
+        origin = np.array([str(s.get("origin") or "overlay") for s in rest], dtype=str)
+    n = len(out)
+
+    def get(key: str) -> np.ndarray:
+        vals = [(i, str(s.get(key) or "")) for i, s in placed]
+        col = np.zeros(n, dtype=f"<U{max([1] + [len(v) for _, v in vals])}")
+        for i, v in vals:
+            col[i] = v
+        return col
+
+    def numb(key: str) -> np.ndarray:
+        col = np.full(n, math.nan)
+        for i, s in placed:
+            col[i] = _num(s.get(key))
+        return col
+
     out[flag_column] = get("flag")
     out["vr_note"] = get("note")
-    out["vr_origin"] = origins
+    out["vr_origin"] = origin
     for k in ("x", "y", "z"):
         out[f"vr_{k}"] = numb(k)
     out["vr_velocity_kms"] = numb("velocity_kms")

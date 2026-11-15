@@ -86,6 +86,12 @@ async def test_points_routes(client, auth_headers, tmp_path, opened_cube):
     r = await client.post("/v1/points/sample_bin", json={"dataset_id": opened_cube, "max_points": 10},
                           headers=auth_headers)
     assert r.status_code == 422
+    # A colour range must be finite: NaN or Infinity would colour every row with the lowest code.
+    for bad in ('{"color_min": NaN}', '{"color_max": Infinity}', '{"color_min": -Infinity}'):
+        body = '{"dataset_id": "%s", "max_points": 10, "color_field": "Mass", %s' % (did, bad[1:])
+        r = await client.post("/v1/points/sample_bin", content=body,
+                              headers={**auth_headers, "Content-Type": "application/json"})
+        assert r.status_code == 422, bad
 
 
 # ── Stereo frames of a point session ─────────────────────────────────────────

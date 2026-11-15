@@ -23,6 +23,12 @@ if [ ! -f "$REQ_FILE" ] && [ -f "$SCRIPT_DIR/app/usr/bin/backend/requirements.tx
   REQ_FILE="$SCRIPT_DIR/app/usr/bin/backend/requirements.txt"
 fi
 
+# WebRTC (headset pairing, stereo video): the same two places.
+WEBRTC_REQ="$(dirname "$REQ_FILE")/requirements-webrtc.txt"
+if [ ! -f "$WEBRTC_REQ" ] && [ -f "$SCRIPT_DIR/app/usr/bin/backend/requirements-webrtc.txt" ]; then
+  WEBRTC_REQ="$SCRIPT_DIR/app/usr/bin/backend/requirements-webrtc.txt"
+fi
+
 if [ ! -f "$REQ_FILE" ]; then
   echo "Error: requirements.txt was not found next to the script or in"
   echo "       $SCRIPT_DIR/app/usr/bin/backend/."
@@ -60,6 +66,20 @@ echo
 echo "Installing backend dependencies (this can take several minutes)..."
 "$VENV_DIR/bin/pip" install --upgrade pip
 "$VENV_DIR/bin/pip" install -r "$REQ_FILE"
+
+# This venv is preferred over the bundled Python, so without these packages
+# headset pairing and stereo video would be missing. Wheels only: PyAV has none
+# for some architectures (ppc64le), and the rest of the backend works without.
+if [ -f "$WEBRTC_REQ" ]; then
+  echo
+  echo "Installing WebRTC packages (headset pairing, stereo video)..."
+  if ! "$VENV_DIR/bin/pip" install --only-binary=:all: -r "$WEBRTC_REQ"; then
+    echo "Warning: the WebRTC packages could not be installed on this Python/platform."
+    echo "         The backend works; headset pairing and stereo video are not available."
+  fi
+else
+  echo "Warning: requirements-webrtc.txt was not found: headset pairing and stereo video are not installed."
+fi
 
 echo
 echo "Done. The backend is ready."

@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -39,13 +40,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+logger = logging.getLogger("visivo.vr")
+
 #: How long a ticket can be exchanged, in seconds. A launch reaches the page
 #: in 1 to 3 s on a Quest 3 over USB; a headset asleep drops the launch
 #: altogether (#254), and the desktop then issues a new ticket.
 TICKET_TTL_S = 60.0
-#: Tickets waiting at most, over the whole backend (the oldest go).
+#: Tickets waiting at most per token (the token's oldest go), so with several
+#: users (VISIVO_TOKENS) one user's launches never evict another's.
 MAX_TICKETS = 32
-#: Launches remembered for the desktop's status checks, and for how long.
+#: Launches remembered per token for the desktop's status checks, and for how long.
 MAX_LAUNCHES = 64
 LAUNCH_KEEP_S = 600.0
 #: What a ticket looks like (secrets.token_urlsafe(32) gives 43 characters).
@@ -112,10 +116,8 @@ class LaunchTickets:
                                                      session_id=session_id, cube=cube, expires=now + self.ttl)
             self._launches[launch] = _Launch(launch=launch, token_hash=token_hash, session_id=session_id,
                                              issued=now, expires=now + self.ttl)
-            while len(self._tickets) > self.max_tickets:
-                self._tickets.popitem(last=False)
-            while len(self._launches) > self.max_launches:
-                self._launches.popitem(last=False)
+            _evict_oldest(self._tickets, token_hash, self.max_tickets)
+            _evict_oldest(self._launches, token_hash, self.max_launches)
         return {"ticket": ticket, "launch": launch, "expires_in": self.ttl}
 
     def exchange(self, ticket: str, accepted: tuple[str, ...]) -> dict[str, Any] | None:
@@ -166,6 +168,14 @@ class LaunchTickets:
                 state = "expired"
             return {"launch": launch, "state": state, "expires_in": max(0.0, round(v.expires - now, 1)),
                     "exchanged_at": v.exchanged_at}
+
+
+def _evict_oldest(store: OrderedDict, token_hash: str, limit: int) -> None:
+    """Drops ``token_hash``'s oldest entries of ``store`` (in issue order)
+    beyond ``limit``; other tokens' entries stay."""
+    mine = [k for k, v in store.items() if v.token_hash == token_hash]
+    for k in mine[:max(0, len(mine) - limit)]:
+        del store[k]
 
 
 TICKETS = LaunchTickets()
@@ -288,6 +298,9 @@ def assetlinks_statements() -> list[dict[str, Any]]:
     if extra:
         statements = read_statements_file(extra)
         if statements is None:
-            raise ValueError(f"{ASSETLINKS_ENV} does not name a readable JSON array of statements")
-        out.extend(statements)
+            # Skipped, not fatal: the release and development statements are
+            # still served, so the packaged app keeps opening full screen.
+            logger.warning("[vr] %s does not name a readable JSON array of statements: skipped", ASSETLINKS_ENV)
+        else:
+            out.extend(statements)
     return out

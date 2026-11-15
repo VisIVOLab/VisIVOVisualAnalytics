@@ -338,3 +338,59 @@ async def test_hello_launch_field_is_checked(client: AsyncClient, auth_headers: 
     r = await client.post("/v1/vr/headset/hello", json={"client": "q3", "transport": "adb", "launch": "bad launch!"},
                           headers=h)
     assert r.status_code == 422
+
+
+def test_tickets_are_bounded_per_token() -> None:
+    """With several users (VISIVO_TOKENS), one user's launches never evict
+    another's pending ticket or launch."""
+    T = L.LaunchTickets(max_tickets=3, max_launches=4)
+    theirs = T.issue("user-b-token-1", "sb", None)
+    mine = [T.issue("user-a-token-1", "sa", None) for _ in range(10)]
+    assert T.status(theirs["launch"], "user-b-token-1", "sb")["state"] == "pending"
+    assert T.exchange(theirs["ticket"], ("user-a-token-1", "user-b-token-1"))["token"] == "user-b-token-1"
+    assert T.exchange(mine[0]["ticket"], ("user-a-token-1",)) is None          # A's oldest went
+    assert T.exchange(mine[-1]["ticket"], ("user-a-token-1",)) is not None
+    assert sum(1 for t in T._tickets.values() if t.token_hash == L._sha256("user-a-token-1")) == 2
+    assert sum(1 for v in T._launches.values() if v.token_hash == L._sha256("user-a-token-1")) == 4
+
+
+def test_the_exchange_budget_counts_refused_tickets_only() -> None:
+    lim = launch_routes._ExchangeLimiter(per_minute=100, max_clients=1000, global_per_minute=3)
+    # Successful exchanges spend nothing of the global budget.
+    for i in range(10):
+        assert lim.allow(f"10.0.0.{i}", now=0.0)
+    assert not lim.misses_over_budget(now=0.0)
+    for i in range(3):
+        lim.miss(f"10.0.1.{i}", now=1.0)
+    assert not lim.misses_over_budget(now=1.0)
+    lim.miss("10.0.1.9", now=1.0)
+    assert lim.misses_over_budget(now=1.0)
+    assert lim.allow("10.0.2.1", now=2.0)           # a new address is still tried
+    assert not lim.misses_over_budget(now=61.5)      # a minute later
+    for i in range(500):                             # junk from many addresses: the window stays bounded
+        lim.miss(f"10.1.{i // 250}.{i % 250}", now=70.0)
+    assert lim.misses_over_budget(now=70.0) and len(lim._all) == 4
+
+
+@pytest.mark.asyncio
+async def test_junk_from_many_addresses_does_not_block_a_valid_exchange(client: AsyncClient, auth_headers: dict,
+                                                                         monkeypatch) -> None:
+    monkeypatch.setattr(launch_routes, "EXCHANGES", type(launch_routes.EXCHANGES)(per_minute=1000, global_per_minute=3))
+    h = await _session(client, auth_headers)
+    ticket = (await client.post("/v1/vr/launch", json={}, headers=h)).json()["ticket"]
+    codes = [(await client.post("/v1/vr/launch/exchange", json={"ticket": "C" * 43})).status_code for _ in range(5)]
+    assert codes[:3] == [404] * 3 and codes[3:] == [429] * 2    # misses beyond the budget: 429
+    r = await client.post("/v1/vr/launch/exchange", json={"ticket": ticket})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_extra_file_keeps_the_release_statement(client: AsyncClient, monkeypatch,
+                                                                    tmp_path: Path, caplog) -> None:
+    monkeypatch.setattr(L, "APP_CONFIG", Path(L.__file__).resolve().parent / "vr_app.json")
+    monkeypatch.setenv(L.ASSETLINKS_ENV, str(tmp_path / "missing.json"))
+    with caplog.at_level(logging.WARNING, logger="visivo.vr"):
+        r = await client.get("/.well-known/assetlinks.json")
+    assert r.status_code == 200
+    assert [s["target"]["package_name"] for s in r.json()] == ["it.inaf.oact.visivo.vr"]
+    assert L.ASSETLINKS_ENV in caplog.text
