@@ -20,6 +20,21 @@ the velocity viewer's controls; the link then carries `kind=points` or
 the desktop's dataset in the same session, or its path again when the session
 no longer holds it, as for a cube (see
 [Open a cube from the desktop](quickstart.md#open-a-cube-from-the-desktop)).
+
+A sky catalogue (RA/Dec with a redshift or a distance) is placed as the
+desktop window places it: the link, the pairing code, the app launch and the
+desktop's *Show on headset* carry the window's frame (FK5, galactic,
+supergalactic), distance mode (comoving or redshift space) and named
+cosmology, and the backend computes the positions with them. A **Custom**
+cosmology is not sent: the backend knows Planck18, Planck15, Planck13 and
+WMAP9 only, so opening the headset puts the window back on Planck18 and says
+so, as the ray-traced view does. Sources with no distance (no usable
+distance value and a redshift ≤ 0 or missing) are left out, as on the
+desktop. The page's status line names the placement and counts them, for
+example *supergalactic · comoving · Planck18 · 26 unplaced*. A catalogue with
+no redshift and no distance column (positions only) is drawn on the
+celestial sphere, and the line reads *fk5 · celestial sphere (no distances)*. Changing the placement
+in the headset comes later.
 On the page: type the path, choose
 **Data kind** (*auto* goes by the name: `.head`, `.bin`, `.csv`, `.xml`… are
 point tables, a FITS whose name says `velocity` or `flow` a velocity field),
@@ -31,7 +46,7 @@ controls are on the same tabs of the menu as a cube's
 ([#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257); see
 [The hand menu](controls.md#the-hand-menu)). On **Display**, for a point
 table: *Colour by* (a chip per column), *Log* and the colour window, the
-colour map, *Points* or *Smooth (splats)*, *Size −/+*, *Intensity*,
+colour map, *Points*, *Smooth (splats)* or *Ray-traced*, *Size −/+*, *Intensity*,
 *Particles shown* (the next budget of rows), *Sample again*, *Box and ticks*;
 for a velocity field: *Streamlines*, *Arrows*, the arrow length, the seed
 density (*Fewer*, *More*) and *Reseed streamlines*, the colour window over the
@@ -58,11 +73,35 @@ sample. Choosing another budget or column while a sample is still coming
 cancels it: only the last one asked for is fetched and drawn. The HUD says *points X M drawn of
 Y M sampled, Z M rows*.
 
+Splats on a headset
+([#295](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/295)):
+
+- **Why splats are expensive.** They are bound by fill rate. On a Quest 3 at size 1, about 200 000 hold 72 Hz on a half-float target and about 50 000 on float32, where points hold a million.
+- **Defaults.** A headset adds its splats into half floats. The refined frame of a still view brings back the faint light that half floats drop. The splats start from 200 000 of the sample. The sample is still the budget's, used for points and for refinement.
+- **The governor works without a GPU timer.** The Quest Browser has no GPU timer, so in a VR session the rows drawn now follow the frame intervals, once the display rate has settled: missed frames, or a median interval above 1.12 display periods, cut them at once. Clean frames add 12 % a quarter second, up to just under the count that missed. Frames drawn under a refined frame earn no clean time. A desktop browser without a GPU timer keeps the count, because its display rate is not known.
+- **Rows move in half-octave steps** (…, 185 k, 262 k, 370 k, …), with hysteresis, and do not grow while a still view waits for its refined frame. The refined frames, drawn for the same rows, are therefore rarely made stale.
+- **Still views cost nothing.** Splat refined frames are asked for with a 6 % margin on every side, about 3° on a Quest 3. While the frame on show, warped to the current pose, covers the whole view, the splats under it are not drawn. A turn or step that would uncover an edge brings them back.
+- **To measure another target**, add `?splattarget=f32`, `f16` or `8bit` to the page address.
+
 *Colour by* a column (the backend puts a positive column spanning more than
 three decades on a log scale the first time, as a mass or a density needs,
-in the same request; untick *log* to undo), *Colour from / to* narrow the map, *Style* is *points* (pixels)
-or *splats* (sized like the desktop's: the mean spacing of the table's rows
-times the size step over 8, larger in proportion when only a sample is drawn).
+in the same request; untick *log* to undo), *Colour from / to* narrow the map, *Style* is *points* (pixels),
+*splats* (sized like the desktop's: the mean spacing of the table's rows
+times the size step over 8, larger in proportion when only a sample is drawn)
+or *ray-traced* (the same splats on the page; the still view ray-traced by the
+backend, see below). A VBT point table (a simulation's particles) opens
+*ray-traced*, a catalogue as *points* (its rows are objects, not a medium),
+until you choose a style yourself.
+
+The splats' look ([#263](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/263)):
+
+- **Tone mapping.** The splats are added in floating point and tone-mapped onto the view. Dense halos keep their colour and their structure instead of burning out to white, and faint splats are no longer rounded away one 8-bit addition at a time. The refined frames use the same curve.
+- **Size without brightness.** *Size −/+* changes the splats' size, not their brightness: each splat's opacity is divided by the size step squared, so size 4 shows the same light as size 1, spread wider.
+- **Close splats.** Splats near your head keep growing up to 256 pixels instead of stopping at 64 when you fly inside the box.
+- **Default colour.** A table opens coloured by a density-like column (`*dens*`, `*rho*`, `LogD`) when it has one. Otherwise it uses the first column that is not a position, velocity, sky coordinate or identifier (a catalogue's redshift rather than its RA).
+- **Axis units.** A sky catalogue's box is labelled in Mpc (*x (Mpc)* instead of `@x`).
+- **Older headsets.** On a headset that cannot render into a float target, the HUD's points line says *8-bit* and splats are added as before, with the brightness growing with the size (divided by the size, large faint splats would round away to nothing in 8 bits).
+- **Page and backend versions.** The backend draws refined frames by the page's own splat rule and says so in each frame. A backend older than the page draws the old look: its splat frames are not shown (the panel says *backend draws splats by an older rule*), so nothing pops in at another brightness; update the backend.
 The box is the sample's bounding box, its longest side 1 (scaled to 0.6 m in
 the headset), with ticks in the table's units.
 
@@ -83,6 +122,24 @@ frame size (it is drawn at the page's own eye size and then reduced). While
 the frame-time governor draws only part of the sample (the HUD's *drawn of
 ... sampled*), the page's own picture is dimmer than the sample's and the
 refined frame brightens it slightly.
+
+With *ray-traced* the still frame comes from the backend's ray-traced particle
+renderer (the one behind the desktop's *Ray-traced* shape, see
+[Ray-traced particles](../raytraced-particles.md)) over every row the session
+holds, [#264](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/264).
+Each splat becomes a smooth Gaussian kernel carrying the light the page's splat
+carries, so the swap from the preview to the refined frame keeps the
+brightness and the colours (measured on a 3.9 M-row snapshot: the refined frame
+adds the same light over the background as the *splats* frame, within 0.1 %).
+The renderer also sends the depth the light of each block of pixels comes from
+(its light-weighted mean distance), so the frame is reprojected through that
+depth like a cube's, instead of as a plane: it stays on show while the head
+moves up to the full refinement limit rather than 1 cm, and a frame warped to a
+pose 1 to 4 degrees around the box is 2.7 to 3.7 dB closer to that pose's own
+frame than the plane gives. On an M-series Mac it costs about 40 ms more per
+refined frame than *splats* (about 60 ms per 1600 × 1000 eye for 3.9 M rows;
+from the camera stopping to the refined frame shown, about 385 ms against
+335 ms; 535 ms for 11.5 M rows).
 
 ## Catalogues over a cube
 

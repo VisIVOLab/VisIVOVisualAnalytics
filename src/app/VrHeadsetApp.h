@@ -389,7 +389,8 @@ inline QString putHeadsetOnMessage()
 
 /// The body of POST /v1/vr/launch: the cube to open, or {} for the app's
 /// connected empty room. No token: it travels in the headers. No box, as for
-/// the hub's `show` of a whole cube.
+/// the hub's `show` of a whole cube. A sky catalogue carries its placement
+/// (`sky`, issue #260), as the `show` does.
 inline QJsonObject launchRequestBody(const VrLink::Inputs &in)
 {
     if (in.datasetId.isEmpty() || in.path.isEmpty())
@@ -397,6 +398,8 @@ inline QJsonObject launchRequestBody(const VrLink::Inputs &in)
     QJsonObject cube{ { QStringLiteral("dataset_id"), in.datasetId },
                       { QStringLiteral("path"), in.path },
                       { QStringLiteral("kind"), in.kind.isEmpty() ? QStringLiteral("cube") : in.kind } };
+    if (in.sky.isSet())
+        cube.insert(QStringLiteral("sky"), VrHub::skyObject(in.sky));
     return QJsonObject{ { QStringLiteral("cube"), cube } };
 }
 

@@ -33,6 +33,8 @@
 #include <vtkPoints.h>
 #include <vtkPolyData.h>
 
+#include <algorithm>
+
 using namespace Qt::StringLiterals;
 
 bool vtkWindowCatalogue3D::sampShowsLocalView() const
@@ -83,7 +85,11 @@ bool vtkWindowCatalogue3D::highlightSampRow(qint64 row, const QString &from)
     const int idx = this->m_sampRowMap.entryFor(row);
     if (idx < 0 || static_cast<std::size_t>(idx) >= this->mappedPositions.size()) {
         QString why;
-        if (this->m_sampRowMap.isEmpty() && !this->entries.empty())
+        const bool unplaced = std::any_of(this->unplacedEntries.cbegin(), this->unplacedEntries.cend(),
+                                          [row](const Catalogue3DEntry &e) { return e.sourceRow == row; });
+        if (unplaced)
+            why = u"it has no distance, so it is not placed (Tools ▸ Unplaced Sources…)"_s;
+        else if (this->m_sampRowMap.isEmpty() && !this->entries.empty())
             why = u"the backend does not report row numbers; update it to link rows"_s;
         else if (this->hasMoreRows())
             why = u"it is not loaded yet, or is filtered out: Load more or Load all may bring it"_s;

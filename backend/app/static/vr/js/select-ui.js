@@ -8,6 +8,7 @@ import * as Rc from './recipe.js';
 import * as M from './mat4.js';
 import { nextSeeds, seedsOf } from './tools-lasso.js';
 import { wrapText, fitText } from './text-fit.js';
+import * as HI from './hi-lines.js';
 
 export const TOOLS = ['probe', 'lasso', 'box'];
 export const TOOL_NAMES = { probe: 'Spectrum probe', lasso: 'Kinematic Lasso', box: 'Box region' };
@@ -249,7 +250,7 @@ export function createSelection(ctx) {
     const r = await b.kinematicSelect(datasetId(), req, signalOf(gen));
     if (stale(gen)) return;
     const t0 = performance.now();
-    const stats = await b.maskStats(datasetId(), r.bytes, r.origin, r.dims, signalOf(gen));
+    const stats = await b.maskStats(datasetId(), r.bytes, r.origin, r.dims, signalOf(gen), req.sigma);
     // Drawn and recorded only together, and only while still the latest action:
     // a superseded grow neither replaces the overlay nor leaves a record.
     if (stale(gen)) return;
@@ -264,6 +265,7 @@ export function createSelection(ctx) {
       stats, statsMs: performance.now() - t0 };
     const params = Rc.lassoDisplayParams(req);
     params['Selected voxels'] = String(r.count);
+    Object.assign(params, HI.recordParams(stats));
     params['Picked in'] = `VR, reduced voxel (${pick.reduced.join(', ')}) of ${s.info.factors.join('×')} binning`;
     if (r.trimBox > 0) {
       params['Domain trimmed'] = `yes: one or more grows exceeded the graph budget and were cut to a seed-centred box, largest half-width ${r.trimBox} voxels`;
@@ -323,7 +325,7 @@ export function createSelection(ctx) {
     const depth = a.tip && b2.tip ? 'corners' : 'velocity slab';
     const t0 = performance.now();
     // One call: every voxel of the box, read on the backend one channel at a time.
-    const steps = Rc.boxReplay(range);
+    const steps = Rc.boxReplay(range, sel.params && sel.params.sigma);
     const stats = await ctx.backend().boxStats(datasetId(), steps[0].request);
     if (stale(gen)) return;
     sel.box = { range, stats, ms: performance.now() - t0, depth };
@@ -336,6 +338,7 @@ export function createSelection(ctx) {
       'Blanked / NaN': String(stats.blank_voxels),
       Min: fmt(stats.min), Max: fmt(stats.max), Mean: fmt(stats.mean), 'Std Dev': fmt(stats.rms), Sum: fmt(stats.sum),
       'Flux (Jy km/s)': fmt(stats.flux_jy_kms),
+      ...HI.recordParams(stats),
       'Channels from': depth === 'corners' ? 'the two corners' : 'the velocity slab (clipping range)',
       'Measured on': 'every voxel of the box on the full cube',
     }, Rc.boxOrigin(xr, yr, zr));
@@ -582,11 +585,12 @@ export function createSelection(ctx) {
         line(`Lasso: 1 + ${sd.add.length} added, ${sd.sub.length} subtracted`, '#9aa3b2');
       }
       if (s) {
-        line(`flux ${fmt(s.flux_jy_kms)} Jy km/s   sum ${fmt(s.sum)} ${s.bunit}`);
+        line(`${HI.fluxText(s)}   sum ${fmt(s.sum)} ${s.bunit}`);
         line(s.velocity_min_kms !== null
           ? `velocity ${s.velocity_min_kms.toFixed(1)} to ${s.velocity_max_kms.toFixed(1)} km/s (ch ${s.channel_min}-${s.channel_max})`
           : `channels ${s.channel_min}-${s.channel_max}`);
         line(`peak ${fmt(s.max)} at (${(s.peak_voxel || []).join(', ')})`);
+        for (const t of HI.panelLines(s)) line(t, '#cfe3ff', 2);
         if (s.flux_note) line(s.flux_note, '#9aa3b2', 2);
         if (s.spectrum && s.spectrum.length > 1) {
           const ax = s.spectrum_velocity_kms && s.spectrum_velocity_kms.length === s.spectrum.length
@@ -604,7 +608,8 @@ export function createSelection(ctx) {
       line(`voxels ${s.valid_voxels} valid / ${s.selected_voxels}  (${s.blank_voxels} blank)`);
       line(`mean ${fmt(s.mean)}  rms ${fmt(s.rms)} ${st().info.bunit || ''}`);
       line(`min ${fmt(s.min)}  max ${fmt(s.max)}  sum ${fmt(s.sum)}`);
-      line(`flux ${fmt(s.flux_jy_kms)} Jy km/s   (${b.ms.toFixed(0)} ms)`, '#f0a0ff');
+      line(`${HI.fluxText(s)}   (${b.ms.toFixed(0)} ms)`, '#f0a0ff');
+      for (const t of HI.panelLines(s)) line(t, '#cfe3ff', 2);
     } else if (sel.tool === 'probe' && sel.spectrum) {
       const sp = sel.spectrum;
       line(`spectrum at (${sp.x}, ${sp.y}), ${sp.values.length} channels, ${sp.ms.toFixed(0)} ms`, '#9fd0ff');

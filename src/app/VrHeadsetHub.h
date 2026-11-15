@@ -9,8 +9,9 @@
 //                                     since, last_seen, in_vr, cube, staged_cube,
 //                                     launch}]} (launch: the app launch, #255)
 //                                     newest first, pages seen in the last 45 s
-//   POST /v1/vr/headset/command    {client?, type: "show", dataset_id, path, kind?, box?}
-//                                   (box: inclusive voxel ranges [[x0, x1], [y0, y1], [z0, z1]])
+//   POST /v1/vr/headset/command    {client?, type: "show", dataset_id, path, kind?, box?, sky?}
+//                                   (box: inclusive voxel ranges [[x0, x1], [y0, y1], [z0, z1]];
+//                                    sky: a sky catalogue's {frame, distance_mode, cosmology}, #260)
 //                                   → {seq, client}; 404 with a detail of its
 //                                     own when no page is connected
 //   GET  /v1/vr/activity?after=&wait= → {events: [{seq, client, time, kind,
@@ -255,10 +256,25 @@ inline bool showsCube(const Headset &h, const QString &datasetId, const QString 
 
 // ── Commands ────────────────────────────────────────────────────────────────
 
+/// A sky catalogue's placement as the hub and the launch take it (routers/
+/// headset.py HeadsetSky): only what is set, the backend defaults the rest.
+inline QJsonObject skyObject(const VrLink::Sky &sky)
+{
+    QJsonObject o;
+    if (!sky.frame.isEmpty())
+        o.insert(QStringLiteral("frame"), sky.frame);
+    if (!sky.distanceMode.isEmpty())
+        o.insert(QStringLiteral("distance_mode"), sky.distanceMode);
+    if (!sky.cosmology.isEmpty())
+        o.insert(QStringLiteral("cosmology"), sky.cosmology);
+    return o;
+}
+
 /// POST /v1/vr/headset/command for a `show` of the window's cube. No @p client:
 /// the newest page. The token is not in it (the link's values except that).
 /// No `box`: the hub's is a voxel box of the cube, which a whole-cube show
-/// leaves out, and a velocity field's box in Mpc is not one.
+/// leaves out, and a velocity field's box in Mpc is not one. A sky catalogue
+/// carries its placement (`sky`, issue #260).
 inline QJsonObject showCommandBody(const VrLink::Inputs &in, const QString &client = {})
 {
     QJsonObject body{ { QStringLiteral("type"), QStringLiteral("show") },
@@ -268,6 +284,8 @@ inline QJsonObject showCommandBody(const VrLink::Inputs &in, const QString &clie
         body.insert(QStringLiteral("client"), client);
     if (!in.kind.isEmpty() && in.kind != u"cube")
         body.insert(QStringLiteral("kind"), in.kind);
+    if (in.sky.isSet())
+        body.insert(QStringLiteral("sky"), skyObject(in.sky));
     return body;
 }
 

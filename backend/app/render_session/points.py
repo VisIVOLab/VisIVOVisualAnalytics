@@ -24,7 +24,19 @@ Commands (besides the camera / viewport ones the cube session takes):
    ``points``, the client's own colour function (instead of ``lut``), ``log``
    its scale
 ``{"type": "set_point_style", "mode": "points" | "gaussian",
-   "size": int 1..12, "intensity": int 1..100}``
+   "size": int 1..12, "intensity": int 1..100,
+   "stereo_renderer": "splat" | "raytrace",
+   "splat_rule": "v1" | "v2-8bit" | "v2-f16" | "v2-f32"}``
+                                         — ``stereo_renderer``: how a headset's
+                                           stereo splats are drawn (the page's
+                                           rule, or ray-traced with depth,
+                                           app/point_splat.py, issues #262
+                                           and #264); ``splat_rule``: how the
+                                           page draws its splats (opacity,
+                                           tone curve: point_splat.SPLAT_RULES,
+                                           issue #263; v1 for a page that
+                                           sends none); both kept when
+                                           omitted, echoed in stereo headers
 ``{"type": "set_filters", "filters": [{"field", "op", "value"}, ...]}``
 ``{"type": "set_background", "name": "Dark" | "Dark gray" | "White"}``
 ``{"type": "set_show_outline" | "set_show_axes" | "set_show_colorbar", "visible": bool}``
@@ -56,6 +68,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+from ..point_splat import SPLAT_RULES
 from ..point_sample import _Q, _STAT_CHUNK, _colour_stats, place_rows, quantise64
 from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
 from ._stereo_points import PointStereoMixin, _vtk_matrix
@@ -75,6 +88,8 @@ _LOD_JPEG_QUALITY = 60
 _BACKGROUNDS = {"White": (0.98, 0.98, 0.98), "Dark gray": (0.16, 0.17, 0.19),
                 "Dark": (0.06, 0.06, 0.1)}
 _SOLID = (0.8, 0.85, 1.0)
+#: How a headset's stereo splats are drawn (_stereo_points.py).
+STEREO_RENDERERS = ("splat", "raytrace")
 _NUMERIC_OPS = {"=", "!=", ">", ">=", "<", "<="}
 
 
@@ -97,6 +112,8 @@ class PointViewState:
     color_log: bool = False
     mode: str = "points"
     size: float = 3   # points: pixels; splats: the size step (0.25..12)
+    stereo_renderer: str = "splat"   # a headset's splats: "splat" | "raytrace"
+    splat_rule: str = "v1"           # and the page's splat rule (point_splat.SPLAT_RULES)
     intensity: int = 35
     background: str = "Dark"
     show_outline: bool = True
@@ -152,6 +169,18 @@ def _code_lut(lut):
     out.SetRange(0.0, float(_Q))
     for i in range(n):
         out.SetTableValue(i, *lut.GetTableValue(i))
+    return out
+
+
+def _solid_lut():
+    """The one colour of a table drawn without a colour column, as a table
+    over the codes (all 0 then)."""
+    import vtk
+    out = vtk.vtkLookupTable()
+    out.SetNumberOfTableValues(2)
+    out.SetRange(0.0, float(_Q))
+    for i in range(2):
+        out.SetTableValue(i, *_SOLID, 1.0)
     return out
 
 
@@ -421,13 +450,29 @@ class PointRenderSession(PointStereoMixin):
         self._table.set_sky_positions(self.view.sky_frame, self.view.distance_mode,
                                       self.view.cosmology)
 
+    def _drawable(self) -> np.ndarray | None:
+        """The rows the current axes can place (a sky catalogue's unplaced
+        ones left out, issue #265); None: every row."""
+        return self._table.drawable((self.view.x, self.view.y, self.view.z))
+
+    @property
+    def _placed_rows(self) -> int:
+        """The rows that can be drawn: what the splat size counts, as the
+        page's sample counts them (X-Visivo-Placed-Rows)."""
+        rows = self._drawable() if self._table is not None else None
+        return self._num_rows if rows is None else len(rows)
+
     def _sample_rows(self) -> np.ndarray:
-        """Every row, or an even sample of MAX_POINTS of them."""
-        if self._num_rows <= MAX_POINTS:
-            return np.arange(self._num_rows, dtype=np.int64)
+        """Every drawable row, or an even sample of MAX_POINTS of them: the
+        budget is not spent on rows without a position."""
+        base = self._drawable()
+        count = self._num_rows if base is None else len(base)
+        if count <= MAX_POINTS:
+            return np.arange(count, dtype=np.int64) if base is None else base.copy()
         logger.info("[point-render %s] %d rows, drawing an even sample of %d",
-                    self.session_id[:8], self._num_rows, MAX_POINTS)
-        return np.linspace(0, self._num_rows - 1, MAX_POINTS).astype(np.int64)
+                    self.session_id[:8], count, MAX_POINTS)
+        picks = np.linspace(0, count - 1, MAX_POINTS).astype(np.int64)
+        return picks if base is None else base[picks]
 
     def _make_window(self):
         import vtk
@@ -600,10 +645,16 @@ class PointRenderSession(PointStereoMixin):
         lut = _sampled_lut(ctf, cmin, cmax, log, ctf_scale)
         code_lut = _code_lut(lut)
         coloured = self._data_range is not None
-        for mapper in self._mappers.values():
+        if not coloured:
+            code_lut = _solid_lut()
+        for (mode, _lod), mapper in self._mappers.items():
             mapper.SetLookupTable(code_lut)
             mapper.SetScalarRange(0.0, float(_Q))
-            mapper.SetScalarVisibility(1 if coloured else 0)
+            # Splats keep their scalars without a column (one colour through
+            # the table): vtkPointGaussianMapper applies its opacity function
+            # only to mapped scalars, so with them off every intensity gave
+            # the same picture (issue #263).
+            mapper.SetScalarVisibility(1 if coloured or mode == "gaussian" else 0)
         self._actor.GetProperty().SetColor(*_SOLID)
         # The same colours for the stereo splats drawn on the CPU (point_splat.py).
         self._splat_lut = (np.array([lut.GetTableValue(i)[:3]
@@ -705,6 +756,7 @@ class PointRenderSession(PointStereoMixin):
                      self.view.cosmology) = previous
                     raise
                 self._splat_basis = None
+                self._sample = self._sample_rows()   # the placed rows, sampled again
                 self._rebuild_points_on_thread()
                 self._renderer.ResetCamera()
                 self.request_idr()
@@ -718,6 +770,7 @@ class PointRenderSession(PointStereoMixin):
                 for axis, name in fields.items():
                     setattr(self.view, axis, name)
                 self._splat_basis = None   # new positions: sized again
+                self._sample = self._sample_rows()   # which rows can be placed may change
                 self._rebuild_points_on_thread()
                 self._renderer.ResetCamera()
                 self.request_idr()
@@ -738,6 +791,12 @@ class PointRenderSession(PointStereoMixin):
             self._recolour_on_thread(field_changed=changed)
             self.request_idr()
         elif ctype == "set_point_style":
+            renderer = command.get("stereo_renderer", self.view.stereo_renderer)
+            if renderer not in STEREO_RENDERERS:   # refused whole (apply_command)
+                raise ValueError(f"stereo_renderer must be one of {STEREO_RENDERERS}.")
+            rule = command.get("splat_rule", self.view.splat_rule)
+            if rule not in SPLAT_RULES:
+                raise ValueError(f"splat_rule must be one of {SPLAT_RULES}.")
             mode = str(command.get("mode", self.view.mode))
             self.view.mode = mode if mode in ("points", "gaussian") else "points"
             # Points: pixels, physical (a Retina client sends twice its own);
@@ -747,6 +806,8 @@ class PointRenderSession(PointStereoMixin):
                               else int(round(min(max(size, 1.0), 64.0))))
             self.view.intensity = max(1, min(100, int(command.get("intensity",
                                                                   self.view.intensity))))
+            self.view.stereo_renderer = renderer
+            self.view.splat_rule = rule
             self._apply_style_on_thread()
             self.request_idr()
         elif ctype == "set_filters":

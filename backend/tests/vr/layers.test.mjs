@@ -29,6 +29,12 @@ test('a sample is read back from its headers and body', () => {
     'X-Visivo-Color-Range': '1,100', 'X-Visivo-Color-Log': '1', 'X-Visivo-Data-Range': '0.5,100' }));
   assert.equal(info.count, 2);
   assert.ok(info.colourLog);
+  // No X-Visivo-Placed-Rows (an older backend): every row counts.
+  assert.equal(info.placedRows, 10);
+  // A sky catalogue's unplaced rows are not counted for the splat size (#265).
+  const sky = PT.sampleInfo(hdr({ 'X-Visivo-Count': '2', 'X-Visivo-Total-Rows': '10', 'X-Visivo-Placed-Rows': '7' }));
+  assert.equal(sky.totalRows, 10);
+  assert.equal(sky.placedRows, 7);
   const buf = new Uint16Array([0, 0, 0, 65535, 65535, 65535, 0, 65535]).buffer;
   const a = PT.sampleArrays(buf, info);
   assert.deepEqual(PT.rowPosition(a.positions, 1, info.bounds), [10, 1, 2]);
@@ -53,8 +59,35 @@ test('the colours sent to the point session are the page map on data values', ()
 test('splats are sized by the desktop rule and grow for a sample', () => {
   const s = PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35);
   close(s.radius, 1, 1e-9);                      // spacing 1, size 8 -> 1
-  close(s.opacity, Math.max(0.05, Math.min(0.9, 20 / 100) * 0.35), 1e-12);
+  close(s.opacity, Math.max(0.05, Math.min(0.9, 20 / 100) * 0.35), 1e-12);   // the desktop's
+  // In a float32 target over size² (#263): the size changes the size, not the light.
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35, 'v2-f32').opacity, 0.07 / 64, 1e-12);
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 1, 35, 'v2-f32').opacity, 0.07, 1e-12);
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e3, 8, 35).sampleRadius, 10, 1e-9);
+});
+
+test('splat look (#263): tone curve, default colour column, axis units', () => {
+  // Linear for faint light, the hue kept, never above 1 (app/point_splat.py tone_map).
+  const faint = PT.toneMap([1e-4, 2e-4, 3e-4]);
+  faint.forEach((v, i) => close(v, [1e-4, 2e-4, 3e-4][i], 1e-7));
+  const y = 0.2126 * 0.5 + 0.7152 * 0.25 + 0.0722 * 0.1;
+  PT.toneMap([0.5, 0.25, 0.1]).forEach((v, i) => close(v, [0.5, 0.25, 0.1][i] * (1 - Math.exp(-y)) / y, 1e-12));
+  const hot = PT.toneMap([40, 20, 8]);
+  close(Math.max(...hot), 1, 1e-12);
+  close(hot[1] / hot[0], 0.5, 1e-12);
+  assert.deepEqual(PT.toneMap([0, 0, 0]), [0, 0, 0]);
+  // A density first; else not a position, velocity, sky coordinate or id.
+  const axes = ['x', 'y', 'z'];
+  assert.equal(PT.defaultColourField(['x', 'y', 'z', 'vx', 'vy', 'vz', 'LogMass', 'LogD', 'LogT'], axes), 'LogD');
+  assert.equal(PT.defaultColourField(['X', 'Y', 'Z', 'vx', 'vy', 'vz', 'Lmass', 'LTemp', 'LDensity'], ['X', 'Y', 'Z']), 'LDensity');
+  assert.equal(PT.defaultColourField(['x', 'y', 'z', 'Mass', 'Rho'], axes), 'Rho');
+  assert.equal(PT.defaultColourField(['RA', 'Dec', 'z', 'Ktmag', '@x', '@y', '@z'], ['@x', '@y', '@z']), 'Ktmag');
+  assert.equal(PT.defaultColourField(['ID', 'RAJ2000', 'DEJ2000', 'cz', '@x', '@y', '@z'], ['@x', '@y', '@z']), 'cz');
+  assert.equal(PT.defaultColourField(['x', 'y', 'z', 'vx'], axes), null);
+  // A sky catalogue's computed positions say their unit; a table's own keep their names.
+  assert.deepEqual(PT.axisTitles(['@x', '@y', '@z']), ['x (Mpc)', 'y (Mpc)', 'z (Mpc)']);
+  assert.deepEqual(PT.axisTitles(['x', 'y', 'POS_Z']), ['x', 'y', 'POS_Z']);
+  assert.equal(PT.MAX_SPLAT_PX, 256, 'the backend draws up to point_splat.MAX_PX');
 });
 
 test('the governor sheds rows when the GPU is late and takes them back slowly', () => {
@@ -76,6 +109,19 @@ test('point look commands and box decorations', () => {
   assert.ok(segs.length >= 12 && labels.some((l) => l.text === '10'));
 });
 
+test('a sky catalogue\'s placement goes to the point session and the status line (#260, #265)', () => {
+  const sky = { frame: 'supergalactic', distance_mode: 'comoving', cosmology: 'Planck18' };
+  const cmds = PT.pointLook({ axes: ['@x', '@y', '@z'], colourField: null, colourRange: null, colourLog: false,
+    lut: colormapTable('grey'), c0: 0, c1: 1, style: 'points', splatSize: 2, pointPx: 3, intensity: 40, sky });
+  assert.deepEqual(cmds[0], { type: 'set_sky_positions', ...sky });
+  assert.equal(cmds[1].type, 'set_point_fields');
+  assert.equal(PT.skyLabel({ ...sky, unplaced: 26 }), 'supergalactic · comoving · Planck18 · 26 unplaced');
+  assert.equal(PT.skyLabel({ frame: 'fk5', distance_mode: 'redshift_space', cosmology: 'WMAP9', unplaced: 0 }),
+    'fk5 · redshift space · WMAP9');
+  assert.equal(PT.skyLabel(null), '');
+  assert.equal(PT.skyLabel({ ...sky, unplaced: 0, sky_sphere: true }), 'supergalactic · celestial sphere (no distances)');
+});
+
 test('a refined pose carries the rows the splats are sized for and the eye height (#262)', () => {
   const box = PT.dataToModel([0, 10, 0, 5, 0, 1]);
   const eyes = [{ eye: 'left', width: 1600, height: 1000 }, { eye: 'right', width: 1600, height: 1000 }];
@@ -88,6 +134,30 @@ test('a refined pose carries the rows the splats are sized for and the eye heigh
   // Points: the box alone (their size is in pixels).
   assert.deepEqual(Object.keys(PT.refinePoseExtra(box, 'points', 1e6, eyes)), ['data_to_model']);
   assert.ok(!('sample_rows' in PT.refinePoseExtra(box, 'splats', 0, [])));
+  // Ray-traced splats (#264) are refined for the same sample and eye size.
+  assert.deepEqual(PT.refinePoseExtra(box, 'raytraced', 999999.6, eyes), splats);
+});
+
+test('ray-traced style (#264): drawn as splats, refined by the backend ray tracer', () => {
+  assert.deepEqual(PT.STYLES, ['points', 'splats', 'raytraced']);
+  assert.ok(PT.isSplats('splats') && PT.isSplats('raytraced') && !PT.isSplats('points'));
+  // A simulation's particles open ray-traced; a catalogue's objects as points.
+  assert.equal(PT.defaultStyle('vbt'), 'raytraced');
+  assert.equal(PT.defaultStyle('catalogue'), 'points');
+  assert.equal(PT.defaultStyle(undefined), 'points', 'an older backend without format');
+  const look = (style) => PT.pointLook({ axes: ['x', 'y', 'z'], colourField: null, style, splatSize: 2,
+    pointPx: 3, intensity: 40 }).find((c) => c.type === 'set_point_style');
+  assert.deepEqual(look('raytraced'), { type: 'set_point_style', mode: 'gaussian', size: 2, intensity: 40,
+    stereo_renderer: 'raytrace', splat_rule: 'v1' });
+  assert.deepEqual(look('splats'), { type: 'set_point_style', mode: 'gaussian', size: 2, intensity: 40,
+    stereo_renderer: 'splat', splat_rule: 'v1' });
+  // The page's splat rule goes with its look (#263).
+  const rule = PT.pointLook({ axes: ['x', 'y', 'z'], colourField: null, style: 'splats', splatSize: 2,
+    pointPx: 3, intensity: 40, splatRule: 'v2-f32' }).find((c) => c.type === 'set_point_style').splat_rule;
+  assert.equal(rule, 'v2-f32');
+  assert.equal(look('points').mode, 'points');
+  // The look key changes with the renderer: a swap re-renders the still frame.
+  assert.notDeepEqual(look('raytraced'), look('splats'));
 });
 
 test('flow lines: headers, body, indices and arrows', () => {
@@ -173,4 +243,120 @@ test('the lines say the box they were traced with', () => {
   assert.equal(FL.linesInfo(hdr({ ...base, 'X-Visivo-Box-Mpc': '0.0' }), { boxMpc: 200 }).boxMpc, 0);
   assert.equal(FL.linesInfo(hdr({ ...base, 'X-Visivo-Box-Mpc': '100.0' })).boxMpc, 100);
   assert.equal(FL.linesInfo(hdr(base), { boxMpc: 200 }).boxMpc, 200);    // an older backend
+});
+
+test('splat rules (#263 review): no vanishing splats without a float target, frames of the page\'s rule only', () => {
+  assert.deepEqual(PT.SPLAT_RULES, ['v1', 'v2-8bit', 'v2-f16', 'v2-f32']);
+  // A size-12 splat: over size² it would add 0.05/144 < 1/510 to an 8-bit target (nothing).
+  close(PT.ruleOpacity(0.05, 12, 'v2-f32'), 0.05 / 144, 1e-15);
+  assert.equal(PT.ruleOpacity(0.05, 12, 'v2-8bit'), 0.05);
+  assert.equal(PT.ruleOpacity(0.05, 12, 'v1'), 0.05);
+  assert.equal(PT.ruleOpacity(0.05, 12, 'v2-f16'), PT.F16_OPACITY_FLOOR);
+  assert.equal(PT.ruleOpacity(0.5, 2, 'v2-f16'), 0.125);
+  // Refined frames: shown only when drawn by the page's rule (a backend from
+  // before #263 says none); points do not depend on it.
+  assert.ok(PT.acceptFrame({ splat_rule: 'v2-f32' }, 'raytraced', 'v2-f32'));
+  assert.ok(!PT.acceptFrame({}, 'splats', 'v2-f32'), 'an older backend');
+  assert.ok(!PT.acceptFrame({ splat_rule: 'v2-8bit' }, 'splats', 'v2-f16'));
+  assert.ok(PT.acceptFrame({}, 'points', 'v2-f32'));
+});
+
+test('row governor without a GPU timer (#295): frame intervals, ceiling, half-octave steps', () => {
+  const hz = 72, P = 1000 / hz;
+  // recentFrames: the newest intervals up to the window; pauses over 250 ms are not frames.
+  const f = PT.recentFrames([100, P, P, 3 * P, P], hz, 4.5 * P);
+  assert.equal(f.n, 3);
+  close(f.missed, 1 / 3, 1e-12);
+  assert.equal(PT.recentFrames([P, 400, P, P, P, P], hz).n, 5, 'a 400 ms pause skipped');
+  const g = new PT.FrameRowGovernor({ min: 20000, holdMs: 1000, ceilingRiseMs: 2000 });
+  const late = { n: 10, meanMs: 2 * P, missed: 0.6 }, clean = { n: 10, meanMs: P, missed: 0 };
+  // A Quest at 36 fps with 1 M splats: cut by the period over the interval (at most to half).
+  let rows = g.update(1_000_000, 1_000_000, late, hz, 0);
+  assert.equal(rows, 500_000);
+  assert.equal(g.ceiling, 1_000_000);
+  assert.equal(g.update(rows, 1_000_000, clean, hz, 500), rows, 'held after a cut');
+  rows = g.update(rows, 1_000_000, clean, hz, 1200);
+  assert.equal(rows, 560_000, '12 % up when clean');
+  // Up to 90 % of where it missed, then a quarter more of ceiling per 2 s clean.
+  for (let t = 1450; t <= 2450; t += 250) rows = g.update(rows, 1_000_000, clean, hz, t);
+  assert.equal(rows, 900_000);
+  for (let t = 2700; t <= 3700; t += 250) rows = g.update(rows, 1_000_000, clean, hz, t);
+  assert.equal(rows, 1_000_000, 'the ceiling rose (x1.5 after 2 s clean): the whole sample');
+  // One late frame in a window (3 %) keeps the count, and a mean raised by it does not cut.
+  assert.equal(g.update(300_000, 1_000_000, { n: 33, meanMs: 1.4 * P, medianMs: P, missed: 0.03, slow: 0.03 }, hz, 9000), 300_000);
+  // A Quest pacing frames between one and 1.5 periods (63 fps, under 1 % missed) is late.
+  assert.equal(g.update(300_000, 1_000_000, { n: 30, meanMs: 1.14 * P, medianMs: 1.14 * P, missed: 0.005 }, hz, 9500),
+    255_000);
+  assert.equal(PT.recentFrames([P, 1.2 * P, 1.1 * P, 200, P], hz, 1000).medianMs, 1.1 * P);
+  close(PT.recentFrames([P, 1.2 * P, 1.05 * P, P], hz, 1000).slow, 0.25, 1e-12);
+  // Sustained sparse misses (5 % to 15 %) or many slow frames: an 8 % cut, then held.
+  const q = new PT.FrameRowGovernor({ min: 20000, holdMs: 1000 });
+  assert.equal(q.update(700_000, 1_000_000, { n: 36, meanMs: 1.05 * P, medianMs: P, missed: 0.06, slow: 0.06 }, hz, 0), 644_000);
+  assert.equal(q.update(644_000, 1_000_000, { n: 36, meanMs: 1.05 * P, medianMs: P, missed: 0.06, slow: 0.06 }, hz, 250), 644_000);
+  assert.equal(q.update(644_000, 1_000_000, { n: 36, meanMs: 1.04 * P, medianMs: P, missed: 0.01, slow: 0.2 }, hz, 1300), 592_480);
+  // Startup cuts ratchet the ceiling down; clean frames bring it back within seconds.
+  const h = new PT.FrameRowGovernor({ min: 20000, holdMs: 1000 });
+  let r = 200_000;
+  for (let t = 0; t < 5000; t += 1100) r = h.update(r, 1_000_000, late, hz, t);
+  assert.equal(r, 20_000, 'hitches at entry: down to the floor');
+  let t = 6000;
+  for (; r < 150_000 && t < 60_000; t += 250) r = h.update(r, 1_000_000, clean, hz, t);
+  assert.ok(t - 6000 <= 12_000, `back to 150 k in ${t - 6000} ms`);
+  // Steady near the limit: a cut right after a ceiling rise doubles the wait for the next rise.
+  const k = new PT.FrameRowGovernor({ min: 20000, holdMs: 1000, ceilingRiseMs: 1500 });
+  k.update(300_000, 1_000_000, late, hz, 0);                 // missed at 300 k
+  let u = 255_000;
+  for (let tt = 1000; tt <= 3000; tt += 250) u = k.update(u, 1_000_000, clean, hz, tt);
+  assert.ok(Number.isFinite(k.lastRiseAt) && k.lastRiseAt <= 3000, 'the ceiling rose');
+  k.update(u, 1_000_000, late, hz, k.lastRiseAt + 1000);    // and it missed again at once
+  assert.equal(k.riseMs, 3000);
+  // Never below the floor nor above the sample; too few frames say nothing.
+  assert.equal(g.update(25_000, 1_000_000, late, hz, 10000), 20_000);
+  assert.equal(g.update(40_000, 30_000, clean, hz, 20000), 30_000);
+  assert.equal(g.update(123_456, 1_000_000, { n: 2, meanMs: 5 * P, missed: 1 }, hz, 30000), 123_456);
+  g.reset();
+  assert.equal(g.ceiling, Infinity);
+  // The rows drawn: half-octave steps, or the whole sample.
+  assert.deepEqual([141_421, 200_000, 260_000, 1_000_000].map((n) => PT.quantizeRows(n, 1_000_000)),
+    [131_072, 185_364, 262_144, 1_000_000]);
+  assert.equal(PT.quantizeRows(700_000, 600_000), 600_000);
+  assert.equal(PT.HEADSET_SPLAT_ROWS, 200_000);
+});
+
+test('row governor review (#297): which governor, earned clean time, decaying backoff, step hysteresis', () => {
+  const hz = 72, P = 1000 / hz;
+  // 1, 6: the frame governor only in a VR session whose display rate has
+  // settled; a GPU timer wins; else the count is kept (a desktop browser
+  // without a timer may run at 30 or 50 Hz against an assumed 60).
+  assert.equal(PT.rowGovernorKind({ gpuMs: 3.2, inXR: false, rateSettled: false }), 'gpu');
+  assert.equal(PT.rowGovernorKind({ gpuMs: -1, inXR: true, rateSettled: true }), 'frames');
+  assert.equal(PT.rowGovernorKind({ gpuMs: -1, inXR: true, rateSettled: false }), 'none', 'settling 90 -> 72 Hz');
+  assert.equal(PT.rowGovernorKind({ gpuMs: -1, inXR: false, rateSettled: false }), 'none', 'Safari or Firefox');
+  const clean = { n: 18, meanMs: P, medianMs: P, missed: 0, slow: 0 };
+  const late = { n: 18, meanMs: 2 * P, medianMs: 2 * P, missed: 0.6, slow: 0.6 };
+  // 2: clean time is earned by consecutive updates only: a gap (splats not
+  // drawn under a refined frame) or interrupted() restarts it.
+  const g = new PT.FrameRowGovernor({ holdMs: 0, ceilingRiseMs: 1500 });
+  g.update(400_000, 1_000_000, late, hz, 0);                    // ceiling 400 k
+  g.update(340_000, 1_000_000, clean, hz, 250);
+  assert.equal(g.cleanSince, 250);
+  g.update(340_000, 1_000_000, clean, hz, 5000);               // 4.75 s not drawn
+  assert.equal(g.cleanSince, 5000, 'the gap is not clean time');
+  assert.equal(g.ceiling, 400_000, 'no unearned rise');
+  g.interrupted(5100);
+  assert.equal(g.cleanSince, null);
+  assert.equal(g.update(340_000, 1_000_000, clean, hz, 5300), 340_000, 'held after the frames come back');
+  // 3: the probing backoff decays with time: a cut long after the probes
+  // (a zoom into the box) is climbed back from at the fast pace.
+  const k = new PT.FrameRowGovernor({ holdMs: 0, ceilingRiseMs: 1500, decayMs: 20000 });
+  k.riseMs = 48000; k.lastBackoffAt = 0;
+  for (let t = 250; t <= 90_000; t += 250) k.update(300_000, 1_000_000, clean, hz, t);
+  assert.equal(k.riseMs, 3000, 'halved every 20 s: 48 -> 24 -> 12 -> 6 -> 3 s');
+  // 4: steps with hysteresis: a count hovering at a midpoint keeps its step.
+  const prev = PT.quantizeRows(200_000, 1_000_000);              // 185 364
+  for (const n of [215_000, 225_000, 240_000, 160_000, 141_000]) assert.equal(PT.quantizeRows(n, 1_000_000, prev), prev, String(n));
+  assert.equal(PT.quantizeRows(260_000, 1_000_000, prev), 262_144, 'more than 0.4 octave: the next step');
+  assert.equal(PT.quantizeRows(120_000, 1_000_000, prev), 131_072);
+  assert.equal(PT.quantizeRows(900_000, 1_000_000, 1_000_000), 1_000_000, 'the whole sample kept near it');
+  assert.equal(PT.quantizeRows(240_000, 200_000, prev), prev, 'clamped to the sample before comparing');
 });

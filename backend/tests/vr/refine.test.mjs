@@ -245,3 +245,33 @@ test('a clipping box the backend would refuse is named before it is sent', () =>
   assert.match(F.cropError({ min: [0, -0.1, 0], max: [1, 1, 1] }), /axis y/);
   assert.match(F.cropError({ min: [0, NaN, 0], max: [1, 1, 1] }), /finite/);
 });
+
+test('refined splat frames: overscan, and whether a warped frame covers the view (#297)', () => {
+  const proj = M.perspective(Math.PI / 2, 1, 0.1, 100);
+  const eye = { eye: 'left', view: M.identity(), proj, width: 1000, height: 1000 };
+  const o = F.overscanEye(eye, 0.06);
+  assert.equal(o.width, 1060);
+  assert.equal(o.height, 1060);
+  assert.ok(Math.abs(o.proj[0] - proj[0] / 1.06) < 1e-6 && Math.abs(o.proj[5] - proj[5] / 1.06) < 1e-6);
+  assert.equal(o.proj[10], proj[10], 'depth untouched');
+  // The pixel scale P11 x H is kept: splats keep their size in pixels.
+  assert.ok(Math.abs(o.proj[5] * o.height - proj[5] * eye.height) < 1e-3 * proj[5] * eye.height);
+  const model = M.translation(0, 0, -1.5);
+  const frameEye = { view: M.identity(), proj: o.proj };
+  const now = (deg, dx = 0) => ({ view: M.multiply(M.rotation([0, 1, 0], deg * Math.PI / 180), M.translation(-dx, 0, 0)), proj });
+  const depths = [1.0, 2.0, 1.5];
+  // The same pose: an overscanned frame covers; one without a margin does not
+  // (its edges sit on the viewport's, none to spare).
+  assert.ok(F.coversViewport(frameEye, model, now(0), model, depths));
+  assert.ok(!F.coversViewport({ view: M.identity(), proj }, model, now(0), model, depths));
+  // A slow turn (1.5 degrees): still covered with the 6 % margin (about 3 degrees here).
+  assert.ok(F.coversViewport(frameEye, model, now(1.5), model, depths));
+  // A 5 degree turn uncovers an edge strip: the splats must be drawn.
+  assert.ok(!F.coversViewport(frameEye, model, now(5), model, depths));
+  // A step sideways: near depths shift more (parallax); 10 cm with depths from 1 m uncovers.
+  assert.ok(F.coversViewport(frameEye, model, now(0, 0.005), model, depths));
+  assert.ok(!F.coversViewport(frameEye, model, now(0, 0.1), model, depths));
+  // A bad depth, or a corner behind the eye, never counts as covered.
+  assert.ok(!F.coversViewport(frameEye, model, now(0), model, [0]));
+  assert.ok(!F.coversViewport(frameEye, model, now(170), model, depths));
+});

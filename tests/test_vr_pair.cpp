@@ -2,9 +2,12 @@
 
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
+#include "app/VrHeadsetApp.h"
+#include "app/VrHeadsetHub.h"
 #include "app/VrPair.h"
 #include "app/VrPairQr.h"
 
+#include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcessEnvironment>
@@ -167,6 +170,75 @@ void TestVrPair::requestBodyCarriesTheLinkValuesButTheToken()
     body = VrPair::requestBody(in);
     QCOMPARE(body.value(u"kind"_s).toString(), u"points"_s);
     QVERIFY(!body.contains(u"box"_s));
+}
+
+void TestVrPair::skyPlacementRidesEveryWayToTheHeadset()
+{
+    // Issue #260: a sky catalogue's applied frame, distance mode and cosmology
+    // go with the link, the pairing, the launch and the hub's show alike.
+    VrLink::Inputs in;
+    in.baseUrl = u"http://127.0.0.1:8000"_s;
+    in.token = u"secret-token"_s;
+    in.sessionId = u"sess-1"_s;
+    in.datasetId = u"cat_1"_s;
+    in.path = u"/data/2mrs.csv"_s;
+    in.kind = u"points"_s;
+    // None: nothing is added (a cube, a VBT, a Cartesian catalogue).
+    QVERIFY(!VrLink::build(in).url.contains(u"sky_frame"_s));
+    QVERIFY(!VrHub::showCommandBody(in).contains(u"sky"_s));
+    QVERIFY(!VrHeadsetApp::launchRequestBody(in).value(u"cube"_s).toObject().contains(u"sky"_s));
+    QVERIFY(!VrPair::requestBody(in).contains(u"sky_frame"_s));
+
+    in.sky.frame = u"supergalactic"_s;
+    in.sky.distanceMode = u"redshift_space"_s;
+    in.sky.cosmology = u"WMAP9"_s;
+    const QString url = VrLink::build(in).url;
+    QVERIFY(url.contains(u"&sky_frame=supergalactic"_s));
+    QVERIFY(url.contains(u"&distance_mode=redshift_space"_s));
+    QVERIFY(url.contains(u"&cosmology=WMAP9"_s));
+
+    const QJsonObject pair = VrPair::requestBody(in);   // flat strings, as the fragment
+    QCOMPARE(pair.value(u"sky_frame"_s).toString(), u"supergalactic"_s);
+    QCOMPARE(pair.value(u"distance_mode"_s).toString(), u"redshift_space"_s);
+    QCOMPARE(pair.value(u"cosmology"_s).toString(), u"WMAP9"_s);
+
+    const QJsonObject expected{ { u"frame"_s, u"supergalactic"_s },
+                                { u"distance_mode"_s, u"redshift_space"_s },
+                                { u"cosmology"_s, u"WMAP9"_s } };
+    QCOMPARE(VrHub::showCommandBody(in, u"c1"_s).value(u"sky"_s).toObject(), expected);
+    QCOMPARE(VrHeadsetApp::launchRequestBody(in).value(u"cube"_s).toObject().value(u"sky"_s).toObject(),
+             expected);
+    // The token is in none of them.
+    QVERIFY(!QJsonDocument(VrHub::showCommandBody(in)).toJson().contains("secret-token"));
+    QVERIFY(!QJsonDocument(VrHeadsetApp::launchRequestBody(in)).toJson().contains("secret-token"));
+
+    // A code shown but unused carries the old placement: a change renews it;
+    // the same sky, an expired code or a used one does not.
+    VrLink::Sky galactic = in.sky;
+    galactic.frame = u"galactic"_s;
+    const VrPair::Tracker waiting = waitingTracker();
+    QVERIFY(VrPair::renewCodeForNewSky(waiting, kNow + 1000, in.sky, galactic));
+    QVERIFY(!VrPair::renewCodeForNewSky(waiting, kNow + 1000, in.sky, in.sky));
+    QVERIFY(!VrPair::renewCodeForNewSky(waiting, kNow + 10'000'000, in.sky, galactic));
+    VrPair::Tracker idle(u"cat_1"_s);
+    QVERIFY(!VrPair::renewCodeForNewSky(idle, kNow, in.sky, galactic));
+
+    // The backend's models take what is sent (routers/headset.py).
+    QFile h(QString::fromUtf8(VISIVO_REPO_ROOT) + u"/backend/app/routers/headset.py"_s);
+    if (!h.open(QIODevice::ReadOnly))
+        QSKIP("the backend's headset routes are not in this tree");
+    const QString source = QString::fromUtf8(h.readAll());
+    const qsizetype at = source.indexOf(u"class HeadsetSky(BaseModel):"_s);
+    QVERIFY(at >= 0);
+    const QString model = source.mid(at, source.indexOf(u"\n\n\n"_s, at) - at);
+    for (auto it = expected.begin(); it != expected.end(); ++it)
+        QVERIFY2(model.contains(u"    %1:"_s.arg(it.key())), qPrintable(it.key()));
+    for (const QString &cls : { u"class HeadsetCube(BaseModel):"_s, u"class HeadsetCommandRequest(BaseModel):"_s }) {
+        const qsizetype c = source.indexOf(cls);
+        QVERIFY2(c >= 0, qPrintable(cls));
+        QVERIFY2(source.mid(c, source.indexOf(u"\n\n\n"_s, c) - c).contains(u"    sky: HeadsetSky | None"_s),
+                 qPrintable(cls));
+    }
 }
 
 void TestVrPair::expiryIsReadAsEpochOrIso()

@@ -14,7 +14,7 @@ import { createSelection, createSelectionSync, TOOLS, TOOL_NAMES } from './selec
 import { channelsOfClip, pixelArcsec } from './selection.js';
 import { Refiner, desktopEyes } from './refine-client.js';
 import { transferFunction, cropBox, cropError } from './refine.js';
-import { pairingFallback } from './pairing.js';
+import { pairingFallback, skyFields, skyOf } from './pairing.js';
 import { loadSettings, saveSettings, clampPanelOffset, thresholdSourceFor, WINDOW_IDS } from './settings.js';
 import * as P from './vr-panel.js';
 import { createLayers, pairedMode } from './layers.js';
@@ -488,6 +488,15 @@ layers = createLayers({
   colormap: () => state.colormap, refineOn: () => refineMode !== 'off',
   rebuild: () => rebuildDecorations(),
   targetHz: () => (xr ? xr.targetHz : 60),
+  // The frame intervals (the row governor without a GPU timer, #295), whether
+  // this is a headset and the splats' float target: half floats on a headset
+  // (#295), ?splattarget=f32|f16|8bit to measure another.
+  frames: () => stats.buf,
+  inXR: () => !!xr,
+  rateSettled: () => !!(xr && xr.rateLog && xr.rateLog.done),
+  headset: isHeadsetBrowser(navigator.userAgent),
+  splatTarget: ['f32', 'f16', '8bit'].includes(query.get('splattarget')) ? query.get('splattarget')
+    : (isHeadsetBrowser(navigator.userAgent) ? 'f16' : 'auto'),
   onLayer: (detail) => reportProduct(null, detail),   // issue #237: a catalogue over the cube
   sourceDecor: () => (sources ? sources.decor() : null),   // issue #279: flags, culling, the current source
 });
@@ -3167,10 +3176,15 @@ function showFromDesktop(cmd) {
   const session = (backend && backend.session) || pairing.session || '';
   shell.log('info', 'hub-show', `${name} (${kind}), command ${cmd.seq}${xr ? ', in VR' : ''}`);
   measure.event('hub-show', { kind, in_vr: !!xr });
+  // A sky catalogue's placement, the desktop window's (issue #260), as the link's keys.
+  const sky = skyFields(cmd.sky);
   // A reload of this tab opens it, as one after the desktop's link does.
-  keepPairing({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '' });
+  keepPairing({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky });
   pendingBox = null;
-  if (shownDatasetId() === cmd.dataset_id && state.openPath === cmd.path) {
+  // The same catalogue placed otherwise is drawn again.
+  const skyChanged = kind === 'points'
+    && JSON.stringify(skyOf(sky)) !== JSON.stringify((layers.state.points && layers.state.points.sky) || null);
+  if (shownDatasetId() === cmd.dataset_id && state.openPath === cmd.path && !skyChanged) {
     // The cube on show: this command is the newest, so a load under way and a
     // cube waiting for the end of the session (older commands) are dropped.
     loads.begin(cmd.path);
@@ -3185,7 +3199,7 @@ function showFromDesktop(cmd) {
   }
   shell.notify('cube-from-desktop', { detail: name });
   $('path').value = cmd.path;
-  withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '' }))
+  withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky }))
     .then(() => {
       // Waiting for the end of the VR session (larger than the room kept for
       // cubes in VR): its box is applied when it is shown (installStaged).
@@ -3330,7 +3344,8 @@ function adoptGrant(grant, handed) {
   saveToken(grant.token, false);
   ensureBackend().adoptSession(grant.session);
   const c = grant.cube;
-  Object.assign(pairing, { session: grant.session, dataset: c ? c.dataset_id : '', path: c ? c.path : '', kind: c ? c.kind : '', box: '' });
+  Object.assign(pairing, { session: grant.session, dataset: c ? c.dataset_id : '', path: c ? c.path : '', kind: c ? c.kind : '', box: '',
+    ...skyFields(c && c.sky) });
   hub.start();
   hub.rehello();      // the hello names this launch: the desktop finds its page
   if (!c) {
@@ -3348,8 +3363,10 @@ function adoptGrant(grant, handed) {
         const eff = flow ? (flow.boxMpc != null ? flow.boxMpc : flow.info ? flow.info.boxMpc : null) : null;
         const box = kind === 'velocity' && eff != null && Number.isFinite(Number(eff)) ? String(eff) : '';
         const path = state.openPath;
-        keepPairing({ session: grant.session, dataset: '', path, kind, box });   // a reload opens it in the new session
-        withLoading(() => loadLinked({ session: grant.session, dataset: '', path, kind, box }))
+        // A sky catalogue keeps the placement it is drawn with (issue #260).
+        const sky = skyFields(layers.state.points && layers.state.points.sky);
+        keepPairing({ session: grant.session, dataset: '', path, kind, box, ...sky });   // a reload opens it in the new session
+        withLoading(() => loadLinked({ session: grant.session, dataset: '', path, kind, box, ...sky }))
           .catch((err) => { if (!err.superseded) setStatus(`${HUB.fileName(path)} could not be opened again: ${err.message || err}`); });
       }
     } else if (!state.openPath && !state.cube && !layers.hasScene()) {
@@ -3358,11 +3375,12 @@ function adoptGrant(grant, handed) {
     }
     return;
   }
-  const cmd = { seq: 0, type: 'show', dataset_id: c.dataset_id, path: c.path, kind: c.kind, box: c.box };
+  const cmd = { seq: 0, type: 'show', dataset_id: c.dataset_id, path: c.path, kind: c.kind, box: c.box, sky: c.sky };
   if (handed) { showFromDesktop(cmd); return; }
-  keepPairing({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '' });
+  const sky = skyFields(c.sky);
+  keepPairing({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '', ...sky });
   $('path').value = c.path;
-  withLoading(() => loadLinked({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '' }))
+  withLoading(() => loadLinked({ session: grant.session, dataset: c.dataset_id, path: c.path, kind: c.kind, box: '', ...sky }))
     .then(() => { if (state.openPath === c.path) applyCommandBox(cmd); })
     .catch((err) => {
       if (err.superseded) return;
@@ -3557,8 +3575,11 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
   shell.xrStarted();
   shell.clearNotice('xr-ended');
   const policy = qualityPolicy({ targetHz, spvMin: governor.min, spvChosen: state.spv, eyeChosen: fbScale });
-  shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, ${targetHz} Hz, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}; text ${layersNote}`);
-  shell.log('info', 'quality-policy', `${policy}; governor ${state.governorOn ? 'on' : 'off'}`);
+  // The display rate is logged once it has settled (xrRateSettled): the
+  // session's frameRate changes after the first frames (#295: logged 90 Hz
+  // for a session running at 72).
+  xr.rateLog = { t0: performance.now(), rate: session.frameRate || 0, since: performance.now(), done: false };
+  shell.log('info', 'xr-start', `${mode}${bench ? ' (benchmark)' : ''}, eye buffer ${layer.framebufferWidth}×${layer.framebufferHeight}; text ${layersNote}; display rate logged when settled`);
   measure.event('xr-start', { mode: mode === 'immersive-ar' ? 'ar' : 'vr', bench: !!bench, display_hz: targetHz,
     eye: [layer.framebufferWidth, layer.framebufferHeight], scale: fbScale,
     foveation: 'fixedFoveation' in layer ? layer.fixedFoveation : null, rates: session.supportedFrameRates ? Array.from(session.supportedFrameRates) : null,
@@ -3976,17 +3997,42 @@ function onXRFrame(time, frame) {
   if (xr.bench) xr.bench.record(interval, cpu, R.gpuMs);
   else measure.frame(interval, cpu, R.gpuMs);
   if (state.governorOn && !xr.bench) {
-    governor.update(interval, 1000 / xr.targetHz);
+    // Under a refined frame the splats are not drawn: no clean time is
+    // earned from those frames, by either governor (#295).
+    const idle = layers.covered;
+    governor.update(interval, 1000 / xr.targetHz, idle);
     // Second stage (epic #166): samples per voxel at 0.5 or less and frames
     // still missed: a smaller eye buffer, one step at a time.
-    const scale = eyeGovernor.update(interval, 1000 / xr.targetHz, spvAtFloor(governor));
-    if (scale < xr.fbScale - 1e-6) setEyeBufferScale(scale);
+    // What is shown changed: the eye buffer may come back up sooner (#295).
+    const shownCube = state.cube ? (state.open ? state.open.dataset_id : '') : null;
+    if (shownCube !== xr.shownCube || layers.mode !== xr.shownMode || layers.state.s.style !== xr.shownStyle) {
+      xr.shownCube = shownCube; xr.shownMode = layers.mode; xr.shownStyle = layers.state.s.style;
+      eyeGovernor.relax();
+    }
+    // Applied when the governor moves (a scale set from elsewhere is kept).
+    const prevScale = eyeGovernor.scale;
+    const scale = eyeGovernor.update(interval, 1000 / xr.targetHz, spvAtFloor(governor), idle);
+    if (Math.abs(scale - prevScale) > 1e-6 && Math.abs(scale - xr.fbScale) > 1e-6) setEyeBufferScale(scale);
   }
   if (session.frameRate) xr.targetHz = session.frameRate;
+  if (xr.rateLog && !xr.rateLog.done) xrRateSettled(session, performance.now());
   if (!xr.bench) shell.xrFrame(time, stats.buf, xr.targetHz, currentQualityNote());
 }
 
-/** The eye buffer made smaller in the running session (a new base layer). */
+/** Logs the display rate and the quality policy once the session's frame
+ *  rate has held for 0.5 s, at least 1.5 s into the session (#295). */
+function xrRateSettled(session, now) {
+  const r = xr.rateLog;
+  const rate = session.frameRate || 0;
+  if (rate !== r.rate) { r.rate = rate; r.since = now; }
+  if (now - r.since < 500 || now - r.t0 < 1500) return;
+  r.done = true;
+  const hz = rate || xr.targetHz;
+  shell.log('info', 'xr-rate', `${hz} Hz (settled after ${Math.round(now - r.t0)} ms), ${fpsLine()}`);
+  shell.log('info', 'quality-policy', `${qualityPolicy({ targetHz: hz, spvMin: governor.min, spvChosen: state.spv, eyeChosen: xr.fbChosen })}; governor ${state.governorOn ? 'on' : 'off'}`);
+}
+
+/** The eye buffer made smaller, or back up (#295), in the running session (a new base layer). */
 function setEyeBufferScale(scale) {
   const old = xr.layer;
   try {
@@ -4363,7 +4409,7 @@ if (query.has('debug')) {
   window.__vrHub = hub;
   window.__vrEntry = () => ({ ...entry, line: entryLine() });
   window.__vrCuts = () => ({ active: activeCuts.slice(), counts: { ...cutCounts } });
-  window.__vrSetEyeScale = (s) => { if (xr) setEyeBufferScale(s); };
+  window.__vrSetEyeScale = (s) => { if (xr) { setEyeBufferScale(s); eyeGovernor.scale = xr.fbScale; } };
   // The message card (in the desktop view with ?panel3d): press one of its
   // buttons through a ray from the camera, as a controller would.
   window.__vrCard = {

@@ -21,9 +21,13 @@ test('eye buffer: lowered only with samples at the floor and frames missed, one 
   for (let i = 0; i < 400; i++) g.update(25, target, true);
   assert.equal(g.scale, Q.EYE_SCALE_FLOOR, 'never below the floor');
   assert.equal(Q.EYE_SCALE_FLOOR, 0.85, 'issue #226: never below 0.85×');
-  // Good frames never raise it again within the session.
-  for (let i = 0; i < 2000; i++) g.update(target, target, true);
+  // Good frames raise it again only after a sustained clean run (#295: 9 s by
+  // default), one step, never above the start.
+  for (let i = 0; i < 700; i++) g.update(target, target, true);        // 7.8 s
   assert.equal(g.scale, 0.85);
+  for (let i = 0; i < 2000; i++) g.update(target, target, true);
+  assert.equal(g.scale, 1, 'back to the chosen scale, not above');
+  assert.equal(g.raised, 1);
   g.reset(1.25);
   assert.equal(g.scale, 1.25);
   for (let i = 0; i < 40; i++) g.update(25, target, true);
@@ -243,4 +247,70 @@ test('the diagnostics name the debug cuts of the address, only when there are so
   assert.ok(D.diagnosticsReport({ ...base, cuts: 'nohover nohud' }).split('\n').includes('debug cuts: nohover nohud'));
   assert.ok(!D.diagnosticsReport({ ...base, cuts: '' }).includes('debug cuts'));
   assert.ok(!D.diagnosticsReport(base).includes('debug cuts'));
+});
+
+test('eye buffer (#295): back up after clean frames, a step taken back doubles the wait, relax forgets it', () => {
+  const target = 1000 / 72;
+  const g = new Q.EyeBufferGovernor({ start: 1, holdMs: 1000, upAfterMs: 4000 });
+  const run = (ms, interval, floor = true) => { for (let t = 0; t < ms; t += interval) g.update(interval, target, floor); };
+  run(1100, 40);                         // heavy splats: down to 0.85
+  assert.equal(g.scale, 0.85);
+  run(5200, target);                     // 4 s of clean windows: back to 1
+  assert.equal(g.scale, 1);
+  run(1100, 40);                         // too much again at once: down, and the wait doubles
+  assert.equal(g.scale, 0.85);
+  assert.equal(g.upAfterMs, 8000);
+  run(5200, target);
+  assert.equal(g.scale, 0.85, 'not after the base wait');
+  run(5200, target);
+  assert.equal(g.scale, 1, 'after the doubled one');
+  run(3000, target);                     // held a while: a later miss is not "taken back"
+  run(2100, 40);
+  assert.equal(g.scale, 0.85);
+  assert.equal(g.upAfterMs, 8000, 'not doubled for a miss long after the step up');
+  g.relax();                             // a cube shown instead: the base wait again
+  assert.equal(g.upAfterMs, 4000);
+  run(5200, target);
+  assert.equal(g.scale, 1);
+  // Clean time at the chosen scale is not banked: a scale lowered later
+  // (from elsewhere, or by the governor) waits its own clean run (on the
+  // Quest a scale set to 0.85 came back up after 500 ms).
+  const b = new Q.EyeBufferGovernor({ start: 1, holdMs: 1000, upAfterMs: 4000 });
+  for (let t = 0; t < 20000; t += target) b.update(target, target, true);
+  b.scale = 0.85;
+  for (let t = 0; t < 2000; t += target) b.update(target, target, true);
+  assert.equal(b.scale, 0.85);
+  for (let t = 0; t < 3500; t += target) b.update(target, target, true);
+  assert.equal(b.scale, 1);
+  // A few missed frames between clean ones restart the clean run.
+  const h = new Q.EyeBufferGovernor({ start: 1, holdMs: 1000, upAfterMs: 3000 });
+  for (let i = 0; i < 40; i++) h.update(40, target, true);
+  assert.equal(h.scale, 0.85);
+  for (let k = 0; k < 6; k++) { for (let i = 0; i < 60; i++) h.update(i < 3 ? 40 : target, target, true); }
+  assert.equal(h.scale, 0.85, 'more than 3 % missed in each window: not clean');
+});
+
+test('governors under a refined frame earn nothing (#297); a chosen scale outside the steps comes back', () => {
+  const target = 1000 / 72;
+  // 5: the eye buffer earns no clean time from frames that drew little.
+  const g = new Q.EyeBufferGovernor({ start: 1, holdMs: 1000, upAfterMs: 3000 });
+  for (let i = 0; i < 40; i++) g.update(40, target, true);
+  assert.equal(g.scale, 0.85);
+  for (let t = 0; t < 10000; t += target) g.update(target, target, true, true);   // covered: idle
+  assert.equal(g.scale, 0.85, 'idle frames are not clean time');
+  for (let t = 0; t < 4200; t += target) g.update(target, target, true);
+  assert.equal(g.scale, 1, 'clean frames that drew are');
+  // ... and neither do samples per voxel.
+  const s = new Governor({ min: 0.25, max: 2, start: 1, upAfterMs: 2000 });
+  for (let i = 0; i < 600; i++) s.update(target, target, true);
+  assert.equal(s.value, 1, 'no climb while idle');
+  for (let i = 0; i < 160; i++) s.update(target, target);
+  assert.ok(s.value > 1, 'climbs on frames that drew');
+  // 7: a chosen scale outside EYE_SCALE_STEPS (0.9) can come back to itself.
+  const h = new Q.EyeBufferGovernor({ start: 0.9, holdMs: 1000, upAfterMs: 2000 });
+  assert.equal(h.nextUp(0.85), 0.9);
+  for (let i = 0; i < 40; i++) h.update(40, target, true);
+  assert.equal(h.scale, 0.85);
+  for (let t = 0; t < 3200; t += target) h.update(target, target, true);
+  assert.equal(h.scale, 0.9);
 });

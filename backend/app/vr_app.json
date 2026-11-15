@@ -3,5 +3,7 @@
     "release": "it.inaf.oact.visivo.vr",
     "development": "it.inaf.oact.visivo.vr.dev"
   },
-  "release_sha256": []
+  "release_sha256": [
+    "A1:54:C4:5B:54:20:5F:B9:6B:B9:80:28:6D:86:F3:A6:78:17:E1:32:2E:4F:68:AB:44:40:30:C0:43:04:D8:D4"
+  ]
 }

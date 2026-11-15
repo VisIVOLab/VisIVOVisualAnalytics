@@ -57,7 +57,9 @@ export function validGrant(g) {
     if (!dataset || !path) return null;
     const kind = str(g.cube.kind, 32) || 'cube';
     const box = Array.isArray(g.cube.box) ? g.cube.box : null;
+    // A sky catalogue's placement, the desktop window's (issue #260).
     cube = { dataset_id: dataset, path, kind, box };
+    if (g.cube.sky && typeof g.cube.sky === 'object') cube.sky = g.cube.sky;
   } else if (g.cube != null) {
     return null;
   }

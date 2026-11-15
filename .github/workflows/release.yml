@@ -37,6 +37,16 @@
 #              $VISIVO_PACKAGE_DIR
 #   - Windows: bin\python\
 #
+# The VisIVO VR headset app (issue #255; tools/quest-app) is built once per run
+# by quest-app.yml, called below, and bundled where the desktop looks for it
+# (VrHeadsetApp::apkCandidates), as visivo-vr.apk + visivo-vr.json:
+#   - macOS:   <App>.app/Contents/Resources/quest-app/   (before signing)
+#   - Linux:   <pkg>/app/usr/bin/quest-app/   (beside the executable)
+#   - Windows: bin\quest-app\
+# Without the signing secrets (a fork) the packages are built without it, with
+# a notice; if its build fails, with a warning. It never holds a release. On a
+# tag quest-app.yml also attaches the APK to the release, once.
+#
 # The setup scripts remain, now optional: they build a venv in a writable
 # user-data location, which BackendLauncher PREFERS over the bundled runtime.
 # That is the supported way to add optional extras (cupy, an LLM SDK):
@@ -166,9 +176,23 @@ jobs:
           echo "building: $(printf '%s' "$include" | jq -r '[.[].name] | join(", ")')"
           printf 'matrix={"include":%s}\n' "$include" >> "$GITHUB_OUTPUT"
 
+  # The headset app, built and signed once for every platform's package (a few
+  # minutes on Linux while nothing else waits on a costly runner). After setup,
+  # so on a tag the draft release exists for its APK asset.
+  quest-app:
+    name: headset app
+    needs: setup
+    uses: ./.github/workflows/quest-app.yml
+    secrets: inherit
+    permissions:
+      contents: write     # attaches the APK to the drafted release
+
   build:
     name: ${{ matrix.name }}
-    needs: setup
+    needs: [setup, quest-app]
+    # Not held by the headset app: without it (no secrets, or its build
+    # failed) the packages are built anyway, without the app.
+    if: ${{ !cancelled() && needs.setup.result == 'success' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
@@ -182,6 +206,43 @@ jobs:
           # The job's token can write releases: not left in .git/config for
           # the hour of third-party build steps that follow.
           persist-credentials: false
+
+      # ── The headset app (quest-app.yml, this run) ────────────────────────
+      - name: Fetch the headset app
+        if: needs.quest-app.outputs.built == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: visivo-vr-apk
+          path: quest-app-dl
+
+      # Only the APK and its visivo-vr.json go into the package (the desktop
+      # reads both; assetlinks.json is the backend's business). Each platform
+      # copies quest-app/ into its place below when this says bundle=true.
+      - name: Headset app to bundle?
+        id: vrapp
+        shell: bash
+        env:
+          QUEST_RESULT: ${{ needs.quest-app.result }}
+          QUEST_BUILT: ${{ needs.quest-app.outputs.built }}
+        run: |
+          set -euo pipefail
+          rm -rf quest-app
+          if [ "$QUEST_BUILT" = "true" ]; then
+            if [ ! -f quest-app-dl/visivo-vr.apk ] || [ ! -f quest-app-dl/visivo-vr.json ]; then
+              echo "::error::The visivo-vr-apk artifact lacks visivo-vr.apk or visivo-vr.json"
+              exit 1
+            fi
+            mkdir quest-app
+            cp quest-app-dl/visivo-vr.apk quest-app-dl/visivo-vr.json quest-app/
+            echo "bundle=true" >> "$GITHUB_OUTPUT"
+            echo "Bundling VisIVO VR: $(tr -d '\n' < quest-app/visivo-vr.json)"
+          elif [ "$QUEST_RESULT" = "success" ]; then
+            echo "bundle=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::This package is built without the VisIVO VR headset app: its signing secrets are not set (tools/quest-app/README.md)."
+          else
+            echo "bundle=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::This package is built without the VisIVO VR headset app: its build ended with '$QUEST_RESULT' (see the headset app job)."
+          fi
 
       # ── System dependencies ──────────────────────────────────────────────
       # ── Self-contained Python runtime ────────────────────────────────────
@@ -541,6 +602,13 @@ jobs:
           # self-contained and nothing has to be installed next to it.
           cp -R pyruntime/python "dist/VisIVOVisualAnalytics.app/Contents/Resources/python"
 
+      # Inside the bundle, so BEFORE the signing below: a file added to a
+      # signed bundle invalidates its seal.
+      - name: Bundle the headset app (macOS)
+        if: runner.os == 'macOS' && steps.vrapp.outputs.bundle == 'true'
+        shell: bash
+        run: cp -R quest-app "dist/VisIVOVisualAnalytics.app/Contents/Resources/quest-app"
+
       # Re-sign the whole bundle ad-hoc AFTER all modifications (Qt deploy +
       # backend copy + bundled interpreter). On Apple Silicon any tampering with a signed bundle
       # produces SIGKILL "Code Signature Invalid" at dyld load time.
@@ -650,6 +718,11 @@ jobs:
 
           # Bundled interpreter next to the .exe (BackendLauncher looks here).
           cp -R pyruntime/python "$BIN/python"
+
+          # The headset app next to the .exe too (<exe dir>/quest-app).
+          if [ "${{ steps.vrapp.outputs.bundle }}" = "true" ]; then
+            cp -R quest-app "$BIN/quest-app"
+          fi
 
       - name: Package Windows release
         if: runner.os == 'Windows'
@@ -786,6 +859,11 @@ jobs:
           ./"$APPIMG" --appimage-extract >/dev/null
           mv squashfs-root "$PKG/app"
           rm -f "$APPIMG"
+          # The headset app beside the executable (<exe dir>/quest-app), put
+          # in after linuxdeploy so it never sees it.
+          if [ "${{ steps.vrapp.outputs.bundle }}" = "true" ]; then
+            cp -R quest-app "$PKG/app/usr/bin/quest-app"
+          fi
           cat > "$PKG/VisIVOVisualAnalytics" <<'LAUNCHER'
           #!/bin/sh
           # VisIVO Visual Analytics launcher: runs the application tree in ./app
@@ -853,6 +931,22 @@ jobs:
             ( cd "$BE" && "$PYABS" -B -c "import app.main; print('backend imports OK')" )
           else
             "$PYABS" -B -c "import fastapi, uvicorn, vtk, numpy, astropy; print('runtime OK')"
+          fi
+          # The headset app where the desktop looks for it, in the package the
+          # user gets (macOS: the signed copy staged for the DMG).
+          if [ "${{ steps.vrapp.outputs.bundle }}" = "true" ]; then
+            case "${{ runner.os }}" in
+              macOS)   QA="dmg-staging/VisIVOVisualAnalytics.app/Contents/Resources/quest-app" ;;
+              Windows) QA="VisIVOVisualAnalytics-${{ matrix.name }}/bin/quest-app" ;;
+              Linux)   QA="VisIVOVisualAnalytics-${{ matrix.name }}/app/usr/bin/quest-app" ;;
+            esac
+            for f in visivo-vr.apk visivo-vr.json; do
+              if [ ! -s "$QA/$f" ]; then
+                echo "::error::$QA/$f is missing from the package"
+                exit 1
+              fi
+            done
+            echo "headset app bundled: $QA"
           fi
 
       # The client must open, not only build: a crash at start (the 1.0.10
@@ -931,7 +1025,9 @@ jobs:
   # then this job publishes it.
   release:
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    # Explicit: the default success() would also look at the headset app job
+    # upstream of build, and a failure there must not hold the release.
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write

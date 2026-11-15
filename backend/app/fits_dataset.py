@@ -117,6 +117,39 @@ def mfimage_subbands(header, n_planes: int, source: str = "") -> MFImageSubbands
     return MFImageSubbands(offset=offset, freq_hz=freq, low_hz=low, high_hz=high)
 
 
+def pixel_to_icrs(wcs, axis_map: dict[int, int], x: float, y: float,
+                  z: float = 0.0) -> dict[str, Any] | None:
+    """The ICRS position of the 0-based viewer pixel (x, y, z) through the
+    file's full WCS (projection, rotation, CD/PC, distortions), or None when
+    the dataset has no sky axes or the pixel is off the projection.
+
+    ``axis_map`` is the dataset's ``client_axis_to_fits_axis``: every FITS axis
+    gets a pixel, the viewer's x, y, z where they map and 0 on a degenerate
+    axis, so a cube whose sky axes depend on the channel is handled too. One
+    conversion for the desktop's SAMP coord.pointAt.sky and the selection
+    centroids. Returns ``{ra_deg, dec_deg, frame, lon_deg, lat_deg}``.
+    """
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
+
+    if wcs is None or not wcs.has_celestial:
+        return None
+    pixel = [0.0] * wcs.pixel_n_dim
+    for client_axis, value in ((1, x), (2, y), (3, z)):
+        fits_axis = axis_map.get(client_axis)
+        if fits_axis is not None and fits_axis - 1 < len(pixel):
+            pixel[fits_axis - 1] = float(value)
+    world = wcs.all_pix2world(np.array([pixel], dtype=np.float64), 0)[0]
+    lon = float(world[wcs.wcs.lng])
+    lat = float(world[wcs.wcs.lat])
+    if not (np.isfinite(lon) and np.isfinite(lat)):
+        return None
+    frame = wcs_to_celestial_frame(wcs.celestial)
+    sky = SkyCoord(lon * u.deg, lat * u.deg, frame=frame).icrs
+    return {"ra_deg": float(sky.ra.deg), "dec_deg": float(sky.dec.deg), "frame": frame.name,
+            "lon_deg": lon % 360.0, "lat_deg": lat}
+
+
 def _open_fits(path, **kwargs):
     # A FITS file, or a field of a VBT volume read in place (issue #83).
     from .volume_source import open_fits  # noqa: PLC0415

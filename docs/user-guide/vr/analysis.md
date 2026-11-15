@@ -45,8 +45,48 @@ channel, and the reduced voxel.
 | Tool | Trigger | What the backend computes | Results window |
 |---|---|---|---|
 | Spectrum probe | once, on the emission | the spectrum along the line of sight at the seed's pixel (`/v1/spectral/probe`, the desktop's probe) | the spectrum against velocity, the seed's channel marked |
-| Kinematic Lasso | once, on a source | the selection grown from the seed on the full cube (`/v1/cube/kinematic_select_bin`, with the desktop's parameters), then its statistics (`/v1/cube/mask_stats_bin`) | voxels selected, flux in Jy km/s, sum, velocity and channel range, peak, the selection's integrated spectrum |
-| Box region | twice, one per corner | the statistics of every voxel of the box, in one call (`/v1/cube/mask_stats_bin` with `box=true`) | voxels, blanks, mean, rms, min, max, sum, flux in Jy km/s |
+| Kinematic Lasso | once, on a source | the selection grown from the seed on the full cube (`/v1/cube/kinematic_select_bin`, with the desktop's parameters), then its statistics (`/v1/cube/mask_stats_bin`) | voxels selected, flux in Jy km/s with its uncertainty, sum, velocity and channel range, peak, the HI measurements, the selection's integrated spectrum |
+| Box region | twice, one per corner | the statistics of every voxel of the box, in one call (`/v1/cube/mask_stats_bin` with `box=true`) | voxels, blanks, mean, rms, min, max, sum, flux in Jy km/s with its uncertainty, the HI measurements |
+
+**HI measurements of a selection.** Under the flux, the results window lists
+what an HI catalogue quotes for a source, measured by the backend on the full
+cube with SoFiA-2's definitions:
+
+- the integrated flux in Jy km/s (beam-corrected) **±** its uncertainty from
+  the noise, corrected for the noise correlation between neighbouring
+  channels, measured around the selection; the line above the peak says by
+  how much (*channels correlated (ρ1 0.74): error corrected ×1.8* on HCG 44).
+  With a typed *Noise σ* the surroundings are not read, and the line says
+  *channel correlation not measured*. A selection narrower than a beam still
+  underestimates the error;
+- the peak flux density, the **peak S/N** (peak / σ) and the **integrated
+  S/N** (flux / its uncertainty);
+- **W20** and **W50** from the integrated spectrum (from each end inwards to
+  20 % or 50 % of its peak, interpolated between channels) and the systemic
+  velocity **Vsys**, the midpoint of the W20 crossings, with the velocity
+  convention and frame named on the next line (for example *optical (AIPS
+  VELO-HEL, no VELREF), barycentric*). A line cut by the selection's edge is
+  flagged: its widths are lower limits;
+- the flux-weighted centroid (positive voxels) in right ascension and
+  declination (ICRS, sexagesimal) and in velocity;
+- the size: the semi-major and semi-minor axes of the moment-0 footprint in
+  arcsec (the uniform ellipse with the same second moments, as SoFiA-2's
+  `ell_maj`/`ell_min`; not deconvolved from the beam) and its position angle
+  east of north (*E of N*, from the coordinates at the centroid);
+- σ, the noise used: the lasso's *Noise σ* when you typed one (the same σ the
+  grow used), otherwise measured around the selection (1.4826 × the median
+  absolute value of the unselected voxels within 3 beams and 5 channels);
+- notes from the backend, when a number is a limit or missing (a topocentric
+  cube, a footprint narrower than a pixel or round, no frame in the header).
+
+The secondary wrist card shows the flux with its uncertainty, Vsys and W50.
+The numbers go into the selection's record (its Provenance), so the desktop
+receives them with the recipe, and the desktop's note for a selection shared
+from the headset adds the uncertainty with its channel-correlation label, the
+peak S/N, Vsys with its convention and frame, W20 and W50. Given
+SoFiA-2's mask, a selection reproduces SoFiA-2's catalogue (flux, widths,
+centroid, size to its precision; the locally measured noise within 7 %, see
+[the backend API](../../backend-api/cube.md#post-v1cubemask_stats_bin)).
 
 The lasso's mask comes back at full resolution and is drawn in **green** on the
 reduced cube: a drawn voxel is green when any full-resolution voxel of its
