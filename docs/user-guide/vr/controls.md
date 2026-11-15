@@ -172,7 +172,10 @@ under the ray, or within 6 cm of the controller, turns yellow and grows
 before you pull the trigger, so you can see which face will move. Then:
 
 - **Trigger on a dot and drag**: that face follows the ray along its own axis
-  (never past the opposite face, never out of the box).
+  (never past the opposite face, never out of the box). With the ray almost
+  along that axis (within about 13°) the face stays where it is rather than
+  racing away. A dot taken with the controller's tip (no ray on it) follows
+  the tip instead.
 - **Trigger on the inside of the crop and drag**: the whole crop moves, its
   size kept, inside the box. The edges and the fill turn yellow while the
   inside is pointed at.
@@ -189,7 +192,10 @@ a point table and a velocity field (their points and lines outside the crop
 are culled in the shaders). On a cube the faces across the velocity axis are
 the velocity range's ends. In a desktop browser the mouse drags a dot or the
 inside; with Shift held a drag elsewhere draws a new crop (any other drag
-turns the view). Each drag is one undo step.
+turns the view). A drag that changes the crop is one undo step; a pull that
+changes nothing leaves none. Changing the tool or the mode in the middle of a
+drag ends it where it is. A flat point table (all its points in one plane)
+has no dots on its flat axis, which is never cropped.
 
 **What the crop changes.** What is drawn: the cube (the headset's own
 rendering and the refined frames from the computer, whose render session gets
@@ -199,7 +205,9 @@ probe, a lasso's seed, Box region's corners, PV points) lands only on what is
 drawn inside the crop; the moment of the whole field shows, and counts, only
 the cropped pixels (*Moment 0 of the cropped field*, its x and y range under
 the title; the product saved for the desktop is the whole-field map of the
-same request); Box region and the PV slice take the velocity range. A lasso
+same request). It is cut with the crop as it was when Moment was pressed, and
+cut again at once when the crop changes afterwards, with no new request. Box
+region and the PV slice take the velocity range. A lasso
 grows from its seed over the whole cube as on the desktop (its object is not
 cut at the crop), and a spectrum is the full band at its pixel. The crop of a
 cube is sent to the desktop as clip activity (voxels of the full cube) half a

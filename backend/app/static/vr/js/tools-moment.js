@@ -55,6 +55,22 @@ export function cropPixels(clip, fullShape) {
   return [r[0][0], r[0][1], r[1][0], r[1][1]];
 }
 
+/**
+ * A whole-field map cut to the crop `clip` (#277): {box, cut, range,
+ * summary, cropped, cropKey}. `values` the full map (width × height of the
+ * full cube's pixels, else not cut).
+ */
+export function cutWhole(order, values, width, height, clip, fullShape) {
+  const crop = wholeCrop(width, height, clip, fullShape);
+  const box = crop || [0, width - 1, 0, height - 1];
+  const cut = crop ? PC.crop(values, width, box[0], box[1], box[2], box[3]) : values;
+  return { box, cut, range: colourRange(order, cut), summary: mapSummary(cut), cropped: !!crop, cropKey: JSON.stringify(crop) };
+}
+/** The crop's pixels for a whole-field map of width × height, or null (cheap: the key of a cut). */
+export function wholeCrop(width, height, clip, fullShape) {
+  return fullShape && width === fullShape[0] && height === fullShape[1] ? cropPixels(clip, fullShape) : null;
+}
+
 export function wholeFieldRequest(order, [a, b]) {
   return { moment_order: order, channel_start: a, channel_end: Math.max(a, b),
     mask_enabled: true, threshold_value: 0, threshold_auto: true };
@@ -152,6 +168,8 @@ export function createMomentTool(ctx) {
     const b = ctx.backend();
     if (!b || !id || !info) { t.error = 'A moment needs a cube from the backend.'; changed(); return; }
     const req = wholeFieldRequest(order, channelsOfClip(ctx.clipZ ? ctx.clipZ() : [0, 1], info.full_shape[2]));
+    // The crop as it is when asked (#277 review), not when the answer comes.
+    const clip0 = ctx.clip ? JSON.parse(JSON.stringify(ctx.clip())) : null;
     t.busy = `moment ${order} of the whole field…`;
     t.pending = 'whole';
     changed();
@@ -164,13 +182,9 @@ export function createMomentTool(ctx) {
       if (values.length !== r.width * r.height) throw new Error('bad moment payload');
       // A spatial crop (#277): the map shows, and its numbers count, the
       // cropped field only; the product saved for the desktop is the request's.
-      const crop = r.width === info.full_shape[0] && r.height === info.full_shape[1]
-        ? cropPixels(ctx.clip ? ctx.clip() : null, info.full_shape) : null;
-      const box = crop || [0, r.width - 1, 0, r.height - 1];
-      const cut = crop ? PC.crop(values, r.width, box[0], box[1], box[2], box[3]) : values;
-      const range = colourRange(order, cut);
-      t.result = { order, req, unit: r.moment_unit, bunit: r.bunit, width: r.width, height: r.height,
-        values, box, cut, range, iso: null, lasso: null, whole: true, cropped: !!crop, ms: performance.now() - t0, summary: mapSummary(cut) };
+      const c = cutWhole(order, values, r.width, r.height, clip0, info.full_shape);
+      t.result = { order, req, unit: r.moment_unit, bunit: r.bunit, width: r.width, height: r.height, fullShape: info.full_shape.slice(),
+        values, ...c, iso: null, lasso: null, whole: true, ms: performance.now() - t0 };
       if (t.recipes.lasso !== 'whole') t.recipes = { lasso: 'whole', ids: {} };
       const rec = ctx.selection.record({ kind: 'moment', label: `Moment ${order}`,
         replay: [{ route: '/v1/products/moment', request: { dataset_id: id, ...req } }] },
@@ -291,5 +305,19 @@ export function createMomentTool(ctx) {
     return out;
   }
 
-  return { state: t, compute, clear, sync, lines, draw };
+  /** The crop changed since a whole-field map was cut: cut again from the
+   *  full map it keeps (no new request; the product saved is the same). */
+  function recut() {
+    const R = t.result;
+    if (!R || !R.whole || !ctx.clip) return false;
+    // Called every frame the window is shown: only the key, until it changes.
+    if (JSON.stringify(wholeCrop(R.width, R.height, ctx.clip(), R.fullShape)) === R.cropKey) return false;
+    const c = cutWhole(R.order, R.values, R.width, R.height, ctx.clip(), R.fullShape);
+    t.result = { ...R, ...c };
+    draw();
+    changed();
+    return true;
+  }
+
+  return { state: t, compute, clear, sync, lines, draw, recut };
 }

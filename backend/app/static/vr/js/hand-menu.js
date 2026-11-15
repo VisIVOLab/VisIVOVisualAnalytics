@@ -53,6 +53,8 @@ export const MENU_GAP = 0.05;
 export const MENU_RISE = 0.08;
 export const MENU_SINK = 0.3;
 export const MENU_TURN = (50 * Math.PI) / 180;
+/** A hand farther than this from the gaze (behind or beside the user): the menu opens along the gaze. */
+export const MENU_BEHIND = (90 * Math.PI) / 180;
 
 export const TABS = [
   ['display', 'Display'], ['range', 'Range'], ['select', 'Select'], ['measure', 'Measure'], ['more', 'More'],
@@ -446,7 +448,8 @@ export function menuFront(head, { dist = MENU_DIST, drop = MENU_DROP } = {}) {
  * Where the menu opens from the hand that opened it (#276): just above and
  * beyond `hand` (its position), MENU_DIST from the eyes along the horizontal
  * direction from the eyes to the hand (at most MENU_TURN from the gaze; the
- * gaze's own when the hand is under the head), its lower edge MENU_GAP above
+ * gaze's own when the hand is under the head, or behind or beside the user,
+ * more than MENU_BEHIND from the gaze), its lower edge MENU_GAP above
  * the hand (its centre within MENU_RISE above and MENU_SINK below the eyes),
  * turned to the eyes. `head` the head's pose (column-major 4x4); without a
  * hand, menuFront.
@@ -465,7 +468,8 @@ export function menuAbove(hand, head, { dist = MENU_DIST, size = MENU_SIZE } = {
   if (Math.hypot(dx, dz) >= 0.12) {
     let d = Math.atan2(dx, -dz) - g;
     d = Math.atan2(Math.sin(d), Math.cos(d));   // -π..π
-    a = g + Math.max(-MENU_TURN, Math.min(MENU_TURN, d));
+    // A hand behind or beside the user says nothing of where to look: the gaze.
+    if (Math.abs(d) <= MENU_BEHIND) a = g + Math.max(-MENU_TURN, Math.min(MENU_TURN, d));
   }
   const y = Math.max(eye[1] - MENU_SINK, Math.min(eye[1] + MENU_RISE, hand[1] + MENU_GAP + size[1] / 2));
   return menuFacing([eye[0] + Math.sin(a) * dist, y, eye[2] - Math.cos(a) * dist], eye);
@@ -502,6 +506,9 @@ export function menuToggle(st, held) {
  */
 export class Steady {
   constructor({ onMs = 0, offMs = 0 } = {}) { this.onMs = onMs; this.offMs = offMs; this.reset(); }
+  /** The hand gone this frame (tracking lost): the gap counts as let go,
+   *  so a blink shorter than offMs neither ends a held palm nor fires again. */
+  missing(t) { return this.update(false, t); }
   update(raw, t) {
     if (raw) {
       // An up run goes on across dropouts shorter than offMs.
@@ -514,7 +521,27 @@ export class Steady {
     }
     return this.held;
   }
-  reset(held = false) { this.held = !!held; this.upSince = null; this.lastUp = -Infinity; }
+  /** Taken over from a controller's button (`held` at time t): a later
+   *  let-go of the palm still waits offMs from now. */
+  reset(held = false, t = -Infinity) {
+    this.held = !!held;
+    this.upSince = held ? t : null;
+    this.lastUp = held ? t : -Infinity;
+  }
+}
+
+/**
+ * The menu's held signal this frame (#276): a tracked hand's palm up through
+ * `steady`; a controller's X as it is (steady follows it, so a switch to
+ * hands carries no stale state); no secondary hand this frame (tracking
+ * lost for a moment) counts as let go through `steady`, so a one-frame blink
+ * neither toggles the menu nor wipes the palm's history.
+ */
+export function menuHeld(steady, hand, raw, t) {
+  if (!hand) return steady.missing(t);
+  if (hand.isHand) return steady.update(raw, t);
+  steady.reset(raw, t);
+  return !!raw;
 }
 /** The palm-up gesture's timing (a controller's X has none). */
 export const PALM_STEADY = { onMs: 150, offMs: 250 };

@@ -28,6 +28,16 @@ async function runCropChecks({ c, check, label }) {
   await sleep(200);
   const s0 = await get();
   check(`xrfake ${label}: crop: the Spatial crop tool draws the crop box`, s0.on && s0.lines >= 24, JSON.stringify(s0));
+  // A pull without a drag on the box (nothing cropped: a new crop) changes
+  // nothing and leaves no undo step (#277 review).
+  const undoSize = () => c.evaluate('window.__vrMenu.ui.undo.size');
+  const undo0 = await undoSize();
+  await aim(await world([0.3, 0.3, 0.5]));
+  await trigger(true);
+  await trigger(false);
+  const sc = await get();
+  check(`xrfake ${label}: crop: a pull without a drag changes nothing and leaves no undo step`,
+    (await undoSize()) === undo0 && sc.clip.min.every((v) => v === 0) && sc.clip.max.every((v) => v === 1), JSON.stringify({ undo0, now: await undoSize(), clip: sc.clip }));
   // Resize: the dot on the x-max face, then the ray swung towards the box's centre along x.
   await aim(await world([1, 0.5, 0.5]));
   const hov = await get();
@@ -38,6 +48,7 @@ async function runCropChecks({ c, check, label }) {
   const s1 = await get();
   check(`xrfake ${label}: crop: dragging the x-max dot moves that face only`,
     Math.abs(s1.clip.max[0] - 0.7) < 0.03 && s1.clip.min[0] === 0 && s1.clip.max[1] === 1 && s1.clip.min[1] === 0, JSON.stringify(s1.clip));
+  check(`xrfake ${label}: crop: that drag is one undo step`, (await undoSize()) === undo0 + 1, `${undo0} → ${await undoSize()}`);
   // Move: the inside (off the dots), dragged towards -x.
   const inside = [0.25, 0.3, 0.55];
   await aim(await world(inside));
@@ -153,7 +164,13 @@ export const XR_FAKE = `(() => {
       // Applied at the next frame, as in a browser.
       pendingLayers = s.layers || (s.baseLayer ? [s.baseLayer] : pendingLayers);
     },
-    async requestReferenceSpace() { return { kind: 'ref' }; },
+    // A reference space that can be recentred (S.recentre(): its 'reset' event, #276).
+    async requestReferenceSpace() {
+      const ls = [];
+      const ref = { kind: 'ref', addEventListener(type, fn) { if (type === 'reset') ls.push(fn); } };
+      S.recentre = () => ls.forEach((fn) => fn({ type: 'reset' }));
+      return ref;
+    },
     requestAnimationFrame(cb) { return requestAnimationFrame((t) => { if (!this.ended) { if (pendingLayers) { activeLayers = pendingLayers; pendingLayers = null; } S.frames++; cb(t, frame); } }); },
     async end() { if (this.ended) return; this.ended = true; S.ended++; (listeners.end || []).forEach((f) => f({})); },
     addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
@@ -274,6 +291,16 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   check(`xrfake ${label}: the menu opens above and beyond the left controller, 0.95 m from the eyes`,
     Math.abs(dist - 0.95) < 0.01 && Math.abs(dirOf(place.p) - dirOf(hand)) < 0.01 && place.p[1] > hand[1] + 0.3,
     JSON.stringify({ menu: place.p.map((v) => +v.toFixed(3)), dist: +dist.toFixed(3) }));
+  await pressX();
+  // A recentre (#276 review): the open menu, left behind by it, is placed again above the hand.
+  await pressX();
+  const placed = await c.evaluate('Array.from(window.__vrMenu.ui.menuModel.slice(12, 15))');
+  await c.evaluate('window.__vrMenu.ui.menuModel[12] += 3; window.__vrMenu.ui.menuModel[14] += 3');
+  await c.evaluate('window.__xrfake.recentre()');
+  await sleep(200);
+  const again = await c.evaluate('({ open: window.__vrMenu.ui.menu.open, p: Array.from(window.__vrMenu.ui.menuModel.slice(12, 15)) })');
+  check(`xrfake ${label}: a recentre places the open menu again above the hand`,
+    again.open && again.p.every((v, i) => Math.abs(v - placed[i]) < 1e-3), JSON.stringify({ placed, again }));
   await pressX();
   check(`xrfake ${label}: X again closes the menu`, !(await c.evaluate('window.__vrMenu.ui.menu.open')));
   await pressX();
