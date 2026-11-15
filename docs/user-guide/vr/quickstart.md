@@ -70,11 +70,27 @@ Once a headset page is open, it is the one the desktop uses
   the page was **launched from the installed app's icon** (step 4), it tries
   to enter VR by itself as soon as its first cube is on show; if the browser
   wants a press for it, the page says *press Enter VR* next to the WebXR
-  status and the button works as usual. Where the browser can offer the
-  session itself (the Quest Browser's own *Enter VR*, in its address bar or
-  system bar), the page offers it, so that button is always at hand. Which of
-  these the Quest Browser allows inside the installed loader is the browser's
-  call: *Copy diagnostics* says what happened (the `entering VR:` line).
+  status and the button works as usual. The page's own **Enter VR** is the
+  way in: it works on the first press. The page does not ask the browser to
+  offer its own *Enter VR* (`navigator.xr.offerSession`, in the Quest
+  Browser's address bar) unless the address has `?offer`
+  ([#291](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/291)):
+  an offer cannot be taken back, and a Quest Browser holding one was seen to
+  refuse the page's button. With `?offer`, the page's button still enters while the
+  offer is pending; a session the browser's button starts while the page is
+  already in VR is ended at once, so there is never a second session. Which
+  of these the Quest Browser allows inside the installed loader is the
+  browser's call: *Copy diagnostics* says what happened (the `entering VR:`
+  line).
+- **When Enter VR fails, the page says what to do.** The status line and the
+  WebXR status name the reason and the way out: another VR session open in
+  the browser (leave it first), VR not allowed for the site (allow it in the
+  site's settings), the browser's own offer holding the session (press the
+  browser's *Enter VR*, or reload the page without `?offer`), a session the
+  browser started that has not closed (reload the page if it stays), or a
+  page that is paused (*Use this window*). An entry by itself after a launch
+  from the app's icon says the same, except a refusal for want of a press,
+  which only adds *press Enter VR*.
 - **What you do in the headset reaches the desktop.** The colour map and
   threshold you choose, the spatial crop and velocity range, and every product (a spectrum, a
   moment map, a PV slice, an isolated or removed cube, a catalogue or a

@@ -577,7 +577,9 @@ number of lines):
   `rec_ms` (the time the page took to build the previous sample);
 - an **event** (`"k": "e"`) with its own `t`, `name` and `data`: `record-start`,
   `record-stop`, `xr-start` (mode, display rate, eye buffer, foveation, the
-  rates offered), `xr-end`, `load-start` and `load-end` (ms, MB, reduction,
+  rates offered), `xr-end`, `xr-enter-failed` (`kind`: offer-conflict,
+  offer-raced, busy, stuck, permission, activation, unsupported, paused, failed; and the
+  browser's error `name`, #291), `load-start` and `load-end` (ms, MB, reduction,
   transfer and upload ms, dimensions, binning), `refined-first` and
   `refined-full` (stop→refined, ms), `change` (transport, refinement on or
   off, refined size, JPEG quality, binning, eye buffer or display rate:

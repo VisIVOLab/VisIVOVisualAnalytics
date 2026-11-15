@@ -158,66 +158,98 @@ export const XR_FAKE = `(() => {
   } else {
     delete window.XRWebGLBinding;
   }
-  const listeners = {};
   let activeLayers = [], pendingLayers = null;
   const gamepad = (hand) => ({ buttons: S.buttons[hand], axes: [0, 0, 0, 0] });
   // As a Quest 3's Touch Plus controllers report themselves (most specific first).
   S.profiles = ['meta-quest-touch-plus', 'generic-trigger-squeeze-thumbstick'];
   const sources = ['left', 'right'].map((hand) => ({ handedness: hand, gripSpace: { hand, kind: 'grip' },
     targetRaySpace: { hand, kind: 'ray' }, gamepad: gamepad(hand), get profiles() { return S.profiles; } }));
-  let enabled = [];
-  const session = {
-    get enabledFeatures() { return enabled; },
-    inputSources: sources,
-    supportedFrameRates: new Float32Array([72, 80, 90, 120]),
-    frameRate: 72,
-    async updateTargetFrameRate(r) { this.frameRate = r; S.rate = r; },
-    updateRenderState(s) {
-      S.renderStates.push({ base: !!s.baseLayer, layers: s.layers ? s.layers.map((l) => (l instanceof FakeLayer ? 'projection' : 'quad')) : null });
-      if (s.layers && !s.layers.every((l) => l instanceof FakeLayer || l.tex)) throw new Error('not a layer');
-      // Applied at the next frame, as in a browser.
-      pendingLayers = s.layers || (s.baseLayer ? [s.baseLayer] : pendingLayers);
-    },
-    // A reference space that can be recentred (S.recentre(): its 'reset' event, #276).
-    async requestReferenceSpace() {
-      const ls = [];
-      const ref = { kind: 'ref', addEventListener(type, fn) { if (type === 'reset') ls.push(fn); } };
-      S.recentre = () => ls.forEach((fn) => fn({ type: 'reset' }));
-      return ref;
-    },
-    requestAnimationFrame(cb) { return requestAnimationFrame((t) => { if (!this.ended) { if (pendingLayers) { activeLayers = pendingLayers; pendingLayers = null; } S.frames++; cb(t, frame); } }); },
-    async end() { if (this.ended) return; this.ended = true; S.ended++; (listeners.end || []).forEach((f) => f({})); },
-    addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
-  };
   const headM = translate(...head);
   const viewFor = (eye) => {
     const m = translate(head[0] + (eye === 'left' ? -0.032 : 0.032), head[1], head[2]);
     return { eye, projectionMatrix: persp(1.6, 0.95, 0.05, 50), transform: { matrix: m, inverse: { matrix: invertRigid(m) } } };
   };
-  const frame = {
-    session,
-    getViewerPose() {
-      return { transform: { matrix: headM, position: { x: head[0], y: head[1], z: head[2] }, inverse: { matrix: invertRigid(headM) } },
-        views: [viewFor('left'), viewFor('right')] };
-    },
-    getPose(space) {
-      // Issue #256: a grip pose set by the checks (the watch gesture).
-      if (space.kind === 'grip' && S.gripPose && S.gripPose[space.hand]) return { transform: { matrix: S.gripPose[space.hand] } };
-      const p = space.hand === 'left' ? [-0.2, 1.3, -0.35] : [0.18, 1.35, -0.3];
-      const q = space.hand === 'left' ? [-0.2, 1.3, -1.2] : S.aimRight;
-      return { transform: { matrix: lookAt(p, q) } };
-    },
-    getJointPose() { return null; },
+  // Every session is an object of its own, with its own listeners (issue
+  // #305: the late 'end' of a refused offered session must not reach the
+  // page's own session; a shared object hid that).
+  const makeSession = (enabled) => {
+    const listeners = {};
+    const session = {
+      id: ++S.sessions,
+      get enabledFeatures() { return enabled; },
+      inputSources: sources,
+      supportedFrameRates: new Float32Array([72, 80, 90, 120]),
+      frameRate: 72,
+      ended: false,
+      async updateTargetFrameRate(r) { this.frameRate = r; S.rate = r; },
+      updateRenderState(s) {
+        S.renderStates.push({ base: !!s.baseLayer, layers: s.layers ? s.layers.map((l) => (l instanceof FakeLayer ? 'projection' : 'quad')) : null });
+        if (s.layers && !s.layers.every((l) => l instanceof FakeLayer || l.tex)) throw new Error('not a layer');
+        // Applied at the next frame, as in a browser.
+        pendingLayers = s.layers || (s.baseLayer ? [s.baseLayer] : pendingLayers);
+      },
+      // A reference space that can be recentred (S.recentre(): its 'reset' event, #276).
+      async requestReferenceSpace() {
+        const ls = [];
+        const ref = { kind: 'ref', addEventListener(type, fn) { if (type === 'reset') ls.push(fn); } };
+        S.recentre = () => ls.forEach((fn) => fn({ type: 'reset' }));
+        return ref;
+      },
+      requestAnimationFrame(cb) { return requestAnimationFrame((t) => { if (!this.ended) { if (pendingLayers) { activeLayers = pendingLayers; pendingLayers = null; } S.frames++; cb(t, frame); } }); },
+      // S.endDelayMs: the 'end' event comes that much later (a refused
+      // offered session ending after the page's own one started, #305).
+      async end() {
+        if (this.ended) return;
+        this.ended = true;
+        S.ended++;
+        live.delete(this);
+        const fire = () => (listeners.end || []).forEach((f) => f({ session: this }));
+        // S.endNever: a session whose end never comes nor settles (#305: the flag stays up, the page says reload).
+        if (this.endNever) return new Promise(() => {});
+        if (this.endDelayMs) await new Promise((r) => setTimeout(() => { fire(); r(); }, this.endDelayMs));
+        else fire();
+      },
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    };
+    const frame = {
+      session,
+      getViewerPose() {
+        return { transform: { matrix: headM, position: { x: head[0], y: head[1], z: head[2] }, inverse: { matrix: invertRigid(headM) } },
+          views: [viewFor('left'), viewFor('right')] };
+      },
+      getPose(space) {
+        // Issue #256: a grip pose set by the checks (the watch gesture).
+        if (space.kind === 'grip' && S.gripPose && S.gripPose[space.hand]) return { transform: { matrix: S.gripPose[space.hand] } };
+        const p = space.hand === 'left' ? [-0.2, 1.3, -0.35] : [0.18, 1.35, -0.3];
+        const q = space.hand === 'left' ? [-0.2, 1.3, -1.2] : S.aimRight;
+        return { transform: { matrix: lookAt(p, q) } };
+      },
+      getJointPose() { return null; },
+    };
+    return session;
   };
   // Issue #237: ?xrgesture refuses a session asked for without a user
   // gesture (as a browser does, NotAllowedError); ?xroffer adds
   // offerSession, whose session comes when S.acceptOffer() is called (the
-  // browser's own Enter VR pressed).
+  // browser's own Enter VR pressed). As measured on a Quest 3 (Quest Browser
+  // 157, issue #291): a session requested while an offer is pending is
+  // granted and the offer stays pending; a second offerSession rejects the
+  // first (InvalidStateError). ?xroffer=conflict refuses the request instead,
+  // as reported on #291 ("already an active, immersive XRSession").
   const gestureOnly = /[?&]xrgesture/.test(location.search);
-  S.offers = 0; S.offerPending = null; S.requests = 0; S.refused = 0;
+  const offerConflict = /[?&]xroffer=conflict/.test(location.search);
+  // ?xrfail=<DOMException name>: every request refused with it (auto-enter's failures, #291).
+  const failWith = (location.search.match(/[?&]xrfail=([A-Za-z]+)/) || [])[1] || '';
+  S.offers = 0; S.offerPending = null; S.requests = 0; S.refused = 0; S.sessions = 0; S.endDelayMs = 0;
+  // The sessions made and not ended yet (S.live() counts them).
+  const live = new Set();
+  S.live = () => live.size;
   const start = (opts) => {
-    session.ended = false;
-    enabled = ['local-floor', ...((opts && opts.optionalFeatures) || []).filter((f) => f !== 'layers' || !noLayers)];
+    const enabled = ['local-floor', ...((opts && opts.optionalFeatures) || []).filter((f) => f !== 'layers' || !noLayers)];
+    const session = makeSession(enabled);
+    session.endDelayMs = S.endDelayMs;
+    session.endNever = !!S.endNever;
+    live.add(session);
     return session;
   };
   const xr = {
@@ -228,19 +260,33 @@ export const XR_FAKE = `(() => {
         S.refused++;
         throw new DOMException('requestSession needs a user gesture', 'NotAllowedError');
       }
+      if (failWith) { S.refused++; throw new DOMException('the XR runtime refused the session (xrfail)', failWith); }
+      if (offerConflict && S.offerPending) {
+        S.refused++;
+        throw new DOMException("Failed to execute 'requestSession' on 'XRSystem': There is already an active, immersive XRSession.", 'InvalidStateError');
+      }
+      if (live.size) throw new DOMException('There is already an active, immersive XRSession.', 'InvalidStateError');
       // A slow headset: the session answers after S.delayMs (a takeover check).
+      const made = S.sessions;
       if (S.delayMs) await new Promise((r) => setTimeout(r, S.delayMs));
-      // A session asked for withdraws the offer (as Chromium does).
-      if (S.offerPending) { const o = S.offerPending; S.offerPending = null; o.reject(new DOMException('a session was requested', 'AbortError')); }
+      // S.raceRefuse: a browser that refuses the request when its own offered
+      // session was made meanwhile (#291, the 'offer-raced' message).
+      if (S.raceRefuse && S.sessions > made) throw new DOMException('There is already an active, immersive XRSession.', 'InvalidStateError');
       return start(opts);
     },
   };
   if (/[?&]xroffer/.test(location.search)) {
     xr.offerSession = (mode, opts) => {
-      if (S.offerPending) return Promise.reject(new DOMException('an offer is pending', 'InvalidStateError'));
+      if (S.offerPending) {
+        const o = S.offerPending;
+        S.offerPending = null;
+        o.reject(new DOMException('OfferSession promise was cancelled because it was called more than once.', 'InvalidStateError'));
+      }
       S.offers++;
       return new Promise((resolve, reject) => { S.offerPending = { resolve: () => resolve(start(opts)), reject }; });
     };
+    // The browser's own Enter VR pressed: its session, even while the page
+    // has one (S.live() > 0): the page must end it, never run two (#291).
     S.acceptOffer = () => { const o = S.offerPending; if (!o) return false; S.offerPending = null; o.resolve(); return true; };
   }
   Object.defineProperty(navigator, 'xr', { value: xr, configurable: true });
