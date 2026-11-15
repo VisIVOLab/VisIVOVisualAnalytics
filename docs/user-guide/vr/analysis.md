@@ -331,7 +331,9 @@ Refined frames from the backend show the whole cube, so under *Mask only* and
 *Residuals* the headset draws alone (no refinement).
 
 **Refine a source.** *Pick* (in the window or on the Select tab), then the
-trigger on the cube: the source under the ray is picked and drawn green. With
+trigger on the cube: the source under the ray is picked and drawn green.
+*Pick* switches to Select, so it works from Explore or Clip too, and the
+trigger picks before a PV path or the readout takes it. With
 the Kinematic Lasso, each trigger then grows from the point it hits (that
 seed alone) and edits the picked source: *Replace* (the lasso's *New*) makes
 the source the grow, *Add* adds the grow, *Subtract* removes it. An edit never
@@ -347,7 +349,16 @@ backend writes the refined mask in the Workspace Exports as FITS
 replaced and emptied sources cleared, the same grid, header and IDs, new
 sources under their new IDs, HISTORY cards saying what changed. It goes to
 the desktop as headset activity with its recipe (the grows, each with the
-edit it made); Headset Activity ▸ Open opens it as a cube.
+edit it made); Headset Activity ▸ Open opens it as a cube. The window says
+*sent to the desktop* only once the desktop was told; when the file was
+written but the desktop was not told, it says so and why. A mask opened by
+the desktop is saved by its file, so it can still be saved after the
+backend restarted or the desktop's session ended.
+
+A mask layer belongs to its cube: opening another cube, a point table or a
+velocity field takes it away. A mask the desktop sends while its cube is
+still loading waits for that cube, and is dropped (with a note in the
+window) when the cube cannot be opened; it is never laid over another cube.
 
 ## Selections shared with the desktop
 

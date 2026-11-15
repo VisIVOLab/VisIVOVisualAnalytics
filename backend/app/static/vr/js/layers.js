@@ -145,7 +145,9 @@ export function createLayers(ctx) {
     // a press waiting for the series; size columns with no positive value.
     stepToken: 0, stepTarget: null, pendingStep: 0, badSize: new Set(),
     // carry: the crop and box (table units) a burst of steps takes from the
-    // last snapshot on show; cropEmpty / selEmpty: a crop or box (table
+    // last snapshot on show, with that table (`from`) and the steps' own
+    // tables dropped while on show (`left`): closed when the burst ends
+    // (#305); cropEmpty / selEmpty: a crop or box (table
     // units) that lies wholly outside the snapshot on show.
     carry: null, cropEmpty: null, selEmpty: null,
   };
@@ -345,15 +347,37 @@ export function createLayers(ctx) {
    * itself is `own`: when a step replaces it, it is closed (DELETE), never one
    * the desktop opened.
    */
-  async function openPoints(b, { datasetId, path, sky = null, keep = null, series = null, token = 0, gen = 0 }, load = {}) {
+  async function openPoints(b, opts, load = {}) {
+    // A table opened afresh (not a step) ends a burst under way (#305): what
+    // it left, the table on show when it began too, is closed once the new
+    // table is on show and the refiner has moved to it (or, if the open
+    // fails, under the same rules against what is on show then).
+    const burst = opts.token ? null : takeBurst();
+    let out;
+    try {
+      out = await openPointsOnce(b, opts, load, burst);
+    } finally {
+      if (burst && !burst.done) closeBurst(burst, L.points, L.points && L.points.refinerSwitch, true);
+    }
+    return out;
+  }
+  async function openPointsOnce(b, { datasetId, path, sky = null, keep = null, series = null, token = 0, gen = 0 }, load, burst) {
     const own = !datasetId;
     // A table opened afresh (not a step) overtakes any step under way.
-    if (!token) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; L.carry = null; }
+    if (!token) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; }
     // A step is stale once a newer step was pressed, any other load began
     // (state.loadGen: a cube, a field, another table) or the scene left the
     // point table (enter): it then installs nothing.
     const stale = () => token && (token !== L.stepToken || state.loadGen !== gen || L.mode !== 'points');
-    const drop = () => { if (own && datasetId) closeDataset(b, datasetId); };
+    // What a stale step opened is closed, unless it is on show (#305): then
+    // its burst closes it when it ends (`left`). The burst is the step's own,
+    // taken now: a table opened afresh may have taken it off L.carry since.
+    const burstOf = token ? L.carry : null;
+    const drop = () => {
+      if (!own || !datasetId) return;
+      if (L.points && L.points.datasetId === datasetId) { if (burstOf && !burstOf.done) burstOf.left.push(L.points); return; }
+      closeDataset(b, datasetId);
+    };
     if (!datasetId) {
       const fmt = catalogueFormat(path);
       if (fmt === 'vbt') {
@@ -417,7 +441,7 @@ export function createLayers(ctx) {
     // A region wholly outside this snapshot stays as it is, in table units,
     // and is shown as such: nothing drawn (an empty crop, Show inside of an
     // empty box) with a note, never the whole table instead.
-    if (carry && pts.sample && carry.axes.join() === pts.axes.join()) {
+    if (carry && carry.axes && pts.sample && carry.axes.join() === pts.axes.join()) {
       const bounds = pts.sample.bounds;
       const clip = SC.toFrac(carry.clip, bounds);
       state.clip = clip || { min: [0, 0, 0], max: [1, 1, 1] };
@@ -432,11 +456,18 @@ export function createLayers(ctx) {
     } else if (keep) {
       L.s.selBox = null; L.s.selMode = 'all'; L.selEmpty = null; L.cropEmpty = null;
     }
-    if (token) { L.stepTarget = null; L.carry = null; }
     // The table on show before, when the page opened it, is closed once the
-    // refiner has left it.
-    if (prevShown && prevShown !== pts && prevShown.own && prevShown.datasetId !== datasetId) {
-      Promise.resolve(pts.refinerSwitch).catch(() => {}).then(() => closeDataset(b, prevShown.datasetId));
+    // refiner has left it. After a burst of steps (#305), that is the table
+    // on show when the burst began, and the steps' own ones left on show.
+    if (token) {
+      L.stepTarget = null;
+      closeBurst(takeBurst(), pts, pts.refinerSwitch, true);
+    } else {
+      if (burst) closeBurst(burst, pts, pts.refinerSwitch, true);
+      if (prevShown && prevShown !== pts && prevShown.own && prevShown.datasetId !== datasetId
+          && !(burst && SC.burstLeftovers(burst, null).includes(prevShown.datasetId))) {
+        Promise.resolve(pts.refinerSwitch).catch(() => {}).then(() => closeDataset(b, prevShown.datasetId));
+      }
     }
     // The snapshots beside it (#259): asked once (a step carries them on), not
     // waited for; a step pressed meanwhile waits for them.
@@ -456,6 +487,29 @@ export function createLayers(ctx) {
   /** Closes a dataset the page opened (DELETE /v1/datasets/{id}): not an error when it is gone. */
   function closeDataset(b, id) {
     b._json('DELETE', `/v1/datasets/${encodeURIComponent(id)}`).catch(() => {});
+  }
+  /** A burst of snapshot steps ends (#305): what it left behind is closed
+   *  (SC.burstLeftovers) after `after` and after the refiner's newest switch
+   *  (its datasetId changes at once, its old session closes when the switch
+   *  settles), never the table on show then nor the one the refiner is on.
+   *  `withFrom` false: the table on show when it began is kept (a cube or a
+   *  field took over). */
+  function endBurst(shown, after = null, withFrom = true) { closeBurst(takeBurst(), shown, after, withFrom); }
+  /** The burst under way, taken off the layers (no step goes on with it). */
+  function takeBurst() { const c = L.carry; L.carry = null; return c; }
+  function closeBurst(c, shown, after = null, withFrom = true) {
+    if (!c || c.done) return;
+    c.done = true;
+    if (!c.b) return;
+    const ids = SC.burstLeftovers(c, shown, withFrom);
+    if (!ids.length) return;
+    Promise.resolve(after).catch(() => {}).then(() => SC.settled(() => (ctx.refiner ? ctx.refiner.lastSwitch : null))).then(() => {
+      const refining = ctx.refiner ? ctx.refiner.datasetId : null;
+      for (const id of ids) {
+        if (id === refining || (L.points && L.points.datasetId === id)) continue;
+        closeDataset(c.b, id);
+      }
+    });
   }
 
   // ── Flow ─────────────────────────────────────────────────────────────
@@ -532,7 +586,7 @@ export function createLayers(ctx) {
   function enter(mode, forStep = false) {
     invalidateRequests();
     // Another scene (a cube, a field) or another table: no snapshot step goes on.
-    if (mode !== 'points' || !forStep) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; L.carry = null; }
+    if (mode !== 'points' || !forStep) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; endBurst(null, null, false); }
     L.mode = mode;
     if (mode !== 'cube') {
       ctx.onNonCube?.();
@@ -733,13 +787,17 @@ export function createLayers(ctx) {
       // The first step of a burst takes the crop and the box, in table units,
       // from the snapshot on show; the later ones keep that until the newest
       // step is installed.
-      if (!L.carry && p.sample) L.carry = carryOf(p);
+      // The table on show is kept with it, closed when the newest step is
+      // installed (#305: a step overtaken never knows it).
+      if (!L.carry) L.carry = { ...(p.sample ? carryOf(p) : {}), from: p, left: [], b };
       const token = ++L.stepToken;
       L.stepTarget = series;
       const keep = { axes: p.axes, colourField: s.colourField, sizeField: s.sizeField };
       openPoints(b, { path: next.path, sky: p.sky || null, keep, series, token, gen: state.loadGen })
         .then((r) => { if (r && token === L.stepToken) ctx.onSnapshot?.(next.path); })
-        .catch((e) => { if (token === L.stepToken) { L.stepTarget = null; L.carry = null; fail(e); } });
+        // A failed burst: what it left is closed too, except the table on
+        // show and the refiner's (endBurst).
+        .catch((e) => { if (token === L.stepToken) { L.stepTarget = null; endBurst(L.points, L.points && L.points.refinerSwitch, true); fail(e); } });
     } else if (id === 'psel-inside' || id === 'psel-outside' || id === 'psel-all') {
       s.selMode = id.slice(5);
     } else if (id === 'psel-clear') {

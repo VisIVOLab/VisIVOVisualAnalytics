@@ -126,3 +126,38 @@ test('the colour bar: the unit from the table or the name, its title, ticks, and
   assert.notEqual(CB.barKey({ lo: 1, hi: 2, log: false, title: 'a', ticks: [] }, 'viridis'),
     CB.barKey({ lo: 1, hi: 2, log: false, title: 'a', ticks: [] }, 'magma'));
 });
+
+test('review (#305): a burst of snapshot steps closes the table shown before it and the steps\' tables left on show, never the one on show', () => {
+  const t0 = { datasetId: 'd0', own: true }, t1 = { datasetId: 'd1', own: true }, t2 = { datasetId: 'd2', own: true };
+  const carry = { from: t0, left: [t1, t1] };
+  assert.deepEqual(SC.burstLeftovers(carry, t2), ['d0', 'd1'], 'each once');
+  assert.deepEqual(SC.burstLeftovers(carry, t2, false), ['d1'], 'another load took over: the table shown before is kept');
+  assert.deepEqual(SC.burstLeftovers(carry, t1), ['d0'], 'never the table on show');
+  assert.deepEqual(SC.burstLeftovers(carry, { datasetId: 'd1' }), ['d0'], 'nor one with its id');
+  assert.deepEqual(SC.burstLeftovers({ from: t0, left: [] }, t0), [], 'a burst that installed nothing: the table shown stays');
+  assert.deepEqual(SC.burstLeftovers({ from: { datasetId: 'desk', own: false }, left: [] }, t2), [], 'never a table the desktop opened');
+  assert.deepEqual(SC.burstLeftovers(null, t2), []);
+  assert.deepEqual(SC.burstLeftovers({ from: t0, left: [] }, null), ['d0']);
+});
+
+test('review (#305): settled waits for the refiner\'s newest switch, a newer one started meanwhile too, and never rejects', async () => {
+  const order = [];
+  let resolveA, resolveB;
+  const r = { lastSwitch: new Promise((res) => { resolveA = res; }) };
+  const done = SC.settled(() => r.lastSwitch).then(() => order.push('settled'));
+  await new Promise((res) => setTimeout(res, 0));
+  // A newer switch starts before the first one ends: settled waits for it too.
+  r.lastSwitch = new Promise((res) => { resolveB = res; });
+  resolveA();
+  await new Promise((res) => setTimeout(res, 0));
+  assert.deepEqual(order, [], 'still the newer switch to wait for');
+  order.push('B ends');
+  resolveB();
+  await done;
+  assert.deepEqual(order, ['B ends', 'settled']);
+  // A failed switch has ended too; no refiner at all is settled at once.
+  const failed = Promise.reject(new Error('closed'));
+  failed.catch(() => {});
+  await SC.settled(() => failed);
+  await SC.settled(() => null);
+});

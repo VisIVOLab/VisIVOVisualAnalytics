@@ -83,6 +83,7 @@ export class Refiner {
     this.failures = 0;         // connection attempts failed in a row: the retry backs off (#166)
     this.retryAt = 0;          // when the next attempt is due (performance.now()), 0 = none
     this.onLifecycle = null;   // optional hook: (name, detail) for the page's diagnostics
+    this.lastSwitch = Promise.resolve();   // the newest setDataset()'s promise
   }
 
   /** The wait before the next attempt: 2, 4, 8, 16, 30, 30… s. */
@@ -97,8 +98,17 @@ export class Refiner {
    * The cube on show changed: its dataset id (null for a synthetic one). A
    * cube the backend draws out of core gives stereo frames too, drawn from
    * one level of its brick pyramid (the frames say which: outOfCoreLevel).
+   * `lastSwitch` is the newest switch's promise: datasetId changes at once,
+   * the old session is closed when it settles (layers.js waits for it
+   * before closing a table the refiner may have been on, #305).
    */
-  async setDataset(datasetId) {
+  setDataset(datasetId) {
+    const p = this._switchDataset(datasetId);
+    this.lastSwitch = p;
+    return p;
+  }
+
+  async _switchDataset(datasetId) {
     // The new cube first, so an attempt still running for the old one sees
     // the change when it ends (its gen and dataset are both stale).
     const closing = this._closeSession();

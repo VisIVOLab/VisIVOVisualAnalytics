@@ -177,10 +177,18 @@ export function createSources(ctx) {
       px = sel.pick.seed.slice(); how = 'probe';
     }
     if (!px || !info) throw new Error('Select it first: a Kinematic Lasso or a Spectrum probe on the source.');
+    // The work it goes into, fixed now (#305): another cube or catalogue
+    // during the sky lookup has its own list, and this voxel is not of it.
+    refresh();
+    const cubeAt = S.cubeId, overlay = S.overlay;
     let sky = null;
     const b = ctx.backend();
     const id = ctx.state.open && ctx.state.open.dataset_id;
     if (b && id) { try { sky = await b.pixelToSky(id, px[0], px[1], px[2]); } catch { sky = null; } }
+    refresh();
+    if (S.cubeId !== cubeAt || S.overlay !== overlay) {
+      throw new Error('The cube or the catalogue changed during the sky lookup: the source was not added.');
+    }
     const n = S.nextUser++;
     const u = SL.foundSource(n, px, info, sky, how, extra);
     S.user.push(u);
@@ -304,8 +312,10 @@ export function createSources(ctx) {
     /** The window opened (true) or closed. */
     setShown(on) { S.shown = !!on; },
     setStatus(text, colour = '#b9c2d0') { S.status = [text, colour]; texKey = ''; },
-    /** GPU objects gone (a lost context): made again on the next texture(). */
-    restore() { tex = null; texKey = ''; },
+    /** A restored context: R.restore() made the panel's texture again in the
+     *  same handle (#305: a new handle each time leaked the old one); drawn
+     *  again on the next texture(). */
+    restore() { texKey = ''; },
     rowOf,
   };
 }
