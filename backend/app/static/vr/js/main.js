@@ -1476,7 +1476,7 @@ function drawScene(view, override, eye = 0) {
 }
 
 /** Rebuild what changes with the selections, when it changed (selSync). */
-function syncSelection() { selSync.sync(); }
+function syncSelection() { analysis.tick(performance.now()); selSync.sync(); }
 /** Rebuild what changes with the selections: their lines, the page's panel. */
 function syncSelectionNow() {
   const own = CUT.noseloutline ? [] : selection.segments();
@@ -1700,11 +1700,12 @@ function lookSnapshot() {
 }
 function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
+  // A crop drag under way ends first (#277 review): its step is the one undone.
+  finishCropDrag();
   const s = ui.undo.pop();
   if (!s) { buzz('primary', 'error'); return false; }
   // A step of other data (a history left from before a switch) is not applied.
   if ((s.kind || 'cube') !== lookKind()) { ui.undo.clear(); buzz('primary', 'error'); return false; }
-  ui.crop.drag = null;
   if ((s.kind || 'cube') !== 'cube') {
     state.clip = { min: [...s.clip.min], max: [...s.clip.max] };
     setColormap(s.colormap);
