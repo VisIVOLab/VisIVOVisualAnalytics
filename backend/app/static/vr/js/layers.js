@@ -88,8 +88,13 @@ export function createLayers(ctx) {
       sizeOn: false, sizeField: null, selBox: null, selMode: 'all',
     },
     box: null, info: null, load: {}, error: '',
+    // Snapshot steps (#259): the newest step's token, the series it moves to,
+    // a press waiting for the series; size columns with no positive value.
+    stepToken: 0, stepTarget: null, pendingStep: 0, badSize: new Set(),
   };
   let cloud = null, lines = null;
+  // The colour bar's description, kept while what it shows is the same (#259).
+  const barCache = { of: null, c0: NaN, c1: NaN, bar: null };
   let scene = 0, linesRequest = 0, overlayRequest = 0;
   let linesAbort = null;
   function invalidateRequests() {
@@ -244,6 +249,10 @@ export function createLayers(ctx) {
     if (!cloud) cloud = new PT.PointCloud(gl, lut);
     const up = cloud.upload(arr.positions, arr.colour, arr.size);
     p.size = arr.size ? size : null;
+    // A size column with no positive value: uniform splats, and said (#259 review).
+    const sizeNote = resp.headers.get('X-Visivo-Size-Note') || '';
+    p.sizeNote = sizeNote;
+    if (sizeNote && L.s.sizeField) L.badSize.add(L.s.sizeField);
     L.s.autoLog = false;
     L.s.colourLog = info.colourLog;
     logBox.checked = info.colourLog;
@@ -255,10 +264,23 @@ export function createLayers(ctx) {
     L.load = { requestMs: tBody - t1, uploadMs: up, mb: buf.byteLength / 1e6, totalMs: performance.now() - t0 };
     state.extent = L.box.extent;
     decorate(p.axes);
-    ctx.refiner.setDataset(p.datasetId);
+    p.refinerSwitch = ctx.refiner.setDataset(p.datasetId);
   }
 
-  async function openPoints(b, { datasetId, path, keep = null }, load = {}) {
+  /**
+   * Opens a point table (`datasetId`: one the session holds, else `path`).
+   * A snapshot step (#259) passes `keep` (what to carry over), `series` (the
+   * series moved on by one: no new /series request) and `token` (the step's;
+   * a step overtaken by a newer one installs nothing and closes what it
+   * opened). A dataset the page opened itself is `own`: when a step replaces
+   * it, it is closed (DELETE), never one the desktop opened.
+   */
+  async function openPoints(b, { datasetId, path, keep = null, series = null, token = 0 }, load = {}) {
+    const own = !datasetId;
+    // A table opened afresh (not a step) overtakes any step under way.
+    if (!token) { L.stepToken++; L.stepTarget = null; L.pendingStep = 0; }
+    const stale = () => token && token !== L.stepToken;
+    const drop = () => { if (own && datasetId) closeDataset(b, datasetId); };
     if (!datasetId) {
       const fmt = catalogueFormat(path);
       if (fmt === 'vbt') {
@@ -272,11 +294,19 @@ export function createLayers(ctx) {
         datasetId = r.dataset_id;
       }
     }
+    if (stale()) { drop(); return null; }
     load.check?.();
     const info = await b._json('POST', '/v1/points/info', { dataset_id: datasetId });
+    if (stale()) { drop(); return null; }
     load.check?.();
-    L.points = { datasetId, path, axes: info.axes, defaultAxes: info.axes.slice(), fields: info.fields, rows: info.num_rows,
-      units: info.units || {}, series: null };
+    const prevShown = L.points;
+    // The crop and the box in the table's units, to be placed on the new
+    // snapshot's own box (its bounds differ) once its sample is in.
+    const prevBounds = keep && prevShown && prevShown.sample ? prevShown.sample.bounds : null;
+    const keptData = prevBounds ? { axes: prevShown.axes.slice(), clip: SC.toData(state.clip, prevBounds),
+      sel: L.s.selBox ? SC.toData(L.s.selBox, prevBounds) : null } : null;
+    L.points = { datasetId, path, own, axes: info.axes, defaultAxes: info.axes.slice(), fields: info.fields, rows: info.num_rows,
+      units: info.units || {}, series };
     fieldSel.innerHTML = '';
     fieldSel.appendChild(el('option', { value: '', textContent: '(none: one colour)' }));
     for (const f of info.fields) fieldSel.appendChild(el('option', { value: f, textContent: f }));
@@ -292,20 +322,48 @@ export function createLayers(ctx) {
     }
     L.s.sizeField = kept ? kept.sizeField : SC.smoothingField(info.fields);
     if (!L.s.sizeField) L.s.sizeOn = false;
-    if (!keep) { L.s.selBox = null; L.s.selMode = 'all'; }
+    if (!keep) { L.s.selBox = null; L.s.selMode = 'all'; L.badSize = new Set(); }
     logBox.checked = L.s.colourLog;
     fieldSel.value = L.s.colourField || '';
-    const clip = keep ? { min: [...state.clip.min], max: [...state.clip.max] } : null;
     const pts = L.points;
+    const selMode = L.s.selMode;
     enter('points');
     L.points = pts;
-    if (clip) state.clip = clip;
     await fetchSample(b, load);
-    // The snapshots beside it (#259): asked once, not waited for.
-    b._json('POST', '/v1/points/series', { dataset_id: datasetId })
-      .then((s) => { if (L.points === pts && s && s.valid) pts.series = s; })
-      .catch(() => {});
+    if (stale() || L.points !== pts) { drop(); return null; }
+    // Placed again in the table's units: the same region of space, not the
+    // same fraction of a box that changed (only on the same X/Y/Z columns).
+    if (keptData && pts.sample && keptData.axes.join() === pts.axes.join()) {
+      state.clip = SC.toFrac(keptData.clip, pts.sample.bounds) || { min: [0, 0, 0], max: [1, 1, 1] };
+      L.s.selBox = keptData.sel ? SC.toFrac(keptData.sel, pts.sample.bounds) : null;
+      L.s.selMode = L.s.selBox ? selMode : 'all';
+    } else if (keep) {
+      L.s.selBox = null; L.s.selMode = 'all';
+    }
+    if (token) L.stepTarget = null;
+    // The table on show before, when the page opened it, is closed once the
+    // refiner has left it.
+    if (prevShown && prevShown !== pts && prevShown.own && prevShown.datasetId !== datasetId) {
+      Promise.resolve(pts.refinerSwitch).catch(() => {}).then(() => closeDataset(b, prevShown.datasetId));
+    }
+    // The snapshots beside it (#259): asked once (a step carries them on), not
+    // waited for; a step pressed meanwhile waits for them.
+    if (!series) {
+      b._json('POST', '/v1/points/series', { dataset_id: datasetId })
+        .then((sr) => {
+          if (L.points !== pts || !sr || !sr.valid) return;
+          pts.series = sr;
+          const d = L.pendingStep;
+          L.pendingStep = 0;
+          if (d) simPress(d > 0 ? 'snap-next' : 'snap-prev', b);
+        })
+        .catch(() => { L.pendingStep = 0; });
+    }
     return { kind: 'points', datasetId };
+  }
+  /** Closes a dataset the page opened (DELETE /v1/datasets/{id}): not an error when it is gone. */
+  function closeDataset(b, id) {
+    b._json('DELETE', `/v1/datasets/${encodeURIComponent(id)}`).catch(() => {});
   }
 
   // ── Flow ─────────────────────────────────────────────────────────────
@@ -557,13 +615,24 @@ export function createLayers(ctx) {
       const on = id === 'size:field' && !!s.sizeField;
       if (on !== s.sizeOn) { s.sizeOn = on; fetchSample(b).catch(fail); }
     } else if (id === 'size-next' && p && b) {
-      s.sizeField = SC.cycleField(SC.axisFields(p.fields), s.sizeField, 1);
+      // Columns found to have no positive size are passed over.
+      s.sizeField = SC.cycleField(SC.axisFields(p.fields), s.sizeField, 1, L.badSize);
       if (s.sizeOn) fetchSample(b).catch(fail);
     } else if ((id === 'snap-prev' || id === 'snap-next') && p && b) {
-      const next = SC.seriesStep(p.series, id === 'snap-next' ? 1 : -1);
+      const dir = id === 'snap-next' ? 1 : -1;
+      // Its series not known yet: the press waits for it (openPoints).
+      if (!p.series && !L.stepTarget) { L.pendingStep = dir; return true; }
+      // From the step under way, if any: quick presses go on from there.
+      const from = L.stepTarget || p.series;
+      const next = SC.seriesStep(from, dir);
       if (!next) return true;
+      const series = { ...from, index: next.index };
+      const token = ++L.stepToken;
+      L.stepTarget = series;
       const keep = { axes: p.axes, colourField: s.colourField, sizeField: s.sizeField };
-      openPoints(b, { path: next.path, keep }).then(() => ctx.onSnapshot?.(next.path)).catch(fail);
+      openPoints(b, { path: next.path, keep, series, token })
+        .then((r) => { if (r && token === L.stepToken) ctx.onSnapshot?.(next.path); })
+        .catch((e) => { if (token === L.stepToken) { L.stepTarget = null; fail(e); } });
     } else if (id === 'psel-inside' || id === 'psel-outside' || id === 'psel-all') {
       s.selMode = id.slice(5);
     } else if (id === 'psel-clear') {
@@ -646,7 +715,8 @@ export function createLayers(ctx) {
       flow: { stream: s.stream, arrows: s.arrows, box: s.box },
       // The simulation controls (#259).
       sim: L.points ? { axes: L.points.axes.slice(), series: L.points.series ? L.points.series.count : 1,
-        seriesIndex: L.points.series ? L.points.series.index : 0, sizeOn: s.sizeOn, sizeField: s.sizeField,
+        seriesIndex: (L.stepTarget || L.points.series || { index: 0 }).index, seriesPending: !L.points.series,
+        sizeOn: s.sizeOn, sizeField: s.sizeField,
         style: s.style, sel: { box: !!s.selBox, mode: s.selMode } } : null,
     };
   }
@@ -672,7 +742,8 @@ export function createLayers(ctx) {
       const p = L.points;
       notes.snapshot = p.series && p.series.count > 1 ? SC.seriesLabel(p.series) : 'One file: no numbered snapshots beside it.';
       ['x', 'y', 'z'].forEach((a, i) => { notes[a] = `${a.toUpperCase()} = ${p.axes[i]}${SC.unitOf(p.units, p.axes[i]) ? ` [${SC.unitOf(p.units, p.axes[i])}]` : ''}`; });
-      notes.size = !s.sizeField ? 'No smoothing-length column (h, hsml, …): ▸ picks another.'
+      notes.size = p.sizeNote && s.sizeOn ? `${p.sizeNote}; ▸ picks another column.`
+        : !s.sizeField ? 'No smoothing-length column (h, hsml, …): ▸ picks another.'
         : s.sizeOn && p.size ? `σ = ${s.sizeField} / √2 × size, ${fmt(p.size.range[0])} to ${fmt(p.size.range[1])}`
           : `Uniform: one size from the mean spacing; ${s.sizeField} on the right.`;
       notes.selection = s.selBox ? `${s.selMode === 'inside' ? 'Inside shown' : s.selMode === 'outside' ? 'Inside hidden' : 'All shown'}: ${SC.boxText(p.axes, sm.bounds, s.selBox)}` : '';
@@ -795,17 +866,29 @@ export function createLayers(ctx) {
     /** The colour bar of a point table coloured by a column, or of a velocity
      *  field (#259: with the column's unit): {lo, hi, log, title, ticks}, or null. */
     colourBar() {
+      // The same object while nothing it shows changed: built only on a change
+      // (main.js redraws the bar when the object changes).
+      const c = barCache;
       if (L.mode === 'points' && L.points && L.points.sample) {
         const sm = L.points.sample;
-        if (!sm.colourField || !sm.colourRange) return null;
-        const at = (f) => PT.codeValue(f * 65535, sm.colourRange, sm.colourLog);
-        const lo = at(L.s.c0), hi = at(L.s.c1);
-        return { lo, hi, log: sm.colourLog, title: SC.colourBarTitle(sm.colourField, SC.unitOf(L.points.units, sm.colourField), sm.colourLog),
-          ticks: SC.colourBarTicks(lo, hi, sm.colourLog, niceTicks) };
+        if (c.of === sm && c.c0 === L.s.c0 && c.c1 === L.s.c1) return c.bar;
+        let bar = null;
+        if (sm.colourField && sm.colourRange) {
+          const at = (f) => PT.codeValue(f * 65535, sm.colourRange, sm.colourLog);
+          const lo = at(L.s.c0), hi = at(L.s.c1);
+          bar = { lo, hi, log: sm.colourLog, title: SC.colourBarTitle(sm.colourField, SC.unitOf(L.points.units, sm.colourField), sm.colourLog),
+            ticks: SC.colourBarTicks(lo, hi, sm.colourLog, niceTicks) };
+        }
+        Object.assign(c, { of: sm, c0: L.s.c0, c1: L.s.c1, bar });
+        return bar;
       }
       if (L.mode === 'flow' && L.flow && L.flow.info) {
+        const i = L.flow.info;
+        if (c.of === i && c.c0 === L.s.flC0 && c.c1 === L.s.flC1) return c.bar;
         const [lo, hi] = flowSpeedRange();
-        return { lo, hi, log: false, title: SC.colourBarTitle('speed', L.flow.info.unit || ''), ticks: SC.colourBarTicks(lo, hi, false, niceTicks) };
+        const bar = { lo, hi, log: false, title: SC.colourBarTitle('speed', i.unit || ''), ticks: SC.colourBarTicks(lo, hi, false, niceTicks) };
+        Object.assign(c, { of: i, c0: L.s.flC0, c1: L.s.flC1, bar });
+        return bar;
       }
       return null;
     },

@@ -212,7 +212,7 @@ uniform vec3 uClipMin; // the spatial crop (#257), box fractions: aPos itself
 uniform vec3 uClipMax;
 // Splats sized by a column (#259, sim-controls.js sizedSplat): x on, y log10
 // of the smallest size, z the log span; uSizeMul turns a size into a factor of
-// uRadius. Each splat's light is kept by 1 / factor² (clamped).
+// uRadius. Each splat gives the uniform splat's light (vLight).
 uniform vec3 uSize;
 uniform float uSizeMul;
 // The box selection (#259), box fractions as the crop: 1 only inside, 2 all but inside.
@@ -234,8 +234,12 @@ void main() {
   vec4 eye = uMV * vec4(uLo + aPos * uSpan, 1.0);
   gl_Position = uP * eye;
   float f = uSize.x > 0.5 ? pow(10.0, uSize.y + aSize * uSize.z) * uSizeMul : 1.0;
-  vLight = clamp(1.0 / max(f * f, 1e-12), 0.0625, 16.0);
-  float px = uPx > 0.0 ? uPx : uRadius * f / max(1e-4, -eye.z);
+  float pxU = uRadius / max(1e-4, -eye.z);
+  float px = uPx > 0.0 ? uPx : pxU * f;
+  // The uniform splat's light over this one's, as drawn (clamped sprites,
+  // the sub-pixel factor): sim-controls.js lightFactor.
+  float cu = clamp(pxU, 1.0, uMaxPx), cd = clamp(px, 1.0, uMaxPx);
+  vLight = uSize.x > 0.5 ? (cu * cu * max(min(pxU, 1.0), 0.25)) / (cd * cd * max(min(px, 1.0), 0.25)) : 1.0;
   gl_PointSize = clamp(px, 1.0, uMaxPx);
   vSplat = uPx > 0.0 ? 0.0 : clamp(px, 0.0, 1.0);   // sub-pixel splats: their light, not a pixel's
   vT = clamp((aVal - uC0) / max(1e-6, uC1 - uC0), 0.0, 1.0);

@@ -51,9 +51,15 @@ fields, and Select on velocity fields, with the reason under each control.
   their number (`run_001.bin`, `run_002.bin`, ...; `/v1/points/series`). The
   next snapshot keeps the X/Y/Z columns, the colour column, the splat sizes,
   the crop and the box selection where it has those columns, and the view
-  stays where it is. There is no time-series data model: a snapshot is a file
-  opened as any table, so a step takes as long as opening that file (the
-  sample is fetched again).
+  stays where it is. The crop and the box keep their place in the table's
+  units (the same region of space), not their fraction of a box whose bounds
+  changed; a region wholly outside the new snapshot's box is dropped. There
+  is no time-series data model: a snapshot is a file opened as any table, so
+  a step takes as long as opening that file (the sample is fetched again).
+  Quick presses go on from the step under way (the last one wins; one
+  overtaken is not shown), and a press made before the series is known waits
+  for it. The snapshot left behind is closed on the backend when the page
+  opened it itself; the table the desktop sent is never closed by the page.
 - **X, Y, Z.** *Data ▸ → X / Y / Z*: *◂* and *▸* (or the column's name) step
   through the table's columns for that axis; *Default axes* goes back to the
   table's own. A new column makes a new box: the crop and the box selection
@@ -63,8 +69,12 @@ fields, and Select on velocity fields, with the reason under each control.
   found by its usual names: `h`, `hsml`, `sml`, `SmoothingLength`,
   `smoothing_length`; *Column ▸* picks another). Each splat is then a Gaussian
   of σ = h / √2 (the ray-traced renderer's kernel, exp(−d²/h²)) times the size
-  step, larger in proportion when only a sample is drawn, and keeps its light
-  (a splat twice as wide is a quarter as bright, within ×16). Splats only. The
+  step, larger in proportion when only a sample is drawn, and gives the light
+  of the uniform splat: its sprite's area as drawn (clamped to the sprite
+  sizes the GPU draws, and the sub-pixel rule) over the uniform one's, so a
+  splat twice as wide is a quarter as bright and a clamped sprite keeps its
+  light too. A column with no positive value gives uniform splats and a note
+  under the row, and *Column ▸* passes over it. Splats only. The
   backend's refined frames draw one size, so they are off while the splats
   follow a column; the headset's own picture stays.
 - **Units on the colour bar.** A table coloured by a column, or a velocity

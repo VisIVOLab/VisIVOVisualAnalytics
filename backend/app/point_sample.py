@@ -69,6 +69,9 @@ class PointSample:
     size: np.ndarray | None = None
     size_field: str | None = None
     size_range: tuple[float, float] | None = None
+    # Why no sizes were sent for the size column asked (none positive): the
+    # page then draws uniform splats and says so (review of #259).
+    size_note: str = ""
 
     def encode(self) -> bytes:
         parts = [np.ascontiguousarray(self.positions, dtype="<u2").tobytes()]
@@ -426,9 +429,15 @@ def sample_points(table, limit: int, axes: tuple[str, str, str] | None = None,
         values = np.empty(len(rows), dtype=np.float64)
         for start in range(0, len(rows), _STAT_CHUNK):
             values[start:start + _STAT_CHUNK] = column[rows[start:start + _STAT_CHUNK]]
-        codes, srange = size_codes(values)
-        out.size = codes[order]
-        out.size_field, out.size_range = size_field, srange
+        try:
+            codes, srange = size_codes(values)
+        except ValueError:
+            # No positive size: uniform splats, said in X-Visivo-Size-Note,
+            # rather than a table that does not load.
+            out.size_note = f"{size_field} has no positive value: uniform splats"
+        else:
+            out.size = codes[order]
+            out.size_field, out.size_range = size_field, srange
     return out
 
 
@@ -468,6 +477,8 @@ def headers(s: PointSample) -> dict[str, str]:
         h["X-Visivo-Color-Log"] = "1" if s.colour_log else "0"
         if s.data_range is not None:
             h["X-Visivo-Data-Range"] = ",".join(repr(float(v)) for v in s.data_range)
+    if s.size_note:
+        h["X-Visivo-Size-Note"] = s.size_note
     if s.size_field is not None:
         h["X-Visivo-Size-Field"] = s.size_field
         h["X-Visivo-Size-Range"] = ",".join(repr(float(v)) for v in s.size_range)

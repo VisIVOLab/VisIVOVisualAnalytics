@@ -1629,7 +1629,7 @@ const ui = {
   pin: null,           // the pinned readout: {p} (box coordinates)
   sliding: null,       // the menu slider held: one undo step per drag
   crop: { hover: null, drag: null, key: '' },   // the Spatial crop tool's box (#277, crop-gizmo.js): pointed at, dragged
-  psel: { hover: null, drag: null, key: '' },   // a point table's box selection (#259): pointed at, dragged
+  psel: { hover: null, drag: null, g: null },   // a point table's box selection (#259): pointed at, dragged; its gizmo kept
   hit: null,           // where the primary ray meets the menu or a window: {point, model}
   busy: { busy: '', error: '' },   // the tools' state last frame, for the haptics
 };
@@ -2648,24 +2648,27 @@ function finishSelBoxDrag() {
   if (d.undo && (!d.prev ? !!box : !box || CG.clipChanged(d.prev, box))) ui.undo.push(d.undo);
   if (!d.prev && box) toast('Box drawn: Select → Show inside or Hide inside.', 'psel');
 }
-/** The box selection for one eye: its edges (green), and while the tool is on its dots. */
+/** The box selection for one eye: its edges (green), and while the tool is on
+ *  its dots. The gizmo and its lines are rebuilt only when the box, what is
+ *  pointed at, the table's box or the tool changes (no per-frame key). */
 function drawSelBox(v, eye) {
   const box = layers.selBox;
-  const f = box ? cropFrame() : null;
-  if (!f) { if (ui.psel.key) { R.setLines([], R.pselLines); ui.psel.key = ''; } return; }
+  const c = ui.psel;
+  if (!box || !layers.state.box) { if (c.g) { R.setLines([], R.pselLines); c.g = null; c.box = null; } return; }
   const on = pointsBoxOn();
-  const hover = on ? ui.psel.drag || ui.psel.hover : null;
-  const g = CG.gizmo(f, box, hover);
-  const key = JSON.stringify([box, hover && (hover.id || hover.kind), f, on]);
-  if (key !== ui.psel.key) {
+  const hover = on ? c.drag || c.hover : null;
+  const hk = hover ? hover.id || hover.kind : '';
+  const newDrag = !!(c.drag && c.drag.kind === 'new');
+  if (!c.g || c.box !== box || c.hk !== hk || c.of !== layers.state.box || c.on !== on || c.newDrag !== newDrag) {
+    const f = cropFrame();
+    c.g = CG.gizmo(f, box, hover);
     const green = [0.45, 1.0, 0.55, 0.95];
-    const edges = ui.psel.drag && ui.psel.drag.kind === 'new' ? CG.previewEdges(f, box) : g.edges.map((e) => ({ ...e, color: hover && hover.kind !== 'new' ? e.color : green }));
-    R.setLines(edges, R.pselLines);
-    ui.psel.key = key;
+    R.setLines(newDrag ? CG.previewEdges(f, box) : c.g.edges.map((e) => ({ ...e, color: hover && hover.kind !== 'new' ? e.color : green })), R.pselLines);
+    Object.assign(c, { box, hk, of: layers.state.box, on, newDrag });
   }
   R.drawLines(v, state.model, R.pselLines);
   if (!on) return;
-  for (const h of g.handles) {
+  for (const h of c.g.handles) {
     const p = M.transformPoint(state.model, h.point);
     const s = h.hot ? CG.HANDLE_M * 1.5 : CG.HANDLE_M;
     R.drawPanel(v, RO.faceEye(p, eye), cropTexture(h.hot ? 'dotHot' : 'dot'), [s, s]);
@@ -2673,22 +2676,22 @@ function drawSelBox(v, eye) {
 }
 
 // ── The colour bar of a point table or a velocity field (issue #259) ────────
-const colourBar = { canvas: null, tex: null, key: '' };
+const colourBar = { canvas: null, tex: null, bar: null, cmap: '' };
 /** The bar beside the box's lower corner, turned to the eye; redrawn and
  *  uploaded only when it changes (a 2-D texture). */
 function drawColourBar(v, eye) {
   if (state.cube || !layers.hasScene() || !layers.state.s.box) return;
-  const bar = layers.colourBar();
+  const bar = layers.colourBar();          // the same object while it is unchanged
   if (!bar) return;
-  const key = CB.barKey(bar, state.colormap);
   if (!colourBar.tex) {
     colourBar.canvas = Object.assign(document.createElement('canvas'), { width: CB.BAR_PX[0], height: CB.BAR_PX[1] });
     colourBar.tex = R.createPanel();
   }
-  if (key !== colourBar.key) {
+  if (bar !== colourBar.bar || state.colormap !== colourBar.cmap) {
     CB.drawColourBar(colourBar.canvas.getContext('2d'), { ...bar, lut: colormapTable(state.colormap) });
     R.updatePanel(colourBar.tex, colourBar.canvas);
-    colourBar.key = key;
+    colourBar.bar = bar;
+    colourBar.cmap = state.colormap;
   }
   const e = layers.state.box.extent;
   const corner = M.transformPoint(state.model, [e[0] / 2, -e[1] / 2, e[2] / 2]);
@@ -4393,6 +4396,8 @@ if (query.has('debug')) {
   window.__vrMeasure = { measure, start: (opts) => startOrCancelRun(opts) };
   window.__vrLink = linkState;
   window.__vrState = state;
+  // The page's backend handle, for checks that ask it what the page asked (?debug only).
+  window.__vrBackend = () => { try { return ensureBackend(); } catch { return null; } };
   window.__vrGL = gl;
   // Issue #226: the XR session's state (fake-XR checks), the renderer's GPU
   // textures, the one-page state.
@@ -4750,6 +4755,8 @@ function rebuildGraphics() {
     refiner.weight = 0;
     menu.key = '';
     for (const w of Object.values(wins)) w.barKey = '';
+    colourBar.bar = null;            // its texture was on the lost context (#259)
+    ui.psel.g = null;
     for (const k of [readout.live, readout.pin]) k.key = '';
     for (const k of Object.values(wristCards)) { k.key = ''; k.level = -1; }
     toastCard.id = -1;

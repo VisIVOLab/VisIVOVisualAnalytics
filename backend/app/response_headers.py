@@ -113,6 +113,7 @@ X_DATA_RANGE = "X-Visivo-Data-Range"
 # Each sampled row's size (issue #259: a smoothing length), its column and range.
 X_SIZE_FIELD = "X-Visivo-Size-Field"
 X_SIZE_RANGE = "X-Visivo-Size-Range"
+X_SIZE_NOTE = "X-Visivo-Size-Note"
 X_LINE_POINTS = "X-Visivo-Line-Points"
 X_LINES = "X-Visivo-Lines"
 X_ARROWS = "X-Visivo-Arrows"

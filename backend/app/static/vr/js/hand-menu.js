@@ -268,10 +268,12 @@ function dataPage(ctx) {
   const sim = ctx.sim;
   const notPts = ctx.kind === 'points' && sim ? '' : WHY.pointsOnly;
   const rows = [['snapshot', 'Snapshot'], ['x', 'X'], ['y', 'Y'], ['z', 'Z'], ['size', 'Splat size'], ['back', '']];
-  const one = notPts || (sim.series > 1 ? '' : WHY.noSeries);
+  // While the series is still asked for, a press waits for it (layers.js).
+  const pending = !notPts && !!sim.seriesPending;
+  const one = notPts || (pending || sim.series > 1 ? '' : WHY.noSeries);
   const w = [
-    btn('snap-prev', span(0, 2, 0), '◂ Previous', { disabled: one || (sim.seriesIndex > 0 ? '' : 'The first snapshot.'), tip: 'The snapshot before this one' }),
-    btn('snap-next', span(0, 2, 1), 'Next ▸', { disabled: one || (sim.seriesIndex < sim.series - 1 ? '' : 'The last snapshot.'), tip: 'The snapshot after this one' }),
+    btn('snap-prev', span(0, 2, 0), '◂ Previous', { disabled: one || (pending || sim.seriesIndex > 0 ? '' : 'The first snapshot.'), tip: 'The snapshot before this one' }),
+    btn('snap-next', span(0, 2, 1), 'Next ▸', { disabled: one || (pending || sim.seriesIndex < sim.series - 1 ? '' : 'The last snapshot.'), tip: 'The snapshot after this one' }),
   ];
   ['x', 'y', 'z'].forEach((a, i) => {
     const name = sim && sim.axes ? sim.axes[i] : '';

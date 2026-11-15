@@ -75,6 +75,32 @@ def test_sizes_are_log_codes_over_the_positive_range(tmp_path):
         ps.size_codes(np.array([0.0, -1.0, np.nan]))
 
 
+def test_a_size_column_without_positive_values_gives_uniform_splats_and_a_note(tmp_path):
+    rng = np.random.default_rng(2)
+    n = 300
+    data = np.stack([rng.uniform(0, 1, n), rng.uniform(0, 1, n), rng.uniform(0, 1, n), np.zeros(n)]).astype("<f4")
+    data.tofile(tmp_path / "flat.bin")
+    (tmp_path / "flat.bin.head").write_text(f"float\n4\n{n}\nlittle\nX\nY\nZ\nzero\n")
+    s = ps.sample_points(open_point_table(str(tmp_path / "flat.bin.head")), 1000, size_field="zero")
+    assert s.size is None and s.size_field is None and "no positive value" in s.size_note
+    h = ps.headers(s)
+    assert "X-Visivo-Size-Field" not in h and "no positive value" in h["X-Visivo-Size-Note"]
+    assert len(s.encode()) == n * 6
+
+
+def test_a_long_series_keeps_the_nearest_and_the_allowed(tmp_path, monkeypatch):
+    for k in range(0, 40):
+        (tmp_path / f"s_{k:03d}.csv").write_text("x\n")
+    monkeypatch.setattr(ss, "MAX_MEMBERS", 5)
+    s = ss.snapshot_series(str(tmp_path / "s_020.csv"))
+    assert s["numbers"] == [18, 19, 20, 21, 22] and s["index"] == 2
+    s = ss.snapshot_series(str(tmp_path / "s_001.csv"))
+    assert s["numbers"] == [0, 1, 2, 3, 4] and s["index"] == 1
+    # A member the data roots refuse (a link outside them) is left out; the open one stays.
+    s = ss.snapshot_series(str(tmp_path / "s_020.csv"), allowed=lambda p: not p.endswith(("s_021.csv", "s_020.csv")))
+    assert 21 not in s["numbers"] and 20 in s["numbers"]
+
+
 def test_a_size_codes_round_trip():
     v = np.array([0.01, 0.1, 1.0, 10.0, -3.0])
     codes, (lo, hi) = ps.size_codes(v)
@@ -131,3 +157,20 @@ async def test_series_sizes_and_units_routes(client, auth_headers, tmp_path):
     info = (await client.post("/v1/points/info", json={"dataset_id": cat["dataset_id"]}, headers=auth_headers)).json()
     assert info.get("valid"), info
     assert info["units"].get("mass") == "Msun"
+
+
+@pytest.mark.asyncio
+async def test_series_leaves_out_links_outside_the_data_roots(client, auth_headers, tmp_path, monkeypatch):
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    for k in (1, 2):
+        _vbt(root, f"snap_{k:03d}", n=50, seed=k)
+    _vbt(outside, "snap_003", n=50, seed=3)
+    (root / "snap_003.bin.head").symlink_to(outside / "snap_003.bin.head")
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root))
+    did = (await client.post("/v1/vbt/open", json={"path": str(root / "snap_001.bin.head")},
+                             headers=auth_headers)).json()["dataset_id"]
+    s = (await client.post("/v1/points/series", json={"dataset_id": did}, headers=auth_headers)).json()
+    assert s["numbers"] == [1, 2], s
+

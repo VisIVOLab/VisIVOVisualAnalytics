@@ -32,7 +32,8 @@ const TOKEN = randomBytes(18).toString('hex');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const OUT = mkdtempSync(join(tmpdir(), 'vr-sim-controls-'));
 
-// Three snapshots: x, y, z, vx, hsml (a smoothing length), rho; 20 000 rows each.
+// Three snapshots: x, y, z, vx, hsml (a smoothing length), rho, zero (no
+// positive value: no usable size); 20 000 rows each, each a little larger.
 const made = spawnSync(PY, ['-c', `
 import numpy as np, sys
 out = sys.argv[1]
@@ -43,8 +44,8 @@ for k in (1, 2, 3):
     vx = rng.normal(0, 100, n)
     h = np.exp(rng.normal(-2, 0.5, n))
     rho = np.exp(rng.normal(0, 1.5, n))
-    np.stack([x, y, z, vx, h, rho]).astype('<f4').tofile(f"{out}/run_{k:03d}.bin")
-    open(f"{out}/run_{k:03d}.bin.head", "w").write(f"float\\n6\\n{n}\\nlittle\\nx\\ny\\nz\\nvx\\nhsml\\nrho\\n")
+    np.stack([x, y, z, vx, h, rho, np.zeros(n)]).astype('<f4').tofile(f"{out}/run_{k:03d}.bin")
+    open(f"{out}/run_{k:03d}.bin.head", "w").write(f"float\\n7\\n{n}\\nlittle\\nx\\ny\\nz\\nvx\\nhsml\\nrho\\nzero\\n")
 `, OUT], { encoding: 'utf8' });
 if (made.status !== 0) { console.log(`FAIL could not write the snapshots: ${made.stderr}`); process.exit(1); }
 
@@ -127,11 +128,41 @@ try {
     `uniform ${(100 * uniform.fraction).toFixed(2)} %, by hsml ${(100 * sized.fraction).toFixed(2)} %`);
   await act({ type: 'press', id: 'size:field' });
   await waitFor(`!!${L}.points.size`);
-  // The next snapshot keeps the columns, the colour and the sizes.
+  // A size column with no positive value: uniform splats and a note, the table still drawn.
+  await ev(`${L}.s.sizeField = 'zero'`);
+  await act({ type: 'press', id: 'size:uniform' });
+  await act({ type: 'press', id: 'size:field' });
+  check('a size column with no positive value: uniform splats, a note, the column passed over next time',
+    await waitFor(`!!(${L}.points.sample && ${L}.points.sizeNote && !${L}.points.size && ${L}.badSize.has('zero'))`), await ev(`${L}.points.sizeNote`));
+  await ev(`${L}.s.sizeField = 'hsml'`);
+  await act({ type: 'press', id: 'size:uniform' });
+  await act({ type: 'press', id: 'size:field' });
+  await waitFor(`!!${L}.points.size`);
+  // Two quick presses (Previous then Next): the second goes on from the first's
+  // target; the step overtaken installs nothing and closes what it opened.
+  const firstId = await ev(`${L}.points.datasetId`);
+  await act({ type: 'press', id: 'snap-prev' });
+  await act({ type: 'press', id: 'snap-next' });
+  check('Previous then Next at once: back on snapshot 2, the newest step wins', await waitFor(`${L}.stepTarget === null && ${L}.points.series.index === 1
+    && /run_002/.test(${L}.points.path || '') && ${L}.points.datasetId !== ${JSON.stringify(firstId)} && !!${L}.points.sample`, 60000),
+    await ev(`${L}.points.path + ' #' + ${L}.points.series.index`));
+  const closed = await waitFor(`window.__vrBackend()._json('POST', '/v1/points/info', { dataset_id: ${JSON.stringify(firstId)} }).then(() => false, () => true)`, 10000);
+  check('the snapshot left behind is closed on the backend (DELETE)', closed);
+  // The next snapshot (larger: other bounds) keeps the columns, the colour, the sizes, and the crop in table units.
+  const cropData = { lo: 0.25, hi: 0.75 };
+  await ev(`window.__vrState.clip = { min: [${cropData.lo}, 0, 0], max: [${cropData.hi}, 1, 1] }`);
+  const b0 = await ev(`${L}.points.sample.bounds`);
+  const wantLo = b0[0] + cropData.lo * (b0[1] - b0[0]), wantHi = b0[0] + cropData.hi * (b0[1] - b0[0]);
   await act({ type: 'press', id: 'snap-next' });
   check('Next ▸: snapshot 3', await waitFor(`${L}.points.series && ${L}.points.series.index === 2 && /run_003/.test(window.__vrState.openPath || '')`, 60000));
   check('the next snapshot keeps X, the colour column and the sizes', await waitFor(`${L}.points.sample && ${L}.points.axes[0] === 'y'
     && ${L}.s.colourField === ${JSON.stringify(colourBefore)} && !!${L}.points.size`));
+  const b1 = await ev(`${L}.points.sample.bounds`);
+  const clip1 = await ev('window.__vrState.clip');
+  const gotLo = b1[0] + clip1.min[0] * (b1[1] - b1[0]), gotHi = b1[0] + clip1.max[0] * (b1[1] - b1[0]);
+  check('the crop keeps its place in table units on a snapshot with other bounds', (b1[0] !== b0[0] || b1[1] !== b0[1]) && Math.abs(gotLo - wantLo) < 1e-3 * (b0[1] - b0[0]) && Math.abs(gotHi - wantHi) < 1e-3 * (b0[1] - b0[0]),
+    `x ${wantLo.toFixed(4)}..${wantHi.toFixed(4)} -> ${gotLo.toFixed(4)}..${gotHi.toFixed(4)}; bounds x ${b0[0].toFixed(3)}..${b0[1].toFixed(3)} -> ${b1[0].toFixed(3)}..${b1[1].toFixed(3)}, crop ${clip1.min[0].toFixed(3)}..${clip1.max[0].toFixed(3)}`);
+  await ev('window.__vrState.clip = { min: [0, 0, 0], max: [1, 1, 1] }');
   // The box selection.
   await act({ type: 'press', id: 'tab:select' });
   await ev(`window.__vrLayers.setSelBox({ min: [0, 0, 0], max: [0.5, 1, 1] })`);

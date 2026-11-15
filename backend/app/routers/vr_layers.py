@@ -126,7 +126,17 @@ async def points_series(request: PointInfoRequest, _: None = _auth,
     path = entry.get("head_path") if entry.get("kind") == "vbt" else entry.get("path")
     if not path:
         raise HTTPException(422, "The table has no file to step from.")
-    return {"valid": True, **await asyncio.to_thread(snapshot_series, str(path))}
+    from ..dependencies import _normalize_path   # noqa: PLC0415
+
+    def allowed(member: str) -> bool:
+        # A member is opened by path later: one the data roots refuse (a
+        # symbolic link resolving outside them, a hidden name) is not listed.
+        try:
+            _normalize_path(member)
+        except (PermissionError, OSError, ValueError):
+            return False
+        return True
+    return {"valid": True, **await asyncio.to_thread(snapshot_series, str(path), allowed)}
 
 
 class PointSampleRequest(BaseModel):

@@ -16,10 +16,10 @@ from __future__ import annotations
 import os
 import re
 
-#: At most this many names are read from a directory (a series longer than
-#: that is cut to the files nearest the open one in the listing's order).
-MAX_LISTED = 100_000
-#: At most this many members are returned.
+#: At most this many entries of a directory are looked at (only the names of
+#: the series are kept).
+MAX_LISTED = 1_000_000
+#: At most this many members are returned: those nearest the open one by number.
 MAX_MEMBERS = 10_000
 
 
@@ -53,22 +53,30 @@ def members(name: str, names) -> list[tuple[int, str]]:
     return out
 
 
-def snapshot_series(path: str) -> dict:
+def snapshot_series(path: str, allowed=None) -> dict:
     """The series of the file at ``path``: ``paths`` (absolute, in order),
     ``numbers``, ``index`` (of ``path``) and ``count``; a series of one when
-    the directory cannot be listed or the name has no number."""
+    the directory cannot be listed or the name has no number. ``allowed``
+    (path -> bool): a member it refuses is left out, e.g. a symbolic link
+    that resolves outside the backend's data roots. Of a longer series, the
+    MAX_MEMBERS nearest the open file by number."""
     path = os.path.abspath(path)
     folder, name = os.path.split(path)
+    pat = pattern(name)
     names = []
-    try:
-        with os.scandir(folder) as it:
-            for k, e in enumerate(it):
-                if k >= MAX_LISTED:
-                    break
-                if e.is_file():
-                    names.append(e.name)
-    except OSError:
-        names = [name]
+    if pat is not None:
+        try:
+            with os.scandir(folder) as it:
+                for k, e in enumerate(it):
+                    if k >= MAX_LISTED:
+                        break
+                    # Only the series' names are kept, whatever the listing's order.
+                    if pat.match(e.name) and e.is_file():
+                        names.append(e.name)
+        except OSError:
+            names = []
+    if allowed is not None:
+        names = [n for n in names if n == name or allowed(os.path.join(folder, n))]
     found = members(name, names)
     index = next(i for i, (_, n) in enumerate(found) if n == name)
     if len(found) > MAX_MEMBERS:

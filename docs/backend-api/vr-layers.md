@@ -27,9 +27,11 @@ file, the files in its folder whose names differ from it only in their number
 steps through `snap_002`, `snap_010`, `snap_1000`, and an extension's digits
 never count). Answers `valid`, `paths` (absolute, by number), `numbers`,
 `index` (of this file) and `count`; a series of one when the name has no
-number or the folder cannot be listed. Only names are read
-(`app/snapshot_series.py`); there is no time-series data model: each snapshot
-is opened as any table (`/v1/vbt/open`, `/v1/catalogue/open`).
+number or the folder cannot be listed. Of a longer series, the 10 000 members
+nearest this one by number. A member the backend's data roots refuse (a
+symbolic link resolving outside them, a hidden name) is left out. Only names
+are read (`app/snapshot_series.py`); there is no time-series data model: each
+snapshot is opened as any table (`/v1/vbt/open`, `/v1/catalogue/open`).
 
 RA/Dec (and GLON/GLAT in `catalogue_pixels`) are read in the unit the table
 declares: a VOTable or FITS column unit, an IPAC header unit, or a unit in the
@@ -87,7 +89,8 @@ column, one more `uint16` per row after the colours: code c is the size
 10^(log10 lo + c / 65535 (log10 hi − log10 lo)) over `X-Visivo-Size-Range`
 (`lo,hi`, the smallest and largest positive finite size; a size that is not
 positive and finite gets the median, so no row is dropped for its size), and
-`X-Visivo-Size-Field`. A size column with no positive value is refused (422).
+`X-Visivo-Size-Field`. A size column with no positive value sends no sizes
+(uniform splats) and says why in `X-Visivo-Size-Note`, instead of failing.
 
 ## `POST /v1/cube/catalogue_pixels`
 

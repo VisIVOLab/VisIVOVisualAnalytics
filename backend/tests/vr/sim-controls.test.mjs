@@ -32,6 +32,11 @@ test('columns: cycling, and a smoothing length found by its usual names', () => 
   assert.equal(SC.cycleField(f, 'x', -1), 'hsml');
   assert.equal(SC.cycleField(f, 'nope', 1), 'x');
   assert.equal(SC.cycleField([], 'x', 1), null);
+  // Columns found unusable (no positive size) are passed over.
+  const bad = new Set(['vx', 'hsml']);
+  assert.equal(SC.cycleField(f, 'z', 1, bad), 'x');
+  assert.equal(SC.cycleField(f, 'x', -1, bad), 'z');
+  assert.equal(SC.cycleField(['vx'], 'vx', 1, new Set(['vx'])), null);
   for (const name of ['h', 'HSML', 'SmoothingLength', 'smoothing_length', 'sml']) assert.equal(SC.smoothingField(['x', name]), name, name);
   assert.equal(SC.smoothingField(['x', 'y', 'z', 'Mass', 'height']), null);
 });
@@ -54,9 +59,15 @@ test('sizes: the header, the codes after the colours, each splat h/√2 and its 
   const s = SC.sizedSplat([0.01, 10], { splatSize: 2, grow: 1.5, radius: 0.3 });
   close(s.log[0], -2); close(s.log[1], 3);
   close(0.3 * (1.0 * s.mul), (1.0 / Math.SQRT2) * 2 * 1.5);
-  close(SC.lightFactor(2), 0.25);
-  close(SC.lightFactor(100), SC.LIGHT_MIN);
-  close(SC.lightFactor(0.01), SC.LIGHT_MAX);
+  // The light kept: the uniform splat's over this one's, as drawn.
+  close(SC.lightFactor(10, 20, 64), 0.25);                 // twice as wide: a quarter as bright
+  close(SC.lightFactor(10, 80, 64), (10 / 64) ** 2);       // h ≥ the spacing: the sprite clamped at 64 px
+  close(SC.lightFactor(10, 640, 64), (10 / 64) ** 2);      // no floor at 1/16: the clamped size counts
+  assert.ok(SC.lightFactor(10, 640, 64) < 1 / 16);
+  close(SC.lightFactor(10, 2, 64), 25);                    // smaller: brighter, no cap
+  close(SC.lightFactor(10, 0.5, 64), 100 / (1 * 0.5));     // sub-pixel: one pixel at half its light
+  close(SC.lightFactor(0.5, 0.25, 64), 0.5 / 0.25);        // both sub-pixel: their light factors
+  close(SC.lightFactor(4, 4, 64), 1);
 });
 
 test('the box selection as the backend filter, in data units on the axis columns', () => {
@@ -68,6 +79,25 @@ test('the box selection as the backend filter, in data units on the axis columns
   assert.deepEqual(SC.boxFilters(['x', 'y', 'z'], bounds, box, 'all'), []);
   assert.deepEqual(SC.boxFilters(['x', 'y', 'z'], bounds, null, 'inside'), []);
   assert.equal(SC.boxText(['x', 'y', 'z'], bounds, box), 'x 1 to 6, y 0 to 5, z 100 to 125');
+});
+
+test('the crop and the box keep their place in table units from one snapshot to the next', () => {
+  const before = [0, 10, -5, 5, 100, 200];
+  const box = { min: [0.2, 0.5, 0], max: [0.6, 1, 0.5] };
+  const data = SC.toData(box, before);
+  assert.deepEqual(data, { min: [2, 0, 100], max: [6, 5, 150] });
+  // The next snapshot's box is larger: the same region is a smaller fraction of it.
+  const after = [-10, 10, -5, 15, 100, 300];
+  const f = SC.toFrac(data, after);
+  for (let i = 0; i < 3; i++) {
+    close(after[2 * i] + f.min[i] * (after[2 * i + 1] - after[2 * i]), data.min[i]);
+    close(after[2 * i] + f.max[i] * (after[2 * i + 1] - after[2 * i]), data.max[i]);
+  }
+  // Partly outside: clamped to the new box; wholly outside an axis: null.
+  assert.deepEqual(SC.toFrac({ min: [-20, -5, 100], max: [0, 5, 200] }, [-10, 10, -5, 5, 100, 200]).min, [0, 0, 0]);
+  assert.equal(SC.toFrac({ min: [20, 0, 100], max: [30, 1, 200] }, [-10, 10, -5, 5, 100, 200]), null);
+  // A flat axis (a planar table) is all of it.
+  assert.deepEqual(SC.toFrac({ min: [0, 0, 3], max: [1, 1, 3] }, [0, 1, 0, 1, 3, 3]), { min: [0, 0, 0], max: [1, 1, 1] });
 });
 
 test('the colour bar: the unit from the table or the name, its title, ticks, and a drawing', () => {

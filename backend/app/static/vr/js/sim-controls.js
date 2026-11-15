@@ -45,12 +45,43 @@ export function carryOver(prev, fields, defaults) {
 export const axisFields = (fields) => fields.slice();
 
 /** The column after (`dir` +1) or before (-1) `current` among `fields`
- *  (cyclic); the first one when `current` is not among them. */
-export function cycleField(fields, current, dir = 1) {
-  if (!fields.length) return null;
+ *  (cyclic), passing over those in `skip` (a Set); the first usable one when
+ *  `current` is not among them; null when none is usable. */
+export function cycleField(fields, current, dir = 1, skip = null) {
+  const ok = (f) => !(skip && skip.has(f));
+  if (!fields.some(ok)) return null;
   const i = fields.indexOf(current);
-  if (i < 0) return fields[0];
-  return fields[(i + (dir < 0 ? -1 : 1) + fields.length) % fields.length];
+  if (i < 0) return fields.find(ok);
+  const n = fields.length;
+  for (let k = 1; k <= n; k++) {
+    const f = fields[(i + (dir < 0 ? -k : k) + n * k) % n];
+    if (ok(f)) return f;
+  }
+  return null;
+}
+
+/** A box in fractions of `bounds` [xmin, xmax, ymin, ymax, zmin, zmax] as
+ *  table units ({min, max}). */
+export function toData(box, bounds) {
+  const at = (i, f) => bounds[2 * i] + f * (bounds[2 * i + 1] - bounds[2 * i]);
+  return { min: [0, 1, 2].map((i) => at(i, box.min[i])), max: [0, 1, 2].map((i) => at(i, box.max[i])) };
+}
+
+/** A box in table units as fractions of `bounds`, clamped to the box (a flat
+ *  axis: all of it); null when the region lies wholly outside the new box on
+ *  an axis. The crop and the box selection keep their place in space from
+ *  one snapshot to the next this way (#259 review), not their fraction of a
+ *  box whose bounds changed. */
+export function toFrac(data, bounds) {
+  const min = [0, 0, 0], max = [1, 1, 1];
+  for (let i = 0; i < 3; i++) {
+    const lo = bounds[2 * i], span = bounds[2 * i + 1] - lo;
+    if (!(span > 0)) continue;
+    min[i] = Math.max(0, Math.min(1, (data.min[i] - lo) / span));
+    max[i] = Math.max(0, Math.min(1, (data.max[i] - lo) / span));
+    if (!(max[i] > min[i])) return null;
+  }
+  return { min, max };
 }
 
 /** A smoothing-length column by its usual names (h, hsml, sml,
@@ -97,10 +128,18 @@ export function sizedSplat(range, { splatSize = 1, grow = 1, radius = 1 } = {}) 
   return { log: [lo, hi - lo], mul: (splatSize * grow) / Math.SQRT2 / Math.max(radius, 1e-30) };
 }
 
-/** The light factor of a splat drawn f times the uniform radius (the shader's). */
-export const LIGHT_MIN = 1 / 16, LIGHT_MAX = 16;
-export function lightFactor(f) {
-  return Math.min(LIGHT_MAX, Math.max(LIGHT_MIN, 1 / Math.max(f * f, 1e-12)));
+/**
+ * The light factor of a sized splat (the shader's vLight): the uniform
+ * splat's light over this one's, each its sprite's area (the pixel size
+ * clamped to 1..maxPx, as drawn) times the sub-pixel factor max(min(px, 1),
+ * 0.25), so a particle gives the light of the uniform splat whatever its
+ * smoothing length and however its sprite is clamped. No floor, no cap.
+ * `pxU`: the uniform splat's size (pixels), `pxD`: this one's.
+ */
+export function lightFactor(pxU, pxD, maxPx) {
+  const c = (px) => Math.min(maxPx, Math.max(1, px));
+  const sub = (px) => Math.max(Math.min(px, 1), 0.25);
+  return (c(pxU) ** 2 * sub(pxU)) / (c(pxD) ** 2 * sub(pxD));
 }
 
 // ── Box selection ───────────────────────────────────────────────────────────

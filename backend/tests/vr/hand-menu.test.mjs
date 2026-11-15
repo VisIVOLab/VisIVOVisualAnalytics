@@ -473,6 +473,9 @@ test('simulation data (#259): the Data page one press from Display, the Box sele
   assert.equal(why('data', pts, 'snap-prev'), 'The first snapshot.');
   assert.equal(why('data', pts, 'snap-next'), '');
   assert.equal(why('data', { ...pts, sim: { ...sim, series: 1 } }, 'snap-next'), HM.WHY.noSeries);
+  // While the series is still asked for, the press is taken (it waits for it).
+  assert.equal(why('data', { ...pts, sim: { ...sim, series: 1, seriesPending: true } }, 'snap-next'), '');
+  assert.equal(why('data', { ...pts, sim: { ...sim, series: 1, seriesPending: true } }, 'snap-prev'), '');
   assert.equal(why('data', pts, 'size:field'), '');
   assert.equal(why('data', { ...pts, sim: { ...sim, sizeField: null } }, 'size:field'), HM.WHY.noSizeField);
   assert.equal(why('data', { ...pts, sim: { ...sim, style: 'points' } }, 'size:field'), HM.WHY.splatsOnly);
