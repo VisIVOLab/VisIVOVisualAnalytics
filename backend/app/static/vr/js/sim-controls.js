@@ -226,3 +226,99 @@ export function colourBarTicks(a, b, log, niceTicks) {
   }
   return niceTicks(a, b, 4);
 }
+
+// ── The variables of a simulation volume (issue #317) ──────────────────────
+
+/** The variables the hand menu offers for the cube on show, from
+ *  reduced_info's `fields` ([{name, path}]) and `field_name`: {names, paths
+ *  ({name: path}), current (null when the one on show is not listed)}; null
+ *  with fewer than two (the picker is hidden). A name listed twice counts
+ *  once (its first path). */
+export function variablesOf(info) {
+  const list = info && Array.isArray(info.fields) ? info.fields : [];
+  const names = [], paths = {};
+  for (const f of list) {
+    if (!f || typeof f.name !== 'string' || !f.name || typeof f.path !== 'string' || !f.path) continue;
+    if (Object.prototype.hasOwnProperty.call(paths, f.name)) continue;
+    names.push(f.name);
+    paths[f.name] = f.path;
+  }
+  if (names.length < 2) return null;
+  const current = names.includes(info.field_name) ? info.field_name : null;
+  return { names, paths, current };
+}
+
+/** The variables' chips on the menu's row: all of them when they fit
+ *  `perPage`, else the page of `perPage - 1` holding `current` (the first
+ *  page without one) and `more` (the last cell steps to the next variable,
+ *  nextVariable, and the page follows it). */
+export function variableChips(names, current, perPage = 5) {
+  if (names.length <= perPage) return { chips: names.slice(), more: false, pages: 1, page: 0 };
+  const per = perPage - 1, pages = Math.ceil(names.length / per);
+  const i = Math.max(0, names.indexOf(current));
+  const page = Math.floor(i / per);
+  return { chips: names.slice(page * per, page * per + per), more: true, pages, page };
+}
+
+/** The variable after (`dir` +1) or before (-1) `current`, cyclic; the first
+ *  when `current` is not among them (cycleField). */
+export function nextVariable(names, current, dir = 1) {
+  return cycleField(names, current, dir);
+}
+
+/**
+ * Each variable's look, by its path (a field reference), so a variable shown
+ * again comes back as it was left: {colormap, stretch, gamma, opacity, mode,
+ * scale (the reduced cube's request: auto, linear, log), threshold and
+ * colourMax as data values}. At most `max` variables are kept (the oldest
+ * goes first).
+ */
+export class VariableLooks {
+  constructor(max = 64) { this.max = max; this.map = new Map(); }
+  save(path, look) {
+    if (!path || !look) return;
+    this.map.delete(path);
+    this.map.set(path, { ...look });
+    while (this.map.size > this.max) this.map.delete(this.map.keys().next().value);
+  }
+  get(path) { const l = this.map.get(path); return l ? { ...l } : null; }
+  clear() { this.map.clear(); }
+  get size() { return this.map.size; }
+}
+
+/**
+ * The threshold and colour max (0..1 of the cube's codes) a saved look gives
+ * the cube `cube` ({lo, hi, scale}), through `toNorm` (volume.js
+ * dataToNorm): its data values put back on the cube's codes, clamped to
+ * 0..1, the colour max kept above the threshold. null when the look has no
+ * finite values (the cube's own defaults then).
+ */
+export function lookNorms(look, cube, toNorm) {
+  if (!look || !cube || !Number.isFinite(look.threshold) || !Number.isFinite(look.colourMax)) return null;
+  const clamp = (n) => (Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0);
+  const thrNorm = clamp(toNorm(look.threshold, cube.lo, cube.hi, cube.scale));
+  let cmaxNorm = clamp(toNorm(look.colourMax, cube.lo, cube.hi, cube.scale));
+  if (cmaxNorm <= thrNorm) cmaxNorm = Math.min(1, thrNorm + 0.01);
+  return { thrNorm, cmaxNorm };
+}
+
+/** The data file a field reference reads ('…/rho.0000.flt' for
+ *  '…/rho.0000.flt::pluto-var=vx1'); any other path as it is. */
+export function fieldSource(path) {
+  return String(path || '').replace(/::(pluto-var|vbt-field)=.*$/, '');
+}
+
+/** The headset hub's word on a cube switch (issue #317): for another
+ *  variable of the source shown before (`prev`, the path on show until now:
+ *  one of the new cube's fields, or their data file opened by itself),
+ *  {summary 'Variable vx1 of rho.0000.flt', field, from}; null for an
+ *  ordinary switch. `picked`: the switch was made with the variable picker
+ *  (the paths may then differ only by how they were spelled: /var and
+ *  /private/var on macOS). */
+export function variableSwitch(path, prev, info, fileName, picked = false) {
+  const v = variablesOf(info);
+  if (!v || !v.current || !prev || prev === path) return null;
+  const source = fieldSource(path);
+  if (!picked && !Object.values(v.paths).includes(prev) && fieldSource(prev) !== source) return null;
+  return { summary: `Variable ${v.current} of ${fileName(source)}`, field: v.current, from: prev };
+}

@@ -34,6 +34,8 @@
 #include <vtkTrivialProducer.h>
 
 #include <QAction>
+#include <QApplication>
+#include <QDateTime>
 #include <QCheckBox>
 #include <QDockWidget>
 #include <QFile>
@@ -111,6 +113,9 @@ void vtkWindowCube::setupHeadsetHub()
         const QSettings settings;
         this->m_headsetFollow = VrHub::followLookEnabled(settings);
     }
+    // Variables switched in the headset before this window opened are no news
+    // (issue #317); a few seconds' slack for a backend's clock.
+    this->m_headsetFieldSinceMs = QDateTime::currentMSecsSinceEpoch() - 5000;
 
     // After the constructor: the window's backend identity is settled then.
     QTimer::singleShot(0, this, [this]() {
@@ -300,8 +305,12 @@ void vtkWindowCube::ensureHeadsetActivityPanel()
             VrHub::setFollowLookEnabled(settings, on);
         }
         if (on) {
-            // What the headset shows now, even if it was seen before.
+            // What the headset shows now, even if it was seen before; but a
+            // variable switch already followed (or seen) is not followed
+            // again (a window the user closed would come back).
+            const QPair<int, qint64> field = this->m_headsetFollowMarks.field;
             this->m_headsetFollowMarks = {};
+            this->m_headsetFollowMarks.field = field;
             this->followHeadsetLook();
         } else {
             // The clip box is the headset's: the whole cube comes back. The
@@ -640,10 +649,42 @@ void vtkWindowCube::openHeadsetSpectrum(const VrHub::Event &event, const VrHub::
     }));
 }
 
+void vtkWindowCube::followHeadsetField()
+{
+    if (!this->m_headsetHub || !this->m_headsetFollow || this->m_siblingFieldList.size() < 2)
+        return;
+    const auto field = VrHub::fieldToFollow(this->m_headsetHub->activity().events(), this->m_siblingFieldList,
+                                            this->filepath, this->m_headsetFollowMarks.field,
+                                            this->m_headsetFieldSinceMs);
+    if (!field)
+        return;
+    // That variable's window when one is open (another switch back and
+    // forth opens nothing new), else its Field product, as a double-click on
+    // its row in Session Data would.
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        auto *cube = qobject_cast<vtkWindowCube *>(w);
+        if (cube && cube != this && cube->filepath == field->second) {
+            cube->show();
+            cube->raise();
+            cube->activateWindow();
+            this->statusBar()->showMessage(u"The headset shows %1: its window brought forward."_s.arg(field->first), 5000);
+            return;
+        }
+    }
+    const QString productId = this->m_fieldProductIds.value(field->second);
+    if (productId.isEmpty())
+        return;
+    this->reopenProductFromFile(productId);
+    this->statusBar()->showMessage(u"The headset shows %1: its Field product opened."_s.arg(field->first), 5000);
+}
+
 void vtkWindowCube::followHeadsetLook()
 {
     if (!this->m_headsetHub || !this->m_headsetFollow)
         return;
+    // A variable switched in the headset: not held back by this cube's
+    // threshold (it is another cube).
+    this->followHeadsetField();
     // Not before the cube's first threshold is set and its bounds come from
     // the data: the first load would overwrite the headset's threshold with
     // its default, or the 0..1 placeholder would clamp it, and the look would
