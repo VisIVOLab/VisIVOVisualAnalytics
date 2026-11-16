@@ -57,17 +57,35 @@ SDP text or as `{type, sdp}`) and `ice {candidate}`; receives `answer {sdp}`,
 - A used, expired or revoked code is remembered for an hour, so a page is
   told why it failed rather than `unknown-code`.
 
-**Limits.** Failed joins per address (20 per 10 minutes) and over all
-addresses (600 a minute); once an address is over its limit even a right
-code answers `rate-limited`, so guessing teaches nothing. Joins per code
-(10 a minute), host connections per address (8), new codes per host
-connection (30 a minute) and per address (60 a minute, however often it
-reconnects), live codes per host (64), live codes in all (100 000; codes
-remembered after use are capped apart and never block a new one), pages in
-signalling per
-host (16), signalling connections per address (16). A page must send its join
-within 10 s, and its signalling connection lasts at most 120 s. Messages are
-at most 64 KiB, and a page relays at most 64 candidates.
+**Limits.** Every limit counts per *address*: an IPv4 address, or the IPv6
+/56 network it belongs to (`VR_PAIR_IPV6_PREFIX`).
+
+- Failed joins: 20 per address in 10 minutes. Once an address is over its
+  limit even a right code answers `rate-limited`, so guessing teaches nothing.
+- Failed joins over all addresses (600 a minute) are a soft brake, not a wall:
+  past it, an address may fail only 3 times in 10 minutes, and a right code
+  from an address with fewer failures still pairs. Failing on purpose
+  therefore cannot stop everybody else's pairing.
+- Joins per code: 10 a minute.
+- Connections: WebSocket upgrades per address, 30 a minute (then HTTP 429);
+  host connections per address, 4; signalling connections per address, 4;
+  open host connections in all, 512, and open pages in all, 128 (then HTTP
+  503). Hosts and pages have separate budgets, so neither can crowd out the
+  other.
+- Codes: new codes per host connection, 30 a minute; per address, 60 a minute
+  (however often it reconnects); live codes per host, 64; per address, 128;
+  in all, 20 000. Codes remembered after use are capped apart (20 000) and
+  never block a new one.
+- Pages in signalling per host: 16. A page must send its join within 10 s,
+  and its signalling connection lasts at most 120 s.
+- Messages are at most 64 KiB. A host sends at most 10 a second (bursts of
+  60); a page at most 80 after its join.
+- The relay carries only one or two answers and up to 64 candidates (each a
+  flat object of at most 2 KiB) per page: never arbitrary data.
+- A connection may send 80 KiB at once and 16 KiB a second after that, every
+  frame (pings included) counting at least 256 bytes. A client that does not
+  read what it is sent is dropped past 256 KiB waiting. Both are dropped
+  without a close handshake.
 
 **TURN credentials.** A page needs them before its code is checked (it makes
 its offer with them), so any client that reaches `/v1/join` gets some; one
@@ -76,7 +94,9 @@ after `VR_PAIR_TURN_TTL`. With `VR_PAIR_HOST_KEYS` set, only hosts with a key
 may connect at all.
 
 **Logging.** Counts and reasons only: never an offer, an answer, a
-candidate, a code or a TURN credential.
+candidate, a code or a TURN credential. Addresses are logged only once
+validated as IP addresses, and lines about clients are capped (10 a minute
+per address, 300 a minute in all), so nobody can flood the journal.
 
 ## Configuration
 
@@ -96,14 +116,23 @@ candidate, a code or a TURN credential.
 | `VR_PAIR_RESUME_TTL`, `VR_PAIR_RESUME_TTL_MAX` | `43200`, `86400` | Resume code lifetime and cap, seconds |
 | `VR_PAIR_PING_S`, `VR_PAIR_PING_TIMEOUT_S` | `20`, `20` | WebSocket pings; a peer that does not answer is dropped |
 | `VR_PAIR_JOIN_SESSION_S` | `120` | Longest signalling connection of a page |
-| `VR_PAIR_HOSTS_PER_IP` | `8` | Host connections per address |
+| `VR_PAIR_MAX_HOSTS`, `VR_PAIR_MAX_PAGES` | `512`, `128` | Open host and page connections in all (then 503) |
+| `VR_PAIR_CONNS_PER_IP_PER_MIN` | `30` | WebSocket upgrades per address per minute (then 429) |
+| `VR_PAIR_HOSTS_PER_IP` | `4` | Host connections per address |
+| `VR_PAIR_JOIN_CONNS_PER_IP` | `4` | Page connections per address |
 | `VR_PAIR_CODES_PER_MIN` | `30` | New codes per host connection per minute |
 | `VR_PAIR_CODES_PER_IP_PER_MIN` | `60` | New codes per host address per minute |
+| `VR_PAIR_LIVE_CODES_PER_HOST`, `VR_PAIR_LIVE_CODES_PER_IP` | `64`, `128` | Live codes per host connection and per address |
+| `VR_PAIR_MAX_CODES` | `20000` | Live codes in all |
+| `VR_PAIR_PEERS_PER_HOST` | `16` | Pages in signalling per host |
+| `VR_PAIR_JOINS_PER_CODE_PER_MIN` | `10` | Joins of one code per minute |
+| `VR_PAIR_IPV6_PREFIX` | `56` | IPv6 clients are counted per network of this many bits |
 | `VR_PAIR_TURN_PER_IP` | `30` | TURN credentials per address per 10 minutes |
 | `VR_PAIR_HOST_KEYS` / `VR_PAIR_HOST_KEYS_FILE` | *(none: any host)* | Keys a backend must present to connect as a host (comma-separated, or one per line in the file). A backend gives its key in `VISIVO_VR_PAIR_URL` as `?key=…`, or as `Authorization: Bearer …` |
 | `VR_PAIR_JOIN_FAILS_PER_IP` | `20` | Failed joins per address per 10 minutes |
-| `VR_PAIR_GLOBAL_FAILS_PER_MIN` | `600` | Failed joins per minute over all addresses |
-| `VR_PAIR_SECRET` / `VR_PAIR_SECRET_FILE` | *(random per start)* | Signs the owner keys of resume codes; set it (e.g. `openssl rand -hex 32`) so a backend's headsets can resume after the service restarts |
+| `VR_PAIR_GLOBAL_FAILS_PER_MIN` | `600` | Failed joins per minute over all addresses that turn the soft brake on |
+| `VR_PAIR_STORM_FAILS_PER_IP` | `3` | Failed joins per address per 10 minutes while the brake is on |
+| `VR_PAIR_SECRET` / `VR_PAIR_SECRET_FILE` | *(random per start)* | Signs the owner keys of resume codes; set it (e.g. `openssl rand -hex 32`) so a backend's headsets can resume after the service restarts. Prefer the file (mode 600): an empty file stops the service, and a file others may read is reported in the log |
 | `VR_PAIR_TLS_CERT`, `VR_PAIR_TLS_KEY` | *(none)* | Serve `wss://` directly, without a proxy |
 | `VR_PAIR_LOG_LEVEL` | `INFO` | Log level |
 
@@ -181,16 +210,21 @@ location /v1/ {
 location = /healthz { proxy_pass http://127.0.0.1:8765; }
 ```
 
-Apache 2.4.47 or later (`mod_proxy`, `mod_proxy_http`):
+Apache 2.4.47 or later (`mod_proxy`, `mod_proxy_http`): use
+[`deploy/apache-pair.conf`](deploy/apache-pair.conf), written for a `/pair/`
+prefix. Its core is one line per path, each with its own small pool:
 
 ```apache
-ProxyPass        /v1/ http://127.0.0.1:8765/v1/ upgrade=websocket timeout=120
-ProxyPassReverse /v1/ http://127.0.0.1:8765/v1/
-ProxyPass        /healthz http://127.0.0.1:8765/healthz
+ProxyPass "/pair/v1/host" "http://127.0.0.1:8765/v1/host" upgrade=websocket timeout=120 connectiontimeout=5 max=8 acquire=50
+ProxyPass "/pair/v1/join" "http://127.0.0.1:8765/v1/join" upgrade=websocket timeout=120 connectiontimeout=5 max=4 acquire=50
+ProxyPass "/pair/healthz" "http://127.0.0.1:8765/healthz" timeout=5 connectiontimeout=5 max=2 acquire=50
 ```
 
-(Older Apache: `mod_proxy_wstunnel` with `ProxyPass /v1/ ws://127.0.0.1:8765/v1/`.)
-Apache adds `X-Forwarded-For` itself.
+On a server shared with other sites, `max` is essential. Apache holds a
+worker thread for every open WebSocket, and a backend's host connection lasts
+for hours, so without it the service can take every worker. Apache appends
+the client's address to `X-Forwarded-For` itself. (Older Apache:
+`mod_proxy_wstunnel` with `ProxyPass /v1/ ws://127.0.0.1:8765/v1/`.)
 
 The service may share a host name with the loader page or live on its own
 (`wss://pair.example.org`); with a prefix (`/vr-pair/v1/…`), strip it in the
@@ -214,6 +248,103 @@ Nothing names the server in code. To move it:
   `pair_service` to the new address: the headset's page connects to the
   service too.
 
+## Security
+
+The service is public: anyone can open `/v1/join`, and `/v1/host` unless host
+keys are set. It was reviewed against a hostile client in
+[#345](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/345).
+Operators should know these points:
+
+- **Everything a client can make it hold is bounded**: connections,
+  connection attempts, bytes, frames and messages per connection, the output
+  waiting for a client that does not read, codes, remembered codes and log
+  lines (see *Limits*). Bookkeeping costs the same however many codes are
+  held. Malformed, oversized or deeply nested JSON, and fields of the wrong
+  type, answer `bad-request`. No client input can end a connection's handler
+  with an error.
+- **Client addresses.** With `VR_PAIR_TRUST_PROXY=1` the address is the
+  *last* `X-Forwarded-For` entry: the one the proxy appended or set. What a
+  client writes in the header itself is ignored. The proxy must append (Apache)
+  or replace (`proxy_set_header X-Forwarded-For $remote_addr` in nginx) that
+  header. Never turn the setting on without a proxy in front, or clients pick
+  their own address. IPv6 clients are counted per /56.
+- **Origins** are compared without case and without a trailing slash, against
+  the exact scheme, host and port. `null`, a missing or repeated `Origin`, a
+  path, an explicit default port or another host are refused. The check keeps
+  pages of other web sites out. A program that is not a browser can send any
+  `Origin`, so the check is not an authentication.
+- **Code guessing.** A pair code holds 30 bits and lives 5 minutes. An address
+  gets 20 failures in 10 minutes. While failures over all addresses exceed 600
+  a minute, each address gets only 3, but a right code from an address with
+  fewer failures still pairs. An attacker spread over many addresses gets 3
+  guesses from each. With 10 live codes, one guess hits with probability
+  about 1 in 10^8.
+- **Shared NAT.** The limits count per address, and an institute's computers
+  often share one. On such a site, one colleague's typos (20 in 10 minutes)
+  rate-limit every headset of the site for up to 10 minutes. Busy sites hit
+  the host and code limits too. For a deployment that serves institutes,
+  raise them:
+
+  | Variable | Default | Institute |
+  |---|---|---|
+  | `VR_PAIR_HOSTS_PER_IP` | 4 | 64 |
+  | `VR_PAIR_JOIN_CONNS_PER_IP` | 4 | 64 |
+  | `VR_PAIR_CONNS_PER_IP_PER_MIN` | 30 | 600 |
+  | `VR_PAIR_CODES_PER_IP_PER_MIN` | 60 | 300 |
+  | `VR_PAIR_LIVE_CODES_PER_IP` | 128 | 512 |
+  | `VR_PAIR_JOIN_FAILS_PER_IP` | 20 | 60 |
+
+  A higher failure limit gives one address more guesses (60 in 10 minutes:
+  still about 1 in 10^6 per 10 minutes against 10 live codes). Counting
+  failures more finely (per connection, or forgiving typos close to a live
+  code) would either let an attacker reset its count by reconnecting or tell
+  it how close it came, so the service does not do it.
+- **What remains.** The caps on connections protect the machine, not the
+  service's availability. An attacker with several addresses can hold them
+  full, and pairing then answers 503 until the connections end (a page's
+  last at most 120 s, a host's for as long as it pings).
+  - Behind Apache the effective cap is the tunnel pool of
+    `deploy/apache-pair.conf`: `max` per Apache child, here 8 hosts and 4
+    pages each. With the default 4 connections per address, a handful of
+    addresses can fill it.
+  - A client can also get 503 from a full child while another child still
+    has room.
+  - Raising the per-address limits for institutes (below) makes this easier.
+    Raise Apache's `MaxRequestWorkers` and `max` together before relying on
+    many simultaneous backends.
+  - Host keys (`VR_PAIR_HOST_KEYS`) close `/v1/host` to unknown backends,
+    where every backend can be given one.
+  - On some mobile networks unrelated users share one IPv6 /56. During a
+    guessing storm they then share its 3 failures.
+- **Secrets.** Keep `VR_PAIR_SECRET` in a file of mode 600, read with
+  `VR_PAIR_SECRET_FILE`, not in a unit's `Environment=` (which `systemctl
+  show` prints to any local user). Secrets never appear in the log or in the
+  configuration's text form.
+- **Dependency.** `websockets` is pinned (`requirements.txt`). The service
+  extends its server connection, so an upgrade is reviewed. Rerun the tests
+  and `tools/attack_harness.py` before you raise it.
+- **Errors** tell a client only a reason from the protocol (`bad-request`,
+  `rate-limited`, ...), or an HTTP status with a fixed one-line body (403,
+  404, 429, 503). The server sends no `Server` header and no tracebacks.
+
+### Host hardening
+
+[`deploy/`](deploy/) holds the files for a Debian host with Apache in front:
+
+- [`visivo-vr-pair.service`](deploy/visivo-vr-pair.service), a systemd unit
+  that confines the process. It has no capabilities, sees no other user's
+  files and no other site's files, no devices and no other processes, and
+  cannot write to disk. It cannot map memory both writable and executable, is
+  limited to an ordinary service's system calls, talks to this machine only,
+  can bind its own port only, and is bounded in memory, tasks, files and CPU.
+  Each line says what it does. `systemd-analyze security` scores it 0.9
+  (SAFE), against 8.4 (EXPOSED) for a unit with only `NoNewPrivileges`,
+  `PrivateTmp`, `ProtectSystem=strict` and `ProtectHome=read-only`. Measured
+  with systemd 257 on Debian 13, where the service ran and paired under it.
+- [`apache-pair.conf`](deploy/apache-pair.conf), the proxy block: the three
+  paths only, a small pool of tunnels per path, GET only, no request body,
+  and mod_reqtimeout against slow clients.
+
 ## Tests
 
 ```sh
@@ -223,3 +354,11 @@ python -m pytest -q
 ```
 
 They start the service on a free port of `127.0.0.1` and need no network.
+
+`tools/attack_harness.py` runs the attacks of the security review against a
+local copy with the production settings. It reports the service's memory, CPU,
+descriptors, threads and log lines, and whether a legitimate pairing still
+succeeds during each attack. It can also go through a private local Apache
+(`--apache`), and measure what one new code costs when many are held
+(`--micro`). It connects to 127.0.0.1 only; never point load at a public
+server.

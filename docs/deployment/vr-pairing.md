@@ -82,20 +82,27 @@ this is what each group is for in a deployment.
 | Behind a proxy | `VR_PAIR_TRUST_PROXY` | `1` behind nginx or Apache, so the rate limits see the client's address. Leave it off when clients connect directly. |
 | Direct TLS | `VR_PAIR_TLS_CERT`, `VR_PAIR_TLS_KEY` | Only to serve `wss://` without a proxy. |
 | Resume across restarts | `VR_PAIR_SECRET`, `VR_PAIR_SECRET_FILE` | **Set it** (`openssl rand -hex 32`). Without it a restart of the service makes every headset pair again with a new code. |
-| Which backends | `VR_PAIR_HOST_KEYS`, `VR_PAIR_HOST_KEYS_FILE` | Optional. With keys set, only backends that present one may ask for codes (see [Security](#security)). |
+| Which backends | `VR_PAIR_HOST_KEYS`, `VR_PAIR_HOST_KEYS_FILE` | Optional. With keys set, only backends that present one may ask for codes (see [Security and hardening](#security-and-hardening)). |
 | STUN and TURN | `VR_PAIR_STUN_URLS`, `VR_PAIR_TURN_URLS`, `VR_PAIR_TURN_SECRET`, `VR_PAIR_TURN_SECRET_FILE`, `VR_PAIR_TURN_TTL`, `VR_PAIR_TURN_USER`, `VR_PAIR_TURN_USERNAME`, `VR_PAIR_TURN_PASSWORD` | Optional. With coturn's `use-auth-secret`, give the shared secret and each connection gets credentials that expire after `VR_PAIR_TURN_TTL`; the static user name and password are for a TURN server without a shared secret. |
 | Code lifetimes | `VR_PAIR_CODE_TTL`, `VR_PAIR_CODE_TTL_MAX`, `VR_PAIR_RESUME_TTL`, `VR_PAIR_RESUME_TTL_MAX` | The defaults (5 minutes, 12 hours) suit most uses. |
-| Rate limits | `VR_PAIR_HOSTS_PER_IP`, `VR_PAIR_CODES_PER_MIN`, `VR_PAIR_CODES_PER_IP_PER_MIN`, `VR_PAIR_TURN_PER_IP`, `VR_PAIR_JOIN_FAILS_PER_IP`, `VR_PAIR_GLOBAL_FAILS_PER_MIN` | See the note below. |
+| Rate limits | `VR_PAIR_HOSTS_PER_IP`, `VR_PAIR_JOIN_CONNS_PER_IP`, `VR_PAIR_CONNS_PER_IP_PER_MIN`, `VR_PAIR_CODES_PER_MIN`, `VR_PAIR_CODES_PER_IP_PER_MIN`, `VR_PAIR_LIVE_CODES_PER_HOST`, `VR_PAIR_LIVE_CODES_PER_IP`, `VR_PAIR_TURN_PER_IP`, `VR_PAIR_JOIN_FAILS_PER_IP`, `VR_PAIR_GLOBAL_FAILS_PER_MIN`, `VR_PAIR_STORM_FAILS_PER_IP`, `VR_PAIR_IPV6_PREFIX` | See the note below. |
+| Capacity | `VR_PAIR_MAX_HOSTS`, `VR_PAIR_MAX_PAGES`, `VR_PAIR_MAX_CODES`, `VR_PAIR_PEERS_PER_HOST`, `VR_PAIR_JOINS_PER_CODE_PER_MIN` | The defaults. Behind Apache, the proxy's `max` is the smaller cap (see [Security and hardening](#security-and-hardening)). |
 | Connections | `VR_PAIR_PING_S`, `VR_PAIR_PING_TIMEOUT_S`, `VR_PAIR_JOIN_SESSION_S` | The defaults; the proxy's read timeout must exceed the ping interval. |
 | Logging | `VR_PAIR_LOG_LEVEL` | `INFO`. The service logs counts and reasons only, never a code, an offer, a candidate or a credential. |
 
 ```{note}
-The rate limits count per address. Every running backend keeps one host
-connection to the service, so behind an institute's NAT, where many users'
-computers share one public address, `VR_PAIR_HOSTS_PER_IP` (8 by default)
-caps how many backends of that site can be paired at the same time, and
-`VR_PAIR_CODES_PER_IP_PER_MIN` (60) how many codes they ask for. Raise both for
-a site that shares an address.
+The rate limits count per address (an IPv4 address, or an IPv6 /56). Behind
+an institute's NAT, many users' computers share one public address. Every
+running backend keeps one host connection, so `VR_PAIR_HOSTS_PER_IP` (4)
+caps how many backends of that site can be paired at the same time. One
+colleague's mistyped codes (`VR_PAIR_JOIN_FAILS_PER_IP`, 20 in 10 minutes)
+rate-limit the site's headsets for up to 10 minutes. For a deployment that
+serves institutes, raise these:
+`VR_PAIR_HOSTS_PER_IP=64`, `VR_PAIR_JOIN_CONNS_PER_IP=64`,
+`VR_PAIR_CONNS_PER_IP_PER_MIN=600`, `VR_PAIR_CODES_PER_IP_PER_MIN=300`,
+`VR_PAIR_LIVE_CODES_PER_IP=512` and `VR_PAIR_JOIN_FAILS_PER_IP=60`. The
+README's Security section gives the reasoning and what each costs against
+code guessing.
 ```
 
 ### TURN
@@ -201,13 +208,19 @@ Apache 2.4.47 or later (`mod_ssl`, `mod_proxy`, `mod_proxy_http`, `mod_headers`)
     </Location>
 
     # The pairing service, /pair/v1/... -> 127.0.0.1:8765/v1/...
-    ProxyPass        /pair/ http://127.0.0.1:8765/ upgrade=websocket timeout=120
-    ProxyPassReverse /pair/ http://127.0.0.1:8765/
+    # (services/vr-pair/deploy/apache-pair.conf, with its comments)
+    Include /etc/apache2/visivo-vr-pair.conf
 </VirtualHost>
 ```
 
+`/etc/apache2/visivo-vr-pair.conf` is a copy of
+[`services/vr-pair/deploy/apache-pair.conf`](https://github.com/VisIVOLab/VisIVOVisualAnalytics/blob/main/services/vr-pair/deploy/apache-pair.conf).
+It needs `mod_reqtimeout` and `mod_headers` as well. Use it rather than a
+single `ProxyPass /pair/` line: on a server that hosts other sites, its `max`
+limits keep the pairing service from taking Apache's workers (see
+[Security and hardening](#security-and-hardening)).
 (Older Apache: `mod_proxy_wstunnel` with `ProxyPass /pair/v1/ ws://127.0.0.1:8765/v1/`.)
-Apache adds `X-Forwarded-For` itself.
+Apache appends the client's address to `X-Forwarded-For` itself.
 
 The service then runs with at least:
 
@@ -294,13 +307,15 @@ users open the new one and install it again. Moving either piece ends the
 headsets connected at the time (their backends restart); users pair again with
 a new code.
 
-## Security
+## Security and hardening
 
 - **Pair codes** are 6 characters from an alphabet without look-alikes (30
   bits), single use, valid 5 minutes. The desktop revokes a code nobody used
-  when its dialog closes. Failed joins are rate-limited per address and over
-  all addresses; once an address is over its limit even a right code answers
-  `rate-limited`, so guessing teaches nothing.
+  when its dialog closes. Failed joins are rate-limited per address; once an
+  address is over its limit even a right code answers `rate-limited`, so
+  guessing teaches nothing. Failures over all addresses only tighten each
+  address's limit (to 3): failing on purpose cannot stop other users from
+  pairing with a right code.
 - **Resume codes** are 192 random bits, issued by the backend at pairing, valid
   12 hours and kept in the loader's tab only (session storage). They let a
   dropped link come back without a new code. The desktop's **Disconnect**
@@ -332,3 +347,76 @@ a new code.
   example refuses to relay to loopback and `0.0.0.0/8` addresses; add the
   host's own private networks to its `--denied-peer-ip` list if the TURN host
   sits on an internal network.
+
+### What a hostile client can and cannot do
+
+The service was reviewed and attacked on a local copy of a production
+configuration
+([#345](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/345)). The
+script that does it ships as `services/vr-pair/tools/attack_harness.py`.
+Everything a client can make the service hold is bounded:
+- connections, overall and per address;
+- connection attempts per address;
+- bytes, frames and messages per connection;
+- output waiting for a client that does not read;
+- codes, live and remembered;
+- log lines.
+
+The relay carries signalling only (one or two answers and at most 64 small
+candidates per page), so the service cannot be used as a data pipe. No input
+ends a handler with an error or a traceback. The limits and their values
+are in the
+[README's Security section](https://github.com/VisIVOLab/VisIVOVisualAnalytics/blob/main/services/vr-pair/README.md#security).
+
+The global caps protect the machine, not the service's availability. An
+attacker with many addresses can fill them, and pairing then answers 503 until
+those connections end.
+
+### Protecting the other sites of a shared server
+
+The process runs confined, so even an unknown bug cannot reach the rest of the
+machine. Apache must be kept from giving it all its workers. Two files in
+`services/vr-pair/deploy/` do this, each with a comment on every line:
+
+| File | What it does |
+|---|---|
+| `visivo-vr-pair.service` | systemd unit. No capabilities. Sees only its own directory, read-only: no other home, no `/var/www`, no certificates, no devices, no other processes. Cannot write to disk or map writable executable memory. Limited to an ordinary service's system calls. Talks only to this machine and binds only its own port. At most 384 MiB of memory, 32 tasks, 4096 files and half a CPU. Restarts after any exit, with a growing delay. |
+| `apache-pair.conf` | The proxy block for `/pair/`. Only the three paths, each with its own small pool of tunnels (`max`), so the service holds at most 72 of Apache's 150 default workers. GET only, no request body, and `mod_reqtimeout` against clients that send their headers slowly. |
+
+Measured locally:
+- `systemd-analyze security` gives the unit 0.9 (SAFE), against 8.4
+  (EXPOSED) for a unit with only `NoNewPrivileges`, `PrivateTmp`,
+  `ProtectSystem=strict` and `ProtectHome=read-only` (systemd 257, Debian 13).
+- The service started and paired under the hardened unit.
+- In a 20-worker Apache, 20 WebSockets through a plain `ProxyPass /pair/` line
+  took every worker, and a static page of another site timed out. With
+  `apache-pair.conf` the extra WebSockets got 503 at once, and the other site
+  and a headset's page were still served.
+
+### Applying it on a server
+
+For a service in `/home/visivo-vr/visivo-vr-pair` with its virtual
+environment in `venv/` and its secret in `pair_secret` (change the paths in
+the unit if yours differ):
+
+1. Update the code and the pinned dependency:
+   `sudo -u visivo-vr venv/bin/pip install -r requirements.txt`. The virtual
+   environment must use the system's Python (`/usr/bin/python3.13`), because
+   the unit hides everything under `/home` but the service directory.
+2. `chmod 600 pair_secret` (owner `visivo-vr`).
+3. Install the unit: `cp deploy/visivo-vr-pair.service
+   /etc/systemd/system/` (replacing the old one, and keeping any
+   `Environment=` lines it had that this one lacks), then `systemctl
+   daemon-reload && systemctl restart visivo-vr-pair`. Check that it runs
+   (`systemctl status visivo-vr-pair`, `journalctl -u visivo-vr-pair`) and
+   compare `systemd-analyze security visivo-vr-pair.service` with the
+   numbers above. If it does not start, the journal names the setting. The
+   most likely cause is a path in the unit that differs from your layout.
+4. Apache: `a2enmod headers reqtimeout`, copy `deploy/apache-pair.conf` to
+   `/etc/apache2/visivo-vr-pair.conf`, and in the virtual host replace the
+   `ProxyPass /pair/ ...` line with `Include /etc/apache2/visivo-vr-pair.conf`.
+   Then `apache2ctl configtest && systemctl reload apache2`. Check
+   `apache2ctl -M | grep remoteip`: if `mod_remoteip` is on, its trusted
+   proxies decide the address the service sees.
+5. Check from outside: `curl https://<host>/pair/healthz` answers `ok`, and a
+   pairing from the desktop and the headset works.
