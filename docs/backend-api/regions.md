@@ -65,14 +65,42 @@ and `bpanda` are reported, not read.
 
 CRTF shapes: `circle`, `ellipse`, `box` (two corners), `centerbox`, `rotbox`,
 `annulus`, `poly`, `symbol` (a point), `line`, `vector` (a line with an arrow
-at its end) and `text`, with the `ann` and `-` prefixes. A CRTF ellipse
-`[[x, y], [b1, b2], pa]` has `b1` along the position angle `pa`, measured
-from north (from +y in pixels), so its canonical form is `semi_axes`
-`[b2, b1]` at `angle_deg` `pa`, and the other way round on export; a
-`rotbox` angle is read as ds9's, and a `centerbox` with an angle is a rotated
-box. CRTF pixel positions
-are 0-based, as in CASA; they become 1-based in the canonical model and go
-back to 0-based when written.
+at its end) and `text`, with the `ann` and `-` prefixes. A `centerbox` with
+an angle is a rotated box. CRTF pixel positions are 0-based, as in CASA; they
+become 1-based in the canonical model and go back to 0-based when written.
+
+#### CRTF angles
+
+The CASA documentation ("Region File Format", Allowed Shapes) gives
+`ellipse[[x, y], [bmaj, bmin], pa]` and `rotbox[[x, y], [x_width, y_width],
+rotang]` without saying where the angles start. CASA's code and its masks
+(casatools 6.7, issue #151) settle it:
+
+| CRTF | CASA's meaning | Canonical (ds9) form |
+|---|---|---|
+| `ellipse[[x, y], [b1, b2], pa]` | `b1` at position angle `pa`, north through east (laid at `pa + 90°` from pixel +x); `b1` stays along `pa` when it is the shorter axis | `semi_axes` `[b2, b1]`, `angle_deg` `pa` |
+| `rotbox[[x, y], [w, h], pa]` | the box turned by `pa` from north through east, so `h` is at position angle `pa` and `w` at ds9's angle `pa` | `size` `[w, h]`, `angle_deg` `pa` |
+
+Export writes the inverse. On a grid with north up and east to the left
+(CASA's own images, and most radio images), the masks VisIVO and CASA draw
+for the same line are the same: for a 40×10" ellipse and an 80×20" rotbox
+at 0° and 30°, in pixels and in J2000, on 1" pixels, the long axis agrees
+within 0.1° and the pixel count within 0.3%. The one exception measured is
+a J2000 box at 0° whose edges fall exactly on pixel centres: CASA keeps
+every pixel an edge touches, VisIVO about half of the edge pixels (1627
+against 1701 pixels).
+
+On a grid with east to the right or with the sky rotated on it, CASA and
+VisIVO differ in two cases, and VisIVO keeps the documented meaning:
+
+- a sky ellipse: CASA applies `pa` on the pixel grid (from pixel +y towards
+  −x), VisIVO from north at the region's centre. On an east-right grid an
+  ellipse at 30° is mirrored (CASA's long axis at 120° from +x, VisIVO's at
+  60°); on a grid with the sky turned by 25° they are 25° apart.
+- a `rotbox` or `centerbox` in pixel coordinates: CASA moves it to the sky
+  and lays it along the sky axes, VisIVO along the pixel axes.
+
+Sky boxes, pixel ellipses and two-corner boxes agree on every grid.
 
 ### Statements that are not read
 
@@ -111,7 +139,12 @@ when the header has none of these keywords, physical equals image, as in
 ds9. A size with the `p` suffix is a physical pixel and one with `i` an image
 pixel in any frame; a bare size in `physical` is a physical pixel. CRTF takes `coord=` per region or on a `global` line: `J2000`,
 `B1950` (FK4), `ICRS`, `GALACTIC`, `ECLIPTIC`; other systems are refused.
-A CRTF sky region with no `coord` is read as J2000. Sexagesimal positions are
+A CRTF sky region with no `coord` (on its line or on a `global` line) is in
+the image's own frame, as in CASA ("Default: image value"): `parse` with a
+`dataset_id` gives it the frame of the dataset's celestial WCS, so
+`circle[[150deg, 2deg], 10arcsec]` on a galactic image is at l = 150°,
+b = 2°. Without a dataset, or on a dataset without a celestial WCS, it is
+read as J2000. Sexagesimal positions are
 hours only for the RA of an equatorial frame.
 
 ## Frame conversion
@@ -170,7 +203,8 @@ Parse CRTF or DS9 text into canonical regions.
 ```
 
 `format` is `auto` (detected from the text), `crtf` or `ds9`; any other is
-422. With a `dataset_id`, ds9 `physical` coordinates use its LTM/LTV even when
+422. With a `dataset_id`, ds9 `physical` coordinates use its LTM/LTV and a
+CRTF sky region without `coord` takes the dataset's sky frame, even when
 `to_frame` is empty. Response:
 
 ```json
