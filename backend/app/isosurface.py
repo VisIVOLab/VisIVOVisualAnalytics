@@ -56,9 +56,10 @@ HARD_MAX_VOXELS = 1024 ** 3
 DEFAULT_MAX_TRIANGLES = 200_000
 MIN_TRIANGLES = 1_000
 MAX_TRIANGLES = 1_000_000
-#: The surface of one level before decimation may hold at most this many
-#: triangles: an automatic level of detail is coarsened until it fits, an
-#: asked-for one is refused (the decimation's memory grows with it).
+#: The surfaces of one request before decimation may hold at most this many
+#: triangles together (every level's slabs are held until the last slab,
+#: about 30 bytes a triangle: 480 MB): an automatic level of detail is
+#: coarsened until they fit, an asked-for one is refused.
 RAW_MAX_TRIANGLES = 16_000_000
 #: A surface of more than this many times its budget is first clustered to
 #: about this many times it (quadric clustering), then decimated.
@@ -157,14 +158,19 @@ class LevelReader:
             self._data = data
 
     def slab(self, z0: int, z1: int) -> np.ndarray:
-        """Planes ``z0 .. z1 - 1`` of the level, float32 (z, y, x), NaN blank."""
+        """Planes ``z0 .. z1 - 1`` of the level (z, y, x), NaN blank: float32
+        from a pyramid, the file's own float type from the cube (a float64
+        PLUTO .dbl is not cast here: transform_block takes its logarithm
+        first), other types as float64."""
         if self._pyr is not None:
             ny, nx = self.shape[1], self.shape[2]
             return self._pyr.read_region(self.lod, (slice(z0, z1), slice(0, ny), slice(0, nx)),
                                          ghost=0, edge="nan")
         f = 1 << self.lod
-        block = self._data[z0 * f:(z1 - 1) * f + 1:f, ::f, ::f]
-        return np.asarray(block, dtype=np.float32)
+        block = np.asarray(self._data[z0 * f:(z1 - 1) * f + 1:f, ::f, ::f])
+        if block.dtype.kind != "f":
+            block = block.astype(np.float64)
+        return block
 
     def close(self) -> None:
         if self._pyr is not None:
@@ -214,17 +220,27 @@ def transform_level(level: float, scale: str) -> float:
     return level
 
 
+_F32_MAX = float(np.finfo(np.float32).max)
+
+
 def transform_block(block: np.ndarray, scale: str) -> np.ndarray:
-    """The block in contouring space, blank voxels at ``_BLANK`` (float32)."""
-    a = np.array(block, dtype=np.float32, copy=True)
+    """The block in contouring space as float32, blank voxels at ``_BLANK``.
+    Non-finite values (NaN, ±inf) are blank on both scales. The logarithm is
+    taken in the block's own precision before the cast, so a float64 value
+    beyond float32's range or below its smallest keeps its logarithm; on a
+    linear scale such values are clamped to float32's range, not made
+    infinite."""
+    a = np.asarray(block)
+    if a.dtype.kind != "f":
+        a = a.astype(np.float64)
+    fin = np.isfinite(a)
+    out = np.full(a.shape, _BLANK, dtype=np.float32)
     if scale == "log":
-        with np.errstate(divide="ignore", invalid="ignore"):
-            pos = a > 0
-            out = np.full(a.shape, _BLANK, dtype=np.float32)
-            np.log10(a, out=out, where=pos)
+        pos = fin & (a > 0)
+        out[pos] = np.log10(a[pos]).astype(np.float32)
         return out
-    a[~np.isfinite(a)] = _BLANK
-    return a
+    out[fin] = np.clip(a[fin], -_F32_MAX, _F32_MAX).astype(np.float32)
+    return out
 
 
 def field_range(path: str, pyramid_path: str | None) -> tuple[float, float]:
@@ -296,11 +312,11 @@ def _vtk():
 def contour_slab(block: np.ndarray, value: float, z0: int) -> tuple[np.ndarray, np.ndarray]:
     """The surface at ``value`` of a slab (z, y, x float32 in contouring
     space) whose first plane is level plane ``z0``: (points (n, 3) float32 in
-    level voxels x, y, z; triangles (m, 3) int64)."""
+    level voxels x, y, z; triangles (m, 3) int32)."""
     vtk, _np2vtk, _ids, vtk_to_numpy = _vtk()
     depth, height, width = block.shape
     if depth < 2 or height < 2 or width < 2:
-        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64)
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int32)
     raw = np.ascontiguousarray(block, dtype=np.float32)
     image = vtk.vtkImageImport()
     image.SetImportVoidPointer(raw, 1)   # raw outlives the filter below
@@ -320,9 +336,10 @@ def contour_slab(block: np.ndarray, value: float, z0: int) -> tuple[np.ndarray, 
     out = contour.GetOutput()
     n = out.GetNumberOfPoints()
     if n == 0 or out.GetNumberOfPolys() == 0:
-        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64)
+        return np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int32)
     pts = vtk_to_numpy(out.GetPoints().GetData()).astype(np.float32, copy=True).reshape(-1, 3)
-    conn = vtk_to_numpy(out.GetPolys().GetConnectivityArray()).astype(np.int64, copy=True)
+    # int32 while the slabs are kept (a slab has far fewer than 2^31 vertices).
+    conn = vtk_to_numpy(out.GetPolys().GetConnectivityArray()).astype(np.int32, copy=True)
     return pts, conn.reshape(-1, 3)
 
 
@@ -409,6 +426,29 @@ def merge_and_decimate(points: np.ndarray, triangles: np.ndarray, budget: int) -
             dec2.VolumePreservationOn()
             dec2.Update()
             poly = dec2.GetOutput()
+    # The budget is a bound: a decimation that stopped above it (it may, on a
+    # surface whose edges it cannot collapse) is followed by clustering on
+    # cells sized from the surface's area, coarser each time, until it fits.
+    cell = None
+    for _ in range(8):
+        n = poly.GetNumberOfPolys()
+        if n <= budget:
+            break
+        pts, tris = _arrays(poly)
+        b = poly.GetBounds()
+        ext = [max(1.0, b[2 * i + 1] - b[2 * i]) for i in range(3)]
+        want = math.sqrt(2.0 * max(surface_area(pts, tris), 1e-9) / (0.8 * budget))
+        cell = max(want if cell is None else cell * 1.25, want,
+                   (ext[0] * ext[1] * ext[2] / MAX_CLUSTER_CELLS) ** (1.0 / 3.0))
+        qc = vtk.vtkQuadricClustering()
+        qc.SetInputData(poly)
+        qc.AutoAdjustNumberOfDivisionsOff()
+        qc.SetNumberOfDivisions(*[max(2, int(math.ceil(e / cell)) + 1) for e in ext])
+        qc.Update()
+        poly = qc.GetOutput()
+    if poly.GetNumberOfPolys() > budget:
+        raise IsosurfaceTooLarge(f"The surface could not be brought to {budget:,} triangles "
+                                 f"({poly.GetNumberOfPolys():,} left): ask a larger budget.")
     return _arrays(poly)
 
 
@@ -500,11 +540,16 @@ def _extract_at(path, lod, levels, values, scale, budget, pyramid_path, full_xyz
                 if len(tris):
                     parts[k].append((pts, tris))
                     counts[k] += len(tris)
-                    if counts[k] > RAW_MAX_TRIANGLES:
+                    # Every level's slabs are held until the last slab is
+                    # read (about 30 bytes a triangle): the cap is on their sum.
+                    if sum(counts) > RAW_MAX_TRIANGLES:
+                        many = len(values) > 1
+                        which = ", ".join(f"{x:g}" for x in levels)
                         raise IsosurfaceTooLarge(
-                            f"The surface at {levels[k]:g} has more than {RAW_MAX_TRIANGLES:,} "
-                            f"triangles at level of detail {lod} ({nx}x{ny}x{nz} voxels): ask a "
-                            "coarser level, or another value.")
+                            f"The surface{'s' if many else ''} at {which} {'have' if many else 'has'} "
+                            f"more than {RAW_MAX_TRIANGLES:,} triangles{' together' if many else ''} "
+                            f"at level of detail {lod} ({nx}x{ny}x{nz} voxels): ask a coarser "
+                            "level, fewer levels or other values.")
             read_s += tb - ta
             contour_s += time.perf_counter() - tb
             report(0.7 * (i + 1) / len(slabs), f"contouring {i + 1}/{len(slabs)}")
@@ -521,7 +566,7 @@ def _extract_at(path, lod, levels, values, scale, budget, pyramid_path, full_xyz
             pts_all, tris_all = [], []
             for pts, tris in parts[k]:
                 pts_all.append(pts)
-                tris_all.append(tris + base)
+                tris_all.append(tris.astype(np.int64) + base)
                 base += len(pts)
             points = np.concatenate(pts_all)
             triangles = np.concatenate(tris_all)

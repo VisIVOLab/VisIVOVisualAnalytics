@@ -415,3 +415,80 @@ async def test_route_pluto_variable_and_sibling_field(client, auth_headers, tmp_
     head, verts, _f = _read_ply(ply.content)
     assert "comment coordinates world" in head
     assert np.allclose(verts[:, :3].mean(axis=0), 0.0, atol=0.01)
+
+
+# ── Review fixes: memory cap, values, budget, concurrent requests ───────────
+
+
+def test_raw_cap_is_on_all_levels_together(sphere_cube, monkeypatch):
+    (a,) = ISO.extract(sphere_cube, [LEVEL], scale="linear", max_triangles=ISO.MAX_TRIANGLES)
+    (b,) = ISO.extract(sphere_cube, [LEVEL * 3], scale="linear", max_triangles=ISO.MAX_TRIANGLES)
+    # Each level alone fits; both together do not.
+    monkeypatch.setattr(ISO, "RAW_MAX_TRIANGLES", max(a.raw_triangles, b.raw_triangles) + 1)
+    ISO.extract(sphere_cube, [LEVEL], scale="linear", lod=0)
+    with pytest.raises(ISO.IsosurfaceTooLarge, match="together"):
+        ISO.extract(sphere_cube, [LEVEL, LEVEL * 3], scale="linear", lod=0)
+
+
+def test_slab_triangles_are_int32():
+    block = ISO.transform_block(_gauss((8, 8, 8)), "linear")
+    pts, tris = ISO.contour_slab(block, float(_gauss((8, 8, 8)).mean()), 0)
+    assert len(tris) and tris.dtype == np.int32 and pts.dtype == np.float32
+
+
+def test_transform_keeps_float64_and_blanks_non_finite():
+    a = np.array([1e40, 1e-50, np.inf, -np.inf, np.nan, 0.0, -2.0, 10.0], dtype=np.float64)
+    log = ISO.transform_block(a, "log")
+    assert log.dtype == np.float32
+    assert log[0] == pytest.approx(40.0) and log[1] == pytest.approx(-50.0) and log[7] == pytest.approx(1.0)
+    assert (log[2:7] == ISO._BLANK).all()             # ±inf, NaN, 0 and negative: blank
+    lin = ISO.transform_block(a, "linear")
+    assert lin[0] == np.finfo(np.float32).max          # clamped, not inf
+    assert (lin[2:5] == ISO._BLANK).all()             # ±inf and NaN blank, as on the log scale
+    assert lin[6] == -2.0 and lin[7] == 10.0 and np.isfinite(lin).all()
+
+
+def test_budget_is_a_bound_when_decimation_stops_short(sphere_cube, monkeypatch):
+    import vtk
+
+    class Stubborn:
+        """A decimation that does nothing (as one that cannot collapse an edge)."""
+        def SetInputData(self, poly): self.poly = poly
+        def Update(self): pass
+        def GetOutput(self): return self.poly
+        def __getattr__(self, name): return lambda *a: None
+    monkeypatch.setattr(vtk, "vtkQuadricDecimation", Stubborn)
+    (mesh,) = ISO.extract(sphere_cube, [LEVEL], scale="linear", max_triangles=4000)
+    assert 0 < len(mesh.triangles) <= 4000
+    da, dv = _errors(_voxels(mesh), mesh.triangles)
+    assert abs(da) < 0.05 and abs(dv) < 0.05, (da, dv)
+
+
+async def test_concurrent_requests_extract_once_and_empty_export(client, auth_headers, sphere_cube, monkeypatch):
+    import time as _time
+    from app.routers import isosurface as route
+    calls = []
+    real = ISO.extract
+
+    def slow(*a, **k):
+        calls.append(list(a[1]))
+        _time.sleep(0.4)
+        return real(*a, **k)
+    monkeypatch.setattr(route.ISO, "extract", slow)
+    dataset, headers = await _open(client, auth_headers, sphere_cube)
+    body = {"dataset_id": dataset, "levels": [LEVEL], "scale": "linear"}
+    r1 = (await client.post("/v1/isosurface/extract", json=body, headers=headers)).json()
+    r2 = (await client.post("/v1/isosurface/extract", json=body, headers=headers)).json()
+    assert r1["status"] == r2["status"] == "running"
+    t1, _ = await _finish(client, headers, r1["task_id"])
+    t2, _ = await _finish(client, headers, r2["task_id"])
+    # The second waited for the lock and found the first one's surface.
+    assert calls == [[LEVEL]]
+    assert t1["result"]["meshes"][0]["mesh_id"] == t2["result"]["meshes"][0]["mesh_id"]
+    # A level outside the values: an empty surface, which is not exported.
+    r = (await client.post("/v1/isosurface/extract", json={**body, "levels": [PEAK * 10]}, headers=headers)).json()
+    t3, _ = await _finish(client, headers, r["task_id"])
+    m = t3["result"]["meshes"][0]
+    assert m["triangles"] == 0
+    resp = await client.get(f"/v1/isosurface/mesh/{m['mesh_id']}/export", headers=headers)
+    assert resp.status_code == 409 and "empty" in resp.text

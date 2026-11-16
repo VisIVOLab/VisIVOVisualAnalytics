@@ -29,9 +29,11 @@ exportable as PLY or binary glTF. Every route takes the token
 4. **Budget.** The slabs' surfaces are joined (the vertices of the planes
    they share merged), then decimated to `max_triangles` (quadric
    decimation; a surface more than three times its budget is first
-   clustered to about three times it). A surface of more than 16 M triangles
-   before decimation is refused at an asked-for level; with `lod` −1 the next
-   coarser level is used instead.
+   clustered to about three times it). A request whose surfaces hold more
+   than 16 M triangles together before decimation is refused at an
+   asked-for level; with `lod` −1 the next coarser level is used instead.
+   The budget is a bound: a decimation that stops above it is followed by
+   coarser clustering until the surface fits.
 5. **Cache.** Each surface is kept (in memory, 512 MB, least recently used
    first out) under the file's version, the field, the level, the scale, the
    level of detail asked for (and whether a pyramid was there) and the
@@ -94,6 +96,8 @@ Box coordinates run 0..1 over the cube's full-resolution extent on each axis
 cache: extract it again.
 
 ## `GET /v1/isosurface/mesh/{mesh_id}/export`
+
+An empty surface (0 triangles) is not exported: 409.
 
 Query: `format` `ply` (default) or `glb`, `color` (`#rrggbb`, the glTF
 material), `save` (`true`: written in the workspace's exports under

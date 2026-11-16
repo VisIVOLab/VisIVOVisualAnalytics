@@ -239,3 +239,93 @@ test('the page side: a level asked for, the task followed, the mesh fetched and 
   assert.equal(ui.iso.surfaces.length, 0);
   assert.ok(changes > 0);
 });
+
+test('the page side: failures that may pass are asked again, a refusal is not; a superseded task is cancelled', async () => {
+  const { createIsosurfaces, transient } = await import('../../app/static/vr/js/isosurface-ui.js');
+  assert.equal(transient({ network: true }), true);
+  assert.equal(transient({ status: 503 }), true);
+  assert.equal(transient({ status: 404 }), true);
+  assert.equal(transient({ status: 422 }), false);
+  assert.equal(transient(null), false);
+  const { gl } = fakeGL();
+  const calls = [];
+  let taskStatus = 'completed';
+  let meshStatus = 404;
+  const backend = {
+    headers: () => ({}),
+    _json: async (method, path, body) => {
+      calls.push(`${method} ${path}`);
+      if (method === 'POST') return { task_id: `t${calls.length}`, status: 'running' };
+      if (method === 'DELETE') return { cancelled: true };
+      return { status: taskStatus, progress: 1, error: taskStatus === 'failed' ? 'too large' : '',
+        result: { cache_hits: 0, meshes: [{ mesh_id: 'm0', level: 1e-6, triangles: 4, raw_triangles: 4 }] } };
+    },
+  };
+  globalThis.fetch = async () => ({ ok: meshStatus === 200, status: meshStatus, arrayBuffer: async () => fixture() });
+  const state = { cube: { lo: -8, hi: -4, scale: 'log', mode: 'mean' }, open: { dataset_id: 'ds' } };
+  const ui = createIsosurfaces({ gl, state, backend: () => backend, thrNorm: () => 0.5, cmaxNorm: () => 1, changed: () => {}, log: () => {}, toast: () => {} });
+  ui.onCube();
+  ui.add();
+  clearTimeout(ui.iso.timer); ui.iso.timer = null;
+  await ui.run();
+  const s = ui.iso.surfaces[0];
+  // The mesh had left the cache (404): asked again, nothing stale drawn.
+  assert.match(s.error, /asked again/);
+  assert.equal(s.mesh, null);
+  assert.equal(s.made, null);
+  assert.ok(ui.iso.timer);
+  clearTimeout(ui.iso.timer); ui.iso.timer = null;
+  meshStatus = 200;
+  await ui.run();
+  assert.equal(s.mesh.triangles, 4);
+  assert.equal(s.error, '');
+  assert.equal(s.failures, 0);
+  // A failed task (the backend said why): shown, not asked again.
+  taskStatus = 'failed';
+  ui.setLevel(0, 2e-6);
+  clearTimeout(ui.iso.timer); ui.iso.timer = null;
+  await ui.run();
+  assert.equal(s.error, 'too large');
+  assert.equal(s.mesh, null);
+  assert.ok(s.made && s.made.failed);
+  assert.equal(ui.iso.timer, null);
+  // The same dataset on another scale: asked again.
+  taskStatus = 'completed';
+  state.cube = { ...state.cube, scale: 'linear', lo: 0, hi: 1e-4 };
+  ui.onCube();
+  assert.ok(ui.iso.timer);
+  clearTimeout(ui.iso.timer); ui.iso.timer = null;
+  // A cube change while an extraction runs: its task is cancelled.
+  ui.iso.task = 'tRun';
+  state.open = { dataset_id: 'other' };
+  ui.onCube();
+  assert.ok(calls.includes('DELETE /v1/tasks/tRun'));
+  assert.equal(ui.iso.surfaces.length, 0);
+  clearTimeout(ui.iso.timer); ui.iso.timer = null;
+});
+
+test('a surface left out for lack of room comes back, its error gone, once there is room', async () => {
+  const { createIsosurfaces } = await import('../../app/static/vr/js/isosurface-ui.js');
+  const { gl } = fakeGL();
+  const state = { cube: { lo: 0, hi: 1, scale: 'linear', mode: 'mean' }, open: { dataset_id: 'ds' } };
+  const ui = createIsosurfaces({ gl, state, backend: () => null, thrNorm: () => 0.5, cmaxNorm: () => 1, changed: () => {}, log: () => {}, toast: () => {} });
+  ui.onCube();
+  ui.add(); ui.add();
+  clearTimeout(ui.iso.timer); ui.iso.timer = null;
+  const big = { vertices: ISO.MAX_VERTICES - 2, triangles: 10, lo: [0, 0, 0], hi: [1, 1, 1], positions: new Uint16Array(3), normals: new Int8Array(4), indices: new Uint32Array(3) };
+  const small = ISO.decodeMesh(fixture());
+  const [a, b] = ui.iso.surfaces;
+  a.mesh = big; a.made = { level: a.value, scale: 'linear', triangles: 10 };
+  b.mesh = small; b.made = { level: b.value, scale: 'linear', triangles: 4 };
+  ui.press('iso-shown', { id: 'iso-shown' });       // repacks (syncSlots), as any change
+  ui.remove(5);                                      // nothing: an index past the list
+  ui.iso.edit = 0;
+  // pack() through a removal: the big one first leaves no room for the second.
+  ui.press('iso-colour:Cyan', { id: 'iso-colour:Cyan', group: 'iso-colour', value: 'Cyan' });
+  ui.afterRestore();
+  assert.match(b.error, /no room/);
+  assert.equal(b.at, null);
+  ui.remove(0);
+  assert.equal(b.error, '');
+  assert.deepEqual(b.at, { vOff: 0, tOff: 0 });
+});

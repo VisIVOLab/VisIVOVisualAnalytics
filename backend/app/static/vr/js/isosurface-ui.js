@@ -16,6 +16,22 @@ import { hookedFetch } from './api.js';
 const SETTLE_MS = 350;
 /** The poll of an extraction task (ms). */
 const POLL_MS = 300;
+/** A surface whose extraction or fetch failed for a reason that may pass (no
+ *  answer, a 5xx, a mesh gone from the backend's cache) is asked again this
+ *  many times, RETRY_MS × the attempt apart. */
+const RETRIES = 3;
+const RETRY_MS = 1000;
+const NO_ROOM = 'no room left in the headset\'s surface buffers';
+
+/** An error worth asking again for: no answer, a server error, a mesh not
+ *  found (evicted from the cache: extracted again). A refusal (4xx) or a
+ *  failed task (the backend said why) is not. */
+export function transient(err) {
+  if (!err) return false;
+  if (err.network || err.timedOut) return true;
+  const st = Number(err.status) || 0;
+  return st >= 500 || st === 404;
+}
 
 /**
  * `deps`: {gl, state (main.js: cube, info, open), backend() (the Backend or
@@ -33,6 +49,8 @@ export function createIsosurfaces(deps) {
     dataset: '',         // the dataset the surfaces are of
     gen: 0,              // bumped by a cube change: answers for an older one are dropped
     running: false,
+    task: '',            // the extraction task under way (cancelled when superseded)
+    scale: '',           // the cube's scale the surfaces were asked on
     timer: null,
     status: '',          // the last extraction's or export's line
     error: '',
@@ -52,18 +70,39 @@ export function createIsosurfaces(deps) {
   };
   const unit = () => (cube() && cube().bunit) || '';
 
-  /** The buffers (13.2 MB), allocated once, with the first surface: a page
-   *  that never shows one keeps that memory for its cubes. They are buffers,
-   *  not 3-D textures (#229); nothing is allocated again afterwards. */
+  /** The program and the buffers (13.2 MB), made once: main.js calls this
+   *  when a cube is shown outside VR, so a session neither compiles nor
+   *  allocates (else the first surface does). They are buffers, not 3-D
+   *  textures (#229); nothing is allocated again afterwards. */
   function prepare() { if (usable()) glr.ensure(); }
 
-  /** Another cube on show: its surfaces are another field's; all go. */
+  /** The extraction under way stopped on the backend (it is superseded). */
+  function cancelTask() {
+    const id = iso.task;
+    iso.task = '';
+    const b = id ? deps.backend() : null;
+    if (b) b._json('DELETE', `/v1/tasks/${encodeURIComponent(id)}`).catch(() => {});
+  }
+
+  /** Another cube on show: its surfaces are another field's; all go (the
+   *  old cube's extraction is cancelled). The same cube on another scale:
+   *  its surfaces are asked again on that scale. */
   function onCube() {
     const id = state.open ? state.open.dataset_id : '';
-    if (id === iso.dataset) return;
+    if (id === iso.dataset) {
+      if (iso.scale && cube() && scaleOf() !== iso.scale && iso.surfaces.length) {
+        iso.scale = scaleOf();
+        for (const s of iso.surfaces) s.failures = 0;
+        if (iso.running) cancelTask();
+        schedule(0);
+      }
+      return;
+    }
+    cancelTask();
     iso.dataset = id;
+    iso.scale = cube() ? scaleOf() : '';
     iso.gen++;
-    iso.running = false;           // an extraction under way is for the old cube: its answer is dropped
+    iso.running = false;           // the old cube's answer is dropped
     iso.surfaces = [];
     iso.edit = 0;
     iso.error = iso.status = '';
@@ -76,7 +115,7 @@ export function createIsosurfaces(deps) {
     prepare();
     const t = ISO.newLevelNorm(iso.surfaces.map((s) => normOfValue(s.value)), deps.thrNorm(), deps.cmaxNorm());
     iso.surfaces.push({ value: valueOfNorm(t), colour: ISO.nextColour(iso.surfaces.map((s) => s.colour)), opacity: iso.surfaces.length ? 0.55 : 1,
-      shown: true, made: null, mesh: null, at: null, pending: false, progress: 0, error: '' });
+      shown: true, made: null, mesh: null, at: null, pending: false, progress: 0, error: '', failures: 0 });
     iso.edit = iso.surfaces.length - 1;
     schedule(0);
     return true;
@@ -96,7 +135,8 @@ export function createIsosurfaces(deps) {
     for (let i = 0; i < iso.surfaces.length; i++) {
       const s = iso.surfaces[i];
       if (!s.mesh) { s.at = null; continue; }
-      if (!at[i]) { s.at = null; s.error = 'no room left in the headset\'s surface buffers'; continue; }
+      if (!at[i]) { s.at = null; s.error = NO_ROOM; continue; }
+      if (s.error === NO_ROOM) s.error = '';      // room again (a surface removed or smaller)
       if (!s.at || s.at.vOff !== at[i].vOff || s.at.tOff !== at[i].tOff || s.uploadedFor !== s.mesh) {
         glr.upload(s.mesh, at[i]);
         s.uploadedFor = s.mesh;
@@ -113,13 +153,19 @@ export function createIsosurfaces(deps) {
   /** Ask for the surfaces whose level changed, `ms` after the last change. */
   function schedule(ms = SETTLE_MS) {
     clearTimeout(iso.timer);
-    iso.timer = setTimeout(() => { run(); }, ms);
+    iso.timer = setTimeout(() => { iso.timer = null; run(); }, ms);
   }
 
   const wanted = (s) => !s.made || s.made.level !== s.value || s.made.scale !== scaleOf();
 
   async function run() {
-    if (iso.running || !usable()) return;
+    if (!usable()) return;
+    if (iso.running) {
+      // A level moved on while it was made: that extraction is stopped, the
+      // newest asked for when its task ends (cancelled).
+      if (iso.inFlight && iso.inFlight.some((s) => iso.surfaces.includes(s) && s.value !== s.askedFor)) cancelTask();
+      return;
+    }
     const todo = iso.surfaces.filter(wanted);
     if (!todo.length) return;
     const b = deps.backend();
@@ -128,15 +174,18 @@ export function createIsosurfaces(deps) {
     const { body, refused } = ISO.extractRequest(state.open.dataset_id, todo.map((s) => s.value), scaleOf(), { budget });
     for (const s of todo) {
       if (refused.includes(s.value)) { s.error = 'a log scale takes levels above zero'; s.made = { level: s.value, scale: scaleOf(), triangles: 0 }; }
-      else { s.pending = true; s.progress = 0; s.error = ''; }
+      else { s.pending = true; s.progress = 0; s.error = ''; s.askedFor = s.value; }
     }
     if (!body.levels.length) { deps.changed(); return; }
     iso.running = true;
+    iso.inFlight = todo;
     iso.error = '';
     const t0 = performance.now();
     deps.changed();
     try {
       const created = await b._json('POST', '/v1/isosurface/extract', body);
+      if (gen !== iso.gen) return;
+      iso.task = created.task_id;
       let task = null;
       for (;;) {
         task = await b._json('GET', `/v1/tasks/${encodeURIComponent(created.task_id)}`);
@@ -146,13 +195,28 @@ export function createIsosurfaces(deps) {
         deps.changed();
         await new Promise((r) => setTimeout(r, POLL_MS));
       }
-      if (task.status !== 'completed') throw new Error(task.error || `the extraction ${task.status}`);
+      if (iso.task === created.task_id) iso.task = '';
+      if (task.status === 'cancelled') {
+        // Superseded (a level moved on): not an error; the newest is asked below.
+        for (const s of todo) s.pending = false;
+        schedule(0);
+        return;
+      }
+      if (task.status !== 'completed') {
+        const e = new Error(task.error || `the extraction ${task.status}`);
+        e.status = 422;                 // the backend said why: not asked again as it is
+        throw e;
+      }
       const meshes = task.result.meshes;
       let tris = 0;
       for (let k = 0; k < meshes.length; k++) {
         const made = meshes[k];
         const resp = await hookedFetch(`/v1/isosurface/mesh/${made.mesh_id}`, { headers: b.headers(false) });
-        if (!resp.ok) throw new Error(`the surface at ${ISO.levelText(made.level)} could not be read (${resp.status})`);
+        if (!resp.ok) {
+          const e = new Error(`the surface at ${ISO.levelText(made.level)} could not be read (${resp.status})`);
+          e.status = resp.status;
+          throw e;
+        }
         const mesh = ISO.decodeMesh(await resp.arrayBuffer());
         if (!ISO.indicesValid(mesh)) throw new Error('a surface came with indices past its vertices');
         if (gen !== iso.gen) return;
@@ -164,6 +228,7 @@ export function createIsosurfaces(deps) {
             s.mesh = mesh;
             s.pending = false;
             s.error = '';
+            s.failures = 0;
           }
         }
       }
@@ -173,14 +238,33 @@ export function createIsosurfaces(deps) {
     } catch (err) {
       if (gen !== iso.gen) return;
       iso.error = String(err && err.message ? err.message : err);
-      for (const s of todo) if (s.pending) { s.pending = false; s.error = iso.error; s.made = { level: s.value, scale: scaleOf(), triangles: 0 }; }
+      const again = transient(err);
+      let retryIn = 0;
+      for (const s of todo) {
+        if (!s.pending) continue;
+        s.pending = false;
+        s.failures = (s.failures || 0) + 1;
+        // The old mesh is not left drawn as if it were this level's.
+        s.mesh = null;
+        s.made = null;
+        if (again && s.failures < RETRIES) {
+          s.error = `${iso.error} (asked again)`;
+          retryIn = Math.max(retryIn, RETRY_MS * s.failures);
+        } else {
+          s.error = iso.error;
+          s.made = { level: s.value, scale: scaleOf(), triangles: 0, failed: true };
+        }
+      }
+      pack();
       deps.log('warning', 'isosurface-failed', iso.error);
+      if (retryIn) schedule(retryIn);
     } finally {
-      if (gen === iso.gen) iso.running = false;
+      if (gen === iso.gen) { iso.running = false; iso.inFlight = null; }
       deps.changed();
     }
-    // A level moved while this one was made: the newest is asked for.
-    if (gen === iso.gen && iso.surfaces.some((s) => wanted(s) && !s.error)) schedule(0);
+    // A level moved while this one was made (or the extraction was
+    // cancelled for it): the newest is asked for.
+    if (gen === iso.gen && !iso.timer && iso.surfaces.some((s) => wanted(s) && !s.pending)) schedule(0);
   }
 
   async function exportMesh(format) {
@@ -236,7 +320,7 @@ export function createIsosurfaces(deps) {
     if (id === 'iso-remove') remove(iso.edit);
     else if (id === 'iso-shown') { s.shown = !s.shown; syncSlots(); }
     else if (w.group === 'iso-colour') { s.colour = w.value; syncSlots(); }
-    else if (id === 'iso-thr') { s.value = valueOfNorm(deps.thrNorm()); schedule(0); }
+    else if (id === 'iso-thr') { s.value = valueOfNorm(deps.thrNorm()); s.failures = 0; schedule(0); }
     else if (id === 'iso-export:ply') exportMesh('ply');
     else if (id === 'iso-export:glb') exportMesh('glb');
     deps.changed();
@@ -247,7 +331,7 @@ export function createIsosurfaces(deps) {
     if (!id.startsWith('iso-')) return false;
     const s = iso.surfaces[iso.edit];
     if (!s) return true;
-    if (id === 'iso-level') { s.value = valueOfNorm(Math.min(1, Math.max(0, value))); schedule(); }
+    if (id === 'iso-level') { s.value = valueOfNorm(Math.min(1, Math.max(0, value))); s.failures = 0; schedule(); }
     else if (id === 'iso-opacity') { s.opacity = Math.min(1, Math.max(0.05, value)); syncSlots(); }
     deps.changed();
     return true;
@@ -273,5 +357,5 @@ export function createIsosurfaces(deps) {
   }
 
   return { iso, gl: glr, prepare, onCube, add, remove, run, menuContext, view, press, slide, draw, hidesVolume, afterRestore, hudLine,
-    setLevel: (i, v) => { if (iso.surfaces[i]) { iso.surfaces[i].value = v; schedule(0); } } };
+    setLevel: (i, v) => { if (iso.surfaces[i]) { iso.surfaces[i].value = v; iso.surfaces[i].failures = 0; schedule(0); } } };
 }
