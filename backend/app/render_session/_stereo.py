@@ -885,7 +885,10 @@ class StereoMixin:
         placement = None if np.allclose(np.diag(stretch), 1.0) else _vtk_matrix(stretch)
         placed = [(p, p.GetUserMatrix()) for p in (self._volume, self._iso_actor,
                                                    self._iso_lod_actor) if p is not None]
-        hidden = [p for p in (self._outline_actor, self._cutting_plane_actor)
+        # The desktop's regions (#356) lie on the plane, hidden with it.
+        hidden = [p for p in (self._outline_actor, self._cutting_plane_actor,
+                              *getattr(self, "_region_actors", []),
+                              *(t for t, _, _ in getattr(self, "_region_labels", [])))
                   if p is not None and p.GetVisibility()]
         mono_cam = ren.GetActiveCamera()
         mono_bg = ren.GetBackground()

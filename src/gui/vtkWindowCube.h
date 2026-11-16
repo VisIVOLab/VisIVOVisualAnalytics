@@ -3256,6 +3256,11 @@ protected:
     /// fresh session is bootstrapped to the same look the user already
     /// sees locally. Cheap (5 JSON commands).
     void pushRenderStateToRemote();
+    /// The region list to the Remote 3-D view's cutting plane (#356), when
+    /// it changed since it was last sent (always with @p force).
+    void pushRegionsToRemote(bool force = false);
+    /// The last `set_regions` sent, compact JSON; empty: none to this session.
+    QByteArray m_remoteRegionsSent;
     /// Send a single state-mutation to the remote renderer. No-op
     /// unless we're in Remote mode AND the widget is Live.
     void sendRemoteRenderStateCommand(const QVariantMap &command);

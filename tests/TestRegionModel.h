@@ -39,4 +39,5 @@ private slots:
     void momentPaneMatchesTheSlice();
     void croppedAndForeignMaps();
     void editsOnOnePaneShowOnTheOthers();
+    void remotePlaneDrawingIsTheLocalOne();
 };

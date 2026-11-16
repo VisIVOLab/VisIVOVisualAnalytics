@@ -584,7 +584,8 @@ void RemoteRenderWebRTCClient::sendStateCommand(const QVariantMap &command)
                 "[webrtc] queued command (channel not open yet, "
                 "queue size=%1): %2")
                 .arg(m_pendingCommands.size())
-                .arg(QString::fromUtf8(bytes));
+                // The head only: a region list (set_regions) runs to 256 KiB.
+                .arg(QString::fromUtf8(bytes.left(200)));
         return;
     }
     try {
