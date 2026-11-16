@@ -15,6 +15,8 @@
 //
 // Pure: unit-tested in backend/tests/vr/quality.test.mjs.
 
+import { overlayBytes, bytesPerVoxel } from './overlay.js';
+
 /** The eye-buffer scale factors (framebufferScaleFactor, absolute: 1 is the
  *  headset's recommended resolution) the governor steps down through, from
  *  the one chosen on the page. Issue #226: the first Quest 3 session showed
@@ -187,10 +189,11 @@ export function textureLimitBytes({ headset = false, deviceMemoryGB } = {}) {
  * (`capacityBytes`); a cube that does not is still checked alone, since the
  * page gives the capacity back when both would not fit.
  */
-export function cubeBudget({ dims, encoding }, { maxTex3D = 2048, headset = false, deviceMemoryGB, capacity = null } = {}) {
+export function cubeBudget({ dims, encoding, channels = 1 }, { maxTex3D = 2048, headset = false, deviceMemoryGB, capacity = null } = {}) {
   const [w, h, d] = dims.map(Number);
   const nvox = w * h * d;
-  const bpv = encoding === 'float16' ? 2 : 1;
+  // Overlaid fields (issue #357) count their channels: RG8 two bytes, RGB8 four (padded).
+  const bpv = channels > 1 ? bytesPerVoxel(channels, encoding) : encoding === 'float16' ? 2 : 1;
   const textureBytes = nvox * bpv;
   const macro = Math.ceil(w / 8) * Math.ceil(h / 8) * Math.ceil(d / 8) * 4;
   const gpuBytes = textureBytes + nvox + macro;
@@ -199,7 +202,7 @@ export function cubeBudget({ dims, encoding }, { maxTex3D = 2048, headset = fals
   // Issue #235: a cube that fits the page's fixed capacity is written into it
   // (no new GPU memory, and it can be shown in VR); one that does not is
   // held in storage of its own (gpuBytes) and waits for the end of a session.
-  const inCapacity = !!capacity && capacity.encoding === encoding && (capacity.cell ?? 8) === 8
+  const inCapacity = channels <= 1 && !!capacity && capacity.encoding === encoding && (capacity.cell ?? 8) === 8
     && [w, h, d].every((v, i) => v <= capacity.dims[i]);
   const capacityBytes = capacity ? capacity.totalBytes : 0;
   const mb = (b) => `${(b / MiB).toFixed(0)} MiB`;
@@ -259,6 +262,35 @@ export function planCapacity({ side, encoding = 'uint8', atLeast = null, maxTex3
     if (fits([s, s, s])) return plan([s, s, s], { shrunk: true });
   }
   return null;
+}
+
+/**
+ * The overlay storage (issue #357) planned beside the capacity, outside VR,
+ * so that two or three fields of the cube on show can be overlaid in a VR
+ * session without a 3-D allocation: the capacity's dims (the overlay is on
+ * the cube's grid, which the capacity holds), `channels` (2: RG8, 3: RGB8,
+ * counted as four bytes a voxel) and its skip grid (RGBA32F), when it fits
+ * `limitBytes` (the device's share less what the capacity and the other
+ * storages already hold). {ok, dims, channels, encoding, cell,
+ * ...overlayBytes, reason}.
+ */
+export function planOverlay({ capDims, channels, encoding = 'uint8', limitBytes, maxTex3D = 2048, cell = 8 }) {
+  const mb = (b) => `${(b / MiB).toFixed(0)} MiB`;
+  if (!capDims) return { ok: false, reason: 'No room for cubes on this GPU: no overlay.' };
+  if (Math.max(...capDims) > maxTex3D) return { ok: false, reason: `${capDims.join('×')} exceeds this GPU's 3-D texture limit (${maxTex3D}).` };
+  const b = overlayBytes(capDims, channels, encoding, cell);
+  const out = { dims: capDims.slice(), channels, encoding, cell, ...b };
+  if (b.totalBytes > limitBytes) {
+    return { ...out, ok: false, reason: `An overlay of ${channels} fields at ${capDims.join('×')} needs ${mb(b.totalBytes)}; `
+      + `${mb(Math.max(0, limitBytes))} is left on this device. Choose a smaller Max side.` };
+  }
+  return { ...out, ok: true, reason: '' };
+}
+
+/** Is `a` the same overlay storage as `b` (dims, channels, encoding, cell)? */
+export function sameOverlay(a, b) {
+  if (!a || !b) return !a && !b;
+  return a.channels === b.channels && a.encoding === b.encoding && (a.cell ?? 8) === (b.cell ?? 8) && a.dims.every((v, i) => v === b.dims[i]);
 }
 
 /** Is `a` the same capacity as `b` (dims, encoding, cell)? */

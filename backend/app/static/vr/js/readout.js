@@ -14,6 +14,7 @@
 import * as M from './mat4.js';
 import { boxToFullPixel, worldOfPixel, formatRA, formatDec, sampleNorm } from './selection.js';
 import { normToData, isSimulation } from './volume.js';
+import { sampleFields } from './overlay.js';
 import { drawFit } from './text-fit.js';
 
 function fmt(v, digits = 4) {
@@ -30,15 +31,17 @@ function fmt(v, digits = 4) {
  * a simulation volume (#317): [mode, X and Y, Z and the voxel, value].
  * `texScale`: the page's. Without a point, the mode line alone.
  */
-export function readoutLines(modeText, p, { info, cube, texScale } = {}) {
+export function readoutLines(modeText, p, { info, cube, texScale, overlay = null } = {}) {
   const out = [modeText];
   if (!p || !info || !cube) return out;
   const px = boxToFullPixel(p, info.full_shape);
   const w = worldOfPixel(info, px);
   const n = sampleNorm({ data: cube.data, dims: cube.dims, encoding: cube.encoding, texScale }, p);
   const binned = cube.factors && cube.factors.some((f) => f > 1) ? `  (binned ${cube.factors.join('×')})` : '';
-  const value = n < 0 || !Number.isFinite(n) ? `blank${binned}`
-    : `${fmt(normToData(n, cube.lo, cube.hi, cube.scale))} ${cube.bunit || ''}${binned}`.replace(/\s+\(/, ' (').trim();
+  // Overlaid fields (#357): each one's value, by name, on the value's line.
+  const value = overlay ? sampleFields(overlay, p, texScale).map((f) => `${f.name} ${Number.isFinite(f.value) ? fmt(f.value) : 'blank'}`).join('  ')
+    : n < 0 || !Number.isFinite(n) ? `blank${binned}`
+      : `${fmt(normToData(n, cube.lo, cube.hi, cube.scale))} ${cube.bunit || ''}${binned}`.replace(/\s+\(/, ' (').trim();
   if (isSimulation(info)) {
     // A simulation volume (#317): X, Y, Z in its axes' units, no velocity or channel.
     const z = info.axes.z;

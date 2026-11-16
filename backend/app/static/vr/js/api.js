@@ -13,6 +13,7 @@
 import { parsePairing, strippedAddress } from './pairing.js';
 import { apiUrl } from './base-path.js';
 import { pageFetch } from './transport.js';
+import { parseFields } from './overlay.js';
 
 const KEY = 'visivo-vr-token';
 
@@ -585,6 +586,75 @@ export class Backend {
       source: h('X-Visivo-Source') || 'cube',
       pyramidLevel: h('X-Visivo-Pyramid-Level') ? Number(h('X-Visivo-Pyramid-Level')) : null,
       fileRevision: h('X-Visivo-File-Revision') || '',
+      bytes: buf.byteLength,
+      timing: { serverMs: tHeaders - t0, totalMs: performance.now() - t0 },
+    };
+  }
+
+  /**
+   * Two or three fields of the cube's source on its grid, interleaved
+   * (issue #357, /v1/cube/reduced_fields_bin): {data (channels a voxel,
+   * channel innermost), dims, channels, encoding, factors, fullShape, mode,
+   * fields (overlay.js parseFields), bytes, timing}; or {preparing: true,
+   * progress} while a field's brick pyramid is being built (ask again).
+   */
+  async reducedFields(req, onProgress, timeoutMs = 1800000) {
+    const t0 = performance.now();
+    let resp;
+    try {
+      resp = await retryOnNetworkError(async (quiet) => {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(TIMED_OUT), timeoutMs);
+        try {
+          return await hookedFetch('/v1/cube/reduced_fields_bin', {
+            method: 'POST', headers: this.headers(true), body: JSON.stringify(req), signal: ctl.signal, idempotent: true,
+          }, quiet);
+        } finally {
+          clearTimeout(timer);
+        }
+      }, { withinMs: RESEND_WITHIN_MS });
+    } catch (e) {
+      if (e && e.timedOut) e.message = `the backend gave no overlay within ${(timeoutMs / 60000).toFixed(0)} min: try again`;
+      throw e;
+    }
+    if (!resp.ok) throw await failed(resp, '/v1/cube/reduced_fields_bin');
+    if (resp.status === 202) {
+      let body = {};
+      try { body = await resp.json(); } catch { /* no body: still preparing */ }
+      return { preparing: true, progress: Number(body.progress) || 0 };
+    }
+    const h = (k) => resp.headers.get(k);
+    const total = Number(h('Content-Length')) || 0;
+    const tHeaders = performance.now();
+    let buf;
+    if (resp.body && onProgress && total) {
+      const reader = resp.body.getReader();
+      const out = new Uint8Array(total);
+      let got = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out.set(value, got);
+        got += value.length;
+        onProgress(got / total);
+      }
+      buf = out.buffer;
+    } else {
+      buf = await resp.arrayBuffer();
+    }
+    const encoding = h('X-Visivo-Scalar-Type');
+    const dims = [Number(h('X-Visivo-Width')), Number(h('X-Visivo-Height')), Number(h('X-Visivo-Depth'))];
+    const channels = Number(h('X-Visivo-Channels')) || 0;
+    const n = dims[0] * dims[1] * dims[2] * channels;
+    const bpe = encoding === 'float16' ? 2 : 1;
+    if (!(channels >= 2) || buf.byteLength < n * bpe) throw new Error(`the overlay came with ${buf.byteLength} bytes for ${dims.join('×')}×${channels}`);
+    const data = encoding === 'float16' ? new Uint16Array(buf, 0, n) : new Uint8Array(buf, 0, n);
+    return {
+      data, dims, channels, encoding,
+      fields: parseFields(h('X-Visivo-Fields'), (req.fields || []).length),
+      factors: (h('X-Visivo-Bin-Factors') || '1,1,1').split(',').map(Number),
+      fullShape: (h('X-Visivo-Full-Shape') || '').split(',').map(Number),
+      mode: h('X-Visivo-Bin-Mode') || '',
       bytes: buf.byteLength,
       timing: { serverMs: tHeaders - t0, totalMs: performance.now() - t0 },
     };
