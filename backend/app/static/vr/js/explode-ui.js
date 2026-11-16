@@ -58,7 +58,7 @@ export function createExplode(deps) {
   const wholeM = new Float32Array(16), scaleM = new Float32Array(16);
   const invM = new Float32Array(16), handRel = new Float32Array(16), pieceM = new Float32Array(16), relM = new Float32Array(16);
   let wasActive = false;
-  const pp = { extent: null, boxMin: null, boxMax: null, texScale: null, spv: 1, maxSteps: 4096, skip: true, mode: 0, src: 'cube', ov: null };
+  const pp = { extent: null, boxMin: null, boxMax: null, texScale: null, spv: 1, maxSteps: 4096, skip: true, mode: 0, src: 'cube', ov: null, clipPlane: null };
   let lay = { n: -1, kind: '', spread: NaN, e0: NaN, e1: NaN, e2: NaN, offsets: [], scale: 1 };
   let bandCache = { lo: NaN, hi: NaN, n: 0, list: [] };
   const stats = { draws: 0, pieces: 0, whole: false };
@@ -248,6 +248,8 @@ export function createExplode(deps) {
     EX.farthestFirst(order, centres, n, eyeOf(view.view));
     pp.extent = base.extent; pp.boxMin = base.boxMin; pp.boxMax = base.boxMax; pp.texScale = base.texScale;
     pp.spv = base.spv; pp.maxSteps = base.maxSteps; pp.skip = base.skip; pp.mode = mode;
+    // The clipping plane (#369) cuts every piece alike, in the piece's own box coordinates.
+    pp.clipPlane = base.clipPlane || null;
     let drawn = 0;
     for (let k = 0; k < n; k++) {
       const i = order[k];

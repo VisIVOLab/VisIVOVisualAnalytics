@@ -148,7 +148,36 @@ function pv(c, x, y, s, color) {
   c.stroke();
 }
 
-export const ICONS = { explore, lasso, probe, box, slab, crop, moment, pv };
+/** Clipping plane: a cube cut by a tilted plane, its arrow on the kept side. */
+function plane(c, x, y, s, color) {
+  const a = x + s * 0.16, b = y + s * 0.3, w = s * 0.5, d = s * 0.16;
+  stroke(c, color, s * 0.045);
+  c.globalAlpha = 0.55;
+  c.beginPath();
+  c.rect(a, b, w, w);
+  c.moveTo(a, b); c.lineTo(a + d, b - d); c.lineTo(a + w + d, b - d); c.lineTo(a + w, b);
+  c.moveTo(a + w + d, b - d); c.lineTo(a + w + d, b + w - d); c.lineTo(a + w, b + w);
+  c.stroke();
+  c.globalAlpha = 1;
+  // The plane, tilted across the cube, filled faintly, and its arrow.
+  const p = [[x + s * 0.08, y + s * 0.62], [x + s * 0.5, y + s * 0.14], [x + s * 0.92, y + s * 0.38], [x + s * 0.5, y + s * 0.86]];
+  c.fillStyle = color;
+  c.globalAlpha = 0.3;
+  c.beginPath();
+  p.forEach(([px, py], i) => (i ? c.lineTo(px, py) : c.moveTo(px, py)));
+  c.closePath();
+  c.fill();
+  c.globalAlpha = 1;
+  stroke(c, color, s * 0.06);
+  c.stroke();
+  c.beginPath();
+  c.moveTo(x + s * 0.5, y + s * 0.5); c.lineTo(x + s * 0.76, y + s * 0.68);
+  c.moveTo(x + s * 0.76, y + s * 0.68); c.lineTo(x + s * 0.64, y + s * 0.7);
+  c.moveTo(x + s * 0.76, y + s * 0.68); c.lineTo(x + s * 0.73, y + s * 0.56);
+  c.stroke();
+}
+
+export const ICONS = { explore, lasso, probe, box, slab, crop, plane, moment, pv };
 
 /** Draws icon `id` in the square (x, y, s); false when there is none. */
 export function drawIcon(c, id, x, y, s, color = '#e6e9ef') {

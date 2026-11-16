@@ -273,5 +273,5 @@ export function createIsosurfaces(deps) {
   }
 
   return { iso, gl: glr, prepare, onCube, add, remove, run, menuContext, view, press, slide, draw, hidesVolume, afterRestore, hudLine,
-    setClipPlane: (plane) => glr.setClipPlane(plane), setLevel: (i, v) => { if (iso.surfaces[i]) { iso.surfaces[i].value = v; schedule(0); } } };
+    setLevel: (i, v) => { if (iso.surfaces[i]) { iso.surfaces[i].value = v; schedule(0); } } };
 }

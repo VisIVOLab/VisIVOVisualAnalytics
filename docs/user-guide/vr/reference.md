@@ -1910,7 +1910,9 @@ axis at the finer level.
      others show through it; *Surfaces only*: the volume goes.
    - Walk into a surface and around it: both sides lit, no white or black
      patches (fp16 normals), no flicker between the surfaces.
-   - *Range* crop: the surfaces are cut where the volume is.
+   - *Range* crop, and the clipping plane (*Range*, *Clipping plane* on,
+     *Slab* too): the surfaces are cut where the volume is, and the cut
+     edge follows the plane while it moves.
    - *Export ▸ PLY*: a toast, and the file in the desktop's workspace
      exports under `isosurfaces/` (open it in any mesh viewer: it is in the
      run's code units, centred on 0).

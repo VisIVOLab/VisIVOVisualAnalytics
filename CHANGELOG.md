@@ -25,7 +25,7 @@ are preserved here unedited; the branch names they refer to are historical.
 - **VR: isosurfaces of a cube's field (#370).** The hand menu's new
   *Surfaces* page (from *Display ▸ Rendering*) shows up to four
   isosurfaces, each a level of the field with its own colour and opacity,
-  with the volume or on their own, cut by the crop. The level is set on the
+  with the volume or on their own, cut by the crop and the clipping plane. The level is set on the
   cube's own scale (in decades on a log-scaled density) and written in the
   field's unit. The surfaces are extracted on the backend from the original
   data by the new `POST /v1/isosurface/extract` task: the cube itself, or
@@ -34,11 +34,28 @@ are preserved here unedited; the branch names they refer to are historical.
   decimated to 150 000 triangles and cached per field, level, scale and
   level of detail. The headset gets a compact mesh (16-bit positions, 8-bit
   normals, `GET /v1/isosurface/mesh/{id}`) into buffers sized once (no
-  allocation per frame, no 3-D texture); a hook lets a clipping plane cut
-  the surfaces. Each surface exports as PLY or binary glTF, in a simulation's
+  allocation per frame, no 3-D texture); the clipping plane (#369) cuts
+  them as it cuts the volume. Each surface exports as PLY or binary glTF, in a simulation's
   world coordinates (`.../export`). On the 2048³ PLUTO density, three
   surfaces from the pyramid's 512³ level take 3.0 s (2.6 MB each on the
   wire) and come back from the cache in 10 ms.
+- **VR: a free clipping plane for simulation volumes (#369).** On a
+  simulation volume (a VBT volume or a PLUTO output) the hand menu's *Range*
+  page has a clipping plane where a cube has its velocity range, and the tool
+  palette a *Clipping plane* tool in place of *Velocity range*. Hold the
+  trigger and the plane moves with the controller and tilts with the wrist;
+  the primary stick moves it along its normal. It hides one half-space and
+  draws the section on the plane with the current colour map and threshold;
+  *Flip* keeps the other side, *Snap* turns it to the nearest box axis,
+  *Slab* keeps a slab between two parallel planes (the stick ↔ sets its
+  thickness), *Reset* puts it back through the centre. On the 2-D page a drag
+  on the plane moves it, Shift and a drag tilts it. The plane is sent to the
+  render session (`set_clip_plane`, in the cube's voxel coordinates as
+  `set_crop` and the desktop's cutting plane), which clips the volume with it
+  and draws the same section in the refined stereo frames; a frame drawn
+  without it (an older backend) is not shown. Nothing new is allocated in VR:
+  the plane is a few shader uniforms. The plane's state and GLSL are exposed
+  (`clip-plane.js`, `clip-plane-ui.js`) for other draws to be clipped by it.
 - **VR: overlay two or three variables of a simulation volume (#357).** The
   hand menu's new *Overlay* page (from *Display ▸ Rendering*) shows two or
   three variables of a VBT volume or a PLUTO output in one view, each with

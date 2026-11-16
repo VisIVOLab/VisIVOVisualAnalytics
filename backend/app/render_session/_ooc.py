@@ -138,6 +138,8 @@ class BlockVolumes:
         # The VR page's clipping box (set_crop), level-0 world units
         # (x0, x1, y0, y1, z0, z1), or None: intersected with each block's own.
         self._user_crop = None
+        # The VR page's clipping plane (issue #369): vtkPlanes, world units, on every block.
+        self._clip_planes: list = []
         # Drawn in log10 of the values (issue #328): the code of a value with
         # no logarithm (_common.log_floor), else None (drawn in values).
         self.log_floor: float | None = None
@@ -215,6 +217,24 @@ class BlockVolumes:
         mapper = self._single_mapper()
         if mapper is not None:
             mapper.GetDepthImage(image)
+
+    # -- the VR page's clipping plane (set_clip_plane, issue #369) ---------
+    def set_clip_planes(self, planes: list) -> None:
+        """Clip every block, present and future, with ``planes`` (vtkPlane, world
+        units; none: no clipping)."""
+        from ._clip_plane import set_mapper_planes  # noqa: PLC0415
+        self._clip_planes = list(planes)
+        for _, mapper, _ in self._blocks.values():
+            set_mapper_planes(mapper, self._clip_planes)
+
+    def drawn_sample(self):
+        """``(array z, y, x, origin, spacing)`` of the one block drawn (a stereo
+        frame's whole level), or None with several or none."""
+        if len(self._blocks) != 1:
+            return None
+        key = next(iter(self._blocks))
+        origin, spacing, (nx, ny, nz), _ = self._geometry[key]
+        return self._arrays[key].reshape(nz, ny, nx), origin, spacing
 
     # -- the VR page's clipping box (set_crop) ----------------------------
     def set_user_crop(self, planes) -> None:
@@ -303,6 +323,9 @@ class BlockVolumes:
             volume.SetMapper(mapper)
             volume.SetProperty(self._prop)
             self._blocks[key] = (image, mapper, volume)
+            if self._clip_planes:
+                from ._clip_plane import set_mapper_planes  # noqa: PLC0415
+                set_mapper_planes(mapper, self._clip_planes)
             self._apply(mapper, volume, key)
             if self._renderer is not None:
                 self._renderer.AddVolume(volume)

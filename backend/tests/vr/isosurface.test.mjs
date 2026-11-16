@@ -153,10 +153,20 @@ test('the buffers are sized once; surfaces are written with bufferSubData; a dra
   assert.deepEqual(calls.drawElements, [[12, 0], [12, 48]]);       // opaque first, the hidden one not drawn
   assert.equal(g.triangles, 8);
   assert.deepEqual([calls.bufferData.length, calls.createBuffer], before);
-  g.setClipPlane([1, 0, 0, -0.5]);
-  assert.deepEqual([...g.clip], [1, 0, 0, -0.5]);
-  g.setClipPlane(null);
-  assert.deepEqual([...g.clip], [0, 0, 0, 1]);
+  // The clipping plane (#369): its uniforms set with every draw, mode 0 without one.
+  const unis = [];
+  const { gl: gl2 } = fakeGL();
+  gl2.uniform1i = (loc, v) => unis.push([loc, v]);
+  gl2.uniform4f = (loc, ...v) => unis.push([loc, v]);
+  const g2 = new IsoSurfaceGL(gl2);
+  g2.upload(mesh, { vOff: 0, tOff: 0 });
+  g2.setSlots([{ at: { vOff: 0, tOff: 0 }, mesh, rgb: [1, 0, 0], opacity: 1, shown: true }]);
+  const p = { extent: [1, 1, 1], boxMin: [0, 0, 0], boxMax: [1, 1, 1] };
+  g2.draw({ proj: M.identity(), view: M.identity() }, M.identity(), p);
+  assert.deepEqual(unis.filter((x) => x[0] === 'uClipMode'), [['uClipMode', 0]]);
+  unis.length = 0;
+  g2.draw({ proj: M.identity(), view: M.identity() }, M.identity(), { ...p, clip: { mode: 1, plane: [1, 0, 0, -0.5], half: 0, sectionA: 0.85 } });
+  assert.deepEqual(unis.filter((x) => x[0].startsWith('uClip')), [['uClipMode', 1], ['uClipPlane', [1, 0, 0, -0.5]]]);
 });
 
 test('the Surfaces page: one press from Display, its controls greyed with a reason', () => {

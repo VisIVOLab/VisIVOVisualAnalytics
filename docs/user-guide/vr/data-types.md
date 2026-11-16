@@ -44,7 +44,9 @@ backend says it is a *simulation volume* and the page treats it as one:
   offers the 90th and 99th percentiles where a cube has 3σ and 5σ), no beam
   or rest line, and the Kinematic Lasso, the Spectrum probe, moments and PV
   slices are greyed with the reason. The *Box region* gives the statistics of
-  a box. The default threshold is the 99th percentile of the values, not the
+  a box. Instead of the velocity range, *Range* has a **clipping plane** you
+  hold and tilt with the controller, or a slab of two parallel planes
+  ([controls](controls.md#range), #369). The default threshold is the 99th percentile of the values, not the
   noise rule. The readout gives X, Y, Z in the axes' unit, the cell, and the
   value.
 

@@ -4,11 +4,13 @@
 // allocated in VR; no 3-D texture is used at all), and drawn in the cube's
 // frame after the volume: opaque surfaces with depth, translucent ones over
 // them without depth writes, two-sided, lit from the eye. The crop box clips
-// them as it clips the volume, and setClipPlane() (a free clipping plane,
-// issue #369) cuts them open. Nothing is allocated per frame.
+// them as it clips the volume, and the free clipping plane (issue #369,
+// clip-plane.js CLIP_GLSL's clipKept) cuts them open. Nothing is allocated
+// per frame.
 
 import * as M from './mat4.js';
 import { MAX_VERTICES, MAX_TRIANGLES, POS_BYTES, NRM_BYTES } from './isosurface.js';
+import { CLIP_GLSL, setClipUniforms } from './clip-plane.js';
 
 // All in highp: on the Quest's GPU mediump is fp16 (normals divided by the
 // cube's extent would flush to zero, as the controller models' did, #232).
@@ -32,20 +34,19 @@ void main() {
   gl_Position = uMVP * p;
 }`;
 
+// The clipping plane's half-space or slab (#369) on box coordinates.
 const FS = `#version 300 es
 precision highp float;
 in vec3 vBox;
 in vec3 vNormal;
 in vec3 vView;
 uniform vec3 uBoxMin, uBoxMax;
-// A plane in box coordinates: what has dot(uClip.xyz, box) + uClip.w < 0 is
-// cut away ((0, 0, 0, 1): nothing is).
-uniform vec4 uClip;
 uniform vec4 uColor;   // rgb, opacity
 out vec4 outColor;
+${CLIP_GLSL}
 void main() {
   if (any(lessThan(vBox, uBoxMin)) || any(greaterThan(vBox, uBoxMax))) discard;
-  if (dot(uClip.xyz, vBox) + uClip.w < 0.0) discard;
+  if (!clipKept(vBox)) discard;
   float l2 = dot(vNormal, vNormal);
   vec3 n = l2 > 0.0 ? vNormal * inversesqrt(l2) : vec3(0.0, 0.0, 1.0);
   vec3 v = normalize(-vView);
@@ -74,7 +75,8 @@ function compile(gl, vs, fs) {
   gl.linkProgram(p);
   if (!gl.getProgramParameter(p, gl.LINK_STATUS) && !gl.isContextLost()) throw new Error(`isosurface program: ${gl.getProgramInfoLog(p)}`);
   const u = {};
-  for (const name of ['uMVP', 'uMV', 'uNormalMat', 'uLo', 'uSpan', 'uExtent', 'uBoxMin', 'uBoxMax', 'uClip', 'uColor']) u[name] = gl.getUniformLocation(p, name);
+  for (const name of ['uMVP', 'uMV', 'uNormalMat', 'uLo', 'uSpan', 'uExtent', 'uBoxMin', 'uBoxMax', 'uColor',
+    'uClipMode', 'uClipPlane', 'uClipHalf', 'uSectionA']) u[name] = gl.getUniformLocation(p, name);
   return { p, u };
 }
 
@@ -99,7 +101,6 @@ export class IsoSurfaceGL {
     this.vao = null;
     this.buf = null;            // {pos, nrm, idx}
     this.slots = [];            // [{at: {vOff, tOff}, mesh, rgb, opacity, shown}]
-    this.clip = new Float32Array([0, 0, 0, 1]);
     this.draws = 0;             // surfaces drawn in the last call (both passes)
     this.triangles = 0;         // triangles drawn in the last call
     this._mv = new Float32Array(16);
@@ -157,12 +158,6 @@ export class IsoSurfaceGL {
   /** What is drawn: [{at, mesh, rgb, opacity, shown}] (already uploaded). */
   setSlots(slots) { this.slots = slots; }
 
-  /** A plane cutting the surfaces (issue #369): [a, b, c, d] in box
-   *  coordinates, what has a x + b y + c z + d < 0 cut away; null: none. */
-  setClipPlane(plane) {
-    if (plane) this.clip.set(plane); else this.clip.set([0, 0, 0, 1]);
-  }
-
   /** After a lost context: the program and the buffers again (the page then
    *  uploads its surfaces again). */
   restore() {
@@ -187,7 +182,9 @@ export class IsoSurfaceGL {
 
   /**
    * The surfaces for one eye: `view` {proj, view}, `model` the cube's,
-   * `p` {extent, boxMin, boxMax} (the crop, box coordinates). Leaves depth
+   * `p` {extent, boxMin, boxMax} (the crop, box coordinates), `p.clip` the
+   * clipping plane's shader numbers (clip-plane.js shaderParams; null or
+   * absent: none). Leaves depth
    * testing off and depth writes on, as the page's other draws do; blending
    * premultiplied (ONE, ONE_MINUS_SRC_ALPHA).
    */
@@ -209,7 +206,7 @@ export class IsoSurfaceGL {
     gl.uniform3f(u.uExtent, p.extent[0], p.extent[1], p.extent[2]);
     gl.uniform3f(u.uBoxMin, p.boxMin[0], p.boxMin[1], p.boxMin[2]);
     gl.uniform3f(u.uBoxMax, p.boxMax[0], p.boxMax[1], p.boxMax[2]);
-    gl.uniform4fv(u.uClip, this.clip);
+    setClipUniforms(gl, u, p.clip || null);
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf.pos);
     gl.disable(gl.CULL_FACE);

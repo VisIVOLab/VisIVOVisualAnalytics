@@ -15,6 +15,7 @@ import { createOverlay } from './overlay-ui.js';
 // A simulation model taken apart: fields and value ranges as pieces (issue #371).
 import { createExplode } from './explode-ui.js';
 import { createIsosurfaces } from './isosurface-ui.js';
+import { createClipPlane } from './clip-plane-ui.js';
 import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
@@ -185,7 +186,7 @@ let lookCache = { key: null, look: null };
 function currentLook() {
   const c = state.cube;
   const key = JSON.stringify([state.thrNorm, state.cmaxNorm, state.stretch, state.gamma, state.opacity, state.mode,
-    state.colormap, state.clip, state.zStretch, c ? [c.lo, c.hi, c.scale, c.factors] : null]);
+    state.colormap, state.clip, state.zStretch, c ? [c.lo, c.hi, c.scale, c.factors] : null, clipPlane.lookKey()]);
   if (lookCache.key !== key && c) {
     lookCache = {
       key,
@@ -195,6 +196,8 @@ function currentLook() {
           lut: colormapTable(state.colormap) }),
         crop: cropBox(state.clip),
         cropError: cropError(state.clip),
+        // The clipping plane (#369), a simulation volume's (a null plane when off; nothing for a radio cube).
+        plane: clipPlane.available() ? clipPlane.command() : null,
       },
     };
   }
@@ -211,7 +214,9 @@ function refineFrame(t, eyes, centreView, background) {
   if (overlay.visible() || explode.active()) return;
   const look = currentLook();
   refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model,
-    zStretch: state.zStretch, aspect: V.voxelAspect(state.info), look: look.look, lookKey: look.key, background });
+    zStretch: state.zStretch, aspect: V.voxelAspect(state.info), look: look.look, lookKey: look.key, background,
+    // A frame drawn without the clipping plane (a backend from before #369) would show what is cut away.
+    ...(clipPlane.current() ? { accept: (h) => h.clip_plane === true, acceptError: 'backend draws no clipping plane: update it to refine with one' } : {}) });
 }
 
 // ── Settings kept in this browser (issue #172) ──────────────────────────────
@@ -1556,6 +1561,17 @@ const isos = createIsosurfaces({
   toast: (text, key) => toast(text, key),
   budget: Number(query.get('isotris')),
 });
+// The clipping plane of a simulation volume (issue #369, clip-plane-ui.js).
+const clipPlane = createClipPlane({
+  R, state,
+  isSimulation: () => simulationShown(),
+  toolOn: () => ui.mode === 'clip' && ui.clipTool === 'plane',
+  snapshot: () => (lookKind() ? lookSnapshot() : null),
+  pushUndo: (snap) => { if (snap) ui.undo.push(snap); },
+  changed: () => { menu.key = ''; labelsChanged(); },
+  buzz: (kind) => buzz('primary', kind),
+  dot: (hot) => cropTexture(hot ? 'dotHot' : 'dot'),
+});
 /** The newest cube put on show wins over one still being prepared. */
 const installs = new Newest();
 /** The time a step of a write into the capacity may take in VR before the
@@ -1844,6 +1860,7 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   overlay.ensureStorage();
   overlay.onCube(info, path);
   isos.onCube();                   // another cube's surfaces go (#370)
+  clipPlane.onCube();          // a plane of its own, unless the same grid (#369)
   applyExtent();
   $('thr-source').value = currentThresholdSource();
   resetThreshold();
@@ -1897,7 +1914,8 @@ function simulationControls(info, cube) {
     state.zStretch = b.zStretch;
     $('zstretch').value = String(Math.round(b.zStretch * 100));
     if (b.tool && selection.sel.tool === 'box') selection.setTool(b.tool);
-    if (b.clipTool === 'slab' && ui.clipTool === 'box') setClipTool('slab');
+    if (b.clipTool === 'slab' && (ui.clipTool === 'box' || ui.clipTool === 'plane')) setClipTool('slab');
+    else if (ui.clipTool === 'plane') setClipTool('box');      // the plane is a simulation volume's (#369)
   }
   const scale = cube && cube.scale === 'log' ? 'log' : 'linear';
   if (scale !== ui.shownScale) {
@@ -2029,7 +2047,8 @@ function volParams(override = {}) {
     thr: state.thrNorm, cmin: state.thrNorm, cmax: Math.max(state.cmaxNorm, state.thrNorm + 1e-3),
     stretch: LV.STRETCH_CODE[state.stretch] || 0, stretchA: stretchA(), opacity: state.opacity, spv: effectiveSpv(),
     mode: state.mode, skip: state.skip, maxSteps: 4096, texScale: d ? d.texScale : state.texScale,
-    maskMode: d ? 0 : masks ? masks.modeCode() : 0, ...(d ? { region: d, showMask: false } : {}), ...override,
+    maskMode: d ? 0 : masks ? masks.modeCode() : 0, ...(d ? { region: d, showMask: false } : {}),
+    clipPlane: clipPlane.shader(), ...override,
   };
 }
 
@@ -2065,8 +2084,8 @@ function drawScene(view, override, eye = 0) {
   }
   // Taken apart (#371): the assembled box's outline, ticks, labels and selection are not where anything is drawn.
   if (exOn) return;
-  // Isosurfaces (#370): over the volume, clipped by the crop.
-  isos.draw(view, state.model, { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max });
+  // Isosurfaces (#370): over the volume, clipped by the crop and the clipping plane (#369).
+  isos.draw(view, state.model, { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max, clip: clipPlane.shader() });
   R.drawLines(view, state.model);
   if (!CUT.noseloutline) { R.drawLines(view, state.model, R.selLines); cutCounts.selLineDraws++; }
   layers.drawOverCube(view, state.model);
@@ -2286,9 +2305,10 @@ function setMode(m) {
   $('ui-mode').value = m;
   finishCropDrag();
   finishSelBoxDrag();
+  clipPlane.finishGrab();
   ui.pin = null;
 }
-function setClipTool(t) { ui.clipTool = t; finishCropDrag(); }
+function setClipTool(t) { ui.clipTool = t; finishCropDrag(); clipPlane.finishGrab(); }
 
 /** Haptics on the hand in `role` (issue #201): 'press', 'done' or 'error'. */
 function buzz(role, kind) {
@@ -2309,12 +2329,14 @@ function lookSnapshot() {
   if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState(), cropEmpty: layers.cropEmpty };
   return { kind, thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
     mode: state.mode, stretch: state.stretch, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState(),   // the catalogue's toggles too
-    ov: overlay.snapshot() };     // the overlaid fields' looks (#357)
+    ov: overlay.snapshot(),       // the overlaid fields' looks (#357)
+    plane: clipPlane.snapshot() };   // the clipping plane (#369)
 }
 function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
   // A crop drag under way ends first (#277 review): its step is the one undone.
   finishCropDrag();
+  clipPlane.finishGrab();         // and a plane held (#369)
   finishSelBoxDrag();             // and a box selection's drag (#259), likewise
   const s = ui.undo.pop();
   if (!s) { buzz('primary', 'error'); return false; }
@@ -2338,6 +2360,7 @@ function undo() {
   setColormap(s.colormap);
   if (s.layer) layers.restoreUndo(s.layer);
   if (s.ov) overlay.restore(s.ov);
+  if (s.plane) clipPlane.restore(s.plane);
   $('rmode').value = String(state.mode);
   $('opacity').value = Math.round(state.opacity * 100);
   $('gamma').value = String(state.gamma);
@@ -2522,7 +2545,7 @@ function menuContext() {
     ov: overlay.menuContext(),
     ex: explode.menuContext(),
     iso: isos.menuContext(),
-    cat: lc.cat, clipTool: ui.clipTool,
+    cat: lc.cat, clipTool: ui.clipTool, plane: clipPlane.menuContext(),
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
     mask: (() => { const v = masks.view(); return { loaded: v.loaded, shown: masks.state.shown, picking: v.picking, canUndo: v.canUndo, canSave: v.canSave }; })(),
@@ -2572,7 +2595,9 @@ function menuView(ctx = menuContext()) {
     const vm = ctx.vars;
     if (vm) notes.var = vm.pending ? `loading ${vm.pending}…` : `${vm.current || 'not listed'}, one of ${vm.names.length}`;
     notes.slab = slabNote();
-    notes.trigger = ui.clipTool === 'box' ? 'Trigger on a dot: a face; inside: the crop moves; elsewhere: a new crop.' : 'Trigger: the range centred on the emission it meets.';
+    notes.trigger = ui.clipTool === 'box' ? 'Trigger on a dot: a face; inside: the crop moves; elsewhere: a new crop.'
+      : ui.clipTool === 'plane' ? 'Hold the trigger: the plane moves with the hand and turns with the wrist.'
+      : 'Trigger: the range centred on the emission it meets.';
     notes.crop = 'Reset crop keeps the range.';
     notes.tool = TOOL_NAMES[selection.sel.tool] ? `Trigger: ${TOOL_NAMES[selection.sel.tool]}` : '';
     const sum = selectionSummary();
@@ -2591,6 +2616,7 @@ function menuView(ctx = menuContext()) {
     if (infoText) { if (page === 'levels') status.unshift(info(infoText)); else status.push(info(infoText)); }
     if (page === 'levels') levelsView(c, notes, status, info);
     if (page === 'select') status.push(...[...(sum || []).slice(1), ...analysis.lasso.lines()].map(info));
+    if (page === 'range' && ctx.simulation) status.push(info(clipPlane.status()));
     if (page === 'measure') {
       const av = analysis.view();
       if (av.error) status.push([av.error, '#ff8a8a']);
@@ -2952,7 +2978,8 @@ function setPage(page) {
   if (m) setMode(m);
   // A point table, a velocity field or a simulation volume (#317) has no
   // velocity range: Range is the crop (#277).
-  if (page === 'range' && ((!state.cube && layers.hasScene()) || simulationShown()) && ui.clipTool !== 'box') setClipTool('box');
+  // A simulation volume's Range also has the clipping plane (#369).
+  if (page === 'range' && ((!state.cube && layers.hasScene()) || simulationShown()) && ui.clipTool === 'slab') setClipTool('box');
 }
 
 /** The menu moved by its title bar (headset only: the desktop view keeps it beside the cube). */
@@ -3020,6 +3047,8 @@ function applyMenu(a, ray = null, eye = null) {
   if (id === 'iso-page') { ui.page = 'iso'; return; }
   if (id === 'iso-back') { ui.page = 'display'; return; }
   if (isos.press(id, w)) return;
+  // The clipping plane (#369): on/off, flip, snap, slab, reset (each one undo step).
+  if (clipPlane.press(id)) return;
   if (id === 'levels-back') { ui.page = 'display'; return; }
   // A point table's Data page (#259) and its box selection's Clear.
   if (id === 'pt-data') { ui.page = 'data'; return; }
@@ -3583,6 +3612,8 @@ function stickAction(action, v, dtS) {
   } else if (action === 'clip-size') {
     state.clip = C.scaleClip(state.clip, Math.exp(-v * dtS * 0.5));
     decorationsChanged();
+  } else if (clipPlane.stick(action, v, dtS)) {
+    // The clipping plane (#369): along its normal, the slab's thickness.
   } else {
     return false;
   }
@@ -3631,6 +3662,7 @@ let dragging = null;
 let pressAt = null;
 let mouseOnPanel = false;      // a press on the menu or a window (?panel3d)
 let mouseOnCard = false;
+let mouseOnPlane = false;      // a press on the clipping plane (#369): the plane is dragged
 let mouseOnCrop = false;       // a press on the crop box (#277): the crop is dragged
 let mouseOnSel = false;        // a press on a point table's box selection (#259)
 /** The message card in the desktop view (?panel3d) takes the mouse first. */
@@ -3657,6 +3689,9 @@ canvas.addEventListener('pointerdown', (e) => {
       return;
     }
   }
+  // The clipping plane (#369) with the mouse: a drag on its section moves it
+  // along its normal; with Shift held (anywhere) it tilts as the pointer turns.
+  if (!xr && clipPlane.mouseDown(mouseWorldRay(e), e.shiftKey)) { mouseOnPlane = true; return; }
   if (!xr && pointsBoxOn()) {
     // The box selection (#259) with the mouse, as the crop: Shift and a drag draw a new box.
     const f = cropFrame(), ray = CG.modelRay(state.model, mouseWorldRay(e));
@@ -3676,7 +3711,9 @@ canvas.addEventListener('pointermove', (e) => {
   if (cardMouse(e, mouseOnCard) || mouseOnCard) return;
   if (mouseOnCrop) { cropPointer(mouseWorldRay(e), true, false); return; }
   if (mouseOnSel) { selBoxPointer(mouseWorldRay(e), true, false); return; }
+  if (mouseOnPlane) { clipPlane.mouseMove(mouseWorldRay(e)); return; }
   if (!xr && !dragging && cropToolOn()) cropPointer(mouseWorldRay(e), false, false);
+  if (!xr && !dragging) clipPlane.mouseHover(mouseWorldRay(e));
   if (!xr && !dragging && pointsBoxOn()) selBoxPointer(mouseWorldRay(e), false, false);
   if (!xr && (mouseOnPanel || !dragging)) {
     const onPanel = uiPointer(mouseWorldRay(e), mouseOnPanel, camEye());
@@ -3693,6 +3730,7 @@ canvas.addEventListener('pointermove', (e) => {
 canvas.addEventListener('pointerup', (e) => {
   if (mouseOnCard) { mouseOnCard = false; cardMouse(e, false); cardMouse(e, false); return; }
   if (mouseOnCrop) { mouseOnCrop = false; cropPointer(mouseWorldRay(e), false, false); return; }
+  if (mouseOnPlane) { mouseOnPlane = false; clipPlane.mouseUp(); return; }
   if (mouseOnSel) { mouseOnSel = false; selBoxPointer(mouseWorldRay(e), false, false); return; }
   if (mouseOnPanel) {
     mouseOnPanel = false;
@@ -3713,7 +3751,7 @@ canvas.addEventListener('pointerup', (e) => {
       && performance.now() - p.t < 600) {
     const r = mouseRay(e);
     const action = C.actionFor(C.controlMap(mapOpts()), 'primary', 'trigger');
-    if (action !== 'clip-drag') primaryAct(action, r);
+    if (action !== 'clip-drag' && action !== 'plane-drag') primaryAct(action, r);
     showReadout();
   }
 });
@@ -3792,6 +3830,7 @@ function desktopFrame(time) {
   if (state.cube) drawScene(lastDesktopView, undefined, 0);
   else if (layers.hasScene()) layers.drawScene(lastDesktopView, 0, h);
   drawCropGizmo(lastDesktopView, camEye());
+  clipPlane.draw(lastDesktopView, camEye());
   drawSelBox(lastDesktopView, camEye());
   drawColourBar(lastDesktopView, camEye());
   if (ui.desktop) {
@@ -4727,6 +4766,9 @@ function handleInput(frame, dtS) {
   if (act('primary', 'trigger') === 'clip-drag' && cropToolOn()) {
     // The crop (#277), on any data shown: a drag under way keeps the ray even over a panel.
     cropPointer(ui.crop.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
+  } else if (act('primary', 'trigger') === 'plane-drag' && clipPlane.available()) {
+    // The clipping plane (#369): held while the trigger is, wherever the ray points off the menus.
+    clipPlane.pointer(clipPlane.dragging || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.m : null);
   } else if (pointsBoxOn()) {
     // A point table's box selection (#259), as the crop.
     selBoxPointer(ui.psel.drag || !onUi ? pRay : null, pTrig, trigEdge && !onUi, Ph ? Ph.pos : null);
@@ -4735,6 +4777,7 @@ function handleInput(frame, dtS) {
     finishCropDrag();
     ui.psel.hover = null;
     finishSelBoxDrag();
+    clipPlane.finishGrab();
     if (trigEdge && boxRay) primaryAct(act('primary', 'trigger'), boxRay);
   }
 
@@ -4997,6 +5040,7 @@ function onXRFrame(time, frame) {
     if (state.cube) drawScene(v, undefined, view.eye === 'right' ? 1 : 0);
     else if (layers.hasScene()) layers.drawScene(v, view.eye === 'right' ? 1 : 0, vp.height);
     drawCropGizmo(v, M.position(view.transform.matrix));
+    clipPlane.draw(v, M.position(view.transform.matrix));
     drawSelBox(v, M.position(view.transform.matrix));
     drawColourBar(v, M.position(view.transform.matrix));
     if (!asLayers) for (const o of overlays) R.drawPanel(v, o.model, o.handle, o.size);
@@ -5412,7 +5456,7 @@ if (query.has('debug')) {
     const w = canvas.width, h = canvas.height;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, w, h);
-    const p = { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max };
+    const p = { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max, clip: clipPlane.shader() };
     const t0 = performance.now();
     for (let f = 0; f < frames; f++) {
       gl.clearColor(...DESKTOP_BG, 1);
@@ -5664,6 +5708,14 @@ if (query.has('debug')) {
       const rect = canvas.getBoundingClientRect();
       return [rect.left + (q[0] + 1) / 2 * rect.width, rect.top + (1 - q[1]) / 2 * rect.height];
     },
+  };
+  // The clipping plane (#369), for checks: its state, the command sent, set it, press its buttons.
+  window.__vrPlane = {
+    get: () => ({ available: clipPlane.available(), plane: clipPlane.plane ? JSON.parse(JSON.stringify(clipPlane.plane)) : null,
+      shader: clipPlane.shader(), command: clipPlane.command(), lines: R.planeLines.count, toolOn: ui.mode === 'clip' && ui.clipTool === 'plane' }),
+    set: (p) => { clipPlane.restore({ ...clipPlane.plane, ...p }); menu.key = ''; labelsChanged(); return clipPlane.plane; },
+    press: (id) => clipPlane.press(id),
+    tool: () => { setMode('clip'); setClipTool('plane'); },
   };
   window.__vrPalette = {
     state: palette,

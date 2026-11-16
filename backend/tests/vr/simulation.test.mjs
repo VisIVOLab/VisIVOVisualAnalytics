@@ -174,13 +174,20 @@ test('a field reference opens as a volume, whatever its file is called', () => {
 test('the palette greys the spectral tools on a simulation volume (kind volume)', () => {
   const layout = TP.paletteLayout({ kind: 'volume', active: 'explore' });
   const on = layout.filter((w) => w.tool && !w.disabled).map((w) => w.tool);
-  assert.deepEqual(on, ['explore', 'box', 'crop']);
+  // The clipping plane (#369) stands where a cube has the velocity range.
+  assert.deepEqual(on, ['explore', 'box', 'plane', 'crop']);
+  assert.ok(!layout.some((w) => w.tool === 'slab'));
   for (const id of ['lasso', 'probe', 'slab', 'moment', 'pv']) {
     assert.match(TP.whyNot(TP.toolById(id), 'volume'), /simulation volume has no spectral axis/);
   }
+  assert.match(TP.whyNot(TP.toolById('plane'), 'cube'), /Simulation volumes only/);
+  assert.deepEqual(TP.pickOf('tool:plane'), { tool: 'plane', disarmPv: true, mode: 'clip', sub: 'plane' });
+  assert.equal(TP.activeTool('clip', 'plane'), 'plane');
+  assert.equal(TP.pressesToTool('plane', 'volume'), 2);
   // The stick steps only through what applies.
   assert.equal(TP.stepTool('explore', 'volume', 1), 'box');
-  assert.equal(TP.stepTool('box', 'volume', 1), 'crop');
+  assert.equal(TP.stepTool('box', 'volume', 1), 'plane');
+  assert.equal(TP.stepTool('plane', 'volume', 1), 'crop');
   assert.equal(TP.stepTool('crop', 'volume', 1), 'explore');
   // A cube keeps every tool.
   assert.equal(TP.paletteLayout({ kind: 'cube', active: 'explore' }).filter((w) => w.tool && !w.disabled).length, TP.TOOLS.length);

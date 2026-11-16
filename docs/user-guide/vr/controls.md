@@ -165,6 +165,32 @@ spectral axis; *Spectral range* on a cube without a velocity axis) or the
 *Full band*, *Reset crop*, the range's two ends and the crop's are on the
 Range tab.
 
+**The clipping plane of a simulation volume** ([#369](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/369)).
+A simulation volume has no velocity range; in its place the Range tab has a
+clipping plane, and the tool palette a **Clipping plane** tool (where a cube
+has *Velocity range*). The plane hides one half of the volume and draws the
+section on it, in the current colour map, where the value is above the
+threshold.
+
+| Control | Clipping plane |
+|---|---|
+| Primary trigger (hold) | the plane is held on the end of the ray: it moves as you move or point the controller and tilts as you turn your wrist; let go to leave it there (one undo step) |
+| Primary stick ↕ | moves the plane along its normal |
+| Primary stick ↔ | the slab's thickness (with *Slab* on) |
+
+The first row of the Range tab: **On/Off**, **Flip** (keep the other side),
+**Snap** (turn the plane to the nearest box axis), **Slab** (keep only a slab
+between two parallel planes, a tenth of the box thick to begin with),
+**Reset** (back through the centre, across x). The status line gives the
+plane in the cube's pixels: its point, its normal and what it keeps. With
+the tool in use the plane's outline is drawn in yellow, with an arrow
+towards the side it keeps and a dot at its point. On the 2-D page, with the
+tool on, a drag on the plane moves it along its normal and Shift and a drag
+tilts it. The full-quality frames from the backend are cut by the same plane
+and show the same section (a backend from before #369 cannot, and its frames
+are then not shown). The plane stays when you switch to another variable or
+snapshot of the same grid.
+
 **The crop you can see and grab** ([#277](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/277)).
 While the Spatial crop tool is on, the crop box is drawn: its twelve edges
 (light blue), a faint fill, and a **dot on each of its six faces**. The dot
@@ -344,7 +370,8 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     has, from how many, and from which level; while one is made it says
     *extracting n %*, and it appears whole when ready (a level moved back to
     one already made comes back at once). The surfaces are cut by the crop
-    as the volume is.
+    and, on a simulation volume, by the clipping plane, as the volume is.
+    While the model is exploded (*Explode ▸*) they are not drawn.
   - *Levels* (a cube, from *Levels ▸*; the Display tab stays lit, *◂ Display*
     goes back): **Values**, a histogram of the drawn cube's values on the
     threshold slider's scale, counts on a log scale, yellow lines at 1, 3, 5
@@ -403,6 +430,9 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     convention and its channels below it; *Full band*.
   - **Trigger**: *Velocity range* or *Spatial crop*, what the trigger moves in
     the cube.
+  - On a simulation volume (#369) the first row is the **Plane** (*On/Off*,
+    *Flip*, *Snap*, *Slab*, *Reset*) and the trigger tools are *Spatial crop*
+    and *Clipping plane*; see [Range](#range).
   - **Crop x**, **Crop y**, **Crop z**: the spatial crop, one range per axis
     (pixels of the full cube below; on a cube *Crop z* is greyed, the third
     axis being the velocity range); *Reset crop*.
