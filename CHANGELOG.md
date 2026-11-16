@@ -21,6 +21,35 @@ are preserved here unedited; the branch names they refer to are historical.
   the capacity, when the device's share allows, so an overlay shown in VR
   allocates no 3-D texture. The readout gives each field's value; the
   desktop's *Headset Activity* says which fields are overlaid.
+- **Desktop and backend: regions on the cutting plane with Remote rendering
+  (#356).** With the 3-D view rendered on the backend, the render session now
+  draws the window's regions on its cutting plane, as the desktop does in
+  Local rendering: the desktop sends the drawing (outlines, paths, markers,
+  labels in cube pixels) whenever the list changes (`set_regions`), and the
+  session places it at the plane's channel, so the regions are in the frames
+  it sends, depth-tested against the volume, and never lag the camera.
+  The backend's plane now spans -0.5 to n - 0.5, as the desktop's: it used to
+  sit half a voxel off the volume it cuts.
+- **Desktop: regions on moment maps in Product panes (#355).** Every pane
+  showing a map of the cube's sky plane (moment maps, line-width maps, the
+  Channels pane, Faraday maps of a boxed RM synthesis) draws the window's
+  region list, with selection, handles, editing, Region Properties, the
+  context menu, Delete, Cmd+Z and Analyse, as on the 2-D slice. The drawing
+  tools draw on the map itself instead of turning the pane into the slice, and
+  the new region joins the same list. Each pane places the regions by its own
+  grid and crop origin, and an edit in one pane shows in all of them.
+  *Analyse* on a map pane measures that map and says which one.
+- **Desktop: linked 2-D views follow every camera change (#358).** In the
+  cube viewer, the 2-D slice and the Product panes (a moment map, say) used to
+  share their pan and zoom only from mouse gestures; Shift+R reset one view
+  and left the linked panes and the linked windows behind. They now compare
+  the camera after every frame, as the 3-D view does since #338, so a reset
+  or any other camera change made in code is followed too. Refits the window
+  makes itself (a new channel, a resized pane, a new colour bar) are not
+  pushed onto the other views, and a view never sends back a camera it took
+  from another. The image viewer streams the tiles of the region on screen
+  after any camera change as well: after Shift+R on a zoomed large image it
+  used to keep only the zoomed patch.
 
 - **Desktop: the cube's regions on the 3-D cutting plane (#343).** The
   region list is drawn on the cutting plane of the 3-D view as on the 2-D

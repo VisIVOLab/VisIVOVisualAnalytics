@@ -26,6 +26,7 @@ from ._common import (
 from ._scene import SceneMixin
 from ._modes import ModesMixin
 from ._pipeline import PipelineMixin
+from ._regions import RegionsMixin
 from ._stereo import StereoMixin
 from ._window import RenderThreadError, offscreen_kind, render_executor
 
@@ -54,7 +55,7 @@ def server_side_rendering_available() -> bool:
     return _EGL_AVAILABLE
 
 
-class RenderSession(SceneMixin, ModesMixin, PipelineMixin, StereoMixin):
+class RenderSession(SceneMixin, ModesMixin, PipelineMixin, StereoMixin, RegionsMixin):
     """One client × one cube × one dedicated render thread.
 
     Lifecycle:
@@ -137,6 +138,10 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin, StereoMixin):
         self._cutting_plane_slice_colors = None  # vtkImageMapToColors
         self._slice_lut_ctf = None         # vtkColorTransferFunction for slice
         self._cutting_plane_slice_index = -1   # invalidates first update
+        # The desktop's regions on the plane (_regions.py, issue #356): the
+        # line and marker actors, and the labels with their pixel positions.
+        self._region_actors: list[Any] = []
+        self._region_labels: list[Any] = []
         self._closed = False
         # The headset's stereo mode (_stereo.py, issue #169): the latest pose
         # (None: the mono view), a refused one waiting to be reported, and

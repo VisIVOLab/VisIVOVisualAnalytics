@@ -739,8 +739,10 @@ void vtkWindowCube::publishRmSynthesisMaps(const BackendRmSynthesisResult &r, co
     // astrometry of the crop and not of the whole field.
     if (region.isValid()) {
         for (const QString &id : { peakId, depthId, significantId }) {
-            if (auto it = m_products2d.find(id); it != m_products2d.end())
+            if (auto it = m_products2d.find(id); it != m_products2d.end()) {
                 it->regionOrigin = region.topLeft();
+                it->hasRegionOrigin = true;
+            }
         }
     }
 }

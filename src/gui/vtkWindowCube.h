@@ -52,6 +52,7 @@ class vtkCallbackCommand;
 #include "RegionImportResult.h"
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
+#include "RegionPanePlacement.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkWeakPointer.h>
@@ -538,6 +539,9 @@ private:
         /// claims the whole field's astrometry and every position read off it
         /// is wrong by the crop offset.
         QPoint regionOrigin;
+        /// The map covers a box of the field (regionOrigin holds its corner,
+        /// which may be (0, 0): a null QPoint does not say "no crop").
+        bool hasRegionOrigin{ false };
         MapStats stats;                                  ///< cached whole-map stats
         bool statsComputed{ false };                     ///< compute once (imageData is immutable)
     };
@@ -2121,12 +2125,64 @@ protected:
     // Regions drawn, imported, restored or typed in are kept in m_regions until
     // the user deletes them, in the cube's full-resolution 0-based pixels (x,
     // y): the world frame of the 2-D slice and of the moment window, which are
-    // served at full resolution with origin 0 and spacing 1. The 3-D view's
-    // preview is reached through CubeLodGeometry::Sampling (cubeToDisplay).
+    // served at full resolution with origin 0 and spacing 1. The maps of the
+    // Product panes (#355) are placed through RegionPanePlacement.h; the 3-D
+    // view's preview through CubeLodGeometry::Sampling (cubeToDisplay).
     visivo::regions::RegionList m_regions;
     /// The list on the 2-D slice and on the moment window (each its own renderer).
     RegionListOverlay m_sliceRegionOverlay;
     RegionListOverlay m_momentRegionOverlay;
+    /// The list on each Product pane's map (issue #355), per slot, and the
+    /// region being drawn there (the slice draws its draft with its own actors).
+    std::array<RegionListOverlay, 4> m_paneRegionOverlays;
+    std::array<RegionListOverlay, 4> m_paneDraftOverlays;
+    /// The Pane2DView each slot's overlays and edit observers were put on: a
+    /// slot whose view was replaced is hooked again.
+    std::array<Pane2DView *, 4> m_paneRegionHooked{ nullptr, nullptr, nullptr, nullptr };
+    /// Rotation-knob distance last drawn on each Product pane (list pixels).
+    std::array<double, 4> m_paneKnobOffset{ 1.0, 1.0, 1.0, 1.0 };
+    /// The 2-D view the region being drawn belongs to (null: the slice). Read
+    /// through regionDraftWin(), which checks it is still a region view.
+    vtkRenderWindow *m_regionDraftWin{ nullptr };
+    /// The 2-D view a region was last drawn, picked or edited in: Analyse
+    /// measures there when the focused pane says nothing.
+    vtkRenderWindow *m_regionFocusWin{ nullptr };
+    /// Where the list sits in the image of @p win: the slice and the moment
+    /// window (world = cube pixels), or a Product pane whose map lies on the
+    /// cube's sky grid. Empty for anything else.
+    std::optional<visivo::regions::MapPlacement> regionPlacement(vtkRenderWindow *win) const;
+    /// The Product pane slot rendering into @p win, or -1.
+    int regionPaneSlot(vtkRenderWindow *win) const;
+    /// Slot @p slot is visible and shows a map of the cube's sky plane.
+    bool isRegionMapPane(int slot) const;
+    bool anyRegionMapPaneVisible() const;
+    bool anyRegionToolArmed() const;
+    /// The widget a region view renders in (focus for Delete / Cmd+Z).
+    QWidget *regionViewWidget(vtkRenderWindow *win) const;
+    /// Put the overlays and the edit observers on the Product panes and draw
+    /// the list on those showing a sky map. The caller renders.
+    void refreshPaneRegionOverlays();
+    void renderRegionPanes();
+    vtkRenderWindow *regionDraftWin() const;
+    /// The draft was started on a Product pane that no longer shows a sky map.
+    bool regionDraftOrphaned() const;
+    /// Where Analyse measures: the focused pane when it shows the sky, else
+    /// the view the region was last handled in, else the slice or the first
+    /// sky map on screen. Null when no such view is shown.
+    vtkRenderWindow *regionAnalysisWin() const;
+    /// The drawing tools' press / move / release on a 2-D view (the slice's
+    /// observers and the Product panes' edit callback both come here).
+    void regionDraftPress(vtkRenderWindow *win, int displayX, int displayY);
+    void regionDraftMove(vtkRenderWindow *win, int displayX, int displayY);
+    void finishRegionDraft();
+    /// The draft as it is drawn on a Product pane: the region so far, an open
+    /// polygon as a line, an annulus being dragged as its outer circle.
+    std::optional<visivo::regions::Region> draftDisplayRegion() const;
+    /// Display position in @p win to list pixels.
+    bool regionDisplayToList(vtkRenderWindow *win, int displayX, int displayY,
+                             visivo::regions::Vec2 *list) const;
+    /// List pixels per screen pixel in @p win at its current zoom.
+    double regionListPerDisplayPixel(vtkRenderWindow *win) const;
     /// The list on the 3-D view's cutting plane (issue #343), at the channel
     /// the plane shows (m_planeChannel; -1 before the plane is placed).
     RegionListOverlay m_planeRegionOverlay;
@@ -2191,9 +2247,10 @@ protected:
     void deleteSelectedRegion();
     void undoRegionEdit();
     void redoRegionEdit();
-    /// Statistics on the pane shown and the mean spectrum over the cube of
-    /// region @p id (the selected one by default).
-    void analyzeRegion(int id = -1);
+    /// Statistics on the map of @p win (regionAnalysisWin() by default) and
+    /// the mean spectrum over the cube of region @p id (the selected one by
+    /// default).
+    void analyzeRegion(int id = -1, vtkRenderWindow *win = nullptr);
 public:
     /// {x0, x1, y0, y1} cube pixels of the selected region's bounds, clamped
     /// to the cube; empty with no region selected. Seeds the box tools (noise,
@@ -2432,18 +2489,20 @@ protected:
     // camera too — it uses the SAME CubeGeom letterbox, so the gutter-independent math transfers.
     int  sliceSlot() const;                    // the visible slot showing Slice2D, or -1
     bool sliceCameraNormalized(double dataCenterXY[2], double &worldHeight) const;
+    // refit: the shared view is being put back after this slice's own letterbox, not taken
+    // from another view, so a send the user's move left waiting is kept (#358).
     void applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
-                                    bool render = true);
-    void onSliceCameraInteraction();           // slice interactor pan/zoom → propagate
-    void captureSliceCamPose();                // record the slice camera's pan/zoom as "seen"
-    // STEP6-P1: last-seen slice camera PAN/ZOOM pose (focal x/y + parallel scale). Tracking the
-    // POSE — not the raw MTime — means a window/level LEFT-drag (no pan/zoom) or a bare
-    // ResetCameraClippingRange (kinematic/lasso overlays) does NOT look like a camera move, so
-    // onSliceCameraInteraction only propagates on a real pan/zoom. Seeded by the initial
-    // fit + every programmatic slice-camera set.
-    double m_sliceCamFocalX{ 0. };
-    double m_sliceCamFocalY{ 0. };
-    double m_sliceCamScale{ 0. };
+                                    bool render = true, bool refit = false);
+    // Issue #358: the slice camera is sent to the linked 2-D views when a drawn frame shows it
+    // moved, whatever moved it (wheel, drag, the Shift+R reset, a catalogue centring). The pose
+    // is compared, not the camera's MTime, so a window/level drag or a bare
+    // ResetCameraClippingRange (overlays) is not a move. Refits made in code (a new channel, a
+    // resized pane) and a camera taken from a linked view are adopted, so they are not sent.
+    void onSliceCameraFrame();                 // slice EndEvent → schedule a send if it moved
+    void adoptSliceCamera();                   // camera taken from a linked view: not news
+    void refitSliceCamera();                   // camera refitted in code: not news either
+    LinkedCameraSync::Pose sliceCameraPose() const;
+    LinkedCameraSync::Tracker m_sliceCameraTracker;
     QPointer<QToolButton> m_linkCameraChip;    // per-facet toggle (camera)
     QPointer<QToolButton> m_linkChannelChip;   // per-facet toggle
     QPointer<QToolButton> m_linkLutChip;       // per-facet toggle
@@ -3199,6 +3258,11 @@ protected:
     /// fresh session is bootstrapped to the same look the user already
     /// sees locally. Cheap (5 JSON commands).
     void pushRenderStateToRemote();
+    /// The region list to the Remote 3-D view's cutting plane (#356), when
+    /// it changed since it was last sent (always with @p force).
+    void pushRegionsToRemote(bool force = false);
+    /// The last `set_regions` sent, compact JSON; empty: none to this session.
+    QByteArray m_remoteRegionsSent;
     /// Send a single state-mutation to the remote renderer. No-op
     /// unless we're in Remote mode AND the widget is Live.
     void sendRemoteRenderStateCommand(const QVariantMap &command);

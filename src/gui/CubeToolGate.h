@@ -55,9 +55,14 @@ struct Inputs
     /// The 3-D view is mounted in a visible pane.
     bool view3dVisible{ false };
     /// A visible pane shows a full-field map (a moment) that the 2-D Slice can
-    /// take as its background: arming a slice tool turns that pane into the
-    /// slice with the map underneath, so the tool draws on the map.
+    /// take as its background: arming Extract Spectrum or PV turns that pane
+    /// into the slice with the map underneath. The region tools draw on the
+    /// map itself (regionMapVisible).
     bool slicePaneAvailable{ false };
+    /// A visible Product pane shows a map of the cube's sky plane (a moment,
+    /// the Channels pane, a cropped Faraday map): the region tools draw and
+    /// edit there directly (#355).
+    bool regionMapVisible{ false };
     /// A spectrum has been probed (2-D click) or picked (3-D plane click), so
     /// Pin Spectrum has something to promote.
     bool haveProbeSpectrum{ false };
@@ -81,8 +86,11 @@ struct Inputs
 
 struct Decision
 {
-    /// Extract Spectrum / PV / Box / Circle / Polygon / Annulus / Import Region.
+    /// Extract Spectrum / PV.
     bool slice2dTools{ false };
+    /// Box / Circle / Polygon / Annulus / Import Region: the slice tools'
+    /// view rule, or a sky map on screen (#355).
+    bool regionTools{ false };
     /// Kinematic Lasso / Pick Spectrum on Plane Click.
     bool view3dTools{ false };
     bool pinSpectrum{ false };
@@ -111,6 +119,7 @@ inline Decision evaluate(const Inputs &in)
     // overlay and where its interactor observer lives. Nothing else about the
     // layout matters, the focused pane included.
     d.slice2dTools = in.slice2dVisible || in.slicePaneAvailable;
+    d.regionTools = d.slice2dTools || in.regionMapVisible;
     d.view3dTools = in.view3dVisible;
     // These four gate on state, not on the layout: a spectrum can be probed on
     // the slice or picked on the 3-D cutting plane and stays pinnable from
@@ -119,9 +128,9 @@ inline Decision evaluate(const Inputs &in)
     d.pinSpectrum = in.haveProbeSpectrum;
     d.exportRegion = in.haveRegion;
     d.editSelectedRegion = in.haveSelectedRegion;
-    // The statistics are taken on the slice (or the map it shows), so the
-    // slice family's view rule applies on top of the selection.
-    d.analyseRegion = in.haveSelectedRegion && d.slice2dTools;
+    // The statistics are taken on the slice or on a sky map in a pane, so
+    // the region tools' view rule applies on top of the selection.
+    d.analyseRegion = in.haveSelectedRegion && d.regionTools;
     d.undoRegion = in.regionUndo;
     d.redoRegion = in.regionRedo;
     d.sendSliceToImageViewer = in.imageViewerOpen;

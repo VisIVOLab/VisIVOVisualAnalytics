@@ -29,6 +29,7 @@
 #include "PvController.h"
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
+#include "RegionPlaneDrawing.h"
 #include "RemoteRenderWidget.h"
 #include "RenderSessionCalls.h"
 #include "RemoteSessionRecovery.h"
@@ -1153,9 +1154,53 @@ void vtkWindowCube::pushRenderStateToRemote()
                                 : QVariant();
         this->sendRemoteRenderStateCommand(m);
     }
+    // The region list on the session's cutting plane (#356): a session kept
+    // from before may hold another list, so it is sent whatever was sent last.
+    this->pushRegionsToRemote(/*force=*/true);
     // Last: on a non-linear volume scale the session draws with this window's
     // own functions, which the LUT and threshold above would otherwise replace.
     this->pushVolumeTransferFunctionsToRemote();
+}
+
+void vtkWindowCube::pushRegionsToRemote(bool force)
+{
+    // The session draws the regions on its own cutting plane: it owns the
+    // camera and the depth buffer, so they sit in its frames at the plane's
+    // channel, hidden by the volume where the volume is in front, and never
+    // trail a drag the way a drawing laid over the stream would.
+    const bool live = this->m_remoteRenderWidget && this->m_remoteRenderWidget->isLive()
+            && this->m_effectiveRenderMode == RenderMode::Remote;
+    if (!live) {
+        // Not sent: the next connection's bootstrap sends the list then.
+        this->m_remoteRegionsSent.clear();
+        return;
+    }
+    const QJsonObject command = visivo::regions::planeDrawingCommand(
+            this->m_regions, &RegionListOverlay::colour);
+    const QByteArray body = QJsonDocument(command).toJson(QJsonDocument::Compact);
+    if (!force && body == this->m_remoteRegionsSent)
+        return;   // a selection or a redraw that changed nothing on the plane
+    // A WebRTC data channel carries messages up to 256 KiB: a list that big
+    // (thousands of imported shapes) is not drawn on the remote plane, and
+    // the user is told so rather than left with a stale drawing.
+    constexpr qsizetype kMaxBody = 256 * 1024;
+    if (body.size() > kMaxBody) {
+        this->m_remoteRegionsSent = body;   // said once per such list, not per click
+        const QJsonObject clear{ { u"type"_s, u"set_regions"_s }, { u"regions"_s, QJsonArray() } };
+        this->m_remoteRenderWidget->sendStateCommand(clear.toVariantMap());
+        this->statusBar()->showMessage(
+                u"%1 regions are too many to draw on the Remote 3-D view's plane; they are "
+                u"on the 2-D views, and on the plane in Local rendering."_s.arg(this->m_regions.count()),
+                8000);
+        return;
+    }
+    this->m_remoteRegionsSent = body;
+    // Straight to the widget: the state-command log prints whole commands,
+    // and a region file's outlines would flood it.
+    qDebug().noquote() << QStringLiteral("[remote-render] SEND set_regions: %1 region(s), %2 bytes")
+                                  .arg(this->m_regions.count())
+                                  .arg(body.size());
+    this->m_remoteRenderWidget->sendStateCommand(command.toVariantMap());
 }
 
 void vtkWindowCube::updateRenderModeBadges()

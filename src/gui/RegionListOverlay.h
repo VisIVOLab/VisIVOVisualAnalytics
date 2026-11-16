@@ -16,6 +16,7 @@
 #include "RegionModel.h"
 
 #include <vtkSmartPointer.h>
+#include <vtkWeakPointer.h>
 
 #include <array>
 #include <functional>
@@ -78,7 +79,8 @@ public:
     bool visible() const { return m_visible; }
 
 private:
-    vtkRenderer *m_renderer{ nullptr };
+    /// Weak: a pane's renderer can go before the overlay drawn in it.
+    vtkWeakPointer<vtkRenderer> m_renderer;
     Style m_style;
     bool m_visible{ true };
     bool m_haveFill{ false };

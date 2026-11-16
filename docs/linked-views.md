@@ -16,6 +16,7 @@ on each viewer you want in the group. `src/gui/vtkWindowCube_Link.cpp`.
 | Aspect | Hooked at | Applied to peers |
 |--------|-----------|------------------|
 | **Camera** (3-D view) | `vtkCommand::EndEvent` on the 3-D render window: every frame whose camera moved (`LinkedCameraSync`) | shared **relative to each cube's data bounds** (see below), then re-render |
+| **2-D pan / zoom** (slice, Product panes) | `vtkCommand::EndEvent` on the slice and on each pane's render window (`LinkedCameraSync`, issue #358) | gutter-independent view (data-area centre + world height) on every visible 2-D pane, and on peer windows on the same spatial grid |
 | **Velocity channel** | `requestRemoteSlice()` (the single convergence for all channel changes) | matched by **spectral value (velocity)** — see below |
 | **Volume colour** (LUT) | `applyColorMapByName()` / 3-D LUT customizer | colormap **name** + volume **stretch** (scale mode + gamma) |
 | **Representation** (render) | the Volume ↔ Isosurface toggle (`changeCubeRender()`) | peers switch representation via `applyLinkedRenderMode()` |
@@ -63,6 +64,20 @@ not by raw coordinates/indices:
   a window loads new data (a camera ROI or a refined box frames its own crop,
   which would pull every peer off its view) and the orbit of *Export Movie*.
   A camera with a non-finite number is never sent.
+- **The 2-D views follow the same rule** (issue #358): the slice and the
+  Product panes watch their frames too, so Shift+R (reset the view), a
+  centring on a catalogue source and the wheel all reach the other 2-D panes
+  and the linked windows. The refits a window makes itself (a new channel, a
+  resized pane, a letterbox redone for a new colour bar, the shared view put
+  back after one) are recorded with `Tracker::refit()`, which keeps a send the
+  user's move left waiting; a view taken from another pane or window is
+  recorded with `adopt()`, which drops it. The slice also records the shared
+  view on every frame of a move, so a channel arriving mid-zoom puts back the
+  new view, not the old one.
+- **The image viewer** has no linked peers, but its tile streaming
+  (viewport level of detail) follows its camera the same way
+  (`LinkedCameraSync::Watch`): any camera change re-arms the settle
+  debounce, and the stream waits while a pan or zoom gesture is still held.
 - **Channel** is matched **physically when it makes sense, proportionally
   otherwise**:
   - If the cubes share a spectral **unit** *and* the sender's velocity falls

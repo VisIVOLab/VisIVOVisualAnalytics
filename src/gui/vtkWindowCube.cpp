@@ -3351,10 +3351,15 @@ vtkWindowCube::~vtkWindowCube()
     // §3.2 B3: destroy the per-slot Pane2DViews FIRST — their destructors remove the
     // render-window EndEvent observer, so it can't fire against a half-torn-down widget
     // once `delete ui` starts tearing the pane hierarchy down.
+    for (auto &overlay : m_paneRegionOverlays)
+        overlay.detach();
+    for (auto &overlay : m_paneDraftOverlays)
+        overlay.detach();
     for (auto *&pv : m_paneViews) {
         delete pv;
         pv = nullptr;
     }
+    m_paneRegionHooked.fill(nullptr);
     delete ui;
 }
 
@@ -9016,7 +9021,7 @@ QList<QPair<QString, QString>> vtkWindowCube::sliceBackdropCandidates() const
     const QString mirror = channelMirrorId();
     for (auto it = m_products2d.constBegin(); it != m_products2d.constEnd(); ++it) {
         const Product2D &p = it.value();
-        if (!p.imageData || !p.regionOrigin.isNull() || it.key() == mirror)
+        if (!p.imageData || p.hasRegionOrigin || it.key() == mirror)
             continue;   // a cropped map is not on the slice's pixel grid; channels are channels
         int pd[3] = { 0, 0, 0 };
         p.imageData->GetDimensions(pd);
@@ -10207,8 +10212,8 @@ void vtkWindowCube::propagate2DCamera(int srcSlot)
     // panes (Pane2DView) AND the 2-D slice (STEP6-P1). They share the same cube spatial grid, and
     // the view is copied GUTTER-INDEPENDENTLY (data-area centre + world height, STEP6-P3), so panes
     // with different colorbar gutters frame the same feature at the same zoom. Gated on the Linked
-    // master + camera facet. Receivers apply echo-guarded (or programmatic Render → no
-    // InteractionEvent), so there is no loop.
+    // master + camera facet. Receivers adopt the camera they are given before drawing it
+    // (LinkedCameraSync), so they never send it back.
     if (!m_linkViews || !m_linkCamera || srcSlot < 0 || srcSlot > 3)
         return;
     double center[2] = { 0., 0. };
@@ -10261,7 +10266,8 @@ void vtkWindowCube::reassertLinked2DCamera(int slot)
         return;
     const ViewId k = m_slots[slot].view.kind;
     if (k == ViewId::Slice2D)
-        this->applySliceCameraNormalized(m_linked2DCenter, m_linked2DWorldHeight);
+        this->applySliceCameraNormalized(m_linked2DCenter, m_linked2DWorldHeight,
+                                         /*render=*/true, /*refit=*/true);
     else if (k == ViewId::Product && m_paneViews[slot]
              && m_products2d.contains(m_slots[slot].view.productId))
         m_paneViews[slot]->setCameraStateNormalized(m_linked2DCenter, m_linked2DWorldHeight);
@@ -10296,7 +10302,7 @@ bool vtkWindowCube::sliceCameraNormalized(double dataCenterXY[2], double &worldH
 }
 
 void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
-                                               bool render)
+                                               bool render, bool refit)
 {
     if (!this->sliceWin)
         return;
@@ -10322,12 +10328,13 @@ void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], dou
     cam->SetFocalPoint(f);
     cam->SetPosition(p);
     cam->SetParallelScale(parScale);
-    // A programmatic camera set + Render fires no InteractionEvent, so onSliceCameraInteraction
-    // won't echo. Record the new pan/zoom pose so a following window/level drag (which does NOT
-    // move the camera) is correctly ignored by onSliceCameraInteraction. Remember this
-    // as the slice's fit baseline so layout2dPaneFor's guard treats the shared zoom as already
-    // fitted and doesn't snap it back.
-    this->captureSliceCamPose();
+    // The shared view is not this slice's move: recorded before any frame shows it, so it is
+    // never sent back. Remember it as the slice's fit baseline too, so layout2dPaneFor's guard
+    // treats the shared zoom as already fitted and doesn't snap it back.
+    if (refit)
+        this->refitSliceCamera();
+    else
+        this->adoptSliceCamera();
     this->m_slice2dFitSize = { size[0], size[1] };
     const auto fitGutter = this->gutter2dFor(/*slice=*/true);
     this->m_slice2dFitRight = fitGutter.right;
@@ -10336,52 +10343,71 @@ void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], dou
         this->sliceWin->Render();
 }
 
-void vtkWindowCube::captureSliceCamPose()
+LinkedCameraSync::Pose vtkWindowCube::sliceCameraPose() const
 {
-    // Record the slice camera's pan/zoom (focal x/y + parallel scale) as the last-seen pose, so
-    // onSliceCameraInteraction can tell a real pan/zoom from a window/level drag or a bare
-    // clipping-range bump. Called after the initial fit + every programmatic slice-camera set.
-    if (!this->sliceWin)
-        return;
-    auto *rc = this->sliceWin->GetRenderers();
+    LinkedCameraSync::Pose pose;
+    auto *rc = this->sliceWin ? this->sliceWin->GetRenderers() : nullptr;
     auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
     auto *cam = renderer ? renderer->GetActiveCamera() : nullptr;
     if (!cam)
-        return;
-    double f[3] = { 0., 0., 0. };
-    cam->GetFocalPoint(f);
-    m_sliceCamFocalX = f[0];
-    m_sliceCamFocalY = f[1];
-    m_sliceCamScale = cam->GetParallelScale();
+        return pose;
+    cam->GetPosition(pose.position.data());
+    cam->GetFocalPoint(pose.focalPoint.data());
+    cam->GetViewUp(pose.viewUp.data());
+    pose.viewAngle = cam->GetViewAngle();
+    pose.parallelScale = cam->GetParallelScale();
+    return pose;
 }
 
-void vtkWindowCube::onSliceCameraInteraction()
+void vtkWindowCube::adoptSliceCamera()
 {
-    // STEP6-P1: the user panned/zoomed the 2-D slice → propagate to the linked image panes. But
-    // vtkInteractorStyleImage also fires InteractionEvent on a window/level LEFT-drag (no pan/zoom),
-    // and overlays bump the camera via ResetCameraClippingRange; compare the actual PAN/ZOOM POSE
-    // (not the MTime) so only a real move propagates. The pose is tracked UNCONDITIONALLY (even
-    // unlinked) so it never goes stale.
-    if (!this->sliceWin)
+    // A camera taken from a linked view: the frames that show it are not the user's move, and a
+    // send still waiting is dropped, since the linked view's camera is the newer shared one.
+    this->m_sliceCameraTracker.adopt(this->sliceCameraPose());
+}
+
+void vtkWindowCube::refitSliceCamera()
+{
+    // A refit made in code (initial fit, new channel, resize, the shared view put back): not the
+    // user's move either, but a send the user's zoom left waiting still goes out.
+    this->m_sliceCameraTracker.refit(this->sliceCameraPose());
+}
+
+void vtkWindowCube::onSliceCameraFrame()
+{
+    // Issue #358: the slice used to send its camera from the interactor's InteractionEvent /
+    // EndInteractionEvent, which only mouse gestures raise; Shift+R reset the slice and left the
+    // linked views behind. The pose is tracked even while unlinked, so it is never stale when
+    // linking is switched on.
+    const bool schedule =
+            this->m_sliceCameraTracker.frame(this->sliceCameraPose(), this->m_applyingLinkedUpdate);
+    if (!this->m_sliceCameraTracker.lastFrameMoved())
         return;
-    auto *rc = this->sliceWin->GetRenderers();
-    auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
-    auto *cam = renderer ? renderer->GetActiveCamera() : nullptr;
-    if (!cam)
-        return;
-    double f[3] = { 0., 0., 0. };
-    cam->GetFocalPoint(f);
-    const double scale = cam->GetParallelScale();
-    const bool moved = (f[0] != m_sliceCamFocalX || f[1] != m_sliceCamFocalY
-                        || scale != m_sliceCamScale);
-    m_sliceCamFocalX = f[0];
-    m_sliceCamFocalY = f[1];
-    m_sliceCamScale = scale;
-    if (!moved || !m_linkViews || !m_linkCamera)
-        return;   // window/level / clipping-only / not linked → nothing to propagate
-    const int s = this->sliceSlot();
-    if (s >= 0)
-        this->propagate2DCamera(s);
+    // Record the new view as the shared one on every frame of the move, not when the send goes
+    // out: a slice that arrives in between (a channel scrub) refits the slice and puts the shared
+    // view back, and that must be this view, not the one before the zoom.
+    if (this->m_linkViews && this->m_linkCamera && this->sliceSlot() >= 0) {
+        double center[2] = { 0., 0. };
+        double worldHeight = 0.;
+        if (this->sliceCameraNormalized(center, worldHeight) && std::isfinite(center[0])
+            && std::isfinite(center[1]) && std::isfinite(worldHeight) && worldHeight > 0.) {
+            this->m_linked2DCenter[0] = center[0];
+            this->m_linked2DCenter[1] = center[1];
+            this->m_linked2DWorldHeight = worldHeight;
+            this->m_linked2DValid = true;
+        }
+    }
+    if (!schedule)
+        return;   // the send already waiting will carry this frame's camera
+    // Sent on the next turn of the event loop: a drag's burst of frames joins one send, and the
+    // other views do not draw while this one is still finishing its frame.
+    QTimer::singleShot(0, this, [this]() {
+        if (!this->m_sliceCameraTracker.takePending() || !this->m_linkViews || !this->m_linkCamera)
+            return;
+        const int s = this->sliceSlot();
+        if (s >= 0)
+            this->propagate2DCamera(s);
+    });
 }
 
 void vtkWindowCube::setActivePane(int pane)
@@ -10776,7 +10802,8 @@ void vtkWindowCube::refreshPaneActiveStyles()
     for (int i = 0; i < 4; ++i) {
         const bool active = (m_activePane == i);
         const bool armedHere = (armed3d && m_slots[i].view.kind == ViewId::View3D)
-                || (armed2d && m_slots[i].view.kind == ViewId::Slice2D);
+                || (armed2d && m_slots[i].view.kind == ViewId::Slice2D)
+                || (m_slots[i].view.kind == ViewId::Product && paneIsArmedTarget(i));
         if (m_slots[i].frame)
             m_slots[i].frame->setStyleSheet(
                     armedHere
@@ -10822,9 +10849,10 @@ void vtkWindowCube::refreshPaneCursors()
                 w->setCursor((m_activePane == i || paneIsArmedTarget(i)) ? Qt::CrossCursor
                                                                         : Qt::ArrowCursor);
         } else if (k == ViewId::Product && m_paneViews[i] && m_paneViews[i]->widget()) {
-            // Display-only: always the plain arrow, never a crosshair — a moment pane
-            // takes no probe/region/PV (those act on the 2-D Slice). §3.2 B3.
-            m_paneViews[i]->widget()->setCursor(Qt::ArrowCursor);
+            // The plain arrow, but for a sky map with a region tool armed: regions
+            // are drawn there too (#355). Probe and PV still act on the 2-D Slice.
+            m_paneViews[i]->widget()->setCursor(paneIsArmedTarget(i) ? Qt::CrossCursor
+                                                                     : Qt::ArrowCursor);
         }
     }
 }
@@ -10847,8 +10875,15 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
     // Cmd+Z / Shift+Cmd+Z on a 2-D view undo the region list while it has a
     // change to undo. The window-wide copilot undo holds the same key, so the
     // view claims it (ShortcutOverride) and handles the key press itself.
+    const auto isMapPaneWidget = [this](QObject *w) {
+        for (int i = 0; i < 4; ++i)
+            if (m_paneViews[i] && w == m_paneViews[i]->widget() && isRegionMapPane(i))
+                return true;
+        return false;
+    };
     if ((et == QEvent::ShortcutOverride || et == QEvent::KeyPress)
-        && (watched == ui->vtkImage || (m_vtkMoment && watched == m_vtkMoment.data()))) {
+        && (watched == ui->vtkImage || (m_vtkMoment && watched == m_vtkMoment.data())
+            || isMapPaneWidget(watched))) {
         auto *key = static_cast<QKeyEvent *>(event);
         const bool free = !this->regionDragRunning();
         const bool undo = free && key->matches(QKeySequence::Undo) && m_regions.canUndo();
@@ -11463,6 +11498,10 @@ bool vtkWindowCube::paneIsArmedTarget(int slot) const
         return anyTool2dArmed();
     if (k == ViewId::View3D)
         return anyTool3dArmed();
+    // A map of the sky plane takes the region tools (#355): they draw there
+    // too, so it keeps its input while one is armed, as the slice does.
+    if (k == ViewId::Product)
+        return anyRegionToolArmed() && isRegionMapPane(slot);
     return false;
 }
 
@@ -12292,6 +12331,14 @@ void vtkWindowCube::mountView(int slot)
     // drops a path that does not belong to its product).
     if (pv)
         this->refreshPvOverlay();
+    // …and the region list, when the map is of the cube's sky plane (#355).
+    if (pv) {
+        this->refreshPaneRegionOverlays();
+        // A sky map on screen enables the region tools. Queued: a layout pass
+        // mounts before it shows the frames, and a gate run now would see no
+        // map and no slice and un-arm a tool for good.
+        QTimer::singleShot(0, this, [this]() { this->applyMomentToolGate(); });
+    }
     // …and refit once the move has settled: the pane's own resize refit runs a tick
     // later, when VTK may still report the OLD size, and the view then keeps a camera
     // for the old pane (an image shrunk into a corner after a swap or a relayout).
@@ -14316,13 +14363,21 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
         }
     } else if (surface == u"moment"_s) {
         const QString measuredOn = origin.value(u"momentProduct"_s).toString();
-        if (this->viewingSlice())
-            m_originRestoreNote = u" - measured on a moment map, not on this slice"_s;
-        else if (!measuredOn.isEmpty() && measuredOn != this->m_momentPipelineProductId)
-            m_originRestoreNote = u" - measured on a different moment map than the one shown"_s;
-        else if (!measuredOn.isEmpty() && !this->m_products2d.contains(measuredOn))
+        // The regions are drawn on every sky map (#355): what matters is
+        // whether the map measured is still there, and still the same.
+        bool shown = !measuredOn.isEmpty() && measuredOn == this->m_sliceBackdropProductId
+                && this->slice2dVisible();
+        for (int i = 0; i < 4 && !shown; ++i)
+            shown = isRegionMapPane(i) && m_slots[i].view.productId == measuredOn;
+        // An old record names no map: nothing more to say about it.
+        if (measuredOn.isEmpty())
+            m_originRestoreNote.clear();
+        else if (this->m_products2d.contains(measuredOn) && !shown)
+            m_originRestoreNote = u" - measured on %1, which no pane shows"_s.arg(
+                    this->m_products2d.value(measuredOn).label);
+        else if (!this->m_products2d.contains(measuredOn))
             m_originRestoreNote = u" - the moment map it was measured on is no longer loaded"_s;
-        else if (origin.contains(u"momentGeneration"_s) && !measuredOn.isEmpty()
+        else if (origin.contains(u"momentGeneration"_s)
                  && origin.value(u"momentGeneration"_s).toInt()
                          != this->m_momentProductGeneration.value(measuredOn, 0))
             // Same product id, different image: the id is stable across a
@@ -14606,6 +14661,7 @@ void vtkWindowCube::applyMomentToolGate()
     in.slice2dVisible = slice2dVisible();
     in.view3dVisible = view3dVisible();
     in.slicePaneAvailable = momentPaneForSliceTools() >= 0;
+    in.regionMapVisible = anyRegionMapPaneVisible();
     // What the data is (issue #83): a VBT field's third axis is Z, not a
     // spectrum, and its axes carry no sky coordinates. Before the header
     // arrives (empty CTYPE3, no WCS yet) every tool stays.
@@ -14651,9 +14707,9 @@ void vtkWindowCube::applyMomentToolGate()
     const bool keepArmedSlice = !d.slice2dTools && zoomed && viewAssigned(ViewId::Slice2D);
     const bool keepArmed3d = !d.view3dTools && zoomed && viewAssigned(ViewId::View3D);
 
-    // The slice family. Import Region belongs here too: it draws the parsed
-    // region onto the 2-D view and runs the region analysis on it, so without
-    // that view on screen it is the same no-op as drawing one by hand.
+    // The slice family, and the region tools with it. Import Region belongs
+    // with those: it puts the parsed regions in the list and measures the
+    // first on the 2-D view, the slice or a sky map in a pane (#355).
     const std::array<QAction *, 7> sliceTools{ ui->actionExtractSpectrum,
                                                actionExtractPvDiagram.data(),
                                                actionBoxRegion.data(),
@@ -14668,11 +14724,16 @@ void vtkWindowCube::applyMomentToolGate()
         // flight); the rest share the cube-open baseline.
         const bool baseline = (a == actionExtractPvDiagram.data()) ? m_pvBaselineEnabled
                                                                    : m_cubeActionsEnabled;
+        // The region tools also draw on the sky maps of the Product panes
+        // (#355); Extract Spectrum and PV stay on the slice.
+        const bool regionTool = a != ui->actionExtractSpectrum
+                && a != actionExtractPvDiagram.data();
+        const bool viewShown = regionTool ? d.regionTools : d.slice2dTools;
         // A REASON un-arms; a baseline denial only greys out. PV drops its
         // baseline the moment an extraction starts, and un-arming there runs
         // clearPv() while the controller is still reading the path it was handed
         // — the first extraction then submits an empty polyline.
-        if (!d.slice2dTools) {
+        if (!viewShown) {
             if (keepArmedSlice && a->isChecked())
                 continue;   // running, and its pane is only hidden by the zoom
             applyGate(a, false, reasonNoSlice);
@@ -14680,9 +14741,12 @@ void vtkWindowCube::applyMomentToolGate()
             applyGate(a, baseline, QString());
             // Enabled because a moment pane could become the slice — but a tool
             // ALREADY armed listens on the slice, which has just left the screen:
-            // un-arm it (arming again draws on the moment pane).
+            // un-arm it (arming again draws on the moment pane). A region tool
+            // keeps drawing while a sky map is on screen.
             const bool sliceHiddenByZoom = zoomed && viewAssigned(ViewId::Slice2D);
-            if (!in.slice2dVisible && !sliceHiddenByZoom && a->isCheckable() && a->isChecked())
+            const bool stillListening =
+                    in.slice2dVisible || (regionTool && in.regionMapVisible);
+            if (!stillListening && !sliceHiddenByZoom && a->isCheckable() && a->isChecked())
                 a->setChecked(false);
         }
     }
