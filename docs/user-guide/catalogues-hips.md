@@ -233,8 +233,9 @@ one-shot actions:
 * - **Load Catalogue Overlay**
   - One-shot
   - Open a file picker for a delimited text table (`.csv`, `.tsv`,
-    `.txt`) with `RA` and `DEC` columns in degrees, or a DS9 region file
-    (`.reg`); the image viewer also takes CASA CRTF (`.crtf`). See
+    `.txt`) with `RA` and `DEC` columns in degrees. A `.reg` or `.crtf`
+    file picked here is read as regions, with every shape and frame
+    ([Importing a region file](region-pv-noise.md#importing-a-region-file)). See
     [Overlay file formats](#overlay-file-formats). The glyphs are drawn
     immediately on the slice. Each call replaces the currently-loaded
     overlay.
@@ -267,8 +268,8 @@ The file is read by what it holds, not only by its name, with the same rule
 the backend applies to delimited text (see
 [3-D catalogue viewer](#3-d-catalogue-viewer)):
 
-- A **`.reg`** file is read as **DS9 regions**: `fk5` / `icrs` points and
-  circles, and `image` ellipses.
+- A **`.reg`** or **`.crtf`** file is not a catalogue: it is read as regions
+  ([Importing a region file](region-pv-noise.md#importing-a-region-file)).
 - A file whose first lines (up to ten, `#` comment lines and blank lines
   aside) split into the same number of fields, two or more, with a **comma**,
   a **tab** or a **semicolon** (tried in that order) is read as a **table**

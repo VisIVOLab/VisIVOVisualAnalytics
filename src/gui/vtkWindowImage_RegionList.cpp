@@ -282,13 +282,16 @@ bool vtkWindowImage::handleRegionEditEvent(unsigned long eventId)
             this->onRegionListChanged();
             return false;
         }
+        const double dx = p[0] - m_regionDrag.start[0], dy = p[1] - m_regionDrag.start[1];
         const Region next =
                 m_regionDrag.hit.kind == Hit::Body
-                        ? visivo::regions::moved(m_regionDrag.original, p[0] - m_regionDrag.start[0],
-                                                 p[1] - m_regionDrag.start[1])
+                        ? visivo::regions::moved(m_regionDrag.original, dx, dy)
                         : visivo::regions::withHandleAt(m_regionDrag.original,
                                                         m_regionDrag.hit.handle, p);
         this->m_regions.replace(next);
+        if (m_regionDrag.hit.kind == Hit::Body)
+            for (const Region &ring : m_regionDrag.companions)
+                this->m_regions.replace(visivo::regions::moved(ring, dx, dy));
         this->onRegionListChanged();
         return true;
     }
@@ -329,6 +332,10 @@ bool vtkWindowImage::handleRegionEditEvent(unsigned long eventId)
         m_regionDrag.hit = hit;
         m_regionDrag.start = p;
         m_regionDrag.original = *this->m_regions.find(id);
+        m_regionDrag.companions.clear();
+        for (int ring : this->m_regions.ringGroup(id))
+            if (ring != id)
+                m_regionDrag.companions.push_back(*this->m_regions.find(ring));
         this->m_regions.beginGesture();
         this->onRegionListChanged();
         if (ui->vtk)

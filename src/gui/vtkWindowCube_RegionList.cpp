@@ -400,13 +400,16 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
             this->onRegionListChanged();
             return false;
         }
+        const double dx = p[0] - m_regionDrag.start[0], dy = p[1] - m_regionDrag.start[1];
         const Region next =
                 m_regionDrag.hit.kind == Hit::Body
-                        ? visivo::regions::moved(m_regionDrag.original, p[0] - m_regionDrag.start[0],
-                                                 p[1] - m_regionDrag.start[1])
+                        ? visivo::regions::moved(m_regionDrag.original, dx, dy)
                         : visivo::regions::withHandleAt(m_regionDrag.original,
                                                         m_regionDrag.hit.handle, p);
         this->m_regions.replace(next);
+        if (m_regionDrag.hit.kind == Hit::Body)
+            for (const Region &ring : m_regionDrag.companions)
+                this->m_regions.replace(visivo::regions::moved(ring, dx, dy));
         this->refreshRegionListOverlay();
         if (m_regionPropertiesDialog)
             m_regionPropertiesDialog->setRegion(next);
@@ -443,6 +446,10 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
         m_regionDrag.hit = hit;
         m_regionDrag.start = p;
         m_regionDrag.original = *this->m_regions.find(id);
+        m_regionDrag.companions.clear();
+        for (int ring : this->m_regions.ringGroup(id))
+            if (ring != id)
+                m_regionDrag.companions.push_back(*this->m_regions.find(ring));
         this->m_regions.beginGesture();
         this->onRegionListChanged();
         // So Delete and Undo reach the view the region was picked in.
@@ -585,7 +592,9 @@ std::optional<std::array<int, 4>> vtkWindowCube::selectedRegionPixelBox() const
     const Region *r = this->m_regions.selected();
     const int maxX = std::max(0, this->remoteDatasetWidth - 1);
     const int maxY = std::max(0, this->remoteDatasetHeight - 1);
-    if (!r || this->remoteDatasetWidth <= 0 || this->remoteDatasetHeight <= 0)
+    // A line, a vector or a text has no pixels to seed a box with.
+    if (!r || !visivo::regions::hasArea(r->shape) || this->remoteDatasetWidth <= 0
+        || this->remoteDatasetHeight <= 0)
         return std::nullopt;
     // The pixels whose centres the region's bounds hold (a box from pixel 4 to
     // pixel 10 gives 4..10), clamped to the cube.
@@ -607,6 +616,13 @@ void vtkWindowCube::analyzeRegion(int id)
     if (!found)
         return;
     const Region region = *found;   // a copy: the list may change below
+    if (!visivo::regions::hasArea(region.shape)) {
+        this->statusBar()->showMessage(
+                u"%1 is a %2: it has no pixels to measure."_s.arg(region.name,
+                                                                    visivo::regions::shapeName(region.shape)),
+                5000);
+        return;
+    }
     vtkRenderWindow *win = this->active2dWin();
     vtkImageData *imageData = this->regionPaneImage(win);
     const visivo::DisplayGrid grid = this->regionDisplayGrid(win);

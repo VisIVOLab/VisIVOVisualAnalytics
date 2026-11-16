@@ -24,6 +24,7 @@
 #include "theme/VisivoTheme.h"
 #include "ProductOrigin.h"
 #include "RegionFullRes.h"
+#include "RegionImport.h"
 #include "RegionListExport.h"
 #include "RegionReadout.h"
 #include "ToolResultDialog.h"
@@ -713,6 +714,30 @@ void vtkWindowImage::clearRegion()
     this->updateRegionReadout();
 }
 
+void vtkWindowImage::importRegionsFromFile(const QString &path, const QString &note)
+{
+    QPointer<vtkWindowImage> self(this);
+    visivo::regions::importRegionFile(
+            this,
+            { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
+              this->remoteDatasetId, this->filepath },
+            [self](const visivo::regions::ImportResult &result) {
+                if (!self)
+                    return;
+                // A drag still running ends here: the import is its own
+                // change, after it, not inside its undo step.
+                if (self->m_regionDrag.active) {
+                    self->m_regionDrag.active = false;
+                    self->m_regions.endGesture();
+                }
+                // One change for the whole file (one Undo takes it back); the
+                // first region is selected.
+                if (!self->m_regions.addAll(result.regions).empty())
+                    self->onRegionListChanged();
+            },
+            path, note);
+}
+
 void vtkWindowImage::exportRegionsToFile()
 {
     visivo::regions::exportRegionList(
@@ -731,6 +756,13 @@ void vtkWindowImage::analyzeRegion(int id)
     }
     // A copy: the list may change while the backend computes.
     const visivo::regions::Region region = *found;
+    if (!visivo::regions::hasArea(region.shape)) {
+        this->statusBar()->showMessage(
+                u"%1 is a %2: it has no pixels to measure."_s.arg(region.name,
+                                                                    visivo::regions::shapeName(region.shape)),
+                5000);
+        return;
+    }
 
     // Close any previous result dialog (its stale generation prevents cleanup races)
     if (this->m_regionResultDialog) {

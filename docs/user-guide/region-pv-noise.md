@@ -188,15 +188,43 @@ and the ring appeared only after you had already chosen.)
   whatever the image's own frame. In the image viewer it asks first whether to
   write all the regions or the selected one, and offers a third frame choice:
   each region in the frame it was typed in (FK5 for a region drawn on the
-  image). *Import Region (CRTF/DS9)…* reads one back:
-  FK5, ICRS, FK4 (B1950), galactic and ecliptic regions are converted to the
-  image's frame through its WCS, rotated or skewed grids and unequal pixel
-  scales included, ds9 `physical` coordinates through the image's LTM/LTV
-  keywords, and each size keeps its own unit (`1'`, `30"`, `0.01d`, …). CRTF
-  pixel positions are read as CASA writes them, counting from 0. A file in
-  which no region can be placed (a frame the backend cannot convert, such as
-  ds9 `linear` or `detector` or CRTF `SUPERGAL`, or regions that do not land
-  on the image) is refused with the reason and line of the first one.
+  image).
+
+### Importing a region file
+
+*Tools ▸ Regions ▸ Import Region (CRTF/DS9)…*, in the image viewer and in the
+cube viewer, reads a ds9 or CASA CRTF file into the window's regions:
+
+- **Every region of the file**, as one change: one Undo takes the whole
+  import back. The first region is selected (in the cube viewer the first one
+  with an area is measured).
+- **Every shape**: circle, ellipse, box, polygon, point, annulus, and the
+  shapes that are drawn but not measured, which are lines (ds9 `line`,
+  `ruler`, `segment`, `projection`; CRTF `line`), vectors (an arrow from a
+  start, a length and an angle) and text. Elliptical and box annuli are
+  measured between their two edges. An annulus written with several radii
+  (`annulus(x,y,r1,r2,r3)`) becomes one ring per pair of radii, named
+  *Annulus, line 4, ring 1/2*; dragging one ring moves them all.
+- **Every frame and coordinate format**: FK5, ICRS, FK4 (B1950), galactic and
+  ecliptic, in degrees or sexagesimal, are placed through the dataset's full
+  WCS by the backend (rotated or skewed grids and unequal pixel scales
+  included), at sub-pixel precision; ds9 `physical` goes through the image's
+  LTM/LTV keywords, and each size keeps its own unit (`1'`, `30"`, `0.01d`).
+  CRTF pixel positions are read as CASA writes them, counting from 0.
+- **Colours, labels and the other properties** of the file are kept: a
+  `text={…}` label is drawn above its region, and an export writes the
+  properties back.
+
+Every line that does not become a region is listed in a report that opens
+next to the viewer (it does not block it): the line number, the line as
+written, and the reason (a shape not supported, such as ds9 `panda` or
+`compass`; a frame the backend cannot convert, such as ds9 `linear` or CRTF
+`SUPERGAL`; a sky region on an image without a celestial WCS; a region off
+the projection; a size of zero). The status bar says how many regions were
+read and how many lines were not.
+
+A `.reg` or `.crtf` file picked in *Tools ▸ Load Catalogue Overlay* is read
+the same way, as regions; the catalogue overlay takes tables.
 
 ---
 

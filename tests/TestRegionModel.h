@@ -33,4 +33,6 @@ private slots:
     void fieldsReportWhatIsWrong();
     void cubeSamplesFollowTheDisplaySampling();
     void addAllIsOneUndoStep();
+    void newShapesRoundTripAndGeometry();
+    void importKeepsEveryRegionAndSaysWhy();
 };
