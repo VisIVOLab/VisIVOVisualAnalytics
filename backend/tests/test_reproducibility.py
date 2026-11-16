@@ -194,6 +194,21 @@ class TestAutoHistory(ReproducibilityTestBase):
                             json={"path": cls.cube_path}, headers=open_headers)
         cls.cube_id = r.json()["dataset_id"]
 
+    def _record_moment(self):
+        """Compute a moment map, which records itself in the session history.
+
+        Each test that reads the history records its own entry and checks
+        that the call succeeded, so it does not rely on an earlier test of
+        the class having done so (a request the API refuses records nothing).
+        """
+        resp = self.client.post("/v1/products/moment",
+                                json={"dataset_id": self.cube_id, "moment_order": 0,
+                                      "channel_start": 0, "channel_end": 3},
+                                headers=self._headers())
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(resp.json().get("valid", False),
+                        f"Moment call failed: {resp.json()}")
+
     def test_moment_auto_records_history(self):
         """Calling /v1/products/moment should append an entry to session history."""
         n_before = self.client.get(
@@ -215,10 +230,7 @@ class TestAutoHistory(ReproducibilityTestBase):
 
     def test_moment_history_entry_has_endpoint(self):
         """The auto-recorded entry must include the endpoint path."""
-        self.client.post("/v1/products/moment",
-                         json={"dataset_id": self.cube_id, "order": 0,
-                               "channel_start": 0, "channel_end": 3},
-                         headers=self._headers())
+        self._record_moment()
         r = self.client.get("/v1/reproducibility/snapshots", headers=self._headers())
         history = r.json()["history"]
         endpoints = [e.get("endpoint", "") for e in history]
@@ -226,10 +238,7 @@ class TestAutoHistory(ReproducibilityTestBase):
 
     def test_moment_history_entry_has_dataset_id(self):
         """Auto-recorded entry must include the source dataset_id."""
-        self.client.post("/v1/products/moment",
-                         json={"dataset_id": self.cube_id, "order": 0,
-                               "channel_start": 0, "channel_end": 3},
-                         headers=self._headers())
+        self._record_moment()
         r = self.client.get("/v1/reproducibility/snapshots", headers=self._headers())
         history = r.json()["history"]
         ds_ids = [e.get("dataset_id", "") for e in history]
@@ -237,10 +246,7 @@ class TestAutoHistory(ReproducibilityTestBase):
 
     def test_moment_history_entry_has_timestamp(self):
         """Auto-recorded entry must have an ISO-8601 timestamp."""
-        self.client.post("/v1/products/moment",
-                         json={"dataset_id": self.cube_id, "order": 0,
-                               "channel_start": 0, "channel_end": 3},
-                         headers=self._headers())
+        self._record_moment()
         r = self.client.get("/v1/reproducibility/snapshots", headers=self._headers())
         history = r.json()["history"]
         ts_list = [e.get("timestamp", "") for e in history if e.get("endpoint") == "/v1/products/moment"]
