@@ -41,7 +41,7 @@ void TestSupportedFormats::allSupportedIsTheUnionWithoutRepeats()
 {
     const QStringList all = visivo::fileTypeSuffixes(FileType::AllSupported);
     for (const FileType type : { FileType::Fits, FileType::Catalogue, FileType::Vbt,
-                                 FileType::Hdf5, FileType::DelimitedText }) {
+                                 FileType::Hdf5, FileType::DelimitedText, FileType::Pluto }) {
         for (const QString &suffix : visivo::fileTypeSuffixes(type))
             QVERIFY2(all.contains(suffix), qPrintable(suffix));
     }
@@ -76,6 +76,11 @@ void TestSupportedFormats::matchingIgnoresCase()
     QVERIFY(visivo::fileTypeMatches(u"Gaia.VOT", FileType::Catalogue));
     QVERIFY(visivo::fileTypeMatches(u"Snap.Bin.Head", FileType::Vbt));
     QVERIFY(visivo::fileTypeMatches(u"PSR.H5", FileType::Hdf5));
+    // PLUTO output (#364): the data files, in the group and in All supported.
+    QVERIFY(visivo::fileTypeMatches(u"rho.0000.flt", FileType::Pluto));
+    QVERIFY(visivo::fileTypeMatches(u"data.0042.dbl", FileType::Pluto));
+    QVERIFY(visivo::fileTypeMatches(u"rho.0000.flt", FileType::AllSupported));
+    QVERIFY(!visivo::fileTypeMatches(u"rho.0000.flt", FileType::Fits));
     QVERIFY(visivo::fileTypeMatches(u"SOURCES.CSV", FileType::DelimitedText));
     QVERIFY(visivo::fileTypeMatches(u"Sources.TSV", FileType::DelimitedText));
 }
@@ -86,7 +91,7 @@ void TestSupportedFormats::dotfilesAreListedOnlyUnderAllFiles()
     QVERIFY(!visivo::isHiddenFileName(u"m31.fits"));
     // macOS resource forks keep the name they shadow.
     for (const FileType type : { FileType::AllSupported, FileType::Fits, FileType::Catalogue,
-                                 FileType::Vbt, FileType::Hdf5, FileType::DelimitedText }) {
+                                 FileType::Vbt, FileType::Hdf5, FileType::DelimitedText, FileType::Pluto }) {
         QVERIFY(!visivo::fileTypeMatches(u"._m31.fits", type));
         QVERIFY(!visivo::fileTypeMatches(u".DS_Store", type));
         QVERIFY(!visivo::fileTypeMatches(u".fits", type));
