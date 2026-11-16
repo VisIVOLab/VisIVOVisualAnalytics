@@ -2462,6 +2462,8 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result, 
     if (renderer && !preserveView) {
         renderer->ResetCamera();
         renderer->ResetCameraClippingRange();
+        // The view of a fresh load is the one just loaded: nothing to stream for it.
+        this->m_lodCameraWatch.adopt(this->imageCameraPose());
     }
     this->invalidateWcsOverlayCache();
     if (!validExtent) {
@@ -2562,6 +2564,30 @@ bool vtkWindowImage::isBusy() const
             || this->m_stokesListingWatcher.isRunning();
 }
 
+LinkedCameraSync::Pose vtkWindowImage::imageCameraPose() const
+{
+    LinkedCameraSync::Pose pose;
+    auto *renderWindow = ui && ui->vtk ? ui->vtk->renderWindow() : nullptr;
+    auto *renderer = renderWindow ? renderWindow->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *camera = renderer ? renderer->GetActiveCamera() : nullptr;
+    if (!camera) {
+        return pose;
+    }
+    camera->GetPosition(pose.position.data());
+    camera->GetFocalPoint(pose.focalPoint.data());
+    camera->GetViewUp(pose.viewUp.data());
+    pose.viewAngle = camera->GetViewAngle();
+    pose.parallelScale = camera->GetParallelScale();
+    return pose;
+}
+
+void vtkWindowImage::onImageCameraFrame()
+{
+    if (this->m_lodCameraWatch.moved(this->imageCameraPose())) {
+        this->onImageInteractionSettled();
+    }
+}
+
 void vtkWindowImage::onImageInteractionSettled()
 {
     // A camera pan/zoom ended — (re)arm the debounce so a burst of end-events
@@ -2586,6 +2612,17 @@ void vtkWindowImage::maybeStreamViewportLod()
     auto *renderer = renderWindow ? renderWindow->GetRenderers()->GetFirstRenderer() : nullptr;
     auto *camera = renderer ? renderer->GetActiveCamera() : nullptr;
     if (!renderer || !camera) {
+        return;
+    }
+    // A pan or zoom still in progress (the mouse held still mid-drag): wait for
+    // its end, as the debounce did when it listened to EndInteractionEvent.
+    auto *interactor = renderWindow->GetInteractor();
+    auto *style = interactor ? vtkInteractorStyle::SafeDownCast(interactor->GetInteractorStyle())
+                             : nullptr;
+    if (style && style->GetState() != VTKIS_NONE) {
+        if (this->m_lodSettleTimer) {
+            this->m_lodSettleTimer->start();
+        }
         return;
     }
     const int *sz = renderWindow->GetSize();

@@ -10207,8 +10207,8 @@ void vtkWindowCube::propagate2DCamera(int srcSlot)
     // panes (Pane2DView) AND the 2-D slice (STEP6-P1). They share the same cube spatial grid, and
     // the view is copied GUTTER-INDEPENDENTLY (data-area centre + world height, STEP6-P3), so panes
     // with different colorbar gutters frame the same feature at the same zoom. Gated on the Linked
-    // master + camera facet. Receivers apply echo-guarded (or programmatic Render → no
-    // InteractionEvent), so there is no loop.
+    // master + camera facet. Receivers adopt the camera they are given before drawing it
+    // (LinkedCameraSync), so they never send it back.
     if (!m_linkViews || !m_linkCamera || srcSlot < 0 || srcSlot > 3)
         return;
     double center[2] = { 0., 0. };
@@ -10261,7 +10261,8 @@ void vtkWindowCube::reassertLinked2DCamera(int slot)
         return;
     const ViewId k = m_slots[slot].view.kind;
     if (k == ViewId::Slice2D)
-        this->applySliceCameraNormalized(m_linked2DCenter, m_linked2DWorldHeight);
+        this->applySliceCameraNormalized(m_linked2DCenter, m_linked2DWorldHeight,
+                                         /*render=*/true, /*refit=*/true);
     else if (k == ViewId::Product && m_paneViews[slot]
              && m_products2d.contains(m_slots[slot].view.productId))
         m_paneViews[slot]->setCameraStateNormalized(m_linked2DCenter, m_linked2DWorldHeight);
@@ -10296,7 +10297,7 @@ bool vtkWindowCube::sliceCameraNormalized(double dataCenterXY[2], double &worldH
 }
 
 void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
-                                               bool render)
+                                               bool render, bool refit)
 {
     if (!this->sliceWin)
         return;
@@ -10322,12 +10323,13 @@ void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], dou
     cam->SetFocalPoint(f);
     cam->SetPosition(p);
     cam->SetParallelScale(parScale);
-    // A programmatic camera set + Render fires no InteractionEvent, so onSliceCameraInteraction
-    // won't echo. Record the new pan/zoom pose so a following window/level drag (which does NOT
-    // move the camera) is correctly ignored by onSliceCameraInteraction. Remember this
-    // as the slice's fit baseline so layout2dPaneFor's guard treats the shared zoom as already
-    // fitted and doesn't snap it back.
-    this->captureSliceCamPose();
+    // The shared view is not this slice's move: recorded before any frame shows it, so it is
+    // never sent back. Remember it as the slice's fit baseline too, so layout2dPaneFor's guard
+    // treats the shared zoom as already fitted and doesn't snap it back.
+    if (refit)
+        this->refitSliceCamera();
+    else
+        this->adoptSliceCamera();
     this->m_slice2dFitSize = { size[0], size[1] };
     const auto fitGutter = this->gutter2dFor(/*slice=*/true);
     this->m_slice2dFitRight = fitGutter.right;
@@ -10336,52 +10338,71 @@ void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], dou
         this->sliceWin->Render();
 }
 
-void vtkWindowCube::captureSliceCamPose()
+LinkedCameraSync::Pose vtkWindowCube::sliceCameraPose() const
 {
-    // Record the slice camera's pan/zoom (focal x/y + parallel scale) as the last-seen pose, so
-    // onSliceCameraInteraction can tell a real pan/zoom from a window/level drag or a bare
-    // clipping-range bump. Called after the initial fit + every programmatic slice-camera set.
-    if (!this->sliceWin)
-        return;
-    auto *rc = this->sliceWin->GetRenderers();
+    LinkedCameraSync::Pose pose;
+    auto *rc = this->sliceWin ? this->sliceWin->GetRenderers() : nullptr;
     auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
     auto *cam = renderer ? renderer->GetActiveCamera() : nullptr;
     if (!cam)
-        return;
-    double f[3] = { 0., 0., 0. };
-    cam->GetFocalPoint(f);
-    m_sliceCamFocalX = f[0];
-    m_sliceCamFocalY = f[1];
-    m_sliceCamScale = cam->GetParallelScale();
+        return pose;
+    cam->GetPosition(pose.position.data());
+    cam->GetFocalPoint(pose.focalPoint.data());
+    cam->GetViewUp(pose.viewUp.data());
+    pose.viewAngle = cam->GetViewAngle();
+    pose.parallelScale = cam->GetParallelScale();
+    return pose;
 }
 
-void vtkWindowCube::onSliceCameraInteraction()
+void vtkWindowCube::adoptSliceCamera()
 {
-    // STEP6-P1: the user panned/zoomed the 2-D slice → propagate to the linked image panes. But
-    // vtkInteractorStyleImage also fires InteractionEvent on a window/level LEFT-drag (no pan/zoom),
-    // and overlays bump the camera via ResetCameraClippingRange; compare the actual PAN/ZOOM POSE
-    // (not the MTime) so only a real move propagates. The pose is tracked UNCONDITIONALLY (even
-    // unlinked) so it never goes stale.
-    if (!this->sliceWin)
+    // A camera taken from a linked view: the frames that show it are not the user's move, and a
+    // send still waiting is dropped, since the linked view's camera is the newer shared one.
+    this->m_sliceCameraTracker.adopt(this->sliceCameraPose());
+}
+
+void vtkWindowCube::refitSliceCamera()
+{
+    // A refit made in code (initial fit, new channel, resize, the shared view put back): not the
+    // user's move either, but a send the user's zoom left waiting still goes out.
+    this->m_sliceCameraTracker.refit(this->sliceCameraPose());
+}
+
+void vtkWindowCube::onSliceCameraFrame()
+{
+    // Issue #358: the slice used to send its camera from the interactor's InteractionEvent /
+    // EndInteractionEvent, which only mouse gestures raise; Shift+R reset the slice and left the
+    // linked views behind. The pose is tracked even while unlinked, so it is never stale when
+    // linking is switched on.
+    const bool schedule =
+            this->m_sliceCameraTracker.frame(this->sliceCameraPose(), this->m_applyingLinkedUpdate);
+    if (!this->m_sliceCameraTracker.lastFrameMoved())
         return;
-    auto *rc = this->sliceWin->GetRenderers();
-    auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
-    auto *cam = renderer ? renderer->GetActiveCamera() : nullptr;
-    if (!cam)
-        return;
-    double f[3] = { 0., 0., 0. };
-    cam->GetFocalPoint(f);
-    const double scale = cam->GetParallelScale();
-    const bool moved = (f[0] != m_sliceCamFocalX || f[1] != m_sliceCamFocalY
-                        || scale != m_sliceCamScale);
-    m_sliceCamFocalX = f[0];
-    m_sliceCamFocalY = f[1];
-    m_sliceCamScale = scale;
-    if (!moved || !m_linkViews || !m_linkCamera)
-        return;   // window/level / clipping-only / not linked → nothing to propagate
-    const int s = this->sliceSlot();
-    if (s >= 0)
-        this->propagate2DCamera(s);
+    // Record the new view as the shared one on every frame of the move, not when the send goes
+    // out: a slice that arrives in between (a channel scrub) refits the slice and puts the shared
+    // view back, and that must be this view, not the one before the zoom.
+    if (this->m_linkViews && this->m_linkCamera && this->sliceSlot() >= 0) {
+        double center[2] = { 0., 0. };
+        double worldHeight = 0.;
+        if (this->sliceCameraNormalized(center, worldHeight) && std::isfinite(center[0])
+            && std::isfinite(center[1]) && std::isfinite(worldHeight) && worldHeight > 0.) {
+            this->m_linked2DCenter[0] = center[0];
+            this->m_linked2DCenter[1] = center[1];
+            this->m_linked2DWorldHeight = worldHeight;
+            this->m_linked2DValid = true;
+        }
+    }
+    if (!schedule)
+        return;   // the send already waiting will carry this frame's camera
+    // Sent on the next turn of the event loop: a drag's burst of frames joins one send, and the
+    // other views do not draw while this one is still finishing its frame.
+    QTimer::singleShot(0, this, [this]() {
+        if (!this->m_sliceCameraTracker.takePending() || !this->m_linkViews || !this->m_linkCamera)
+            return;
+        const int s = this->sliceSlot();
+        if (s >= 0)
+            this->propagate2DCamera(s);
+    });
 }
 
 void vtkWindowCube::setActivePane(int pane)
