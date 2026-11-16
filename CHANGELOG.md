@@ -8,6 +8,17 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+  (#151).** A CRTF sky region without `coord=` is now in the image's own
+  frame, as CASA reads it, instead of J2000: on a galactic image
+  `circle[[150deg, 2deg], 10arcsec]` lands at l = 150°, b = 2°. Ellipse
+  and rotated-box angles were checked against CASA's code and against
+  casatools 6.7 masks: the ellipse's first semi-axis is at position angle
+  `pa` from north through east, a rotbox turns by `pa` from north through
+  east, and VisIVO already read and wrote both that way; on north-up,
+  east-left grids the masks agree. Where they differ (a sky ellipse or a
+  pixel rotbox on a mirrored or rotated grid) is documented in
+  `docs/technical/backend-api/regions.md`, with round-trip tests.
+
 - **Desktop: WCS axis labels follow every camera change (#362).** The axis
   labels of the 2-D views (the cube's slice and moment map, its Product panes
   and the image viewer) were computed after each frame was drawn, so a single
