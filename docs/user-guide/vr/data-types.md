@@ -95,6 +95,29 @@ backend says it is a *simulation volume* and the page treats it as one:
   The desktop is told (*Headset Activity*: *Overlay (emission): rho red log,
   T green log, vx blue*).
 
+- **The model taken apart.** On a simulation volume the *Rendering* row of
+  *Display* also has *Explode ▸*. Its page pulls the model apart into
+  pieces, to look at each one and put them back:
+  - *Pieces*: *Fields* (the overlaid fields, each in its own colours; the
+    overlay must be on) or *Value ranges* (the variable on show, or the
+    field edited on the *Overlay* page, split into 2, 3 or 4 ranges of equal
+    width between its threshold and its colour max: on a log scale, equal in
+    decades). Each range has its own colour (blue, green, orange, red from
+    the lowest) over its own values; the top one keeps everything above the
+    colour max.
+  - *Layout*: *Row* (side by side), *Column* (one above the other) or
+    *Ring*; *Spread*: the gap between pieces. The pieces are scaled down so
+    that together they cover no more than the cube alone did.
+  - *Shown*: one chip a piece; a press hides it or shows it again.
+  - *Explode* / *Assemble* animate between the two; *Reset* puts every piece
+    back in its place in the layout and shows them all.
+
+  With the pieces apart, a grip that starts inside a piece moves and turns
+  that piece; a grip elsewhere moves the whole model, pieces included. One
+  colour bar per piece stands beside the box. While the model is apart the
+  refined frames and the crop's detail are not shown, and the trigger still
+  picks on the assembled box.
+
 ## Opening one
 
 From the desktop: *Tools → Open in VR Headset…* in a point

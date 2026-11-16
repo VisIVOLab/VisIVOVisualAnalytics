@@ -8,6 +8,19 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: take a simulation model apart (#371).** The hand menu's new
+  *Explode* page (from *Display ▸ Rendering*) pulls a simulation volume
+  apart into pieces: the overlaid fields, each in its own colours, or 2–4
+  value ranges of one field (shells and layers between its threshold and
+  colour max, equal in decades on a log scale), each in a colour of its own
+  with its own colour bar. Pieces sit in a row, a column or a ring, animate
+  between assembled and exploded, can be hidden, and a grip inside one moves
+  and turns it; *Reset* puts them back. Every piece is the same resident 3-D
+  texture (the overlay storage or the cube's) drawn again with its own
+  matrix and uniforms, so nothing is allocated in VR, and the pieces are
+  scaled so that together they cover no more than the cube alone. The plane
+  split (opening the model like a book, after #369) and isosurface pieces
+  (#370) are follow-ups.
 - **VR: overlay two or three variables of a simulation volume (#357).** The
   hand menu's new *Overlay* page (from *Display ▸ Rendering*) shows two or
   three variables of a VBT volume or a PLUTO output in one view, each with
