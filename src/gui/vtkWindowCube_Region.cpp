@@ -363,12 +363,22 @@ bool vtkWindowCube::updateRegionFromDisplayPosition(int displayX, int displayY)
         return false;
     }
 
-    this->coordinate->SetValue(displayX, displayY);
-    const double *worldCoord = this->coordinate->GetComputedWorldValue(renderer);
-    if (!worldCoord) {
-        this->pvCursorValid = false;
-        this->refreshPvOverlay();
-        return false;
+    // A coordinate of its own: the shared one has its viewport pinned to the
+    // slice's renderer (changeImageRenderer), and a vtkCoordinate with a
+    // viewport set ignores the renderer it is handed, so a Product pane's
+    // click was read with the slice's camera.
+    vtkNew<vtkCoordinate> coordinate;
+    coordinate->SetCoordinateSystemToDisplay();
+    coordinate->SetValue(displayX, displayY);
+    double worldCoord[3];
+    {
+        const double *w = coordinate->GetComputedWorldValue(renderer);
+        if (!w) {
+            this->pvCursorValid = false;
+            this->refreshPvOverlay();
+            return false;
+        }
+        std::copy(w, w + 3, worldCoord);
     }
 
     int extent[6];
