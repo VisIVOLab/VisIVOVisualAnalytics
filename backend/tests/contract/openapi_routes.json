@@ -115,6 +115,7 @@
     "POST /v1/cube/pv",
     "POST /v1/cube/pyramid_status",
     "POST /v1/cube/reduced_bin",
+    "POST /v1/cube/reduced_fields_bin",
     "POST /v1/cube/reduced_info",
     "POST /v1/cube/region_level_bin",
     "POST /v1/cube/save_channel_2d",

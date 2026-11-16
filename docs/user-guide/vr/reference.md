@@ -1851,6 +1851,30 @@ axis at the finer level.
    threshold, go back to the first one, and check that it comes back as it
    was left (and on its own scale, *log* for a density). On the desktop,
    *Headset Activity* lists *Variable … of …*.
+7. Overlay (#357), with the same file of three variables or more (a PLUTO
+   output with `rho`, `prs`, `vx1`, or the synthetic VBT that
+   `validation/vr_overlay.mjs` writes): on the 2-D page, before entering VR,
+   the debug HUD (`?debug`) or *GPU memory* lists the overlay storage
+   (3 channels). In VR open *Display ▸ Overlay ▸* and press *Off* so it reads
+   *On*. Within about a second the three fields must appear in red, green
+   and blue, with three colour bars beside the box, and no *The new cube is
+   shown when you leave VR* notice. Check:
+   - *Edit 2*, *Hidden*: the green field goes, the other two stay.
+   - *Edit 1*, colour map *grey*, threshold and colour max sliders: only the
+     first field changes, and its bar follows.
+   - *Log* on a velocity field: it loads again on a log scale (values ≤ 0
+     blank).
+   - *MIP*: the brightest field wins each pixel, in its own colours.
+   - The readout lists `rho … prs … vx1 …`.
+   - Display ▸ *Variable*: another variable alone; the overlay is off;
+     *Overlay ▸ On* brings it back.
+
+   Note **FPS** and **missed %** in the HUD with the single variable and
+   with the three fields (Sum and MIP), at the same distance and with the box
+   filling about half the view; and **samples/voxel** (the governor lowers
+   it first). A drop larger than the single variable's at the same settings
+   is the overlay's cost. On the desktop, *Headset Activity* must read
+   *Overlay (emission): …*.
 
 ### The headset's view on the desktop, with the headset (#281)
 

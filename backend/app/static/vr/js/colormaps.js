@@ -7,9 +7,17 @@ const STOPS = {
   magma: ['#000004', '#1c1044', '#4f127b', '#812581', '#b5367a', '#e55964', '#fb8761', '#fec287', '#fcfdbf'],
   hot: ['#0b0000', '#600000', '#b40000', '#ff1000', '#ff6a00', '#ffc000', '#ffff20', '#ffff90', '#ffffff'],
   grey: ['#000000', '#ffffff'],
+  // Single-hue maps for overlaid fields (issue #357): black through the hue
+  // to a light tint, so two or three fields stay apart where they overlap.
+  red: ['#000000', '#3d0603', '#7a0f08', '#b81c10', '#e8341f', '#ff6146', '#ff9580', '#ffc6b8', '#fff0ea'],
+  green: ['#000000', '#022e0a', '#065c16', '#0b8a23', '#16b835', '#3ddc55', '#7bf08a', '#b8fbbf', '#ecfff0'],
+  blue: ['#000000', '#03113d', '#08257a', '#103bb8', '#2257f0', '#4f80ff', '#86a8ff', '#bccdff', '#ecf1ff'],
 };
 
-export const COLORMAP_NAMES = Object.keys(STOPS);
+/** The cube's colour maps (the Display page's swatches). */
+export const COLORMAP_NAMES = ['viridis', 'inferno', 'magma', 'hot', 'grey'];
+/** The colour maps an overlaid field can take (issue #357, the Overlay page). */
+export const OVERLAY_COLORMAPS = ['red', 'green', 'blue', 'inferno', 'viridis', 'grey'];
 
 function hex(c) {
   return [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
