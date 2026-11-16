@@ -768,13 +768,12 @@ void vtkWindowCube::layout2dPaneFor(bool slice, bool force)
         // moment path never participates in the pane camera link.)
         if (slice && this->m_linkViews && this->m_linkCamera && this->m_linked2DValid)
             this->applySliceCameraNormalized(this->m_linked2DCenter, this->m_linked2DWorldHeight,
-                                             /*render=*/false);   // win->Render() runs just below
-        // STEP6-P1: a fit / slice reload moves the slice camera WITHOUT going through
-        // applySliceCameraNormalized, so record the post-fit pan/zoom pose here too — otherwise
-        // the first window/level drag after a reset would look like a camera move and spuriously
-        // propagate. Reflects the fit (or the re-assert above).
+                                             /*render=*/false,   // win->Render() runs just below
+                                             /*refit=*/true);
+        // STEP6-P1 / #358: a fit is not the user's move. Record the post-fit camera (or the
+        // re-assert above) so its frame is not sent to the linked views.
         if (slice)
-            this->captureSliceCamPose();
+            this->refitSliceCamera();
     }
     this->invalidateWcsOverlayCache();   // keep last — makes the next EndEvent recompute
     win->Render();

@@ -1409,13 +1409,10 @@ void vtkWindowCube::setupSliceRenderer()
                                                  &vtkWindowCube::finalizePvInteraction);
     this->sliceWin->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
                                                  &vtkWindowCube::finalizePvInteraction);
-    // STEP6-P1: the 2-D slice participates in the Linked-2D camera. InteractionEvent follows live
-    // pan (drag); EndInteractionEvent catches mouse-wheel zoom (no InteractionEvent). The handler
-    // early-returns unless Linked·camera is on, so this is free otherwise.
-    this->sliceWin->GetInteractor()->AddObserver(vtkCommand::InteractionEvent, this,
-                                                 &vtkWindowCube::onSliceCameraInteraction);
-    this->sliceWin->GetInteractor()->AddObserver(vtkCommand::EndInteractionEvent, this,
-                                                 &vtkWindowCube::onSliceCameraInteraction);
+    // STEP6-P1 / #358: the 2-D slice participates in the Linked-2D camera. It watches the frames,
+    // not the interactor: a camera moved by a key (Shift+R) or by code raises no interaction
+    // event. Comparing one pose per frame is cheap, and only a change schedules a send.
+    this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::onSliceCameraFrame);
     this->coordinate->SetCoordinateSystemToDisplay();
     this->coordinate->SetViewport(ren);
 
@@ -1668,6 +1665,7 @@ void vtkWindowCube::setupSliceRenderer()
     }
 
     ren->ResetCamera();                       // keep: establishes a sane camera distance
+    this->refitSliceCamera();                 // the initial fit is not a move (#358)
     this->layout2dPaneFor(/*slice=*/true, true); // then letterbox it into the gutter
     this->sliceWin->Render();
 }
