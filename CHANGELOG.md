@@ -8,6 +8,23 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: isosurfaces of a cube's field (#370).** The hand menu's new
+  *Surfaces* page (from *Display ▸ Rendering*) shows up to four
+  isosurfaces, each a level of the field with its own colour and opacity,
+  with the volume or on their own, cut by the crop. The level is set on the
+  cube's own scale (in decades on a log-scaled density) and written in the
+  field's unit. The surfaces are extracted on the backend from the original
+  data by the new `POST /v1/isosurface/extract` task: the cube itself, or
+  the finest level of its brick pyramid within 512³ voxels, read slab by
+  slab and contoured with flying edges (in log space on a log scale), then
+  decimated to 150 000 triangles and cached per field, level, scale and
+  level of detail. The headset gets a compact mesh (16-bit positions, 8-bit
+  normals, `GET /v1/isosurface/mesh/{id}`) into buffers sized once (no
+  allocation per frame, no 3-D texture); a hook lets a clipping plane cut
+  the surfaces. Each surface exports as PLY or binary glTF, in a simulation's
+  world coordinates (`.../export`). On the 2048³ PLUTO density, three
+  surfaces from the pyramid's 512³ level take 3.0 s (2.6 MB each on the
+  wire) and come back from the cache in 10 ms.
 - **VR: overlay two or three variables of a simulation volume (#357).** The
   hand menu's new *Overlay* page (from *Display ▸ Rendering*) shows two or
   three variables of a VBT volume or a PLUTO output in one view, each with

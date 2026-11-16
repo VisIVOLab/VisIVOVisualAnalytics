@@ -1875,6 +1875,35 @@ axis at the finer level.
    it first). A drop larger than the single variable's at the same settings
    is the overlay's cost. On the desktop, *Headset Activity* must read
    *Overlay (emission): …*.
+8. Isosurfaces (#370), with the 2048³ PLUTO density (`rho.0000.flt`, its
+   brick pyramid built): *Display ▸ Surfaces ▸*, *+ Add*. The status line
+   under the rows must say *extracting n %*, then within about 3 s (at once
+   for a level made before) *150 k triangles of 0.7 M, 512×512×512 pyramid
+   level 2* for 1e-6, and the orange surface must appear in the box with no stall of the
+   head motion while it is made (the HUD's **missed %** stays as it was).
+   Check:
+   - **Level** slider: the value under it moves in decades (log scale); on
+     release the surface is made again (1–5 s); moved back, it comes back at
+     once. Put it at 1e-6 and 2e-6 (the run's code units; the dense shell
+     of the remnant) and compare with the desktop's *Isosurface* at the
+     same value: the same shape in the same place (on the Mac the two
+     surfaces' vertices lie a median 2.4 cube voxels apart, within the
+     desktop's 8-voxel sampling of this cube).
+   - *+ Add* twice more (cyan, magenta), *Opacity* about 0.5 on one: the
+     others show through it; *Surfaces only*: the volume goes.
+   - Walk into a surface and around it: both sides lit, no white or black
+     patches (fp16 normals), no flicker between the surfaces.
+   - *Range* crop: the surfaces are cut where the volume is.
+   - *Export ▸ PLY*: a toast, and the file in the desktop's workspace
+     exports under `isosurfaces/` (open it in any mesh viewer: it is in the
+     run's code units, centred on 0).
+
+   With the debug HUD (`?debug`) read **FPS**, **missed %**, **GPU ms** and
+   the HUD's `surfaces …: … k triangles drawn` line with the volume alone,
+   with one opaque surface, and with three surfaces (one translucent), the
+   box filling about half the view. Report them: the budget (150 000
+   triangles a surface, 600 000 at most) is chosen for 72 Hz and is to be
+   lowered (`?isotris=`) if the three surfaces miss frames.
 
 ### The headset's view on the desktop, with the headset (#281)
 

@@ -12,6 +12,7 @@ import * as CD from './crop-detail.js';
 import * as SC from './sim-controls.js';
 // Two or three variables overlaid in one view (issue #357).
 import { createOverlay } from './overlay-ui.js';
+import { createIsosurfaces } from './isosurface-ui.js';
 import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
@@ -1530,6 +1531,18 @@ const overlay = createOverlay({
   dropDetail: (why) => dropDetail(why),
   sliderToNorm: (v) => sliderToNorm(v), normToSlider: (v) => normToSlider(v),
 });
+// Isosurfaces of the cube (issue #370, isosurface-ui.js): extracted by the
+// backend, drawn after the volume; their buffers are allocated once, with
+// the first surface (buffers, not 3-D textures; nothing per frame).
+const isos = createIsosurfaces({
+  gl, state,
+  backend: () => (state.open ? ensureBackend() : null),
+  thrNorm: () => state.thrNorm, cmaxNorm: () => state.cmaxNorm,
+  changed: () => { menu.key = ''; },
+  log: (level, event, detail) => shell.log(level, event, detail),
+  toast: (text, key) => toast(text, key),
+  budget: Number(query.get('isotris')),
+});
 /** The newest cube put on show wins over one still being prepared. */
 const installs = new Newest();
 /** The time a step of a write into the capacity may take in VR before the
@@ -1816,6 +1829,7 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   // says what it allows), then the fields this cube starts with, within its channels.
   overlay.ensureStorage();
   overlay.onCube(info, path);
+  isos.onCube();                   // another cube's surfaces go (#370)
   applyExtent();
   $('thr-source').value = currentThresholdSource();
   resetThreshold();
@@ -2021,7 +2035,7 @@ function drawScene(view, override, eye = 0) {
   // frame (the backend's frame has none); then the box, ticks and labels.
   const ovOn = overlay.visible();
   const refined = !ovOn && refineMode !== 'off' && refiner.showing && !(masks && masks.hidesRefined());
-  if (!CUT.novolume) {
+  if (!CUT.novolume && !isos.hidesVolume()) {
     // Overlaid fields (#357): their own program, no region or mask.
     if (ovOn) R.drawOverlay(view, state.model, overlay.params(volParams({ ...override, showMask: false }), override || {}));
     else R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override));
@@ -2031,6 +2045,8 @@ function drawScene(view, override, eye = 0) {
     refiner.composite(view, state.model, eye);
     if (R.mask && !CUT.novolume) { R.drawVolume(view, state.model, volParams({ ...override, mode: 0, maskOnly: true })); cutCounts.volumeDraws++; }
   }
+  // Isosurfaces (#370): over the volume, clipped by the crop.
+  isos.draw(view, state.model, { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max });
   R.drawLines(view, state.model);
   if (!CUT.noseloutline) { R.drawLines(view, state.model, R.selLines); cutCounts.selLineDraws++; }
   layers.drawOverCube(view, state.model);
@@ -2131,6 +2147,8 @@ function hudLines(targetHz) {
       const o = overlay.ov, g = R.gpuStats().overlay;
       lines.push(`overlay ${o.loaded.fields.map((f) => f.name).join('+')} ${o.composite} ${g ? `${g.channels} ch ${(g.totalBytes / 1e6).toFixed(1)} MB` : ''}`.trim());
     }
+    const isoLine = isos.hudLine();
+    if (isoLine) lines.push(isoLine);
   }
   lines.push(...selection.hudLines());
   lines.push(...layers.hudLines());
@@ -2480,6 +2498,7 @@ function menuContext() {
     simulation: simulationShown(),
     vars: variablesMenu(),
     ov: overlay.menuContext(),
+    iso: isos.menuContext(),
     cat: lc.cat, clipTool: ui.clipTool,
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
@@ -2557,6 +2576,7 @@ function menuView(ctx = menuContext()) {
   }
   if (page === 'debug') status.push(`Refinement: ${refineShort()}`);
   if (page === 'overlay' && ctx.ov) overlay.view(values, notes, status);
+  if (page === 'iso' && ctx.iso) isos.view(values, notes, status);
   const hist = page === 'levels' && c ? {
     density: histDensity(c), thr: normToSlider(state.thrNorm) / 1000, cmax: normToSlider(state.cmaxNorm) / 1000,
     marks: LV.sigmaMarks(LV.sigmaOf(state.info), c.lo, c.hi, undefined, undefined, c.scale).map(({ at, label }) => ({ at, label })),
@@ -2596,6 +2616,7 @@ function menuLayout() {
   if (ui.page === 'levels' && ctx.kind !== 'cube') ui.page = 'display';
   if (ui.page === 'data' && ctx.kind !== 'points') ui.page = 'display';
   if (ui.page === 'overlay' && !ctx.ov) ui.page = 'display';
+  if (ui.page === 'iso' && !ctx.iso) ui.page = 'display';
   menu.ctx = ctx;
   menu.spec = HM.pageSpec(ui.page, ctx);
   menu.pointer.layout = HM.menuLayout(ui.page, ctx);
@@ -2967,6 +2988,10 @@ function applyMenu(a, ray = null, eye = null) {
   if (id === 'overlay-page') { ui.page = 'overlay'; return; }
   if (w.group === 'ov-cmap' || id === 'ov-show-field' || id === 'ov-thr-reset' || w.group === 'ov-comp') pushUndo();
   if (overlay.press(id, w)) return;
+  // Isosurfaces (#370): their page and its presses.
+  if (id === 'iso-page') { ui.page = 'iso'; return; }
+  if (id === 'iso-back') { ui.page = 'display'; return; }
+  if (isos.press(id, w)) return;
   if (id === 'levels-back') { ui.page = 'display'; return; }
   // A point table's Data page (#259) and its box selection's Clear.
   if (id === 'pt-data') { ui.page = 'data'; return; }
@@ -3038,6 +3063,7 @@ function menuSlide(a) {
     else if (a.id === 'cmax') state.cmaxNorm = Math.max(state.thrNorm + 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
     else if (overlay.slide(a.id, a.value)) { /* an overlaid field's (#357) */ }
+    else if (isos.slide(a.id, a.value)) { /* a surface's level or opacity (#370) */ }
     else layers.slide(a.id, a.value);
     labelsChanged();
     return;
@@ -5342,6 +5368,28 @@ if (query.has('debug')) {
   // The crop in more detail (#328): {shown, last, busy}.
   window.__vrDetail = detail;
   window.__vrOverlay = overlay;     // #357
+  window.__vrIso = isos;            // #370
+  // The surfaces alone drawn into the page's canvas (#370): the share of
+  // pixels they cover, what was drawn and the draw's time over `frames`.
+  window.__vrIsoPixels = ({ frames = 1 } = {}) => {
+    const w = canvas.width, h = canvas.height;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    const p = { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max };
+    const t0 = performance.now();
+    for (let f = 0; f < frames; f++) {
+      gl.clearColor(...DESKTOP_BG, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      isos.draw(desktopView(), state.model, p);
+    }
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const ms = (performance.now() - t0) / frames;
+    const bg = DESKTOP_BG.map((v) => Math.round(v * 255));
+    let n = 0;
+    for (let i = 0; i < px.length; i += 4) if (Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]) > 12) n++;
+    return { fraction: n / (w * h), draws: isos.gl.draws, triangles: isos.gl.triangles, ms, w, h };
+  };
   window.__vrOverlaySetMaps = (maps) => R.setOverlayColormaps(maps);
   window.__vrReadoutAt = (p) => readoutAt(p);
   // The variables of a simulation volume (#317): the menu's row, a switch, the looks kept.
@@ -5774,6 +5822,7 @@ function rebuildGraphics() {
     for (const w of Object.values(wins)) w.barKey = '';
     colourBar.bar = null;            // its texture was on the lost context (#259)
     overlay.afterRestore();          // the overlay written again by R.restore (#357)
+    isos.afterRestore();             // the surfaces' buffers made and filled again (#370)
     for (const b of overlayBars) b.key = '';
     ui.psel.g = null;
     for (const k of [readout.live, readout.pin]) k.key = '';

@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--variables] [--overlay] [--pyramid-wait] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--variables] [--overlay] [--isosurface] [--pyramid-wait] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -19,6 +19,8 @@
 // issue #201; --menu runs that alone on the smoke run) and every canvas's
 // text fitting its box (vr_text_fit.mjs, issue #276; --text-fit alone). CI
 // runs both; the full lifecycle run remains separate.
+// --isosurface (issue #370) adds the isosurfaces' checks to the smoke run
+// (validation/vr_isosurface.mjs; about two seconds; --regressions runs them too).
 // --simulation (issue #317) adds a simulation volume's checks to the smoke run
 // (validation/vr_simulation.mjs: a VBT density over seven decades on a log
 // scale, its box drawn to the grid spacing, no spectral wording or tools);
@@ -64,6 +66,7 @@ import { runCropDetailChecks } from './vr_crop_detail.mjs';
 import { runVariableChecks } from './vr_variables.mjs';
 import { runOverlayChecks } from './vr_overlay.mjs';
 import { runPyramidWaitChecks } from './vr_pyramid_wait.mjs';
+import { runIsosurfaceChecks } from './vr_isosurface.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -94,9 +97,11 @@ const OVERLAY = !!args.overlay && !XRFAKE && !args.paired;
 const OVERLAY_SHAPE = typeof args['overlay-shape'] === 'string' ? args['overlay-shape'].split(',').map(Number) : undefined;
 // --pyramid-wait (issue #329): a brick pyramid build that outlasts the page's request deadline, alone (also part of --xrfake and --regressions).
 const PYRAMID_WAIT = !!args['pyramid-wait'] && !XRFAKE && !args.paired;
+// --isosurface (issue #370): isosurfaces of the smoke's cube (extracted, drawn, cached, exported; about 2 s; also part of --regressions).
+const ISOSURFACE = (!!args.isosurface || !!args.regressions) && !args.paired;
 // --simulation (issue #317): a simulation volume (also part of --regressions).
 const SIMULATION = (!!args.simulation || !!args.regressions) && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['crop-detail'] || !!args.variables || !!args.overlay || !!args['pyramid-wait'];
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['crop-detail'] || !!args.variables || !!args.overlay || !!args['pyramid-wait'] || ISOSURFACE;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -667,6 +672,8 @@ try {
   const errs = await c.evaluate(`window.__vrShell.diag.items.filter((e) => e.level === 'error'
     && !(e.event === 'request-failed' && e.message.includes('/v1/render/'))).map((e) => e.event + ': ' + e.message)`);
   check('no page error', !errs.length && !c.pageErrors.length, [...errs, ...c.pageErrors].join(' / '));
+  // Issue #370: isosurfaces of this cube, on the page as loaded.
+  if (ISOSURFACE) results.isosurface = await runIsosurfaceChecks({ c, check, waitFor, api, token: tokenA, results: {} });
 
   if (args.regressions || args.menu) await runMenuChecks({ c, check, waitFor, results });
   // Issue #276: every canvas's text inside its box, with this page's fonts and values (vr_text_fit.mjs).

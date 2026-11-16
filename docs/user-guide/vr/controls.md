@@ -316,13 +316,35 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     in the cube's unit and in multiples of the noise (*= 3.2 σ*, with σ), *3σ*
     and *5σ*, and *Reset* (the default threshold and colour range);
     **Colour max** (its value in the cube's unit) and *Levels ▸*; **Opacity**;
-    **Rendering**: *Emission* or *MIP*; **Catalogue**: *Overlay*, *Labels*,
+    **Rendering**: *Emission* or *MIP*, and *Surfaces ▸*; **Catalogue**: *Overlay*, *Labels*,
     *Through velocity*, with the catalogue's summary or its first warning
     (greyed until a catalogue is placed, on the page or from the desktop).
     Under the rows, the cube's **info line**: the rest frequency (*HI rest
     1420.406 MHz*), the channel width in km/s (and the drawn channel's when
     the cube is binned along the band, *drawn ×2*) and the restoring beam
     (*beam 15.0″ × 12.0″, PA 33°*) when the header has BMAJ/BMIN/BPA.
+  - *Surfaces* (a cube, from *Surfaces ▸*;
+    [#370](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/370)):
+    up to four **isosurfaces**, each a level of the field with its own colour
+    and opacity. *+ Add* puts one at the volume's threshold (the next ones
+    between the threshold and the colour max); the numbered chips pick the one
+    the rows below set. **Level** is a slider on the cube's own scale (on a
+    log-scaled density it moves in decades), its value written in the field's
+    unit; *Threshold* puts it back at the volume's threshold. **Colour** and
+    **Opacity** (a surface at full opacity hides what is behind it, a lower
+    one lets the volume and the other surfaces show through); *Shown* or
+    *Hidden*. **Show**: *With the volume*, or *Surfaces only* (the volume
+    hidden). **Export**: the picked surface saved as *PLY* or *glTF* in the
+    workspace's exports (`isosurfaces/`), in the cube's own coordinates for a
+    simulation (code units of a PLUTO run), else in voxels.
+    The backend extracts each surface from the original data, not from the
+    headset's reduced copy: the full cube when it is small, else the finest
+    level of its brick pyramid that fits (512³ of a 2048³ run), decimated to
+    150 000 triangles. Under the rows each surface says how many triangles it
+    has, from how many, and from which level; while one is made it says
+    *extracting n %*, and it appears whole when ready (a level moved back to
+    one already made comes back at once). The surfaces are cut by the crop
+    as the volume is.
   - *Levels* (a cube, from *Levels ▸*; the Display tab stays lit, *◂ Display*
     goes back): **Values**, a histogram of the drawn cube's values on the
     threshold slider's scale, counts on a log scale, yellow lines at 1, 3, 5

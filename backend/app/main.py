@@ -466,6 +466,9 @@ app.include_router(simulations.router, dependencies=[_auth])
 app.include_router(particle_render.router, dependencies=[_auth])
 app.include_router(volume_render.router, dependencies=[_auth])
 app.include_router(vr_layers.router, dependencies=[_auth])
+# Isosurfaces of a cube's field, for the headset and for export (issue #370).
+from .routers import isosurface as isosurface_routes  # noqa: E402
+app.include_router(isosurface_routes.router, dependencies=[_auth])
 # Selections shared between the headset and the desktop (issue #188).
 app.include_router(share.router, dependencies=[_auth])
 # The headset pages of a session: presence, commands and activity (issue #236).
