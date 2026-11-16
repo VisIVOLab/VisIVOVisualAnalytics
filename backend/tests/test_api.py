@@ -557,6 +557,7 @@ async def test_cube_pv(client: AsyncClient, opened_cube: dict) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("worker_pool")
 async def test_moment_task_endpoint(client: AsyncClient, opened_cube: dict) -> None:
     create_resp = await client.post(
         "/v1/tasks/moment",
@@ -589,6 +590,7 @@ async def test_moment_task_endpoint(client: AsyncClient, opened_cube: dict) -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("worker_pool")
 async def test_pv_task_endpoint(client: AsyncClient, opened_cube: dict) -> None:
     create_resp = await client.post(
         "/v1/tasks/pv",
@@ -619,6 +621,7 @@ async def test_pv_task_endpoint(client: AsyncClient, opened_cube: dict) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("worker_pool")
 async def test_pv_task_cache_hit(client: AsyncClient, opened_cube: dict) -> None:
     payload = {
         "dataset_id": opened_cube["dataset_id"],
