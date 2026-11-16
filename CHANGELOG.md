@@ -8,6 +8,16 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: headset pairing works with no setup (#344).** *Settings ▸
+  Backends ▸ Headset Pairing* now offers the pairing service and loader hosted
+  by INAF (`wss://vr.visivolab.oact.inaf.it/pair`,
+  `https://vr.visivolab.oact.inaf.it/`) as defaults: an empty field uses the
+  default shown in it. The environment (`VISIVO_VR_PAIR_URL`,
+  `VISIVO_VR_PAGE_URL`) still wins over the fields. New: *Pair headsets by
+  code* (on; off passes nothing to the backend) and **Restore Pairing Defaults**.
+  Values typed before are kept. The defaults are the CMake options
+  `VISIVO_DEFAULT_VR_PAIR_URL` and `VISIVO_DEFAULT_VR_PAGE_URL`, so a site can
+  build with its own server; the backend still has no built-in host.
 - **Desktop: the image viewer keeps a list of editable regions, with positions
   typed in a chosen frame (part of #341).** Every region drawn stays until it
   is deleted, in full-resolution pixels at double precision, so it survives the

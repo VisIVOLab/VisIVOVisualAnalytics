@@ -51,7 +51,8 @@ private:
     QLineEdit *m_copilotModel{ nullptr };
     QWidget *buildCopilotSection();   ///< build the group, pre-filled from Settings
     /// Reparent every section into a QTabWidget and size the dialog to it.
-    // Headset pairing service and page (issue #214), for a backend started here.
+    // Headset pairing (issues #214, #344), for a backend started here.
+    QCheckBox *m_vrPairEnabled{ nullptr };
     QLineEdit *m_vrPairUrl{ nullptr };
     QLineEdit *m_vrPageUrl{ nullptr };
     QWidget *buildVrPairingSection();   ///< build the group, pre-filled from Settings

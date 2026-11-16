@@ -327,6 +327,8 @@ qt_standard_project_setup()
 set(CMAKE_AUTOUIC OFF)
 
 configure_file(src/Version.h.in Version.h @ONLY)
+# The headset pairing service and loader offered by default (VrPairingDefaults.h).
+include(cmake/VrPairingDefaults.cmake)
 
 # VLKB sign-in (OIDC authorization-code flow against the IA2 single sign-on,
 # Settings ▸ VLKB). The endpoints and scope are public and are the defaults
