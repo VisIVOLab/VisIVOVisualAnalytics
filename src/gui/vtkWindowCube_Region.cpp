@@ -21,6 +21,7 @@
 #include "StackDialog.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "Pane2DView.h"
 #include "ProductOrigin.h"
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
@@ -179,7 +180,21 @@ void vtkWindowCube::finishRegionInteraction()
         return;   // lasso 2-D edit consumes the release
     }
 
+    // A draft on a Product pane ends with that pane's release (#355), not
+    // with one on the slice.
+    if (this->regionDraftWin() != this->active2dWin()) {
+        return;
+    }
+    this->finishRegionDraft();
+}
+
+void vtkWindowCube::finishRegionDraft()
+{
     if (this->regionMode == RegionMode::None || !this->regionDragging) {
+        return;
+    }
+    vtkRenderWindow *win = this->regionDraftWin();
+    if (!win) {
         return;
     }
 
@@ -189,12 +204,12 @@ void vtkWindowCube::finishRegionInteraction()
             return;
         }
         if (this->finalizePolygonRegion()) {
-            this->active2dWin()->Render();
+            win->Render();
         }
         return;
     }
 
-    const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
+    const int *position = win->GetInteractor()->GetEventPosition();
     if (position) {
         this->updateRegionFromDisplayPosition(position[0], position[1]);
     }
@@ -222,13 +237,12 @@ void vtkWindowCube::finishRegionInteraction()
         prompt.setDoubleRange(0.0, std::max(0.0, outerRadius));
         prompt.setDoubleDecimals(1);
         prompt.setDoubleValue(0.0);
-        const auto showInner = [this](double r) {
+        const auto showInner = [this, win](double r) {
             this->regionAnnulusInnerRadius = r;
             this->regionDragging = false;   // the overlay hides the ring while dragging
             this->regionValid = true;
             this->refreshRegionOverlay();
-            if (auto *win = this->active2dWin())
-                win->Render();
+            win->Render();
         };
         showInner(0.0);
         QObject::connect(&prompt, &QInputDialog::doubleValueChanged, this, showInner);
@@ -241,8 +255,7 @@ void vtkWindowCube::finishRegionInteraction()
         if (!accepted) {
             this->regionAnnulusInnerRadius = 0.0;
             this->refreshRegionOverlay();
-            if (auto *win = this->active2dWin())
-                win->Render();
+            win->Render();
             if (this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
                 this->actionAnnulusRegion->setChecked(false);
             }
@@ -254,20 +267,21 @@ void vtkWindowCube::finishRegionInteraction()
             this->regionAnnulusInnerRadius = 0.0;
             this->regionValid = true;
             this->refreshRegionOverlay();
-            this->active2dWin()->Render();
+            win->Render();
             return;
         }
         this->regionAnnulusInnerRadius = innerRadius;
         this->regionDragging = false;
         this->regionValid = true;
         this->refreshRegionOverlay();
-        this->active2dWin()->Render();
+        win->Render();
     }
-    // The finished draft joins the list, selected, and is measured.
+    // The finished draft joins the list, selected, and is measured on the
+    // map it was drawn on.
     const int added = this->commitDraftRegion();
     if (added >= 0)
-        this->analyzeRegion(added);
-    this->active2dWin()->Render();
+        this->analyzeRegion(added, win);
+    win->Render();
     if (this->regionMode == RegionMode::Box && this->actionBoxRegion && this->actionBoxRegion->isChecked()) {
         this->actionBoxRegion->setChecked(false);
     } else if (this->regionMode == RegionMode::Circle && this->actionCircleRegion
@@ -295,6 +309,8 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
             if (this->active2dWin()) {
                 this->active2dWin()->Render();
             }
+            this->renderRegionPanes();   // a draft on a map pane goes too
+            this->refreshPaneActiveStyles();
         }
         return;
     }
@@ -317,7 +333,10 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
     if (mode != RegionMode::Annulus && this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
         this->actionAnnulusRegion->setChecked(false);
     }
-    this->ensureSliceForTools();   // a moment pane becomes the slice to draw on
+    // Regions are drawn on the slice and on every sky map in a Product pane
+    // (#355): only with neither on screen does a map pane become the slice.
+    if (!this->slice2dVisible() && !this->anyRegionMapPaneVisible())
+        this->ensureSliceForTools();
     this->regionMode = mode;
     this->regionDragging = false;
     this->regionValid = false;
@@ -327,15 +346,17 @@ void vtkWindowCube::setRegionMode(RegionMode mode, bool active)
     this->clearRegion();
     this->setInteractorStyleRegion();
     if (auto *w2d = this->active2dWidget()) w2d->setCursor(Qt::CrossCursor);
+    // The panes the tool listens on wear the armed border and the crosshair.
+    this->refreshPaneActiveStyles();
 }
 
 bool vtkWindowCube::updateRegionFromDisplayPosition(int displayX, int displayY)
 {
-    auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
-                                                  : nullptr;
-    auto *imageData = this->viewingSlice()
-            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
-            : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
+    // In the voxels of the view the region is drawn on: the slice, or a
+    // Product pane's map (#355).
+    vtkRenderWindow *win = this->regionDraftWin();
+    auto *renderer = win ? win->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *imageData = this->regionPaneImage(win);
     if (!renderer || !imageData) {
         this->pvCursorValid = false;
         this->refreshPvOverlay();
@@ -520,7 +541,12 @@ void vtkWindowCube::refreshRegionOverlay()
         }
     };
 
-    updateOverlay(vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
+    // Each view draws the draft only when it is drawn there.
+    vtkRenderWindow *draftWin = this->regionDraftWin();
+    updateOverlay(draftWin == this->sliceWin.GetPointer()
+                          ? vtkImageData::SafeDownCast(
+                                    this->remoteSliceDisplaySource->GetOutputDataObject(0))
+                          : nullptr,
                   this->sliceRegionTopLine, this->sliceRegionBottomLine, this->sliceRegionLeftLine,
                   this->sliceRegionRightLine, this->sliceRegionTopActor, this->sliceRegionBottomActor,
                   this->sliceRegionLeftActor, this->sliceRegionRightActor, this->sliceRegionCircleSource,
@@ -532,7 +558,9 @@ void vtkWindowCube::refreshRegionOverlay()
                   this->sliceRegionPolygonCells, this->sliceRegionPolygonData, this->sliceRegionPolygonActor,
                   this->sliceRegionPolygonFillData, this->sliceRegionPolygonTriangulator,
                   this->sliceRegionPolygonFillActor);
-    updateOverlay(vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0)),
+    updateOverlay(draftWin == this->momentWin.GetPointer()
+                          ? vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0))
+                          : nullptr,
                   this->momentRegionTopLine, this->momentRegionBottomLine, this->momentRegionLeftLine,
                   this->momentRegionRightLine, this->momentRegionTopActor, this->momentRegionBottomActor,
                   this->momentRegionLeftActor, this->momentRegionRightActor, this->momentRegionCircleSource,
@@ -544,6 +572,57 @@ void vtkWindowCube::refreshRegionOverlay()
                   this->momentRegionPolygonCells, this->momentRegionPolygonData,
                   this->momentRegionPolygonActor, this->momentRegionPolygonFillData,
                   this->momentRegionPolygonTriangulator, this->momentRegionPolygonFillActor);
+
+    // On a Product pane the draft is drawn as a region of a one-region list,
+    // placed like the list there (RegionPanePlacement.h).
+    const auto draft = this->draftDisplayRegion();
+    for (int i = 0; i < 4; ++i) {
+        Pane2DView *pv = m_paneViews[i];
+        if (!pv || m_paneRegionHooked[i] != pv)
+            continue;
+        vtkRenderWindow *paneWin = pv->renderer()->GetRenderWindow();
+        const auto placement = paneWin == draftWin ? this->regionPlacement(paneWin)
+                                                   : std::optional<visivo::regions::MapPlacement>();
+        if (!draft || !placement) {
+            m_paneDraftOverlays[i].setVisible(false);
+            continue;
+        }
+        visivo::regions::RegionList one;
+        one.add(*draft);
+        one.select(-1);   // drawn plain while it is drawn: no fill, no handles
+        const visivo::regions::MapPlacement place = *placement;
+        m_paneDraftOverlays[i].setVisible(true);
+        m_paneDraftOverlays[i].update(
+                one, 0.0, [place](const visivo::regions::Vec2 &p) { return place.toWorld(p); },
+                /*withHandles=*/false);
+    }
+}
+
+std::optional<visivo::regions::Region> vtkWindowCube::draftDisplayRegion() const
+{
+    if (this->regionMode == RegionMode::None || !this->regionValid)
+        return std::nullopt;
+    const visivo::DisplayGrid grid = this->regionDisplayGrid(this->regionDraftWin());
+    if (this->regionMode == RegionMode::Polygon) {
+        std::vector<std::array<int, 2>> vertices = this->regionPolygonVertices;
+        if (this->regionDragging && (vertices.empty() || vertices.back() != this->regionCurrentVoxel))
+            vertices.push_back(this->regionCurrentVoxel);
+        if (!this->regionDragging && vertices.size() >= 3)
+            return this->draftRegion();
+        if (vertices.size() < 2)
+            return std::nullopt;
+        // Still open: the path so far, as a line through the vertices.
+        visivo::regions::Region line;
+        line.shape = visivo::regions::Shape::Line;
+        for (const auto &v : vertices)
+            line.points.push_back({ grid.sourceX(v[0]), grid.sourceY(v[1]) });
+        return line;
+    }
+    if (this->regionMode == RegionMode::Annulus && this->regionDragging)
+        // The outer ring while it is dragged; the inner one is asked for after.
+        return visivo::regionFromDisplayed(u"circle"_s, grid, this->regionAnchorVoxel,
+                                           this->regionCurrentVoxel, {}, 0.0);
+    return this->draftRegion();
 }
 
 void vtkWindowCube::setNoiseRegionPreview(int x0, int x1, int y0, int y1,
@@ -645,6 +724,9 @@ void vtkWindowCube::clearRegion()
     this->ignoreNextPolygonRelease = false;
     this->regionPolygonVertices.clear();
     this->regionAnnulusInnerRadius = 0.0;
+    this->m_regionDraftWin = nullptr;
+    for (auto &overlay : m_paneDraftOverlays)
+        overlay.setVisible(false);
     this->sliceRegionTopActor->VisibilityOff();
     this->sliceRegionBottomActor->VisibilityOff();
     this->sliceRegionLeftActor->VisibilityOff();
@@ -669,7 +751,10 @@ void vtkWindowCube::clearRegion()
 
 bool vtkWindowCube::finalizePolygonRegion()
 {
-    const int *position = this->active2dWin()->GetInteractor()->GetEventPosition();
+    vtkRenderWindow *win = this->regionDraftWin();
+    if (!win || !win->GetInteractor())
+        return false;
+    const int *position = win->GetInteractor()->GetEventPosition();
     if (position) {
         this->updateRegionFromDisplayPosition(position[0], position[1]);
         const bool closesToFirst = this->regionPolygonVertices.size() >= 3
@@ -697,7 +782,7 @@ bool vtkWindowCube::finalizePolygonRegion()
     this->regionValid = true;
     const int added = this->commitDraftRegion();
     if (added >= 0)
-        this->analyzeRegion(added);
+        this->analyzeRegion(added, win);
     if (this->actionPolygonRegion && this->actionPolygonRegion->isChecked()) {
         this->actionPolygonRegion->setChecked(false);
     }
