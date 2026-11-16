@@ -163,6 +163,16 @@ adjustable from *View → Cutting Plane Opacity* (or the *Opacity* slider under
 volume behind, higher opacity to emphasise the slice.
 ```
 
+The **regions** of the window are drawn on the cutting plane too, in their
+colours, the selected one thicker, and follow the channel, the preview or
+full resolution on screen, and every edit made on the slice (they are edited
+on the slice, not on the plane). Plane and regions are placed with one rule:
+cube pixel *i* of the slice is where the volume shows that pixel, on a
+strided or block-mean preview as at full resolution, and the plane sits at
+the channel's height in the volume. They hide with the plane (*Cutting plane*
+in **LAYERS**). With the 3-D view rendered on the backend (*Remote*), the
+plane and its regions are the backend's and the regions are not drawn there.
+
 ### Slice animation (movie mode)
 
 Auto-advance the slice axis as a movie — useful for spotting coherent

@@ -71,6 +71,41 @@ inline std::vector<std::array<int, 2>> samplesInRegion(const Region &r, const Ax
     return inside;
 }
 
+// ── The 3-D view's cutting plane (issue #343) ────────────────────────────────
+// The plane at the current channel wears the full-resolution slice as its
+// texture. Its texel i is centred at u = (i + 0.5) / width, so for that centre
+// to sit where the 3-D view puts cube pixel i, toWorld(i), the plane runs from
+// toWorld(-0.5) to toWorld(width - 0.5); its height lies at toWorld(channel).
+// The regions on it are placed with the same function, so plane and regions
+// agree at every sampling (full resolution, strided, block means, a box read
+// at full resolution with its origin at its corner).
+
+struct PlaneRect
+{
+    double x0{ 0.0 }, x1{ 0.0 }, y0{ 0.0 }, y1{ 0.0 }, z{ 0.0 };
+};
+
+inline PlaneRect cuttingPlane(int width, int height, int channel, const CubeLodGeometry::Sampling &s)
+{
+    return { CubeLodGeometry::toWorld(-0.5, s), CubeLodGeometry::toWorld(width - 0.5, s),
+             CubeLodGeometry::toWorld(-0.5, s), CubeLodGeometry::toWorld(height - 0.5, s),
+             CubeLodGeometry::toWorld(double(channel), s) };
+}
+
+/// The 3-D view's world position of cube pixel @p p on channel @p channel.
+inline std::array<double, 3> planePoint(const Vec2 &p, int channel, const CubeLodGeometry::Sampling &s)
+{
+    return { CubeLodGeometry::toWorld(p[0], s), CubeLodGeometry::toWorld(p[1], s),
+             CubeLodGeometry::toWorld(double(channel), s) };
+}
+
+/// The cube pixel (fractional) under world @p w on the plane: the inverse of
+/// planePoint along one axis. Its texel is the nearest integer.
+inline double planeToCube(double w, const CubeLodGeometry::Sampling &s)
+{
+    return CubeLodGeometry::toCube(w, s);
+}
+
 }   // namespace visivo::regions
 
 #endif   // RegionCubeSampling_h

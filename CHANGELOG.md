@@ -8,6 +8,17 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: the cube's regions on the 3-D cutting plane (#343).** The
+  region list is drawn on the cutting plane of the 3-D view as on the 2-D
+  slice, in its colours with the selected region thicker, pulled towards the
+  camera so the textured plane never hides it. It follows the channel, the
+  preview or full-resolution cube on screen, and every edit, and hides with
+  the plane. The plane is now placed by the same rule as the regions: cube
+  pixel *i* of the slice it wears is where the volume shows that pixel, and
+  its height is the channel's in the volume. On a strided preview the plane
+  used to span the preview's bounds and sit at a fraction of its depth, so its
+  last texels and its height were up to a sample off; a pick on the plane
+  reads the pixel under the cursor by the same rule.
 - **Desktop: region files are imported whole in both viewers, with the
   reason for every line not read (#342).** *Tools ▸ Regions ▸ Import Region*
   is now in the image viewer too, and both viewers read the file through the

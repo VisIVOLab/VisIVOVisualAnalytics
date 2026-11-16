@@ -21,6 +21,7 @@
 #include "ProductOrigin.h"
 #include "ProfileWidget.h"
 #include "RegionCubeSampling.h"
+#include <QVTKOpenGLNativeWidget.h>
 #include "RegionFullRes.h"
 #include "RegionListExport.h"
 #include "RegionPropertiesDialog.h"
@@ -228,6 +229,22 @@ void vtkWindowCube::setupRegionList()
         if (auto *camera = renderer->GetActiveCamera())
             camera->AddObserver(vtkCommand::ModifiedEvent, this, &vtkWindowCube::onRegionCameraChanged);
     }
+    // The cutting plane of the 3-D view (#343): drawn, not edited there. The
+    // lines are pulled towards the camera so the textured plane they lie on
+    // never hides them; no fill, which would tint the slice under it.
+    if (auto *cubeWin = ui->vtkCube ? ui->vtkCube->renderWindow() : nullptr) {
+        auto *renderers = cubeWin->GetRenderers();
+        renderers->InitTraversal();
+        while (vtkRenderer *r = renderers->GetNextItem()) {
+            if (r->HasViewProp(this->remoteCuttingPlaneActor)) {
+                RegionListOverlay::Style style;
+                style.fill = false;
+                style.lineOffsetUnits = 4.0;
+                this->m_planeRegionOverlay.attach(r, style);
+                break;
+            }
+        }
+    }
     // Pressing on a region selects it, dragging moves or reshapes it: such a
     // press must neither pan the slice, nor pin the probe, nor start a new
     // region under it. The callback runs ahead of the interactor style and the
@@ -300,6 +317,9 @@ void vtkWindowCube::setupRegionListActions()
 
 void vtkWindowCube::onRegionListChanged()
 {
+    // Shown before the change: the last region deleted still needs the 3-D
+    // view drawn again, to take it off.
+    const bool planeWasShown = this->m_planeRegionOverlay.visible();
     this->refreshRegionListOverlay();
     this->applyMomentToolGate();   // Properties / Analyse / Delete / Undo / Export
 
@@ -315,6 +335,12 @@ void vtkWindowCube::onRegionListChanged()
     for (auto *win : { this->sliceWin.GetPointer(), this->momentWin.GetPointer() })
         if (win && win->GetInteractor() && win->GetInteractor()->GetInitialized())
             win->Render();
+    // The 3-D view too when the plane shows them: once per change, not per
+    // mouse move of a drag (a volume render is not free).
+    if ((planeWasShown || this->m_planeRegionOverlay.visible()) && ui->vtkCube
+        && ui->vtkCube->renderWindow()
+        && ui->vtkCube->isVisible())
+        ui->vtkCube->renderWindow()->Render();
 }
 
 void vtkWindowCube::refreshRegionListOverlay()
@@ -326,6 +352,27 @@ void vtkWindowCube::refreshRegionListOverlay()
     this->m_regionKnobOffset[1] = kKnobPx * this->regionWorldPerDisplayPixel(this->momentWin);
     this->m_sliceRegionOverlay.update(this->m_regions, this->m_regionKnobOffset[0]);
     this->m_momentRegionOverlay.update(this->m_regions, this->m_regionKnobOffset[1]);
+    this->refreshPlaneRegionOverlay();
+}
+
+void vtkWindowCube::refreshPlaneRegionOverlay()
+{
+    if (!this->m_planeRegionOverlay.attached())
+        return;
+    // With the plane: hidden with it, and before it has a channel.
+    const bool shown = this->m_planeChannel >= 0 && this->remoteCuttingPlaneActor
+            && this->remoteCuttingPlaneActor->GetVisibility();
+    this->m_planeRegionOverlay.setVisible(shown && !this->m_regions.isEmpty());
+    if (!shown)
+        return;
+    const int channel = this->m_planeChannel;
+    const CubeLodGeometry::Sampling sampling = this->m_displaySampling;
+    this->m_planeRegionOverlay.update(
+            this->m_regions, 0.0,
+            [channel, sampling](const Vec2 &p) {
+                return visivo::regions::planePoint(p, channel, sampling);
+            },
+            /*withHandles=*/false);
 }
 
 void vtkWindowCube::onRegionCameraChanged(vtkObject *, unsigned long, void *)
