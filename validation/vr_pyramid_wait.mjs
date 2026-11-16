@@ -92,12 +92,18 @@ async function release(c) {
 async function watch(c, done, ms) {
   const samples = [];
   const t0 = Date.now();
-  while (Date.now() - t0 < ms) {
-    const s = await c.evaluate(`(() => { const n = window.__vrShell.notices.current(); const S = window.__vrState;
+  const sample = async () => samples.push({ t: Date.now() - t0, ...await c.evaluate(`(() => { const n = window.__vrShell.notices.current(); const S = window.__vrState;
       return { status: document.getElementById('load-status').textContent, notice: n ? n.id + ': ' + n.title : '',
-        prep: S.prep ? Math.round(100 * S.prep.progress) : null, shown: !!S.cube, loading: S.loading, path: S.openPath || '' }; })()`);
-    samples.push({ t: Date.now() - t0, ...s });
-    if (await c.evaluate(done)) break;
+        prep: S.prep ? Math.round(100 * S.prep.progress) : null, shown: !!S.cube, loading: S.loading, path: S.openPath || '' }; })()`) });
+  while (Date.now() - t0 < ms) {
+    await sample();
+    if (await c.evaluate(done)) {
+      // The state that met `done`: the page may have moved on between the
+      // sample above and this test (a load that ends in between), and the
+      // checks read the last sample as the final state.
+      await sample();
+      break;
+    }
     await sleep(150);
   }
   return samples;
@@ -150,8 +156,16 @@ export async function runPyramidWaitChecks({ c, check, waitFor, api, base, token
     const during = samples.filter((x) => /\(\d+ s so far\)/.test(x.status));
     const spanMs = during.length ? during[during.length - 1].t - during[0].t : 0;
     const secs = [...new Set(during.map((x) => x.status.match(/\((\d+) s so far\)/)[1]))];
+    // Between two samples dt apart the count moves by floor(dt) ± 1 s: never
+    // stuck (a poll that hangs must not stop it), never jumping ahead. Read
+    // pairwise, so that sparse sampling on a busy machine (missed seconds)
+    // does not fail it, where a count of distinct values did.
+    const val = (x) => Number(x.status.match(/\((\d+) s so far\)/)[1]);
+    const badStep = during.slice(1).map((x, i) => ({ dt: x.t - during[i].t, dv: val(x) - val(during[i]) }))
+      .find(({ dt, dv }) => dv < Math.floor(dt / 1000) - 1 || dv > Math.floor(dt / 1000) + 1);
     check('pyramid wait (app): the time so far moves every second, also while a poll waits for its answer',
-      spanMs > 2 * POLL_MS && secs.length >= Math.floor(spanMs / 1000), `${secs.length} values over ${spanMs} ms`);
+      spanMs > 2 * POLL_MS && !badStep,
+      `${secs.length} values over ${spanMs} ms${badStep ? `; moved ${badStep.dv} s in ${badStep.dt} ms` : ''}`);
     check('pyramid wait (app): never "could not be opened" or "did not answer"', !failed, failed ? `${failed.notice} | ${failed.status}` : '');
     check('pyramid wait (app): the cube is loaded once the build ends, the room gone',
       last.shown && last.path === cube && !/^app-room/.test(last.notice) && last.prep === null,
