@@ -40,6 +40,13 @@ bool CubeLodVolumes::replace(vtkRenderer *renderer, std::vector<Block> blocks, O
     }
     m_renderer = renderer;
     m_orderFunction = std::move(order);
+    // One clearance for the whole set, so both blocks of a face move it to
+    // the same place: at most a tenth of the finest block's spacing, which
+    // keeps every moved face well inside the ghost sample beyond it (half a
+    // spacing) whatever the preview's stride.
+    m_clearance = CubeLodAssembly::kEyeFaceClearance;
+    for (const Block &b : blocks)
+        m_clearance = std::min(m_clearance, b.geometry.placement.spacing / 10.0);
     m_entries.reserve(blocks.size());
     for (Block &b : blocks) {
         const CubeLodAssembly::Dims &d = b.geometry.dims;
@@ -167,7 +174,7 @@ void CubeLodVolumes::apply(Entry &e) const
         // Faces off the eye, or the rays running inside a shared face would
         // be drawn by neither block (CubeLodAssembly::clearOfEye).
         const CubeLodAssembly::Crop planes = CubeLodAssembly::cropPlanes(
-                e.geometry, m_eye ? CubeLodAssembly::clearOfEye(*drawn, *m_eye) : *drawn);
+                e.geometry, m_eye ? CubeLodAssembly::clearOfEye(*drawn, *m_eye, m_clearance) : *drawn);
         double current[6];
         e.mapper->GetCroppingRegionPlanes(current);
         if (!std::equal(planes.begin(), planes.end(), current))

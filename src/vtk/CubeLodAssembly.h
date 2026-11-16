@@ -188,8 +188,15 @@ inline constexpr double kEyeFaceClearance = 1e-2;
 /// planes, where two nodes of a level meet. Moving the face off the eye puts
 /// those rays inside one block. The function depends only on the face's
 /// value and the eye, so the two blocks of a face move it to the same place
-/// and still meet without a gap or an overlap; the move is far smaller than
-/// the ghost sample beyond each face, so nothing is extrapolated.
+/// and still meet without a gap or an overlap, as long as every block of a set
+/// is given the same @p clearance; keep it well under the ghost reach beyond
+/// each face (half a block spacing), so nothing is extrapolated.
+///
+/// In a parallel projection the rays are parallel to every face along the
+/// projection direction, not only to the faces through the camera: a face
+/// that falls exactly on a pixel column can still show, in the float32
+/// rounding between its two blocks. Perspective views (the viewer's default)
+/// have only the faces through the eye.
 inline Crop clearOfEye(Crop drawn, const std::array<double, 3> &eye,
                        double clearance = kEyeFaceClearance)
 {

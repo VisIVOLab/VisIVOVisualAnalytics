@@ -114,6 +114,8 @@ private:
     /// The camera's position at the last frame (world): faces near it are
     /// moved off it (CubeLodAssembly::clearOfEye).
     std::optional<std::array<double, 3>> m_eye;
+    /// How far a face is moved off the eye, for the whole set (replace()).
+    double m_clearance{ CubeLodAssembly::kEyeFaceClearance };
     // The window's mapper settings (copySettingsFrom).
     int m_blendMode{ 0 };
     bool m_jitter{ true };

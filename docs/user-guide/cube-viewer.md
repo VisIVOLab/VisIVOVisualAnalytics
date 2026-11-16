@@ -62,9 +62,11 @@ box has arrived; the status line then reads, for example, *Detail: level 0 in
 x 512..1023, y 512..1023, z 768..1023; elsewhere block means, pyramid level 3*.
 
 The box and the preview share one colour map, threshold, scale and opacity,
-and they meet without seams, also when the camera sits exactly on a face
-between two blocks (the default view does: its eye is on the cube's centre
-planes). Level 0 is read from the cube's file and needs
+and they meet without seams in the perspective view, also when the camera
+sits exactly on a face between two blocks (the default view does: its eye is
+on the cube's centre planes). In a parallel projection looking straight along
+an axis, a face that falls exactly on a pixel column can still show as a
+faint line. Level 0 is read from the cube's file and needs
 no pyramid; coarser levels come from the pyramid when it is ready, otherwise
 from every 2^l-th voxel. On the 2048³ PLUTO density, a level-0 box of
 512 × 512 × 256 voxels (four blocks, 275 MB) took 2.9 s from the click to the
