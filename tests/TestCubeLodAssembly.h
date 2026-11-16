@@ -17,6 +17,7 @@ private slots:
     void placement_putsSamplesWhereThePreviewShowsThem();
     void neighbours_meetOnOneWorldFace();
     void userCrop_hidesBlocksOutsideIt();
+    void facesOnTheEye_moveOffItTogether();
     void drawOrder_isBackToFrontForEveryEye();
     void statusText_namesThePreviewAndTheDetail();
     void pyramidStatus_isParsedAsXyz();

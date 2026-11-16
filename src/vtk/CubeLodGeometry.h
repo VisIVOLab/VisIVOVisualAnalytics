@@ -220,6 +220,38 @@ inline Box nodeLevelBox(const Dims &cubeShape, int nodeSize, const Node &node)
     return b;
 }
 
+/// The samples of level @p level that cover the cube voxels @p cubeBox: the
+/// box divided by the level's scale, rounded outward, within the level.
+inline Box levelBoxCovering(const Box &cubeBox, const Dims &cubeShape, int level)
+{
+    const Box box = intersect(cubeBox, wholeBox(cubeShape));
+    if (box.empty())
+        return {};
+    const std::int64_t scale = levelScale(level);
+    const Dims shape = levelShape(cubeShape, level);
+    Box out;
+    for (int i = 0; i < 3; ++i) {
+        out.lo[i] = int(box.lo[i] / scale);
+        out.hi[i] = int(std::min<std::int64_t>(shape[i], (box.hi[i] + scale - 1) / scale));
+    }
+    return out;
+}
+
+/// The cube voxels the samples @p levelBox of level @p level stand for,
+/// clipped to the cube.
+inline Box cubeBoxOfLevelBox(const Box &levelBox, const Dims &cubeShape, int level)
+{
+    if (levelBox.empty())
+        return {};
+    const std::int64_t scale = levelScale(level);
+    Box out;
+    for (int i = 0; i < 3; ++i) {
+        out.lo[i] = int(std::min<std::int64_t>(cubeShape[i], levelBox.lo[i] * scale));
+        out.hi[i] = int(std::min<std::int64_t>(cubeShape[i], levelBox.hi[i] * scale));
+    }
+    return out;
+}
+
 /// The cube voxels the node owns, clipped to the cube (brick_lod.node_box).
 inline Box nodeCubeBox(const Dims &cubeShape, int nodeSize, const Node &node)
 {

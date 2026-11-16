@@ -100,6 +100,7 @@ void CubeLodVolumes::clear()
     m_entries.clear();
     m_order.clear();
     m_orderFunction = nullptr;
+    m_eye.reset();
     m_startTag = 0;
     m_startObserver = nullptr;
     m_renderer = nullptr;
@@ -163,7 +164,10 @@ void CubeLodVolumes::apply(Entry &e) const
     e.mapper->SetImageSampleDistance(1.0f);
     const std::optional<CubeLodAssembly::Crop> drawn = CubeLodAssembly::clipped(e.geometry, m_userCrop);
     if (drawn) {
-        const CubeLodAssembly::Crop planes = CubeLodAssembly::cropPlanes(e.geometry, *drawn);
+        // Faces off the eye, or the rays running inside a shared face would
+        // be drawn by neither block (CubeLodAssembly::clearOfEye).
+        const CubeLodAssembly::Crop planes = CubeLodAssembly::cropPlanes(
+                e.geometry, m_eye ? CubeLodAssembly::clearOfEye(*drawn, *m_eye) : *drawn);
         double current[6];
         e.mapper->GetCroppingRegionPlanes(current);
         if (!std::equal(planes.begin(), planes.end(), current))
@@ -174,7 +178,7 @@ void CubeLodVolumes::apply(Entry &e) const
 
 void CubeLodVolumes::sortForCamera()
 {
-    if (!m_renderer || m_entries.size() < 2 || !m_orderFunction)
+    if (!m_renderer || m_entries.empty())
         return;
     vtkCamera *camera = m_renderer->GetActiveCamera();
     if (!camera)
@@ -182,6 +186,15 @@ void CubeLodVolumes::sortForCamera()
     double position[3];
     camera->GetPosition(position);
     std::array<double, 3> eye{ position[0], position[1], position[2] };
+    // The crops follow the eye only where a face comes within reach of it;
+    // apply() sets the planes only when they change, so this is cheap.
+    if (m_eye != eye) {
+        m_eye = eye;
+        for (Entry &e : m_entries)
+            this->apply(e);
+    }
+    if (m_entries.size() < 2 || !m_orderFunction)
+        return;
     if (camera->GetParallelProjection()) {
         // Every ray runs along the projection direction: the order is that of
         // an eye far back along it, whatever the camera's distance.

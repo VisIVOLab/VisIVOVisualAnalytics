@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <vector>
@@ -72,14 +73,19 @@ inline std::vector<Block> coarsePieces(const Dims &cubeShape, const Sampling &pr
 
 /// The fine block of @p node (nodes of @p nodeSize level voxels), with
 /// @p ghost samples per side, before it is read. Its sampling is set from the
-/// backend's answer (pyramid block means or a strided read).
-inline Block fineBlock(const Dims &cubeShape, int nodeSize, const Node &node, int ghost)
+/// backend's answer (pyramid block means or a strided read). With
+/// @p levelClip (samples of the node's level, as CubeLodPlan::Plan::levelBox)
+/// the node is cut to it: it reads and owns only that part.
+inline Block fineBlock(const Dims &cubeShape, int nodeSize, const Node &node, int ghost,
+                       const std::optional<Box> &levelClip = std::nullopt)
 {
     Block b;
     b.fine = true;
     b.node = node;
-    b.owned = CubeLodGeometry::nodeCubeBox(cubeShape, nodeSize, node);
-    const Box level = CubeLodGeometry::nodeLevelBox(cubeShape, nodeSize, node);
+    Box level = CubeLodGeometry::nodeLevelBox(cubeShape, nodeSize, node);
+    if (levelClip)
+        level = CubeLodGeometry::intersect(level, *levelClip);
+    b.owned = CubeLodGeometry::cubeBoxOfLevelBox(level, cubeShape, node.level);
     for (int i = 0; i < 3; ++i) {
         b.samples.lo[i] = level.lo[i] - ghost;
         b.samples.hi[i] = level.hi[i] + ghost;
@@ -165,10 +171,60 @@ inline std::optional<Crop> clipped(const Geometry &g, const std::optional<Crop> 
     return out;
 }
 
+/// How far (world units) a face is moved off the eye: a hundredth of a
+/// preview sample, under a sixth of the ghost reach beyond a face of a
+/// level-0 block under a stride-8 preview (half of its 0.125 spacing).
+inline constexpr double kEyeFaceClearance = 1e-2;
+
+/// @p drawn with every face that lies within @p clearance of the eye moved
+/// to @p clearance from it, on the side it was on.
+///
+/// Why: two blocks meet on a shared face, each cropped to its side of it
+/// with its own float32 planes, so between them there is a sliver one
+/// rounding wide (or an overlap). A ray that runs inside that face never
+/// crosses it: it lies in the sliver neither block draws (or both do), and
+/// the pixels of those rays show a line of whatever is behind. That happens whenever the eye is on the face's
+/// plane, which is the default camera's place: it sits on the cube's centre
+/// planes, where two nodes of a level meet. Moving the face off the eye puts
+/// those rays inside one block. The function depends only on the face's
+/// value and the eye, so the two blocks of a face move it to the same place
+/// and still meet without a gap or an overlap; the move is far smaller than
+/// the ghost sample beyond each face, so nothing is extrapolated.
+inline Crop clearOfEye(Crop drawn, const std::array<double, 3> &eye,
+                       double clearance = kEyeFaceClearance)
+{
+    for (int axis = 0; axis < 3; ++axis) {
+        const double e = eye[axis];
+        if (!std::isfinite(e))
+            continue;
+        const double lo = drawn[size_t(2 * axis)];
+        const double hi = drawn[size_t(2 * axis + 1)];
+        for (int k = 2 * axis; k <= 2 * axis + 1; ++k) {
+            const double face = drawn[size_t(k)];
+            if (std::fabs(face - e) < clearance)
+                drawn[size_t(k)] = face <= e ? e - clearance : e + clearance;
+        }
+        // A sliver thinner than the clearance with the eye in it would turn
+        // inside out: it keeps its faces (it is next to invisible anyway).
+        if (!(drawn[size_t(2 * axis)] < drawn[size_t(2 * axis + 1)])) {
+            drawn[size_t(2 * axis)] = lo;
+            drawn[size_t(2 * axis + 1)] = hi;
+        }
+    }
+    return drawn;
+}
+
 /// The cropping planes to give the block's mapper so it draws @p drawn.
+///
+/// No kFaceEps pull here, only the float32 rounding that keeps each face
+/// inside its block: a sliver of 1e-3 between neighbours is crossed by rays
+/// running almost along the face (the eye just off its plane) over a tenth
+/// of their length, which showed as a dark wedge along the face at high zoom.
+/// The ray lying exactly in a face, which the pull was there for, is now
+/// kept off every face by clearOfEye.
 inline Crop cropPlanes(const Geometry &g, const Crop &drawn)
 {
-    return CubeLodGeometry::vtkCropPlanes(drawn, g.placement.origin, g.placement.spacing, g.dims);
+    return CubeLodGeometry::vtkCropPlanes(drawn, g.placement.origin, g.placement.spacing, g.dims, 0.0);
 }
 
 /// Indices into @p blocks in back-to-front order for an eye at @p eyeCube

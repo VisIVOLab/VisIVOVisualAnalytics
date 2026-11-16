@@ -262,26 +262,28 @@ void vtkWindowCube::refineBox(const std::array<int, 6> &cubeBox)
     pending->previewImage = previewImage;
     pending->timer.start();
     for (const CubeLodGeometry::Node &n : plan.nodes)
-        pending->fine.push_back(CubeLodAssembly::fineBlock(cube, plan.nodeSize, n, CubeLodPlan::kGhost));
+        pending->fine.push_back(CubeLodAssembly::fineBlock(cube, plan.nodeSize, n, CubeLodPlan::kGhost,
+                                                             plan.levelBox));
     pending->results.resize(pending->fine.size());
     pending->arrived.assign(pending->fine.size(), false);
     pending->remaining = int(pending->fine.size());
     this->m_lodPending = pending;
 
-    const qint64 bytes = CubeLodPlan::nodeBytes(in, plan.nodes);
+    const qint64 bytes = CubeLodPlan::planBytes(in, plan);
     QString what = u"level %1, %2 blocks, %3 MB"_s.arg(plan.level)
                            .arg(plan.nodes.size())
                            .arg(double(bytes) / (1 << 20), 0, 'f', 0);
-    if (plan.reason == CubeLodPlan::Reason::Shrunk)
+    if (plan.reason == CubeLodPlan::Reason::BoxShrunk)
         what += u"; the budget holds only part of the box, around its centre"_s;
     this->showPersistentStatusMessage(u"Refining the box (%1)…"_s.arg(what));
-    qDebug().noquote() << u"[lod] refine gen=%1 box=%2 level=%3 nodes=%4 bytes=%5 reason=%6"_s
+    qDebug().noquote() << u"[lod] refine gen=%1 asked=%7 box=%2 level=%3 nodes=%4 bytes=%5 reason=%6"_s
                                   .arg(generation)
                                   .arg(CubeLodStatus::boxText(plan.cubeBox))
                                   .arg(plan.level)
                                   .arg(plan.nodes.size())
                                   .arg(bytes)
-                                  .arg(QString::fromUtf8(CubeLodPlan::reasonText(plan.reason)));
+                                  .arg(QString::fromUtf8(CubeLodPlan::reasonText(plan.reason)))
+                                  .arg(CubeLodStatus::boxText(box));
 
     const QString url = this->remoteBackendUrl;
     const QString token = this->remoteBackendToken;
@@ -289,8 +291,7 @@ void vtkWindowCube::refineBox(const std::array<int, 6> &cubeBox)
     const QString dataset = this->remoteDatasetId;
     const std::shared_ptr<std::atomic<quint64>> live = this->m_lodLiveGeneration;
     for (int i = 0; i < int(plan.nodes.size()); ++i) {
-        const CubeLodGeometry::Box level =
-                CubeLodGeometry::nodeLevelBox(cube, plan.nodeSize, plan.nodes[size_t(i)]);
+        const CubeLodGeometry::Box level = CubeLodPlan::blockLevelBox(plan, cube, plan.nodes[size_t(i)]);
         const int lvl = plan.level;
         auto *watcher = new QFutureWatcher<BackendRegionLevelResult>(this);
         QObject::connect(watcher, &QFutureWatcher<BackendRegionLevelResult>::finished, this,
