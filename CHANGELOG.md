@@ -8,6 +8,12 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: linked cube views follow every camera move (#338).** A linked
+  window now sends its 3-D camera whenever a drawn frame shows it moved, not
+  only on mouse gestures. Picking *Camera → Front/Back/Top/Right/Bottom/Left*
+  in one window used to leave the other linked windows where they were; they
+  now follow, as they do for rotate, pan and wheel zoom. A window that adopts
+  a peer's camera never sends it back.
 - **Desktop: refine a selected box of a large cube (part of #321, client part
   of #320).** *Tools → Views → Refine Selected Box…* reads a box of the cube
   at the finest level the detail budget allows (exactly that box, rounded
