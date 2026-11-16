@@ -1536,6 +1536,9 @@ const overlay = createOverlay({
 const explode = createExplode({
   R, state, overlay,
   volParams: (o) => volParams(o), dataValue: (n) => dataValue(n), isSimulation: () => simulationShown(),
+  // The volume as drawn when assembled, at another model matrix (the shrink before the pieces part).
+  drawWhole: (view, model, o) => (overlay.visible() ? R.drawOverlay(view, model, overlay.params(volParams({ ...o, showMask: false }), o || {}))
+    : R.drawVolume(view, model, volParams({ ...o, showMask: false }))),
   log: (level, event, detail) => shell.log(level, event, detail),
   changed: () => { menu.key = ''; labelsChanged(); },
   dropDetail: (why) => dropDetail(why), now: () => performance.now(),
@@ -2045,6 +2048,8 @@ function drawScene(view, override, eye = 0) {
     refiner.composite(view, state.model, eye);
     if (R.mask && !CUT.novolume) { R.drawVolume(view, state.model, volParams({ ...override, mode: 0, maskOnly: true })); cutCounts.volumeDraws++; }
   }
+  // Taken apart (#371): the assembled box's outline, ticks, labels and selection are not where anything is drawn.
+  if (exOn) return;
   R.drawLines(view, state.model);
   if (!CUT.noseloutline) { R.drawLines(view, state.model, R.selLines); cutCounts.selLineDraws++; }
   layers.drawOverCube(view, state.model);
@@ -3053,7 +3058,8 @@ function applyMenu(a, ray = null, eye = null) {
 
 /** A slider or a range held on the menu: one undo step for the whole drag. */
 function menuSlide(a) {
-  if (ui.sliding !== a.id) { pushUndo(); ui.sliding = a.id; }
+  // The exploded view's spread (#371) is not part of the look: no undo step.
+  if (ui.sliding !== a.id) { if (a.id !== 'ex-spread') pushUndo(); ui.sliding = a.id; }
   if (a.type === 'slide') {
     // The histogram is drawn on the threshold slider's scale (#258).
     if (a.id === 'thr' || a.id === 'hist') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));

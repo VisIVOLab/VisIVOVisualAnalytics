@@ -81,6 +81,19 @@ export async function runExplodeChecks({ c, check, waitFor, base, token, python,
   results.bands = { ...(await drawCost(c, cost)), fraction: +bands.fraction.toFixed(4), singleFraction: +single.fraction.toFixed(4),
     steps: bandSteps.steps && +bandSteps.steps.toFixed(1), singleSteps: singleSteps.steps && +singleSteps.steps.toFixed(1) };
 
+  // Mid-animation: the volume shrinking (drawn once), then the pieces parting at their scale; neither costs more than the cube.
+  const mid = {};
+  for (const amount of [0.2, 0.6]) {
+    await c.evaluate(`window.__vrExplode.set(true, { amount: ${amount} })`);
+    const px = await c.evaluate('window.__vrVolumePixels({ frames: 1 })');
+    const st2 = await c.evaluate('({ whole: window.__vrExplode.stats.whole, pieces: window.__vrExplode.stats.pieces })');
+    mid[amount] = { ...(await drawCost(c, cost)), fraction: +px.fraction.toFixed(4), ...st2 };
+  }
+  await c.evaluate('window.__vrExplode.set(true, { now: true })');
+  results.midAnimation = mid;
+  check(`${L}: mid-animation the volume shrinks alone (0.2), then the pieces part at their scale (0.6)`,
+    mid[0.2].whole && mid[0.2].pieces === 0 && !mid[0.6].whole && mid[0.6].pieces === 3, JSON.stringify(mid));
+
   // A hidden piece is not drawn.
   await press('ex-piece:1');
   await c.evaluate('window.__vrVolumePixels({ frames: 1 })');

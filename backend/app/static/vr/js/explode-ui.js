@@ -5,9 +5,10 @@
 // drawPiece), grabbing one with a hand, and the Explode page's presses,
 // slider, notes and status. main.js draws the pieces in place of the volume
 // while active() and hands the grips over; this module owns nothing else.
+// A field piece is shown or hidden with the field's own Shown on the Overlay
+// page (one switch for both); a value range has its own.
 
 import * as EX from './explode.js';
-import * as M from './mat4.js';
 import { normToData } from './volume.js';
 import * as LV from './levels.js';
 
@@ -16,8 +17,21 @@ import * as LV from './levels.js';
  * volParams(override) (the single cube's draw parameters), dataValue(norm)
  * (the single cube's code to a value), isSimulation(), log(level, event,
  * detail), changed() (the menu and labels to redraw), dropDetail(why), now()
- * (ms)}.
+ * (ms), drawWhole(view, model, override) (the volume as drawn assembled, at
+ * another model matrix)}.
  */
+
+/** A change detector over a list of values put in order (no allocation once its array has grown). */
+function stamper() {
+  const a = [];
+  let k = 0, dirty = false;
+  return {
+    begin() { k = 0; dirty = false; },
+    put(v) { if (a[k] !== v) { a[k] = v; dirty = true; } k++; },
+    end() { if (a.length !== k) { a.length = k; dirty = true; } return dirty; },
+  };
+}
+
 export function createExplode(deps) {
   const { R, state, overlay } = deps;
   const ex = {
@@ -41,10 +55,13 @@ export function createExplode(deps) {
   const centres = new Float32Array(3 * EX.MAX_PIECES);
   const order = new Int32Array(EX.MAX_PIECES);
   const eye = [0, 0, 0];
+  const wholeM = new Float32Array(16), scaleM = new Float32Array(16);
+  const invM = new Float32Array(16), handRel = new Float32Array(16), pieceM = new Float32Array(16), relM = new Float32Array(16);
+  let wasActive = false;
   const pp = { extent: null, boxMin: null, boxMax: null, texScale: null, spv: 1, maxSteps: 4096, skip: true, mode: 0, src: 'cube', ov: null };
   let lay = { n: -1, kind: '', spread: NaN, e0: NaN, e1: NaN, e2: NaN, offsets: [], scale: 1 };
   let bandCache = { lo: NaN, hi: NaN, n: 0, list: [] };
-  const stats = { draws: 0, pieces: 0 };
+  const stats = { draws: 0, pieces: 0, whole: false };
 
   const cubeOk = () => !!(state.cube && state.info && deps.isSimulation());
 
@@ -59,6 +76,17 @@ export function createExplode(deps) {
     const name = overlay.ov.fields[overlay.ov.edit];
     const k = L.fields.findIndex((f) => f.name === name);
     return k >= 0 ? k : 0;
+  }
+
+  /** Is piece i hidden? A field by its own Shown on the Overlay page, a value range by its chip. */
+  function isHidden(i) {
+    const p = ex.pieces[i];
+    if (!p) return true;
+    if (p.kind === 'field') {
+      const L = ovLoaded();
+      return !L || !L.looks[p.channel] || L.looks[p.channel].on === false;
+    }
+    return !!ex.hidden[i];
   }
 
   /**
@@ -98,16 +126,27 @@ export function createExplode(deps) {
     }
     ex.pieces = pieces;
     ex.why = why;
+    // Nothing left to take apart (the overlay off under Fields, another kind
+    // of data): assembled, so that pieces coming back do not explode by themselves.
+    if (!pieces.length && (ex.want || ex.anim.to > 0 || ex.anim.from > 0)) {
+      ex.want = false;
+      ex.anim = EX.newAnim(0);
+      ex.held = null;
+      deps.log('info', 'explode', `assembled: ${why || 'no pieces'}`);
+    }
     ex.sig = { ok, source: ex.source, bands: ex.bands, L, edit, cube: state.cube };
     R.setPieceColormaps(pieces.map((p) => p.map));
     deps.changed();
     return pieces.length;
   }
 
-  /** Is the exploded view drawn in place of the volume (exploded, or on its way back)? */
+  /** Is the exploded view drawn in place of the volume (exploded, or on its way back)?
+   *  Turning active drops the crop's region in more detail (the pieces are drawn from the coarse cube). */
   function active() {
-    if (!ex.want && EX.amountAt(ex.anim, deps.now()) <= 0) return false;
-    return refresh() > 0;
+    const on = (ex.want || EX.amountAt(ex.anim, deps.now()) > 0) && refresh() > 0;
+    if (on && !wasActive) deps.dropDetail('the exploded view is on');
+    wasActive = on;
+    return on;
   }
 
   /** The layout for `n` pieces now (kept while it holds). */
@@ -183,13 +222,25 @@ export function createExplode(deps) {
 
   /**
    * The pieces for one eye, in place of the volume: the farthest first, each
-   * with its box outline once they are apart. `override` as main.js
-   * volParams's (mode 2: steps per ray). Returns the pieces drawn.
+   * with its box outline once they are apart. While the amount is below
+   * explode.js SHRINK, the assembled volume is drawn once, shrinking to the
+   * pieces' scale (so no frame costs more than the cube alone). `override`
+   * as main.js volParams's (mode 2: steps per ray). Returns the pieces drawn.
    */
   function draw(view, model, override = undefined) {
     const n = refresh();
     if (!n) return 0;
     const e = EX.amountAt(ex.anim, deps.now());
+    stats.draws++;
+    if (!EX.piecesDrawn(e)) {
+      const k = EX.wholeScale(e, layoutNow(n).scale);
+      scaleM.fill(0); scaleM[0] = scaleM[5] = scaleM[10] = k; scaleM[15] = 1;
+      deps.drawWhole(view, EX.pieceWorld(wholeM, model, scaleM), override || {});
+      stats.pieces = 0;
+      stats.whole = true;
+      return 0;
+    }
+    stats.whole = false;
     const base = deps.volParams({ ...(override || {}), showMask: false, region: null });
     const mode = uniforms(base, override || {});
     if (mode < 0) return 0;
@@ -200,13 +251,12 @@ export function createExplode(deps) {
     let drawn = 0;
     for (let k = 0; k < n; k++) {
       const i = order[k];
-      if (ex.hidden[i]) continue;
+      if (isHidden(i)) continue;
       pp.src = ex.pieces[i].src;
       pp.ov = uni[i];
       if (R.drawPiece(view, world[i], pp)) drawn++;
     }
-    if (e > 0.02) for (let i = 0; i < n; i++) if (!ex.hidden[i]) R.drawLines(view, world[i]);
-    stats.draws++;
+    if (e > EX.SHRINK + 0.02) for (let i = 0; i < n; i++) if (!isHidden(i)) R.drawLines(view, world[i]);
     stats.pieces = drawn;
     return drawn;
   }
@@ -231,17 +281,23 @@ export function createExplode(deps) {
     if (!starting) {
       if (!ex.held || ex.held.hand !== hand || !apart()) { ex.held = null; return false; }
       const i = ex.held.i;
-      const P = M.multiply(M.invert(model), M.multiply(handM, ex.held.rel));
-      EX.userFromPiece(ex.users[i], P, layoutNow(ex.pieces.length).offsets[i]);
+      // The piece in the model frame: model⁻¹ × hand × the grab's relation (no allocation).
+      if (!EX.invertInto(invM, model)) return true;
+      EX.pieceWorld(handRel, handM, relM);
+      EX.pieceWorld(pieceM, invM, handRel);
+      EX.userFromPiece(ex.users[i], pieceM, layoutNow(ex.pieces.length).offsets[i]);
       return true;
     }
     ex.held = null;
     if (!apart()) return false;
+    // The grip's first frame only (allocating here is once a grip).
     place(model, 1);
-    const invs = ex.pieces.map((_, i) => M.invert(world[i]));
-    const i = EX.pieceAt([handM[12], handM[13], handM[14]], invs, state.extent, state.clip, ex.hidden);
-    if (i < 0) return false;
-    ex.held = { hand, i, rel: M.multiply(M.invert(handM), world[i]) };
+    const invs = ex.pieces.map((_, i) => { const m = new Float32Array(16); return EX.invertInto(m, world[i]) ? m : null; });
+    const hidden = ex.pieces.map((_, i) => isHidden(i));
+    const i = EX.pieceAt([handM[12], handM[13], handM[14]], invs, state.extent, state.clip, hidden);
+    if (i < 0 || !EX.invertInto(invM, handM)) return false;
+    EX.pieceWorld(relM, invM, world[i]);
+    ex.held = { hand, i };
     deps.log('info', 'explode-grab', `piece ${i + 1} of ${ex.pieces.length}`);
     return true;
   }
@@ -257,32 +313,46 @@ export function createExplode(deps) {
     return a !== 0 && (a < 1e-2 || a >= 1e4) ? v.toExponential(1) : String(Number(v.toPrecision(2)));
   };
 
-  /** A piece's chip label: the field's name, or its value range in data units. */
-  function labelOf(p, i) {
+  /** Every piece's chip ({label: the field's name or its value range in data units, hidden}). */
+  function chips() {
     const L = ovLoaded();
-    if (p.kind === 'field') return L ? L.fields[p.channel].name : `field ${i + 1}`;
-    let lo, hi, value;
-    if (p.src === 'overlay' && L) {
-      const f = L.fields[p.channel], look = L.looks[p.channel];
-      const list = EX.bands(look.thrNorm, look.cmaxNorm, ex.pieces.length);
-      ({ lo, hi } = list[i]);
-      value = (n) => normToData(n, f.lo, f.hi, f.scale);
+    const n = ex.pieces.length;
+    const p0 = ex.pieces[0];
+    const look = p0 && p0.src === 'overlay' && L ? L.looks[p0.channel] : null;
+    let list;
+    let value;
+    if (look) {
+      const f = L.fields[p0.channel];
+      list = EX.bands(look.thrNorm, look.cmaxNorm, n);
+      value = (v) => normToData(v, f.lo, f.hi, f.scale);
     } else {
-      const list = EX.bands(state.thrNorm, Math.max(state.cmaxNorm, state.thrNorm + 1e-3), ex.pieces.length);
-      ({ lo, hi } = list[i]);
+      list = EX.bands(state.thrNorm, Math.max(state.cmaxNorm, state.thrNorm + 1e-3), n);
       value = deps.dataValue;
     }
-    return hi > 1 ? `≥ ${fmtV(value(lo))}` : `${fmtV(value(lo))}–${fmtV(value(hi))}`;
+    return ex.pieces.map((p, i) => {
+      let label;
+      if (p.kind === 'field') label = L ? L.fields[p.channel].name : `field ${i + 1}`;
+      else label = list[i].hi > 1 ? `≥ ${fmtV(value(list[i].lo))}` : `${fmtV(value(list[i].lo))}–${fmtV(value(list[i].hi))}`;
+      return { label, hidden: isHidden(i) };
+    });
   }
+  const chipStamp = stamper();
+  let chipCache = [];
 
-  /** The hand menu's context (hand-menu.js ctx.ex), or null when it has none. */
+  /** The hand menu's context (hand-menu.js ctx.ex), or null when it has none. The
+   *  chips are made again only when what they show changed. */
   function menuContext() {
     if (!cubeOk()) return null;
     refresh();
     const t = deps.now();
+    const L = ovLoaded();
+    chipStamp.begin();
+    chipStamp.put(ex.pieces); chipStamp.put(L); chipStamp.put(state.cube); chipStamp.put(state.thrNorm); chipStamp.put(state.cmaxNorm);
+    if (L) for (const l of L.looks) { chipStamp.put(l.thrNorm); chipStamp.put(l.cmaxNorm); chipStamp.put(l.on); }
+    for (let i = 0; i < ex.pieces.length; i++) chipStamp.put(!!ex.hidden[i]);
+    if (chipStamp.end()) chipCache = chips();
     return { source: ex.source, bands: ex.bands, layout: ex.layout, exploded: ex.want, animating: EX.animating(ex.anim, t),
-      pieces: ex.pieces.map((p, i) => ({ label: labelOf(p, i), hidden: !!ex.hidden[i] })),
-      fieldsWhy: ovLoaded() ? '' : 'Switch the overlay on first (Display, Overlay ▸).', why: ex.why };
+      pieces: chipCache, fieldsWhy: L ? '' : 'Switch the overlay on first (Display, Overlay ▸).', why: ex.why };
   }
 
   /** The Explode page's slider position, notes and status lines. */
@@ -310,7 +380,12 @@ export function createExplode(deps) {
     if (w.group === 'ex-src') ex.source = w.value;
     else if (w.group === 'ex-bands') ex.bands = w.value;
     else if (w.group === 'ex-layout') ex.layout = w.value;
-    else if (w.group === 'ex-piece') { if (w.value < ex.hidden.length) ex.hidden[w.value] = !ex.hidden[w.value]; }
+    else if (w.group === 'ex-piece') {
+      const p = ex.pieces[w.value], L = ovLoaded();
+      // A field: its Shown on the Overlay page; a value range: its own.
+      if (p && p.kind === 'field' && L && L.looks[p.channel]) L.looks[p.channel].on = L.looks[p.channel].on === false;
+      else if (w.value < ex.hidden.length) ex.hidden[w.value] = !ex.hidden[w.value];
+    }
     else if (id === 'ex-go') {
       ex.want = !ex.want;
       EX.retarget(ex.anim, ex.want ? 1 : 0, t);
@@ -321,6 +396,8 @@ export function createExplode(deps) {
       ex.users = ex.pieces.map(() => EX.newUser());
       ex.hidden = ex.pieces.map(() => false);
       ex.held = null;
+      const L = ovLoaded();
+      for (const p of ex.pieces) if (p.kind === 'field' && L && L.looks[p.channel]) L.looks[p.channel].on = true;
     }
     refresh();
     deps.changed();
@@ -335,8 +412,9 @@ export function createExplode(deps) {
     return true;
   }
 
-  /** Explode (true) or assemble (false) from code (tests, the measurement run). */
-  function set(want, { source, bands, layout, spread, now = false } = {}) {
+  /** Explode (true) or assemble (false) from code (tests, the measurement run;
+   *  `amount` holds the animation at that amount). */
+  function set(want, { source, bands, layout, spread, now = false, amount = NaN } = {}) {
     if (source) ex.source = source;
     if (bands) ex.bands = bands;
     if (layout) ex.layout = layout;
@@ -345,6 +423,7 @@ export function createExplode(deps) {
     const t = deps.now();
     EX.retarget(ex.anim, ex.want ? 1 : 0, t, now ? 0 : EX.ANIM_MS);
     if (now) ex.anim = EX.newAnim(ex.want ? 1 : 0);
+    if (Number.isFinite(amount)) ex.anim = EX.newAnim(amount);
     if (ex.want) deps.dropDetail('the exploded view is on');
     refresh();
     deps.changed();
@@ -357,30 +436,35 @@ export function createExplode(deps) {
    * objects with `colormap` and `key`, as overlay-ui.js bars). Remade only
    * when a look changes.
    */
-  let barsCache = { key: '', bars: [] };
+  const barStamp = stamper();
+  let barsCache = [], barsVersion = 0;
   function bars() {
     const n = ex.pieces.length;
     if (!n) return [];
     const L = ovLoaded();
     const c = state.cube;
+    barStamp.begin();
+    barStamp.put(ex.pieces); barStamp.put(L); barStamp.put(c);
+    for (let i = 0; i < n; i++) barStamp.put(isHidden(i));
+    if (L) for (const l of L.looks) { barStamp.put(l.thrNorm); barStamp.put(l.cmaxNorm); barStamp.put(l.stretch); }
+    else { barStamp.put(state.thrNorm); barStamp.put(state.cmaxNorm); barStamp.put(state.stretch); barStamp.put(state.gamma); }
+    if (!barStamp.end()) return barsCache;
+    barsVersion++;
     const base = L ? null : deps.volParams({});
-    const key = JSON.stringify([ex.source, ex.hidden, ex.pieces.map((p) => p.map),
-      L ? [L.key, L.looks.map((l) => [l.thrNorm, l.cmaxNorm, l.stretch])] : [state.thrNorm, state.cmaxNorm, c && c.lo, c && c.hi, c && c.scale, base.stretch, base.stretchA]]);
-    if (key === barsCache.key) return barsCache.bars;
+    const q = L ? overlay.params({}, {}).ov : null;
     const out = [];
     ex.pieces.forEach((p, i) => {
-      if (ex.hidden[i]) return;
-      let f, look, thr, cmax, stretch, stretchA, title;
+      if (isHidden(i)) return;
+      let f, thr, cmax, stretch, stretchA, title;
       if (p.src === 'overlay' && L) {
-        f = L.fields[p.channel]; look = L.looks[p.channel];
-        const q = overlay.params({}, {}).ov;
+        const field = L.fields[p.channel], look = L.looks[p.channel];
         stretch = look.stretch; stretchA = q.stretchA[p.channel];
-        if (p.kind === 'field') { thr = look.thrNorm; cmax = look.cmaxNorm; title = `${i + 1} ${f.name}`; }
+        if (p.kind === 'field') { thr = look.thrNorm; cmax = look.cmaxNorm; title = `${i + 1} ${field.name}`; }
         else {
           const b = EX.bands(look.thrNorm, look.cmaxNorm, n)[i];
-          thr = b.cmin; cmax = b.cmax; title = `${i + 1} ${f.name} range`;
+          thr = b.cmin; cmax = b.cmax; title = `${i + 1} ${field.name} range`;
         }
-        f = { lo: f.lo, hi: f.hi, scale: f.scale, unit: f.bunit || '' };
+        f = { lo: field.lo, hi: field.hi, scale: field.scale, unit: field.bunit || '' };
       } else {
         if (!c) return;
         const b = EX.bands(base.thr, base.cmax, n)[i];
@@ -388,9 +472,9 @@ export function createExplode(deps) {
         thr = b.cmin; cmax = b.cmax; stretch = state.stretch; stretchA = base.stretchA; title = `${i + 1} range`;
       }
       const bar = LV.volumeBar({ thrNorm: thr, cmaxNorm: cmax, lo: f.lo, hi: f.hi, scale: f.scale, stretch, stretchA, title, unit: f.unit });
-      out.push({ ...bar, colormap: p.map, key: JSON.stringify([i, key]) });
+      out.push({ ...bar, colormap: p.map, key: `explode:${barsVersion}:${i}` });
     });
-    barsCache = { key, bars: out };
+    barsCache = out;
     return out;
   }
 

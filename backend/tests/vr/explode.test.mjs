@@ -113,10 +113,14 @@ test('a piece\'s matrix: the cube itself when assembled, its layout place, the h
   close(M.uniformScale(out), 0.6, 1e-6, 'scale');
   const want = M.multiply(M.translation(0.55, -0.1, -0.2), M.multiply(M.rotation([0, 1, 0], 0.7), M.scaling(0.6)));
   closeArr(Array.from(out), Array.from(want), 1e-6, 'T R S');
-  // Halfway: half the way there, half the turn.
-  EX.pieceMatrix(out, off, user, 0.6, 0.5, scratch);
-  closeArr([out[12], out[13], out[14]], [0.275, -0.05, -0.1], 1e-6);
+  // Shrink first, then part: halfway through the shrink, the piece is still in place at a scale between.
+  EX.pieceMatrix(out, off, user, 0.6, EX.SHRINK / 2, scratch);
+  closeArr([out[12], out[13], out[14]], [0, 0, 0], 1e-9, 'not moved while shrinking');
   close(M.uniformScale(out), 0.8, 1e-6);
+  // Halfway through the parting: at its scale, half the way there, half the turn.
+  EX.pieceMatrix(out, off, user, 0.6, EX.SHRINK + (1 - EX.SHRINK) / 2, scratch);
+  closeArr([out[12], out[13], out[14]], [0.275, -0.05, -0.1], 1e-6);
+  close(M.uniformScale(out), 0.6, 1e-6);
   closeArr(Array.from(EX.quatFromMatrix(out)), Array.from(EX.quatFromMatrix(M.rotation([0, 1, 0], 0.35))), 1e-6, 'half the turn');
   // The hand's part back from a piece put somewhere at e = 1 (the round trip a grab makes).
   const P = M.multiply(M.translation(0.9, 0.3, -0.4), M.multiply(M.rotation(M.normalize([1, 2, 0.5]), 2.1), M.scaling(0.6)));
@@ -124,6 +128,30 @@ test('a piece\'s matrix: the cube itself when assembled, its layout place, the h
   EX.userFromPiece(u, P, off);
   EX.pieceMatrix(out, off, u, 0.6, 1, scratch);
   closeArr(Array.from(out), Array.from(P), 1e-5, 'round trip');
+});
+
+test('the animation never draws more than the cube alone: the volume shrinks, then pieces at their scale part', () => {
+  for (const n of [2, 3, 4]) {
+    const s = EX.pieceScale(n);
+    let worst = 0;
+    for (let e = 0; e <= 1.0001; e += 0.01) worst = Math.max(worst, EX.coverageAt(n, e, s));
+    assert.ok(worst <= 1 + 1e-9, `n=${n}: at most ${worst} of the cube's pixels`);
+    assert.equal(EX.piecesDrawn(EX.SHRINK - 1e-6), false);
+    assert.equal(EX.piecesDrawn(EX.SHRINK), true);
+    close(EX.wholeScale(EX.SHRINK, s), s, 1e-12, 'the volume ends the shrink at the pieces\' scale');
+    close(EX.wholeScale(0, s), 1, 1e-12);
+  }
+  const p = EX.phases(0.2);
+  close(p.shrink, 0.2 / EX.SHRINK); assert.equal(p.spread, 0);
+  assert.deepEqual(EX.phases(1), { shrink: 1, spread: 1 });
+});
+
+test('invertInto: the inverse with no allocation, false when singular', () => {
+  const m = M.multiply(M.translation(0.3, -1, 2), M.multiply(M.rotation(M.normalize([1, 2, 3]), 0.9), M.scaling(0.4)));
+  const out = new Float32Array(16);
+  assert.equal(EX.invertInto(out, m), true);
+  closeArr(Array.from(out), Array.from(M.invert(m)), 1e-5);
+  assert.equal(EX.invertInto(out, new Float32Array(16)), false);
 });
 
 test('quaternions from rotation matrices: every branch, half turns included, scale taken out', () => {
@@ -235,7 +263,7 @@ test('the hand menu: Display leads to the Explode page on a simulation volume; t
 /** A stand-in renderer that records the pieces' draws (and would count any 3-D allocation). */
 function fakeRenderer() {
   return {
-    calls: [], maps: null, lines: 0, alloc3D: 0, volTex: {}, dims: [32, 32, 32],
+    calls: [], maps: null, lines: 0, alloc3D: 0, volTex: {}, dims: [32, 32, 32], whole: [],
     setPieceColormaps(m) { this.maps = m.slice(); },
     drawPiece(view, model, p) {
       this.calls.push({ model: Float32Array.from(model), src: p.src, thr: Array.from(p.ov.thr), thrHi: Array.from(p.ov.thrHi), rows: Array.from(p.ov.rows), mode: p.mode });
@@ -257,20 +285,32 @@ function setup({ overlayLoaded = null } = {}) {
   };
   const volParams = (o = {}) => ({ extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max, thr: state.thrNorm, cmin: state.thrNorm, cmax: state.cmaxNorm,
     stretch: 2, stretchA: 1, opacity: 0.5, spv: 1.5, mode: 0, skip: true, maxSteps: 4096, texScale: [1, 1, 1], ...o });
-  const logs = [];
+  const logs = [], drops = [];
   const ex = createExplode({ R, state, overlay, volParams, dataValue: (n) => 10 ** (-12 + 8 * n), isSimulation: () => true,
-    log: (...a) => logs.push(a), changed: () => {}, dropDetail: () => {}, now: () => now });
+    log: (...a) => logs.push(a), changed: () => {}, dropDetail: (why) => drops.push(why), now: () => now,
+    drawWhole: (v, model) => R.whole.push(M.uniformScale(model)) });
   const view = { view: M.invert(M.translation(0, 0, 2)), proj: M.perspective(1, 1, 0.01, 10) };
-  return { R, state, overlay, ex, view, tick: (ms) => { now += ms; }, logs };
+  return { R, state, overlay, ex, view, tick: (ms) => { now += ms; }, logs, drops };
 }
 
 test('the page\'s side: value ranges of the single cube drawn as pieces of the same texture, apart, the farthest first; hidden ones skipped', () => {
-  const { R, ex, view, tick } = setup();
+  const { R, ex, view, tick, drops } = setup();
   assert.equal(ex.active(), false, 'assembled: the volume is drawn as usual');
   ex.set(true, { source: 'bands', bands: 3, layout: 'row' });
+  drops.length = 0;
   assert.equal(ex.active(), true);
+  assert.equal(drops.length, 1, 'turning active drops the crop\'s detail');
+  ex.active();
+  assert.equal(drops.length, 1, 'once');
   assert.deepEqual(R.maps, ['blue', 'green', 'red']);
-  tick(EX.ANIM_MS / 2);
+  // Early on: the volume itself, once, shrinking (no pieces).
+  tick(EX.ANIM_MS * 0.2);
+  R.calls.length = 0;
+  assert.equal(ex.draw(view, M.identity()), 0);
+  assert.equal(R.calls.length, 0);
+  assert.equal(R.whole.length, 1);
+  assert.ok(R.whole[0] < 1 && R.whole[0] > EX.pieceScale(3), `shrinking: ${R.whole[0]}`);
+  tick(EX.ANIM_MS * 0.3);
   close(ex.amount(), 0.5);
   tick(EX.ANIM_MS);
   close(ex.amount(), 1);
@@ -342,11 +382,27 @@ test('the page\'s side: the overlaid fields as pieces, each its own channel and 
   assert.equal(R.calls.length, 2);
   assert.ok(R.calls.every((c) => c.src === 'overlay' && c.thr[0] === 2 && c.thr[2] === 2));
   closeArr(R.calls.map((c) => c.thr[1]).sort(), [0.2, 0.5], 1e-6);
-  // The overlay off: Fields have nothing to show (the reason said), ranges go to the single cube.
+  // A field hidden on the Overlay page is not drawn and has no bar; its chip is the same switch.
   ex.set(true, { source: 'fields', now: true });
+  loaded.looks[2].on = false;
+  R.calls.length = 0;
+  ex.draw(view, M.identity());
+  assert.equal(R.calls.length, 2);
+  assert.equal(ex.bars().length, 2);
+  assert.equal(ex.menuContext().pieces[2].hidden, true);
+  ex.press('ex-piece:2', { group: 'ex-piece', value: 2 });
+  assert.equal(loaded.looks[2].on, true);
+  loaded.looks[0].on = false;
+  ex.press('ex-reset', {});
+  assert.equal(loaded.looks[0].on, true, 'Reset shows every field');
+  // The overlay off: Fields have nothing to show (the reason said) and the view is assembled,
+  // so the overlay coming back does not explode it by itself.
   overlay.drawn = () => false;
   assert.equal(ex.active(), false);
   assert.match(ex.menuContext().why, /overlay on first/);
+  assert.equal(ex.menuContext().exploded, false);
+  overlay.drawn = () => true;
+  assert.equal(ex.active(), false, 'not exploded again by itself');
 });
 
 test('the page\'s side: a grip inside a piece moves and turns that piece only; elsewhere it is the model\'s', () => {

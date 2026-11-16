@@ -18,6 +18,10 @@
 // pieces' area together within the cube's own (n·s² ≤ 1), so the pixels
 // ray-marched, and the frame's cost, stay at most those of the cube alone
 // (the steps a ray takes are counted in voxels, whatever the scale).
+// The animation keeps that bound all the way: first (e < SHRINK) the
+// assembled volume, drawn once, shrinks to the pieces' scale; then the
+// pieces, already at that scale, part (phases(e)). Pieces never overlap at a
+// larger scale, so no frame of the animation costs more than the cube alone.
 //
 // Pure: no DOM, no GL. Unit-tested in backend/tests/vr/explode.test.mjs.
 
@@ -40,6 +44,8 @@ export const SPREAD_MAX = 1.5;
 export const MAX_SPAN = 2.2;
 /** Assembling or exploding takes this long (ms). */
 export const ANIM_MS = 600;
+/** The share of the explode amount spent shrinking the assembled volume to the pieces' scale (the rest parts them). */
+export const SHRINK = 0.35;
 /** A piece is grabbed with the hand this far outside its box, a fraction of the box (a little margin). */
 export const GRAB_MARGIN = 0.08;
 /** The value ranges' colour maps, from the lowest range to the highest. */
@@ -172,19 +178,67 @@ export function quatFromMatrix(m, out = [0, 0, 0, 1]) {
 export const newUser = () => ({ t: [0, 0, 0], q: [0, 0, 0, 1] });
 const QI = [0, 0, 0, 1];
 
+/** The two phases of explode amount `e`: `shrink` (0..1 over e in
+ *  [0, SHRINK]: the assembled volume to the pieces' scale) and `spread`
+ *  (0..1 over e in [SHRINK, 1]: the pieces parting). */
+export function phases(e) {
+  return { shrink: clamp01(e / SHRINK), spread: clamp01((e - SHRINK) / (1 - SHRINK)) };
+}
+/** Are the pieces drawn at amount `e` (else the assembled volume, shrunk)? */
+export const piecesDrawn = (e) => e >= SHRINK;
+/** The assembled volume's scale at amount `e` while it shrinks (pieces of scale `scale`). */
+export const wholeScale = (e, scale) => 1 + (scale - 1) * clamp01(e / SHRINK);
+/** The pixels ray-marched at amount `e`, in units of the cube's own (n pieces of scale `scale`): never above 1. */
+export function coverageAt(n, e, scale) {
+  if (!piecesDrawn(e)) { const w = wholeScale(e, scale); return w * w; }
+  return n * scale * scale;
+}
+
 /**
  * A piece's matrix in the cube's model frame, into `out` (16 numbers), with
- * no allocation (`scratch` {t: [3], q: [4], s: [3]}): the translation
- * e·(offset + user.t), the rotation slerp(identity, user.q, e) and the scale
- * 1 + (scale − 1)·e, about the piece's centre. At e = 0 every piece is the
- * cube itself.
+ * no allocation (`scratch` {t: [3], q: [4], s: [3]}): with p = phases(e),
+ * the translation p.spread·(offset + user.t), the rotation slerp(identity,
+ * user.q, p.spread) and the scale 1 + (scale − 1)·p.shrink, about the
+ * piece's centre. At e = 0 every piece is the cube itself; from SHRINK on it
+ * has its own scale.
  */
 export function pieceMatrix(out, offset, user, scale, e, scratch) {
   const t = scratch.t, q = scratch.q, s = scratch.s;
-  for (let i = 0; i < 3; i++) t[i] = e * (offset[i] + user.t[i]);
-  slerpInto(q, QI, user.q, e);
-  s[0] = s[1] = s[2] = 1 + (scale - 1) * e;
+  const sp = clamp01((e - SHRINK) / (1 - SHRINK)), sh = clamp01(e / SHRINK);
+  for (let i = 0; i < 3; i++) t[i] = sp * (offset[i] + user.t[i]);
+  slerpInto(q, QI, user.q, sp);
+  s[0] = s[1] = s[2] = 1 + (scale - 1) * sh;
   return composeTRS(out, t, q, s);
+}
+
+/** The inverse of 4×4 `m` into `out` (column-major; no allocation). Returns false when singular. */
+export function invertInto(out, m) {
+  const a00 = m[0], a01 = m[1], a02 = m[2], a03 = m[3], a10 = m[4], a11 = m[5], a12 = m[6], a13 = m[7];
+  const a20 = m[8], a21 = m[9], a22 = m[10], a23 = m[11], a30 = m[12], a31 = m[13], a32 = m[14], a33 = m[15];
+  const b00 = a00 * a11 - a01 * a10, b01 = a00 * a12 - a02 * a10, b02 = a00 * a13 - a03 * a10;
+  const b03 = a01 * a12 - a02 * a11, b04 = a01 * a13 - a03 * a11, b05 = a02 * a13 - a03 * a12;
+  const b06 = a20 * a31 - a21 * a30, b07 = a20 * a32 - a22 * a30, b08 = a20 * a33 - a23 * a30;
+  const b09 = a21 * a32 - a22 * a31, b10 = a21 * a33 - a23 * a31, b11 = a22 * a33 - a23 * a32;
+  let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (!det) return false;
+  det = 1 / det;
+  out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
+  out[1] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
+  out[2] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
+  out[3] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
+  out[4] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
+  out[5] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
+  out[6] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
+  out[7] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
+  out[8] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
+  out[9] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
+  out[10] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
+  out[11] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
+  out[12] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
+  out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
+  out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
+  out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+  return true;
 }
 
 /** A piece's matrix in the world: model × piece (into `out`). */

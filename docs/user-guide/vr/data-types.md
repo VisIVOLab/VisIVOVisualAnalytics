@@ -108,15 +108,18 @@ backend says it is a *simulation volume* and the page treats it as one:
   - *Layout*: *Row* (side by side), *Column* (one above the other) or
     *Ring*; *Spread*: the gap between pieces. The pieces are scaled down so
     that together they cover no more than the cube alone did.
-  - *Shown*: one chip a piece; a press hides it or shows it again.
-  - *Explode* / *Assemble* animate between the two; *Reset* puts every piece
-    back in its place in the layout and shows them all.
+  - *Shown*: one chip a piece; a press hides it or shows it again. A
+    field's chip is the same switch as its *Shown* on the *Overlay* page.
+  - *Explode* / *Assemble* animate between the two: the model first shrinks
+    to the pieces' size, then the pieces part (and the reverse). *Reset*
+    puts every piece back in its place in the layout and shows them all.
 
   With the pieces apart, a grip that starts inside a piece moves and turns
   that piece; a grip elsewhere moves the whole model, pieces included. One
   colour bar per piece stands beside the box. While the model is apart the
-  refined frames and the crop's detail are not shown, and the trigger still
-  picks on the assembled box.
+  box's outline, ticks and labels, the refined frames and the crop's detail
+  are not shown, and the trigger still picks on the assembled box. With
+  *Fields*, switching the overlay off puts the model back together.
 
 ## Opening one
 

@@ -17,8 +17,9 @@ are preserved here unedited; the branch names they refer to are historical.
   between assembled and exploded, can be hidden, and a grip inside one moves
   and turns it; *Reset* puts them back. Every piece is the same resident 3-D
   texture (the overlay storage or the cube's) drawn again with its own
-  matrix and uniforms, so nothing is allocated in VR, and the pieces are
-  scaled so that together they cover no more than the cube alone. The plane
+  matrix and uniforms, so nothing is allocated in VR. The pieces are scaled
+  so that together they cover no more than the cube alone, and the animation
+  shrinks the model before parting it, so no frame of it costs more. The plane
   split (opening the model like a book, after #369) and isosurface pieces
   (#370) are follow-ups.
 - **VR: overlay two or three variables of a simulation volume (#357).** The
