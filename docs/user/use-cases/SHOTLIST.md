@@ -1,0 +1,100 @@
+---
+orphan: true
+---
+
+# Use-case screenshots: shot list
+
+The screenshots the use-case pages expect, for capture in the real
+application for 1.2.0. Each file goes to `docs/user/use-cases/img/` under the
+name given. Capture the window only (no desktop, no other windows), on macOS
+in the light theme, at 2× (Retina) and the window size given. Crop nothing
+inside the window unless the row says so. Where a row says to highlight
+something, the highlight must come from the application itself (a selection,
+a hover, an armed tool), never a drawn overlay.
+
+Demo files are in the demo data folder (`DemoData/`); the PLUTO density is
+`STEP62/rho.0000.flt` with its `flt.out` and `grid.out`. Unless a row says
+otherwise, use the local backend.
+
+## 01-first-steps.md
+
+| File | What must be on screen |
+|---|---|
+| `01-first-steps-1.png` | The *Open Dataset* file browser (*File ▸ Open…*), title naming *Backend: Local*, listing `DemoData/` with `WALLABY.fits` selected; the *Preview* shows its FITS header (NAXIS1 196, NAXIS2 280, NAXIS3 109, CTYPE3 VOPT visible). *File type* on *All supported files*. Dialog at its default size over a 1600 × 1000 main window; capture the dialog only. |
+| `01-first-steps-2.png` | Cube window, 1600 × 1000, `WALLABY.fits` at full resolution. *Two panes*: left *3D View* (Volume, *Composite*, default colour map), right *2D Slice* at a channel through the middle of the galaxy's emission (about channel 55). Camera: default view turned about 30° about the vertical axis so the cutting plane is seen at an angle. Left dock with *Session Data* and *DISPLAY, 3D* visible; Inspector open on *Properties*. Status bar showing *Full resolution*. |
+| `01-first-steps-3.png` | Same window and layout, *Tools ▸ Spectral ▸ Extract Spectrum* armed: cross-hair on the galaxy's brighter side in the *2D Slice*, the third pane (layout grown to *Four panes* or a *Two panes* layout with the spectrum replacing the 3-D view, whichever the tool does) showing the live spectrum with its header *pixel (x, y) · live*. The double-horned profile must be visible. |
+| `01-first-steps-4.png` | Same window after pinning: *Session Data* with the saved spectrum row selected (*Spectrum 1* or similar), the Inspector on *Parameters* showing the pixel it was probed at. The spectrum visible in a pane. Crop to the left dock, the spectrum pane and the Inspector if the full window is too wide to read at page width. |
+
+## 02-find-and-measure-a-source.md
+
+| File | What must be on screen |
+|---|---|
+| `02-find-and-measure-a-source-1.png` | The *SoFiA-2 Source Finding* dialog on `hgc44.fits` (full resolution loaded) after the suggestion arrived: *Data type* and *Line widths* filled in with their reasons, the measurements block (noise σ, beam in pixels, channel width), and the parameter table with *Value*, *Status*, *SoFiA default* and *Why* columns, a few bold (non-default) rows. No run yet. Dialog at its default size; capture the dialog only. Needs SoFiA-2 2.7 on the backend for the later steps, not for this shot. |
+| `02-find-and-measure-a-source-2.png` | Cube window, 1600 × 1000, `hgc44.fits` at full resolution, *Two panes*: *3D View* (left) and *2D Slice* (right). *Kinematic Lasso (click to select)* on, NGC 3187 selected by a double-click: green selection surface in the 3-D view, its outline on the slice at a channel crossing the galaxy. Camera rotated so NGC 3187 is not behind NGC 3190. Inspector on *Parameters* showing *Reach*, *Velocity coupling*, *Threshold*, *Smoothing*, the voxel count (*N voxels selected*) and the per-channel profile. |
+| `02-find-and-measure-a-source-3.png` | Same window after *Kinematic Model Overlay… ▸ Fit from the lasso selection* on that selection (dialog closed): *Session Data* showing the new rows (velocity field, model, residual, *Integrated spectrum (selection)*, *Source properties: … Jy km/s*), the *Source properties* row selected, the Inspector showing *Flux*, *w20 / w50*, *V_sys (w20 midpoint)*, *PA (moment 0)* and the inclination. The integrated spectrum in a pane. |
+
+## 03-moments-and-pv.md
+
+| File | What must be on screen |
+|---|---|
+| `03-moments-and-pv-1.png` | The *Moment Map Settings* dialog on `WALLABY.fits`: *Moment order* on *Moment 0: Integrated intensity (M0)*, a *Channel range* restricted to the galaxy's channels (not the full cube), *Enable threshold mask* on, *Auto threshold (≈ 3σ from MAD)* chosen. Capture the dialog only, default size. |
+| `03-moments-and-pv-2.png` | Cube window, 1600 × 1000, *Four panes*: *3D View* top left, then the M0, M1 and M2 maps of `WALLABY.fits` (each from *Session Data*). Default colour maps (Inferno, CoolWarm, Viridis). The galaxy's rotation gradient clearly visible in M1. Left dock *Session Data* showing the three moment rows. |
+| `03-moments-and-pv-3.png` | Cube window, 1600 × 1000, *Two panes*: left the M1 map with a two-vertex PV path drawn along the kinematic major axis (handles visible, *Extract PV Diagram…* still on), right the *PV Diagram* pane showing an S-shaped rotation curve, with the footer (*Width*, *Smooth curve*, *New path*, *Save as FITS…*, *Save as PNG…*) and the colour bar visible. |
+
+## 04-regions.md
+
+Before the shots, save the `hcg44.reg` file of the page next to `hgc44.fits`.
+
+| File | What must be on screen |
+|---|---|
+| `04-regions-1.png` | Cube window, 1600 × 1000, `hgc44.fits` at full resolution, *Two panes*: *2D Slice* left at a channel with HI in NGC 3190, the region's mean spectrum right. A circle region drawn on a galaxy, selected (thicker outline, white handles). |
+| `04-regions-2.png` | The *Region Properties* dialog next to the slice: *Frame* on *ICRS, sexagesimal*, centre RA `10:18:05.6` Dec `+21:49:56`, radius 90 arcsec, after *Apply*; the circle visible on NGC 3190 in the slice behind it. Capture the window with the dialog placed beside the slice so both read. |
+| `04-regions-3.png` | After *Import Region (CRTF/DS9)…* of `hcg44.reg`: the slice with the imported circle, ellipse (cyan), annulus and point, their `text` labels drawn, and the non-modal *Region Import: hcg44.reg* window beside the viewer listing the `panda` line with its *Line*, *Text* and *Reason*. The status bar message with the counts visible. |
+| `04-regions-4.png` | *3D View* of `hgc44.fits` with the imported regions drawn on the cutting plane (needs PR #353 merged). Camera rotated about 30° so the plane is seen at an angle; *Cutting plane* opacity around 0.7. Same channel as `04-regions-3.png`. |
+
+## 05-large-cubes-and-simulations.md
+
+Use a backend that has not yet built the pyramid of `rho.0000.flt` for shot 1 and the start of shot 2 (or delete its pyramid from the backend's pyramid folder first). Log scale on in every shot.
+
+| File | What must be on screen |
+|---|---|
+| `05-large-cubes-and-simulations-1.png` | Cube window, 1600 × 1000, `rho.0000.flt` just opened, one pane *3D View*, *Local*: the strided preview, log colour scale (LUT editor *Scale: Log* applied), the status line naming the preview (*Preview: every Nth voxel*), and the banner offering *Load full resolution* and *Switch to Remote*. Default camera. |
+| `05-large-cubes-and-simulations-2.png` | Same window after *Remote* and the pyramid build: the remote view of the full cube, *Remote* selected in the pane header's *Auto / Local / Remote*, status bar naming remote rendering. Same camera as shot 1 so the two compare. |
+| `05-large-cubes-and-simulations-3.png` | Back on *Local* with the pyramid built: camera zoomed onto a dense filament (about a quarter of the cube across the view) and settled, the refined part visibly sharper than the block-mean preview around it, the status line reading *Detail: level … in x …, y …, z …; elsewhere block means, pyramid level 3*. |
+
+## 06-catalogues-hips-crossmatch.md
+
+| File | What must be on screen |
+|---|---|
+| `06-catalogues-hips-crossmatch-1.png` | 3-D catalogue viewer, 1600 × 1000, `NKATZ_2.3M.tbl` with *Load all* done, shape *Gaussian splats*, coloured by `LDensity` (log scale, Inferno or the default map), colour bar visible, one point selected with its ring and the *Source Info* page showing its row. Check that positions come from `X`, `Y`, `Z` (the *AXIS MAPPING* section visible in the dock). |
+| `06-catalogues-hips-crossmatch-2.png` | Main window, 1600 × 1000, *HiPS Viewer* tab: a Herschel 250 µm survey (chosen with *Browse…* and `herschel 250`) or DSS colour, centred on a resolved target typed in *Target:* (`M31` works for DSS; a Galactic-plane target such as `W43` for Herschel), the order and field of view visible in the toolbar. |
+| `06-catalogues-hips-crossmatch-3.png` | Image viewer, 1400 × 1000, `vlkb-cutout_2023-09-08_04-44-11_833602_continuum-higal_mosaic_mosaic_wgls_m030039_PSW.fits` after *Tools ▸ Catalogue ▸ Cross-match with Catalogue…* with `simbad`, radius 60: markers with names on the image, *Session Data* showing *Cross-match with simbad*. Needs network access on the backend. |
+
+## 07-polarimetry.md
+
+| File | What must be on screen |
+|---|---|
+| `07-polarimetry-1.png` | Cube window, 1600 × 1000, `polarimetry/DEMO_I.fits` with Q, U and V companions loaded, *Two panes* showing *Polarised intensity (ch N)* and *Polarisation angle (ch N)* for one sub-band (channel 3 or later), *Session Data* listing the two products. |
+| `07-polarimetry-2.png` | The *Rotation Measure Synthesis* dialog with *φ min* -80, *φ max* 80, *φ step* 1 and the sample count (161) shown. Capture the dialog only. |
+| `07-polarimetry-3.png` | Cube window, 1600 × 1000, *Two panes*: *Faraday depth (peak \|F\| > 6σ)* left, *Peak \|F(φ)\|* right, for the synthetic field: the left-to-right gradient and the two blobs (near pixels (180, 150) and (330, 340)) visible, colour bars visible. |
+
+## 08-vr-from-the-desktop.md
+
+Headset shots come from the Quest 3's own capture (or *Watch the Headset* on the desktop), cropped to one eye, 1600 × 1000 or the capture's native size. Use the hosted pairing service.
+
+| File | What must be on screen |
+|---|---|
+| `08-vr-from-the-desktop-1.png` | The *Open in VR Headset* dialog for `hgc44.fits`, waiting for the headset: the large pairing code, the countdown (*Waiting for the headset. The code expires in 4:5x.*), the QR code. Capture the dialog only. Blur nothing: the code expires in five minutes. |
+| `08-vr-from-the-desktop-2.png` | In the headset, HCG 44 in front of you, the hand menu open (X) on the *Display* tab: colour map swatches, *Threshold* with its σ value, *Colour max*, *Opacity*. The cube fully visible beside the menu. |
+| `08-vr-from-the-desktop-3.png` | In the headset, the tool palette open (A), the ray on the *Kinematic Lasso* icon so its description line shows under the icons. |
+| `08-vr-from-the-desktop-4.png` | In the headset, `rho.0000.flt` sent with *Show on Headset*: the density on a log scale, the colour bar beside the box in values, a *Spatial crop* of about a quarter of each axis settled so the label over the box reads *the crop binned 2× (level 1)* (or the level shown). |
+
+## 09-backend-on-a-cluster.md
+
+Use a real cluster profile (PLEIADI or another SLURM site). Replace the user name and paths in the profile with neutral ones (`user`, `/scratch/user/...`) before capturing, or capture on a test account.
+
+| File | What must be on screen |
+|---|---|
+| `09-backend-on-a-cluster-1.png` | The *Connect to a cluster* dialog with a complete profile: *Name*, *Frontend*, *User*, *VisIVO clone*, *Partition* `gpu`, *GPUs (gres)* `gpu:1`, *Memory*, *Time limit*, *Backend image*, *Data root*, *Workspace*. Capture the dialog only. |
+| `09-backend-on-a-cluster-2.png` | The cluster window's *Open Dataset* browser listing the data root on the cluster with a cube selected, title naming *Backend: NAME*; the status bar and backend chip of the window behind it naming the cluster. 1600 × 1000. |
+| `09-backend-on-a-cluster-3.png` | Cube window on the cluster, 1600 × 1000, a large cube (several GB) rendered with *Remote* selected in the 3-D pane header, the backend chip naming the cluster. |

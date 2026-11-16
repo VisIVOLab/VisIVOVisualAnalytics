@@ -1,0 +1,123 @@
+# Working with a backend on a cluster
+
+You will start the VisIVO Visual Analytics backend on a GPU node of a SLURM
+cluster from the desktop, open data that lives on the cluster, and see what
+changes while you work.
+
+## You need
+
+- An account on a SLURM cluster with a GPU partition, and SSH access to its
+  login node (the frontend) with a key, so that nothing has to be typed. Set
+  the key up once with `ssh-copy-id <user>@<frontend>`.
+- On the frontend: a copy of the VisIVO Visual Analytics repository (its
+  `scripts/launch_backend_slurm.sh` starts the backend), and the backend's
+  container image, `backend-egl.sif`. Your site's support team or the
+  [cluster deployment page](../../deployment/hpc-slurm.md) tells you where
+  they are.
+- Your data on the cluster's disk, for example a large cube under
+  `/scratch/<user>/data`.
+
+## Steps
+
+1. In the main window's *Data Hub*, press *Connect to a cluster…*. The
+   *Connect to a cluster* dialog keeps named profiles.
+
+2. Fill in a profile:
+   - *Name*: the name shown in the status bar, for example the cluster's.
+   - *Frontend* and *User*: the login node and your login there.
+   - *VisIVO clone*: where the repository is on the frontend.
+   - *Partition*, *Account*, *QOS*, *GPUs (gres)*, *CPUs*, *Memory* and *Time
+     limit*: the SLURM resources of the job. *Account* is required on some
+     sites.
+   - *Backend image*: the path of `backend-egl.sif`.
+   - *Data root*: the folder the backend may open data from.
+   - *Workspace*: where the backend writes exports, brick pyramids and logs.
+     Put it on a large disk, not in your home.
+
+   Press *Save* to keep the profile.
+
+   ```{figure} img/09-backend-on-a-cluster-1.png
+   :alt: The Connect to a cluster dialog with a filled-in profile for a GPU partition.
+   :width: 70%
+
+   A cluster profile: login node, SLURM resources, image and folders.
+   ```
+
+3. Press *Connect*. A new VisIVO Visual Analytics window starts for the
+   cluster; the window you were using stays on its own backend. The new
+   window submits the backend job over SSH, waits for SLURM to give it a
+   node, opens an SSH tunnel to it and waits for the backend to answer. The
+   progress screen says which step it is on (*Submitting the backend job
+   on…*, then the job and node, then the tunnel). *Cancel* stops at any step
+   and cancels the job.
+
+4. When the window opens, its status bar and backend chip name the cluster
+   (*Backend: NAME*). Choose *File ▸ Open…*: the file browser lists the
+   cluster's files under the data root, and its title names the backend.
+   Open a cube.
+
+   ```{figure} img/09-backend-on-a-cluster-2.png
+   :alt: The Open dialog listing files on the cluster, with the backend named in the title, and the status bar of the window naming the cluster.
+   :width: 100%
+
+   The file browser on the cluster's disk.
+   ```
+
+5. In the cube window, the 3-D view's *Auto / Local / Remote* switch is set
+   to *Auto*. A cube above the local limit is drawn by the cluster's GPU
+   (*Remote*), and only the frames cross the network. A cube larger than
+   about 6 GB is drawn from its brick pyramid, which the backend builds once
+   in the workspace the first time (see
+   [Large cubes and simulations](05-large-cubes-and-simulations.md)).
+
+   ```{figure} img/09-backend-on-a-cluster-3.png
+   :alt: A large cube rendered remotely on the cluster's GPU, with Remote selected in the 3-D pane header and the backend chip naming the cluster.
+   :width: 100%
+
+   A cube rendered by the cluster's GPU.
+   ```
+
+6. Work as on your own machine. Moment maps, PV diagrams, SoFiA-2, the lasso
+   and the exports run on the node, next to the data.
+
+7. When you are done, close the window, or press *Disconnect from NAME* in
+   its Data Hub. Both close the tunnel and cancel the SLURM job, so the node
+   is released.
+
+## What changes for you
+
+Paths are on the cluster. The file browser, *Recent Datasets* and the
+Workspace Exports refer to the cluster's disk. *Recent Datasets* marks the
+entries opened on a cluster with its name, and clicking one from another
+window offers to open a window on that cluster.
+
+The data stays there. Large cubes are not copied to your machine: what
+travels is a preview, the frames of the remote view and the products you ask
+for (maps, spectra, diagrams).
+
+The window owns the job, and there is one window per profile. If a window did
+not close normally, the next connection with that profile cancels the job it
+left behind. Your SLURM time limit still applies: when it runs out, the
+backend stops.
+
+The window sends the cluster backend its own token, never the one of your
+local backend.
+
+The same can be started from a terminal: `VisIVOVisualAnalytics
+--connect-cluster NAME` opens a window on the profile `NAME`, and a path after
+it is opened on the cluster once connected. If you prefer to start the job
+and the tunnel yourself with the scripts, register the backend under
+*Settings ▸ Backends ▸ Remote Backends* instead; the cluster deployment page
+describes both.
+
+A Meta Quest can show cubes from the cluster backend too; see
+[Headset with a cluster backend](../../user-guide/vr/cluster.md).
+
+## Next
+
+- [Running the backend on a cluster](../../deployment/hpc-slurm.md): the
+  launcher, the tunnel script, container images and troubleshooting.
+- [Getting started](../../user-guide/getting-started.md): connecting to a
+  remote backend.
+- [Spectral cube viewer](../../user-guide/cube-viewer.md): Auto, Local and
+  Remote rendering.
