@@ -103,6 +103,39 @@ BackendRegionExportResult BackendClient::exportRegions(const QJsonArray &regions
     return result;
 }
 
+BackendRegionConvertResult BackendClient::convertRegions(const QJsonArray &regions,
+                                                         const QString &toFrame,
+                                                         const QString &datasetId,
+                                                         int origin,
+                                                         const QString &unit) const
+{
+    BackendRegionConvertResult result;
+    QJsonObject bodyObj{
+        { QStringLiteral("regions"), regions },
+        { QStringLiteral("to_frame"), toFrame },
+        { QStringLiteral("origin"), origin },
+    };
+    if (!datasetId.isEmpty()) bodyObj[QStringLiteral("dataset_id")] = datasetId;
+    if (!unit.isEmpty())      bodyObj[QStringLiteral("unit")]       = unit;
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/regions/convert")), QJsonDocument(bodyObj), error);
+    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    if (!error.isEmpty()) {
+        // On an HTTP error the body is the reason ("The region lies outside the
+        // dataset's sky projection."); Qt's own text only says the status.
+        const QString detail = obj.value(QStringLiteral("detail")).toString();
+        result.error = detail.isEmpty() ? error : detail;
+        return result;
+    }
+    result.valid       = obj.value(QStringLiteral("valid")).toBool();
+    result.error       = obj.value(QStringLiteral("error")).toString();
+    result.frame       = obj.value(QStringLiteral("frame")).toString();
+    result.nativeFrame = obj.value(QStringLiteral("native_frame")).toString();
+    result.regions     = obj.value(QStringLiteral("regions")).toArray();
+    return result;
+}
+
 BackendRegionStatsResult BackendClient::regionStats(const QString &datasetId,
                                                     const QJsonObject &region,
                                                     int channel) const

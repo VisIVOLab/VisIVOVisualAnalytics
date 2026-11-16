@@ -12,9 +12,13 @@ Pairing needs two things on a public HTTPS server, hosted once for all users:
 | **Pairing service** | A small WebSocket service that hands out codes and relays the WebRTC offer, answer and candidates between a headset and a backend, then steps aside. No cube data and no API traffic pass through it. Optionally a TURN server next to it. | `services/vr-pair/` |
 | **Public loader** | A static directory that the headset opens: it asks for the code, holds the WebRTC link and runs the VR page, whose files come from the user's own backend. Installable as an app. | `web/vr-loader/` |
 
-Each backend then names both (`VISIVO_VR_PAIR_URL`, `VISIVO_VR_PAGE_URL`). No
-address is built into the application, the backend, the service or the loader:
-the operator chooses the server, and moving it means changing a few values
+Each backend then names both (`VISIVO_VR_PAIR_URL`, `VISIVO_VR_PAGE_URL`).
+
+INAF hosts both for everyone, at `wss://vr.visivolab.oact.inaf.it/pair` (the
+service) and `https://vr.visivolab.oact.inaf.it/` (the loader), and the desktop
+application offers them by default. No address is built into the backend, the
+service or the loader, and the desktop's defaults are one build option each:
+an institute can run its own server, and moving it means changing a few values
 (see [Moving to another server](#moving-to-another-server)).
 
 ```
@@ -257,31 +261,44 @@ of **Settings ▸ Backends ▸ Headset Pairing**:
 | *Pairing service* | `VISIVO_VR_PAIR_URL` |
 | *Headset page* | `VISIVO_VR_PAGE_URL` |
 
-Both fields are empty after installation: give users the two values to type
-there. The same variables in the environment the application starts from take
-precedence over the fields; the change applies at the backend's next start, so
-users restart the application. A backend started by hand, or a remote one,
+Both fields are empty after installation, and an empty field uses the
+build's default (the INAF server in the released builds), which the field
+shows as its placeholder. With your own server, either give users the two
+values to type there, or build the desktop with your server as the default
+(see [Moving to another server](#moving-to-another-server)). The same variables
+in the environment the application starts from take precedence over the
+fields, and the fields over the defaults. *Pair headsets by code* switched off
+passes neither; **Restore Pairing Defaults** empties the fields and switches pairing
+on. The change applies at the backend's next start, so users restart the
+application. A backend started by hand, or a remote one,
 uses its own environment (on a cluster, export them with the `APPTAINERENV_`
 prefix as in [Other backend settings](hpc-slurm.md#other-backend-settings)).
 
 ## Moving to another server
 
-Nothing names the server in code. Each side holds exactly one value per piece
-that moves; change it there and nowhere else.
+Nothing in the backend, the service or the loader names the server. Each
+side holds exactly one value per piece that moves; change it there and nowhere
+else. For the desktop that value is its build default, or, without a new
+build, the field users type over it:
+
+| Desktop | The one value to change |
+|---|---|
+| A build for your site | `-DVISIVO_DEFAULT_VR_PAIR_URL=…` and `-DVISIVO_DEFAULT_VR_PAGE_URL=…` at configure time (`cmake/VrPairingDefaults.cmake`); users who left the fields empty follow it |
+| An existing build | the *Pairing service* and *Headset page* fields (both: the default page goes only with the default service) |
 
 **The pairing service moves** (to `wss://new.example.org/pair`):
 
 | Side | The one value to change |
 |---|---|
 | Loader | `pair_service` in its `config.json` |
-| Each backend | `VISIVO_VR_PAIR_URL` (for the desktop's own backend: the *Pairing service* field), then restart it |
+| Each backend | `VISIVO_VR_PAIR_URL` (for the desktop's own backend: the build default or the *Pairing service* field), then restart it |
 | Pairing service | nothing: run it on the new server with the same `VR_PAIR_*` settings, the same `VR_PAIR_SECRET` included |
 
 **The loader moves** (to `https://new.example.org/visivo/`):
 
 | Side | The one value to change |
 |---|---|
-| Each backend | `VISIVO_VR_PAGE_URL` (for the desktop's own backend: the *Headset page* field), then restart it |
+| Each backend | `VISIVO_VR_PAGE_URL` (for the desktop's own backend: the build default or the *Headset page* field), then restart it |
 | Pairing service | `VR_PAIR_ALLOWED_ORIGINS`: add the new origin (remove the old one once nobody uses it) |
 | Loader | nothing: copy the directory, `config.json` included, unchanged |
 

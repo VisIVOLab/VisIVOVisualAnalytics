@@ -6,13 +6,17 @@
 #include "app/VrHeadsetHub.h"
 #include "app/VrPair.h"
 #include "app/VrPairQr.h"
+#include "app/VrPairService.h"
+#include "Settings.h"
 
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcessEnvironment>
+#include <QSettings>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTemporaryDir>
 #include <QtTest>
 
 using namespace Qt::StringLiterals;
@@ -705,25 +709,205 @@ void TestVrPair::pollGateLetsOnePollOutAndResets()
     QVERIFY(!gate.finish(0));
 }
 
+namespace {
+const VrPairService::Defaults kDefaults{ u"wss://vr.default.example/pair"_s,
+                                         u"https://vr.default.example/"_s };
+
+VrPairService::Fields fieldsOf(const QString &service, const QString &page, bool enabled = true)
+{
+    VrPairService::Fields f;
+    f.enabled = enabled;
+    f.serviceUrl = service;
+    f.pageUrl = page;
+    return f;
+}
+}   // namespace
+
 void TestVrPair::serviceSettingsReachTheBackendUnlessTheEnvironmentSetsThem()
 {
     QProcessEnvironment env;
-    VrPair::applyServiceSettings(env, u" wss://pair.example/ "_s, u"https://pair.example/vr/"_s);
+    VrPairService::apply(env, fieldsOf(u" wss://pair.example/ "_s, u"https://pair.example/vr/"_s),
+                         kDefaults);
     QCOMPARE(env.value(u"VISIVO_VR_PAIR_URL"_s), u"wss://pair.example/"_s);
     QCOMPARE(env.value(u"VISIVO_VR_PAGE_URL"_s), u"https://pair.example/vr/"_s);
 
     // The environment wins, variable by variable.
     QProcessEnvironment set;
     set.insert(u"VISIVO_VR_PAIR_URL"_s, u"wss://other.example/"_s);
-    VrPair::applyServiceSettings(set, u"wss://pair.example/"_s, u"https://pair.example/vr/"_s);
+    VrPairService::apply(set, fieldsOf(u"wss://pair.example/"_s, u"https://pair.example/vr/"_s),
+                         kDefaults);
     QCOMPARE(set.value(u"VISIVO_VR_PAIR_URL"_s), u"wss://other.example/"_s);
     QCOMPARE(set.value(u"VISIVO_VR_PAGE_URL"_s), u"https://pair.example/vr/"_s);
 
-    // Nothing built in: empty settings pass nothing at all.
+    // Over the defaults too.
+    QProcessEnvironment both;
+    both.insert(u"VISIVO_VR_PAIR_URL"_s, u"wss://env.example/pair"_s);
+    both.insert(u"VISIVO_VR_PAGE_URL"_s, u"https://env.example/vr"_s);
+    VrPairService::apply(both, fieldsOf(QString(), QString()), kDefaults);
+    QCOMPARE(both.value(u"VISIVO_VR_PAIR_URL"_s), u"wss://env.example/pair"_s);
+    QCOMPARE(both.value(u"VISIVO_VR_PAGE_URL"_s), u"https://env.example/vr"_s);
+}
+
+void TestVrPair::emptyFieldsUseTheBuildDefaults()
+{
+    QProcessEnvironment env;
+    VrPairService::apply(env, fieldsOf(u"  "_s, QString()), kDefaults);
+    QCOMPARE(env.value(u"VISIVO_VR_PAIR_URL"_s), kDefaults.serviceUrl);
+    QCOMPARE(env.value(u"VISIVO_VR_PAGE_URL"_s), kDefaults.pageUrl);
+
+    // One field typed, the other empty: each on its own.
+    QProcessEnvironment page;
+    VrPairService::apply(page, fieldsOf(QString(), u"https://mirror.example/vr/"_s), kDefaults);
+    QCOMPARE(page.value(u"VISIVO_VR_PAIR_URL"_s), kDefaults.serviceUrl);
+    QCOMPARE(page.value(u"VISIVO_VR_PAGE_URL"_s), u"https://mirror.example/vr/"_s);
+
+    // The default service typed by hand (with a trailing slash the backend
+    // strips) still goes with the default loader.
+    QProcessEnvironment typed;
+    VrPairService::apply(typed, fieldsOf(u"wss://vr.default.example/pair/"_s, QString()),
+                         kDefaults);
+    QCOMPARE(typed.value(u"VISIVO_VR_PAGE_URL"_s), kDefaults.pageUrl);
+
+    // A build without defaults passes nothing for an empty field, as before.
     QProcessEnvironment none;
-    VrPair::applyServiceSettings(none, QString(), u"  "_s);
+    VrPairService::apply(none, fieldsOf(QString(), u"  "_s), VrPairService::Defaults{});
     QVERIFY(!none.contains(u"VISIVO_VR_PAIR_URL"_s));
     QVERIFY(!none.contains(u"VISIVO_VR_PAGE_URL"_s));
+
+    // The compiled-in defaults: a service, and a loader that already ends
+    // with its slash (or none at all, for a site that builds without).
+    const VrPairService::Defaults built = VrPairService::buildDefaults();
+    QVERIFY(built.serviceUrl.isEmpty() || built.serviceUrl.startsWith(u"ws"_s));
+    QCOMPARE(VrPairService::loaderAddress(built.pageUrl), built.pageUrl);
+}
+
+void TestVrPair::theDefaultLoaderGoesOnlyWithTheDefaultService()
+{
+    // Another service, typed or from the environment: the default loader would
+    // join the default service, so an empty page passes nothing.
+    QProcessEnvironment typed;
+    VrPairService::apply(typed, fieldsOf(u"wss://own.example/pair"_s, QString()), kDefaults);
+    QCOMPARE(typed.value(u"VISIVO_VR_PAIR_URL"_s), u"wss://own.example/pair"_s);
+    QVERIFY(!typed.contains(u"VISIVO_VR_PAGE_URL"_s));
+
+    QProcessEnvironment env;
+    env.insert(u"VISIVO_VR_PAIR_URL"_s, u"wss://own.example/pair"_s);
+    VrPairService::apply(env, fieldsOf(QString(), QString()), kDefaults);
+    QCOMPARE(env.value(u"VISIVO_VR_PAIR_URL"_s), u"wss://own.example/pair"_s);
+    QVERIFY(!env.contains(u"VISIVO_VR_PAGE_URL"_s));
+
+    QVERIFY(VrPairService::defaultPageApplies(kDefaults.serviceUrl, kDefaults));
+    QVERIFY(!VrPairService::defaultPageApplies(u"wss://own.example/pair"_s, kDefaults));
+
+    // A build with a default page but no default service: the page alone
+    // would pair nothing, so it is not passed.
+    const VrPairService::Defaults pageOnly{ QString(), u"https://vr.default.example/"_s };
+    QVERIFY(!VrPairService::defaultPageApplies(QString(), pageOnly));
+    QProcessEnvironment none;
+    VrPairService::apply(none, fieldsOf(QString(), QString()), pageOnly);
+    QVERIFY(none.isEmpty());
+}
+
+void TestVrPair::pairingSwitchedOffPassesNothing()
+{
+    QProcessEnvironment env;
+    VrPairService::apply(env, fieldsOf(u"wss://pair.example/"_s, u"https://pair.example/vr/"_s,
+                                       false),
+                         kDefaults);
+    QVERIFY(!env.contains(u"VISIVO_VR_PAIR_URL"_s));
+    QVERIFY(!env.contains(u"VISIVO_VR_PAGE_URL"_s));
+
+    QProcessEnvironment defaults;
+    VrPairService::apply(defaults, fieldsOf(QString(), QString(), false), kDefaults);
+    QVERIFY(defaults.isEmpty());
+
+    // The environment is the user's own choice and stays: the desktop only
+    // adds nothing.
+    QProcessEnvironment set;
+    set.insert(u"VISIVO_VR_PAIR_URL"_s, u"wss://env.example/pair"_s);
+    VrPairService::apply(set, fieldsOf(QString(), QString(), false), kDefaults);
+    QCOMPARE(set.value(u"VISIVO_VR_PAIR_URL"_s), u"wss://env.example/pair"_s);
+    QVERIFY(!set.contains(u"VISIVO_VR_PAGE_URL"_s));
+}
+
+void TestVrPair::restoreDefaultsEmptiesTheFieldsAndSwitchesPairingOn()
+{
+    const VrPairService::Fields restored = VrPairService::restoredDefaults();
+    QVERIFY(restored.enabled);
+    QVERIFY(restored.serviceUrl.isEmpty());
+    QVERIFY(restored.pageUrl.isEmpty());
+    QProcessEnvironment env;
+    VrPairService::apply(env, restored, kDefaults);
+    QCOMPARE(env.value(u"VISIVO_VR_PAIR_URL"_s), kDefaults.serviceUrl);
+    QCOMPARE(env.value(u"VISIVO_VR_PAGE_URL"_s), kDefaults.pageUrl);
+}
+
+void TestVrPair::loaderAddressGetsItsTrailingSlashAsTheBackendGivesIt_data()
+{
+    QTest::addColumn<QString>("given");
+    QTest::addColumn<QString>("expected");
+    // backend/app/vr_pair_host.py page_url: a directory gets its slash.
+    QTest::newRow("host only") << u"https://vr.example.org"_s << u"https://vr.example.org/"_s;
+    QTest::newRow("directory") << u"https://vr.example.org/visivo"_s
+                               << u"https://vr.example.org/visivo/"_s;
+    QTest::newRow("already") << u"https://vr.example.org/visivo/"_s
+                             << u"https://vr.example.org/visivo/"_s;
+    QTest::newRow("file") << u"https://vr.example.org/visivo/index.html"_s
+                          << u"https://vr.example.org/visivo/index.html"_s;
+    QTest::newRow("encoded dot") << u"https://vr.example.org/visivo/index%2Ehtml"_s
+                                 << u"https://vr.example.org/visivo/index%2Ehtml"_s;
+    QTest::newRow("encoded slash") << u"https://vr.example.org/d/a%2Eb%2Fc"_s
+                                   << u"https://vr.example.org/d/a%2Eb%2Fc"_s;
+    QTest::newRow("no scheme") << u"vr.example.org/visivo"_s << u"vr.example.org/visivo/"_s;
+    QTest::newRow("double slash in path") << u"vr.example.org/a//index.html"_s
+                                          << u"vr.example.org/a//index.html"_s;
+    QTest::newRow("query kept")<< u"https://vr.example.org/visivo?x=1"_s
+                                << u"https://vr.example.org/visivo/?x=1"_s;
+    QTest::newRow("fragment kept") << u"https://vr.example.org/visivo#a"_s
+                                   << u"https://vr.example.org/visivo/#a"_s;
+    QTest::newRow("trimmed") << u"  https://vr.example.org/visivo  "_s
+                             << u"https://vr.example.org/visivo/"_s;
+    QTest::newRow("empty") << QString() << QString();
+}
+
+void TestVrPair::loaderAddressGetsItsTrailingSlashAsTheBackendGivesIt()
+{
+    QFETCH(QString, given);
+    QFETCH(QString, expected);
+    QCOMPARE(VrPairService::loaderAddress(given), expected);
+
+    // And so does a typed field on its way to the backend.
+    if (!given.trimmed().isEmpty()) {
+        QProcessEnvironment env;
+        VrPairService::apply(env, fieldsOf(u"wss://pair.example/"_s, given), kDefaults);
+        QCOMPARE(env.value(u"VISIVO_VR_PAGE_URL"_s), expected);
+    }
+}
+
+void TestVrPair::pairingSettingsKeepWhatWasTyped()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        // A Settings.ini from before #344: values typed, no "enabled" key.
+        QSettings ini(dir.path() + u"/Settings.ini"_s, QSettings::IniFormat);
+        ini.setValue(u"VrPairing/serviceUrl"_s, u"wss://site.example/pair"_s);
+        ini.setValue(u"VrPairing/pageUrl"_s, u"https://site.example/vr/"_s);
+    }
+    Settings s(dir.path());
+    QVERIFY(s.getVrPairEnabled());
+    QCOMPARE(s.getVrPairUrl(), u"wss://site.example/pair"_s);
+    QCOMPARE(s.getVrPageUrl(), u"https://site.example/vr/"_s);
+
+    // A fresh profile: pairing on, fields empty (the defaults apply).
+    QTemporaryDir fresh;
+    QVERIFY(fresh.isValid());
+    Settings f(fresh.path());
+    QVERIFY(f.getVrPairEnabled());
+    QVERIFY(f.getVrPairUrl().isEmpty());
+    QVERIFY(f.getVrPageUrl().isEmpty());
+    f.setVrPairEnabled(false);
+    QVERIFY(!f.getVrPairEnabled());
 }
 
 void TestVrPair::clientCallsTheThreeRoutes()

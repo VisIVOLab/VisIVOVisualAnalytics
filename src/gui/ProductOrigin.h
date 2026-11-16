@@ -70,6 +70,28 @@ inline QVariantMap encodeRegionOrigin(int mode,
     return m;
 }
 
+/// A region of a window's region list (issue #341), as the canonical image-frame
+/// region in 0-based full-resolution pixels (RegionModel.h's toCanonical with
+/// offset 0). It does not depend on the voxel grid displayed when it was
+/// measured, so it needs no frame stamp, and it carries the shapes the int
+/// anchor/current form cannot (ellipse, rotated box, point).
+inline QVariantMap encodeListRegionOrigin(const QVariantMap &canonicalZeroBased)
+{
+    const QString shape = canonicalZeroBased.value(QStringLiteral("shape")).toString();
+    if (shape.isEmpty())
+        return {};
+    return { { QStringLiteral("kind"), QStringLiteral("region") },
+             { QStringLiteral("shape"), shape },
+             { QStringLiteral("region"), canonicalZeroBased } };
+}
+
+/// The list region a product records, or an empty map for a product that
+/// predates the list (then the anchor/current form applies).
+inline QVariantMap originListRegion(const QVariantMap &origin)
+{
+    return origin.value(QStringLiteral("region")).toMap();
+}
+
 /// The path a PV diagram was cut along. Its own kind rather than a "polygon":
 /// a PV path is open and carries a width, and restoring one into a region's
 /// polygon would draw a closed shape that was never there.
@@ -258,6 +280,20 @@ inline QString describeOrigin(const QVariantMap &origin)
     if (kind != QStringLiteral("region"))
         return QString();
     const QString shape = originShape(origin);
+    const QVariantMap listRegion = originListRegion(origin);
+    if (!listRegion.isEmpty()) {
+        // Same phrasing as below, from the canonical form (0-based pixels).
+        if (shape == QStringLiteral("polygon"))
+            return QStringLiteral("a polygon of %1 points")
+                    .arg(listRegion.value(QStringLiteral("points")).toList().size());
+        const QVariantList c = listRegion.value(QStringLiteral("center")).toList();
+        if (c.size() == 2)
+            return QStringLiteral("a %1 region at (%2, %3)")
+                    .arg(shape)
+                    .arg(c.at(0).toDouble(), 0, 'f', 1)
+                    .arg(c.at(1).toDouble(), 0, 'f', 1);
+        return QStringLiteral("a %1 region").arg(shape);
+    }
     if (shape == QStringLiteral("polygon"))
         return QStringLiteral("a polygon of %1 points%2")
                 .arg(originPolygon(origin).size())

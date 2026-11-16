@@ -149,8 +149,33 @@ direct HTTP address ([Headset pairing by code](backend-api/vr-pair.md)). The
 pairing service is configured with its own `VR_PAIR_*` variables
 (`services/vr-pair/README.md`); running it and the public loader, and moving
 them to another server, is in [Hosting headset pairing](deployment/vr-pairing.md).
-The desktop application passes both variables to the backend it starts from
-**Settings ▸ Backends ▸ Headset Pairing** (the environment takes precedence).
+The backend has no built-in value for either: a backend started by hand or
+on a cluster pairs only when its own environment names them. The desktop
+application passes both to the backend it starts, from the first of:
+
+1. the variables already set in the environment the application starts from;
+2. the fields of **Settings ▸ Backends ▸ Headset Pairing**;
+3. the build's defaults, the pairing service hosted by INAF:
+   `wss://vr.visivolab.oact.inaf.it/pair` and
+   `https://vr.visivolab.oact.inaf.it/`.
+
+An empty field uses the default, which the field shows as its placeholder.
+The default page goes with the default service only: with another service
+typed (or set in the environment), an empty *Headset page* passes nothing.
+*Pair headsets by code* switched off passes neither (variables set in the
+environment still reach the backend); **Restore Pairing Defaults** empties both fields
+and switches pairing on.
+
+The defaults are CMake cache options, compiled into the desktop
+(`cmake/VrPairingDefaults.cmake`, which generates `VrPairingDefaults.h`); a
+site with its own server builds with its own values:
+
+```sh
+cmake -B build -DVISIVO_DEFAULT_VR_PAIR_URL=wss://vr.example.org/pair \
+               -DVISIVO_DEFAULT_VR_PAGE_URL=https://vr.example.org/visivo/
+```
+
+Empty values build a desktop with no default, where pairing needs the fields.
 
 | Variable | Default | Effect |
 |---|---|---|

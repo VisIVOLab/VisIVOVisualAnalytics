@@ -34,7 +34,6 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QList>
-#include <QProcessEnvironment>
 #include <QSet>
 #include <QString>
 #include <QTimeZone>
@@ -101,26 +100,6 @@ struct Status
     QList<Pending> pending;
     QList<Connection> connected;
 };
-
-/// The pairing service and the public loader page for a backend this desktop
-/// starts (VISIVO_VR_PAIR_URL, VISIVO_VR_PAGE_URL), from Settings ▸ Backends.
-/// Neither has a built-in value: the server that hosts them is the operator's
-/// choice and moves, so changing it is changing the setting. A variable
-/// already set in the environment wins over the setting (the launcher's rule
-/// for every VISIVO_* it passes); an empty setting passes nothing, and the
-/// backend then answers 409 not-configured.
-inline void applyServiceSettings(QProcessEnvironment &env, const QString &pairUrl,
-                                 const QString &pageUrl)
-{
-    using namespace Qt::StringLiterals;
-    const auto put = [&env](const QString &name, const QString &value) {
-        if (!env.value(name).trimmed().isEmpty() || value.trimmed().isEmpty())
-            return;
-        env.insert(name, value.trimmed());
-    };
-    put(u"VISIVO_VR_PAIR_URL"_s, pairUrl);
-    put(u"VISIVO_VR_PAGE_URL"_s, pageUrl);
-}
 
 /// The POST body: the same values the adb link's fragment carries, except the
 /// token. kind is left out for a cube (as in the link), box when there is none.

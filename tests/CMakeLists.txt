@@ -32,6 +32,10 @@ else()
     set(VISIVO_ROOT "${PROJECT_SOURCE_DIR}")
 endif()
 
+# The headset pairing defaults header (VrPairingDefaults.h); a no-op when the
+# main build already included it.
+include(${VISIVO_ROOT}/cmake/VrPairingDefaults.cmake)
+
 include(CTest)
 enable_testing()
 
@@ -163,6 +167,8 @@ add_executable(VisIVOTests
     ${VISIVO_ROOT}/src/gui/RenderSessionCalls.cpp
     TestRegionFullRes.h
     test_region_full_res.cpp
+    TestRegionModel.h
+    test_region_model.cpp
     TestDatasetName.h
     test_dataset_name.cpp
     TestVbtByteOrder.h

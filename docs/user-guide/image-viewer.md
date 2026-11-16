@@ -272,7 +272,16 @@ viewer's 2-D dock:
   read-out in the bottom-right.
 - **Box / Circle / Polygon / Annulus regions** — compute statistics
   (mean, median, MAD-based sigma, min, max, sum) over the region.
-- Right-click on a region to copy the value summary or remove it.
+- Regions are kept in a list until you delete them: click one to select it,
+  drag it or its handles to move and reshape it, double-click it for
+  **Region Properties** (centre, sizes, angle or vertices typed in image
+  pixels, ICRS, FK5 or galactic, converted with the image's WCS by the
+  backend), right-click it for *Properties…*, *Analyse* and *Delete*;
+  **Delete**/**Backspace** removes the selected one and **Cmd+Z** undoes. See
+  [Editing regions](region-pv-noise.md#editing-regions-image-viewer).
+- *Extract Spectrum* on a dynamic spectrum collapses over the selected region's
+  bounding box when a region is selected; click empty image to deselect and
+  collapse over the whole image.
 
 The detailed semantics are documented in
 [Regions, PV, noise](region-pv-noise).

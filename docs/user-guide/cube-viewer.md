@@ -969,6 +969,11 @@ Full workflow, naming rules and a worked MeerKAT example:
 These are all explained on a dedicated page:
 [Regions, PV diagrams, noise](region-pv-noise).
 
+The cube viewer still keeps **one** region at a time, cleared when its spectrum
+closes. The editable region list of the image viewer (select, move, reshape,
+delete, undo, Region Properties with positions typed in a sky frame) is coming
+to the cube's slice and moment panes next (issue #341).
+
 ## Pixel histogram (current slice)
 
 *Tools → Statistics → Pixel Histogram (current slice)* opens a floating

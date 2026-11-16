@@ -408,30 +408,18 @@ void vtkWindowImage::extractSpectrum2D()
     // NAXIS1 = TIME, NAXIS2 = FREQUENCY (the beamformed convention this window
     // already assumes for its axis titles).
     int x0 = ext[0], x1 = ext[1], y0 = ext[2], y1 = ext[3];
-    const bool fromRegion = this->regionValid && this->regionMode != RegionMode::None;
+    // The region being drawn, else the selected region of the list (issue #341).
+    const std::optional<visivo::regions::Region> region =
+            this->draftRegion() ? this->draftRegion()
+            : this->m_regions.selected() ? std::optional<visivo::regions::Region>(*this->m_regions.selected())
+                                         : std::nullopt;
+    const bool fromRegion = region.has_value();
     if (fromRegion) {
         // The region's BOUNDING BOX, said so in the product: collapsing a circle
         // or a polygon per row would give each frequency a different number of
         // samples, which is a different measurement than the one the shape
-        // suggests. The box comes from the shared helper, so a circle gives its
-        // whole disc and not the quadrant its two corners span.
-        auto b = (this->regionMode == RegionMode::Polygon
-                  && !this->regionPolygonVertices.empty())
-                ? CubeRegionGeom::polygonBounds(this->regionPolygonVertices)
-                : (this->regionMode == RegionMode::Circle
-                   || this->regionMode == RegionMode::Annulus)
-                        ? CubeRegionGeom::circleBounds(this->regionAnchorVoxel,
-                                                       this->regionCurrentVoxel)
-                        : CubeRegionGeom::boxBounds(this->regionAnchorVoxel,
-                                                    this->regionCurrentVoxel);
-        if (this->regionMode == RegionMode::Polygon) {
-            // Still being drawn: the cursor vertex is on screen but not yet in
-            // the list, and the user can see it inside their selection.
-            b[0] = std::min(b[0], this->regionCurrentVoxel[0]);
-            b[1] = std::max(b[1], this->regionCurrentVoxel[0]);
-            b[2] = std::min(b[2], this->regionCurrentVoxel[1]);
-            b[3] = std::max(b[3], this->regionCurrentVoxel[1]);
-        }
+        // suggests. The box is the whole shape's, a circle's whole disc.
+        const auto b = visivo::displayedVoxelBounds(*region, this->displayGrid());
         x0 = std::clamp(b[0], ext[0], ext[1]);
         x1 = std::clamp(b[1], ext[0], ext[1]);
         y0 = std::clamp(b[2], ext[2], ext[3]);
@@ -519,14 +507,8 @@ void vtkWindowImage::extractSpectrum2D()
         params.insert(u"Blanked channels"_s, QString::number(emptyRows));
     QVariantMap origin;
     if (fromRegion) {
-        origin = visivo::encodeRegionOrigin(
-                static_cast<int>(this->regionMode), this->regionAnchorVoxel,
-                this->regionCurrentVoxel, this->regionPolygonVertices,
-                this->regionAnnulusInnerRadius);
-        double frameScale[2], framePos[2];
-        if (this->currentVoxelFrame(frameScale, framePos))
-            origin = visivo::withVoxelFrame(origin, frameScale[0], frameScale[1], framePos[0],
-                                            framePos[1]);
+        origin = visivo::encodeListRegionOrigin(
+                visivo::regions::toCanonical(*region, 0.0).toVariantMap());
         params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
     }
     const QVariantMap record = ToolResultDialog::makeRecord(

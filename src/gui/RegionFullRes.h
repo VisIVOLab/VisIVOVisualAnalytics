@@ -22,12 +22,15 @@
 // At spacing 1 these are the viewer's own rules (CubeRegionGeom): the same
 // pixels are counted.
 
+#include "RegionModel.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 
 #include <array>
 #include <cmath>
+#include <optional>
 #include <vector>
 
 namespace visivo {
@@ -97,6 +100,44 @@ inline QJsonObject regionInSourcePixels(const QString &shape, const DisplayGrid 
         return o;
     }
     return {};
+}
+
+/// A region drawn on the displayed grid, as a region of the list (issue #341):
+/// the same source-pixel geometry the statistics are computed on, so what is
+/// kept is what was measured. Empty when the drawing has no area yet (a box
+/// of one row, a polygon of two vertices).
+inline std::optional<regions::Region> regionFromDisplayed(const QString &shape, const DisplayGrid &g,
+                                                          const std::array<int, 2> &anchor,
+                                                          const std::array<int, 2> &current,
+                                                          const std::vector<std::array<int, 2>> &polygon,
+                                                          double innerRadius)
+{
+    const QJsonObject o = regionInSourcePixels(shape, g, anchor, current, polygon, innerRadius);
+    regions::Region r;
+    if (o.isEmpty() || !regions::fromCanonical(o, 0.0, &r))
+        return std::nullopt;
+    return r;
+}
+
+/// {xmin, xmax, ymin, ymax} of the displayed voxels whose centres may fall in
+/// `r`: the voxels whose centres lie within its bounds in source pixels (a
+/// hair of tolerance either way). A box from pixel 4 to 10 gives 4..10, not
+/// 3..11: Extract Spectrum collapses exactly these, and the "region reaches
+/// beyond the loaded pixels" test compares them with the extent.
+inline std::array<int, 4> displayedVoxelBounds(const regions::Region &r, const DisplayGrid &g)
+{
+    const auto b = regions::bounds(r);
+    const auto vx = [&g](double s) { return g.extentX0 + (s - g.originX) / g.spacingX; };
+    const auto vy = [&g](double s) { return g.extentY0 + (s - g.originY) / g.spacingY; };
+    constexpr double eps = 1e-9;
+    return { static_cast<int>(std::ceil(vx(b[0]) - eps)), static_cast<int>(std::floor(vx(b[1]) + eps)),
+             static_cast<int>(std::ceil(vy(b[2]) - eps)), static_cast<int>(std::floor(vy(b[3]) + eps)) };
+}
+
+/// Is the displayed voxel (x, y) in `r`? Its centre in source pixels decides.
+inline bool displayedVoxelIn(const regions::Region &r, const DisplayGrid &g, int x, int y)
+{
+    return regions::contains(r, g.sourceX(x), g.sourceY(y));
 }
 
 } // namespace visivo

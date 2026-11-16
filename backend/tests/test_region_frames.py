@@ -238,7 +238,8 @@ class TestSizeUnits(unittest.TestCase):
 
     def test_crtf_mixed_units(self):
         e = R.parse_crtf("ellipse[[10deg, 20deg], [1arcmin, 30arcsec], 0deg] coord=J2000\n")[0]
-        self.assertEqual((e["semi_axes"], e["unit"]), ([1.0, 0.5], "arcmin"))
+        # CASA [b1, b2] with b1 along the angle from north: canonical [b2, b1].
+        self.assertEqual((e["semi_axes"], e["unit"]), ([0.5, 1.0], "arcmin"))
         b = R.parse_crtf("centerbox[[10deg, 20deg], [1arcmin, 30arcsec]] coord=J2000\n")[0]
         self.assertEqual(b["size"], [1.0, 0.5])
         a = R.parse_crtf("annulus[[10deg, 20deg], [30arcsec, 1arcmin]] coord=J2000\n")[0]
@@ -391,10 +392,17 @@ class TestRegionFramesHttp(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertGreater(r.json()["valid_count"], 40)        # ~π·4² pixels at 1"/pix
 
-    def test_off_image_projection_is_422(self):
+    def test_off_image_projection_is_a_diagnostic(self):
         r = self.client.post("/v1/regions/parse", headers=self.h, json={
-            "text": 'fk5\ncircle(86.4,28.9,3")\n', "to_frame": "image", "dataset_id": self.dataset_id})
-        self.assertEqual(r.status_code, 422, r.text)
+            "text": 'fk5\ncircle(86.4,28.9,3")\ncircle(266.405,-28.936,3")\n',
+            "to_frame": "image", "dataset_id": self.dataset_id})
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual((body["n_regions"], body["n_skipped"]), (1, 1))
+        d = body["diagnostics"][0]
+        self.assertEqual(d["line"], 2)
+        self.assertEqual(d["text"], 'circle(86.4,28.9,3")')
+        self.assertIn("outside", d["reason"])
 
 
 if __name__ == "__main__":

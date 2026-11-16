@@ -61,6 +61,7 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::CopilotModel.first, Settings::CopilotModel.second);
     this->settings->setValue(Settings::VrPairUrl.first, Settings::VrPairUrl.second);
     this->settings->setValue(Settings::VrPageUrl.first, Settings::VrPageUrl.second);
+    this->settings->setValue(Settings::VrPairEnabled.first, Settings::VrPairEnabled.second);
     this->settings->setValue(Settings::LodEnabled.first, Settings::LodEnabled.second);
     this->settings->setValue(Settings::LodBudgetMb.first, Settings::LodBudgetMb.second);
     this->settings->setValue(Settings::LodAutoRefine.first, Settings::LodAutoRefine.second);
@@ -492,6 +493,17 @@ void Settings::setCopilotModel(const QString &model)
 //----------------------------------------------------------------------------
 const std::pair<QString, QVariant> Settings::VrPairUrl = { u"VrPairing/serviceUrl"_s, u""_s };
 const std::pair<QString, QVariant> Settings::VrPageUrl = { u"VrPairing/pageUrl"_s, u""_s };
+const std::pair<QString, QVariant> Settings::VrPairEnabled = { u"VrPairing/enabled"_s, true };
+
+bool Settings::getVrPairEnabled() const
+{
+    return this->settings->value(Settings::VrPairEnabled.first, Settings::VrPairEnabled.second)
+            .toBool();
+}
+void Settings::setVrPairEnabled(bool enabled)
+{
+    this->settings->setValue(Settings::VrPairEnabled.first, enabled);
+}
 
 QString Settings::getVrPairUrl() const
 {
