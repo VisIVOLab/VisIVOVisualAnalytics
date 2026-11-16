@@ -116,8 +116,14 @@ void vtkWindowCube::setDisplaySampling(const CubeLodGeometry::Sampling &sampling
 {
     const CubeLodGeometry::Sampling before = std::exchange(this->m_displaySampling, sampling);
     const bool same = before.scale == sampling.scale && before.offset == sampling.offset;
-    if (!same)
+    if (!same) {
         this->refreshPick3dMarkerAfterDisplaySwap();   // drawn in the displayed voxels
+        // So are the plane and its regions (#343): moved together, so no frame
+        // shows them in two different samplings.
+        if (this->m_planeChannel >= 0)
+            this->placeCuttingPlane(this->m_planeChannel);
+        this->refreshPlaneRegionOverlay();
+    }
     if (same || !this->m_rtView || this->m_rtFromRemote || this->m_rtView->camera().isEmpty())
         return;
     // The same view in the new displayed coordinates: a point is taken back to

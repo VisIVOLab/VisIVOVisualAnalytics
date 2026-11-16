@@ -21,6 +21,7 @@
 #include "ProductOrigin.h"
 #include "ProfileWidget.h"
 #include "RegionCubeSampling.h"
+#include <QVTKOpenGLNativeWidget.h>
 #include "RegionFullRes.h"
 #include "RegionListExport.h"
 #include "RegionPropertiesDialog.h"
@@ -228,6 +229,22 @@ void vtkWindowCube::setupRegionList()
         if (auto *camera = renderer->GetActiveCamera())
             camera->AddObserver(vtkCommand::ModifiedEvent, this, &vtkWindowCube::onRegionCameraChanged);
     }
+    // The cutting plane of the 3-D view (#343): drawn, not edited there. The
+    // lines are pulled towards the camera so the textured plane they lie on
+    // never hides them; no fill, which would tint the slice under it.
+    if (auto *cubeWin = ui->vtkCube ? ui->vtkCube->renderWindow() : nullptr) {
+        auto *renderers = cubeWin->GetRenderers();
+        renderers->InitTraversal();
+        while (vtkRenderer *r = renderers->GetNextItem()) {
+            if (r->HasViewProp(this->remoteCuttingPlaneActor)) {
+                RegionListOverlay::Style style;
+                style.fill = false;
+                style.lineOffsetUnits = 4.0;
+                this->m_planeRegionOverlay.attach(r, style);
+                break;
+            }
+        }
+    }
     // Pressing on a region selects it, dragging moves or reshapes it: such a
     // press must neither pan the slice, nor pin the probe, nor start a new
     // region under it. The callback runs ahead of the interactor style and the
@@ -300,6 +317,9 @@ void vtkWindowCube::setupRegionListActions()
 
 void vtkWindowCube::onRegionListChanged()
 {
+    // Shown before the change: the last region deleted still needs the 3-D
+    // view drawn again, to take it off.
+    const bool planeWasShown = this->m_planeRegionOverlay.visible();
     this->refreshRegionListOverlay();
     this->applyMomentToolGate();   // Properties / Analyse / Delete / Undo / Export
 
@@ -315,6 +335,12 @@ void vtkWindowCube::onRegionListChanged()
     for (auto *win : { this->sliceWin.GetPointer(), this->momentWin.GetPointer() })
         if (win && win->GetInteractor() && win->GetInteractor()->GetInitialized())
             win->Render();
+    // The 3-D view too when the plane shows them: once per change, not per
+    // mouse move of a drag (a volume render is not free).
+    if ((planeWasShown || this->m_planeRegionOverlay.visible()) && ui->vtkCube
+        && ui->vtkCube->renderWindow()
+        && ui->vtkCube->isVisible())
+        ui->vtkCube->renderWindow()->Render();
 }
 
 void vtkWindowCube::refreshRegionListOverlay()
@@ -326,6 +352,27 @@ void vtkWindowCube::refreshRegionListOverlay()
     this->m_regionKnobOffset[1] = kKnobPx * this->regionWorldPerDisplayPixel(this->momentWin);
     this->m_sliceRegionOverlay.update(this->m_regions, this->m_regionKnobOffset[0]);
     this->m_momentRegionOverlay.update(this->m_regions, this->m_regionKnobOffset[1]);
+    this->refreshPlaneRegionOverlay();
+}
+
+void vtkWindowCube::refreshPlaneRegionOverlay()
+{
+    if (!this->m_planeRegionOverlay.attached())
+        return;
+    // With the plane: hidden with it, and before it has a channel.
+    const bool shown = this->m_planeChannel >= 0 && this->remoteCuttingPlaneActor
+            && this->remoteCuttingPlaneActor->GetVisibility();
+    this->m_planeRegionOverlay.setVisible(shown && !this->m_regions.isEmpty());
+    if (!shown)
+        return;
+    const int channel = this->m_planeChannel;
+    const CubeLodGeometry::Sampling sampling = this->m_displaySampling;
+    this->m_planeRegionOverlay.update(
+            this->m_regions, 0.0,
+            [channel, sampling](const Vec2 &p) {
+                return visivo::regions::planePoint(p, channel, sampling);
+            },
+            /*withHandles=*/false);
 }
 
 void vtkWindowCube::onRegionCameraChanged(vtkObject *, unsigned long, void *)
@@ -400,13 +447,16 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
             this->onRegionListChanged();
             return false;
         }
+        const double dx = p[0] - m_regionDrag.start[0], dy = p[1] - m_regionDrag.start[1];
         const Region next =
                 m_regionDrag.hit.kind == Hit::Body
-                        ? visivo::regions::moved(m_regionDrag.original, p[0] - m_regionDrag.start[0],
-                                                 p[1] - m_regionDrag.start[1])
+                        ? visivo::regions::moved(m_regionDrag.original, dx, dy)
                         : visivo::regions::withHandleAt(m_regionDrag.original,
                                                         m_regionDrag.hit.handle, p);
         this->m_regions.replace(next);
+        if (m_regionDrag.hit.kind == Hit::Body)
+            for (const Region &ring : m_regionDrag.companions)
+                this->m_regions.replace(visivo::regions::moved(ring, dx, dy));
         this->refreshRegionListOverlay();
         if (m_regionPropertiesDialog)
             m_regionPropertiesDialog->setRegion(next);
@@ -443,6 +493,10 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
         m_regionDrag.hit = hit;
         m_regionDrag.start = p;
         m_regionDrag.original = *this->m_regions.find(id);
+        m_regionDrag.companions.clear();
+        for (int ring : this->m_regions.ringGroup(id))
+            if (ring != id)
+                m_regionDrag.companions.push_back(*this->m_regions.find(ring));
         this->m_regions.beginGesture();
         this->onRegionListChanged();
         // So Delete and Undo reach the view the region was picked in.
@@ -585,7 +639,9 @@ std::optional<std::array<int, 4>> vtkWindowCube::selectedRegionPixelBox() const
     const Region *r = this->m_regions.selected();
     const int maxX = std::max(0, this->remoteDatasetWidth - 1);
     const int maxY = std::max(0, this->remoteDatasetHeight - 1);
-    if (!r || this->remoteDatasetWidth <= 0 || this->remoteDatasetHeight <= 0)
+    // A line, a vector or a text has no pixels to seed a box with.
+    if (!r || !visivo::regions::hasArea(r->shape) || this->remoteDatasetWidth <= 0
+        || this->remoteDatasetHeight <= 0)
         return std::nullopt;
     // The pixels whose centres the region's bounds hold (a box from pixel 4 to
     // pixel 10 gives 4..10), clamped to the cube.
@@ -607,6 +663,13 @@ void vtkWindowCube::analyzeRegion(int id)
     if (!found)
         return;
     const Region region = *found;   // a copy: the list may change below
+    if (!visivo::regions::hasArea(region.shape)) {
+        this->statusBar()->showMessage(
+                u"%1 is a %2: it has no pixels to measure."_s.arg(region.name,
+                                                                    visivo::regions::shapeName(region.shape)),
+                5000);
+        return;
+    }
     vtkRenderWindow *win = this->active2dWin();
     vtkImageData *imageData = this->regionPaneImage(win);
     const visivo::DisplayGrid grid = this->regionDisplayGrid(win);

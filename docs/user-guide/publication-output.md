@@ -9,7 +9,7 @@ keeping several views in step while you compare them.
 | An animation | *Tools ▸ Export ▸ Export Movie…* (cube viewer) |
 | Labels and arrows on an image | *Tools ▸ Annotations ▸ Add Text Annotation…* / *Add Arrow Annotation…* (image viewer) |
 | Two views showing the same thing | *Tools ▸ Views ▸ Link Views* (cube viewer) |
-| Regions shared with CASA or DS9 | *Tools ▸ Regions ▸ Import / Export Region (CRTF/DS9)…* (cube viewer); *Export Region (CRTF/DS9)…* and *Load Catalogue Overlay…* (image viewer) |
+| Regions shared with CASA or DS9 | *Tools ▸ Regions ▸ Import / Export Region (CRTF/DS9)…* (both viewers) |
 
 ---
 
@@ -139,10 +139,10 @@ known line lands at the same place in both before believing a comparison — see
 
 ## Regions in and out
 
-*Import / Export Region (CRTF/DS9)* in the cube viewer reads and writes the two
+*Import / Export Region (CRTF/DS9)* in both viewers reads and writes the two
 formats CASA and DS9 use, so a region defined in either tool can be measured
-here and vice versa. The image viewer writes regions with *Export Region
-(CRTF/DS9)…* and reads `.reg` / `.crtf` files with *Load Catalogue Overlay…*.
+here and vice versa; the lines of a file that cannot be read are listed with
+the reason.
 A region saved in another sky frame than the image's (a galactic region on an
 FK5 map, say) is moved onto the image through its WCS, and its angle is turned
 with it; sizes keep the unit written for each of them (`1'` and `30"` in one

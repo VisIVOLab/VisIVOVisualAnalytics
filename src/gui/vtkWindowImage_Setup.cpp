@@ -1275,6 +1275,7 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Regions"_s, self->m_actDeleteRegion);
     add(u"Regions"_s, self->m_actUndoRegion);
     add(u"Regions"_s, self->m_actRedoRegion);
+    add(u"Regions"_s, self->m_actImportRegions);
     add(u"Regions"_s, self->m_actExportRegions);
 
     add(u"Catalogue"_s, self->actionLoadCatalogueOverlay);

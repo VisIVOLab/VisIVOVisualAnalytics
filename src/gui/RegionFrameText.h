@@ -202,7 +202,10 @@ inline std::optional<Vec2> parsePosition(const QString &lon, const QString &lat,
 /// A region as the properties editor shows it in one frame: the centre (or
 /// the vertices) as text, the sizes in that frame's unit, the angle in degrees.
 /// `sizes` per shape: circle {radius}; ellipse {semi-major, semi-minor}; box
-/// {width, height}; annulus {inner, outer}; none for a point or a polygon.
+/// {width, height}; annulus {inner, outer}; vector {length}; elliptical
+/// annulus {inner a, inner b, outer a, outer b}; box annulus {inner width,
+/// inner height, outer width, outer height}; none for a point, a polygon, a
+/// line or a text.
 struct RegionFields
 {
     Shape shape{ Shape::Box };
@@ -219,13 +222,29 @@ inline std::vector<QString> sizeLabels(Shape s)
     case Shape::Ellipse: return { QStringLiteral("Semi-major axis"), QStringLiteral("Semi-minor axis") };
     case Shape::Box:     return { QStringLiteral("Width"), QStringLiteral("Height") };
     case Shape::Annulus: return { QStringLiteral("Inner radius"), QStringLiteral("Outer radius") };
+    case Shape::Vector:  return { QStringLiteral("Length") };
+    case Shape::EllipseAnnulus:
+        return { QStringLiteral("Inner semi-major"), QStringLiteral("Inner semi-minor"),
+                 QStringLiteral("Outer semi-major"), QStringLiteral("Outer semi-minor") };
+    case Shape::BoxAnnulus:
+        return { QStringLiteral("Inner width"), QStringLiteral("Inner height"),
+                 QStringLiteral("Outer width"), QStringLiteral("Outer height") };
     case Shape::Point:
-    case Shape::Polygon: return {};
+    case Shape::Polygon:
+    case Shape::Line:
+    case Shape::Text:    return {};
     }
     return {};
 }
 
-inline bool hasAngle(Shape s) { return s == Shape::Ellipse || s == Shape::Box; }
+inline bool hasAngle(Shape s)
+{
+    return s == Shape::Ellipse || s == Shape::Box || s == Shape::Vector
+            || s == Shape::EllipseAnnulus || s == Shape::BoxAnnulus;
+}
+
+/// The fewest vertices a polygon or a line keeps.
+inline int minVertices(Shape s) { return s == Shape::Line ? 2 : 3; }
 
 /// The fields of a canonical region already expressed in frame `c` (pixels
 /// 1-based in the image frame, sizes in `sizeUnit(c)`).
@@ -237,7 +256,7 @@ inline RegionFields fieldsFromCanonical(const QJsonObject &o, FrameChoice c)
         const QJsonArray a = o.value(key).toArray();
         return Vec2{ a.at(0).toDouble(), a.at(1).toDouble() };
     };
-    if (f.shape == Shape::Polygon) {
+    if (isPointList(f.shape)) {
         for (const QJsonValue &v : o.value(QStringLiteral("points")).toArray()) {
             const QJsonArray p = v.toArray();
             f.vertices.push_back(formatPosition({ p.at(0).toDouble(), p.at(1).toDouble() }, c));
@@ -264,8 +283,19 @@ inline RegionFields fieldsFromCanonical(const QJsonObject &o, FrameChoice c)
         f.sizes = { s[0], s[1] };
         break;
     }
+    case Shape::Vector:
+        f.sizes = { o.value(QStringLiteral("length")).toDouble() };
+        break;
+    case Shape::EllipseAnnulus:
+    case Shape::BoxAnnulus: {
+        const Vec2 i = pair(QStringLiteral("inner")), out = pair(QStringLiteral("outer"));
+        f.sizes = { i[0], i[1], out[0], out[1] };
+        break;
+    }
     case Shape::Point:
     case Shape::Polygon:
+    case Shape::Line:
+    case Shape::Text:
         break;
     }
     f.angleDeg = o.value(QStringLiteral("angle_deg")).toDouble(0.0);
@@ -289,9 +319,10 @@ inline bool canonicalFromFields(const RegionFields &f, FrameChoice c, QJsonObjec
     const QString what = isSky(c) ? (info.sexagesimal ? QStringLiteral("a position (hh:mm:ss, dd:mm:ss or degrees)")
                                                       : QStringLiteral("a position in degrees"))
                                   : QStringLiteral("a pixel position");
-    if (f.shape == Shape::Polygon) {
-        if (f.vertices.size() < 3)
-            return fail(QStringLiteral("A polygon needs at least three vertices."));
+    if (isPointList(f.shape)) {
+        if (static_cast<int>(f.vertices.size()) < minVertices(f.shape))
+            return fail(f.shape == Shape::Line ? QStringLiteral("A line needs at least two vertices.")
+                                               : QStringLiteral("A polygon needs at least three vertices."));
         QJsonArray pts;
         for (std::size_t i = 0; i < f.vertices.size(); ++i) {
             const auto p = parsePosition(f.vertices[i][0], f.vertices[i][1], c);
@@ -313,7 +344,8 @@ inline bool canonicalFromFields(const RegionFields &f, FrameChoice c, QJsonObjec
         return fail(QStringLiteral("Missing size."));
     for (std::size_t i = 0; i < labels.size(); ++i) {
         const double v = f.sizes[i];
-        const bool innerMayBeZero = f.shape == Shape::Annulus && i == 0;
+        const bool innerMayBeZero = (f.shape == Shape::Annulus && i == 0)
+                || ((f.shape == Shape::EllipseAnnulus || f.shape == Shape::BoxAnnulus) && i < 2);
         if (!std::isfinite(v) || v < 0.0 || (v == 0.0 && !innerMayBeZero))
             return fail(QStringLiteral("%1 must be greater than zero.").arg(labels[i]));
     }
@@ -332,8 +364,20 @@ inline bool canonicalFromFields(const RegionFields &f, FrameChoice c, QJsonObjec
             return fail(QStringLiteral("The inner radius must be smaller than the outer radius."));
         o[QStringLiteral("radii")] = QJsonArray{ f.sizes[0], f.sizes[1] };
         break;
+    case Shape::Vector:
+        o[QStringLiteral("length")] = f.sizes[0];
+        break;
+    case Shape::EllipseAnnulus:
+    case Shape::BoxAnnulus:
+        if (f.sizes[0] >= f.sizes[2] || f.sizes[1] >= f.sizes[3])
+            return fail(QStringLiteral("The inner edge must be smaller than the outer one."));
+        o[QStringLiteral("inner")] = QJsonArray{ f.sizes[0], f.sizes[1] };
+        o[QStringLiteral("outer")] = QJsonArray{ f.sizes[2], f.sizes[3] };
+        break;
     case Shape::Point:
     case Shape::Polygon:
+    case Shape::Line:
+    case Shape::Text:
         break;
     }
     if (hasAngle(f.shape)) {
