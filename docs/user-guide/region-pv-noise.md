@@ -174,10 +174,13 @@ and the ring appeared only after you had already chosen.)
   each region in the frame it was typed in (FK5 for a region drawn on the
   image). *Import Region (CRTF/DS9)…* reads one back:
   FK5, ICRS, FK4 (B1950), galactic and ecliptic regions are converted to the
-  image's frame through its WCS, each size keeps its own unit (`1'`, `30"`,
-  `0.01d`, …), and a frame the backend cannot convert (ds9 `linear` or
-  `detector`, CRTF `SUPERGAL`) or a region that does not land on the image is
-  refused with the reason.
+  image's frame through its WCS, rotated or skewed grids and unequal pixel
+  scales included, ds9 `physical` coordinates through the image's LTM/LTV
+  keywords, and each size keeps its own unit (`1'`, `30"`, `0.01d`, …). CRTF
+  pixel positions are read as CASA writes them, counting from 0. A file in
+  which no region can be placed (a frame the backend cannot convert, such as
+  ds9 `linear` or `detector` or CRTF `SUPERGAL`, or regions that do not land
+  on the image) is refused with the reason and line of the first one.
 
 ---
 
