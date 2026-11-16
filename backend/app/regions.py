@@ -42,6 +42,16 @@ pixel +x in the image frame and from the longitude axis of the region's own
 sky frame. Changing the sky frame rotates it by the angle between the two
 frames' north directions at the region's centre (see ``convert_regions``).
 
+CRTF angles are CASA's (casa6 ``imageanalysis/Annotations``, checked against
+casatools 6.7 masks, issue #151): an ellipse ``[[x, y], [b1, b2], pa]`` has
+``b1`` at position angle ``pa`` from north through east (CASA lays it at
+``pa + 90`` from pixel +x, i.e. from +y towards -x), so it reads as ds9's
+``semi_axes [b2, b1]`` at ``angle_deg = pa``. A ``rotbox [[x, y], [w, h], pa]``
+turns its ``h`` side by ``pa`` from north through east, which leaves ``w`` at
+ds9's angle ``pa``: it is read unchanged. A sky region without ``coord=``
+is in the image's own frame (CASA's default), so ``parse_report`` gives it
+the dataset's frame when it has a WCS, and J2000 otherwise.
+
 Reading never drops a region silently: every statement that cannot be turned
 into a region (an unsupported shape or coordinate system, a malformed number,
 a sky region on a dataset without a celestial WCS) is reported as a
@@ -1053,17 +1063,21 @@ def _crtf_split(line: str) -> tuple[str, str, str, str]:
     return sign, shape, line[start:end + 1], line[end + 1:].lstrip(", ")
 
 
-def parse_crtf(text: str, diagnostics: list | None = None) -> list[dict[str, Any]]:
+def parse_crtf(text: str, diagnostics: list | None = None,
+               default_frame: str = "fk5") -> list[dict[str, Any]]:
     """Parse a CASA CRTF region file into canonical region dicts.
 
     Shapes: circle, ellipse, box (two corners), centerbox, rotbox, annulus,
     poly, symbol (as a point), line, vector (a line with an arrow at its
     end) and text; ``ann`` annotations and ``-`` exclusions are read too.
     A sky region without ``coord=`` takes the file's ``global coord=``, else
-    J2000 (CASA would use the image's own frame, which a region file alone
-    does not know). A statement that cannot be read is reported in
-    ``diagnostics`` (or raises when it is None).
+    ``default_frame``: CASA uses the image's own frame there ("Default: image
+    value"), which the caller passes when it knows the image; J2000 when it
+    does not. A statement that cannot be read is reported in ``diagnostics``
+    (or raises when it is None).
     """
+    if default_frame not in _FRAME_TO_CRTF:
+        raise RegionParseError(f"Unknown default CRTF frame '{default_frame}'.")
     regions: list[dict[str, Any]] = []
     global_frame: str | None = None
     global_bad = ""
@@ -1094,7 +1108,7 @@ def parse_crtf(text: str, diagnostics: list | None = None) -> list[dict[str, Any
                 props["include"] = False
             if sign.endswith("ann"):
                 props["annotation"] = True
-            built = _crtf_shape(shape, geom, coord_frame or global_frame or "fk5")
+            built = _crtf_shape(shape, geom, coord_frame or global_frame or default_frame)
             if (global_bad and not coord_frame
                     and any(r["frame"] != "image" for r in built)):
                 raise _Skip(f"CRTF coordinate system '{global_bad}' is not supported "
@@ -1146,8 +1160,10 @@ def _crtf_shape(shape: str, geom: str, sky_frame_name: str) -> list[dict[str, An
         (b1, b2), unit = sizes(groups[1], dflt)
         ang_tok = _trailing_scalar(geom)
         pa = _parse_angle(ang_tok) if ang_tok else 0.0
-        # CASA's b1 lies along the position angle pa (from north), so across
-        # the ds9 axis at angle pa (whose position angle is pa - 90).
+        # CASA's b1 lies along the position angle pa, from north through east
+        # (AnnEllipse lays it at pa + 90 from pixel +x), so across the ds9
+        # axis at angle pa (whose position angle is pa - 90). b1 is along pa
+        # even when it is the shorter one (CASA then swaps and adds 90).
         return [{"shape": "ellipse", "frame": frame, "center": c, "semi_axes": [b2, b1],
                  "angle_deg": pa, "unit": unit}]
     if shape in ("box", "centerbox", "rotbox"):
@@ -1169,6 +1185,9 @@ def _crtf_shape(shape: str, geom: str, sky_frame_name: str) -> list[dict[str, An
             center = [ax, ay]
             size, unit = sizes(groups[1], dflt)
             ang_tok = _trailing_scalar(geom)
+            # CASA turns the box's h side by pa from north through east
+            # (AnnPolygon::_doCorners rotates the sky offsets by -pa), which
+            # puts w at ds9's angle pa: the number is the same.
             ang = _parse_angle(ang_tok) if ang_tok else 0.0
         return [{"shape": "box", "frame": frame, "center": center, "size": size,
                  "angle_deg": ang, "unit": unit}]
@@ -1353,12 +1372,15 @@ def detect_format(text: str) -> str:
 
 
 def parse_regions(text: str, fmt: str = "auto", *, diagnostics: list | None = None,
-                  physical: PhysicalTransform | None = None) -> list[dict[str, Any]]:
+                  physical: PhysicalTransform | None = None,
+                  crtf_default_frame: str = "fk5") -> list[dict[str, Any]]:
+    """Parse region text; ``crtf_default_frame`` is the frame of a CRTF sky
+    region that states none (the image's own frame in CASA)."""
     fmt = (fmt or "auto").lower()
     if fmt == "auto":
         fmt = detect_format(text)
     if fmt == "crtf":
-        return parse_crtf(text, diagnostics)
+        return parse_crtf(text, diagnostics, default_frame=crtf_default_frame)
     if fmt == "ds9":
         return parse_ds9(text, diagnostics, physical)
     raise RegionParseError(f"Unknown region format '{fmt}'.")
@@ -1814,12 +1836,20 @@ def parse_report(
     that did not become a region → ``{format, regions, diagnostics}``.
 
     Diagnostics are sorted by line and carry the file's own text for the
-    regions that failed in the conversion."""
+    regions that failed in the conversion. A CRTF sky region without
+    ``coord=`` is in the frame of ``wcs`` when one is given, as in CASA."""
     fmt = (fmt or "auto").lower()
     if fmt == "auto":
         fmt = detect_format(text)
     diagnostics: list[dict[str, Any]] = []
-    regions = parse_regions(text, fmt, diagnostics=diagnostics, physical=physical)
+    crtf_default = "fk5"
+    if wcs is not None and fmt == "crtf":
+        try:
+            crtf_default = native_frame_name(wcs)
+        except ValueError:   # a celestial WCS astropy names no frame for
+            pass
+    regions = parse_regions(text, fmt, diagnostics=diagnostics, physical=physical,
+                            crtf_default_frame=crtf_default)
     if to_frame:
         regions = convert_regions(regions, to_frame=to_frame, wcs=wcs, origin=origin,
                                   diagnostics=diagnostics, no_wcs_reason=no_wcs_reason)
