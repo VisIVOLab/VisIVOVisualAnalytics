@@ -182,12 +182,18 @@ backend cannot build (a directory it cannot write, a failed build: the status
 line then says so, and the whole cube is read in bounded pieces).
 
 **The first time.** When the cube has no pyramid yet, the backend builds it
-in a process of its own and the page shows *Building the cube's brick pyramid
-on the backend… N %*; every view of the cube shares that build (the
-desktop's too), and it is done once per cube (a changed file gets a new
-one). The status line then says *brick pyramid built in N s*. A build whose
-progress does not move for 5 minutes, or that takes over 2 hours, is given up
-by the page, which says to choose *Read from: whole cube*. To skip the wait,
+in a process of its own and the page shows *Preparing the cube… N %* for the
+whole build, however long: on the status line, in the headset app's room in
+VR, and on the notice (in VR, the toast) of a cube sent from the desktop.
+Every view of the cube shares that build (the desktop's too), and it is done
+once per cube (a changed file gets a new one). The status line then says
+*brick pyramid built in N s*. The page asks for the progress every second.
+A request that gets no answer (a slow or dropped connection) is sent again;
+after 10 s without an answer the page says *The computer has not answered for
+N s: still waiting*. It gives up only when the backend has stayed silent for
+3 minutes, and then says to check the computer. A build whose progress does
+not move for 5 minutes, or that takes over 2 hours, is also given up by the
+page, which then says to choose *Read from: whole cube*. To skip the wait,
 build it beforehand (`python -m app.brick_pyramid build cube.fits`, see
 [Building](../../brick-pyramid.md#building)).
 
@@ -1800,6 +1806,14 @@ Desktop and headset together:
    faint part darker in the refined frame than in the headset's own picture
    is worth a note). Note **FPS**, **missed %**, **pose->frame** and
    **stop->refined** over USB and over Wi-Fi.
+6. With a file of several variables (a PLUTO output with `rho`, `vx1`,
+   `prs` on disk, or a VBT volume of several fields): Display's last row is
+   *Variable*. In VR press another variable. It must appear within about a
+   second, with the same crop, without leaving VR and without a *The new
+   cube is shown when you leave VR* notice. Change its colour map and
+   threshold, go back to the first one, and check that it comes back as it
+   was left (and on its own scale, *log* for a density). On the desktop,
+   *Headset Activity* lists *Variable … of …*.
 
 ### The headset's view on the desktop, with the headset (#281)
 

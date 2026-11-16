@@ -665,3 +665,36 @@ test('review (#305): a desktop mask waiting for its cube goes over that cube onl
   assert.equal(L.pendingMaskVerdict(pending, { shown: null, loading: 0, current: '/d/a.fits' }), 'apply');
   assert.equal(L.pendingMaskVerdict(pending, { shown: null, loading: 0, current: '/d/b.fits' }), 'drop');
 });
+
+// ── A brick pyramid build the load waits for (issue #329) ──────────────────
+
+test('prepText: the build\'s progress, its time so far, and a backend that has not answered', () => {
+  const t = L.prepText({ progress: 0.4249, ms: 35400, silentMs: 0 }, 'rho.0000.flt');
+  assert.equal(t.title, 'Preparing the cube… 42 %');
+  assert.equal(t.toast, t.title);
+  assert.deepEqual(t.lines, ['rho.0000.flt: the computer builds its brick pyramid, once for this cube (35 s so far).', 'It is shown as soon as it is ready.']);
+  const q = L.prepText({ progress: 0.9, ms: 120000, silentMs: 21000 });
+  assert.match(q.lines[0], /^The computer builds/, 'no name: no name');
+  assert.equal(q.title, 'Preparing the cube… 90 %');
+  assert.match(q.lines[1], /has not answered for 21 s: still waiting/);
+  assert.equal(q.toast, 'Preparing the cube… 90 %: no answer for 21 s');
+  // A few seconds without an answer (one slow poll) are not worth a word.
+  assert.equal(L.prepText({ progress: 0.5, ms: 5000, silentMs: 9000 }).lines[1], 'It is shown as soon as it is ready.');
+  // Out-of-range or missing values do not print NaN or more than 100 %.
+  assert.equal(L.prepText({ progress: 1.7 }).title, 'Preparing the cube… 100 %');
+  assert.equal(L.prepText(null).title, 'Preparing the cube… 0 %');
+});
+
+test('the desktop cube\'s notice shows the build while it waits, a toast in VR, and its done form after', () => {
+  const prep = { progress: 0.3, ms: 12000, silentMs: 0 };
+  const n = L.noticeFor('cube-from-desktop', { detail: 'rho.0000.flt', prep, inVR: true });
+  assert.equal(n.id, 'cube-from-desktop');
+  assert.equal(n.title, 'Preparing the cube… 30 %');
+  assert.match(n.lines[0], /^rho.0000.flt: /);
+  assert.equal(n.toast, n.title);
+  assert.ok(n.autoHideMs > 0 && !n.sticky);
+  assert.deepEqual(n.actions.map((a) => a.id), ['dismiss']);
+  const done = L.noticeFor('cube-from-desktop', { detail: 'rho.0000.flt', prep, done: true });
+  assert.equal(done.title, 'Showing rho.0000.flt from the computer');
+  assert.equal(L.noticeFor('cube-from-desktop', { detail: 'a.fits' }).title, 'Opening a.fits from the computer…');
+});

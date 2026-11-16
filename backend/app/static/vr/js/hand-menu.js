@@ -34,6 +34,7 @@ import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
 import { drawIcon } from './tool-icons.js';
 import { fitLine, wrapFit, measureWith } from './text-fit.js';
 import { STRETCHES, STRETCH_LABELS, STRETCH_TIPS, SIGMA_PRESETS, PERCENTILE_PRESETS } from './levels.js';
+import { variableChips } from './sim-controls.js';
 
 export const TITLE_H = 64;
 export const TAB_H = 88;
@@ -133,6 +134,7 @@ export const WHY = {
   powerOnly: 'The Power stretch only.',
   simulation: 'A simulation volume has no spectral axis: no channels or spectra.',
   simSigma: 'A simulation volume has no noise σ: use a percentile.',
+  varLoading: 'A variable is being loaded: wait for it.',
 };
 
 /** The default context: nothing shown, nothing chosen. main.js fills it. */
@@ -141,6 +143,8 @@ export function defaultContext() {
     kind: 'none', debug: false, colormap: COLORMAP_NAMES[0], render: 0, spectralName: 'Velocity range',
     // A simulation volume (issue #317): kind 'cube', no spectral axis.
     simulation: false,
+    // Its variables (#317): {names, current, pending} with two or more, else null.
+    vars: null,
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     src: { total: 0, shown: false, canAdd: false },
@@ -194,10 +198,24 @@ function displayCube(ctx) {
     { id: 'opacity', kind: 'slider', rect: [X0, rowY(3), RIGHT - X0, WH] },
     btn('render:0', span(4, 2, 0), 'Emission', { group: 'render', value: 0, on: ctx.render === 0, tip: 'Emission: the voxels add up along each ray' }),
     btn('render:1', span(4, 2, 1), 'MIP', { group: 'render', value: 1, on: ctx.render === 1, tip: 'MIP: the brightest value along each ray' }),
-    btn('ct-show', span(5, 3, 0), 'Overlay', { on: c.loaded && c.show, disabled: noCat, tip: 'The catalogue\'s sources over the cube' }),
-    btn('ct-labels', span(5, 3, 1), 'Labels', { on: c.loaded && c.labels, disabled: noCat, tip: 'The sources\' names' }),
-    btn('ct-pins', span(5, 3, 2), 'Through velocity', { on: c.loaded && c.pins, disabled: sim ? WHY.simulation : noCat, tip: 'Through velocity: pins along the velocity axis' }),
   ];
+  const v = sim ? ctx.vars : null;
+  if (v && v.names && v.names.length > 1) {
+    // A simulation volume with several variables (#317): the last row picks
+    // one (a sky catalogue has no place over a simulation box).
+    rows[5] = ['var', 'Variable'];
+    const { chips, more } = variableChips(v.names, v.current);
+    const n = chips.length + (more ? 1 : 0);
+    const busy = v.pending ? WHY.varLoading : '';
+    chips.forEach((name, k) => w.push(btn(`var:${name}`, span(5, n, k), name,
+      { group: 'var', value: name, on: v.current === name, free: true, disabled: busy, tip: `Show ${name}` })));
+    if (more) w.push(btn('var-next', span(5, n, n - 1), 'next ▸', { disabled: busy, tip: 'The next variable' }));
+  } else {
+    w.push(
+      btn('ct-show', span(5, 3, 0), 'Overlay', { on: c.loaded && c.show, disabled: noCat, tip: 'The catalogue\'s sources over the cube' }),
+      btn('ct-labels', span(5, 3, 1), 'Labels', { on: c.loaded && c.labels, disabled: noCat, tip: 'The sources\' names' }),
+      btn('ct-pins', span(5, 3, 2), 'Through velocity', { on: c.loaded && c.pins, disabled: sim ? WHY.simulation : noCat, tip: 'Through velocity: pins along the velocity axis' }));
+  }
   return { rows, widgets: w, status: 6 };
 }
 

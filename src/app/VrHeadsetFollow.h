@@ -59,7 +59,44 @@ struct FollowMarks
 {
     QPair<int, qint64> look{ -1, 0 };
     QPair<int, qint64> clip{ -1, 0 };
+    QPair<int, qint64> field{ -1, 0 };   ///< the variable switch dealt with (issue #317)
 };
+
+/// The variable the headset switched to from this window's cube (issue #317):
+/// the newest `cube` event, when its payload names a `field` and the cube it
+/// replaced (`from`) is @p path, and the cube it shows is one of @p siblings
+/// (name, path) other than @p path; that sibling. Only the newest switch
+/// counts (an older one was overtaken), each once (@p mark is set for it). A
+/// newest switch from another window's cube, or not a variable, is left to
+/// that window and returns nothing. A switch made before @p notBeforeMs (the
+/// window was opened after it: it is no news) is marked and not followed.
+inline std::optional<QPair<QString, QString>> fieldToFollow(const QList<Event> &events,
+                                                           const QList<QPair<QString, QString>> &siblings,
+                                                           const QString &path, QPair<int, qint64> &mark,
+                                                           qint64 notBeforeMs = 0)
+{
+    for (const Event &e : events) {   // newest first
+        if (e.kind != u"cube")
+            continue;
+        const QPair<int, qint64> id{ e.epoch, e.seq };
+        if (id == mark)
+            return std::nullopt;
+        if (notBeforeMs > 0 && e.timeMs > 0 && e.timeMs < notBeforeMs) {
+            mark = id;
+            return std::nullopt;
+        }
+        const QString field = e.payload.value(u"field").toString();
+        const QString from = e.payload.value(u"from").toString();
+        if (field.isEmpty() || path.isEmpty() || from != path)
+            return std::nullopt;
+        mark = id;
+        for (const auto &s : siblings)
+            if (s.second == e.cubePath && s.second != path)
+                return s;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
 
 /// What a window applies now: the headset's latest look and clip of its cube,
 /// each only when it is new and still on show.

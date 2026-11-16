@@ -381,7 +381,11 @@ come from one pyramid level, see
 (`cube` or `pyramid`), `pyramid` (`null`, or `level`, `levels`, `level_shape`
 `[width, height, depth]`, `extra_factors`, `asked_factors`, `brick`, `reduction`), `modes`
 (`["mean"]` from the pyramid), `source_note` (why the whole cube was read
-instead of the pyramid with `auto`, else empty), and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
+instead of the pyramid with `auto`, else empty), `fields` and `field_name` (a
+field reference's source, a VBT volume or a PLUTO output: every field
+`[{name, path}]` with the reference opening it, as `/v1/datasets/open` lists
+them, and the name of the one this dataset is; `[]` and `""` for any other
+cube; the headset's variable picker, #317), and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
 before its first `-`), `ctype`, `unit` and `world`, the world coordinate of
 each reduced voxel's centre (`null` where undefined). `x` and `y` are read with
 the file's full WCS along the central row (for `x`) and column (for `y`) of the

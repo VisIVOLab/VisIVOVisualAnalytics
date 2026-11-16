@@ -16154,6 +16154,8 @@ void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &field
     // row opens that field (reopenProductFromFile → its "Output path").
     int index = 0;
     this->m_rtFields.clear();
+    this->m_siblingFieldList = fields;
+    this->m_fieldProductIds.clear();
     for (const auto &field : fields) {
         ++index;
         if (field.second == this->filepath)
@@ -16163,10 +16165,12 @@ void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &field
         QVariantMap params;
         params.insert(u"Field"_s, field.first);
         params.insert(u"Output path"_s, field.second);
-        this->registerAnalysisProduct(
-                u"field"_s, u"Field: %1"_s.arg(field.first), params, nullptr,
-                this->scopedProductId(u"field-%1"_s.arg(index)), QString(),
+        const QString productId = this->scopedProductId(u"field-%1"_s.arg(index));
+        const QString registered = this->registerAnalysisProduct(
+                u"field"_s, u"Field: %1"_s.arg(field.first), params, nullptr, productId, QString(),
                 /*revealProvenance=*/false, {}, /*selectInSession=*/false);
+        // Opened when the headset switches to this field (followHeadsetField).
+        this->m_fieldProductIds.insert(field.second, registered.isEmpty() ? productId : registered);
     }
 }
 

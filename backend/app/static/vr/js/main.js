@@ -8,6 +8,7 @@ import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, keepPairing, requestHooks } from './api.js';
 import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState, pageFetch } from './transport.js';
 import * as V from './volume.js';
+import * as SC from './sim-controls.js';
 import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
@@ -42,7 +43,7 @@ import { RefineDraw } from './refine-gl.js';
 // Lifecycle, notices, guide, diagnostics, quality (epic #166).
 import { createShell } from './shell.js';
 import { CARD_PX, CARD_SIZE } from './notice.js';
-import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen, pendingMaskVerdict } from './lifecycle.js';
+import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen, pendingMaskVerdict, prepText } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
 import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy, textureLimitBytes, planCapacity, sameCapacity } from './quality.js';
 // The first Quest 3 session's fixes (issue #226): composition layers for the
@@ -98,6 +99,9 @@ if (isHeadsetBrowser(navigator.userAgent) || query.has('xrfake')) setTimeout(() 
 const state = {
   info: null,          // /v1/cube/reduced_info answer (or the synthetic one)
   cube: null,          // {data, dims, encoding, lo, hi, factors, mode, reducedThreshold, ...}
+  // A brick pyramid build the newest load waits for (issue #329): {progress,
+  // ms, silentMs, name, ticket}, null when none (reducedInfoWhenReady).
+  prep: null,
   // The colour scale's stretch and the Power exponent (issue #258, levels.js);
   // sqrt is the look the page had before (gamma 0.5).
   thrNorm: 0.1, cmaxNorm: 1, stretch: LV.DEFAULT_STRETCH, gamma: LV.DEFAULT_GAMMA, opacity: 0.4,
@@ -831,54 +835,102 @@ function layerLoad(b, ticket) {
 /**
  * reduced_info, waiting while the backend builds the cube's brick pyramid
  * (202 with the fraction done): a large cube's reduced cube is read from a
- * pyramid level, not from the whole cube. The status shows the progress; a
- * newer load ends the wait (stillCurrent), and a build that does not move is
- * given up (V.buildWatch).
+ * pyramid level, not from the whole cube. The status line, the headset
+ * app's room and the notice of a cube the desktop sent show the progress
+ * (showPrep, issue #329); a newer load ends the wait (stillCurrent), and a
+ * build that does not move, or a backend that stops answering for minutes,
+ * is given up (V.buildWatch).
  */
 async function reducedInfoWhenReady(b, req, ticket) {
   const t0 = performance.now();
   const watch = V.buildWatch();
   let waited = false;
-  for (;;) {
-    let info = null, progress = 0;
-    try {
-      // The first request without a deadline of its own (opening a large
-      // cube can take long); the polls of a build, two minutes each.
-      info = await b.reducedInfo(req, waited ? { timeoutMs: REDUCED_POLL_TIMEOUT_MS } : {});
-    } catch (e) {
-      if (e && e.preparing) {
-        progress = e.progress;              // 202: the pyramid is being built
-      } else if (e && e.timedOut && waited) {
-        progress = watch.progress();        // a poll that did not answer: asked again
-      } else {
-        // Any other error ends the load. One met after the build started is
-        // not the pairing's dataset check (pairingFallback: loadPaired must
-        // not open the path again for it).
-        if (e && waited) e.duringBuild = true;
+  // Once the build is under way, the time and the silence shown move every
+  // second, also while a poll is still waiting for its answer.
+  let ticker = null;
+  const tick = () => {
+    const now = performance.now();
+    showPrep({ progress: watch.progress(), ms: now - t0, silentMs: watch.silentMs(now) }, ticket);
+  };
+  try {
+    for (;;) {
+      let info = null, progress = 0, answered = true;
+      try {
+        // The first request without a deadline of its own (opening a large
+        // cube can take long); the polls of a build, one minute each.
+        info = await b.reducedInfo(req, waited ? { timeoutMs: REDUCED_POLL_TIMEOUT_MS } : {});
+      } catch (e) {
+        if (e && e.preparing) {
+          progress = e.progress;              // 202: the pyramid is being built
+        } else if (waited && e && ((e.network && !e.aborted) || [502, 503, 504].includes(e.status))) {
+          // A poll nothing answered (its deadline, a lost connection, a
+          // proxy's gateway error): the build goes on on the backend, so it is
+          // asked again. The lifecycle was told, and says whether the backend
+          // can be reached at all.
+          answered = false;
+        } else {
+          // Any other error ends the load. One met after the build started is
+          // not the pairing's dataset check (pairingFallback: loadPaired must
+          // not open the path again for it).
+          if (e && waited) e.duringBuild = true;
+          throw e;
+        }
+      }
+      stillCurrent(ticket);
+      if (info) {
+        ticket.pyramidBuildMs = waited ? performance.now() - t0 : undefined;
+        return info;
+      }
+      waited = true;
+      const now = performance.now();
+      const verdict = watch.see(answered ? progress : null, now, answered);
+      const pct = (100 * watch.progress()).toFixed(0);
+      if (verdict === 'silent') {
+        const e = new Error(`the backend has not answered for ${Math.round(watch.silentMs(now) / 60000)} min while it built the cube's`
+          + ` brick pyramid (at ${pct} %): check the computer, then open the cube again`);
+        e.network = true;
+        e.duringBuild = true;
         throw e;
       }
+      if (verdict) {
+        throw new Error(`the brick pyramid's build ${verdict === 'stalled' ? 'has not moved for 5 minutes' : 'took over 2 hours'}`
+          + ` (at ${pct} %): choose "Read from: whole cube" and load again`);
+      }
+      tick();
+      if (!ticker) ticker = setInterval(() => { if (loads.isCurrent(ticket)) tick(); }, 1000);
+      await new Promise((res) => setTimeout(res, 1000));
+      stillCurrent(ticket);
     }
-    stillCurrent(ticket);
-    if (info) {
-      ticket.pyramidBuildMs = waited ? performance.now() - t0 : undefined;
-      return info;
-    }
-    waited = true;
-    const verdict = watch.see(progress, performance.now());
-    if (verdict) {
-      throw new Error(`the brick pyramid's build ${verdict === 'stalled' ? 'has not moved for 5 minutes' : 'took over 2 hours'}`
-        + ` (at ${(100 * watch.progress()).toFixed(0)} %): choose "Read from: whole cube" and load again`);
-    }
-    const sec = ((performance.now() - t0) / 1000).toFixed(0);
-    setStatus(`Building the cube's brick pyramid on the backend… ${(100 * (progress || 0)).toFixed(0)} % (${sec} s)\n`
-      + 'once for this cube: the headset\'s reduced cube is then read from one of its levels');
-    await new Promise((res) => setTimeout(res, 1000));
-    stillCurrent(ticket);
+  } finally {
+    if (ticker) clearInterval(ticker);
+    if (state.prep && state.prep.ticket === ticket) state.prep = null;
   }
 }
 
-/** The deadline of each poll of reduced_info while a brick pyramid builds. */
-const REDUCED_POLL_TIMEOUT_MS = 120000;
+/**
+ * A brick pyramid build under way for the load `ticket` (issue #329), said
+ * where the user looks: the status line; state.prep, which the headset app's
+ * room shows (appTick); and the notice of the cube the desktop sent, when it
+ * is this load's (a toast in VR, said again at each poll so it stays).
+ */
+function showPrep(prep, ticket) {
+  const name = HUB.fileName(ticket.path || '');
+  state.prep = { ...prep, name, ticket };
+  const t = prepText(prep, name);
+  setStatus(`${t.title}\n${t.lines.join('\n')}`);
+  if (desktopShow && desktopShow.loadId === ticket.id && loads.isCurrent(ticket)) {
+    // Not forced: a notice the user closed stays closed.
+    shell.notify('cube-from-desktop', { detail: desktopShow.name, prep }, { force: false });
+  }
+}
+
+/** The deadline of each poll of reduced_info while a brick pyramid builds:
+ *  a 202 comes in milliseconds, the final answer in seconds (2.9 s for the
+ *  2048³ density); three that never answer are V.buildWatch's 3 min of
+ *  silence. With ?debug, ?polltimeout=MS sets it (validation/vr_pyramid_wait.mjs:
+ *  a build that outlasts it, checked in seconds). */
+const REDUCED_POLL_TIMEOUT_MS = query.has('debug') && Number(query.get('polltimeout')) > 0
+  ? Number(query.get('polltimeout')) : 60000;
 
 async function loadFromBackend() {
   ensureBackend();
@@ -1007,6 +1059,140 @@ async function showDataset(id, path) {
   });
 }
 
+// ── The variables of a simulation volume (issue #317) ───────────────────────
+// Each variable of a multi-field source (a PLUTO output's variables, a VBT
+// volume's fields) is a cube of its own on the same grid. The hand menu's
+// Variable row loads another one as any cube is loaded: in VR it is written
+// into the capacity's spare bank (no 3-D texture made, #229/#235). The crop
+// stays (the same grid); each variable comes back with its own look.
+
+/** Each variable's look, by its path (SC.VariableLooks). */
+const variableLooks = new SC.VariableLooks();
+/** The variable switch under way: {path, name, from, clip, look, ticketId}, consumed
+ *  by showInstalled for that load only (a cube waiting for the end of the VR
+ *  session keeps it until it is shown). */
+let pendingVariable = null;
+/** The path of the last variable the picker put on show (the hub says it is one, #317). */
+let variablePicked = '';
+/** The datasets this page opened for variables, by `${session}|${path}`. */
+const variableDatasets = new Map();
+
+/** The look of the cube on show, as a variable keeps it; its scale is the
+ *  one its reduced cube was asked with (not the form's, changed since). */
+function variableLook() {
+  const c = state.cube;
+  return { colormap: state.colormap, stretch: state.stretch, gamma: state.gamma, opacity: state.opacity, mode: state.mode,
+    scale: (c && c.scaleRequest) || 'auto', threshold: dataValue(state.thrNorm), colourMax: dataValue(state.cmaxNorm) };
+}
+
+/** The look of the variable on show kept (any way it is left: the picker,
+ *  a cube from the desktop, a load), under its own reference. */
+function keepVariableLook() {
+  const v = state.cube && simulationShown() ? SC.variablesOf(state.info) : null;
+  if (!v || !v.current) return;
+  variableLooks.save(v.paths[v.current], variableLook());
+}
+
+/** The menu's Variable row: {names, current, pending}, or null (one variable, none, or not a simulation). */
+function variablesMenu() {
+  if (!simulationShown()) return null;
+  const v = SC.variablesOf(state.info);
+  if (!v) return null;
+  // Greyed while its load runs (not while its cube waits for the end of the session).
+  return { names: v.names, current: v.current, pending: pendingVariable && state.loading > 0 ? pendingVariable.name : null };
+}
+
+/** Shows the variable `name` of the cube on show (the menu's Variable row). */
+function switchVariable(name) {
+  const v = simulationShown() ? SC.variablesOf(state.info) : null;
+  if (!v || !name || name === v.current || !Object.prototype.hasOwnProperty.call(v.paths, name) || !state.open) return false;
+  const path = v.paths[name];
+  keepVariableLook();
+  const look = variableLooks.get(path);
+  // The reduced cube's scale: the one this variable was last shown with,
+  // else the backend's choice for it (auto: a density on log, a velocity
+  // linear). Only for this load: the form's own choice comes back after it.
+  const scale = look && look.scale ? look.scale : 'auto';
+  const from = state.openPath;
+  const pv = { path, name, from, clip: { min: state.clip.min.slice(), max: state.clip.max.slice() }, look, ticketId: -1 };
+  pendingVariable = pv;
+  shell.log('info', 'variable', `${name} (from ${HUB.fileName(from)})`);
+  setStatus(`Loading the variable ${name}…`);
+  const before = loads.latest;
+  const loading = withLoading(() => loadVariable(path, name, scale));
+  // loadVariable begins its ticket at once: the switch is that load's only.
+  if (loads.latest > before) pv.ticketId = loads.latest;
+  loading
+    .catch((err) => {
+      if (err.superseded) return;
+      setStatus(`The variable ${name} could not be shown: ${err.message || err}`);
+      toast(`${name} could not be shown`, 'variable');
+      shell.log('warning', 'variable-failed', `${name}: ${err.message || err}`);
+    })
+    .finally(() => {
+      // Kept for a cube that waits for the end of the VR session (installStaged shows it).
+      const staged = stagedCube && stagedCube.ticket && stagedCube.ticket.id === pv.ticketId;
+      if (pendingVariable === pv && !staged) pendingVariable = null;
+    });
+  return true;
+}
+
+/** Loads the variable at `path` in the page's session: the dataset this page
+ *  opened for it before when the backend still holds it, else opened now. */
+async function loadVariable(path, name, scale) {
+  ensureBackend();
+  const ticket = loads.begin(path);
+  ticket.reduction = { ...reducedRequest(''), scale };
+  const b = loadHandle();
+  const t0 = performance.now();
+  b.sessionNote = state.sessionNote || 'own session';
+  if (!b.session) await b.newSession();
+  stillCurrent(ticket);
+  const key = `${b.session}|${path}`;
+  let open = null, info = null;
+  const known = variableDatasets.get(key);
+  if (known) {
+    try {
+      info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: known }, ticket);
+      open = { dataset_id: known, kind: 'cube', valid: true };
+    } catch (err) {
+      if (err.superseded || !(err.status === 404)) throw err;
+      variableDatasets.delete(key);       // gone from the session: opened again below
+    }
+  }
+  if (!open) {
+    setStatus(`Opening the variable ${name}…`);
+    open = await b.open(path);
+    stillCurrent(ticket);
+    variableDatasets.set(`${b.session}|${path}`, open.dataset_id);
+    info = await reducedInfoWhenReady(b, { ...ticket.reduction, dataset_id: open.dataset_id }, ticket);
+  }
+  stillCurrent(ticket);
+  $('path').value = path;
+  await loadReduced(b, open, info, t0, ticket);
+}
+
+/** After a variable went on show (showInstalled): the crop it was switched
+ *  with, and its own look when it was shown before. */
+function applyVariable(path) {
+  const pv = pendingVariable && pendingVariable.path === path && pendingVariable.ticketId === loads.latest ? pendingVariable : null;
+  if (!pv) return false;
+  pendingVariable = null;
+  variablePicked = path;
+  state.clip = { min: pv.clip.min.slice(), max: pv.clip.max.slice() };
+  const look = pv.look;
+  if (look) {
+    if (look.colormap && look.colormap !== state.colormap) setColormap(look.colormap);
+    if (look.stretch) state.stretch = LV.stretchOf(look.stretch);
+    if (Number.isFinite(look.gamma)) state.gamma = look.gamma;
+    if (Number.isFinite(look.opacity)) { state.opacity = look.opacity; $('opacity').value = Math.round(state.opacity * 100); }
+    if (look.mode === 0 || look.mode === 1) { state.mode = look.mode; $('rmode').value = String(state.mode); }
+    const n = SC.lookNorms(look, state.cube, V.dataToNorm);
+    if (n) { state.thrNorm = n.thrNorm; state.cmaxNorm = n.cmaxNorm; }
+  }
+  return true;
+}
+
 async function loadReduced(b, open, info, t0, ticket) {
   const req = { ...ticket.reduction, dataset_id: open.dataset_id };
   const t1 = performance.now();
@@ -1035,6 +1221,8 @@ async function loadReduced(b, open, info, t0, ticket) {
   }
   // A load started meanwhile owns the page: this cube is not shown.
   stillCurrent(ticket);
+  // The scale it was asked with (a variable keeps it, #317).
+  cube.scaleRequest = req.scale || 'auto';
   if (cube.factors.join() !== info.factors.join()) {
     throw new Error(`the reduced cube came binned ${cube.factors.join('×')}, not ${info.factors.join('×')}: load it again`);
   }
@@ -1433,6 +1621,8 @@ function prepNow(cube, opts) {
 
 /** The page's state after a cube went on show (`up`: its timings). */
 function showInstalled(info, cube, open, path, slot, up, load, clock) {
+  // The variable on show leaves: its look kept for when it comes back (#317).
+  keepVariableLook();
   // Every cube put on show (from the backend, synthetic, the benchmark's)
   // supersedes a recovery under way for the previous one (reopenCube).
   state.loadGen++;
@@ -1466,6 +1656,10 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   applyExtent();
   $('thr-source').value = currentThresholdSource();
   resetThreshold();
+  // Another variable of the same source (#317): its crop and its own look.
+  // Any other cube put on show is no picker switch for the hub.
+  variablePicked = '';
+  if (applyVariable(path)) decorationsChanged();
   const { blockMs, mainMs } = clock.end();
   const offMain = !!(cube.prep && cube.prep.offMain && !slot);
   state.load = { ...load, uploadMs: up.uploadMs, macroMs: up.macroMs, textureMB: up.textureBytes / 1e6, blockMs, mainMs, offMain,
@@ -2101,6 +2295,7 @@ function menuContext() {
     ...HM.defaultContext(),
     kind, debug: DEBUG_HUD, colormap: state.colormap, render: state.mode, spectralName: spectralName(),
     simulation: simulationShown(),
+    vars: variablesMenu(),
     cat: lc.cat, clipTool: ui.clipTool,
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
@@ -2148,6 +2343,8 @@ function menuView(ctx = menuContext()) {
     notes.cmax = `${fmt(dataValue(state.cmaxNorm))}${unit}`;
     notes.opacity = state.opacity.toFixed(2);
     notes.render = state.mode === 1 ? 'MIP: the brightest value along each ray' : 'Emission: the voxels add up along each ray';
+    const vm = ctx.vars;
+    if (vm) notes.var = vm.pending ? `loading ${vm.pending}…` : `${vm.current || 'not listed'}, one of ${vm.names.length}`;
     notes.slab = slabNote();
     notes.trigger = ui.clipTool === 'box' ? 'Trigger on a dot: a face; inside: the crop moves; elsewhere: a new crop.' : 'Trigger: the range centred on the emission it meets.';
     notes.crop = 'Reset crop keeps the range.';
@@ -2570,6 +2767,13 @@ function applyMenu(a, ray = null, eye = null) {
     state.gamma = LV.stepGamma(state.gamma, id === 'gamma-up' ? 1 : -1);
     $('gamma').value = String(state.gamma);
     labelsChanged();
+    return;
+  }
+  // A simulation volume's variables (#317).
+  if (w.group === 'var') { if (!switchVariable(w.value)) buzz('primary', 'error'); return; }
+  if (id === 'var-next') {
+    const v = SC.variablesOf(state.info);
+    if (!v || !switchVariable(SC.nextVariable(v.names, v.current, 1))) buzz('primary', 'error');
     return;
   }
   if (id === 'levels-page') { ui.page = 'levels'; return; }
@@ -3529,6 +3733,8 @@ function hubClip(id) {
 }
 
 let hubShownKey = '';
+/** The path the hub was last told is on show (a variable switch names it, #317). */
+let hubShownPath = '';
 function hubTick() {
   single.setContent(pageHasContent(), shownName());
   appTick();
@@ -3549,8 +3755,14 @@ function hubTick() {
     // Switched: the desktop is told, and the new cube's look and clip as the
     // page starts them are its baseline (only later changes are sent).
     hubShownKey = key;
-    hub.cube(path, { path, dataset_id: id, kind: shownKind(), binning: state.cube ? state.cube.factors.slice() : null },
-      `Switched to ${HUB.fileName(path)}`);
+    // Another variable of the same source (#317): said so, with the variable
+    // and the one it replaces, so the desktop's window of that one can follow.
+    // Only a switch the picker made (a sibling the desktop sent is its own action).
+    const vs = shownKind() === 'cube' && variablePicked === path ? SC.variableSwitch(path, hubShownPath, state.info, HUB.fileName, true) : null;
+    variablePicked = '';
+    hubShownPath = path;
+    hub.cube(path, { path, dataset_id: id, kind: shownKind(), binning: state.cube ? state.cube.factors.slice() : null,
+      ...(vs ? { field: vs.field, from: vs.from } : {}) }, vs ? vs.summary : `Switched to ${HUB.fileName(path)}`);
     if (look) hub.rebase('look', path, look);
     if (clip) hub.rebase('clip', path, clip);
     return;
@@ -3629,17 +3841,28 @@ function showFromDesktop(cmd) {
   }
   shell.notify('cube-from-desktop', { detail: name });
   $('path').value = cmd.path;
-  withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky }))
+  // Its notice tells a brick pyramid build's progress (showPrep, #329): the
+  // load this show starts is the one loadLinked begins at once (its ticket).
+  const show = { path: cmd.path, name, loadId: -1, seq: ++desktopShowSeq };
+  desktopShow = show;
+  const done = () => { if (desktopShow === show) desktopShow = null; };
+  // The notice is this show's to clear only while no newer show was sent.
+  const clearOwn = () => { if (show.seq === desktopShowSeq) shell.clearNotice('cube-from-desktop'); };
+  const before = loads.latest;
+  const loading = withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky }));
+  if (loads.latest > before) show.loadId = loads.latest;
+  loading
+    .finally(done)
     .then(() => {
       // Waiting for the end of the VR session (larger than the room kept for
       // cubes in VR): its box is applied when it is shown (installStaged).
-      if (stagedCube && stagedCube.path === cmd.path) { pendingBox = cmd.box ? { path: cmd.path, cmd } : null; shell.clearNotice('cube-from-desktop'); return; }
-      if (state.openPath !== cmd.path) { shell.clearNotice('cube-from-desktop'); return; }
+      if (stagedCube && stagedCube.path === cmd.path) { pendingBox = cmd.box ? { path: cmd.path, cmd } : null; clearOwn(); return; }
+      if (state.openPath !== cmd.path) { clearOwn(); return; }
       applyCommandBox(cmd);
       shell.notify('cube-from-desktop', { detail: name, done: true });
     })
     .catch((err) => {
-      shell.clearNotice('cube-from-desktop');
+      clearOwn();
       if (err.superseded) return;
       setStatus(`The cube sent from the desktop could not be opened: ${err.message || err}`);
       shell.log('warning', 'hub-show-failed', `${name}: ${err.message || err}`);
@@ -3648,6 +3871,10 @@ function showFromDesktop(cmd) {
 
 /** A commanded box for a cube that waits for the end of the VR session: {path, cmd} or null. */
 let pendingBox = null;
+/** The cube the desktop sent last while its load runs: {path, name, loadId, seq}, else null. */
+let desktopShow = null;
+/** The desktop's shows that started a load, counted (the newest owns the notice). */
+let desktopShowSeq = 0;
 
 /** A `show` with a voxel box: the cube's clipping box (not reported back). */
 function applyCommandBox(cmd) {
@@ -3866,7 +4093,8 @@ function appTick() {
   if (!single.active) return;
   const r = APP.roomState({ immersive: true, exchanging: appLaunch.exchanging || !appLaunch.settled, error: appLaunch.error,
     connected: !!(tokenField.value.trim() && hubAuth()), loading: state.loading > 0, shown: !!state.cube || layers.hasScene(),
-    name: HUB.fileName(pairing.path || ''), origin: APP.originLabel(window.location) });
+    name: HUB.fileName(pairing.path || ''), origin: APP.originLabel(window.location),
+    prep: state.prep && loads.isCurrent(state.prep.ticket) ? { progress: state.prep.progress, ms: state.prep.ms, silentMs: state.prep.silentMs } : null });
   // Said again on entering VR: the way out (Quit) is offered only in VR.
   const key = r ? JSON.stringify([r, !!xr]) : '';
   if (key === appLaunch.roomKey) return;
@@ -4880,6 +5108,8 @@ if (query.has('debug')) {
   window.__vrMeasure = { measure, start: (opts) => startOrCancelRun(opts) };
   window.__vrLink = linkState;
   window.__vrState = state;
+  // The variables of a simulation volume (#317): the menu's row, a switch, the looks kept.
+  window.__vrVariables = { menu: () => variablesMenu(), show: (name) => switchVariable(name), looks: variableLooks, pending: () => pendingVariable };
   // The page's backend handle, for checks that ask it what the page asked (?debug only).
   window.__vrBackend = () => { try { return ensureBackend(); } catch { return null; } };
   window.__vrGL = gl;

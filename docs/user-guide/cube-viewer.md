@@ -132,7 +132,13 @@ cubes when you only want detail in the region you're inspecting.
 The **3D cube** statistics in Inspector ▸ Properties (Min, Max, Mean, Median,
 Std, RMS, Sum) are those of the **whole cube at full resolution**: the backend
 scans the file in the background, without loading it into the viewer, and fills
-the rows when it is done. They do not change when the full resolution, or a
+the rows when it is done. A cube shown as a preview (above the full-resolution
+threshold) is not scanned whole: Min and Max come from its brick pyramid when
+one has been built (exact for single-precision data), the Mean from a coarse
+level of it, and the other
+rows from a sample of about 4 million voxels spread over the cube; without a
+pyramid all rows come from that sample, so Min and Max may lie inside the
+true range. Either way the backend's memory stays bounded. They do not change when the full resolution, or a
 camera ROI of it, is loaded. Until the scan lands, the rows show what the
 grid on screen measured, when that grid is the whole cube: a cube shown as a
 preview (above the full-resolution threshold) has no Mean and RMS of its own,
