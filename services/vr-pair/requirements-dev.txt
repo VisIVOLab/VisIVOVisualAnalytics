@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=8.0
+# tools/attack_harness.py measures the service's memory, CPU and descriptors.
+psutil>=5.9
