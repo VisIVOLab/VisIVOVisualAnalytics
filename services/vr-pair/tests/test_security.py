@@ -262,13 +262,19 @@ def test_a_client_that_does_not_read_is_dropped():
             _, writer = await _raw_ws(svc)
             writer.transport.pause_reading()
             writer.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-            for _ in range(400):
+            # Until the server's write buffer passes its cap, not for a fixed
+            # count: the kernel's socket buffers in between are sized by the
+            # platform (Linux grows loopback buffers to several MB), so the
+            # pongs needed to fill them differ by an order of magnitude.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 30.0
+            while loop.time() < deadline:
                 if writer.is_closing() or svc.stats["dropped_not_reading"]:
                     break
-                writer.write(_ping_frame() * 100)
+                writer.write(_ping_frame() * 1000)        # ~131 KB of pings, as many pongs back
                 with contextlib.suppress(ConnectionError):
                     await writer.drain()
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.005)
             assert svc.stats["dropped_not_reading"] == 1
             writer.transport.abort()
     run(go())
