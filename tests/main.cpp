@@ -64,6 +64,7 @@
 #include "TestThresholdShare.h"
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
+#include "TestRegionModel.h"
 #include "TestBackendUrlLocality.h"
 #include "TestSkavaClient.h"
 #include "TestPvPathGeometry.h"
@@ -149,6 +150,7 @@ int main(int argc, char *argv[])
     { TestBusyFeedback     t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRegionModel      t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkavaClient      t; status |= QTest::qExec(&t, argc, argv); }
     { TestPvPathGeometry   t; status |= QTest::qExec(&t, argc, argv); }

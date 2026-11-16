@@ -161,6 +161,8 @@ add_executable(VisIVOTests
     ${VISIVO_ROOT}/src/gui/RenderSessionCalls.cpp
     TestRegionFullRes.h
     test_region_full_res.cpp
+    TestRegionModel.h
+    test_region_model.cpp
     TestDatasetName.h
     test_dataset_name.cpp
     TestVbtByteOrder.h

@@ -1466,11 +1466,12 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     ui->menuTools->addSeparator();
     m_actExportRegions = ui->menuTools->addAction(u"Export Region (CRTF/DS9)…"_s);
     m_actExportRegions->setToolTip(
-            u"Save the active *drawn* region (Box/Circle/Polygon/Annulus) as a "
+            u"Save the regions of this window, all of them or the selected one, as a "
             u"CASA CRTF or DS9 region file. To *load* regions (incl. CRTF) use "
             u"Tools ▸ Load Catalogue Overlay."_s);
     QObject::connect(m_actExportRegions, &QAction::triggered, this,
                      [this]() { this->exportRegionsToFile(); });
+    this->setupRegionListActions();
 
     // Contour overlay — same approach as the cube viewer: toggle + Level/Lower/Upper
     ui->menuTools->addSeparator();

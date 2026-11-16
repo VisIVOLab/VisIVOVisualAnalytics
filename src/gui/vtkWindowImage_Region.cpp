@@ -135,69 +135,6 @@ struct RegionStatistics
     bool valid{ false };
 };
 
-std::array<int, 4> regionBounds2D(vtkWindowImage::RegionMode mode, const std::array<int, 2> &anchor,
-                                  const std::array<int, 2> &current,
-                                  const std::vector<std::array<int, 2>> &polygonVertices);
-bool pointInRegion(vtkWindowImage::RegionMode mode, const std::array<int, 2> &anchor,
-                   const std::array<int, 2> &current,
-                   const std::vector<std::array<int, 2>> &polygonVertices, double annulusInnerRadius,
-                   int x, int y);
-QString regionModeLabel(vtkWindowImage::RegionMode mode);
-RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowImage::RegionMode mode,
-                                           const std::array<int, 2> &anchor,
-                                           const std::array<int, 2> &current,
-                                           const std::vector<std::array<int, 2>> &polygonVertices,
-                                           double annulusInnerRadius);
-
-
-
-
-
-
-std::array<int, 4> regionBounds2D(vtkWindowImage::RegionMode mode, const std::array<int, 2> &anchor,
-                                  const std::array<int, 2> &current,
-                                  const std::vector<std::array<int, 2>> &polygonVertices)
-{
-    // Each shape's own box (CubeRegionGeom, unit-tested). A circle and an annulus
-    // are a CENTRE plus a point on the rim: the box between those two corners is
-    // one quadrant, and the stats loop only ever asked the hit-tester about
-    // pixels inside it - so their statistics covered a quarter of the shape, in
-    // whichever direction the user dragged.
-    if (mode == vtkWindowImage::RegionMode::Polygon && !polygonVertices.empty()) {
-        auto b = CubeRegionGeom::polygonBounds(polygonVertices);
-        // While the polygon is still being drawn, `current` is the cursor vertex
-        // and is not in the list yet.
-        b[0] = std::min(b[0], current[0]);
-        b[1] = std::max(b[1], current[0]);
-        b[2] = std::min(b[2], current[1]);
-        b[3] = std::max(b[3], current[1]);
-        return b;
-    }
-    if (mode == vtkWindowImage::RegionMode::Circle || mode == vtkWindowImage::RegionMode::Annulus)
-        return CubeRegionGeom::circleBounds(anchor, current);
-    return CubeRegionGeom::boxBounds(anchor, current);
-}
-
-bool pointInRegion(vtkWindowImage::RegionMode mode, const std::array<int, 2> &anchor,
-                   const std::array<int, 2> &current,
-                   const std::vector<std::array<int, 2>> &polygonVertices, double annulusInnerRadius,
-                   int x, int y)
-{
-    switch (mode) {
-    case vtkWindowImage::RegionMode::Box:
-        return pointInBox(anchor, current, x, y);
-    case vtkWindowImage::RegionMode::Circle:
-        return pointInCircle(anchor, current, x, y);
-    case vtkWindowImage::RegionMode::Polygon:
-        return pointInPolygon(polygonVertices, x, y);
-    case vtkWindowImage::RegionMode::Annulus:
-        return pointInAnnulus(anchor, current, annulusInnerRadius, x, y);
-    case vtkWindowImage::RegionMode::None:
-    default:
-        return false;
-    }
-}
-
 QString regionModeLabel(vtkWindowImage::RegionMode mode)
 {
     switch (mode) {
@@ -215,6 +152,21 @@ QString regionModeLabel(vtkWindowImage::RegionMode mode)
     }
 }
 
+/// The displayed voxels to visit for `region`, clipped to what is loaded.
+/// False when none are.
+bool visitBounds(vtkImageData *imageData, const visivo::regions::Region &region,
+                 const visivo::DisplayGrid &grid, int out[4])
+{
+    int extent[6];
+    imageData->GetExtent(extent);
+    const auto b = visivo::displayedVoxelBounds(region, grid);
+    out[0] = std::max(extent[0], b[0]);
+    out[1] = std::min(extent[1], b[1]);
+    out[2] = std::max(extent[2], b[2]);
+    out[3] = std::min(extent[3], b[3]);
+    return out[1] >= out[0] && out[3] >= out[2];
+}
+
 /// Sum and mean only, in one pass, over at most a fixed budget of pixels.
 ///
 /// The full statistics sort the values (median, MAD); doing that on every mouse
@@ -230,35 +182,25 @@ struct RegionQuickStats
 };
 
 RegionQuickStats computeRegionQuickStats(vtkImageData *imageData,
-                                         vtkWindowImage::RegionMode mode,
-                                         const std::array<int, 2> &anchor,
-                                         const std::array<int, 2> &current,
-                                         const std::vector<std::array<int, 2>> &polygonVertices,
-                                         double annulusInnerRadius)
+                                         const visivo::regions::Region &region,
+                                         const visivo::DisplayGrid &grid)
 {
     RegionQuickStats quick;
-    if (!imageData)
+    int b[4];
+    if (!imageData || !visitBounds(imageData, region, grid, b))
         return quick;
-
     int extent[6];
     imageData->GetExtent(extent);
-    const auto bounds = regionBounds2D(mode, anchor, current, polygonVertices);
-    const int x0 = std::max(extent[0], bounds[0]);
-    const int x1 = std::min(extent[1], bounds[1]);
-    const int y0 = std::max(extent[2], bounds[2]);
-    const int y1 = std::min(extent[3], bounds[3]);
-    if (x1 < x0 || y1 < y0)
-        return quick;
 
-    const long long box = static_cast<long long>(x1 - x0 + 1) * (y1 - y0 + 1);
+    const long long box = static_cast<long long>(b[1] - b[0] + 1) * (b[3] - b[2] + 1);
     const int stride = visivo::regionSampleStride(box);
     quick.sampled = stride > 1;
 
     double sum = 0.0;
     long long counted = 0;
-    for (int y = y0; y <= y1; y += stride) {
-        for (int x = x0; x <= x1; x += stride) {
-            if (!pointInRegion(mode, anchor, current, polygonVertices, annulusInnerRadius, x, y))
+    for (int y = b[2]; y <= b[3]; y += stride) {
+        for (int x = b[0]; x <= b[1]; x += stride) {
+            if (!visivo::displayedVoxelIn(region, grid, x, y))
                 continue;
             const double value = imageData->GetScalarComponentAsDouble(x, y, extent[4], 0);
             if (!std::isfinite(value))
@@ -279,31 +221,25 @@ RegionQuickStats computeRegionQuickStats(vtkImageData *imageData,
     return quick;
 }
 
-RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowImage::RegionMode mode,
-                                           const std::array<int, 2> &anchor,
-                                           const std::array<int, 2> &current,
-                                           const std::vector<std::array<int, 2>> &polygonVertices,
-                                           double annulusInnerRadius)
+RegionStatistics computeRegionStatistics2D(vtkImageData *imageData,
+                                           const visivo::regions::Region &region,
+                                           const visivo::DisplayGrid &grid)
 {
     RegionStatistics stats;
-    if (!imageData) {
+    int b[4];
+    if (!imageData || !visitBounds(imageData, region, grid, b)) {
         return stats;
     }
 
-    int extent[6];
-    imageData->GetExtent(extent);
-    const auto bounds = regionBounds2D(mode, anchor, current, polygonVertices);
     std::vector<double> values;
     double sum = 0.0;
     double sumSq = 0.0;
     stats.minValue = std::numeric_limits<double>::infinity();
     stats.maxValue = -std::numeric_limits<double>::infinity();
 
-    for (int y = std::max(extent[2], bounds[2]); y <= std::min(extent[3], bounds[3]); ++y) {
-        for (int x = std::max(extent[0], bounds[0]); x <= std::min(extent[1], bounds[1]); ++x) {
-            const bool inside =
-                    pointInRegion(mode, anchor, current, polygonVertices, annulusInnerRadius, x, y);
-            if (!inside) {
+    for (int y = b[2]; y <= b[3]; ++y) {
+        for (int x = b[0]; x <= b[1]; ++x) {
+            if (!visivo::displayedVoxelIn(region, grid, x, y)) {
                 continue;
             }
 
@@ -350,6 +286,7 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData, vtkWindowIma
     stats.valid = true;
     return stats;
 }
+
 }  // namespace
 
 void vtkWindowImage::finishRegionInteraction()
@@ -423,27 +360,22 @@ void vtkWindowImage::finishRegionInteraction()
         }
         if (innerRadius < 0.0 || innerRadius >= outerRadius) {
             this->statusBar()->showMessage(
-                    u"Inner radius must be >= 0 and smaller than the outer radius."_s, 3000);
+                    u"Inner radius must be >= 0 and smaller than the outer radius: the annulus "
+                    u"keeps no hole (Region Properties sets it)."_s, 5000);
             this->regionAnnulusInnerRadius = 0.0;
-            this->regionValid = true;
-            this->refreshRegionOverlay();
-            ui->vtk->renderWindow()->Render();
-            return;
+        } else {
+            this->regionAnnulusInnerRadius = innerRadius;
         }
-        this->regionAnnulusInnerRadius = innerRadius;
-        this->regionDragging = false;
-        this->regionValid = true;
-        this->refreshRegionOverlay();
-        ui->vtk->renderWindow()->Render();
     }
     this->regionDragging = false;
     this->regionValid = true;
-    this->refreshRegionOverlay();
-    this->analyzeCurrentRegion();
+    // The finished shape joins the window's region list and is measured. The
+    // tool stays armed: the next drag on empty image draws another region, a
+    // press on a region selects it.
+    const int id = this->commitDraftRegion();
+    if (id > 0)
+        this->analyzeRegion(id);
     ui->vtk->renderWindow()->Render();
-    // Note: the region action is intentionally NOT unchecked here.
-    // The overlay stays visible while the result dialog is open, and is cleared
-    // (along with the action check state) when the dialog is closed.
 }
 
 void vtkWindowImage::setRegionMode(RegionMode mode, bool active)
@@ -551,7 +483,18 @@ void vtkWindowImage::updateRegionReadout()
         return;
     auto *imageData =
             this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    if (!imageData || this->regionMode == RegionMode::None || !this->regionValid) {
+    // The region being drawn, else the selected one of the list: the numbers
+    // follow whichever shape the user is working on, while it is dragged.
+    std::optional<visivo::regions::Region> shown;
+    QString shapeLabel;
+    if (imageData && this->regionMode != RegionMode::None && this->regionValid) {
+        shown = this->draftRegion();
+        shapeLabel = regionModeLabel(this->regionMode);
+    } else if (imageData && this->m_regions.selected()) {
+        shown = *this->m_regions.selected();
+        shapeLabel = shown->name;
+    }
+    if (!shown) {
         this->hideRegionReadout();
         return;
     }
@@ -572,14 +515,10 @@ void vtkWindowImage::updateRegionReadout()
                              QLatin1StringView(VisivoTheme::kSurfaceContainer())));
     }
 
-    auto quick = computeRegionQuickStats(imageData, this->regionMode,
-                                         this->regionAnchorVoxel, this->regionCurrentVoxel,
-                                         this->regionPolygonVertices,
-                                         this->regionAnnulusInnerRadius);
+    auto quick = computeRegionQuickStats(imageData, *shown, this->displayGrid());
     // Below full resolution a displayed pixel stands for a block: the sum is
     // scaled by its area and marked as an estimate, and the readout says so;
     // the statistics on release come from the file (issue #95).
-    QString shapeLabel = regionModeLabel(this->regionMode);
     double spacing[3];
     imageData->GetSpacing(spacing);
     if (spacing[0] > 1.001) {
@@ -623,8 +562,7 @@ void vtkWindowImage::refreshRegionOverlay()
 {
     auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
     if (!imageData || this->regionMode == RegionMode::None || !this->regionValid) {
-        this->clearRegion();
-        this->hideRegionReadout();
+        this->clearRegion();   // the draft; the readout falls back to the selected region
         return;
     }
     // The numbers follow the shape: same call site, so they cannot show a
@@ -753,9 +691,8 @@ void vtkWindowImage::refreshRegionOverlay()
 
 void vtkWindowImage::clearRegion()
 {
-    // The readout describes a region; with none there is nothing for it to say.
-    this->hideRegionReadout();
-    this->m_regionStatsPending = false;
+    // Clears the region being DRAWN (and its actors). The regions of the list
+    // are not touched: they stay until the user deletes them.
     this->regionValid = false;
     this->regionDragging = false;
     this->ignoreNextPolygonRelease = false;
@@ -771,91 +708,38 @@ void vtkWindowImage::clearRegion()
     this->regionAnnulusFillActor->VisibilityOff();
     this->regionPolygonActor->VisibilityOff();
     this->regionPolygonFillActor->VisibilityOff();
-}
-
-QJsonObject vtkWindowImage::currentRegionToJson() const
-{
-    // Canonical image-frame region in 1-based pixel coordinates (the FITS /
-    // ds9 / CRTF convention). The viewer stores 0-based *display* voxels; when
-    // the displayed image is decimated (spacing>1 for a preview or a future LOD
-    // level) those must be mapped back onto the full-resolution pixel grid
-    // before the +1. This is a no-op for a full-resolution image (origin 0,
-    // spacing 1, extent0 0 → pxX(v) == v+1), so exports are byte-identical.
-    double ox = 0.0, oy = 0.0, sx = 1.0, sy = 1.0;
-    int ex0 = 0, ey0 = 0;
-    if (this->layers) {
-        if (auto *img = this->layers->getImageData(this->layers->getMasterIndex())) {
-            double origin[3], spacing[3];
-            int extent[6];
-            img->GetOrigin(origin);
-            img->GetSpacing(spacing);
-            img->GetExtent(extent);
-            ox = origin[0]; oy = origin[1];
-            sx = spacing[0]; sy = spacing[1];
-            ex0 = extent[0]; ey0 = extent[2];
-        }
-    }
-    QJsonObject r;
-    r[u"frame"_s] = u"image"_s;
-    r[u"unit"_s]  = u"pix"_s;
-    // Display voxel → full-res 1-based FITS pixel (per axis).
-    const auto pxX = [=](int v) { return (ox + (v - ex0) * sx) + 1.0; };
-    const auto pxY = [=](int v) { return (oy + (v - ey0) * sy) + 1.0; };
-    switch (this->regionMode) {
-    case RegionMode::Box: {
-        const double ax = pxX(regionAnchorVoxel[0]), ay = pxY(regionAnchorVoxel[1]);
-        const double bx = pxX(regionCurrentVoxel[0]), by = pxY(regionCurrentVoxel[1]);
-        r[u"shape"_s] = u"box"_s;
-        r[u"center"_s] = QJsonArray{ (ax + bx) / 2.0, (ay + by) / 2.0 };
-        r[u"size"_s]   = QJsonArray{ std::abs(bx - ax), std::abs(by - ay) };
-        r[u"angle_deg"_s] = 0.0;
-        break;
-    }
-    case RegionMode::Circle: {
-        const double dx = (regionCurrentVoxel[0] - regionAnchorVoxel[0]) * sx;
-        const double dy = (regionCurrentVoxel[1] - regionAnchorVoxel[1]) * sy;
-        r[u"shape"_s] = u"circle"_s;
-        r[u"center"_s] = QJsonArray{ pxX(regionAnchorVoxel[0]), pxY(regionAnchorVoxel[1]) };
-        r[u"radius"_s] = std::sqrt(dx * dx + dy * dy);
-        break;
-    }
-    case RegionMode::Annulus: {
-        const double dx = (regionCurrentVoxel[0] - regionAnchorVoxel[0]) * sx;
-        const double dy = (regionCurrentVoxel[1] - regionAnchorVoxel[1]) * sy;
-        r[u"shape"_s] = u"annulus"_s;
-        r[u"center"_s] = QJsonArray{ pxX(regionAnchorVoxel[0]), pxY(regionAnchorVoxel[1]) };
-        r[u"radii"_s]  = QJsonArray{ regionAnnulusInnerRadius * sx, std::sqrt(dx * dx + dy * dy) };
-        break;
-    }
-    case RegionMode::Polygon: {
-        r[u"shape"_s] = u"polygon"_s;
-        QJsonArray pts;
-        for (const auto &v : regionPolygonVertices)
-            pts.append(QJsonArray{ pxX(v[0]), pxY(v[1]) });
-        r[u"points"_s] = pts;
-        break;
-    }
-    default:
-        break;
-    }
-    return r;
+    // No draft any more: the readout shows the selected region, or nothing.
+    this->updateRegionReadout();
 }
 
 void vtkWindowImage::exportRegionsToFile()
 {
-    if (this->regionMode == RegionMode::None || !this->regionValid) {
+    if (this->m_regions.isEmpty()) {
         QMessageBox::information(this, u"Export Region"_s,
                 u"Draw a region first (Tools ▸ Box/Circle/Polygon/Annulus)."_s);
         return;
     }
-    const QStringList choices{
-        u"DS9, sky (FK5)"_s, u"DS9, pixel"_s,
-        u"CASA CRTF, sky (FK5)"_s, u"CASA CRTF, pixel"_s };
     bool ok = false;
+    bool selectedOnly = false;
+    if (this->m_regions.count() > 1 && this->m_regions.selected()) {
+        const QStringList which{
+            u"All %1 regions"_s.arg(this->m_regions.count()),
+            u"The selected region (%1)"_s.arg(this->m_regions.selected()->name) };
+        const QString w = QInputDialog::getItem(this, u"Export Region"_s, u"Regions to write:"_s,
+                                                which, 0, false, &ok);
+        if (!ok)
+            return;
+        selectedOnly = w == which.at(1);
+    }
+    const QStringList choices{
+        u"DS9, sky (FK5)"_s, u"DS9, sky (the frame each region was typed in)"_s, u"DS9, pixel"_s,
+        u"CASA CRTF, sky (FK5)"_s, u"CASA CRTF, sky (the frame each region was typed in)"_s,
+        u"CASA CRTF, pixel"_s };
     const QString choice = QInputDialog::getItem(
             this, u"Export Region"_s, u"Format and coordinate frame:"_s, choices, 0, false, &ok);
     if (!ok) return;
     const bool isCrtf = choice.startsWith(u"CASA"_s);
+    const bool ownFrames = choice.contains(u"each region"_s);
     const QString format  = isCrtf ? u"crtf"_s : u"ds9"_s;
     const QString toFrame = choice.contains(u"sky"_s) ? u"fk5"_s : QString();
     const QString filter  = isCrtf ? u"CRTF region (*.crtf)"_s : u"DS9 region (*.reg)"_s;
@@ -865,12 +749,25 @@ void vtkWindowImage::exportRegionsToFile()
     if (path.isEmpty()) return;
     if (!path.endsWith(suffix)) path += suffix;
 
-    QJsonArray arr{ this->currentRegionToJson() };
-    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken, dsId = this->remoteDatasetId;
-    this->statusBar()->showMessage(u"Serializing region…"_s, 0);
+    // 1-based pixels, as region files count them, and the frame each region
+    // was typed or read in (FK5 for one drawn on the image).
+    QJsonArray arr;
+    QStringList frames;
+    for (const auto &r : this->m_regions.regions()) {
+        if (selectedOnly && r.id != this->m_regions.selectedId())
+            continue;
+        arr.append(visivo::regions::toCanonical(r, 1.0));
+        frames << ((r.sourceFrame.isEmpty() || r.sourceFrame == u"image"_s) ? u"fk5"_s
+                                                                             : r.sourceFrame);
+    }
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken,
+                  dsId = this->remoteDatasetId, session = this->remoteSessionId;
+    const int n = arr.size();
+    this->statusBar()->showMessage(u"Serializing %1 region(s)…"_s.arg(n), 0);
     QPointer<vtkWindowImage> self(this);
     auto *watcher = new QFutureWatcher<BackendRegionExportResult>(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendRegionExportResult>::finished, this, [self, watcher, path]() {
+    QObject::connect(watcher, &QFutureWatcher<BackendRegionExportResult>::finished, this,
+                     [self, watcher, path, n]() {
         const BackendRegionExportResult r = watcher->result();
         watcher->deleteLater();
         if (!self) return;
@@ -886,19 +783,42 @@ void vtkWindowImage::exportRegionsToFile()
         }
         out.write(r.text.toUtf8());
         out.close();
-        QMessageBox::information(self, u"Export Region"_s, u"Saved region to:\n%1"_s.arg(path));
+        QMessageBox::information(self, u"Export Region"_s,
+                                 u"Saved %1 region(s) to:\n%2"_s.arg(n).arg(path));
     });
-    watcher->setFuture(QtConcurrent::run([url, token, arr, format, dsId, toFrame]() -> BackendRegionExportResult {
+    watcher->setFuture(QtConcurrent::run([url, token, session, arr, format, dsId, toFrame,
+                                          ownFrames, frames]() -> BackendRegionExportResult {
         BackendClient c(url, token);
-        return c.exportRegions(arr, format, toFrame.isEmpty() ? QString() : dsId, toFrame);
+        c.setSessionId(session);
+        if (!ownFrames)
+            return c.exportRegions(arr, format, toFrame.isEmpty() ? QString() : dsId, toFrame);
+        // Each region back in its own frame first, through the dataset's WCS,
+        // then written as it is.
+        QJsonArray framed;
+        for (int i = 0; i < arr.size(); ++i) {
+            const BackendRegionConvertResult conv = c.convertRegions(
+                    QJsonArray{ arr.at(i) }, frames.at(i), dsId, /*origin=*/1);
+            if (!conv.valid || conv.regions.isEmpty()) {
+                BackendRegionExportResult failed;
+                failed.error = conv.error;
+                return failed;
+            }
+            framed.append(conv.regions.first());
+        }
+        return c.exportRegions(framed, format);
     }));
 }
 
-void vtkWindowImage::analyzeCurrentRegion()
+void vtkWindowImage::analyzeRegion(int id)
 {
-    if (this->regionMode == RegionMode::None || !this->regionValid || !this->layers) {
+    if (id < 0)
+        id = this->m_regions.selectedId();
+    const visivo::regions::Region *found = this->m_regions.find(id);
+    if (!found || !this->layers) {
         return;
     }
+    // A copy: the list may change while the backend computes.
+    const visivo::regions::Region region = *found;
 
     // Close any previous result dialog (its stale generation prevents cleanup races)
     if (this->m_regionResultDialog) {
@@ -906,35 +826,21 @@ void vtkWindowImage::analyzeCurrentRegion()
     }
 
     auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
-    const auto displayed = computeRegionStatistics2D(imageData, this->regionMode,
-                                                     this->regionAnchorVoxel,
-                                                     this->regionCurrentVoxel,
-                                                     this->regionPolygonVertices,
-                                                     this->regionAnnulusInnerRadius);
-    const RegionMode capturedMode = this->regionMode;
-    const int requestGeneration = ++this->m_regionDialogGeneration;
-    this->m_regionStatsPending = false;   // an earlier request is superseded
-
     // What a displayed pixel is (issue #95): at full resolution the displayed
     // pixels are the file's and their statistics are exact; below it they are
     // block means or one pixel per block, and the statistics come from the
     // file, computed by the backend.
-    visivo::DisplayGrid grid;
-    if (imageData) {
-        double origin[3], spacing[3];
-        int extent[6];
-        imageData->GetOrigin(origin);
-        imageData->GetSpacing(spacing);
-        imageData->GetExtent(extent);
-        grid = { origin[0], origin[1], spacing[0], spacing[1], extent[0], extent[2] };
-    }
+    const visivo::DisplayGrid grid = this->displayGrid();
+    const auto displayed = computeRegionStatistics2D(imageData, region, grid);
+    const int requestGeneration = ++this->m_regionDialogGeneration;
+    this->m_regionStatsPending = false;   // an earlier request is superseded
+
     const int block = static_cast<int>(std::lround(grid.spacingX));
     const QString displayedPixels = this->m_displayAveraged
             ? u"the displayed pixels, each the mean of %1\u00d7%1"_s.arg(block)
             : u"the displayed pixels, 1 in %1\u00d7%1 sampled"_s.arg(block);
 
-    auto present = [this, capturedMode, grid](const RegionStatistics &stats, const QString &scope) {
-        const int myGeneration = this->m_regionDialogGeneration;
+    auto present = [this, region, grid](const RegionStatistics &stats, const QString &scope) {
         auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
 
         // Built as a RECORD, then shown and registered from that single description
@@ -943,7 +849,7 @@ void vtkWindowImage::analyzeCurrentRegion()
         // with WA_DeleteOnClose, so closing it meant drawing the region again.
         QList<QPair<QString, QList<QPair<QString, QString>>>> sections;
         const QString subtitle =
-                QStringLiteral("%1  ·  computed on %2").arg(regionModeLabel(capturedMode), scope);
+                QStringLiteral("%1  ·  computed on %2").arg(region.name, scope);
 
         if (!stats.valid) {
             sections.append({ u"Statistics"_s,
@@ -997,10 +903,7 @@ void vtkWindowImage::analyzeCurrentRegion()
                     if (idx < 0) continue;
                     auto *roleData = this->layers->getImageData(idx);
                     if (!roleData || roleData == imageData) continue;  // skip if same as master
-                    const auto roleStats = computeRegionStatistics2D(
-                            roleData, this->regionMode, this->regionAnchorVoxel,
-                            this->regionCurrentVoxel, this->regionPolygonVertices,
-                            this->regionAnnulusInnerRadius);
+                    const auto roleStats = computeRegionStatistics2D(roleData, region, grid);
                     if (!roleStats.valid) continue;
                     const QString roleName = this->stokesRoleLabel(role);
                     if (role == StokesRole::DerivedPA) {
@@ -1040,10 +943,10 @@ void vtkWindowImage::analyzeCurrentRegion()
         this->m_regionResultDialog = dlg;
         dlg->applyRecord(record);
 
-        // One row per REGION SHAPE: re-measuring the same kind of region replaces its
-        // row, a different shape adds one, so two regions can be compared.
+        // One row per REGION of the list: re-measuring a region replaces its row,
+        // another region adds one, so regions can be compared.
         QVariantMap params;
-        params.insert(u"Region"_s, regionModeLabel(capturedMode));
+        params.insert(u"Region"_s, region.name);
         params.insert(u"Scope"_s, scope);
         if (stats.valid) {
             params.insert(u"Valid pixels"_s,
@@ -1053,55 +956,20 @@ void vtkWindowImage::analyzeCurrentRegion()
             params.insert(u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8));
             params.insert(u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8));
         }
-        // …with the geometry it was measured on, so opening the row redraws the very
-        // box/circle/polygon/annulus these numbers came from.
-        QVariantMap origin = visivo::encodeRegionOrigin(
-                static_cast<int>(capturedMode), this->regionAnchorVoxel, this->regionCurrentVoxel,
-                this->regionPolygonVertices, this->regionAnnulusInnerRadius);
-        // Stamp the voxel grid it was drawn on: this window shows a decimated LOD
-        // image before the full-resolution swap, and replaying raw indices across
-        // that swap would draw the overlay at half position and half size.
-        double frameScale[2], framePos[2];
-        if (this->currentVoxelFrame(frameScale, framePos))
-            origin = visivo::withVoxelFrame(origin, frameScale[0], frameScale[1], framePos[0],
-                                            framePos[1]);
+        // …with the geometry it was measured on, so opening the row puts that very
+        // region back in the list. Full-resolution pixels: no voxel-grid stamp needed.
+        const QVariantMap origin = visivo::encodeListRegionOrigin(
+                visivo::regions::toCanonical(region, 0.0).toVariantMap());
         params.insert(u"Measured on"_s, visivo::describeOrigin(origin));
         this->registerAnalysisProduct(
                 u"region"_s,
-                u"%1 region stats"_s.arg(regionModeLabel(capturedMode)),
+                u"%1 stats"_s.arg(region.name),
                 params,
-                this->scopedProductId(u"region-%1"_s.arg(static_cast<int>(capturedMode))),
+                this->scopedProductId(u"region-%1"_s.arg(region.id)),
                 record, /*layerIndex=*/-1, origin);
 
-        // When the dialog is closed, clear the overlay and deactivate the region tool.
-        // The generation guard prevents the cleanup from running if a newer analysis has
-        // already replaced this dialog (e.g., the user drew a second region while this
-        // dialog was still open).
-        QObject::connect(dlg, &QObject::destroyed, this, [this, myGeneration, capturedMode]() {
-            if (this->m_regionDialogGeneration != myGeneration) {
-                return; // stale — a newer analysis supersedes this one
-            }
-            this->clearRegion();
-            // Deactivate the region action; setRegionMode() will restore the image interactor.
-            QAction *regionAction = nullptr;
-            switch (capturedMode) {
-            case RegionMode::Box:     regionAction = this->actionBoxRegion;     break;
-            case RegionMode::Circle:  regionAction = this->actionCircleRegion;  break;
-            case RegionMode::Polygon: regionAction = this->actionPolygonRegion; break;
-            case RegionMode::Annulus: regionAction = this->actionAnnulusRegion; break;
-            default: break;
-            }
-            if (regionAction && regionAction->isChecked()) {
-                regionAction->setChecked(false); // triggers setRegionMode(mode, false)
-            } else {
-                // Action was already unchecked; at minimum restore the interactor and render.
-                this->setInteractorStyleImage();
-                if (ui && ui->vtk && ui->vtk->renderWindow()) {
-                    ui->vtk->renderWindow()->Render();
-                }
-            }
-        });
-
+        // The region stays in the list when the dialog closes, and the tool that
+        // drew it stays armed: closing the numbers is not deleting the shape.
         dlg->show();
     };
 
@@ -1112,8 +980,7 @@ void vtkWindowImage::analyzeCurrentRegion()
     if (imageData) {
         int extent[6];
         imageData->GetExtent(extent);
-        const auto b = regionBounds2D(capturedMode, this->regionAnchorVoxel,
-                                      this->regionCurrentVoxel, this->regionPolygonVertices);
+        const auto b = visivo::displayedVoxelBounds(region, grid);
         clipped = b[0] < extent[0] || b[1] > extent[1] || b[2] < extent[2] || b[3] > extent[3];
     }
     if (!grid.reduced() && !clipped) {
@@ -1128,32 +995,24 @@ void vtkWindowImage::analyzeCurrentRegion()
         return;
     }
 
-    static const char *const kShapes[] = { "", "box", "circle", "polygon", "annulus" };
-    const int modeIndex = static_cast<int>(capturedMode);
-    const QString shape = (modeIndex >= 0 && modeIndex < 5)
-            ? QString::fromLatin1(kShapes[modeIndex]) : QString();
-    const QJsonObject region = visivo::regionInSourcePixels(
-            shape, grid, this->regionAnchorVoxel, this->regionCurrentVoxel,
-            this->regionPolygonVertices, this->regionAnnulusInnerRadius);
+    // The list region is already in source pixels: the backend gets it as is.
+    QJsonObject canonical = visivo::regions::toCanonical(region, 0.0);
+    canonical.remove(u"props"_s);
     this->m_regionStatsPending = true;
     this->updateRegionReadout();
     auto *watcher = new QFutureWatcher<BackendRegionStatsResult>(this);
-    const auto anchor = this->regionAnchorVoxel;
-    const auto current = this->regionCurrentVoxel;
-    const auto vertices = this->regionPolygonVertices;
-    const double inner = this->regionAnnulusInnerRadius;
     QObject::connect(watcher, &QFutureWatcher<BackendRegionStatsResult>::finished, this,
                      [this, watcher, present, displayed, loadedPixels, requestGeneration,
-                      anchor, current, vertices, inner]() {
+                      region]() {
         watcher->deleteLater();
         if (requestGeneration != this->m_regionDialogGeneration)
             return;   // another region meanwhile: the readout is its
         this->m_regionStatsPending = false;
         this->updateRegionReadout();
-        if (!this->regionValid)
-            return;   // no region any more
-        if (anchor != this->regionAnchorVoxel || current != this->regionCurrentVoxel
-            || vertices != this->regionPolygonVertices || inner != this->regionAnnulusInnerRadius)
+        const visivo::regions::Region *now = this->m_regions.find(region.id);
+        if (!now)
+            return;   // deleted meanwhile
+        if (!visivo::regions::sameGeometry(*now, region))
             return;   // the region was edited meanwhile: these numbers are not its
         const BackendRegionStatsResult r = watcher->result();
         if (!r.valid) {
@@ -1177,10 +1036,10 @@ void vtkWindowImage::analyzeCurrentRegion()
     });
     const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
     const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
-    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, region]() {
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, canonical]() {
         BackendClient client(url, token);
         client.setSessionId(session);
-        return client.regionStats(dataset, region);
+        return client.regionStats(dataset, canonical);
     }));
 }
 
@@ -1212,9 +1071,8 @@ bool vtkWindowImage::finalizePolygonRegion()
 
     this->regionDragging = false;
     this->regionValid = true;
-    this->refreshRegionOverlay();
-    this->analyzeCurrentRegion();
-    // Note: polygon action is NOT unchecked here — the overlay stays visible while
-    // the result dialog is open and is cleared when the dialog closes.
-    return true;
+    const int id = this->commitDraftRegion();
+    if (id > 0)
+        this->analyzeRegion(id);
+    return id > 0;
 }

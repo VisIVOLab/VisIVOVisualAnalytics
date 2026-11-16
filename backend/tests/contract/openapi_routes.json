@@ -167,6 +167,7 @@
     "POST /v1/products/pv_fits",
     "POST /v1/products/spectrum_table",
     "POST /v1/pv/result/binary",
+    "POST /v1/regions/convert",
     "POST /v1/regions/export",
     "POST /v1/regions/parse",
     "POST /v1/regions/stats/{dataset_id}",
