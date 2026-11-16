@@ -357,8 +357,11 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     the rows below set. **Level** is a slider on the cube's own scale (on a
     log-scaled density it moves in decades), its value written in the field's
     unit; *Threshold* puts it back at the volume's threshold. **Colour** and
-    **Opacity** (a surface at full opacity hides what is behind it, a lower
-    one lets the volume and the other surfaces show through); *Shown* or
+    **Opacity**. The surfaces are drawn over the volume, not mixed with its
+    emission by depth: an opaque surface covers the volume's glow in front
+    of it as well as behind it, so lower the opacity (or the volume's) to
+    see both. Opaque surfaces hide one another by depth; a translucent one
+    lets the others show through; *Shown* or
     *Hidden*. **Show**: *With the volume*, or *Surfaces only* (the volume
     hidden). **Export**: the picked surface saved as *PLY* or *glTF* in the
     workspace's exports (`isosurfaces/`), in the cube's own coordinates for a

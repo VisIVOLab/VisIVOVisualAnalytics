@@ -128,17 +128,19 @@ async def isosurface_extract(request: IsosurfaceRequest, token: str = _auth,
         with ISO.EXTRACT_LOCK:
             if stop.is_set():
                 raise ISO.IsosurfaceCancelled("Cancelled by the client.")
+            # The extraction that held the lock before may have made some.
+            found = {i: ISO.CACHE.get(ISO.MeshCache.mesh_id(plan["keys"][i])) for i in todo}
+            missing = [i for i in todo if found[i] is None]
             meshes = ISO.extract(
-                path, [request.levels[i] for i in todo], scale=plan["scale"], lod=request.lod,
+                path, [request.levels[i] for i in missing], scale=plan["scale"], lod=request.lod,
                 max_voxels=request.max_voxels, max_triangles=request.max_triangles,
                 pyramid_path=plan["pyramid"],
                 progress=lambda f, _s: TASKS.update(task_id, progress=round(0.99 * f, 3)),
-                should_stop=stop.is_set)
-        made = []
-        for i, mesh in zip(todo, meshes):
-            wire = ISO.encode_mesh(mesh)
-            made.append(ISO.CACHE.put(plan["keys"][i], mesh, path, ISO.describe(mesh, len(wire))))
-        return made
+                should_stop=stop.is_set) if missing else []
+            for i, mesh in zip(missing, meshes):
+                wire = ISO.encode_mesh(mesh)
+                found[i] = ISO.CACHE.put(plan["keys"][i], mesh, path, ISO.describe(mesh, len(wire)))
+        return [found[i] for i in todo]
 
     async def _runner() -> None:
         work = asyncio.ensure_future(asyncio.to_thread(_work))
@@ -200,6 +202,9 @@ async def isosurface_export(mesh_id: str, format: Literal["ply", "glb"] = "ply",
     Z), else in full-resolution voxels. ``save``: written in the workspace's
     exports (``isosurfaces/``) and answered with its path instead."""
     c = _cached(mesh_id)
+    if not len(c.mesh.triangles):
+        raise HTTPException(409, "This surface is empty (its level is outside the field's "
+                                 "values): there is nothing to export.")
 
     def make() -> bytes:
         axes = ISO.world_axes(c.path)

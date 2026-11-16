@@ -1860,6 +1860,7 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   overlay.ensureStorage();
   overlay.onCube(info, path);
   isos.onCube();                   // another cube's surfaces go (#370)
+  if (!R.xrActive) isos.prepare(); // their program and buffers made outside VR
   clipPlane.onCube();          // a plane of its own, unless the same grid (#369)
   applyExtent();
   $('thr-source').value = currentThresholdSource();
@@ -2062,6 +2063,8 @@ function stretchA() {
     cmaxData: dataValue(Math.max(state.cmaxNorm, state.thrNorm + 1e-3)) });
 }
 
+/** The surfaces' draw parameters (#370), one object filled again each draw. */
+const isoParams = { extent: null, boxMin: null, boxMax: null, clip: null };
 function drawScene(view, override, eye = 0) {
   // With a refined frame on show (fading in or out included) the selection is
   // left out of the headset's own volume and drawn once, over the refined
@@ -2085,7 +2088,8 @@ function drawScene(view, override, eye = 0) {
   // Taken apart (#371): the assembled box's outline, ticks, labels and selection are not where anything is drawn.
   if (exOn) return;
   // Isosurfaces (#370): over the volume, clipped by the crop and the clipping plane (#369).
-  isos.draw(view, state.model, { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max, clip: clipPlane.shader() });
+  isoParams.extent = state.extent; isoParams.boxMin = state.clip.min; isoParams.boxMax = state.clip.max; isoParams.clip = clipPlane.shader();
+  isos.draw(view, state.model, isoParams);
   R.drawLines(view, state.model);
   if (!CUT.noseloutline) { R.drawLines(view, state.model, R.selLines); cutCounts.selLineDraws++; }
   layers.drawOverCube(view, state.model);
