@@ -98,6 +98,10 @@ X_FILE_REVISION = "X-Visivo-File-Revision"
 # range the codes span ("min,max") and the voxels at or below zero made blank.
 X_SCALE = "X-Visivo-Scale"
 X_LOG_RANGE = "X-Visivo-Log-Range"
+# Several fields of one source reduced on one grid (issue #357): the channels
+# a voxel holds, and each field's name, scale, range and threshold (JSON).
+X_CHANNELS = "X-Visivo-Channels"
+X_FIELDS = "X-Visivo-Fields"
 X_NONPOSITIVE_VOXELS = "X-Visivo-Nonpositive-Voxels"
 
 # ── Levels of detail of a large cube (issue #321) ──────────────────────────

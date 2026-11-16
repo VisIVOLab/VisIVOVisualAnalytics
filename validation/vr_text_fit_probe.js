@@ -262,6 +262,39 @@
       drawMenuCase(label, 'display', ctx, view, null);
       for (const w of HM.menuLayout('display', ctx).filter((x) => x.id.startsWith('var'))) drawMenuCase(label, 'display', ctx, view, w.id);
     }
+    // Overlaid variables (#357): the Display page with Overlay ▸ (and its look
+    // greyed while the overlay is on), the Overlay page with three fields,
+    // long names, nine variables paged, loading, no room on the device.
+    const ovNames = ['gas_density_in_code_units', 'electron_temperature_K', 'vx1', 'vx2', 'vx3', 'Bx1', 'prs', 'tr1', 'tr2'];
+    for (const [label, vars, ov] of [
+      ['three fields shown', { names: ['rho', 'T', 'vx'], current: 'rho', pending: null },
+        { fields: [{ name: 'rho', colormap: 'red', log: true, on: true }, { name: 'T', colormap: 'green', log: true, on: true }, { name: 'vx', colormap: 'blue', log: false, on: false }],
+          edit: 2, composite: 'sum', shown: true, loading: false, room: '', fieldPage: 0 }],
+      ['long names paged', { names: ovNames, current: 'vx1', pending: null },
+        { fields: [{ name: ovNames[0], colormap: 'red', log: true, on: true }, { name: ovNames[1], colormap: 'inferno', log: true, on: true }],
+          edit: 1, composite: 'mip', shown: false, loading: true, room: '', fieldPage: 1 }],
+      ['no room', { names: ['rho', 'T'], current: 'rho', pending: null },
+        { fields: [{ name: 'rho', colormap: 'red', log: true, on: true }, { name: 'T', colormap: 'green', log: true, on: true }],
+          edit: 0, composite: 'sum', shown: false, loading: false, room: 'An overlay of 2 fields at 384×384×384 needs 113 MiB; 12 MiB is left on this device. Choose a smaller Max side.', fieldPage: 0 }]]) {
+      const ctx = { ...ctxFor('cube', false, false), simulation: true, spectralName: 'Z range', clipTool: 'box', vars, ov };
+      for (const page of ['display', 'overlay']) {
+        const view = viewFor('cube', page);
+        if (page === 'overlay') {
+          Object.assign(view.notes, { fields: ov.fields.map((f) => f.name).join(' + '), thr: `${ov.fields[ov.edit].name}: 9.686e-06 g/cm3 (log scale)`,
+            cmax: '2.116e-05 g/cm3', opacity: '0.40', cmap: ov.fields[ov.edit].colormap });
+          Object.assign(view.values, { 'ov-thr': 0.4, 'ov-cmax': 0.9, 'ov-opacity': 0.2 });
+          view.status = [];
+          if (ov.room) view.status.push([ov.room, '#ffd27a']);
+          if (ov.loading) view.status.push(['Building the fields\' brick pyramids… 42 %', '#ffd27a']);
+          view.status.push(['Sum: the fields emit and absorb together; where they overlap their colours mix by opacity.', '#b9c2d0'],
+            [`${ov.fields.map((f) => f.name).join(' + ')}: 50.3 MB, shown in 1.4 s`, '#b9c2d0'],
+            ['The overlay could not be shown: the fields came 128×128×64 binned 16×16×16, not on the cube\'s grid 256×256×128 binned 8×8×8', '#ff8a8a']);
+        }
+        const name = `simulation overlay ${label} ${page}`;
+        drawMenuCase(name, page, ctx, view, null);
+        for (const w of HM.menuLayout(page, ctx).filter((x) => page === 'overlay' || /overlay|render|thr/.test(x.id))) drawMenuCase(name, page, ctx, view, w.id);
+      }
+    }
     if (opts.live && window.__vrMenu) {
       const m = window.__vrMenu;
       const page0 = m.ui.page;
@@ -454,12 +487,17 @@
       // A simulation volume's (#317, levels.js volumeBar): every decade of a density.
       { lo: 1.83467e-12, hi: 2.11593e-5, log: true, title: 'density_of_a_long_PLUTO_variable_name [g/cm3], log scale',
         ticks: [1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5] },
-    ]) run('colour bar', bar.title, CB.BAR_PX, (c) => CB.drawColourBar(c, { ...bar, lut: CM.colormapTable('viridis') }));
+      // An overlaid field's (#357): its channel number before its name, in a single-hue map.
+      { lo: 1.83467e-12, hi: 2.11593e-5, log: true, title: '3 gas_density_in_code_units [g/cm3], log scale', colormap: 'blue',
+        ticks: [1e-11, 1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5] },
+    ]) run('colour bar', bar.title, CB.BAR_PX, (c) => CB.drawColourBar(c, { ...bar, lut: CM.colormapTable(bar.colormap || 'viridis') }));
 
     // ── The readout card ──
     for (const lines of [
       ['EXPLORE', 'RA 10h18m12.34s  Dec -28°45′12.3″', 'v 4321.12 km/s (radio)  ch 108', '1.234e-03 Jy/beam (binned 2×2×1)'],
       ['SELECT · Kinematic Lasso', 'GLON 123.456789 deg  GLAT -12.345678 deg', 'FREQ 1.420405e+09 Hz  ch 1089', 'blank  (binned 4×4×2)'],
+      // Overlaid fields (#357): each value by name on the value's line.
+      ['EXPLORE', 'X1 -1.234e+21  X2 1.234e+21 cm', 'X3 -1.234e+21 cm  voxel 2047, 2047, 2047', 'rho 1.234e-12  T 1.234e+07  vx1 -1234'],
       // A simulation volume (#317): X, Y, Z and the voxel, no channel.
       ['SELECT · Box region', 'X1 -1.234e+21  X2 -1.234e+21 cm', 'X3 -1.234e+21 cm  voxel 2047, 2047, 2047', '1.835e-12 g/cm3 (binned 8×8×8)'],
     ]) run('readout', lines[0], RO.READOUT_PX, (c) => RO.drawReadout(c, lines, false));

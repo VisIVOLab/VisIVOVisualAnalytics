@@ -528,6 +528,217 @@ async def cube_reduced_bin(
     return Response(content=raw, media_type="application/octet-stream", headers=headers)
 
 
+# ── Several fields on one grid, for the headset's overlay (issue #357) ──────
+# The VR page overlays two or three fields of one simulation volume (a VBT
+# volume's fields, a PLUTO output's variables) in one multi-channel 3-D
+# texture. This route reduces them on ONE grid: the first field with the
+# request's factors (0: automatic, as reduced_bin plans them, so it matches
+# the cube on show), every other field with the first one's factors given
+# explicitly. Each field keeps its own source (its own brick pyramid, or the
+# whole cube), its own value scale (auto: log for a positive density spanning
+# more than three decades, linear for a velocity), range and threshold. The
+# answer interleaves the fields' codes, the channel innermost.
+
+#: At most this many fields are overlaid, and channels a voxel may carry.
+OVERLAY_MAX_FIELDS = 3
+OVERLAY_MAX_CHANNELS = 4
+#: The largest answer (all channels): two headset textures' worth (128 MiB),
+#: e.g. three 256³ fields in float16, or four channels of them; checked after
+#: the first field is reduced, before the others are.
+OVERLAY_MAX_BYTES = 2 * 64 * 1024 * 1024
+
+
+class CubeReducedFieldsRequest(CubeReducedRequest):
+    #: The fields to reduce, by their names in reduced_info's ``fields`` (the
+    #: siblings of the dataset's field reference), in channel order.
+    fields: list[str] = Field(min_length=2, max_length=OVERLAY_MAX_FIELDS)
+    #: One value scale per field; empty: the request's ``scale`` for each.
+    scales: list[Literal["auto", "linear", "log"]] = Field(default_factory=list,
+                                                            max_length=OVERLAY_MAX_FIELDS)
+    #: Channels per voxel in the answer: 0 is one per field; more pads each
+    #: voxel with zero codes (two fields into a three-channel texture).
+    channels: int = Field(default=0, ge=0, le=OVERLAY_MAX_CHANNELS)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "CubeReducedFieldsRequest":
+        if len(set(self.fields)) != len(self.fields):
+            raise ValueError("A field is named twice in fields.")
+        if self.scales and len(self.scales) != len(self.fields):
+            raise ValueError(f"scales has {len(self.scales)} entries for "
+                             f"{len(self.fields)} fields: give one per field, or none.")
+        if self.channels and self.channels < len(self.fields):
+            raise ValueError(f"channels {self.channels} cannot hold {len(self.fields)} fields.")
+        return self
+
+
+def _interleave(raws: list[bytes], channels: int, encoding: str) -> bytes:
+    """The fields' codes (each x fastest) as one buffer, the channel
+    innermost; channels past the fields hold zero codes (blank)."""
+    dtype = np.dtype("<u2") if encoding == "float16" else np.dtype("u1")
+    first = np.frombuffer(raws[0], dtype=dtype)
+    out = np.zeros((first.size, channels), dtype=dtype)
+    for c, raw in enumerate(raws):
+        out[:, c] = np.frombuffer(raw, dtype=dtype)
+    return out.tobytes()
+
+
+def _json_number(v: Any) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+@router.post("/v1/cube/reduced_fields_bin", tags=["cube"], responses=_PREPARING)
+async def cube_reduced_fields_bin(
+    request: CubeReducedFieldsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> Response:
+    """Two or three fields of the dataset's source reduced on one grid, as
+    one interleaved buffer: voxel index ((z·h + y)·w + x)·C + c, uint8 codes
+    or little-endian float16, each channel quantised on its own field's scale
+    and range (``X-Visivo-Fields``). 202 while any field's brick pyramid is
+    built (every field's build is started)."""
+    import json  # noqa: PLC0415
+    from fastapi.responses import JSONResponse  # noqa: PLC0415
+    from .. import cube_reduce  # noqa: PLC0415
+    from ..compute import worker_cube_reduced  # noqa: PLC0415
+    from ..volume_source import field_listing  # noqa: PLC0415
+
+    path = _require_cube_path(session, request.dataset_id)
+    try:
+        listed, _name = await asyncio.to_thread(field_listing, path)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, f"The fields beside this cube could not be listed: {exc}") from exc
+    if not listed:
+        raise HTTPException(422, "This cube is not a field of a multi-field source (a VBT "
+                                 "volume's field, a PLUTO variable): it has no fields to overlay.")
+    by_name: dict[str, str] = {}
+    for f in listed:
+        by_name.setdefault(str(f["name"]), str(f["path"]))
+    unknown = [n for n in request.fields if n not in by_name]
+    if unknown:
+        raise HTTPException(422, f"No field {', '.join(map(repr, unknown))} beside this cube: "
+                                 f"its fields are {', '.join(by_name)}.")
+    paths = [by_name[n] for n in request.fields]
+    scales = list(request.scales) or [request.scale] * len(paths)
+    channels = request.channels or len(paths)
+
+    # One grid only: fields of different shapes are refused before any of
+    # them is reduced (the shapes come from the headers, nothing is read).
+    from ..volume_source import volume_shape  # noqa: PLC0415
+
+    def shapes() -> list[list[int]]:
+        return [[int(n) for n in volume_shape(p, None)[0]] for p in paths]
+    try:
+        full = await asyncio.to_thread(shapes)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(422, f"A field could not be read: {exc}") from exc
+    for name, s in zip(request.fields[1:], full[1:]):
+        if s != full[0]:
+            raise HTTPException(422, f"The field {name!r} is {s}, not {full[0]} as "
+                                     f"{request.fields[0]!r}: fields of one grid only.")
+
+    # Every field's source first (each one's pyramid build started), so a
+    # page waiting for a 202 waits once for all of them.
+    sources = []
+    building = []
+    for p in paths:
+        pyramid_path, preparing, note = await asyncio.to_thread(_reduced_source, p, request)
+        sources.append((pyramid_path, note))
+        if preparing is not None:
+            building.append(json.loads(preparing.body))
+    if building:
+        done = len(paths) - len(building)
+        progress = (done + sum(float(b.get("progress", 0.0)) for b in building)) / len(paths)
+        return JSONResponse(status_code=202, content={
+            "valid": False, "preparing": True, "progress": round(progress, 3),
+            "error": (f"Building the brick pyramids of {len(building)} of the {len(paths)} "
+                      "fields for the headset's overlay.")})
+
+    results = []
+    factors = (request.factor_xy, request.factor_xy, request.factor_z)
+    try:
+        for i, (p, (pyramid_path, _note)) in enumerate(zip(paths, sources)):
+            fxy, _fy, fz = factors
+            result = await _run_heavy_with_limit(
+                session, worker_cube_reduced, p, fxy, fz, request.max_dim, request.mode,
+                request.encoding, True, pyramid_path, scales[i])
+            if i == 0:
+                factors = tuple(int(f) for f in result["factors"])
+                if factors[0] != factors[1]:
+                    raise ValueError(f"The first field came binned {factors}: the x and y "
+                                     "factors differ, so the others cannot follow it.")
+                w, h, d = result["width"], result["height"], result["depth"]
+                nbytes = w * h * d * channels * cube_reduce.BYTES_PER_VOXEL.get(request.encoding, 2)
+                if nbytes > OVERLAY_MAX_BYTES:
+                    raise ValueError(f"{channels} channels of {w} x {h} x {d} voxels "
+                                     f"({nbytes / 2**20:.0f} MiB in {request.encoding}) are more than "
+                                     f"{OVERLAY_MAX_BYTES // 2**20} MiB: use larger factors or uint8.")
+            else:
+                head = results[0]
+                if list(result["full_shape"]) != list(head["full_shape"]):
+                    raise ValueError(
+                        f"The field {request.fields[i]!r} is {result['full_shape']}, not "
+                        f"{head['full_shape']} as {request.fields[0]!r}: fields of one grid only.")
+                same = (tuple(result["factors"]) == factors
+                        and (result["width"], result["height"], result["depth"])
+                        == (head["width"], head["height"], head["depth"]))
+                if not same:
+                    return Response(content=(
+                        f"The field {request.fields[i]!r} came reduced to "
+                        f"{result['width']} x {result['height']} x {result['depth']} by "
+                        f"{result['factors']}, not {head['width']} x {head['height']} x "
+                        f"{head['depth']} by {list(factors)} as {request.fields[0]!r}."
+                    ).encode("utf-8"), media_type="text/plain", status_code=500)
+            results.append(result)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=422)
+    except Exception as exc:  # noqa: BLE001 - the binary routes answer text/plain
+        return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
+                        status_code=500)
+
+    raw = await asyncio.to_thread(_interleave, [r["raw_bytes"] for r in results],
+                                  channels, request.encoding)
+    head = results[0]
+    described = []
+    for name, p, r, (_pyr, note) in zip(request.fields, paths, results, sources):
+        plan = r.get("pyramid") or {}
+        described.append({
+            "name": name, "path": p, "scale": str(r.get("scale", "linear")),
+            "range_min": _json_number(r["range_min"]), "range_max": _json_number(r["range_max"]),
+            "log_min": _json_number(r.get("log_min")), "log_max": _json_number(r.get("log_max")),
+            "threshold": _json_number(r.get("threshold")),
+            "nonpositive_voxels": int(r.get("nonpositive_voxels", 0)),
+            "bunit": str(r.get("bunit", "")), "source": str(r.get("source", "cube")),
+            "pyramid_level": int(plan["level"]) if plan else None,
+            "file_revision": str(r.get("file_revision", "")),
+            "source_note": note,
+        })
+    fx, fy, fz = factors
+    fw, fh, fd = head["full_shape"]
+    headers = {
+        "X-Visivo-Width": str(head["width"]),
+        "X-Visivo-Height": str(head["height"]),
+        "X-Visivo-Depth": str(head["depth"]),
+        "X-Visivo-Scalar-Type": head["encoding"],
+        "X-Visivo-Byte-Order": "little",
+        "X-Visivo-Full-Shape": f"{fw},{fh},{fd}",
+        "X-Visivo-Bin-Factors": f"{fx},{fy},{fz}",
+        "X-Visivo-Bin-Mode": head["mode"],
+        "X-Visivo-Channels": str(channels),
+        "X-Visivo-Fields": json.dumps(described, ensure_ascii=True, separators=(",", ":"),
+                                      allow_nan=False),
+        "Content-Length": str(len(raw)),
+    }
+    return Response(content=raw, media_type="application/octet-stream", headers=headers)
+
+
 # ── Tilted-ring kinematic model (F2) ────────────────────────────────────────
 # Build a model PPV cube of a regularly rotating disk from a compact tilted-ring
 # parameter set and stream it as raw little-endian float32 (same wire format as
