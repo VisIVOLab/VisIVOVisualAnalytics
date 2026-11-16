@@ -377,6 +377,10 @@ void TestCubeLodAuto::motion_framesTellMovesFromStills()
     p.parallelScale = 64;
     QCOMPARE(m.frame(p), MotionTracker::Frame::Started);
     QVERIFY(m.settle());
+    // A resized view, camera unchanged: it sees another part at another zoom.
+    p.viewport = { 1200, 800 };
+    QCOMPARE(m.frame(p), MotionTracker::Frame::Started);
+    QVERIFY(m.settle());
     // A new scene starts over.
     m.reset();
     QCOMPARE(m.frame(p), MotionTracker::Frame::First);
@@ -384,10 +388,14 @@ void TestCubeLodAuto::motion_framesTellMovesFromStills()
 
 void TestCubeLodAuto::settle_waitsWhileAButtonIsHeld()
 {
-    QCOMPARE(settleStep(true, true), SettleStep::Wait);     // a drag paused, still held
-    QCOMPARE(settleStep(true, false), SettleStep::Plan);    // released, or a wheel zoom
-    QCOMPARE(settleStep(false, false), SettleStep::Plan);   // Clear Refined Box restarts the timer
-    QCOMPARE(settleStep(false, true), SettleStep::Plan);    // a click that moved nothing
+    QCOMPARE(settleStep(true, true, 400), SettleStep::Wait);     // a drag paused, still held
+    QCOMPARE(settleStep(true, false, 400), SettleStep::Plan);    // released, or a wheel zoom
+    QCOMPARE(settleStep(false, false, 400), SettleStep::Plan);   // Clear Refined Box restarts the timer
+    QCOMPARE(settleStep(false, true, 400), SettleStep::Plan);    // a click that moved nothing
+    // A button the application still thinks is held long after the camera
+    // stopped (a release lost to a menu): planned anyway.
+    QCOMPARE(settleStep(true, true, kMaxHeldWaitMs), SettleStep::Plan);
+    QCOMPARE(settleStep(true, true, kMaxHeldWaitMs - 1), SettleStep::Wait);
 }
 
 void TestCubeLodAuto::decide_explicitBoxSurvivesSettling()

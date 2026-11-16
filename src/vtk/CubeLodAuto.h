@@ -107,11 +107,15 @@ struct CameraPose
     double viewAngle{ 0.0 };
     double parallelScale{ 0.0 };
     bool parallel{ false };
+    /// The renderer's size in pixels: a resized view sees more or less of
+    /// the cube, at another zoom, with the camera unchanged.
+    std::array<int, 2> viewport{ 0, 0 };
 
     bool operator==(const CameraPose &o) const
     {
         return position == o.position && focalPoint == o.focalPoint && viewUp == o.viewUp
-                && viewAngle == o.viewAngle && parallelScale == o.parallelScale && parallel == o.parallel;
+                && viewAngle == o.viewAngle && parallelScale == o.parallelScale && parallel == o.parallel
+                && viewport == o.viewport;
     }
     bool operator!=(const CameraPose &o) const { return !(*this == o); }
 };
@@ -176,12 +180,17 @@ private:
 
 /// What to do when the settle timer runs out: wait more while a mouse button
 /// is still held during a motion (a drag paused longer than the delay is not
-/// over), else plan the view.
+/// over), else plan the view. The button state is the application's, which a
+/// release lost to a menu or a dialog can leave set: past @p maxHeldMs since
+/// the camera last moved, the view is planned anyway.
 enum class SettleStep { Wait, Plan };
 
-inline SettleStep settleStep(bool moving, bool buttonHeld)
+inline constexpr std::int64_t kMaxHeldWaitMs = 3000;
+
+inline SettleStep settleStep(bool moving, bool buttonHeld, std::int64_t msSinceMove,
+                             std::int64_t maxHeldMs = kMaxHeldWaitMs)
 {
-    return moving && buttonHeld ? SettleStep::Wait : SettleStep::Plan;
+    return moving && buttonHeld && msSinceMove < maxHeldMs ? SettleStep::Wait : SettleStep::Plan;
 }
 
 // ── Whether to fetch ────────────────────────────────────────────────────────

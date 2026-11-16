@@ -49,8 +49,8 @@ a block from where every N-th voxel would put it.
 
 When the 3-D view of a large cube shows a preview, it refines itself as you
 look around. About 200 ms after the camera stops moving (a rotation, pan,
-wheel zoom, a Camera menu view, a linked view; a drag paused with the button
-held does not count as stopped), the viewer works
+wheel zoom, a Camera menu view, a linked view, a resized view; a drag paused
+with the button held counts as stopped only after 3 s), the viewer works
 out the part of the cube in view, how many cube voxels one screen pixel covers
 at the focal point, and the level that matches: zoomed in on a quarter of the
 cube, it reads that part at level 1 or level 0; zoomed out so that the preview

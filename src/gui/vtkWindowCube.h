@@ -1432,6 +1432,10 @@ protected:
     vtkWeakPointer<vtkRenderer> m_lodFrameRenderer;
     unsigned long m_lodFrameTag{ 0 };
     CubeLodAuto::MotionTracker m_lodMotion;
+    QElapsedTimer m_lodLastMove;   ///< since the camera last moved (settle wait cap)
+    /// Set while something drives the camera on its own (the orbit movie):
+    /// its frames are not a motion to refine for.
+    bool m_lodSuspended{ false };
     bool m_lodTornDown{ false };   ///< teardownLevelOfDetail ran: install nothing again
     /// Frames drawn during the current camera motion, for the log: count, the
     /// renderer's own time and the time between frames.

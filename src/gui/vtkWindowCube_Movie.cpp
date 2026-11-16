@@ -25,6 +25,7 @@
 #include <vtkRendererCollection.h>
 #include <vtkSmartPointer.h>
 
+#include <QScopedValueRollback>
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
@@ -293,6 +294,11 @@ void vtkWindowCube::showExportMovieDialog()
             QMessageBox::warning(this, u"Export Movie"_s, u"3-D view is not available."_s);
             return;
         }
+        // The orbit's frames are not a camera motion to refine for: a refine
+        // landing mid-movie would change the detail between frames.
+        const QScopedValueRollback<bool> lodPause(this->m_lodSuspended, true);
+        if (this->m_lodSettleTimer)
+            this->m_lodSettleTimer->stop();
         // Snapshot the camera so cancel/partial export leaves the view unchanged.
         double pos[3], foc[3], up[3];
         cam->GetPosition(pos);

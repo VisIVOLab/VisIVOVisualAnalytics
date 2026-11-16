@@ -226,6 +226,8 @@ void vtkWindowCube::installLodCameraObservers()
 
 void vtkWindowCube::onLodFrameDrawn()
 {
+    if (this->m_lodSuspended)
+        return;
     vtkRenderer *renderer = this->m_lodFrameRenderer.GetPointer();
     vtkCamera *camera = renderer ? renderer->GetActiveCamera() : nullptr;
     if (!camera)
@@ -237,6 +239,8 @@ void vtkWindowCube::onLodFrameDrawn()
     pose.viewAngle = camera->GetViewAngle();
     pose.parallelScale = camera->GetParallelScale();
     pose.parallel = camera->GetParallelProjection() != 0;
+    if (const int *size = renderer->GetSize())
+        pose.viewport = { size[0], size[1] };
     const CubeLodAuto::MotionTracker::Frame frame = this->m_lodMotion.frame(pose);
     if (frame == CubeLodAuto::MotionTracker::Frame::Started) {
         qDebug().noquote() << u"[lod] camera moving"_s;
@@ -252,14 +256,21 @@ void vtkWindowCube::onLodFrameDrawn()
     this->m_lodFrames.renderSeconds += t;
     this->m_lodFrames.worstRenderSeconds = std::max(this->m_lodFrames.worstRenderSeconds, t);
     // Only a frame that moved the camera puts the settling off.
-    if (frame != CubeLodAuto::MotionTracker::Frame::Still && this->m_lodSettleTimer)
-        this->m_lodSettleTimer->start();
+    if (frame != CubeLodAuto::MotionTracker::Frame::Still) {
+        this->m_lodLastMove.start();
+        if (this->m_lodSettleTimer)
+            this->m_lodSettleTimer->start();
+    }
 }
 
 void vtkWindowCube::onLodSettleTimeout()
 {
+    if (this->m_lodSuspended)
+        return;
     const bool held = QGuiApplication::mouseButtons() != Qt::NoButton;
-    if (CubeLodAuto::settleStep(this->m_lodMotion.moving(), held) == CubeLodAuto::SettleStep::Wait) {
+    const qint64 sinceMove = this->m_lodLastMove.isValid() ? this->m_lodLastMove.elapsed() : 0;
+    if (CubeLodAuto::settleStep(this->m_lodMotion.moving(), held, sinceMove)
+        == CubeLodAuto::SettleStep::Wait) {
         if (this->m_lodSettleTimer)
             this->m_lodSettleTimer->start();   // a drag paused, not ended
         return;
