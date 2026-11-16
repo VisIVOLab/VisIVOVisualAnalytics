@@ -114,8 +114,10 @@ symbol[[100pix,100pix], .]
 
     def test_box_corners_to_center_size(self):
         regs = R.parse_regions(self.CRTF)
-        box = regs[3]  # box[[10,10],[50,40]] → center (30,25) size (40,30)
-        self.assertEqual(box["center"], [30.0, 25.0])
+        # box[[10,10],[50,40]] → center (30,25) size (40,30) in CRTF's 0-based
+        # pixels, so (31,26) in the canonical 1-based ones.
+        box = regs[3]
+        self.assertEqual(box["center"], [31.0, 26.0])
         self.assertEqual(box["size"], [40.0, 30.0])
 
     def test_rotbox_angle(self):
@@ -233,9 +235,22 @@ class TestRegionsHttp(unittest.TestCase):
         self.assertAlmostEqual(reg["center"][1], 32.0, delta=0.5)
         self.assertAlmostEqual(reg["radius"], 3.0, delta=0.1)  # 3" / 1"/pix
 
-    def test_invalid_text_returns_422(self):
+    def test_invalid_text_is_reported_by_line(self):
+        # Unreadable statements are not a failed request: each one comes back
+        # with its line and reason, next to the regions that could be read.
         r = self.client.post("/v1/regions/parse",
                              json={"text": "circle[[bad", "format": "crtf"},
+                             headers=self._headers())
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        self.assertEqual((body["n_regions"], body["n_skipped"]), (0, 1))
+        self.assertFalse(body["valid"])          # nothing read: the reason is in error too
+        self.assertIn("Line 1", body["error"])
+        self.assertEqual(body["diagnostics"][0]["line"], 1)
+        self.assertEqual(body["diagnostics"][0]["text"], "circle[[bad")
+
+    def test_unknown_format_returns_422(self):
+        r = self.client.post("/v1/regions/parse", json={"text": "circle(1,2,3)", "format": "reg"},
                              headers=self._headers())
         self.assertEqual(r.status_code, 422)
 
@@ -311,6 +326,24 @@ class TestRegionStats(unittest.TestCase):
         # Axis-aligned 10×6 box → 11×7 = 77 pixels (inclusive of the boundary).
         self.assertGreaterEqual(d["valid_count"], 60)
         self.assertEqual(d["mean"], 2.0)
+
+    def test_box_and_ellipse_annulus_counts(self):
+        # A 10×6 box minus the 4×2 box inside it: 11×7 pixels less the 3×1
+        # strictly inside the inner one (its edge belongs to the annulus).
+        reg = {"shape": "box_annulus", "frame": "image", "center": [32, 32], "inner": [4, 2],
+               "outer": [10, 6], "angle_deg": 0.0, "unit": "pix"}
+        d = self._stats(self.ds, reg).json()
+        self.assertEqual(d["valid_count"], 77 - 3)
+        # Elliptical annulus with equal axes is the circular annulus.
+        circ = {"shape": "annulus", "frame": "image", "center": [32, 32], "radii": [3, 6], "unit": "pix"}
+        ell = {"shape": "ellipse_annulus", "frame": "image", "center": [32, 32], "inner": [3, 3],
+               "outer": [6, 6], "angle_deg": 17.0, "unit": "pix"}
+        self.assertEqual(self._stats(self.ds, ell).json()["valid_count"],
+                         self._stats(self.ds, circ).json()["valid_count"])
+
+    def test_line_has_no_statistics(self):
+        reg = {"shape": "line", "frame": "image", "points": [[3, 3], [9, 9]], "unit": "pix"}
+        self.assertEqual(self._stats(self.ds, reg).status_code, 422)
 
     def test_polygon_stats(self):
         reg = {"shape": "polygon", "frame": "image",
