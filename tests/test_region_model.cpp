@@ -7,9 +7,11 @@
 #include "RegionFrameText.h"
 #include "RegionCubeSampling.h"
 #include "RegionFullRes.h"
+#include "RegionImportResult.h"
 #include "RegionModel.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTest>
 
@@ -553,4 +555,129 @@ void TestRegionModel::addAllIsOneUndoStep()
     QVERIFY(list.canRedo());
     QVERIFY(list.addAll({}).empty());
     QVERIFY(list.canRedo());     // nothing added: no undo step, redo kept
+}
+
+// ── Shapes read from region files (issue #342) ───────────────────────────────
+
+namespace {
+Region readCanonical(const char *json)
+{
+    Region r;
+    QString why;
+    const QJsonObject o = QJsonDocument::fromJson(json).object();
+    if (!fromCanonical(o, 1.0, &r, &why))
+        qWarning() << "readCanonical:" << why;
+    return r;
+}
+}   // namespace
+
+void TestRegionModel::newShapesRoundTripAndGeometry()
+{
+    // Each new shape as the backend returns it (image frame, 1-based).
+    const Region line = readCanonical(R"j({"shape":"line","frame":"image","unit":"pix",
+        "points":[[11,11],[21,11]],"source_line":3})j");
+    QCOMPARE(line.shape, Shape::Line);
+    QCOMPARE(line.sourceLine, 3);
+    QVERIFY(!contains(line, 15.0, 10.0));   // no area
+    QVERIFY(near(distanceToOutline(line, { 15.0, 12.0 }), 2.0));
+    QCOMPARE(int(openPaths(line).size()), 1);
+    QVERIFY(outlines(line).empty());
+
+    const Region vec = readCanonical(R"j({"shape":"vector","frame":"image","unit":"pix",
+        "center":[11,11],"length":10,"angle_deg":90,"props":{"arrow":true}})j");
+    QCOMPARE(vec.shape, Shape::Vector);
+    QVERIFY(near(vectorEnd(vec)[0], 10.0, 1e-9) && near(vectorEnd(vec)[1], 20.0, 1e-9));
+    QCOMPARE(int(openPaths(vec).size()), 2);   // shaft and head
+    QVERIFY(vec.props.value(QStringLiteral("arrow")).toBool());
+    const Region turned = withHandleAt(vec, handles(vec, 5.0).front(), { 20.0, 10.0 });
+    QVERIFY(near(turned.length, 10.0) && near(turned.angleDeg, 0.0));
+
+    const Region text = readCanonical(R"j({"shape":"text","frame":"image","unit":"pix",
+        "center":[5,6],"text":"NGC 1"})j");
+    QCOMPARE(text.text, QStringLiteral("NGC 1"));
+    QVERIFY(!hasArea(text.shape));
+
+    const Region ea = readCanonical(R"j({"shape":"ellipse_annulus","frame":"image","unit":"pix",
+        "center":[51,51],"inner":[4,2],"outer":[10,5],"angle_deg":0})j");
+    QVERIFY(contains(ea, 57.0, 50.0));    // between the ellipses
+    QVERIFY(!contains(ea, 52.0, 50.0));   // in the hole
+    QVERIFY(!contains(ea, 50.0, 56.0));   // outside
+    QCOMPARE(int(outlines(ea).size()), 2);
+    const Region ba = readCanonical(R"j({"shape":"box_annulus","frame":"image","unit":"pix",
+        "center":[51,51],"inner":[4,4],"outer":[10,6],"angle_deg":90})j");
+    // Turned by 90 degrees: the outer box is 6 wide and 10 high on the grid.
+    QVERIFY(contains(ba, 50.0, 54.0));
+    QVERIFY(!contains(ba, 54.0, 50.0));
+    QVERIFY(!contains(ba, 51.0, 50.0));   // in the hole
+    const auto b = bounds(ba);
+    QVERIFY(near(b[1] - b[0], 6.0, 1e-9) && near(b[3] - b[2], 10.0, 1e-9));
+
+    // Back to canonical: sizes, the string, the properties and the file line.
+    for (const Region &r : { line, vec, text, ea, ba }) {
+        Region again;
+        QVERIFY(fromCanonical(toCanonical(r, 1.0), 1.0, &again));
+        QVERIFY(sameGeometry(r, again));
+        QCOMPARE(again.text, r.text);
+        QCOMPARE(again.sourceLine, r.sourceLine);
+    }
+    QVERIFY(toCanonical(vec, 1.0).value(QStringLiteral("props")).toObject()
+                    .value(QStringLiteral("arrow")).toBool());
+
+    // An annulus's outer edge never crosses the inner one under a drag.
+    const Handle major = handles(ea, 5.0).front();
+    QCOMPARE(major.kind, HandleKind::MajorAxis);
+    QVERIFY(withHandleAt(ea, major, { 51.0, 50.0 }).outer[0] > ea.inner[0]);
+    // A line keeps two vertices.
+    Region bad;
+    QVERIFY(!fromCanonical(QJsonDocument::fromJson(
+                                   R"j({"shape":"line","frame":"image","points":[[1,1]]})j")
+                                   .object(),
+                           1.0, &bad));
+}
+
+void TestRegionModel::importKeepsEveryRegionAndSaysWhy()
+{
+    // A parse response: two rings of one annulus statement, a labelled circle,
+    // a region the list cannot hold, and the backend's own diagnostic.
+    const QString file = QStringLiteral("# Region file format: DS9\n"
+                                        "image\n"
+                                        "annulus(50,50,2,4,6)\n"
+                                        "circle(10,10,3) # text={src} color=red\n"
+                                        "panda(10,10,0,360,4,1,2,2)\n"
+                                        "fk5;circle(0,0,0\")\n");
+    const QJsonArray regions = QJsonDocument::fromJson(R"j([
+        {"shape":"annulus","frame":"image","unit":"pix","center":[50,50],"radii":[2,4],"source_line":3},
+        {"shape":"annulus","frame":"image","unit":"pix","center":[50,50],"radii":[4,6],"source_line":3},
+        {"shape":"circle","frame":"image","unit":"pix","center":[10,10],"radius":3,"source_line":4,
+         "props":{"text":"src","color":"red"}},
+        {"shape":"circle","frame":"image","unit":"pix","center":[10,10],"radius":0,"source_line":6}
+    ])j").array();
+    const QJsonArray diags = QJsonDocument::fromJson(R"j([
+        {"line":5,"text":"panda(10,10,0,360,4,1,2,2)","reason":"unsupported shape 'panda'"}
+    ])j").array();
+    const ImportResult r = importFromParse(regions, diags, false, 1, file);
+    QCOMPARE(int(r.regions.size()), 3);
+    QCOMPARE(r.regions[0].name, QStringLiteral("Annulus, line 3, ring 1/2"));
+    QCOMPARE(r.regions[1].name, QStringLiteral("Annulus, line 3, ring 2/2"));
+    QCOMPARE(r.regions[2].name, QStringLiteral("src"));
+    QCOMPARE(r.regions[2].color, QStringLiteral("red"));
+    // The backend's line and the one the list refused, in file order, each
+    // with its text and reason.
+    QCOMPARE(int(r.diagnostics.size()), 2);
+    QCOMPARE(r.diagnostics[0].line, 5);
+    QCOMPARE(r.diagnostics[1].line, 6);
+    QCOMPARE(r.diagnostics[1].text, QStringLiteral("fk5;circle(0,0,0\")"));
+    QVERIFY(r.diagnostics[1].reason.contains(QStringLiteral("no size")));
+    QVERIFY(importSummary(r).contains(QStringLiteral("2 not read")));
+
+    // The two rings move together; the circle alone.
+    RegionList list;
+    const auto ids = list.addAll(r.regions);
+    QCOMPARE(int(list.ringGroup(ids[0]).size()), 2);
+    QCOMPARE(int(list.ringGroup(ids[2]).size()), 1);
+    QCOMPARE(r.notRead(), 2);   // one by the backend, one by the list
+    // The same file imported again: its rings are a group of their own.
+    const auto again = list.addAll(r.regions);
+    QCOMPARE(int(list.ringGroup(again[0]).size()), 2);
+    QCOMPARE(int(list.ringGroup(ids[0]).size()), 2);
 }

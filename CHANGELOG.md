@@ -8,6 +8,20 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: region files are imported whole in both viewers, with the
+  reason for every line not read (#342).** *Tools ▸ Regions ▸ Import Region*
+  is now in the image viewer too, and both viewers read the file through the
+  backend with the dataset's WCS into the region list: every region (one
+  Undo takes the import back), at sub-pixel precision, in any frame and
+  coordinate format. Lines, vectors, text, elliptical and box annuli are drawn
+  (the last two measured between their edges); the rings of a multi-radius
+  annulus are named as one group and move together; colours, `text={…}`
+  labels and the other properties are kept for export. Every line that does
+  not become a region is listed in a non-modal report with its number, text
+  and reason. A `.reg` or `.crtf` picked in *Load Catalogue Overlay* is read
+  as regions too; the overlay's own ds9 reader, which skipped galactic,
+  physical and sexagesimal positions and image-frame shapes, no longer sees
+  region files.
 - **Desktop: regions in the cube viewer are a list you edit and keep
   (#341).** The 2-D slice (and a moment map shown under it) draws every
   region of the window's list, as the image viewer does: click selects, drag

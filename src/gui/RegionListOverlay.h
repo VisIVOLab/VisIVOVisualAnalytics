@@ -8,7 +8,8 @@
 // viewer's 2-D slice and its moment window, and the cube's 3-D cutting plane
 // (#343). Each draws the same RegionList: the unselected outlines in their own
 // colours, the selected one thicker with a light fill, point regions as
-// markers, and the selected region's handles. Positions are the list's
+// markers, lines and vectors as open paths, text regions and the labels a
+// region file gave as text, and the selected region's handles. Positions are the list's
 // full-resolution 0-based pixels, mapped to the renderer's world by `toWorld`
 // (the identity on a 2-D view whose world is those pixels).
 
@@ -18,11 +19,13 @@
 
 #include <array>
 #include <functional>
+#include <vector>
 
 class vtkActor;
 class vtkContourTriangulator;
 class vtkPolyData;
 class vtkRenderer;
+class vtkTextActor;
 
 class RegionListOverlay
 {
@@ -90,6 +93,10 @@ private:
     vtkSmartPointer<vtkActor> m_pointActor;
     vtkSmartPointer<vtkPolyData> m_handleData;      ///< the selected region's handles
     vtkSmartPointer<vtkActor> m_handleActor;
+    /// The strings of text regions and the labels a region file gave
+    /// (`text={…}`), one actor each, reused between updates.
+    std::vector<vtkSmartPointer<vtkTextActor>> m_labels;
+    int m_labelsShown{ 0 };
 };
 
 #endif   // RegionListOverlay_h

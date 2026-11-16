@@ -205,9 +205,20 @@ void vtkWindowCube::loadCatalogueOverlay()
 {
     const QString path = QFileDialog::getOpenFileName(
             this, u"Load Catalogue Overlay"_s, QString(),
-            u"Catalogue / region files (*.reg *.csv *.tsv *.txt);;DS9 region (*.reg);;"
-            u"Delimited text tables (*.csv *.tsv *.txt);;All files (*)"_s);
+            u"Catalogue tables, or region files read as regions (*.csv *.tsv *.txt *.reg *.crtf);;"
+            u"Catalogue tables (*.csv *.tsv *.txt);;Region files (*.reg *.crtf);;"
+            u"All files (*)"_s);
     if (path.isEmpty()) {
+        return;
+    }
+    // A ds9 or CRTF region file is regions, not a catalogue: it goes to the
+    // region list through the backend (issue #342), every shape and frame
+    // placed with the cube's WCS, rather than to markers.
+    if (path.endsWith(u".reg"_s, Qt::CaseInsensitive)
+        || path.endsWith(u".crtf"_s, Qt::CaseInsensitive)) {
+        this->importRegionsFromFile(
+                path, u"Region files are read as regions (Tools \u25b8 Regions \u25b8 Import "
+                      u"Region); the catalogue overlay takes tables."_s);
         return;
     }
 

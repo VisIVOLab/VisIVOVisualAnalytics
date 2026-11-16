@@ -34,7 +34,13 @@
 
 namespace visivo::regions {
 
-enum class Shape { Point, Circle, Ellipse, Box, Polygon, Annulus };
+enum class Shape {
+    Point, Circle, Ellipse, Box, Polygon, Annulus,
+    // Read from region files (issue #342): no statistics for the three
+    // without an area, and the two annuli of an ellipse or a box.
+    Line, Vector, Text, EllipseAnnulus, BoxAnnulus
+};
+constexpr std::size_t kShapeCount = 11;
 
 using Vec2 = std::array<double, 2>;
 
@@ -48,6 +54,11 @@ inline QString shapeName(Shape s)
     case Shape::Box:     return QStringLiteral("box");
     case Shape::Polygon: return QStringLiteral("polygon");
     case Shape::Annulus: return QStringLiteral("annulus");
+    case Shape::Line:    return QStringLiteral("line");
+    case Shape::Vector:  return QStringLiteral("vector");
+    case Shape::Text:    return QStringLiteral("text");
+    case Shape::EllipseAnnulus: return QStringLiteral("ellipse_annulus");
+    case Shape::BoxAnnulus:     return QStringLiteral("box_annulus");
     }
     return QString();
 }
@@ -55,16 +66,33 @@ inline QString shapeName(Shape s)
 inline std::optional<Shape> shapeFromName(const QString &name)
 {
     for (Shape s : { Shape::Point, Shape::Circle, Shape::Ellipse, Shape::Box, Shape::Polygon,
-                     Shape::Annulus }) {
+                     Shape::Annulus, Shape::Line, Shape::Vector, Shape::Text,
+                     Shape::EllipseAnnulus, Shape::BoxAnnulus }) {
         if (shapeName(s) == name)
             return s;
     }
     return std::nullopt;
 }
 
+/// The vertices are the shape (a polygon, a line), not a centre and sizes.
+inline bool isPointList(Shape s) { return s == Shape::Polygon || s == Shape::Line; }
+
+/// Pixels can be inside it: statistics, spectra and masks make sense.
+inline bool hasArea(Shape s) { return s != Shape::Line && s != Shape::Vector && s != Shape::Text; }
+
+/// One of the rings ds9 makes of a multi-radius annulus.
+inline bool isRing(Shape s)
+{
+    return s == Shape::Annulus || s == Shape::EllipseAnnulus || s == Shape::BoxAnnulus;
+}
+
 /// What a person calls it: "Box", "Annulus".
 inline QString shapeLabel(Shape s)
 {
+    if (s == Shape::EllipseAnnulus)
+        return QStringLiteral("Elliptical annulus");
+    if (s == Shape::BoxAnnulus)
+        return QStringLiteral("Box annulus");
     QString n = shapeName(s);
     if (!n.isEmpty())
         n[0] = n[0].toUpper();
@@ -82,8 +110,22 @@ struct Region
     Vec2 semiAxes{ 0.0, 0.0 }; ///< ellipse: along the angle, then across it
     Vec2 size{ 0.0, 0.0 };     ///< box: full width along the angle, full height across it
     Vec2 radii{ 0.0, 0.0 };    ///< annulus: inner, outer
-    double angleDeg{ 0.0 };    ///< ellipse and box: counter-clockwise from pixel +x
-    std::vector<Vec2> points;  ///< polygon vertices
+    double angleDeg{ 0.0 };    ///< ellipse, box, their annuli, vector: counter-clockwise from pixel +x
+    std::vector<Vec2> points;  ///< polygon or line vertices
+    double length{ 0.0 };      ///< vector: from the centre along the angle
+    QString text;              ///< text region: the string shown
+    Vec2 inner{ 0.0, 0.0 };    ///< elliptical annulus: inner semi-axes; box annulus: inner size
+    Vec2 outer{ 0.0, 0.0 };    ///< ... and outer
+    /// The file's properties (props), kept so an export writes them back:
+    /// width, dash, font, tags, include, … The name and colour above win.
+    QJsonObject props;
+    /// Line of the file it was read from (1-based); 0 when drawn. Rings read
+    /// from one multi-radius annulus share it and move together.
+    int sourceLine{ 0 };
+    /// Which addAll() put it in the list (0: added alone): rings group only
+    /// within one import, so two files with an annulus on the same line and
+    /// centre stay apart. Not written to files.
+    int batch{ 0 };
     /// Frame and size unit the region was last typed or read in ("icrs",
     /// "galactic", …); empty when it was drawn on the image.
     QString sourceFrame;
@@ -94,7 +136,8 @@ inline bool sameGeometry(const Region &a, const Region &b)
 {
     return a.shape == b.shape && a.center == b.center && a.radius == b.radius
             && a.semiAxes == b.semiAxes && a.size == b.size && a.radii == b.radii
-            && a.angleDeg == b.angleDeg && a.points == b.points;
+            && a.angleDeg == b.angleDeg && a.points == b.points && a.length == b.length
+            && a.inner == b.inner && a.outer == b.outer;
 }
 
 // ── Geometry ─────────────────────────────────────────────────────────────────
@@ -128,6 +171,20 @@ inline std::array<Vec2, 4> boxCorners(const Region &r)
              toWorld(r, { -hw, hh }) };
 }
 
+/// The far end of a vector.
+inline Vec2 vectorEnd(const Region &r)
+{
+    return toWorld(r, { r.length, 0.0 });
+}
+
+/// The corners of a box of `size` centred on the region, in its own axes.
+inline std::array<Vec2, 4> cornersOfSize(const Region &r, const Vec2 &size)
+{
+    const double hw = size[0] / 2.0, hh = size[1] / 2.0;
+    return { toWorld(r, { -hw, -hh }), toWorld(r, { hw, -hh }), toWorld(r, { hw, hh }),
+             toWorld(r, { -hw, hh }) };
+}
+
 /// Is the pixel centred at (x, y) in the region? The backend's rules for the
 /// statistics (`_region_mask`): inside a circle, ellipse or rotated box, between
 /// an annulus's radii with both edges included, inside a polygon by the
@@ -157,6 +214,29 @@ inline bool contains(const Region &r, double x, double y)
         const Vec2 l = toLocal(r, { x, y });
         return std::abs(l[0]) <= r.size[0] / 2.0 + eps && std::abs(l[1]) <= r.size[1] / 2.0 + eps;
     }
+    case Shape::EllipseAnnulus: {
+        if (r.outer[0] <= 0.0 || r.outer[1] <= 0.0)
+            return false;
+        const Vec2 l = toLocal(r, { x, y });
+        const auto in = [&l](const Vec2 &ax) {
+            const double u = l[0] / ax[0], v = l[1] / ax[1];
+            return u * u + v * v;
+        };
+        if (in(r.outer) > 1.0 + eps)
+            return false;
+        // Both edges included, as for the circular annulus.
+        return r.inner[0] <= 0.0 || r.inner[1] <= 0.0 || in(r.inner) >= 1.0 - eps;
+    }
+    case Shape::BoxAnnulus: {
+        const Vec2 l = toLocal(r, { x, y });
+        if (std::abs(l[0]) > r.outer[0] / 2.0 + eps || std::abs(l[1]) > r.outer[1] / 2.0 + eps)
+            return false;
+        return !(std::abs(l[0]) < r.inner[0] / 2.0 - eps && std::abs(l[1]) < r.inner[1] / 2.0 - eps);
+    }
+    case Shape::Line:
+    case Shape::Vector:
+    case Shape::Text:
+        return false;   // no area
     case Shape::Polygon: {
         const auto &v = r.points;
         if (v.size() < 3)
@@ -183,14 +263,35 @@ inline std::array<double, 4> bounds(const Region &r)
         return std::array<double, 4>{ r.center[0] - rad, r.center[0] + rad, r.center[1] - rad,
                                       r.center[1] + rad };
     };
+    const auto fromPoints = [](const std::vector<Vec2> &pts) {
+        if (pts.empty())
+            return std::array<double, 4>{ 0, 0, 0, 0 };
+        std::array<double, 4> b{ pts[0][0], pts[0][0], pts[0][1], pts[0][1] };
+        for (const Vec2 &p : pts) {
+            b[0] = std::min(b[0], p[0]);
+            b[1] = std::max(b[1], p[0]);
+            b[2] = std::min(b[2], p[1]);
+            b[3] = std::max(b[3], p[1]);
+        }
+        return b;
+    };
     switch (r.shape) {
-    case Shape::Point:   return square(0.5);
+    case Shape::Point:
+    case Shape::Text:    return square(0.5);
     case Shape::Circle:  return square(r.radius);
     case Shape::Annulus: return square(r.radii[1]);
-    case Shape::Ellipse: {
+    case Shape::Line:    return fromPoints(r.points);
+    case Shape::Vector:  return fromPoints({ r.center, vectorEnd(r) });
+    case Shape::BoxAnnulus: {
+        const auto c = cornersOfSize(r, r.outer);
+        return fromPoints({ c.begin(), c.end() });
+    }
+    case Shape::Ellipse:
+    case Shape::EllipseAnnulus: {
         // Exact extent of a rotated ellipse.
         const double t = r.angleDeg * kPi / 180.0;
-        const double a = r.semiAxes[0], b = r.semiAxes[1];
+        const Vec2 ax = r.shape == Shape::Ellipse ? r.semiAxes : r.outer;
+        const double a = ax[0], b = ax[1];
         const double ex = std::sqrt(a * a * std::cos(t) * std::cos(t) + b * b * std::sin(t) * std::sin(t));
         const double ey = std::sqrt(a * a * std::sin(t) * std::sin(t) + b * b * std::cos(t) * std::cos(t));
         return { r.center[0] - ex, r.center[0] + ex, r.center[1] - ey, r.center[1] + ey };
@@ -242,6 +343,24 @@ inline std::vector<std::vector<Vec2>> outlines(const Region &r, int segments = 9
         loops.push_back(r.radii[0] > 0.0 ? ellipse(r.radii[0], r.radii[0]) : std::vector<Vec2>{});
         return loops;
     }
+    case Shape::EllipseAnnulus: {
+        std::vector<std::vector<Vec2>> loops{ ellipse(r.outer[0], r.outer[1]) };
+        loops.push_back(r.inner[0] > 0.0 && r.inner[1] > 0.0 ? ellipse(r.inner[0], r.inner[1])
+                                                             : std::vector<Vec2>{});
+        return loops;
+    }
+    case Shape::BoxAnnulus: {
+        const auto o = cornersOfSize(r, r.outer);
+        const auto i = cornersOfSize(r, r.inner);
+        std::vector<std::vector<Vec2>> loops{ std::vector<Vec2>(o.begin(), o.end()) };
+        loops.push_back(r.inner[0] > 0.0 && r.inner[1] > 0.0 ? std::vector<Vec2>(i.begin(), i.end())
+                                                             : std::vector<Vec2>{});
+        return loops;
+    }
+    case Shape::Line:
+    case Shape::Vector:
+    case Shape::Text:
+        return {};   // open paths, below
     case Shape::Box: {
         const auto c = boxCorners(r);
         return { std::vector<Vec2>(c.begin(), c.end()) };
@@ -249,6 +368,23 @@ inline std::vector<std::vector<Vec2>> outlines(const Region &r, int segments = 9
     case Shape::Polygon: return { r.points };
     }
     return {};
+}
+
+/// The open polylines to draw: a line's vertices, a vector's shaft and arrow
+/// head. Every other shape is a closed outline (outlines).
+inline std::vector<std::vector<Vec2>> openPaths(const Region &r)
+{
+    if (r.shape == Shape::Line)
+        return { r.points };
+    if (r.shape != Shape::Vector)
+        return {};
+    const Vec2 end = vectorEnd(r);
+    const double head = std::min(0.25 * r.length, 8.0);
+    const auto barb = [&](double turnDeg) {
+        return toWorld(r, { r.length - head * std::cos(turnDeg * kPi / 180.0),
+                            head * std::sin(turnDeg * kPi / 180.0) });
+    };
+    return { { r.center, end }, { barb(25.0), end, barb(-25.0) } };
 }
 
 inline double distanceToSegment(const Vec2 &p, const Vec2 &a, const Vec2 &b)
@@ -263,12 +399,16 @@ inline double distanceToSegment(const Vec2 &p, const Vec2 &a, const Vec2 &b)
 /// Shortest distance from `p` to the region's drawn outline (to the centre for a point).
 inline double distanceToOutline(const Region &r, const Vec2 &p)
 {
-    if (r.shape == Shape::Point)
+    if (r.shape == Shape::Point || r.shape == Shape::Text)
         return std::hypot(p[0] - r.center[0], p[1] - r.center[1]);
     double best = std::numeric_limits<double>::infinity();
     for (const auto &loop : outlines(r)) {
         for (std::size_t i = 0; i < loop.size(); ++i)
             best = std::min(best, distanceToSegment(p, loop[i], loop[(i + 1) % loop.size()]));
+    }
+    for (const auto &path : openPaths(r)) {
+        for (std::size_t i = 0; i + 1 < path.size(); ++i)
+            best = std::min(best, distanceToSegment(p, path[i], path[i + 1]));
     }
     return best;
 }
@@ -278,7 +418,20 @@ inline double distanceToOutline(const Region &r, const Vec2 &p)
 // vertices, a circle's rim, an annulus's two radii, an ellipse's two semi-axes,
 // and a rotation knob standing off the top edge of a box or an ellipse.
 
-enum class HandleKind { Vertex, Corner, Radius, InnerRadius, MajorAxis, MinorAxis, Rotate };
+enum class HandleKind { Vertex, Corner, Radius, InnerRadius, MajorAxis, MinorAxis, Rotate, VectorEnd };
+
+/// How far from the centre, along the shape's +y axis, the edge the rotation
+/// knob hangs from lies.
+inline double knobEdge(const Region &r)
+{
+    switch (r.shape) {
+    case Shape::Box:            return r.size[1] / 2.0;
+    case Shape::Ellipse:        return r.semiAxes[1];
+    case Shape::EllipseAnnulus: return r.outer[1];
+    case Shape::BoxAnnulus:     return r.outer[1] / 2.0;
+    default:                    return 0.0;
+    }
+}
 
 struct Handle
 {
@@ -317,8 +470,23 @@ inline std::vector<Handle> handles(const Region &r, double knobOffset)
         break;
     }
     case Shape::Polygon:
+    case Shape::Line:
         for (std::size_t i = 0; i < r.points.size(); ++i)
             out.push_back({ HandleKind::Vertex, static_cast<int>(i), r.points[i] });
+        break;
+    case Shape::Vector:
+        out.push_back({ HandleKind::VectorEnd, 0, vectorEnd(r) });
+        break;
+    case Shape::EllipseAnnulus:
+    case Shape::BoxAnnulus: {
+        // The outer edge's two axes, and the knob; the inner one is typed.
+        const double f = r.shape == Shape::EllipseAnnulus ? 1.0 : 0.5;
+        out.push_back({ HandleKind::MajorAxis, 0, toWorld(r, { f * r.outer[0], 0.0 }) });
+        out.push_back({ HandleKind::MinorAxis, 0, toWorld(r, { 0.0, f * r.outer[1] }) });
+        out.push_back({ HandleKind::Rotate, 0, toWorld(r, { 0.0, knobEdge(r) + knobOffset }) });
+        break;
+    }
+    case Shape::Text:
         break;
     }
     return out;
@@ -404,15 +572,25 @@ inline Region withHandleAt(Region r, const Handle &h, const Vec2 &p, double minS
         break;
     case HandleKind::MajorAxis:
     case HandleKind::MinorAxis: {
-        if (r.shape != Shape::Ellipse)
-            break;
         const Vec2 l = toLocal(r, p);
-        if (h.kind == HandleKind::MajorAxis)
-            r.semiAxes[0] = std::max(minSize, std::abs(l[0]));
-        else
-            r.semiAxes[1] = std::max(minSize, std::abs(l[1]));
+        const int k = h.kind == HandleKind::MajorAxis ? 0 : 1;
+        const double along = std::abs(l[static_cast<std::size_t>(k)]);
+        if (r.shape == Shape::Ellipse) {
+            r.semiAxes[static_cast<std::size_t>(k)] = std::max(minSize, along);
+        } else if (r.shape == Shape::EllipseAnnulus || r.shape == Shape::BoxAnnulus) {
+            // The outer edge follows; it never closes on the inner one.
+            const double f = r.shape == Shape::EllipseAnnulus ? 1.0 : 2.0;
+            const std::size_t i = static_cast<std::size_t>(k);
+            r.outer[i] = std::max(r.inner[i] + minSize, f * along);
+        }
         break;
     }
+    case HandleKind::VectorEnd:
+        if (r.shape == Shape::Vector && dist > 0.0) {
+            r.length = std::max(minSize, dist);
+            r.angleDeg = std::fmod(std::atan2(dy, dx) * 180.0 / kPi + 360.0, 360.0);
+        }
+        break;
     case HandleKind::Rotate: {
         if (dist <= 0.0)
             break;
@@ -432,7 +610,7 @@ inline Region withHandleAt(Region r, const Handle &h, const Vec2 &p, double minS
 inline bool isUsable(const Region &r)
 {
     const auto finite = [](const Vec2 &v) { return std::isfinite(v[0]) && std::isfinite(v[1]); };
-    if (r.shape != Shape::Polygon && !finite(r.center))
+    if (!isPointList(r.shape) && !finite(r.center))
         return false;
     switch (r.shape) {
     case Shape::Point:   return true;
@@ -445,6 +623,16 @@ inline bool isUsable(const Region &r)
     case Shape::Polygon:
         return r.points.size() >= 3
                 && std::all_of(r.points.begin(), r.points.end(), finite);
+    case Shape::Line:
+        return r.points.size() >= 2
+                && std::all_of(r.points.begin(), r.points.end(), finite);
+    case Shape::Vector:  return std::isfinite(r.length) && r.length > 0.0 && std::isfinite(r.angleDeg);
+    case Shape::Text:    return true;
+    case Shape::EllipseAnnulus:
+    case Shape::BoxAnnulus:
+        return finite(r.inner) && finite(r.outer) && std::isfinite(r.angleDeg)
+                && r.inner[0] >= 0.0 && r.inner[1] >= 0.0 && r.outer[0] > r.inner[0]
+                && r.outer[1] > r.inner[1];
     }
     return false;
 }
@@ -484,15 +672,34 @@ inline QJsonObject toCanonical(const Region &r, double originOffset)
         o[QStringLiteral("center")] = pos(r.center);
         o[QStringLiteral("radii")] = QJsonArray{ r.radii[0], r.radii[1] };
         break;
-    case Shape::Polygon: {
+    case Shape::Polygon:
+    case Shape::Line: {
         QJsonArray pts;
         for (const Vec2 &v : r.points)
             pts.append(pos(v));
         o[QStringLiteral("points")] = pts;
         break;
     }
+    case Shape::Vector:
+        o[QStringLiteral("center")] = pos(r.center);
+        o[QStringLiteral("length")] = r.length;
+        o[QStringLiteral("angle_deg")] = r.angleDeg;
+        break;
+    case Shape::Text:
+        o[QStringLiteral("center")] = pos(r.center);
+        o[QStringLiteral("text")] = r.text;
+        break;
+    case Shape::EllipseAnnulus:
+    case Shape::BoxAnnulus:
+        o[QStringLiteral("center")] = pos(r.center);
+        o[QStringLiteral("inner")] = QJsonArray{ r.inner[0], r.inner[1] };
+        o[QStringLiteral("outer")] = QJsonArray{ r.outer[0], r.outer[1] };
+        o[QStringLiteral("angle_deg")] = r.angleDeg;
+        break;
     }
-    QJsonObject props;
+    if (r.sourceLine > 0)
+        o[QStringLiteral("source_line")] = r.sourceLine;
+    QJsonObject props = r.props;
     if (!r.name.isEmpty())
         props[QStringLiteral("text")] = r.name;
     if (!r.color.isEmpty())
@@ -535,11 +742,11 @@ inline bool fromCanonical(const QJsonObject &o, double originOffset, Region *out
     Region r;
     r.shape = *shape;
     const auto shift = [originOffset](Vec2 v) { return Vec2{ v[0] - originOffset, v[1] - originOffset }; };
-    if (r.shape == Shape::Polygon) {
+    if (isPointList(r.shape)) {
         for (const QJsonValue &pv : o.value(QStringLiteral("points")).toArray()) {
             const QJsonArray p = pv.toArray();
             if (p.size() != 2 || !p.at(0).isDouble() || !p.at(1).isDouble())
-                return fail(QStringLiteral("a polygon vertex is not a pair of numbers"));
+                return fail(QStringLiteral("a %1 vertex is not a pair of numbers").arg(shapeName(r.shape)));
             r.points.push_back(shift({ p.at(0).toDouble(), p.at(1).toDouble() }));
         }
     } else {
@@ -567,16 +774,36 @@ inline bool fromCanonical(const QJsonObject &o, double originOffset, Region *out
         if (!detail::readPair(o, QStringLiteral("radii"), &r.radii))
             return fail(QStringLiteral("the annulus has no radii"));
         break;
+    case Shape::Vector:
+        r.length = o.value(QStringLiteral("length")).toDouble(-1.0);
+        r.angleDeg = angle;
+        break;
+    case Shape::Text:
+        r.text = o.value(QStringLiteral("text")).toString();
+        break;
+    case Shape::EllipseAnnulus:
+    case Shape::BoxAnnulus:
+        if (!detail::readPair(o, QStringLiteral("inner"), &r.inner)
+            || !detail::readPair(o, QStringLiteral("outer"), &r.outer))
+            return fail(QStringLiteral("the %1 has no inner and outer size").arg(shapeName(r.shape)));
+        r.angleDeg = angle;
+        break;
     case Shape::Point:
     case Shape::Polygon:
+    case Shape::Line:
         break;
     }
     if (!isUsable(r))
-        return fail(QStringLiteral("the %1 has no area (a size is zero, negative or missing)")
-                            .arg(shapeName(r.shape)));
+        return fail(r.shape == Shape::Line
+                            ? QStringLiteral("the line has fewer than two vertices")
+                            : QStringLiteral("the %1 has no size (a size is zero, negative, "
+                                             "missing, or an inner edge reaches the outer one)")
+                                      .arg(shapeName(r.shape)));
     const QJsonObject props = o.value(QStringLiteral("props")).toObject();
+    r.props = props;
     r.name = props.value(QStringLiteral("text")).toString();
     r.color = props.value(QStringLiteral("color")).toString();
+    r.sourceLine = o.value(QStringLiteral("source_line")).toInt(0);
     *out = r;
     return true;
 }
@@ -636,8 +863,10 @@ public:
         if (regions.empty())
             return ids;
         pushUndo();
+        const int batch = ++m_batches;
         for (Region r : regions) {
             r.id = m_nextId++;
+            r.batch = batch;
             if (r.name.isEmpty())
                 r.name = QStringLiteral("%1 %2").arg(shapeLabel(r.shape)).arg(++m_named[static_cast<std::size_t>(r.shape)]);
             m_regions.push_back(r);
@@ -774,6 +1003,27 @@ public:
         return best;
     }
 
+    /// The rings read from the same multi-radius annulus as region `id`
+    /// (same file line, same centre), `id` included: they move together.
+    std::vector<int> ringGroup(int id) const
+    {
+        std::vector<int> out;
+        const Region *r = find(id);
+        if (!r)
+            return out;
+        if (r->sourceLine <= 0 || !isRing(r->shape)) {
+            out.push_back(id);
+            return out;
+        }
+        for (const Region &o : m_regions) {
+            if (o.sourceLine == r->sourceLine && o.batch == r->batch && o.shape == r->shape
+                && std::abs(o.center[0] - r->center[0]) < 1e-9
+                && std::abs(o.center[1] - r->center[1]) < 1e-9)
+                out.push_back(o.id);
+        }
+        return out;
+    }
+
     static constexpr int kUndoDepth = 100;
 
 private:
@@ -804,7 +1054,8 @@ private:
     std::vector<Region> m_regions;
     int m_selected{ -1 };
     int m_nextId{ 1 };
-    std::array<int, 6> m_named{};   ///< per shape, so names read "Box 1", "Circle 1", "Box 2"
+    int m_batches{ 0 };
+    std::array<int, kShapeCount> m_named{};   ///< per shape, so names read "Box 1", "Circle 1", "Box 2"
     std::vector<Snapshot> m_undo, m_redo;
     Snapshot m_gestureSnapshot;
     bool m_inGesture{ false };

@@ -235,44 +235,6 @@ void nativeWorldToPixel(const QString &ctype0, double nx, double ny,
     }
 }
 
-// Convert canonical region dicts (from the backend CRTF/DS9 parser) into
-// catalogue-overlay entries, so Load Catalogue Overlay is the single loader for
-// region files — including CASA CRTF, which CatalogueOverlayUtils cannot parse.
-// Image-frame pixel values are kept as-is (matching the DS9 path); ellipse and
-// circle become drawable ellipses, other shapes fall back to a centre marker.
-CatalogueOverlayParseResult catalogueResultFromRegions(const QJsonArray &regions)
-{
-    CatalogueOverlayParseResult res;
-    res.valid = true;
-    res.frameLabel = QStringLiteral("CRTF");
-    res.sourceLabel = QStringLiteral("CRTF regions");
-    for (const QJsonValue &rv : regions) {
-        const QJsonObject r = rv.toObject();
-        const QJsonArray c = r.value(u"center"_s).toArray();
-        if (c.size() < 2) continue;
-        CatalogueOverlayEntry e;
-        const bool image = r.value(u"frame"_s).toString() == u"image"_s;
-        e.frame = image ? CatalogueOverlayEntry::Frame::Image : CatalogueOverlayEntry::Frame::Sky;
-        if (image) { e.pixelX = c.at(0).toDouble(); e.pixelY = c.at(1).toDouble(); }
-        else       { e.raDeg = c.at(0).toDouble(); e.decDeg = c.at(1).toDouble(); }
-        const QString shape = r.value(u"shape"_s).toString();
-        if (shape == u"ellipse"_s) {
-            const QJsonArray a = r.value(u"semi_axes"_s).toArray();
-            e.shape = CatalogueOverlayEntry::Shape::Ellipse;
-            e.radiusX = a.at(0).toDouble();
-            e.radiusY = a.at(1).toDouble();
-            e.angleDeg = r.value(u"angle_deg"_s).toDouble();
-        } else if (shape == u"circle"_s) {
-            e.shape = CatalogueOverlayEntry::Shape::Ellipse;
-            e.radiusX = e.radiusY = r.value(u"radius"_s).toDouble();
-        } else {
-            e.shape = CatalogueOverlayEntry::Shape::Marker;
-        }
-        e.label = r.value(u"props"_s).toObject().value(u"text"_s).toString();
-        res.entries.push_back(e);
-    }
-    return res;
-}
 
 }  // namespace
 
@@ -292,37 +254,27 @@ void vtkWindowImage::loadCatalogueOverlay()
 {
     const QString path = QFileDialog::getOpenFileName(
             this, u"Load Catalogue Overlay"_s, QString(),
-            u"Catalogue / region files (*.reg *.crtf *.csv *.tsv *.txt);;DS9 region (*.reg);;"
-            u"CASA CRTF (*.crtf);;Delimited text tables (*.csv *.tsv *.txt);;All files (*)"_s);
+            u"Catalogue tables, or region files read as regions (*.csv *.tsv *.txt *.reg *.crtf);;"
+            u"Catalogue tables (*.csv *.tsv *.txt);;Region files (*.reg *.crtf);;"
+            u"All files (*)"_s);
     if (path.isEmpty()) {
         return;
     }
 
-    // DS9 regions and comma/tab/semicolon tables are parsed locally, told apart
-    // by content (parseFile); CASA CRTF is parsed by the backend (the only place
-    // with a CRTF parser) and converted to catalogue entries.
-    CatalogueOverlayParseResult parsed;
-    if (path.endsWith(u".crtf"_s, Qt::CaseInsensitive)) {
-        QFile crtfFile(path);
-        if (!crtfFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QMessageBox::warning(this, u"Catalogue Overlay"_s, u"Cannot open file:\n%1"_s.arg(path));
-            return;
-        }
-        const QString text = QString::fromUtf8(crtfFile.readAll());
-        crtfFile.close();
-        this->statusBar()->showMessage(u"Parsing CRTF…"_s, 0);
-        BackendClient c(this->remoteBackendUrl, this->remoteBackendToken);
-        const BackendRegionParseResult rr = c.parseRegions(text, u"crtf"_s, QString(), QString());
-        this->statusBar()->clearMessage();
-        if (!rr.valid) {
-            QMessageBox::warning(this, u"Catalogue Overlay"_s,
-                                 u"CRTF parse failed:\n%1"_s.arg(rr.error));
-            return;
-        }
-        parsed = catalogueResultFromRegions(rr.regions);
-    } else {
-        parsed = CatalogueOverlayUtils::parseFile(path);
+    // A ds9 or CRTF region file is regions, not a catalogue: it goes to the
+    // region list through the backend (issue #342), which reads every shape
+    // and frame with the image's full WCS and reports what it cannot read.
+    // The overlay's own ds9 reader skipped galactic and physical frames,
+    // sexagesimal positions and image-frame shapes, and drew sky circles as
+    // crosses without their size.
+    if (path.endsWith(u".reg"_s, Qt::CaseInsensitive)
+        || path.endsWith(u".crtf"_s, Qt::CaseInsensitive)) {
+        this->importRegionsFromFile(
+                path, u"Region files are read as regions (Tools \u25b8 Regions \u25b8 Import "
+                      u"Region); the catalogue overlay takes tables."_s);
+        return;
     }
+    const CatalogueOverlayParseResult parsed = CatalogueOverlayUtils::parseFile(path);
     if (!parsed.valid) {
         QMessageBox::warning(this, u"Catalogue Overlay"_s, parsed.errorMessage);
         return;

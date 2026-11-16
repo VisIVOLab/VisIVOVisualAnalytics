@@ -49,6 +49,7 @@ class vtkCallbackCommand;
 #include "CubeLodAuto.h"
 #include "CubeLodGeometry.h"
 #include "RegionFullRes.h"
+#include "RegionImportResult.h"
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
 
@@ -2110,10 +2111,11 @@ protected:
     QPointer<QAction> m_actExportCubeRegion;
     QPointer<QAction> m_actImportCubeRegion;
     void exportRegionsToFile();
-    void importRegionsFromFile();
-    /// Put the parsed canonical regions (image frame, 1-based pixels) in the
-    /// region list, select the first, and analyse it.
-    void applyImportedRegion(const QJsonArray &regions);
+    /// Tools ▸ Regions ▸ Import Region; @p path skips the file dialog.
+    void importRegionsFromFile(const QString &path = QString(), const QString &note = QString());
+    /// Put the regions read from a file in the list as one change, select
+    /// the first, and analyse the first with an area.
+    void applyImportedRegions(const visivo::regions::ImportResult &result);
 
     // ── The region list (issue #341, vtkWindowCube_RegionList.cpp) ───────────
     // Regions drawn, imported, restored or typed in are kept in m_regions until
@@ -2132,6 +2134,9 @@ protected:
         visivo::regions::Hit hit;
         visivo::regions::Vec2 start{ 0.0, 0.0 };
         visivo::regions::Region original;
+        /// The other rings of a multi-radius annulus, as they were: a move
+        /// carries them along (RegionList::ringGroup).
+        std::vector<visivo::regions::Region> companions;
     };
     RegionDrag m_regionDrag;
     vtkSmartPointer<vtkCallbackCommand> m_regionEditCommand;

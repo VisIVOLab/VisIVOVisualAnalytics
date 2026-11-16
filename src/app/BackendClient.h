@@ -1910,6 +1910,11 @@ struct BackendRegionParseResult
     /// Canonical region dicts as returned by the backend (shape/frame/center/…).
     /// Kept as raw JSON so the viewer can map them onto its overlay model.
     QJsonArray regions;
+    /// Every statement that did not become a region: {line, text, reason}
+    /// (issue #342), at most the backend's cap; `skipped` counts them all.
+    QJsonArray diagnostics;
+    int skipped{ 0 };
+    bool diagnosticsTruncated{ false };
 };
 
 struct BackendRegionExportResult
