@@ -239,12 +239,20 @@ void TestCubeLodAuto::lru_capacityAndOversize()
 void TestCubeLodAuto::lru_blockKeysSeparateDatasetsAndLevels()
 {
     LruCache<BlockKey, int> cache(100);
-    cache.insert(blockKey("cube-a", 256, Node{ 0, 1, 2, 3 }), 1, 1);
-    QVERIFY(cache.contains(blockKey("cube-a", 256, Node{ 0, 1, 2, 3 })));
-    QVERIFY(!cache.contains(blockKey("cube-b", 256, Node{ 0, 1, 2, 3 })));
-    QVERIFY(!cache.contains(blockKey("cube-a", 256, Node{ 1, 1, 2, 3 })));
-    QVERIFY(!cache.contains(blockKey("cube-a", 128, Node{ 0, 1, 2, 3 })));
-    QVERIFY(!cache.contains(blockKey("cube-a", 256, Node{ 0, 3, 2, 1 })));
+    const CubeLodGeometry::Dims cube{ 2048, 2048, 2048 };
+    cache.insert(blockKey("cube-a", 256, Node{ 0, 1, 2, 3 }, cube), 1, 1);
+    QVERIFY(cache.contains(blockKey("cube-a", 256, Node{ 0, 1, 2, 3 }, cube)));
+    QVERIFY(!cache.contains(blockKey("cube-b", 256, Node{ 0, 1, 2, 3 }, cube)));
+    QVERIFY(!cache.contains(blockKey("cube-a", 256, Node{ 1, 1, 2, 3 }, cube)));
+    QVERIFY(!cache.contains(blockKey("cube-a", 128, Node{ 0, 1, 2, 3 }, cube)));
+    QVERIFY(!cache.contains(blockKey("cube-a", 256, Node{ 0, 3, 2, 1 }, cube)));
+    // A node cut to a chosen box is another block than the whole node; the
+    // whole node keyed by its samples is the same one.
+    const CubeLodGeometry::Box whole = CubeLodGeometry::nodeLevelBox(cube, 256, Node{ 0, 1, 2, 3 });
+    QVERIFY(cache.contains(blockKey("cube-a", 256, Node{ 0, 1, 2, 3 }, whole)));
+    CubeLodGeometry::Box part = whole;
+    part.lo[0] += 10;
+    QVERIFY(!cache.contains(blockKey("cube-a", 256, Node{ 0, 1, 2, 3 }, part)));
 }
 
 namespace {

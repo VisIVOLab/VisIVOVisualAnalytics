@@ -105,11 +105,12 @@ struct Signature
     int level{ -1 };
     int nodeSize{ 0 };
     std::vector<Node> nodes;   ///< sorted, so the order a plan lists them in does not matter
+    CubeLodGeometry::Box levelBox;   ///< what the nodes are clipped to (CubeLodPlan::Plan::levelBox)
 
     bool empty() const { return nodes.empty(); }
     bool operator==(const Signature &o) const
     {
-        return level == o.level && nodeSize == o.nodeSize && nodes == o.nodes;
+        return level == o.level && nodeSize == o.nodeSize && nodes == o.nodes && levelBox == o.levelBox;
     }
     bool operator!=(const Signature &o) const { return !(*this == o); }
 };
@@ -127,6 +128,7 @@ inline Signature signatureOf(const CubeLodPlan::Plan &plan)
     s.level = plan.level;
     s.nodeSize = plan.nodeSize;
     s.nodes = plan.nodes;
+    s.levelBox = plan.levelBox;
     std::sort(s.nodes.begin(), s.nodes.end(), nodeLess);
     return s;
 }
@@ -268,12 +270,25 @@ private:
 };
 
 /// The key of a fine block in the cache: the dataset, the level and node side
-/// it was read at, and its node.
-using BlockKey = std::tuple<std::string, int, int, int, int, int>;
+/// it was read at, its node, and the samples of the node it holds (a whole
+/// node, or the part of it inside a box chosen with Refine Selected Box).
+using BlockKey = std::tuple<std::string, int, int, int, int, int, std::array<int, 6>>;
 
-inline BlockKey blockKey(const std::string &dataset, int nodeSize, const Node &n)
+/// The key of the block of node @p n holding the samples @p levelBox of its
+/// level (CubeLodPlan::blockLevelBox).
+inline BlockKey blockKey(const std::string &dataset, int nodeSize, const Node &n,
+                         const CubeLodGeometry::Box &levelBox)
 {
-    return { dataset, n.level, nodeSize, n.ix, n.iy, n.iz };
+    return { dataset, n.level, nodeSize, n.ix, n.iy, n.iz,
+             { levelBox.lo[0], levelBox.lo[1], levelBox.lo[2], levelBox.hi[0], levelBox.hi[1],
+               levelBox.hi[2] } };
+}
+
+/// The key of node @p n read whole.
+inline BlockKey blockKey(const std::string &dataset, int nodeSize, const Node &n,
+                         const CubeLodGeometry::Dims &cubeShape)
+{
+    return blockKey(dataset, nodeSize, n, CubeLodGeometry::nodeLevelBox(cubeShape, nodeSize, n));
 }
 
 }   // namespace CubeLodAuto

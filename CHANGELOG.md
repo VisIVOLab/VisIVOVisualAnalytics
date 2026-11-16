@@ -24,8 +24,8 @@ are preserved here unedited; the branch names they refer to are historical.
 
 - **Desktop: refine a selected box of a large cube (part of #321, client part
   of #320).** *Tools → Views → Refine Selected Box…* reads a box of the cube
-  at the finest level the detail budget allows and draws it over the 3-D
-  preview, which keeps covering the rest of the cube as up to six coarse
+  at the finest level the detail budget allows (exactly that box, rounded
+  only to the level's samples) and draws it over the 3-D preview, which keeps covering the rest of the cube as up to six coarse
   pieces. All the volumes share one colour map, threshold and opacity, are
   cropped so that they meet without seams, and are drawn back to front. The
   view swaps only when every block has arrived. Full resolution, a region, a

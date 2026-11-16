@@ -564,6 +564,9 @@ void vtkWindowCube::refineBox(const std::array<int, 6> &cubeBox)
                 8000);
         return;
     }
+    qDebug().noquote() << u"[lod] refine asked=%1 -> box=%2 level=%3"_s.arg(CubeLodStatus::boxText(box),
+                                                                          CubeLodStatus::boxText(plan.cubeBox))
+                                  .arg(plan.level);
     this->startLodFetch(plan, in, false);
 }
 
@@ -588,7 +591,8 @@ void vtkWindowCube::startLodFetch(const CubeLodPlan::Plan &plan, const CubeLodPl
     pending->previewImage = previewImage;
     pending->timer.start();
     for (const CubeLodGeometry::Node &n : plan.nodes)
-        pending->fine.push_back(CubeLodAssembly::fineBlock(cube, plan.nodeSize, n, CubeLodPlan::kGhost));
+        pending->fine.push_back(CubeLodAssembly::fineBlock(cube, plan.nodeSize, n, CubeLodPlan::kGhost,
+                                                             plan.levelBox));
     pending->results.resize(pending->fine.size());
     pending->arrived.assign(pending->fine.size(), false);
     pending->remaining = int(pending->fine.size());
@@ -599,8 +603,10 @@ void vtkWindowCube::startLodFetch(const CubeLodPlan::Plan &plan, const CubeLodPl
     const std::string dataset = this->remoteDatasetId.toStdString();
     std::vector<int> toRead;
     for (int i = 0; i < int(plan.nodes.size()); ++i) {
+        const CubeLodGeometry::Node &node = plan.nodes[size_t(i)];
         const LodBlock *cached = this->m_lodCache
-                ? this->m_lodCache->find(CubeLodAuto::blockKey(dataset, plan.nodeSize, plan.nodes[size_t(i)]))
+                ? this->m_lodCache->find(CubeLodAuto::blockKey(dataset, plan.nodeSize, node,
+                                                               CubeLodPlan::blockLevelBox(plan, cube, node)))
                 : nullptr;
         if (cached && cached->sentinel == sentinel) {
             pending->results[size_t(i)] = *cached;
@@ -614,13 +620,14 @@ void vtkWindowCube::startLodFetch(const CubeLodPlan::Plan &plan, const CubeLodPl
     this->m_lodPending = pending;
     this->updateRefineBoxAction();
 
-    const qint64 bytes = CubeLodPlan::nodeBytes(in, plan.nodes);
+    const qint64 bytes = CubeLodPlan::planBytes(in, plan);
     QString what = u"level %1, %2 blocks, %3 MB"_s.arg(plan.level)
                            .arg(plan.nodes.size())
                            .arg(double(bytes) / (1 << 20), 0, 'f', 0);
     if (plan.reason == CubeLodPlan::Reason::Shrunk)
-        what += automatic ? u"; around the focal point"_s
-                          : u"; the budget holds only part of the box, around its centre"_s;
+        what += u"; around the focal point"_s;
+    else if (plan.reason == CubeLodPlan::Reason::BoxShrunk)
+        what += u"; the budget holds only part of the box, around its centre"_s;
     qDebug().noquote() << u"[lod] %1 gen=%2 box=%3 level=%4 nodes=%5 cached=%6 bytes=%7 reason=%8"_s
                                   .arg(automatic ? u"auto"_s : u"refine"_s)
                                   .arg(generation)
@@ -644,13 +651,13 @@ void vtkWindowCube::startLodFetch(const CubeLodPlan::Plan &plan, const CubeLodPl
     const std::shared_ptr<std::atomic<quint64>> live = this->m_lodLiveGeneration;
     for (int i : toRead) {
         const CubeLodGeometry::Node node = plan.nodes[size_t(i)];
-        const CubeLodGeometry::Box level = CubeLodGeometry::nodeLevelBox(cube, plan.nodeSize, node);
+        const CubeLodGeometry::Box level = CubeLodPlan::blockLevelBox(plan, cube, node);
         const int nodeSize = plan.nodeSize;
         const CubeLodGeometry::Dims expectedDims = CubeLodAssembly::dims(pending->fine[size_t(i)]);
         const CubeLodGeometry::Dims expectedOrigin = pending->fine[size_t(i)].samples.lo;
         auto *watcher = new QFutureWatcher<LodBlock>(this);
         QObject::connect(watcher, &QFutureWatcher<LodBlock>::finished, this,
-                         [this, watcher, generation, i, node, nodeSize, datasetId, expectedDims,
+                         [this, watcher, generation, i, node, nodeSize, level, datasetId, expectedDims,
                           expectedOrigin]() {
                              const LodBlock block = watcher->result();
                              watcher->deleteLater();
@@ -667,7 +674,7 @@ void vtkWindowCube::startLodFetch(const CubeLodPlan::Plan &plan, const CubeLodPl
                              if (asked && this->m_lodCache && datasetId == this->remoteDatasetId) {
                                  const qint64 bytes = qint64(block.array->GetNumberOfTuples()) * qint64(sizeof(float));
                                  this->m_lodCache->insert(
-                                         CubeLodAuto::blockKey(datasetId.toStdString(), nodeSize, node), block,
+                                         CubeLodAuto::blockKey(datasetId.toStdString(), nodeSize, node, level), block,
                                          bytes);
                              }
                              this->onLodBlock(generation, i, block);

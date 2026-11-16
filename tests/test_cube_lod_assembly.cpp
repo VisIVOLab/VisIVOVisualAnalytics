@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <vector>
 
 using namespace CubeLodAssembly;
@@ -25,15 +26,19 @@ using CubeLodGeometry::Piece;
 
 namespace {
 
-/// A refined view: the fine nodes of @p range at @p level, and the coarse
-/// pieces around them, cut from a preview of @p previewSampling.
+/// A refined view: the fine nodes of @p range at @p level (cut to @p clip,
+/// samples of that level, when given: an explicit box), and the coarse pieces
+/// around them, cut from a preview of @p previewSampling.
 std::vector<Block> assemble(const Dims &cube, const Sampling &preview, int level, int nodeSize,
-                            const Box &range, const Sampling &fine)
+                            const Box &range, const Sampling &fine,
+                            const std::optional<Box> &clip = std::nullopt)
 {
-    const Box fineBox = CubeLodGeometry::cubeBoxOfRange(range, cube, level, nodeSize);
+    Box fineBox = CubeLodGeometry::cubeBoxOfRange(range, cube, level, nodeSize);
+    if (clip)
+        fineBox = CubeLodGeometry::intersect(fineBox, CubeLodGeometry::cubeBoxOfLevelBox(*clip, cube, level));
     std::vector<Block> blocks = coarsePieces(cube, preview, fineBox);
     for (const Node &n : CubeLodGeometry::nodesIn(range, level)) {
-        Block b = fineBlock(cube, nodeSize, n, 1);
+        Block b = fineBlock(cube, nodeSize, n, 1, clip);
         b.sampling = fine;
         blocks.push_back(b);
     }
@@ -48,6 +53,7 @@ struct Scene
     int nodeSize;
     Box range;
     Sampling fine;
+    std::optional<Box> clip;   ///< an explicit box, level samples
 };
 
 std::vector<Scene> scenes()
@@ -63,6 +69,13 @@ std::vector<Scene> scenes()
         // Pyramid level 1 under a level-3 preview, box at the low corner.
         { { 1000, 900, 520 }, Sampling::blockMean(8), 1, 128, { { 0, 0, 0 }, { 2, 2, 2 } },
           Sampling::pyramidLevel(1) },
+        // An explicit box 512..1535 of the 2048^3 cube at level 2: two nodes
+        // per axis, each cut to the box.
+        { { 2048, 2048, 2048 }, Sampling::blockMean(8), 2, 256, { { 0, 0, 0 }, { 2, 2, 2 } },
+          Sampling::pyramidLevel(2), Box{ { 128, 128, 128 }, { 384, 384, 384 } } },
+        // An explicit box that is on no grid at all, strided level 1.
+        { { 701, 333, 158 }, Sampling::strided(6), 1, 128, { { 0, 0, 0 }, { 2, 1, 1 } },
+          Sampling::stridedLevel(1), Box{ { 37, 10, 5 }, { 200, 90, 60 } } },
     };
 }
 
@@ -71,7 +84,7 @@ std::vector<Scene> scenes()
 void TestCubeLodAssembly::blocks_ownTheCubeExactlyOnce()
 {
     for (const Scene &s : scenes()) {
-        const std::vector<Block> blocks = assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine);
+        const std::vector<Block> blocks = assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine, s.clip);
         // Every voxel next to a block face, where an off-by-one would show,
         // plus a coarse stride through the rest: a full count of a 2048^3
         // cube would take too long for a unit test.
@@ -109,7 +122,7 @@ void TestCubeLodAssembly::blocks_ownTheCubeExactlyOnce()
 void TestCubeLodAssembly::blocks_reachTheFacesTheyDraw()
 {
     for (const Scene &s : scenes()) {
-        for (const Block &b : assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine)) {
+        for (const Block &b : assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine, s.clip)) {
             QVERIFY2(covers(b), qPrintable(u"block %1 does not bracket its region"_s.arg(int(b.side))));
             // A coarse piece is cut from the preview: its samples are the
             // preview's indices, at most one ghost outside the preview.
@@ -171,7 +184,7 @@ void TestCubeLodAssembly::placement_putsSamplesWhereThePreviewShowsThem()
 void TestCubeLodAssembly::neighbours_meetOnOneWorldFace()
 {
     for (const Scene &s : scenes()) {
-        const std::vector<Block> blocks = assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine);
+        const std::vector<Block> blocks = assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine, s.clip);
         for (size_t i = 0; i < blocks.size(); ++i) {
             for (size_t j = 0; j < blocks.size(); ++j) {
                 for (int a = 0; a < 3; ++a) {
@@ -195,6 +208,65 @@ void TestCubeLodAssembly::neighbours_meetOnOneWorldFace()
     }
 }
 
+void TestCubeLodAssembly::facesOnTheEye_moveOffItTogether()
+{
+    // The default camera sits on the cube's centre planes, where the nodes
+    // of the GUI tester's box (512..1535, level 2) meet: x = y = 1023.5 in
+    // cube voxels, world 127.5 under a stride-8 block-mean preview.
+    const Scene s{ { 2048, 2048, 2048 }, Sampling::blockMean(8), 2, 256, { { 0, 0, 0 }, { 2, 2, 2 } },
+                   Sampling::pyramidLevel(2), Box{ { 128, 128, 128 }, { 384, 384, 384 } } };
+    const std::vector<Block> blocks = assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine, s.clip);
+    const std::array<double, 3> eye{ 127.5, 127.5 + 0.004, -900.0 };
+    std::vector<Crop> moved;
+    for (const Block &b : blocks)
+        moved.push_back(clearOfEye(geometryOf(b, s.cube, s.preview).drawn, eye));
+    int facesOnTheEye = 0;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        const Crop before = geometryOf(blocks[i], s.cube, s.preview).drawn;
+        for (int a = 0; a < 3; ++a) {
+            for (int k : { 2 * a, 2 * a + 1 }) {
+                facesOnTheEye += std::fabs(before[size_t(k)] - eye[size_t(a)]) < kEyeFaceClearance;
+                // No face is left within reach of the eye, none moved far.
+                QVERIFY(std::fabs(moved[i][size_t(k)] - eye[size_t(a)]) >= kEyeFaceClearance - 1e-12);
+                QVERIFY(std::fabs(moved[i][size_t(k)] - before[size_t(k)]) <= 2 * kEyeFaceClearance);
+            }
+            QVERIFY(moved[i][size_t(2 * a)] < moved[i][size_t(2 * a + 1)]);
+        }
+        // Neighbours still meet on one plane: no gap, no overlap. And the
+        // planes the mappers get draw that face to within float32 rounding
+        // (the mapper draws plane p at o - s/2 + (p - o) n / (n - 1)): no
+        // sliver a ray running along the face could stay in for long.
+        const Geometry gi = geometryOf(blocks[i], s.cube, s.preview);
+        const Crop pi = cropPlanes(gi, moved[i]);
+        for (size_t j = 0; j < blocks.size(); ++j) {
+            const Geometry gj = geometryOf(blocks[j], s.cube, s.preview);
+            const Crop pj = cropPlanes(gj, moved[j]);
+            for (int a = 0; a < 3; ++a) {
+                if (blocks[i].owned.hi[a] != blocks[j].owned.lo[a])
+                    continue;
+                QCOMPARE(moved[i][size_t(2 * a + 1)], moved[j][size_t(2 * a)]);
+                auto drawnAt = [a](const Geometry &g, double p) {
+                    const double o = g.placement.origin[size_t(a)], sp = g.placement.spacing;
+                    const int n = g.dims[size_t(a)];
+                    return o - sp / 2.0 + (p - o) * n / (n - 1);
+                };
+                const double hiOfI = drawnAt(gi, pi[size_t(2 * a + 1)]);
+                const double loOfJ = drawnAt(gj, pj[size_t(2 * a)]);
+                QVERIFY2(std::fabs(hiOfI - loOfJ) < 1e-4,
+                         qPrintable(u"faces %1 and %2 drawn %3 apart"_s.arg(i).arg(j).arg(loOfJ - hiOfI)));
+            }
+        }
+    }
+    QVERIFY(facesOnTheEye > 0);   // the case above did put the eye on faces
+    // Far from every face: nothing moves.
+    const Crop c{ 1.0, 2.0, 1.0, 2.0, 1.0, 2.0 };
+    QCOMPARE(clearOfEye(c, { 1.5, 1.5, 1.5 }), c);
+    // A sliver thinner than the clearance, both faces on one side of the
+    // eye, would turn inside out: it keeps its faces.
+    const Crop sliver{ 1.0, 1.005, 0.0, 9.0, 0.0, 9.0 };
+    QCOMPARE(clearOfEye(sliver, { 1.008, 5.0, 5.0 }), sliver);
+}
+
 void TestCubeLodAssembly::userCrop_hidesBlocksOutsideIt()
 {
     const Dims cube{ 512, 512, 512 };
@@ -213,8 +285,11 @@ void TestCubeLodAssembly::userCrop_hidesBlocksOutsideIt()
 void TestCubeLodAssembly::drawOrder_isBackToFrontForEveryEye()
 {
     for (const Scene &s : scenes()) {
-        const std::vector<Block> blocks = assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine);
-        const Box fineBox = CubeLodGeometry::cubeBoxOfRange(s.range, s.cube, s.level, s.nodeSize);
+        const std::vector<Block> blocks = assemble(s.cube, s.preview, s.level, s.nodeSize, s.range, s.fine, s.clip);
+        Box fineBox = CubeLodGeometry::cubeBoxOfRange(s.range, s.cube, s.level, s.nodeSize);
+        if (s.clip)
+            fineBox = CubeLodGeometry::intersect(fineBox,
+                                                 CubeLodGeometry::cubeBoxOfLevelBox(*s.clip, s.cube, s.level));
         // Eyes in every octant around the box, inside it, and far away.
         std::vector<std::array<double, 3>> eyes;
         for (double fx : { -0.5, 0.2, 0.5, 0.8, 1.5 })
@@ -229,21 +304,33 @@ void TestCubeLodAssembly::drawOrder_isBackToFrontForEveryEye()
                 QVERIFY(position[size_t(order[k])] < 0);   // a permutation
                 position[size_t(order[k])] = int(k);
             }
-            // Block A may hide B only if a plane between them has the eye on
-            // A's side. When A can hide B and B cannot hide A, B goes first.
+            // Block A may hide B only if every plane between them has the eye
+            // on A's side: one plane with the eye on B's side (say an eye
+            // between the two, beyond A's face) separates the ray to B from
+            // A. When A can hide B and B cannot hide A, B goes first.
             auto canHide = [&eye](const Block &a, const Block &b) {
+                bool separated = false;
                 for (int i = 0; i < 3; ++i) {
-                    if (a.owned.hi[i] <= b.owned.lo[i] && eye[i] < b.owned.lo[i] - 0.5)
-                        return true;
-                    if (b.owned.hi[i] <= a.owned.lo[i] && eye[i] > a.owned.lo[i] - 0.5)
-                        return true;
+                    if (a.owned.hi[i] <= b.owned.lo[i]) {
+                        separated = true;
+                        if (!(eye[i] < a.owned.hi[i] - 0.5))
+                            return false;
+                    } else if (b.owned.hi[i] <= a.owned.lo[i]) {
+                        separated = true;
+                        if (!(eye[i] > a.owned.lo[i] - 0.5))
+                            return false;
+                    }
                 }
-                return false;
+                return separated;
             };
             for (size_t a = 0; a < blocks.size(); ++a)
                 for (size_t b = 0; b < blocks.size(); ++b)
                     if (a != b && canHide(blocks[a], blocks[b]) && !canHide(blocks[b], blocks[a]))
-                        QVERIFY2(position[b] < position[a], "a far block is drawn over a near one");
+                        QVERIFY2(position[b] < position[a],
+                                 qPrintable(u"a far block is drawn over a near one: cube %1, eye (%2, %3, %4), "
+                                            u"near %5 (fine %6) over far %7 (fine %8)"_s.arg(s.cube[0])
+                                                    .arg(eye[0]).arg(eye[1]).arg(eye[2])
+                                                    .arg(a).arg(blocks[a].fine).arg(b).arg(blocks[b].fine)));
         }
     }
 }

@@ -82,15 +82,22 @@ starts from the drawn region (its bounding box on the sky) or the middle half
 of the cube, and the amber box in the volume follows it while you edit the
 bounds. **Refine** reads the box from the backend at the finest level the
 detail budget allows: level 0, the cube itself, when it fits, else level 1, 2
-and so on. A box larger than the budget allows at any level finer than the
-preview is refined around its centre. A chosen box stays whatever the camera
-does, until **Tools → Views → Clear Refined Box**; the view then refines where
-the camera looks again. The view changes only once the whole
+and so on. The refined part is the box you chose, rounded outward only to the
+level's samples (at level 2, to multiples of 4 voxels), not the whole blocks
+of the pyramid it touches. A box larger than the budget allows at any level
+finer than the preview is refined around its centre, inside the box, and the
+status line says so. A chosen box stays whatever the camera does, until
+**Tools → Views → Clear Refined Box**; the view then refines where the camera
+looks again. The view changes only once the whole
 box has arrived; the status line then reads, for example, *Detail: level 0 in
 x 512..1023, y 512..1023, z 768..1023; elsewhere block means, pyramid level 3*.
 
 The box and the preview share one colour map, threshold, scale and opacity,
-and they meet without seams. Level 0 is read from the cube's file and needs
+and they meet without seams in the perspective view, also when the camera
+sits exactly on a face between two blocks (the default view does: its eye is
+on the cube's centre planes). In a parallel projection looking straight along
+an axis, a face that falls exactly on a pixel column can still show as a
+faint line. Level 0 is read from the cube's file and needs
 no pyramid; coarser levels come from the pyramid when it is ready, otherwise
 from every 2^l-th voxel. On the 2048³ PLUTO density, a level-0 box of
 512 × 512 × 256 voxels (four blocks, 275 MB) took 2.9 s from the click to the

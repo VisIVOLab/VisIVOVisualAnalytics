@@ -11,7 +11,9 @@
 //     and follow every edit made to them;
 //   - every block is cropped to the region it owns, with the planes of
 //     CubeLodAssembly::cropPlanes, so neighbours meet without a gap or a
-//     double-drawn seam;
+//     double-drawn seam; a face the camera sits on is moved a hair off it
+//     before each frame (CubeLodAssembly::clearOfEye), or the rays running
+//     inside it would be drawn by neither neighbour;
 //   - the blocks are drawn back to front, re-sorted before every frame by
 //     reordering the renderer's props (RemoveVolume would release the GPU
 //     textures and upload every block again each frame);
@@ -100,7 +102,8 @@ public:
     void setUserCrop(const std::optional<CubeLodAssembly::Crop> &crop);
     /// Make every block pickable by @p picker (PickFromList).
     void addToPickList(vtkPicker *picker) const;
-    /// Re-sort the blocks for the renderer's current camera.
+    /// Re-sort the blocks for the renderer's current camera, and move the
+    /// faces the camera sits on off it.
     void sortForCamera();
     /// The view ray p0 → p1 (world) walked through the visible blocks, each
     /// on its own grid within the box it draws (CubeLodPick::along).
@@ -132,6 +135,11 @@ private:
     OrderFunction m_orderFunction;
     bool m_visible{ true };
     std::optional<CubeLodAssembly::Crop> m_userCrop;
+    /// The camera's position at the last frame (world): faces near it are
+    /// moved off it (CubeLodAssembly::clearOfEye).
+    std::optional<std::array<double, 3>> m_eye;
+    /// How far a face is moved off the eye, for the whole set (replace()).
+    double m_clearance{ CubeLodAssembly::kEyeFaceClearance };
     // The window's mapper settings (copySettingsFrom).
     int m_blendMode{ 0 };
     bool m_jitter{ true };

@@ -298,20 +298,53 @@ void TestCubeLodPlan::planBox_refinesTheSelectedBox()
     Inputs in = bigCube();
     // The zoom does not matter for an explicit box: the finest level that fits.
     in.voxelsPerPixel = 64.0;
+    // The box itself, not the node it lies in: the node is cut to the box.
     Plan p = planBox(Box{ { 1030, 1030, 1030 }, { 1270, 1270, 1270 } }, in);
     QVERIFY(p.refine);
     QCOMPARE(p.reason, Reason::Refined);
     QCOMPARE(p.level, 0);
-    QCOMPARE(p.cubeBox, (Box{ { 1024, 1024, 1024 }, { 1280, 1280, 1280 } }));
+    QCOMPARE(p.cubeBox, (Box{ { 1030, 1030, 1030 }, { 1270, 1270, 1270 } }));
+    QCOMPARE(p.levelBox, p.cubeBox);
+    QCOMPARE(int(p.nodes.size()), 1);
+    QCOMPARE(blockLevelBox(p, in.cubeShape, p.nodes.front()), p.cubeBox);
+    QCOMPARE(planBytes(in, p), 242LL * 242 * 242 * 4);
+    // The box the GUI tester chose, 512..1535 on every axis (1024^3 voxels).
+    // Level 0 and level 1 (8 blocks of 256^3 + ghosts, 549 MB) do not fit
+    // 512 MB; level 2 holds all of it in 8 blocks of 128^3, each a corner of
+    // a node cut to the box. Not the half cube around its centre that the
+    // whole nodes of level 2 would have been.
+    p = planBox(Box{ { 512, 512, 512 }, { 1536, 1536, 1536 } }, in);
+    QVERIFY(p.refine);
+    QCOMPARE(p.reason, Reason::Refined);
+    QCOMPARE(p.level, 2);
+    QCOMPARE(p.cubeBox, (Box{ { 512, 512, 512 }, { 1536, 1536, 1536 } }));
+    QCOMPARE(int(p.nodes.size()), 8);
+    for (const Node &n : p.nodes) {
+        const Box b = blockLevelBox(p, in.cubeShape, n);
+        QCOMPARE(b.count(), 128LL * 128 * 128);
+    }
+    QCOMPARE(planBytes(in, p), 8LL * 130 * 130 * 130 * 4);
+    // A box on no level's grid is rounded outward to the level's samples only.
+    p = planBox(Box{ { 513, 700, 900 }, { 1535, 1101, 1300 } }, in);
+    QCOMPARE(p.level, 1);
+    QCOMPARE(p.cubeBox, (Box{ { 512, 700, 900 }, { 1536, 1102, 1300 } }));
     // The whole cube: the finest that fits, as for the view.
     in.budgetBytes = 1024 * MB;
     p = planBox(wholeBox(in.cubeShape), in);
     QCOMPARE(p.level, 2);
-    // Too big for the budget at any finer level: a box around its centre.
+    QCOMPARE(p.cubeBox, wholeBox(in.cubeShape));
+    // Too big for the budget at any finer level: part of the box around its
+    // centre, said as such (not "around the focal point").
     in.budgetBytes = 300 * MB;
     p = planBox(wholeBox(in.cubeShape), in);
-    QCOMPARE(p.reason, Reason::Shrunk);
+    QCOMPARE(p.reason, Reason::BoxShrunk);
     QVERIFY(contains(p.cubeBox, Box{ { 1024, 1024, 1024 }, { 1025, 1025, 1025 } }));
+    QVERIFY(planBytes(in, p) <= in.budgetBytes);
+    QVERIFY(QString::fromLatin1(reasonText(Reason::BoxShrunk)).contains(u"box"));
+    // Shrunk within the box: never outside what was chosen.
+    p = planBox(Box{ { 100, 100, 100 }, { 1900, 1900, 1900 } }, in);
+    QCOMPARE(p.reason, Reason::BoxShrunk);
+    QVERIFY(contains(Box{ { 100, 100, 100 }, { 1900, 1900, 1900 } }, p.cubeBox));
     // Outside the cube, or a full-resolution preview: nothing.
     QCOMPARE(planBox(Box{ { -10, -10, -10 }, { 0, 5, 5 } }, in).reason, Reason::NotInView);
     in.previewStride = 1;
