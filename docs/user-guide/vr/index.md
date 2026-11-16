@@ -193,7 +193,8 @@ measured under [Fidelity of the reduced cube](reference.md#fidelity-of-the-reduc
   refined image can look a little denser or fainter than the reduced one. Not
   cropped in isosurface mode (the page does not use it).
 - **Pairing by code** needs an internet connection on both sides, a pairing
-  service and loader hosted by your institute (no server is built in), and,
+  service and loader (hosted by INAF and set up by default, or your
+  institute's own), and,
   on a Mac with Apple Silicon, macOS 14 or newer. The headset and the computer
   must reach each other on the local network, or go through a TURN relay,
   more slowly. It has not yet been checked on a Quest 3 (see

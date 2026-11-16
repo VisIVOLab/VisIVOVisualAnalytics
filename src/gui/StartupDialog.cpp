@@ -333,7 +333,11 @@ void StartupDialog::beginSequence()
 
     const QString backendUrl  = m_settings->getBackendUrl();
     const QString pythonExe   = m_settings->getPythonLocation();
-    m_launcher->setVrPairing(m_settings->getVrPairUrl(), m_settings->getVrPageUrl());
+    VrPairService::Fields pairing;
+    pairing.enabled = m_settings->getVrPairEnabled();
+    pairing.serviceUrl = m_settings->getVrPairUrl();
+    pairing.pageUrl = m_settings->getVrPageUrl();
+    m_launcher->setVrPairing(pairing);
     m_launcher->startAsync(backendUrl, pythonExe, m_noAutostart,
                            m_settings->getBackendToken());
 }

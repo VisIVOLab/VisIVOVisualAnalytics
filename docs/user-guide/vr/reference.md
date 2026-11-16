@@ -1598,7 +1598,8 @@ pairing service and the in-repository fake
 ([Checking it without a headset](public-loader.md#checking-it-without-a-headset)).
 On the Quest 3, with the pairing service and the loader hosted as in
 [Hosting headset pairing](../../deployment/vr-pairing.md), and the desktop's
-**Settings ▸ Backends ▸ Headset Pairing** filled in, check the following. After
+**Settings ▸ Backends ▸ Headset Pairing** pointing at them (the INAF
+server by default), check the following. After
 each step that connects, copy the page's diagnostics (*Copy diagnostics*) and
 keep the `transport:` line.
 

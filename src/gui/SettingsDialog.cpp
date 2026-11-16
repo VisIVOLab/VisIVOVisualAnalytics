@@ -5,6 +5,7 @@
 #include "BackendsSettingsWidget.h"
 #include "CopilotStatus.h"
 #include "Settings.h"
+#include "app/VrPairService.h"
 
 #include <QBoxLayout>
 #include <QCheckBox>
@@ -17,6 +18,7 @@
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
 #include <QSpinBox>
@@ -247,6 +249,7 @@ void SettingsDialog::accept()
         this->settings->setCopilotModel(this->m_copilotModel->text().trimmed());
     }
     if (this->m_vrPairUrl) {
+        this->settings->setVrPairEnabled(this->m_vrPairEnabled->isChecked());
         this->settings->setVrPairUrl(this->m_vrPairUrl->text());
         this->settings->setVrPageUrl(this->m_vrPageUrl->text());
     }
@@ -362,25 +365,56 @@ QWidget *SettingsDialog::buildVrPairingSection()
 {
     auto *group = new QGroupBox(tr("Headset Pairing"), this);
     auto *form = new QFormLayout(group);
-    // No built-in addresses: the server that hosts the pairing service is the
-    // operator's choice, and moving it is changing these two fields.
+    // The fields hold only what the user typed. An empty one stands for this
+    // build's default (issue #344), shown as its placeholder, so a later build
+    // with another server reaches users who never typed anything.
+    const VrPairService::Defaults defaults = VrPairService::buildDefaults();
+    m_vrPairEnabled = new QCheckBox(tr("Pair headsets by code"), group);
     m_vrPairUrl = new QLineEdit(group);
-    m_vrPairUrl->setPlaceholderText(u"wss://pairing-server/"_s);
+    m_vrPairUrl->setPlaceholderText(defaults.serviceUrl.isEmpty() ? u"wss://pairing-server/"_s
+                                                                  : defaults.serviceUrl);
     m_vrPageUrl = new QLineEdit(group);
-    m_vrPageUrl->setPlaceholderText(u"https://pairing-server/vr/"_s);
+    auto *restore = new QPushButton(tr("Restore Pairing Defaults"), group);
+    restore->setToolTip(tr("Pairing on, and both fields empty: this build's defaults."));
+    form->addRow(m_vrPairEnabled);
     form->addRow(tr("Pairing service"), m_vrPairUrl);
     form->addRow(tr("Headset page"), m_vrPageUrl);
+    form->addRow(QString(), restore);
     auto *note = new QLabel(
             tr("Used by Open in VR Headset to pair a headset by code. Passed to the backend "
-               "this desktop starts, at its next start; VISIVO_VR_PAIR_URL and "
-               "VISIVO_VR_PAGE_URL in the environment take precedence. Empty: pairing is off "
-               "and the headset connects through a USB cable. A remote backend uses its own "
-               "configuration."),
+               "this desktop starts, at its next start; an empty field uses the default "
+               "shown in it, and VISIVO_VR_PAIR_URL and VISIVO_VR_PAGE_URL in the "
+               "environment take precedence. Off: the headset connects through a USB "
+               "cable. A remote backend uses its own configuration."),
             group);
     note->setWordWrap(true);
     form->addRow(note);
+
+    // The default loader goes with the default service only (its config.json
+    // names that one): with another service typed, an empty page stays empty.
+    const auto refresh = [this, defaults]() {
+        const QString typed = m_vrPairUrl->text().trimmed();
+        const bool defaultPage = VrPairService::defaultPageApplies(
+                typed.isEmpty() ? defaults.serviceUrl : typed, defaults);
+        m_vrPageUrl->setPlaceholderText(defaultPage ? defaults.pageUrl
+                                                    : u"https://pairing-server/vr/"_s);
+        const bool on = m_vrPairEnabled->isChecked();
+        m_vrPairUrl->setEnabled(on);
+        m_vrPageUrl->setEnabled(on);
+    };
+    QObject::connect(m_vrPairUrl, &QLineEdit::textChanged, group, refresh);
+    QObject::connect(m_vrPairEnabled, &QCheckBox::toggled, group, refresh);
+    QObject::connect(restore, &QPushButton::clicked, group, [this]() {
+        const VrPairService::Fields restored = VrPairService::restoredDefaults();
+        m_vrPairEnabled->setChecked(restored.enabled);
+        m_vrPairUrl->setText(restored.serviceUrl);
+        m_vrPageUrl->setText(restored.pageUrl);
+    });
+
+    m_vrPairEnabled->setChecked(this->settings->getVrPairEnabled());
     m_vrPairUrl->setText(this->settings->getVrPairUrl());
     m_vrPageUrl->setText(this->settings->getVrPageUrl());
+    refresh();
     return group;
 }
 
