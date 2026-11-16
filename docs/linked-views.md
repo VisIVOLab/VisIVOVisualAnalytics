@@ -15,7 +15,7 @@ on each viewer you want in the group. `src/gui/vtkWindowCube_Link.cpp`.
 
 | Aspect | Hooked at | Applied to peers |
 |--------|-----------|------------------|
-| **Camera** (3-D view) | `vtkCommand::InteractionEvent` on the cube interactor | shared **relative to each cube's data bounds** (see below), then re-render |
+| **Camera** (3-D view) | `vtkCommand::EndEvent` on the 3-D render window: every frame whose camera moved (`LinkedCameraSync`) | shared **relative to each cube's data bounds** (see below), then re-render |
 | **Velocity channel** | `requestRemoteSlice()` (the single convergence for all channel changes) | matched by **spectral value (velocity)** — see below |
 | **Volume colour** (LUT) | `applyColorMapByName()` / 3-D LUT customizer | colormap **name** + volume **stretch** (scale mode + gamma) |
 | **Representation** (render) | the Volume ↔ Isosurface toggle (`changeCubeRender()`) | peers switch representation via `applyLinkedRenderMode()` |
@@ -51,9 +51,18 @@ not by raw coordinates/indices:
   the camera against *its own* centre + diagonal. So a 512×512×200 cube and a
   128×128×64 cube linked together stay correctly framed on their own data with
   the same orientation **and zoom** — copying absolute world coordinates would
-  have thrown the larger cube off-screen. (Both `InteractionEvent` *and*
-  `EndInteractionEvent` are observed so mouse-wheel **zoom** — which doesn't emit
-  `InteractionEvent` — is broadcast too.)
+  have thrown the larger cube off-screen.
+- **Any camera move is sent**, not only mouse gestures (issue #338). The window
+  compares the camera after every frame it draws (`src/gui/LinkedCameraSync.h`);
+  a pose that changed schedules one send on the next turn of the event loop, so
+  a drag's burst of frames becomes one send per loop turn. Wheel zoom, rotate
+  and pan are covered, and so are the *Camera* menu presets, the R key and any
+  other camera set in code, which the interactor's `InteractionEvent` /
+  `EndInteractionEvent` never reported. Resizing a window changes no camera and
+  sends nothing. Two camera changes are deliberately kept local: the refit when
+  a window loads new data (a camera ROI or a refined box frames its own crop,
+  which would pull every peer off its view) and the orbit of *Export Movie*.
+  A camera with a non-finite number is never sent.
 - **Channel** is matched **physically when it makes sense, proportionally
   otherwise**:
   - If the cubes share a spectral **unit** *and* the sender's velocity falls
@@ -88,8 +97,11 @@ not by raw coordinates/indices:
   fact that programmatic slice/colour updates don't re-fire the user-facing
   slots (the slider/spin are set under `QSignalBlocker`) prevents echo loops.
 - The camera observer is installed once (lazily, on first enable) and removed in
-  the destructor from the *exact* interactor it was added to
+  the destructor from the *exact* render window it was added to
   (`vtkWeakPointer`), only if still alive.
+- A follower records the camera it adopts from a peer before drawing it, so
+  neither that frame nor a later repaint sends it back: two linked windows never
+  bounce a camera between them.
 - Linked-driven slice requests skip the ±1 neighbour **prefetch**, so synced
   scrubbing across N windows doesn't multiply backend fetches.
 

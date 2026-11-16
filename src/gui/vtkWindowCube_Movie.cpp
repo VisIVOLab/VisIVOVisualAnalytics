@@ -313,6 +313,9 @@ void vtkWindowCube::showExportMovieDialog()
             cam->Azimuth(step);
             ren->ResetCameraClippingRange();
             rw->Render();
+            // The orbit is this export's own, not a move for linked windows
+            // to follow frame by frame (#338).
+            this->m_linkCameraTracker.adopt(this->cubeCameraPose());
             if (captureWidgetToPng(ui->vtkCube, framePath(workDir, written)))
                 ++written;
         }
@@ -322,6 +325,7 @@ void vtkWindowCube::showExportMovieDialog()
         cam->SetViewUp(up);
         ren->ResetCameraClippingRange();
         rw->Render();
+        this->m_linkCameraTracker.adopt(this->cubeCameraPose());
     }
     progress.setValue(nFrames);
 
