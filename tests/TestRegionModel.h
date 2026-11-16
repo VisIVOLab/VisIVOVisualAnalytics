@@ -31,4 +31,6 @@ private slots:
     void framesOfferedFollowTheWcs();
     void fieldsRoundTripThroughCanonical();
     void fieldsReportWhatIsWrong();
+    void cubeSamplesFollowTheDisplaySampling();
+    void addAllIsOneUndoStep();
 };

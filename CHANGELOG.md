@@ -8,6 +8,26 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: regions in the cube viewer are a list you edit and keep
+  (#341).** The 2-D slice (and a moment map shown under it) draws every
+  region of the window's list, as the image viewer does: click selects, drag
+  moves, handles reshape, double-click opens Region Properties (positions in
+  pixels or a sky frame through the cube's WCS), Delete/Backspace and the
+  right-click menu remove, and Cmd+Z undoes while the slice has the focus.
+  Regions no longer vanish when their spectrum closes or the channel changes.
+  *Tools ▸ Regions* gains Region Properties, Analyse Region, Delete Region,
+  Undo and Redo Region Edit, gated on a selected region. Analysis runs on the
+  selected region: its statistics on the slice shown, and its mean spectrum
+  over the cube shown in 3-D, now read through the preview's sampling (a
+  strided or block-mean preview counts its own samples inside the region,
+  and the spectral axis is placed at the samples' channels). The spectrum
+  opens in a pane, or in a window only when no pane is free. Estimate Noise,
+  Export Sub-Cube, Mask 3-D Region, Refine Selected Box and RM Synthesis start
+  from the selected region's bounding box; Import Region puts every region of
+  the file in the list at the backend's sub-pixel position (rotation kept);
+  Export Region writes all regions or the selected one; a Session Data row
+  puts its region back in the list.
+
 - **Pairing service: security review, attack tests and host hardening
   (#345).** The public pairing service was audited and attacked on a local
   copy of its production configuration
@@ -63,11 +83,11 @@ are preserved here unedited; the branch names they refer to are historical.
   degrees; the numbers follow the region while it is moved. Analysis runs on
   the selected region, Export Region writes all regions or the selected one
   (optionally each in the frame it was typed in), and a Session Data row puts
-  its region back in the list. The cube viewer's slice and moment panes still
-  keep a single region; they follow next.
+  its region back in the list.
 - **Backend: `POST /v1/regions/convert`** moves canonical regions between
   pixels (0- or 1-based) and sky frames with the dataset's full celestial WCS,
   and reports the dataset's sky frame (empty without a celestial WCS).
+
 - **Backend: region files are read whole, with a reason for every line not
   read (part of #342).** `/v1/regions/parse` now reads every ds9 shape (line,
   vector, text, ruler, segment, projection, every point style, annuli with

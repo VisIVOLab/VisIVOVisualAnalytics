@@ -33,7 +33,9 @@ public:
 
     // Pre-fill the spinboxes (e.g. from the region last used for this dataset).
     // Values are clamped to the cube extent by the spinboxes; call before exec().
-    void setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd);
+    // @p origin says where the values came from (empty: the last session).
+    void setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd,
+                   const QString &origin = QString());
 
     /// Grey the inputs while an estimate is in flight.
     void setBusy(bool busy);

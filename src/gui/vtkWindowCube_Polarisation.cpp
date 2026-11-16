@@ -535,7 +535,7 @@ void vtkWindowCube::runRmSynthesis()
     // Bounds pre-filled from a drawn region, exactly as Export Sub-Cube does.
     const auto bounds = currentRegionBounds2D();
     const int x0 = bounds[0], x1 = bounds[1], y0 = bounds[2], y1 = bounds[3];
-    const bool haveRegion = this->regionValid && this->regionMode != RegionMode::None;
+    const bool haveRegion = this->selectedRegionPixelBox().has_value();
 
     QDialog dlg(this);
     dlg.setWindowTitle(u"Rotation Measure Synthesis"_s);
