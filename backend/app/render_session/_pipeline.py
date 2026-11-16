@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image
 
 from ._regions import parse_regions
+from ._clip_plane import parse_clip_plane, set_mapper_planes, vtk_planes
 from ._common import (
     SessionStats,
     SessionViewState,
@@ -81,6 +82,20 @@ class PipelineMixin:
             mapper.SetCroppingRegionFlagsToSubVolume()
             mapper.SetCropping(1)
 
+    def _apply_clip_plane_on_thread(self, scale=(1.0, 1.0, 1.0)) -> None:
+        """Clip the volume with the VR page's plane (issue #369), given in voxel
+        coordinates, in a world where voxel v is at ``scale * v`` (a stereo
+        frame's prop matrix; the mono view's voxels are the world's). Out of
+        core, every block, present and future (``_ooc.BlockVolumes``)."""
+        planes = vtk_planes(getattr(self, "_clip_plane", None), scale)
+        mapper = self._volume_mapper
+        if mapper is None:
+            return
+        if hasattr(mapper, "set_clip_planes"):
+            mapper.set_clip_planes(planes)
+        else:
+            set_mapper_planes(mapper, planes)
+
     def _apply_command_on_thread(self, command: dict[str, Any]) -> None:
         """Apply one client command to ``self.view``.
 
@@ -109,6 +124,8 @@ class PipelineMixin:
         ``{"type": "set_show_rendering",  "visible": bool}``    — volume/iso on/off
         ``{"type": "set_regions", "regions": [...]}``            — the desktop's
           regions on the cutting plane (_regions.py); replaces the previous ones
+        ``{"type": "set_clip_plane", "plane": {...} | null}``    — the VR page's
+          clipping plane (_clip_plane.py, issue #369)
 
         Viewport / encoding:
 
@@ -186,6 +203,9 @@ class PipelineMixin:
             self._rebuild_slice_lut_on_thread()
             self._apply_blend_mode_on_thread(self.view.blend_mode)
             self._apply_crop_on_thread(None)
+            self._crop_voxel = None
+            self._clip_plane = None
+            self._apply_clip_plane_on_thread()
             if self._outline_actor is not None:
                 self._outline_actor.SetVisibility(1 if self.view.show_outline else 0)
             if self._axes_actor is not None:
@@ -254,6 +274,18 @@ class PipelineMixin:
                 logger.warning("[render-session %s] set_crop refused: %s", self.session_id, exc)
                 return
             self._apply_crop_on_thread(planes)
+            self._crop_voxel = planes          # the section stays inside the box (#369)
+            self.request_idr()
+        elif ctype == "set_clip_plane":
+            # The VR page's clipping plane (issue #369): its refined frames
+            # must show the cut, and the section on it, as the headset does.
+            try:
+                clip = parse_clip_plane(command.get("plane"))
+            except ValueError as exc:
+                logger.warning("[render-session %s] set_clip_plane refused: %s", self.session_id, exc)
+                return
+            self._clip_plane = clip
+            self._apply_clip_plane_on_thread()
             self.request_idr()
         elif ctype == "set_cube_render_mode":
             mode = str(command.get("mode", "volume")).lower()

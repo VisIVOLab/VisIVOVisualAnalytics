@@ -11,13 +11,15 @@
 export const MODES = ['explore', 'select', 'clip'];
 /** The trigger with the Spatial crop tool, as the wrist legend says it (#277). */
 export const CROP_LEGEND = 'drag: dot, inside, or new';
+/** The trigger with the Clipping plane tool (#369): the plane held, moved and turned. */
+export const PLANE_LEGEND = 'hold: move and turn the plane';
 /** The modes: Explore (set by the menu's Display and Measure tabs), Select, and Range (the clip mode). */
 export const MODE_NAMES = { explore: 'Explore', select: 'Select', clip: 'Range' };
 /** The tools of each mode (the secondary stick's left/right steps through them), the lasso first. */
-export const SUBTOOLS = { explore: [], select: ['lasso', 'probe', 'box'], clip: ['slab', 'box'] };
+export const SUBTOOLS = { explore: [], select: ['lasso', 'probe', 'box'], clip: ['slab', 'box', 'plane'] };
 export const SUB_NAMES = {
   select: { probe: 'Spectrum probe', lasso: 'Kinematic Lasso', box: 'Box region' },
-  clip: { slab: 'Velocity range', box: 'Spatial crop' },
+  clip: { slab: 'Velocity range', box: 'Spatial crop', plane: 'Clipping plane' },
 };
 
 /** Which hand does what. */
@@ -73,12 +75,12 @@ export function controlMap({ mode = 'explore', sub = null, leftHanded = false, p
   const trig = pvArmed ? ['pv-point', 'PV slice point'] : {
     explore: ['pin-readout', 'pin the readout'],
     select: sub === 'lasso' ? ['select', 'lasso seed'] : sub === 'box' ? ['select', 'box corner'] : ['select', 'spectrum probe here'],
-    clip: sub === 'box' ? ['clip-drag', CROP_LEGEND] : ['slab-at', 'range to this channel'],
+    clip: sub === 'box' ? ['clip-drag', CROP_LEGEND] : sub === 'plane' ? ['plane-drag', PLANE_LEGEND] : ['slab-at', 'range to this channel'],
   }[mode];
   const stickY = { explore: ['threshold', 'threshold'], select: ['threshold', 'threshold'],
-    clip: sub === 'box' ? ['clip-size', 'crop size'] : ['slab-move', 'range position'] }[mode];
+    clip: sub === 'box' ? ['clip-size', 'crop size'] : sub === 'plane' ? ['plane-move', 'plane along its normal'] : ['slab-move', 'range position'] }[mode];
   const stickX = { explore: ['opacity', 'opacity'], select: [null, ''],
-    clip: sub === 'box' ? [null, ''] : ['slab-width', 'range width'] }[mode];
+    clip: sub === 'box' ? [null, ''] : sub === 'plane' ? ['plane-width', 'slab thickness'] : ['slab-width', 'range width'] }[mode];
   const p = r.primary, s = r.secondary;
   const P = buttonNames(p), S = buttonNames(s);
   const primary = [

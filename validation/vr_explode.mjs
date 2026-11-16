@@ -94,6 +94,19 @@ export async function runExplodeChecks({ c, check, waitFor, base, token, python,
   check(`${L}: mid-animation the volume shrinks alone (0.2), then the pieces part at their scale (0.6)`,
     mid[0.2].whole && mid[0.2].pieces === 0 && !mid[0.6].whole && mid[0.6].pieces === 3, JSON.stringify(mid));
 
+  // The clipping plane (#369) cuts every piece alike, in its own box: on, the pieces draw less.
+  const hasPlane = await c.evaluate('!!(window.__vrPlane && window.__vrPlane.get().available)');
+  if (hasPlane) {
+    const open = await c.evaluate('window.__vrVolumePixels({ frames: 1 })');
+    await c.evaluate('window.__vrPlane.set({ on: true, slab: false })');
+    const cut = await c.evaluate('window.__vrVolumePixels({ frames: 1 })');
+    const cutPieces = await c.evaluate('window.__vrExplode.stats.pieces');
+    await c.evaluate('window.__vrPlane.set({ on: false })');
+    results.plane = { open: +open.fraction.toFixed(4), cut: +cut.fraction.toFixed(4) };
+    check(`${L}: the clipping plane cuts the pieces (each in its own box)`, cut.explode && cutPieces === 3 && cut.fraction < 0.9 * open.fraction && cut.fraction > 0,
+      `${(100 * open.fraction).toFixed(2)} % -> ${(100 * cut.fraction).toFixed(2)} % with the plane`);
+  }
+
   // A hidden piece is not drawn.
   await press('ex-piece:1');
   await c.evaluate('window.__vrVolumePixels({ frames: 1 })');
