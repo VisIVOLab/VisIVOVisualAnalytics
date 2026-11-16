@@ -2127,6 +2127,16 @@ protected:
     /// The list on the 2-D slice and on the moment window (each its own renderer).
     RegionListOverlay m_sliceRegionOverlay;
     RegionListOverlay m_momentRegionOverlay;
+    /// The list on the 3-D view's cutting plane (issue #343), at the channel
+    /// the plane shows (m_planeChannel; -1 before the plane is placed).
+    RegionListOverlay m_planeRegionOverlay;
+    int m_planeChannel{ -1 };
+    /// Place the plane's regions at the plane's channel and the display's
+    /// sampling, shown with the plane. The caller renders.
+    void refreshPlaneRegionOverlay();
+    /// Put the cutting plane at @p channel with the display's sampling
+    /// (RegionCubeSampling.h cuttingPlane), the regions on it too.
+    void placeCuttingPlane(int channel);
     struct RegionDrag
     {
         bool active{ false };

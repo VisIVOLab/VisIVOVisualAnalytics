@@ -681,3 +681,41 @@ void TestRegionModel::importKeepsEveryRegionAndSaysWhy()
     QCOMPARE(int(list.ringGroup(again[0]).size()), 2);
     QCOMPARE(int(list.ringGroup(ids[0]).size()), 2);
 }
+
+// ── Regions on the cube's cutting plane (issue #343) ─────────────────────────
+
+void TestRegionModel::planeAndRegionsShareOnePlacement()
+{
+    using CubeLodGeometry::Sampling;
+    const int width = 101, height = 61, channel = 37;
+    for (const Sampling &s : { Sampling{}, Sampling::strided(4), Sampling::blockMean(4),
+                               Sampling::pyramidLevel(2) }) {
+        const PlaneRect rect = cuttingPlane(width, height, channel, s);
+        // Texel i of the full-resolution slice is centred at u = (i + 0.5) / W
+        // on the plane: that is exactly where a region puts cube pixel i.
+        for (int i : { 0, 7, 50, width - 1 }) {
+            const double u = (i + 0.5) / width;
+            const double texelX = rect.x0 + u * (rect.x1 - rect.x0);
+            QVERIFY(near(texelX, planePoint({ double(i), 0.0 }, channel, s)[0], 1e-9));
+            QCOMPARE(int(std::lround(planeToCube(texelX, s))), i);   // the pick goes back
+        }
+        for (int j : { 0, 30, height - 1 }) {
+            const double v = (j + 0.5) / height;
+            const double texelY = rect.y0 + v * (rect.y1 - rect.y0);
+            QVERIFY(near(texelY, planePoint({ 0.0, double(j) }, channel, s)[1], 1e-9));
+        }
+        // Plane and regions at one height: the channel's.
+        QVERIFY(near(rect.z, planePoint({ 3.0, 4.0 }, channel, s)[2], 1e-12));
+        // And where the volume shows that channel's samples.
+        QVERIFY(near(rect.z, CubeLodGeometry::toWorld(channel, s), 1e-12));
+    }
+    // Strided by 4: preview sample k shows cube voxel 4k, at world k. A region
+    // corner on cube pixel 40 sits on preview sample 10, and channel 36 on
+    // sample 9 (the old plane, at a fraction of the preview's depth, did not).
+    QVERIFY(near(planePoint({ 40.0, 20.0 }, 36, Sampling::strided(4))[0], 10.0));
+    QVERIFY(near(planePoint({ 40.0, 20.0 }, 36, Sampling::strided(4))[2], 9.0));
+    // Block means of 4: sample k is the mean of 4k..4k+3, centred at 4k + 1.5.
+    QVERIFY(near(planePoint({ 41.5, 0.0 }, 0, Sampling::blockMean(4))[0], 10.0));
+    // Full resolution: the identity.
+    QVERIFY(near(planePoint({ 12.25, 7.5 }, 3, Sampling{})[0], 12.25));
+}
