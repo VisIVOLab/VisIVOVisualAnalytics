@@ -20,6 +20,9 @@ private slots:
     void visibleBoxAndZoom_driveThePlan();
     void signature_ignoresNodeOrder();
     void decide_table();
+    void motion_framesTellMovesFromStills();
+    void settle_waitsWhileAButtonIsHeld();
+    void decide_explicitBoxSurvivesSettling();
     void lru_evictsLeastRecentlyUsed();
     void lru_capacityAndOversize();
     void lru_blockKeysSeparateDatasetsAndLevels();

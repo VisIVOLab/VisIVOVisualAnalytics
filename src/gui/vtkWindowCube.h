@@ -1424,17 +1424,16 @@ protected:
     void setupLevelOfDetail();
     /// Before the window goes: the camera observers, the timer, the blocks.
     void teardownLevelOfDetail();
-    // Refining as the camera settles (phase 4): the end of every interaction
-    // restarts a short timer, and when it fires the view is planned again.
+    // Refining as the camera settles (phase 4): every frame drawn with the
+    // camera moved restarts a short timer, and when it runs out the view is
+    // planned again (CubeLodAuto::MotionTracker says why frames, not the
+    // interactor style's events).
     QPointer<QTimer> m_lodSettleTimer;
-    vtkWeakPointer<vtkRenderWindowInteractor> m_lodInteractor;
-    unsigned long m_lodStartTag{ 0 };
-    unsigned long m_lodEndTag{ 0 };
     vtkWeakPointer<vtkRenderer> m_lodFrameRenderer;
     unsigned long m_lodFrameTag{ 0 };
-    bool m_lodInteracting{ false };
+    CubeLodAuto::MotionTracker m_lodMotion;
     bool m_lodTornDown{ false };   ///< teardownLevelOfDetail ran: install nothing again
-    /// Frames drawn during the current interaction, for the log: count, the
+    /// Frames drawn during the current camera motion, for the log: count, the
     /// renderer's own time and the time between frames.
     struct LodFrameStats
     {
@@ -1456,9 +1455,10 @@ protected:
     std::shared_ptr<LodCache> m_lodCache;
     QPointer<QAction> m_actClearRefinedBox;
     void installLodCameraObservers();
-    void onLodInteractionStart();
-    void onLodInteractionEnd();
+    /// Every frame of the 3-D view: did the camera move since the last one?
     void onLodFrameDrawn();
+    /// The settle timer ran out: the motion is over (or still held), plan.
+    void onLodSettleTimeout();
     /// The camera settled: plan the view and fetch, keep, or clear.
     void maybeRefineLod();
     /// The planner's inputs that do not depend on the camera; false when the
@@ -1493,8 +1493,10 @@ protected:
     void refineBox(const std::array<int, 6> &cubeBox);
     /// Back to the plain preview volume; cancels a refine in flight.
     /// @p why, when given, goes to the status line. The blocks already read
-    /// stay cached when @p keepCache (the camera may want them again).
-    void clearLod(const QString &why = QString(), bool keepCache = false);
+    /// stay cached (the camera, or the same box chosen again, may want them;
+    /// the cache holds at most twice the detail budget) unless @p dropCache:
+    /// another cube on screen, full-resolution data, or the window closing.
+    void clearLod(const QString &why = QString(), bool dropCache = false);
     /// One block of the request @p generation arrived (or failed).
     struct LodBlock;
     void onLodBlock(quint64 generation, int index, const LodBlock &block);

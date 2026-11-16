@@ -64,6 +64,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFutureWatcher>
+#include <QGuiApplication>
 #include <QStatusBar>
 #include <QThreadPool>
 #include <QTimer>
@@ -188,7 +189,7 @@ void vtkWindowCube::setupLevelOfDetail()
     ui->menuTools->addAction(this->m_actRefineBox);
     this->m_actClearRefinedBox = new QAction(u"Clear Refined Box"_s, ui->menuTools);
     QObject::connect(this->m_actClearRefinedBox, &QAction::triggered, this, [this]() {
-        this->clearLod(u"Refined box cleared: the view refines where the camera looks again."_s, true);
+        this->clearLod(u"Refined box cleared: the view refines where the camera looks again."_s);
         if (auto *rw = ui->vtkCube->renderWindow())
             rw->Render();
         if (this->m_lodSettleTimer)
@@ -199,50 +200,89 @@ void vtkWindowCube::setupLevelOfDetail()
     this->m_lodSettleTimer = new QTimer(this);
     this->m_lodSettleTimer->setSingleShot(true);
     this->m_lodSettleTimer->setInterval(kSettleMs);
-    QObject::connect(this->m_lodSettleTimer, &QTimer::timeout, this, &vtkWindowCube::maybeRefineLod);
+    QObject::connect(this->m_lodSettleTimer, &QTimer::timeout, this, &vtkWindowCube::onLodSettleTimeout);
     this->installLodCameraObservers();
     this->updateRefineBoxAction();
 }
 
 void vtkWindowCube::installLodCameraObservers()
 {
-    if (this->m_lodTornDown)
-        return;   // the window is going: nothing may observe for it any more
+    if (this->m_lodTornDown || this->m_lodFrameTag != 0)
+        return;   // there already, or the window is going
     auto *rw = ui->vtkCube ? ui->vtkCube->renderWindow() : nullptr;
-    if (!rw)
+    vtkRenderer *renderer = rw ? rw->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!renderer)
         return;
-    if (this->m_lodEndTag == 0) {
-        if (auto *iren = rw->GetInteractor()) {
-            // Start and end of every rotation, pan or zoom (a wheel step is a
-            // whole interaction): the end restarts the settle timer.
-            this->m_lodStartTag = iren->AddObserver(vtkCommand::StartInteractionEvent, this,
-                                                    &vtkWindowCube::onLodInteractionStart);
-            this->m_lodEndTag = iren->AddObserver(vtkCommand::EndInteractionEvent, this,
-                                                  &vtkWindowCube::onLodInteractionEnd);
-            this->m_lodInteractor = iren;
-            qDebug().noquote() << u"[lod] camera observers on interactor %1"_s.arg(
-                    quintptr(iren), 0, 16);
-        }
-    }
-    if (this->m_lodFrameTag == 0) {
-        if (auto *renderer = rw->GetRenderers()->GetFirstRenderer()) {
-            // Frames drawn while the camera moves, for the log line that
-            // closes each interaction: what a refined view costs to rotate.
-            this->m_lodFrameTag = renderer->AddObserver(vtkCommand::EndEvent, this,
-                                                        &vtkWindowCube::onLodFrameDrawn);
-            this->m_lodFrameRenderer = renderer;
-        }
-    }
+    // Every frame of the 3-D view, whatever drew it: a drag, a wheel step, a
+    // Camera preset, a linked view, the headset. The interactor's
+    // Start/EndInteractionEvent never came (VTK raises them on the style),
+    // and the render window's own EndEvent did not either in the Qt widget:
+    // the renderer's is raised by every vtkRenderer::Render.
+    this->m_lodFrameTag = renderer->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::onLodFrameDrawn);
+    this->m_lodFrameRenderer = renderer;
+    this->m_lodMotion.reset();
+    qDebug().noquote() << u"[lod] camera watched on renderer %1"_s.arg(quintptr(renderer), 0, 16);
 }
 
 void vtkWindowCube::onLodFrameDrawn()
 {
-    if (!this->m_lodInteracting || !this->m_lodFrameRenderer)
+    vtkRenderer *renderer = this->m_lodFrameRenderer.GetPointer();
+    vtkCamera *camera = renderer ? renderer->GetActiveCamera() : nullptr;
+    if (!camera)
         return;
-    const double t = this->m_lodFrameRenderer->GetLastRenderTimeInSeconds();
+    CubeLodAuto::CameraPose pose;
+    camera->GetPosition(pose.position.data());
+    camera->GetFocalPoint(pose.focalPoint.data());
+    camera->GetViewUp(pose.viewUp.data());
+    pose.viewAngle = camera->GetViewAngle();
+    pose.parallelScale = camera->GetParallelScale();
+    pose.parallel = camera->GetParallelProjection() != 0;
+    const CubeLodAuto::MotionTracker::Frame frame = this->m_lodMotion.frame(pose);
+    if (frame == CubeLodAuto::MotionTracker::Frame::Started) {
+        qDebug().noquote() << u"[lod] camera moving"_s;
+        this->m_lodFrames = LodFrameStats{};
+        this->m_lodFrames.sinceStart.start();
+    }
+    if (!this->m_lodMotion.moving())
+        return;
+    // Frames drawn while the camera moves, for the log line that closes each
+    // motion: what a refined view costs to rotate.
+    const double t = renderer->GetLastRenderTimeInSeconds();
     ++this->m_lodFrames.frames;
     this->m_lodFrames.renderSeconds += t;
     this->m_lodFrames.worstRenderSeconds = std::max(this->m_lodFrames.worstRenderSeconds, t);
+    // Only a frame that moved the camera puts the settling off.
+    if (frame != CubeLodAuto::MotionTracker::Frame::Still && this->m_lodSettleTimer)
+        this->m_lodSettleTimer->start();
+}
+
+void vtkWindowCube::onLodSettleTimeout()
+{
+    const bool held = QGuiApplication::mouseButtons() != Qt::NoButton;
+    if (CubeLodAuto::settleStep(this->m_lodMotion.moving(), held) == CubeLodAuto::SettleStep::Wait) {
+        if (this->m_lodSettleTimer)
+            this->m_lodSettleTimer->start();   // a drag paused, not ended
+        return;
+    }
+    if (this->m_lodMotion.settle()) {
+        const LodFrameStats &f = this->m_lodFrames;
+        const double elapsed = f.sinceStart.isValid() ? f.sinceStart.elapsed() / 1000.0 : 0.0;
+        // Only drags say anything about the frame rate (a wheel step draws one frame).
+        if (f.frames >= 5 && this->m_lod && this->m_lod->active()) {
+            qDebug().noquote() << u"[lod] interaction frames=%1 blocks=%2 render mean=%3 ms worst=%4 ms; "
+                                  u"%5 frames/s over %6 s"_s
+                                          .arg(f.frames)
+                                          .arg(this->m_lod->blockCount())
+                                          .arg(1000.0 * f.renderSeconds / f.frames, 0, 'f', 1)
+                                          .arg(1000.0 * f.worstRenderSeconds, 0, 'f', 1)
+                                          .arg(elapsed > 0 ? f.frames / elapsed : 0.0, 0, 'f', 1)
+                                          .arg(elapsed, 0, 'f', 2);
+        } else {
+            qDebug().noquote() << u"[lod] camera moved: %1 frames over %2 s"_s.arg(f.frames).arg(
+                    elapsed, 0, 'f', 2);
+        }
+    }
+    this->maybeRefineLod();
 }
 
 void vtkWindowCube::teardownLevelOfDetail()
@@ -250,46 +290,11 @@ void vtkWindowCube::teardownLevelOfDetail()
     this->m_lodTornDown = true;
     if (this->m_lodSettleTimer)
         this->m_lodSettleTimer->stop();
-    if (this->m_lodInteractor) {
-        if (this->m_lodStartTag)
-            this->m_lodInteractor->RemoveObserver(this->m_lodStartTag);
-        if (this->m_lodEndTag)
-            this->m_lodInteractor->RemoveObserver(this->m_lodEndTag);
-    }
     if (this->m_lodFrameRenderer && this->m_lodFrameTag)
         this->m_lodFrameRenderer->RemoveObserver(this->m_lodFrameTag);
-    this->m_lodStartTag = this->m_lodEndTag = this->m_lodFrameTag = 0;
+    this->m_lodFrameTag = 0;
     // The refined box's blocks leave the renderer while it still exists.
-    this->clearLod();
-}
-
-void vtkWindowCube::onLodInteractionStart()
-{
-    this->m_lodInteracting = true;
-    if (this->m_lodSettleTimer)
-        this->m_lodSettleTimer->stop();
-    this->m_lodFrames = LodFrameStats{};
-    this->m_lodFrames.sinceStart.start();
-}
-
-void vtkWindowCube::onLodInteractionEnd()
-{
-    this->m_lodInteracting = false;
-    const LodFrameStats &f = this->m_lodFrames;
-    // Only drags say anything about the frame rate (a wheel step draws one frame).
-    if (f.frames >= 5 && this->m_lod && this->m_lod->active()) {
-        const double elapsed = f.sinceStart.isValid() ? f.sinceStart.elapsed() / 1000.0 : 0.0;
-        qDebug().noquote() << u"[lod] interaction frames=%1 blocks=%2 render mean=%3 ms worst=%4 ms; "
-                              u"%5 frames/s over %6 s"_s
-                                      .arg(f.frames)
-                                      .arg(this->m_lod->blockCount())
-                                      .arg(1000.0 * f.renderSeconds / f.frames, 0, 'f', 1)
-                                      .arg(1000.0 * f.worstRenderSeconds, 0, 'f', 1)
-                                      .arg(elapsed > 0 ? f.frames / elapsed : 0.0, 0, 'f', 1)
-                                      .arg(elapsed, 0, 'f', 2);
-    }
-    if (this->m_lodSettleTimer)
-        this->m_lodSettleTimer->start();
+    this->clearLod(QString(), true);
 }
 
 vtkWindowCube::LodGateResult vtkWindowCube::lodGate() const
@@ -475,8 +480,8 @@ bool vtkWindowCube::lodViewInputs(CubeLodPlan::Inputs &in)
 
 void vtkWindowCube::maybeRefineLod()
 {
-    if (this->m_lodInteracting)
-        return;
+    if (this->m_lodMotion.moving())
+        return;   // planned when it settles
     if (!Settings(settingsDir()).getLodAutoRefine()) {
         // Switched off while the camera's set was shown or on its way: it
         // goes (a chosen box stays).
@@ -484,7 +489,7 @@ void vtkWindowCube::maybeRefineLod()
         if (autoPending)
             this->cancelLodFetch();
         if (!this->m_lodShownSignature.empty()) {
-            this->clearLod(QString(), true);
+            this->clearLod();
             if (auto *rw = ui->vtkCube->renderWindow())
                 rw->Render();
         }
@@ -529,7 +534,7 @@ void vtkWindowCube::maybeRefineLod()
         break;
     case CubeLodAuto::Action::Clear:
         // The view needs no finer level: the blocks would only cost frames.
-        this->clearLod(QString(), true);
+        this->clearLod();
         if (auto *rw = ui->vtkCube->renderWindow())
             rw->Render();
         break;
@@ -893,7 +898,7 @@ void vtkWindowCube::applyLodSet()
                                   .arg(this->m_lodStatus);
 }
 
-void vtkWindowCube::clearLod(const QString &why, bool keepCache)
+void vtkWindowCube::clearLod(const QString &why, bool dropCache)
 {
     // A request in flight is dropped: its blocks are ignored as they come,
     // and those not sent yet are never sent.
@@ -908,7 +913,7 @@ void vtkWindowCube::clearLod(const QString &why, bool keepCache)
         this->m_lod->clear();
     this->m_lodShownExplicit = false;
     this->m_lodShownSignature = CubeLodAuto::Signature{};
-    if (!keepCache && this->m_lodCache)
+    if (dropCache && this->m_lodCache)
         this->m_lodCache->clear();
     if (wasShown) {
         this->volume->SetVisibility(this->m_show3dRendering ? 1 : 0);

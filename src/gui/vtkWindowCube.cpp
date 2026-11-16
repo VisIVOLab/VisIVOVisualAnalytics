@@ -6898,7 +6898,7 @@ bool vtkWindowCube::requestHighResCube()
     }
     // Full-resolution data replaces the preview a refined box was drawn on
     // (only once the load really starts: a refused one keeps the box).
-    this->clearLod(u"Refined box removed: loading full-resolution data."_s);
+    this->clearLod(u"Refined box removed: loading full-resolution data."_s, true);
     this->currentRemoteRoi = roi;
     qDebug().noquote()
             << QStringLiteral("[remote-roi] mode=%1 request x=%2..%3 y=%4..%5 z=%6..%7")
@@ -7009,8 +7009,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
         return;
     }
     // Another cube on screen (a new preview, the full cube, a region): a
-    // refined box belonged to the one it replaces.
-    this->clearLod();
+    // refined box belonged to the one it replaces, and so did its cache.
+    this->clearLod(QString(), true);
 
     QElapsedTimer totalTimer;
     totalTimer.start();

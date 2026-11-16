@@ -14,8 +14,10 @@ are preserved here unedited; the branch names they refer to are historical.
   detail budget and the GPU's 3-D texture limit, reads only the blocks it does
   not have yet, and swaps them in once all have arrived. Zooming out until the
   preview is enough goes back to the plain preview. Blocks already read are
-  kept (up to twice the budget) and blocks still needed stay on the GPU, so
-  turning back reads nothing. A box chosen with *Refine Selected Box…* stays
+  kept (up to twice the budget, also through *Clear Refined Box* and MIP or
+  MinIP) and blocks still needed stay on the GPU, so turning back reads
+  nothing. The view is planned once the camera has not moved for 200 ms,
+  whatever moved it (drag, wheel, Camera menu, linked views). A box chosen with *Refine Selected Box…* stays
   until the new *Clear Refined Box*. The 3-D pick and spectrum probe walk the
   fine blocks inside the refined box. New setting: *Refine automatically when
   the view settles* (Settings → General → Large Cubes, on by default). The box
@@ -25,8 +27,8 @@ are preserved here unedited; the branch names they refer to are historical.
 - **Desktop: refine a selected box of a large cube (part of #321, client part
   of #320).** *Tools → Views → Refine Selected Box…* reads a box of the cube
   at the finest level the detail budget allows (exactly that box, rounded
-  only to the level's samples) and draws it over the 3-D preview, which keeps covering the rest of the cube as up to six coarse
-  pieces. All the volumes share one colour map, threshold and opacity, are
+  only to the level's samples) and draws it over the 3-D preview, which
+  keeps covering the rest of the cube as up to six coarse pieces. All the volumes share one colour map, threshold and opacity, are
   cropped so that they meet without seams, and are drawn back to front. The
   view swaps only when every block has arrived. Full resolution, a region, a
   new preview, MIP/MinIP, the isosurface, remote rendering and VR go back to

@@ -48,7 +48,9 @@ a block from where every N-th voxel would put it.
 ### Finer detail where the camera looks
 
 When the 3-D view of a large cube shows a preview, it refines itself as you
-look around. About 200 ms after a rotation, pan or zoom ends, the viewer works
+look around. About 200 ms after the camera stops moving (a rotation, pan,
+wheel zoom, a Camera menu view, a linked view; a drag paused with the button
+held does not count as stopped), the viewer works
 out the part of the cube in view, how many cube voxels one screen pixel covers
 at the focal point, and the level that matches: zoomed in on a quarter of the
 cube, it reads that part at level 1 or level 0; zoomed out so that the preview
@@ -59,7 +61,10 @@ changes only once all of them have arrived. The camera never waits for them.
 
 Blocks already read stay in memory, up to twice the detail budget, and the
 blocks on screen that a new view still needs stay on the GPU. Turning back to
-a part seen before therefore reads nothing new. Clicking a refined part of the
+a part seen before therefore reads nothing new. They stay through *Clear
+Refined Box*, MIP or MinIP, the isosurface and the backend's rendering, and go
+only when another cube (a new preview, a region, the full resolution) is
+shown or the window closes. Clicking a refined part of the
 volume (3-D pick, spectrum probe, lasso seed) lands on the finer voxel drawn
 there, not on the preview's.
 

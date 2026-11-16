@@ -341,3 +341,73 @@ void TestCubeLodAuto::pick_maximumAcrossPieces()
     QCOMPARE(blanked.piece, 0);
     QCOMPARE(blanked.voxel.value, 5.0);
 }
+
+void TestCubeLodAuto::motion_framesTellMovesFromStills()
+{
+    // Every way the camera moves draws frames: a wheel step (one frame), a
+    // drag (many), a Camera preset (one), with the same pose in between.
+    MotionTracker m;
+    CameraPose p;
+    p.position = { 0, 0, 500 };
+    p.focalPoint = { 128, 128, 128 };
+    p.viewUp = { 0, 1, 0 };
+    p.viewAngle = 30;
+    QCOMPARE(m.frame(p), MotionTracker::Frame::First);   // a scene's first frame is no motion
+    QVERIFY(!m.moving());
+    QCOMPARE(m.frame(p), MotionTracker::Frame::Still);
+    QVERIFY(!m.settle());                                // nothing moved: nothing ended
+    // A wheel step: the camera dollies, one frame.
+    p.position[2] = 450;
+    QCOMPARE(m.frame(p), MotionTracker::Frame::Started);
+    QVERIFY(m.moving());
+    QCOMPARE(m.frame(p), MotionTracker::Frame::Still);   // a redraw (a block swap) is not a move
+    QVERIFY(m.moving());
+    QVERIFY(m.settle());                                 // the timer ran out: the zoom is over
+    QVERIFY(!m.moving());
+    // A drag: many frames, each a new pose.
+    for (int i = 1; i <= 5; ++i) {
+        p.viewUp = { std::sin(0.01 * i), std::cos(0.01 * i), 0 };
+        QCOMPARE(m.frame(p), i == 1 ? MotionTracker::Frame::Started : MotionTracker::Frame::Moving);
+    }
+    QVERIFY(m.settle());
+    // A preset that only changes the projection, or the zoom of a parallel one.
+    p.parallel = true;
+    QCOMPARE(m.frame(p), MotionTracker::Frame::Started);
+    QVERIFY(m.settle());
+    p.parallelScale = 64;
+    QCOMPARE(m.frame(p), MotionTracker::Frame::Started);
+    QVERIFY(m.settle());
+    // A new scene starts over.
+    m.reset();
+    QCOMPARE(m.frame(p), MotionTracker::Frame::First);
+}
+
+void TestCubeLodAuto::settle_waitsWhileAButtonIsHeld()
+{
+    QCOMPARE(settleStep(true, true), SettleStep::Wait);     // a drag paused, still held
+    QCOMPARE(settleStep(true, false), SettleStep::Plan);    // released, or a wheel zoom
+    QCOMPARE(settleStep(false, false), SettleStep::Plan);   // Clear Refined Box restarts the timer
+    QCOMPARE(settleStep(false, true), SettleStep::Plan);    // a click that moved nothing
+}
+
+void TestCubeLodAuto::decide_explicitBoxSurvivesSettling()
+{
+    // A box chosen with Refine Selected Box, cut to the box, is shown: no
+    // camera plan may replace it until it is cleared.
+    CubeLodPlan::Inputs in = bigCube();
+    in.visibleBox = CubeLodGeometry::wholeBox(in.cubeShape);
+    in.focalPoint = { 1024.0, 1024.0, 1024.0 };
+    in.voxelsPerPixel = 1.0;
+    const CubeLodPlan::Plan chosen
+            = CubeLodPlan::planBox(Box{ { 512, 512, 512 }, { 1536, 1536, 1536 } }, in);
+    QVERIFY(chosen.refine);
+    const CubeLodPlan::Plan view = CubeLodPlan::planFocus(in);
+    QVERIFY(view.refine);
+    State held;
+    held.explicitHeld = true;
+    QCOMPARE(decide(view, held), Action::Keep);
+    CubeLodPlan::Plan none;
+    QCOMPARE(decide(none, held), Action::Keep);
+    // A box cut from a node is another set than the whole node.
+    QVERIFY(signatureOf(chosen) != signatureOf(CubeLodPlan::planBox(Box{ { 0, 0, 0 }, { 2048, 2048, 2048 } }, in)));
+}

@@ -96,6 +96,94 @@ inline double voxelsPerPixel(const Camera &c, const Sampling &preview)
     return worldHeight / double(c.viewportHeightPx) * preview.scale;
 }
 
+// ── When the camera has settled ─────────────────────────────────────────────
+
+/// What a frame's camera is, as far as the view of the cube goes.
+struct CameraPose
+{
+    std::array<double, 3> position{ 0.0, 0.0, 0.0 };
+    std::array<double, 3> focalPoint{ 0.0, 0.0, 0.0 };
+    std::array<double, 3> viewUp{ 0.0, 0.0, 0.0 };
+    double viewAngle{ 0.0 };
+    double parallelScale{ 0.0 };
+    bool parallel{ false };
+
+    bool operator==(const CameraPose &o) const
+    {
+        return position == o.position && focalPoint == o.focalPoint && viewUp == o.viewUp
+                && viewAngle == o.viewAngle && parallelScale == o.parallelScale && parallel == o.parallel;
+    }
+    bool operator!=(const CameraPose &o) const { return !(*this == o); }
+};
+
+/// Tells camera motion from the frames the view draws.
+///
+/// The view is refined once the camera has stopped. The interactor style's
+/// Start/EndInteractionEvent cannot say that: VTK raises them on the style,
+/// not on the interactor, the style changes (the lasso swaps it), and the
+/// Camera menu's presets, the linked views and the headset move the camera
+/// without any interaction at all. Every one of those draws a frame, so the
+/// window feeds each frame's camera here and restarts a short timer whenever
+/// a frame shows it moved; when the timer runs out, settle() says whether a
+/// motion has just ended.
+class MotionTracker
+{
+public:
+    enum class Frame {
+        First,     ///< the first frame seen: nothing to compare with
+        Still,     ///< the camera is where it was at the last frame
+        Started,   ///< it moved, after being still: a motion begins
+        Moving,    ///< it moved again during a motion
+    };
+
+    Frame frame(const CameraPose &pose)
+    {
+        if (!m_have) {
+            m_have = true;
+            m_last = pose;
+            return Frame::First;
+        }
+        if (pose == m_last)
+            return Frame::Still;
+        m_last = pose;
+        if (m_moving)
+            return Frame::Moving;
+        m_moving = true;
+        return Frame::Started;
+    }
+    /// True from a motion's first frame until settle().
+    bool moving() const { return m_moving; }
+    /// No camera change for the settle delay: the motion, if any, is over.
+    /// True when one was under way.
+    bool settle()
+    {
+        const bool was = m_moving;
+        m_moving = false;
+        return was;
+    }
+    /// Forget the last camera (a new scene: its first frame is not a motion).
+    void reset()
+    {
+        m_have = false;
+        m_moving = false;
+    }
+
+private:
+    CameraPose m_last;
+    bool m_have{ false };
+    bool m_moving{ false };
+};
+
+/// What to do when the settle timer runs out: wait more while a mouse button
+/// is still held during a motion (a drag paused longer than the delay is not
+/// over), else plan the view.
+enum class SettleStep { Wait, Plan };
+
+inline SettleStep settleStep(bool moving, bool buttonHeld)
+{
+    return moving && buttonHeld ? SettleStep::Wait : SettleStep::Plan;
+}
+
 // ── Whether to fetch ────────────────────────────────────────────────────────
 
 /// What a fine set is: its level and nodes. Two plans with the same signature
