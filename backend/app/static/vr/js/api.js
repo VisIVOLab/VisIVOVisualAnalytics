@@ -463,6 +463,31 @@ export class Backend {
       .then(({ buf }) => JSON.parse(new TextDecoder().decode(buf)));
   }
 
+  /** The cube's brick pyramid's state and level shapes (pyramid_status, never
+   *  a build): {state, levels, shapes [[z, y, x], …]}; a 202 (building) is an
+   *  answer too. */
+  async pyramidStatus(datasetId, signal = undefined) {
+    const path = '/v1/cube/pyramid_status';
+    const resp = await hookedFetch(path, { method: 'POST', headers: this.headers(true), signal,
+      body: JSON.stringify({ dataset_id: datasetId, build: false }) });
+    if (!resp.ok) throw await failed(resp, path);
+    return resp.json();
+  }
+
+  /** One box of one level of detail (region_level_bin, issue #328): the box
+   *  {x0, x1, y0, y1, z0, z1} inclusive in voxels of `level`, float32 (NaN
+   *  blank), x fastest. {values, dims, level, source, bytes, ms}. */
+  async regionLevel(datasetId, level, box, signal = undefined) {
+    const t0 = performance.now();
+    const { resp, buf } = await this._binary('/v1/cube/region_level_bin',
+      // A level above 0 from the pyramid only: never a strided sample drawn as a block mean.
+      JSON.stringify({ dataset_id: datasetId, level, ...box, ghost: 0, source: level > 0 ? 'pyramid' : 'auto' }), 'application/json', signal);
+    const h = (k) => resp.headers.get(k);
+    const dims = [Number(h('X-Visivo-Width')), Number(h('X-Visivo-Height')), Number(h('X-Visivo-Depth'))];
+    return { values: new Float32Array(buf), dims, level: Number(h('X-Visivo-Level')), source: h('X-Visivo-Source') || '',
+      bytes: buf.byteLength, ms: performance.now() - t0 };
+  }
+
   spectralProbe(datasetId, probeRequest) {
     return this._json('POST', '/v1/spectral/probe', { dataset_id: datasetId, ...probeRequest });
   }

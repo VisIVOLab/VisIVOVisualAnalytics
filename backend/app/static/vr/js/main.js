@@ -8,6 +8,7 @@ import { Renderer } from './renderer.js';
 import { Backend, takeToken, saveToken, tokenError, takePairing, forgetPairing, keepPairing, requestHooks } from './api.js';
 import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, linkState, pageFetch } from './transport.js';
 import * as V from './volume.js';
+import * as CD from './crop-detail.js';
 import * as SC from './sim-controls.js';
 import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
@@ -1273,6 +1274,8 @@ let capacitySide = 0;   // the Max side the capacity on the GPU was planned for
 
 function ensureCapacity(cube, { reshow = true, page = false } = {}) {
   if (R.xrActive || gl.isContextLost()) return !!cube && R.fitsCapacity(cube);
+  // The capacity may be made anew: the coarse cube on show first (#328).
+  if (detail.shown) dropDetail('the capacity is planned again');
   // The share less what other storages of their own hold (the benchmark's
   // cubes, a cube shown from them): the cube shown from its voxels is given
   // back or moved into the capacity, so it is not counted.
@@ -1497,6 +1500,119 @@ const installs = new Newest();
 const WRITE_STEP_MS = 4;
 const nextTask = () => new Promise((r) => setTimeout(r, 0));
 
+// ── The crop in more detail (issue #328, crop-detail.js) ────────────────────
+// Once the crop has settled, its region at the finest level of detail that
+// fits the capacity is read from the backend (region_level_bin), coded on the
+// whole cube's codes, written into the capacity's spare bank (in VR too: no
+// 3-D allocation) and drawn in the crop's place. The coarse cube stays in its
+// bank: clearing the crop or moving it out of the region shows it again at
+// once. ?nodetail turns it off.
+const detail = {
+  gate: new CD.DetailGate(), busy: false, shown: null, levels: null, levelsFor: '', gen: 0, last: null, off: query.has('nodetail'),
+};
+
+/** Back to the coarse cube (its slot is still in its bank). */
+function dropDetail(why = '', cancel = true) {
+  const d = detail.shown;
+  if (cancel) detail.gen++;     // a region on its way is dropped too
+  detail.gate.reset();
+  if (!d) return;
+  detail.shown = null;
+  if (R.slot === d.slot && d.coarseSlot && !d.coarseSlot.released && state.cube) R.showCoarse(d.coarseSlot, state.cube);
+  if (state.info) decorationsChanged();
+  if (why) shell.log('info', 'crop-detail-dropped', why);
+}
+
+/** Every 150 ms: is a region due, does the one on show still hold the crop? */
+async function detailTick() {
+  const c = state.cube;
+  // A mean-binned cube only: the pyramid's levels are block means.
+  if (detail.off || !c || !state.open || !state.info || c.mode !== 'mean' || !R.cap || gl.isContextLost()) return;
+  if (detail.shown && (!CD.regionHolds(detail.shown.region, state.clip) || R.slot !== detail.shown.slot)) dropDetail('the crop left the region');
+  if (CD.wholeCrop(state.clip) || state.loading > 0 || (xr && xr.bench)) { detail.gate.note('', performance.now()); return; }
+  const r4 = (v) => Math.round(v * 1e4);
+  const key = JSON.stringify([state.open.dataset_id, state.clip.min.map(r4), state.clip.max.map(r4), R.cap.dims, c.encoding, state.loadGen]);
+  detail.gate.note(key, performance.now());
+  if (detail.busy || !detail.gate.due(performance.now())) return;
+  try { await loadDetail(key); } catch (err) {
+    if (err && err.stale) { detail.gate.reset(); return; }
+    // Not asked again until the crop changes (no request every 150 ms).
+    detail.last = { error: String(err.message || err) };
+    shell.log('warning', 'crop-detail-failed', String(err.message || err).slice(0, 200));
+  }
+}
+setInterval(() => { detailTick(); }, 150);
+
+/** The region of the settled crop: asked for, coded, written, shown. */
+async function loadDetail(key) {
+  const c = state.cube, info = state.info, ds = state.open.dataset_id;
+  const gen = ++detail.gen;
+  const stale = () => {
+    if (gen !== detail.gen || state.cube !== c || !R.cap || state.loading > 0) { const e = new Error('stale'); e.stale = true; throw e; }
+  };
+  detail.busy = true;
+  const t0 = performance.now();
+  try {
+    const b = ensureBackend();
+    // Kept only for a ready pyramid: one built later in the session is used.
+    if (detail.levelsFor !== ds) {
+      const st = await b.pyramidStatus(ds);
+      stale();
+      detail.levelsFor = st && st.state === 'ready' ? ds : '';
+      const all = st && st.state !== 'unsupported' ? CD.levelShapesXYZ(st.shapes) : [];
+      // A level read strided is a sample, not a block mean: drawn at the
+      // block centre it would sit (2^l - 1)/2 voxels off. Level 0 is exact.
+      detail.levels = st && st.state === 'ready' ? all : all.slice(0, 1);
+    }
+    const plan = CD.planRegion({ clip: state.clip, fullShape: info.full_shape, levels: detail.levels,
+      capDims: R.cap.dims, factors: c.factors });
+    if (!plan) { detail.last = { none: true }; return; }
+    const s = detail.shown;
+    if (s && s.region.level === plan.level && JSON.stringify(s.region.box) === JSON.stringify(plan.box)) return;
+    const r = await b.regionLevel(ds, plan.level, plan.box);
+    stale();
+    const tNet = performance.now();
+    if (r.dims.join() !== plan.dims.join()) throw new Error(`the region came ${r.dims.join('×')}, not ${plan.dims.join('×')}`);
+    const n = r.values.length;
+    const data = c.encoding === 'uint8' ? new Uint8Array(n) : new Uint16Array(n);
+    // Coded in slices, the frames drawn in between (about 3 ms a slice).
+    for (let i = 0; i < n; i += 1 << 20) {
+      CD.quantise(r.values, c.lo, c.hi, c.scale, c.encoding, data, i, Math.min(n, i + (1 << 20)));
+      await nextTask();
+      stale();
+    }
+    const tCode = performance.now();
+    const got = { source: r.source, bytes: r.bytes };
+    r.values = null;                          // the floats go (67 MB for a 256³ region)
+    const region = { data, dims: plan.dims, encoding: c.encoding, lo: c.lo, hi: c.hi, scale: c.scale, mode: 'region' };
+    const cell = 8;
+    region.prep = await cubePrep.prepare(region, { cell, aboves: ['cube', 'reduced'].map((src) => thresholdNorm(c, info, src)), store: R.cap.dims.slice() });
+    stale();
+    // The coarse cube on show while the region is written: the spare bank is
+    // then the region's, never the coarse cube's.
+    if (detail.shown) dropDetail('', false);
+    const coarseSlot = R.slot;
+    if (!coarseSlot || coarseSlot.cap !== R.cap) return;          // the cube is not in the capacity
+    const job = R.beginWrite(region, cell, region.prep);
+    while (!job.step(WRITE_STEP_MS)) {
+      await nextTask();
+      if (gen !== detail.gen || state.cube !== c) { job.cancelled = true; return; }
+    }
+    if (!CD.regionHolds(plan, state.clip)) return;
+    R.showRegion(job.slot, region);
+    const t1 = performance.now();
+    detail.shown = { region: plan, draw: CD.regionDraw(plan, info.full_shape, c.factors), slot: job.slot, coarseSlot, key };
+    decorationsChanged();
+    detail.last = { level: plan.level, step: plan.step, dims: plan.dims, source: got.source, mb: got.bytes / 1e6,
+      netMs: Math.round(tNet - t0), codeMs: Math.round(tCode - tNet), writeMs: Math.round(t1 - tCode), totalMs: Math.round(t1 - t0), steps: job.steps };
+    shell.log('info', 'crop-detail', `level ${plan.level} (${plan.step}× finer than the cube: ${c.factors.join('×')}), ${plan.dims.join('×')}, `
+      + `${(got.bytes / 1e6).toFixed(1)} MB in ${Math.round(tNet - t0)} ms, coded ${Math.round(tCode - tNet)} ms, written ${Math.round(t1 - tCode)} ms`);
+    measure.event('crop-detail', { level: plan.level, dims: plan.dims, ms: Math.round(t1 - t0), mb: Math.round(got.bytes / 1e5) / 10 });
+  } finally {
+    detail.busy = false;
+  }
+}
+
 /** The main-thread time of an install, in slices between its waits: the longest is what a frame may wait. */
 function blockClock() {
   let t = performance.now(), max = 0, total = 0;
@@ -1531,6 +1647,9 @@ function dropBenchPrep() {
  * this thread (the desktop benchmark).
  */
 function installCube(info, cube, open, path = '', slot = null, { sync = false } = {}) {
+  // The coarse cube on show first (#328): the new cube is written into the
+  // region's half, and a region on its way is dropped.
+  dropDetail();
   const load = state.load;
   // Fenced by both: a newer install and a newer load (including a desktop
   // command for the cube already on show) make this one stale.
@@ -1809,8 +1928,10 @@ function rebuildDecorations() {
   labels.push({ pos: [h[0] + 1.6 * L, -h[1] - 3 * L, 0], text: V.axisTitle(az), height: H * 1.1, anchor: 'left', color: '#9fd0ff', face: 'side' });
   const c = state.cube;
   if (c) {
+    const dd = detail.shown;
     const bin = c.mode === 'synthetic' ? 'synthetic cube, not binned'
-      : `binned ${c.factors.join('×')} (${c.mode}), ${c.dims.join('×')} of ${c.fullShape.join('×')}`;
+      : `binned ${c.factors.join('×')} (${c.mode}), ${c.dims.join('×')} of ${c.fullShape.join('×')}`
+        + (dd ? `; the crop binned ${dd.region.step}× (level ${dd.region.level})` : '');
     labels.push({ pos: [0, h[1] + 2.2 * L, -h[2]], text: bin, height: H, anchor: 'center', color: '#ffd27a' });
     labels.push({ pos: [0, h[1] + 4.6 * L, -h[2]], text: V.velocityScaleShort(info, state.zStretch), height: H * 0.9, anchor: 'center', color: '#c8ccd6' });
   }
@@ -1827,11 +1948,16 @@ function effectiveSpv() {
 }
 
 function volParams(override = {}) {
+  // The crop's region on show (#328): its own texture place, no mask drawn
+  // (the selection and mask layers are on the coarse grid).
+  if (detail.shown && R.slot === detail.shown.slot && !CD.regionHolds(detail.shown.region, state.clip)) dropDetail('the crop left the region');
+  const d = detail.shown && R.slot === detail.shown.slot ? detail.shown.draw : null;
   return {
     extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max,
     thr: state.thrNorm, cmin: state.thrNorm, cmax: Math.max(state.cmaxNorm, state.thrNorm + 1e-3),
     stretch: LV.STRETCH_CODE[state.stretch] || 0, stretchA: stretchA(), opacity: state.opacity, spv: effectiveSpv(),
-    mode: state.mode, skip: state.skip, maxSteps: 4096, texScale: state.texScale, maskMode: masks ? masks.modeCode() : 0, ...override,
+    mode: state.mode, skip: state.skip, maxSteps: 4096, texScale: d ? d.texScale : state.texScale,
+    maskMode: d ? 0 : masks ? masks.modeCode() : 0, ...(d ? { region: d, showMask: false } : {}), ...override,
   };
 }
 
@@ -4911,6 +5037,7 @@ function benchPlan(includeLoaded, sizes = BENCH_SIZES) {
 }
 
 function makeBench() {
+  dropDetail('the headset benchmark');      // its saved cube is the coarse one (#328)
   const saved = state.cube && R.slot ? { info: state.info, cube: state.cube, open: state.open, openPath: state.openPath, slot: R.slot } : null;
   const b = {
     plan: benchPlan(!!saved, benchPrep.cubes.map((e) => e.n)), i: -1, t0: 0, saved, results: [], status: 'benchmark starting',
@@ -5108,6 +5235,8 @@ if (query.has('debug')) {
   window.__vrMeasure = { measure, start: (opts) => startOrCancelRun(opts) };
   window.__vrLink = linkState;
   window.__vrState = state;
+  // The crop in more detail (#328): {shown, last, busy}.
+  window.__vrDetail = detail;
   // The variables of a simulation volume (#317): the menu's row, a switch, the looks kept.
   window.__vrVariables = { menu: () => variablesMenu(), show: (name) => switchVariable(name), looks: variableLooks, pending: () => pendingVariable };
   // The page's backend handle, for checks that ask it what the page asked (?debug only).
@@ -5138,7 +5267,7 @@ if (query.has('debug')) {
   window.__vrInstall = (info, cube) => installCube(info, cube, null, '');
   // Issue #229: the 3-D allocation guard (calls, refusals), the session flag,
   // a cube waiting for the session's end, the benchmark's preparation.
-  window.__vrTex3D = () => ({ calls: { ...R.tex3dGuard.calls }, refused: R.tex3dGuard.refused, xrActive: R.xrActive,
+  window.__vrTex3D = () => ({ calls: { ...R.tex3dGuard.calls }, refused: R.tex3dGuard.refused, xrActive: R.xrActive, region: !!R.region,
     // Issue #305: who holds the flag (the page's own session, and refused ones not ended yet).
     owner: R.xrSession ? (R.xrSession === (xr && xr.session) ? 'shown' : 'starting') : null, refusedHeld: xrFlag.refused.size,
     afterXR: { ...afterXR }, entering,

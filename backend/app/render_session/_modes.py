@@ -209,6 +209,43 @@ class ModesMixin:
         if self._iso_lod_actor is not None:
             self._iso_lod_actor.SetVisibility(1 if (shown and is_iso and lod) else 0)
 
+    def _set_log_scalars_on_thread(self, log: bool) -> None:
+        """The volume drawn in log10 of its values, or in its values again
+        (issue #328). In core, a log10 copy of the cube is shown and the
+        values' array kept (given back when the scale is linear again); out
+        of core, the blocks are made again from the cache, each coded as it
+        is shown (BlockVolumes.log_floor)."""
+        log = bool(log)
+        if log == bool(self.view.log_scalars):
+            return
+        self.view.log_scalars = log
+        from ._common import log_floor, to_log10  # noqa: PLC0415
+        img = getattr(self, "_image_data", None)
+        linear = getattr(self, "_vtk_intensity_array", None)
+        ooc = getattr(self, "_ooc", None)
+        floor = None
+        if log:
+            sample = ooc.sample() if ooc is not None else getattr(self, "_cube_flat_view", None)
+            floor = log_floor(sample) if sample is not None else 0.0
+        if img is not None and linear is not None:
+            if log and getattr(self, "_cube_flat_view", None) is not None:
+                from vtk.util.numpy_support import numpy_to_vtk  # noqa: PLC0415
+                import vtk  # noqa: PLC0415
+                flat = to_log10(self._cube_flat_view, floor)
+                arr = numpy_to_vtk(flat, deep=False, array_type=vtk.VTK_FLOAT)
+                arr.SetName("intensity")
+                self._log_flat, self._log_array = flat, arr     # kept alive with the image
+                img.GetPointData().SetScalars(arr)
+            else:
+                img.GetPointData().SetScalars(linear)
+                self._log_flat = self._log_array = None
+            img.Modified()
+        if ooc is not None and getattr(ooc, "blocks", None) is not None:
+            ooc.blocks.log_floor = floor
+            ooc.blocks.clear()          # chosen and made again at the next frame
+        if hasattr(self, "mark_dirty"):
+            self.mark_dirty()
+
     def _apply_blend_mode_on_thread(self, blend_mode: int) -> None:
         """Set the volume mapper's blend mode (0=Composite, 1=MIP, 2=MinIP)."""
         if self._volume_mapper is None:

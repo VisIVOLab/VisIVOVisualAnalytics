@@ -333,7 +333,7 @@ async function installHarness({ xrActive = false } = {}) {
       showWritten: () => ({ via: 'showWritten' }),
     },
     gl: { isContextLost: () => false },
-    mustWait: () => false, dropBenchPrep: () => {}, thresholdNorm: () => 0, ensureCapacity: () => {}, stageCube: () => {},
+    mustWait: () => false, dropBenchPrep: () => {}, dropDetail: () => {}, thresholdNorm: () => 0, ensureCapacity: () => {}, stageCube: () => {},
     prepNow: () => ({ cell: 8, quantiles: [] }),
     blockClock: () => ({ pause() {}, resume() {} }),
     nextTask: () => new Promise((r) => setTimeout(r, 0)),

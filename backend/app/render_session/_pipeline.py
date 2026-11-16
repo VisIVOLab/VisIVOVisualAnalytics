@@ -171,6 +171,8 @@ class PipelineMixin:
                 self.view.interactive = False
                 self._apply_interactive_mode_on_thread(False)
             keep_w, keep_h = self.view.width, self.view.height
+            # Drawn in values again before the view forgets it was log (#328).
+            self._set_log_scalars_on_thread(False)
             self.view = SessionViewState(width=keep_w, height=keep_h,
                                           vmin=self._vmin, vmax=self._vmax,
                                           threshold=(self._default_threshold
@@ -208,6 +210,9 @@ class PipelineMixin:
                                self.session_id, exc)
                 return
             self.view.explicit_tf = (color, opacity)
+            # A log-scaled cube (issue #328): the points are in log10 of the
+            # values, and the volume is drawn in log10.
+            self._set_log_scalars_on_thread(command.get("scale") == "log")
             if "blend_mode" in command:
                 self.view.blend_mode = int(command["blend_mode"])
                 self._apply_blend_mode_on_thread(self.view.blend_mode)
@@ -215,6 +220,7 @@ class PipelineMixin:
             self.request_idr()
         elif ctype in ("set_lut", "colormap"):
             self.view.explicit_tf = None
+            self._set_log_scalars_on_thread(False)
             self.view.volume_lut_name = str(command.get("name", self.view.volume_lut_name))
             self._rebuild_volume_tfs_on_thread()
             self.request_idr()
@@ -224,6 +230,7 @@ class PipelineMixin:
             self.request_idr()
         elif ctype == "set_threshold":
             self.view.explicit_tf = None
+            self._set_log_scalars_on_thread(False)
             self._threshold_from_client = True
             self.view.threshold = float(command.get("value", self.view.threshold or self._vmin))
             self._rebuild_volume_tfs_on_thread()
@@ -386,6 +393,9 @@ class PipelineMixin:
                     self._vmax = float(v_hi)
             elif kind == "complete":
                 complete = True
+                # A log10 copy made while the cube streamed in is made again
+                # from the whole cube (#328).
+                self._relog_after_load = bool(self.view.log_scalars)
                 # _cube_complete is set once the final threshold is computed
                 # (below): /levels read in between would report the loading
                 # threshold as final, and the client would stop asking.
@@ -404,9 +414,14 @@ class PipelineMixin:
             elif kind == "error":
                 # Nothing more will arrive: the values are as final as they get.
                 self._cube_complete = True
+                self._relog_after_load = bool(self.view.log_scalars)
                 logger.warning(
                     "[render-session %s] cube reader error: %s",
                     self.session_id, ev.get("message"))
+        if getattr(self, "_relog_after_load", False):
+            self._relog_after_load = False
+            self._set_log_scalars_on_thread(False)
+            self._set_log_scalars_on_thread(True)
         if any_chunk and self._image_data is not None:
             # Throttle ``Modified()`` to once every ~3 s. Each call
             # forces a 10 GB GPU texture re-upload on the next render,
@@ -567,6 +582,9 @@ class PipelineMixin:
             floor = None
             if self.view.blend_mode == 0 and self.view.explicit_tf is not None:
                 floor = _explicit_opacity_floor(self.view.explicit_tf[1])
+                # The bricks' statistics are values: a floor in log10 back to one.
+                if floor is not None and self.view.log_scalars:
+                    floor = float(10.0 ** floor)
             elif self.view.blend_mode == 0:
                 floor = _opacity_floor(self._vmin, self._vmax,
                                        self.view.threshold or self._vmin)

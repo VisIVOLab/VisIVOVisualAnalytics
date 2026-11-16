@@ -138,6 +138,9 @@ class BlockVolumes:
         # The VR page's clipping box (set_crop), level-0 world units
         # (x0, x1, y0, y1, z0, z1), or None: intersected with each block's own.
         self._user_crop = None
+        # Drawn in log10 of the values (issue #328): the code of a value with
+        # no logarithm (_common.log_floor), else None (drawn in values).
+        self.log_floor: float | None = None
 
     # -- the mapper's interface ------------------------------------------
     def SetAutoAdjustSampleDistances(self, v):
@@ -280,6 +283,10 @@ class BlockVolumes:
             # changed after it is read, and a copy would double what a block
             # costs in memory (a whole level, in MIP).
             flat = np.ascontiguousarray(array, dtype=np.float32).ravel()
+            if self.log_floor is not None:
+                # Drawn in log10 (issue #328): a copy, the cache keeps the values.
+                from ._common import to_log10  # noqa: PLC0415
+                flat = to_log10(flat, self.log_floor)
             self._arrays[key] = flat
             scalars = numpy_to_vtk(flat, deep=False, array_type=vtk.VTK_FLOAT)
             scalars.SetName("intensity")
