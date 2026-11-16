@@ -22,6 +22,18 @@ are preserved here unedited; the branch names they refer to are historical.
   output (32 GiB, 49 s build): every route the page uses kept answering in
   under 80 ms during the build.
 
+- **Bounded memory for a large cube's statistics (#333).** Opening a 32 GB
+  cube made the backend read every voxel for the Inspector's whole-cube
+  statistics through a memory map, and it grew past 40 GB until macOS ran out
+  of application memory. A cube opened as a preview is no longer read whole:
+  the minimum, maximum and mean come from its brick pyramid when there is one,
+  the rest from a sample of about 4 million voxels (0.7 s and 0.2 GB on the
+  2048³ density, where the backend used to grow by 3 GB/s). An exact pass,
+  for smaller cubes or with `?exact=true`, reads slab by slab and holds one
+  slab at a time (16 s and under 0.4 GB for the same 32 GB cube). The answer
+  says which (`source`: `exact`, `pyramid` or `sampled`) and which numbers
+  are exact (`exact_fields`). Scaled FITS (BSCALE, BZERO, BLANK) now work
+  too.
 - **One brick pyramid per file, whatever the letter case of its path
   (#325).** On macOS (and Windows) the same file opened as
   `.../step62/rho.0000.flt` and `.../STEP62/rho.0000.flt` got two pyramids
