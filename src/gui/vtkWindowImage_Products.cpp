@@ -305,52 +305,70 @@ bool vtkWindowImage::restoreProductOrigin(const QVariantMap &origin)
 {
     if (visivo::originKind(origin) != u"region"_s)
         return false;
-    const QString shape = visivo::originShape(origin);
-    // The geometry was recorded in the voxel grid displayed at the time. If the
-    // viewer has swapped LOD since (preview -> full), that grid is not this one.
-    double scale[2] = { 1., 1. }, pos[2] = { 0., 0. };
-    const bool haveFrame = this->currentVoxelFrame(scale, pos);
-    const auto remap = [&](int v[2]) {
-        if (haveFrame)
-            visivo::remapOriginVoxel(origin, scale, pos, v);
-    };
-    if (shape == u"polygon"_s) {
-        auto verts = visivo::originPolygon(origin);
-        if (verts.size() < 3)
+    // The measured region goes back into the region list (issue #341) and is
+    // selected; a region of the list with the same geometry is selected rather
+    // than duplicated, so opening a row twice does not stack two copies.
+    std::optional<visivo::regions::Region> restored;
+    const QVariantMap listRegion = visivo::originListRegion(origin);
+    if (!listRegion.isEmpty()) {
+        visivo::regions::Region r;
+        if (!visivo::regions::fromCanonical(QJsonObject::fromVariantMap(listRegion), 0.0, &r))
             return false;
-        for (auto &v : verts) {
-            int p[2] = { v[0], v[1] };
-            remap(p);
-            v = { p[0], p[1] };
-        }
-        this->regionPolygonVertices = verts;
-        this->regionMode = RegionMode::Polygon;
+        restored = r;
     } else {
-        int a[2] = { 0, 0 }, c[2] = { 0, 0 };
-        if (!visivo::originPoint(origin, u"anchor"_s, a, 2)
-            || !visivo::originPoint(origin, u"current"_s, c, 2))
-            return false;   // half a geometry is worse than none
-        double oldScale[2] = { 1., 1. }, oldPos[2] = { 0., 0. };
-        const bool hadFrame = visivo::originFrame(origin, oldScale, oldPos);
-        remap(a);
-        remap(c);
-        this->regionAnchorVoxel = { a[0], a[1] };
-        this->regionCurrentVoxel = { c[0], c[1] };
-        // The inner radius is a length in the same voxel grid, so it scales too.
-        this->regionAnnulusInnerRadius = visivo::originInnerRadius(origin);
-        if (haveFrame && hadFrame && oldScale[0] != 0.0)
-            this->regionAnnulusInnerRadius *= oldScale[0] / scale[0];
-        this->regionMode = shape == u"box"_s      ? RegionMode::Box
-                         : shape == u"circle"_s   ? RegionMode::Circle
-                         : shape == u"annulus"_s  ? RegionMode::Annulus
-                                                  : RegionMode::None;
-        if (this->regionMode == RegionMode::None)
+        // A product measured before the list: anchor/current (or vertices) in the
+        // voxel grid displayed at the time. If the viewer has swapped LOD since
+        // (preview -> full), that grid is not this one.
+        const QString shape = visivo::originShape(origin);
+        double scale[2] = { 1., 1. }, pos[2] = { 0., 0. };
+        const bool haveFrame = this->currentVoxelFrame(scale, pos);
+        const auto remap = [&](int v[2]) {
+            if (haveFrame)
+                visivo::remapOriginVoxel(origin, scale, pos, v);
+        };
+        std::array<int, 2> anchor{ 0, 0 }, current{ 0, 0 };
+        std::vector<std::array<int, 2>> verts;
+        double inner = 0.0;
+        if (shape == u"polygon"_s) {
+            verts = visivo::originPolygon(origin);
+            if (verts.size() < 3)
+                return false;
+            for (auto &v : verts) {
+                int p[2] = { v[0], v[1] };
+                remap(p);
+                v = { p[0], p[1] };
+            }
+        } else {
+            int a[2] = { 0, 0 }, c[2] = { 0, 0 };
+            if (!visivo::originPoint(origin, u"anchor"_s, a, 2)
+                || !visivo::originPoint(origin, u"current"_s, c, 2))
+                return false;   // half a geometry is worse than none
+            double oldScale[2] = { 1., 1. }, oldPos[2] = { 0., 0. };
+            const bool hadFrame = visivo::originFrame(origin, oldScale, oldPos);
+            remap(a);
+            remap(c);
+            anchor = { a[0], a[1] };
+            current = { c[0], c[1] };
+            // The inner radius is a length in the same voxel grid, so it scales too.
+            inner = visivo::originInnerRadius(origin);
+            if (haveFrame && hadFrame && oldScale[0] != 0.0)
+                inner *= oldScale[0] / scale[0];
+        }
+        restored = visivo::regionFromDisplayed(shape, this->displayGrid(), anchor, current, verts,
+                                               inner);
+        if (!restored)
             return false;
     }
-    this->regionDragging = false;
-    this->regionValid = true;
-    this->refreshRegionOverlay();
-    if (ui->vtk && ui->vtk->renderWindow())
-        ui->vtk->renderWindow()->Render();
+    int id = -1;
+    for (const auto &r : this->m_regions.regions()) {
+        if (visivo::regions::sameGeometry(r, *restored)) {
+            id = r.id;
+            break;
+        }
+    }
+    if (id < 0)
+        id = this->m_regions.add(*restored);
+    this->m_regions.select(id);
+    this->onRegionListChanged();
     return true;
 }

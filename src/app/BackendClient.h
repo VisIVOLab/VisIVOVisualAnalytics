@@ -1919,6 +1919,15 @@ struct BackendRegionExportResult
     QString text;                 ///< serialized CRTF / DS9 region file content
 };
 
+struct BackendRegionConvertResult
+{
+    bool valid{ false };
+    QString error;                ///< the backend's reason (FastAPI detail) when not valid
+    QString frame;                ///< the frame the regions are now in
+    QString nativeFrame;          ///< the dataset's sky frame; empty without a celestial WCS
+    QJsonArray regions;
+};
+
 struct BackendRegionStatsResult
 {
     bool valid{ false };
@@ -2591,6 +2600,22 @@ public:
                                             const QString &format,
                                             const QString &datasetId = {},
                                             const QString &toFrame = {}) const;
+
+    /** POST /v1/regions/convert — move canonical regions to another frame with
+     *  the dataset's WCS (issue #341).
+     *  @param regions  canonical region dicts; may be empty to only learn the
+     *                  dataset's sky frame (`nativeFrame`, empty without a
+     *                  celestial WCS).
+     *  @param toFrame  "image", a sky frame ("icrs", "fk5", "galactic", …) or
+     *                  "native" (the dataset's own).
+     *  @param origin   pixel base of image-frame regions, in and out (0 or 1).
+     *  @param unit     size unit of the result ("" = pix in the image frame,
+     *                  arcsec when pixels go to the sky). */
+    BackendRegionConvertResult convertRegions(const QJsonArray &regions,
+                                              const QString &toFrame,
+                                              const QString &datasetId,
+                                              int origin = 1,
+                                              const QString &unit = {}) const;
 
     /** POST /v1/regions/stats/{dataset_id} — pixel statistics inside a region.
      *  @param region   canonical region dict (image or world frame).

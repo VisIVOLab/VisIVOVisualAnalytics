@@ -624,6 +624,10 @@ set(PROJECT_SOURCES
         src/gui/NoiseController.h
         src/gui/NoiseRegionDialog.cpp
         src/gui/NoiseRegionDialog.h
+        src/gui/RegionPropertiesDialog.cpp
+        src/gui/RegionPropertiesDialog.h
+        src/gui/RegionModel.h
+        src/gui/RegionFrameText.h
         src/gui/ToolResultDialog.cpp
         src/gui/ToolResultDialog.h
         src/gui/CosmologyCalculatorDialog.cpp
@@ -716,6 +720,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Products.cpp
         src/gui/vtkWindowImage_Cosmology.cpp
         src/gui/vtkWindowImage_Region.cpp
+        src/gui/vtkWindowImage_RegionList.cpp
         src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp
         src/gui/vtkWindowVbt.h
