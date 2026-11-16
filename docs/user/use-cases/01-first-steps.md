@@ -7,7 +7,7 @@ read the spectrum of any pixel.
 
 - VisIVO Visual Analytics, installed from a release package and started once,
   so that its backend is set up (see
-  [Getting started](../../user-guide/getting-started.md)).
+  [Getting started](../reference/getting-started.md)).
 - An HI cube. This page uses `WALLABY.fits` from the demo data: a WALLABY
   cutout of the galaxy J100903-290239 in the Hydra field, 196 × 280 pixels
   and 109 channels, with an optical velocity axis.
@@ -118,8 +118,8 @@ A saved spectrum in Session Data, with the pixel it was taken at.
 
 ## Next
 
-- [Spectral cube viewer](../../user-guide/cube-viewer.md): every control of the
+- [Spectral cube viewer](../reference/cube-viewer.md): every control of the
   cube window.
-- [Spectral analysis](../../user-guide/spectral-tools.md): smoothing, line
+- [Spectral analysis](../reference/spectral-tools.md): smoothing, line
   lists, Gaussian fits and comparison of spectra.
 - [Moment maps and PV diagrams](03-moments-and-pv.md), the next use case.

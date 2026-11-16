@@ -3,7 +3,7 @@
 The same page shows the other data types the desktop opens
 ([#190](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/190)), with
 the same rule: the headset draws, the backend computes. The routes are in
-[Points, catalogues and flows for the headset](../../backend-api/vr-layers.md).
+[Points, catalogues and flows for the headset](../../technical/backend-api/vr-layers.md).
 
 | Data | What the headset draws | What the backend does | Refined when still |
 |---|---|---|---|
@@ -46,7 +46,7 @@ backend says it is a *simulation volume* and the page treats it as one:
   slices are greyed with the reason. The *Box region* gives the statistics of
   a box. Instead of the velocity range, *Range* has a **clipping plane** you
   hold and tilt with the controller, or a slab of two parallel planes
-  ([controls](controls.md#range), #369). The default threshold is the 99th percentile of the values, not the
+  ([controls](../../user/reference/vr.md#range), #369). The default threshold is the 99th percentile of the values, not the
   noise rule. The readout gives X, Y, Z in the axes' unit, the cell, and the
   value.
 
@@ -131,7 +131,7 @@ the velocity viewer's controls; the link then carries `kind=points` or
 `kind=velocity` (and a velocity field's box size, `box=`), and the page opens
 the desktop's dataset in the same session, or its path again when the session
 no longer holds it, as for a cube (see
-[Open a cube from the desktop](quickstart.md#open-a-cube-from-the-desktop)).
+[Open a cube from the desktop](../../user/reference/vr.md#open-a-cube-from-the-desktop)).
 
 A sky catalogue (RA/Dec with a redshift or a distance) is placed as the
 desktop window places it: the link, the pairing code, the app launch and the
@@ -156,7 +156,7 @@ load*. The page's cube controls are hidden meanwhile.
 In the headset a point table or a velocity field replaces the cube, so its
 controls are on the same tabs of the menu as a cube's
 ([#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257); see
-[The hand menu](controls.md#the-hand-menu)). On **Display**, for a point
+[The hand menu](../../user/reference/vr.md#the-hand-menu)). On **Display**, for a point
 table: *Colour by* (a chip per column), *Log* and the colour window, the
 colour map, *Points*, *Smooth (splats)* or *Ray-traced*, *Size −/+*, *Intensity*,
 *Particles shown* (the next budget of rows), *Again* (sample again), *Box*
@@ -276,7 +276,7 @@ the headset), with ticks in the table's units.
 
 When you hold still, the backend's point render session draws every row of the
 table for your eyes and the page blends that frame in, as for a cube (see
-[Refinement](reference.md#refinement-full-quality-frames-from-the-backend)): the
+[Refinement](../../technical/vr/reference.md#refinement-full-quality-frames-from-the-backend)): the
 page sends its colours, style and the map from the table to its box
 (`data_to_model`) with each pose, so the frame lands on the page's points.
 Both read the colour column in full precision and give each row the same
@@ -294,7 +294,7 @@ refined frame brightens it slightly.
 
 With *ray-traced* the still frame comes from the backend's ray-traced particle
 renderer (the one behind the desktop's *Ray-traced* shape, see
-[Ray-traced particles](../raytraced-particles.md)) over every row the session
+[Ray-traced particles](../../user/reference/raytraced-particles.md)) over every row the session
 holds, [#264](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/264).
 Each splat becomes a smooth Gaussian kernel carrying the light the page's splat
 carries, so the swap from the preview to the refined frame keeps the
@@ -380,7 +380,7 @@ and pull the trigger to sort by it (again: the other way); *◂ Page* and
   (every original column and row of the catalogue, the flag column `vr_flag`,
   `vr_note`, `vr_origin`, the pixel and the velocity, the found sources
   appended) and reports it to the desktop as headset activity (see
-  [The headset from the desktop](desktop.md#headset-activity)). Each Send
+  [The headset from the desktop](../../user/reference/vr.md#headset-activity)). Each Send
   writes a new file (`<catalogue>_vr_classified.xml`, then `_1`, `_2`…). The
   window's line says *sending* until the file is written and the desktop
   told, then *sent* with the file's name (or why it was not, in red), and
@@ -421,6 +421,6 @@ draws tubes.
 
 The frame rates, request times and placement accuracy of all three were
 measured on the Mac: see
-[Points, catalogues, flows](reference.md#points-catalogues-flows); the checks
+[Points, catalogues, flows](../../technical/vr/reference.md#points-catalogues-flows); the checks
 to run with the headset are under
-[Points, catalogues, flows, with the headset](reference.md#points-catalogues-flows-with-the-headset).
+[Points, catalogues, flows, with the headset](../../technical/vr/reference.md#points-catalogues-flows-with-the-headset).

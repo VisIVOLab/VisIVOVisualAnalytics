@@ -141,7 +141,7 @@ The palette and the Select tab choose one directly. A push that is
 not mostly sideways, one made while that hand holds the grip (moving the
 cube), or one made while a tool is still working changes nothing until the
 stick is back at rest, so a thumb resting on the stick does not change the
-tool. What they compute is described in [Analysis](analysis.md).
+tool. What they compute is described in [Analysis](../../user/reference/vr.md).
 
 | Control | Does |
 |---|---|
@@ -308,7 +308,7 @@ sizes the page asks for. The work on
 that the Quest Browser may read a composition layer's width and height as
 half extents, which would draw the panels twice as large as asked; that is
 not yet measured on the headset, and the menu's size is one of the checks
-below (see the [checks](reference.md#the-menu-in-front-of-you-organised-by-task-257)). It is a 2-D
+below (see the [checks](../../technical/vr/reference.md#the-menu-in-front-of-you-organised-by-task-257)). It is a 2-D
 canvas redrawn only when something on it changes. The secondary wrist's card is
 hidden while the menu is open. In a desktop browser the same menu stands in
 the page's 3-D view at half that size with *show the headset's menu here* (or
@@ -408,7 +408,7 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     Previous*, *Next ▸* (the numbered files beside it); **X**, **Y**, **Z**:
     *◂*, the column, *▸*; **Splat size**: *Uniform*, *By hsml* (a smoothing
     length), *Column ▸*; *Default axes*, *◂ Display*. See
-    [Simulation controls](data-types.md#simulation-controls-259).
+    [Simulation controls](../../user/reference/vr.md#simulation-controls-259).
   - *A point table*: **Colour by** (one chip per column, *none* first, then the
     velocity columns such as *VX*, *VY*, *VZ*, then the others; *more ▸* when
     there are more than fit, and the menu opens on the first page); **Scale, range**: *Log* and the colour
@@ -443,7 +443,7 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
 - **Select** (a cube; on a point table only the *Box select*, #259: drag a
   box with the trigger, then *Show inside*, *Hide inside*, *Show all* under
   **Result**, *Clear* to drop it, see
-  [Simulation controls](data-types.md#simulation-controls-259); greyed on
+  [Simulation controls](../../user/reference/vr.md#simulation-controls-259); greyed on
   velocity fields)
   - **Tool**: *Kinematic Lasso*, *Spectrum probe*, *Box region*, with the palette's icons (the lasso is the tool on a
     first visit, so a galaxy is lassoed and isolated in two presses: Select,
@@ -454,18 +454,18 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     selection's first numbers.
   - **Result**, only while something is selected: *Isolate*, *Remove*, *Show
     result cube* (greyed until Isolate or Remove made one; greyed on a box
-    region, which has no mask). See [Analysis](analysis.md).
+    region, which has no mask). See [Analysis](../../user/reference/vr.md).
   - **Sources** (#279): *List* (opens or closes the *Sources* window),
     *◂ Prev*, *Next ▸* (visit the previous or next source; greyed with no
     catalogue and no found source), *+ Found* (the selection as a source found
     by eye; greyed with no lasso or probe result). See
-    [Catalogues over a cube](data-types.md#the-source-list-browse-visit-classify).
+    [Catalogues over a cube](../../user/reference/vr.md#the-source-list-browse-visit-classify).
   - **Mask** (#282): *Mask* (opens or closes the *Mask* window), *Pick* (the
     next trigger on the cube picks the mask's source under the ray, in any
     mode: Pick switches to Select), *Undo*
     (the last edit of the mask), *Save* (to the desktop). Greyed until a mask
     is over the cube. See
-    [Mask layers](analysis.md#mask-layers-show-compare-refine-and-save-a-mask).
+    [Mask layers](../../user/reference/vr.md#mask-layers-show-compare-refine-and-save-a-mask).
 - **Measure** (a cube)
   - **Moment**: *Intensity (M0)*, *Velocity (M1)*, *Dispersion (M2)*, *Hide*.
     On a lasso selection it is the moment of that object (its mask). With no
@@ -496,7 +496,7 @@ address does More show *Technical settings ▸*, a page with *Hold the frame
 rate*, *Refine with the full cube*, *Reproject refined frames with depth*,
 *Refined frame size* (0.4× to 1×, one step per press), *Record measurements*
 with *Run protocol* (*Cancel run* while one runs; see
-[Recording measurements](reference.md#recording-measurements)) and
+[Recording measurements](../../technical/vr/reference.md#recording-measurements)) and
 *Threshold from*: *This binning* or *Full cube*. Without `?debug` the
 threshold always starts from the full cube's, the value the desktop starts
 from (`default_threshold` of `/v1/cube/reduced_info`: about a hundred noise
@@ -535,7 +535,7 @@ ones.
 
 The velocity stretch, the binning, the texture, the Kinematic
 Lasso parameters and the eye-buffer settings are set on the page before
-entering VR (the colour stretch is also on the menu's Levels page) (see [The settings on the page](reference.md#the-settings-on-the-page)).
+entering VR (the colour stretch is also on the menu's Levels page) (see [The settings on the page](../../technical/vr/reference.md#the-settings-on-the-page)).
 
 ## Wrist cards, toasts, readout and haptics
 
@@ -665,7 +665,7 @@ they close.
 The pinch closes under 1.2 cm between the fingertips' surfaces and opens over
 2.8 cm; the grip under 0.72 of the palm's length, opening over 0.95. These
 thresholds, and the palm's, were set and tested on synthetic hands, not yet on
-a headset (see the [checks](reference.md#controls-and-the-hand-menu-201)).
+a headset (see the [checks](../../technical/vr/reference.md#controls-and-the-hand-menu-201)).
 
 ## Settings kept in this browser
 
@@ -713,8 +713,8 @@ numbers ([#256](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/256)):
 - **menu redraw**: the time to redraw the menu and to upload it as a texture
   (medians of the last 60 redraws), and how many redraws; **readout redraw**
   and the mode;
-- the *refine* line (see [Refinement](reference.md#refinement-full-quality-frames-from-the-backend)),
-  the link and reprojection lines on a cluster (see [Cluster backends](cluster.md)),
+- the *refine* line (see [Refinement](../../technical/vr/reference.md#refinement-full-quality-frames-from-the-backend)),
+  the link and reprojection lines on a cluster (see [Cluster backends](../../technical/deployment/vr-cluster.md)),
   the *share* line (sent, received, publish and receive ms), and for a point
   table *points X M drawn of Y M sampled, Z M rows*;
 - the *hub* line ([#237](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/237)):

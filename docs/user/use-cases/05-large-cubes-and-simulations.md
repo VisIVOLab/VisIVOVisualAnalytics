@@ -117,11 +117,11 @@ density, which you can also load at full resolution).
 
 ## Next
 
-- [PLUTO simulation output](../../user-guide/pluto-output.md): what to open,
+- [PLUTO simulation output](../reference/pluto-output.md): what to open,
   variables and axes.
-- [Spectral cube viewer](../../user-guide/cube-viewer.md): the preview, the
+- [Spectral cube viewer](../reference/cube-viewer.md): the preview, the
   level of detail and Auto / Local / Remote in detail.
-- [Simulations](../../user-guide/simulations.md) and
-  [Ray-traced volumes](../../user-guide/raytraced-volumes.md).
+- [Simulations](../reference/simulations.md) and
+  [Ray-traced volumes](../reference/raytraced-volumes.md).
 - [From the desktop to the VR headset](08-vr-from-the-desktop.md): the same
   density in a Meta Quest.

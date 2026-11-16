@@ -16,7 +16,7 @@ is in VR. No new code, no adb, no new browser window.
 **Pair Another Headset** brings back the pairing code and the USB section, for
 a second headset. With no headset page open, or with a backend older than this
 feature, the dialog is the pairing dialog described in
-[Quickstart and pairing](quickstart.md). It keeps asking while it is open: a
+[Quickstart and pairing](../../user/reference/vr.md). It keeps asking while it is open: a
 headset page that connects later (by code or over the USB cable) switches it
 to the connected-headset view by itself, and a code nobody used stops working.
 
@@ -36,7 +36,7 @@ The cube window's **Tools → Views → Show on Headset** does the same in one
 click. In the window of a file whose name ends in `mask` (SoFiA-2's
 `*_mask.fits`, the headset's refined `*_vr_mask.fits` and `*_vr_mask_1.fits`)
 it asks first: **Mask Layer** sends it as a layer over the headset's cube
-([Mask layers](analysis.md#mask-layers-show-compare-refine-and-save-a-mask)),
+([Mask layers](../../user/reference/vr.md#mask-layers-show-compare-refine-and-save-a-mask)),
 drawn when that cube is on the mask's grid; **Show as Cube** shows it as a
 cube, as for any other file. It is enabled while a headset is connected to the session; its tooltip
 names the headset. With several pages open, the newest one is used.
@@ -48,7 +48,7 @@ the details).
 ## Open on Headset with the VisIVO VR app
 
 Under **Advanced (USB cable)**, when this build of the desktop comes with the
-headset app ([The headset app](headset-app.md)), the section says whether
+headset app ([The headset app](../../user/reference/vr.md)), the section says whether
 VisIVO VR is installed and current on the headset and offers **Install** or
 **Update**. **Open on Headset** then installs it when needed and starts it
 straight in VR: *Starting on the headset…*, then *In VR*. Without the app,
@@ -66,7 +66,7 @@ started but could not connect to this computer*.
 The launch carries a one-time ticket, never the token; neither the ticket
 nor the token appears in the desktop's log, its messages or **Copy Error**.
 The routes are in the backend API's
-[headset app launch](../../backend-api/vr-launch.md).
+[headset app launch](../../technical/backend-api/vr-launch.md).
 
 ## Headset Activity
 

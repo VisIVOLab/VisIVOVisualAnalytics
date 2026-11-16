@@ -112,9 +112,9 @@ source by source.
 
 ## Next
 
-- [Polarimetry (Stokes Q, U, V)](../../user-guide/polarimetry.md): naming
+- [Polarimetry (Stokes Q, U, V)](../reference/polarimetry.md): naming
   rules for the companions, the formulas and the worked example on the Bulge
   field.
-- [Image viewer](../../user-guide/image-viewer.md): polarisation on 2-D Stokes
+- [Image viewer](../reference/image-viewer.md): polarisation on 2-D Stokes
   images.
 - [Regions: draw, place at catalogue coordinates, import and export](04-regions.md).

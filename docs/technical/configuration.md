@@ -1,0 +1,385 @@
+# Configuration reference
+
+The VisIVO Visual Analytics backend is configured through environment
+variables, read when the backend starts (a few are re-read on every request;
+those are marked). Set them in the shell that launches `uvicorn`, in the
+container's environment, or in the `environment:` block of a compose file.
+
+Every default below is the value in the backend code. Sizes are in bytes and
+times in seconds unless stated otherwise; `1 GiB` is 1073741824 bytes.
+Boolean switches name the values they accept, because they are not all parsed
+the same way.
+
+Variables marked **secret** hold credentials. Keep them out of shell history,
+scripts under version control and log files; prefer an env file readable only
+by the service account.
+
+The variables used by the cluster launch scripts (`VISIVO_PARTITION`,
+`VISIVO_TIME`, `VISIVO_SIF`, `VISIVO_GRES` and the others read by
+`scripts/launch_backend_slurm.sh`) configure the job, not the backend, and are
+documented in [Running the backend on a cluster](deployment/hpc-slurm.md).
+
+## Worker pool and admission
+
+CPU-bound work runs in one process pool. Heavy tasks (moments, isosurfaces,
+PV slices, spectral fits) are throttled so that at least one worker stays free
+for interactive requests such as slice scrolling and probing; see
+[Async patterns](design/async-patterns.md) for the design.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_WORKERS` | `4` | Number of worker processes in the pool. The default is a fixed 4, not derived from the CPU count. |
+| `VISIVO_HEAVY_SLOTS` | `max(1, VISIVO_WORKERS - 1)` | Heavy tasks allowed to occupy the pool at once. Set it to `VISIVO_WORKERS` to give up the reserved interactive slot, or to `1` to serialise heavy work. |
+| `VISIVO_HEAVY_TIMEOUT_S` | `900` | Wall-clock ceiling on one heavy computation started by a synchronous request (for example `/v1/products/moment`). Past it, the request answers HTTP 504 and the detail points to the task route. The worker runs on to its end and keeps its slot until then, and its result is discarded. `0` disables the ceiling. It does not apply to tasks. |
+| `VISIVO_TASK_TIMEOUT_S` | `0` (none) | The same ceiling for work started as a task (`/v1/tasks/moment`, `/v1/tasks/pv`, asynchronous SODA jobs). There is none by default: a task holds no request open, reports progress and can be cancelled, and an M2 over a 450 GB cube takes about 32 minutes on one HPC node (`benchmark/RESULTS.md`). When it is set and exceeded, the task fails and its worker is asked to stop through the stop file. |
+| `VISIVO_MAX_CONCURRENT_TASKS` | `3` | Compute tasks one session may run at once; further requests wait (see below) and then answer HTTP 429. |
+| `VISIVO_TASK_SLOT_WAIT_S` | `15` | How long a request waits for a free per-session slot before answering 429. `0` refuses immediately. |
+| `VISIVO_MP_START_METHOD` | `spawn` | Start method of the worker processes (`spawn`, `fork` or `forkserver`). `spawn` is required when workers use CUDA. An unknown value falls back to the platform default, with a warning. |
+| `VISIVO_GPU_ROUND_ROBIN` | `1` | With `1`, each worker is pinned to one GPU in turn (through `CUDA_VISIBLE_DEVICES`), taken from the inherited `CUDA_VISIBLE_DEVICES` or, failing that, from `nvidia-smi -L`. Any other value turns pinning off. |
+| `VISIVO_PRODUCT_CACHE_ENTRIES` | `32` | Capacity of the in-memory LRU cache of computed products (moment, isosurface, PV, line width). Identical recomputations are served from it. |
+
+## Memory and full-resolution loading
+
+The backend measures the memory it can use from the tightest of: the cgroup
+memory limit at each level of its own cgroup (cgroup v2 `memory.max`, else
+cgroup v1 `memory.limit_in_bytes`), the memory SLURM granted the job, and,
+when none of these exists, the host's physical memory. The *available* memory
+is the headroom under those limits, or the host's available memory.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_FULL_RES_THRESHOLD_BYTES` | `min(4 GiB, memory limit / 4)` | File size at or above which the backend tells the client to open a cube as a preview only (`recommended_load_mode = preview_only`). The user can still load full resolution or crop explicitly. When set, the value is used as is, with no memory check. |
+| `VISIVO_CGROUP_ROOT` | the process's own cgroup | cgroup v2 directory to read the memory and CPU limits from. When set, cgroup v1 is not consulted. Useful when `/proc/self/cgroup` does not name the right group. |
+
+## Moments and Dask
+
+How a moment map is computed depends on the size of the selected channel
+range, `channels × NAXIS1 × NAXIS2 × 4` bytes (float32):
+
+1. With `VISIVO_DASK_MODE=auto` (the default) and Dask installed, the moment
+   is computed with chunked `dask.array`: always on the distributed cluster
+   when `VISIVO_DASK_SCHEDULER` names a reachable one, otherwise with a local
+   threaded scheduler once the range reaches `VISIVO_DASK_MIN_BYTES`. Blocks
+   are read from disk on demand; each holds at most 64 channels and at most
+   `VISIVO_MOMENT_CHUNK_BYTES`, and at least one channel. A plane larger than
+   `VISIVO_MOMENT_CHUNK_BYTES` (6082² float32 is 148 MB) is cut into bands
+   of whole rows, so a block never exceeds the budget whatever the plane. The
+   maps are bit-identical, and the memory a computation materialises follows
+   the budget rather than the plane.
+2. Otherwise the worker keeps the range in memory only when it is no larger
+   than `min(VISIVO_MOMENT_STREAM_BYTES, available memory / 12)`. The factor 12
+   covers the float64 temporaries of the reduction.
+3. A larger range is streamed from disk: M0, M1 and M2 in spectral slabs,
+   M3 to M10 through the same chunked Dask path (if Dask is installed; without
+   it they fall back to memory). Slabs are sized like the Dask blocks, by
+   `VISIVO_MOMENT_CHUNK_BYTES`, with `VISIVO_MOMENT_SLAB_CHANNELS` as the cap
+   on their channel count.
+
+Moments that need the centroid first (M2 to M5) are computed in two passes
+over the data on both out-of-core paths. Memory follows the block size, the
+blocks in flight (one per Dask thread, or the streamed slab and the
+`VISIVO_MOMENT_READ_AHEAD` slabs read ahead) and the reduction's partial maps,
+never the length of the channel range.
+
+Both out-of-core paths read a block with explicit positional reads (whole
+planes in one read, or one read per channel for a band of rows) rather than
+by faulting the memory map page by page; several Dask threads, or the
+streamer's read-ahead thread, keep reads in flight while others reduce. The
+values are those of the memory-mapped data (BSCALE, BZERO, BLANK and unsigned
+integers are applied by astropy's own conversion), so the maps are unchanged.
+Tile-compressed and gzip files, and platforms without `pread` (Windows), are
+read through the memory map as before.
+
+**Threads.** With `VISIVO_MOMENT_THREADS=0` the backend takes the smallest of:
+
+- the CPUs the process may use (its affinity or cgroup cpuset, capped by a
+  cgroup CPU quota; not the host's count), divided by the heavy slots
+  (`VISIVO_HEAVY_SLOTS`, default `VISIVO_WORKERS - 1`), which share them;
+- what the memory budget holds: 60 % of the budget, less 1 GiB and the
+  reduction's partial maps (16 float64 planes), at eight blocks of
+  `VISIVO_MOMENT_CHUNK_BYTES` (0.54 GB at the default) per thread. The budget
+  is the tightest of the process's `RLIMIT_DATA`, its share of the SLURM grant
+  (`SLURM_MEM_PER_NODE`; cgroup v1 may not enforce it), its share of the memory
+  available under the cgroup limit or on the host, and, when none can be read,
+  its share of the host's RAM;
+- 32, beyond which nothing was gained on a 128-thread node.
+
+At least one thread is used. The choice and the limit that set it are logged
+once (`[moment] threads=N (...)`). On a 128-thread POWER9 node under a 16 GB
+`RLIMIT_DATA` this gives about 15 threads for a 1286² plane; on an 18-core
+laptop with the default four workers, 6.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_MOMENT_STREAM_BYTES` | `2 GiB` | Ceiling of the channel range kept in memory; the effective threshold is the smaller of this and one twelfth of the available memory. |
+| `VISIVO_MOMENT_CHUNK_BYTES` | `64 MiB` | Size of each streamed slab or Dask block, never less than one channel; a Dask block of a larger plane is a band of rows within this size. |
+| `VISIVO_MOMENT_SLAB_CHANNELS` | `64` | Upper limit on the channels in a streamed slab. It only caps the slab; the size comes from `VISIVO_MOMENT_CHUNK_BYTES`. |
+| `VISIVO_MOMENT_THREADS` | `0` | Threads for the parallel moment kernels and the local Dask scheduler. `0` chooses them from the node (below); a positive value is used as is. |
+| `VISIVO_MOMENT_READ_AHEAD` | `2` | Slabs the streamed path reads ahead of the one it reduces, on one thread. `0` reads in the reducing thread. |
+| `VISIVO_DASK_MODE` | `auto` | `auto`: distributed if a scheduler is set, else local threaded Dask for large ranges. `off`: never Dask. `local`: always local threaded Dask. `distributed`: only a cluster, else the plain worker. |
+| `VISIVO_DASK_MIN_BYTES` | `512 MiB` | In `auto` mode, smallest range sent to the local threaded Dask path. |
+| `VISIVO_DASK_SCHEDULER` | unset | Address of a `dask.distributed` scheduler (for example `tcp://host:8786`). When set, moments are computed on that cluster; its workers must see the same files. |
+
+## Rendering
+
+Remote 3-D views ([Cube viewer](../user/reference/cube-viewer.md)) are rendered by the
+backend, each in a process of its own.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_RENDER_MAX_SESSIONS` | `8` | Remote views rendering at once; beyond it a new view waits in the queue if it asked to (HTTP 202), else answers HTTP 503. |
+| `VISIVO_RENDER_IDLE_TTL_SECONDS` | `300` | A view that receives no command for this long is closed. |
+| `VISIVO_RENDER_QUEUE_MAX` | `16` | Remote views that may wait for a slot; beyond it HTTP 503. `0` turns the queue off. |
+| `VISIVO_RENDER_QUEUE_TIMEOUT_SECONDS` | `600` | Longest wait in the queue; then HTTP 503. |
+| `VISIVO_RENDER_QUEUE_STALE_SECONDS` | `15` | A waiting view whose client stops asking for this long loses its place. |
+| `VISIVO_RENDER_DISCONNECT_GRACE_SECONDS` | `30` | While views wait, a view with no client connected for this long is closed to free its slot. |
+| `VISIVO_WEBRTC_H264` | unset | `1` advertises and accepts the remote view's H.264 WebRTC stream where aiortc has no encoder to patch for NVENC (aiortc 1.10 and later, as in the release bundles): encoded in software. Without it such a backend offers JPEG only, as before aiortc was bundled. |
+| `VISIVO_RENDER_IN_PROCESS` | unset | `1` renders inside the backend's own process instead of a child process (slower: rendering then competes with the process that serves the clients). |
+| `VISIVO_RENDER_OUT_OF_CORE_BYTES` | 6 GiB | A cube larger than this (as float32) is not loaded: the view draws it from its brick pyramid, block by block ([Brick pyramid](design/brick-pyramid.md#rendering-from-the-pyramid)). |
+| `VISIVO_RENDER_OOC_BUDGET_BYTES` | 2 GiB | Out of core: GPU data of the blocks drawn at once. |
+| `VISIVO_RENDER_OOC_MAX_BLOCKS` | `12` | Out of core: blocks drawn at once (each is one ray-casting pass). |
+| `VISIVO_RENDER_OOC_NODE` | `256` | Out of core: voxels per side of a block. |
+| `VISIVO_POINT_RENDER_MAX_POINTS` | `100000000` | Points a remote point or catalogue view draws at most; a larger table is drawn from an even sample of its rows. |
+| `VISIVO_POINT_RENDER_LOD_POINTS` | `1000000` | Points a remote point or catalogue view draws while it is being dragged. |
+
+## VR headset pairing
+
+A headset's page can reach this backend through a pairing code instead of a
+direct HTTP address ([Headset pairing by code](backend-api/vr-pair.md)). The
+pairing service is configured with its own `VR_PAIR_*` variables
+(`services/vr-pair/README.md`); running it and the public loader, and moving
+them to another server, is in [Hosting headset pairing](deployment/vr-pairing.md).
+The backend has no built-in value for either: a backend started by hand or
+on a cluster pairs only when its own environment names them. The desktop
+application passes both to the backend it starts, from the first of:
+
+1. the variables already set in the environment the application starts from;
+2. the fields of **Settings ▸ Backends ▸ Headset Pairing**;
+3. the build's defaults, the pairing service hosted by INAF:
+   `wss://vr.visivolab.oact.inaf.it/pair` and
+   `https://vr.visivolab.oact.inaf.it/`.
+
+An empty field uses the default, which the field shows as its placeholder.
+The default page goes with the default service only: with another service
+typed (or set in the environment), an empty *Headset page* passes nothing.
+*Pair headsets by code* switched off passes neither (variables set in the
+environment still reach the backend); **Restore Pairing Defaults** empties both fields
+and switches pairing on.
+
+The defaults are CMake cache options, compiled into the desktop
+(`cmake/VrPairingDefaults.cmake`, which generates `VrPairingDefaults.h`); a
+site with its own server builds with its own values:
+
+```sh
+cmake -B build -DVISIVO_DEFAULT_VR_PAIR_URL=wss://vr.example.org/pair \
+               -DVISIVO_DEFAULT_VR_PAGE_URL=https://vr.example.org/visivo/
+```
+
+Empty values build a desktop with no default, where pairing needs the fields.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_VR_PAIR_URL` | unset (off) | The pairing service, `wss://…` (`ws://` for a service on this machine; a host key as `?key=…`). The backend connects out to its `/v1/host` when a code is first asked for, and reconnects with backoff. Read once: a change takes effect when the backend restarts. |
+| `VISIVO_VR_PAGE_URL` | unset | The public loader page (`https://vr.example.org/visivo/`; a missing trailing `/` is added); the desktop is given it with `#pair=<code>` for its QR code. |
+
+Pairing needs `aiortc` and PyAV (`backend/requirements-webrtc.txt`, part of
+the release bundles); without them the routes answer 409 `not-configured`.
+They are not in `requirements.txt`, because the cluster images install that
+file and PyAV has no wheel for every cluster architecture.
+
+On a Mac with Apple Silicon, pairing needs macOS 14 or newer: the PyAV
+wheel for that platform is built for macOS 14. On macOS 13 the backend
+cannot load it and answers `not-configured`, and the desktop's *Open in VR
+Headset…* dialog falls back to its USB section.
+
+Bundling aiortc does not change the remote 3-D view: a backend advertises
+the H.264 stream (`h264-webrtc` in `/v1/render/diagnostics`) only where it
+did before, with aiortc's encoder patched for NVENC (the cluster image), or
+when `VISIVO_WEBRTC_H264=1` asks for it (then encoded in software).
+
+## VR headset app
+
+The VisIVO VR app opens the VR page full screen only when the backend lists
+it at `/.well-known/assetlinks.json` ([Headset app launch](backend-api/vr-launch.md));
+the desktop installs and starts it ([The headset app](../user/reference/vr.md)).
+The release app is listed by every backend without configuration.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_VR_APP_RELEASE_SHA256` | unset | More SHA-256 certificate fingerprints of the release app (`it.inaf.oact.visivo.vr`), comma-separated, added to those in `backend/app/vr_app.json`. |
+| `VISIVO_QUEST_APP_DIR` | `~/.visivo/quest-app` | Where `tools/quest-app/build.sh` keeps the development key; its `dev-sha256.txt` makes the backend list the development app (`it.inaf.oact.visivo.vr.dev`). |
+| `VISIVO_VR_ASSETLINKS_FILE` | unset | A JSON file of further statements (an array of objects, at most 64 KiB), served as they are. |
+
+The desktop client reads `VISIVO_QUEST_APK` (see [Desktop client](#desktop-client)).
+
+## SRC node
+
+Settings for a backend that runs as a node of the SKA Regional Centre network
+and is discovered by a SKAVA catalogue; see
+[The backend as an SRC node](deployment/src-node.md) and
+[SKAVA discovery](../user/reference/skava-discovery.md).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_NODE_CODE` | unset | The node's code in the catalogue, reported in `/v1/node/status` and in pushed telemetry. |
+| `VISIVO_NODE_GPU` | unset | `1`/`true`/`yes` declares a GPU, `0`/`false`/`no` declares none; unset reports "unknown". |
+| `VISIVO_NODE_STATUS_PUBLIC` | `1` | `0`/`false`/`no` makes `/v1/node/status` and the metrics require the backend token. `/v1/ping` always stays open. Re-read on every request. |
+| `VISIVO_VERSION` | the application version | Version string reported in the node status. |
+| `VISIVO_DATA_ROOT` | unset | A single directory that `file://` access URLs from SKAVA and the SODA service may point into. Combined with `VISIVO_DATA_ROOTS`; either is enough. |
+| `VISIVO_SKAVA_TELEMETRY_URL` | unset | Base URL (`http` or `https`) of the catalogue to push the node status to. Pushing is off unless this, the token and the node code are all set. |
+| `VISIVO_SKAVA_NODE_TOKEN` | unset | **Secret.** This node's telemetry token, issued by the catalogue's operator. |
+| `VISIVO_SKAVA_TELEMETRY_INTERVAL` | `10` | Seconds between pushed reports; at least 1. |
+
+## Security, tokens and multi-user
+
+See [Sharing one backend between users](multi-user-backend.md) for how these
+fit together.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_TOKEN` | generated at startup | **Secret.** The primary (operator) token. When unset, a random token is generated, printed at startup and written to `~/.visivo_token` (mode 600). Re-read on every request, so it can be rotated. |
+| `VISIVO_TOKENS` | unset | **Secret.** Additional per-user tokens, comma- or whitespace-separated. More than one accepted token switches on multi-user mode. Re-read on every request. |
+| `VISIVO_DATA_ROOTS` | unset | Directories (separated by `:` on Linux and macOS, `;` on Windows) that path-based endpoints may read. Unset: unconfined with a single token, all path access denied in multi-user mode. Re-read on every request. |
+| `VISIVO_STRICT_SESSIONS` | on in multi-user mode, off otherwise | When on, only session ids minted by the backend are accepted. `0`/`false`/`no` turns it off, any other non-empty value on. |
+| `VISIVO_SESSION_TTL` | `1800` | A session idle for longer than this many seconds is removed and its datasets closed, unless a task of it is still running. The shared anonymous session stays, but its datasets are released. |
+| `VISIVO_MAX_SESSIONS_PER_TOKEN` | `32` | Live sessions one token may hold; a further session answers HTTP 429. |
+| `VISIVO_TASK_TTL_SECONDS` | `1800` | A task record neither read nor updated for this many seconds is dropped from the task registry (at least 1), after which its status can no longer be polled. Running tasks are never dropped. |
+| `VISIVO_SNAPSHOT_SECRET` | `ADMIN_SESSION_SECRET`, else random per process | **Secret.** HMAC key that signs reproducibility snapshots. Set it so signatures stay valid across restarts. |
+
+## Files and caches
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_EXPORTS_DIR` | `~/.visivo/exports` | The Workspace exports folder: saved cut-outs, moment FITS files and source-finding products. Created if missing. |
+| `VISIVO_DECOMPRESS_CACHE_DIR` | `<exports>/.decompressed` | Where compressed FITS (`.fits.gz`, tile-compressed `.fz`) are decompressed before they are read. One entry per source file version (path, size, modification time); a source that changes is decompressed again. On a cluster, point it at scratch rather than a home with a small quota: a cube needs its full uncompressed size here. Beside the entries the cache keeps one empty `<key>.lock` file per source version ever decompressed: processes opening the same file at once lock it, and it stays (a few bytes) so that a process waiting on it and the next one to create the entry lock the same file. Deleting the whole directory while no backend runs is safe. |
+| `VISIVO_DECOMPRESS_CACHE_MAX_BYTES` | `100 GiB` | Size cap of the decompression cache; `0` for no cap. The least recently used entries are evicted to make room, never one an open dataset reads or one used in the last 10 minutes. A file that cannot fit is refused with a message naming this setting. Independently, a decompression is refused when the disk of the cache lacks its size plus 1 GiB. |
+| `VISIVO_PYRAMID_DIR` | `<exports>/.pyramids` | Where brick pyramids are written and looked for ([Brick pyramid](design/brick-pyramid.md)). |
+| `VISIVO_HIPS_CACHE` | `~/.cache/visivo/hips` | Directory of the HiPS tile cache. |
+| `VISIVO_HIPS_CACHE_MAX_BYTES` | `2 GiB` | Size cap of the HiPS cache; the least recently used tiles are evicted beyond it. |
+| `VISIVO_HIPS_CACHE_TTL_SECONDS` | `604800` (7 days) | Tiles older than this are deleted. |
+| `VISIVO_HIPS_CACHE_CLEANUP_INTERVAL` | `60` | Minimum seconds between two cleanup passes over the HiPS cache. |
+| `VISIVO_IMAGE_PYRAMID_BYTES` | `256 MiB` | A 2-D image larger than this (as float32) is tiled from an averaged pyramid, built in the background the first time a tile is asked for; until it is ready, tiles are sampled from the file. |
+| `VISIVO_REGION_SPILL_DIR` | the system temporary directory, unless it is held in memory | Where region statistics over a large image copy the region's values to local disk between passes. Unset and with a memory-backed temporary directory (`tmpfs`), no copy is made and every pass reads the file. |
+| `VISIVO_SAMP_FILE_TTL` | `3600` | Files staged for SAMP (in the system temporary directory, `visivo_samp_files`) are deleted after this many seconds. |
+
+## Copilot
+
+The copilot's provider is chosen per session in the client; these variables
+give every new session its starting configuration. See
+[Self-hosted copilot LLM](deployment/copilot-self-hosted.md) and
+[Copilot backend](design/copilot-backend.md).
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_ASSISTANT_PROVIDER` | `auto` | `auto`, `anthropic`, `openai` or `null`. `auto` picks a self-hosted endpoint or OpenAI key first, then an Anthropic key, else `null` (tools only, no language model). |
+| `VISIVO_ASSISTANT_MODEL` | provider default | Model name sent to the provider. Without it the Anthropic provider uses `claude-opus-4-8` and cloud OpenAI `gpt-4o`. A self-hosted server is asked for its models (`GET <base>/models`) at the first question: when it lists exactly one, that one is used; when it lists none or several, or cannot be reached, the copilot answers which variable to set and, if any, the names it serves. |
+| `VISIVO_LLM_BASE_URL` | unset | Base URL of an OpenAI-compatible server (for example `http://host:8000/v1`). It must be `http`/`https` with no credentials, query or fragment, the same check as a URL set from the client; the key belongs in `VISIVO_LLM_API_KEY`. A value that fails the check does not stop the backend: it is logged at start-up (without the URL), and the copilot stays off, with the reason in its answers and in `GET /v1/assistant/status` (`problem`), until it is corrected or a session sets its own URL. |
+| `VISIVO_LLM_API_KEY` | unset | **Secret.** Key sent to `VISIVO_LLM_BASE_URL`, and only there. |
+| `ANTHROPIC_API_KEY` | unset | **Secret.** Key for the Anthropic provider. |
+| `OPENAI_API_KEY` | unset | **Secret.** Key for the cloud OpenAI provider; never sent to a self-hosted URL. |
+| `VISIVO_ASSISTANT_SLOTS` | `2` | Copilot queries running at once, across all sessions (at least 1). Separate from the heavy-task slots. |
+| `VISIVO_ASSISTANT_TIMEOUT_S` | `120` | Wall-clock budget of one copilot query, tool calls included; beyond it the request answers HTTP 504. |
+
+## Remote services: VLKB, HiPS, cone search, open URL, SAMP
+
+Every URL the backend fetches on a client's behalf is checked against an
+allowlist variable, separately for each service. **When an allowlist is set,
+only the hosts it names (comma-separated, matched case-insensitively) are
+fetched and every other host is refused.** When it is unset, only `http` and
+`https` URLs are accepted and, except for the open-URL route, addresses that
+resolve to private, loopback, link-local, reserved or multicast networks are
+refused. Redirects are checked with the same policy.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_VLKB_URL` | `https://vlkb.ia2.inaf.it` | VLKB service root for TAP queries and multi-cutout batches alike: a request's own `service_url` wins, then this variable, then the public VLKB. `/tap` and `/soda` are appended to it. |
+| `VISIVO_VLKB_ALLOWED_HOSTS` | unset | Allowlist for VLKB TAP, cut-out, multi-cutout and SED-fit requests. |
+| `VISIVO_VLKB_MAX_BYTES` | `8 GiB` | Largest single cut-out download. |
+| `VISIVO_VLKB_MCUTOUT_TIMEOUT` | `300` | Socket timeout of each multi-cutout archive call. |
+| `VISIVO_VLKB_MCUTOUT_MAX_ITEMS` | `500` | Datasets in one multi-cutout batch. |
+| `VISIVO_VLKB_MCUTOUT_MAX_BYTES` | `16 GiB` | Largest multi-cutout results archive. |
+| `VISIVO_VLKB_MCUTOUT_MAX_EXTRACTED` | `32 GiB` | Total unpacked size of that archive. |
+| `VISIVO_VLKB_MCUTOUT_MAX_MEMBERS` | `2000` | Entries in that archive. |
+| `VISIVO_VLKB_MCUTOUT_MAX_REPORT` | `8 MiB` | Largest job report. |
+| `VISIVO_VLKB_SEDFIT_URL` | unset | Base URL of the VLKB SED-fit model service. |
+| `VISIVO_SED_MODELS_TIMEOUT` | `300` | Deadline of a whole SED model-fit request. |
+| `VISIVO_SED_MODELS_MAX_BYTES` | `64 MiB` | Largest response accepted from the SED-fit service. |
+| `VISIVO_SED_MAX_MODELS` | `2000` | Upper bound on the `max_models` a client may request. |
+| `VISIVO_HIPS2FITS_URL` | `https://alasky.cds.unistra.fr/hips-image-services/hips2fits` | hips2fits service, for a mirror. |
+| `VISIVO_HIPS2FITS_ALLOWED_HOSTS` | unset | Allowlist for hips2fits requests. |
+| `VISIVO_CONE_SEARCH_ALLOWED_HOSTS` | unset | Allowlist for cone-search requests. |
+| `VISIVO_OPENURL_ALLOWED_HOSTS` | unset | Allowlist for `/v1/datasets/open_url` (opening a dataset by URL, as SKAVA access URLs do). |
+| `VISIVO_OPENURL_BLOCK_PRIVATE` | off | `1`/`true`/`yes` refuses private and loopback addresses on the open-URL route too. Off by default because federated data nodes often sit on private networks. |
+| `VISIVO_SAMP_ALLOWED_HOSTS` | unset | Allowlist for `/v1/samp/import-url`, the route that downloads a URL received over SAMP into the backend's SAMP store. A hub's own loopback URLs are refused there; the desktop client downloads those itself and uploads them. |
+| `VISIVO_SAMP_DIRECT` | `0` | `1` lets the backend register with a SAMP hub on its own machine and send messages directly. Without it, SAMP goes through the desktop client, which is the only way when the backend is remote. |
+
+## Analysis limits
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_LINEWIDTH_SNR` | `3.0` | Pixels below this signal-to-noise ratio are skipped by the line-width fit; `0` fits every pixel. |
+| `VISIVO_LINEWIDTH_CHUNKS` | `VISIVO_WORKERS` | Row chunks a line-width map is split into; the chunks still pass the heavy-task throttle. |
+| `VISIVO_KINEMATIC_MAX_VOXELS` | `268435456` (256 Mi voxels) | Largest kinematic model cube; larger requests answer HTTP 413. Zero or invalid values use the default. |
+| `VISIVO_AREPO_MAX_CELLS` | `600000000` | Largest grid an AREPO extraction may materialise. |
+| `VISIVO_AREPO_MAX_LEVEL` | `14` | Highest AREPO refinement level accepted. |
+| `VISIVO_SOFIA_BIN` | `sofia2`, else `sofia`, on `PATH` | The SoFiA-2 executable. |
+| `VISIVO_SOFIA_TIMEOUT_S` | `900` | Wall-clock limit of a SoFiA-2 run started from `POST /v1/sourcefind/{dataset_id}`; `0` disables it. |
+| `VISIVO_FINDER_TIMEOUT_S` | `3600` | Wall-clock limit of a source finder run as a task (`POST /v1/tasks/sourcefind`); at least 1. |
+
+## Velocity fields
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_VELOCITY_STREAM_BYTES` | `512 MiB` | Above this field size, the full-resolution divergence is computed in z-slabs read from disk instead of in memory. `0` always streams. |
+| `VISIVO_VELOCITY_SLAB` | `32` | z-planes per slab on the streamed path (at least 1). |
+
+## Diagnostics
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_DIAGNOSTICS_LEVEL` | `INFO` | Lowest Python logging level copied into the diagnostics buffer that *View → Diagnostics* shows (`DEBUG`, `INFO`, `WARNING`, `ERROR`). An unknown name means `INFO`. |
+| `VISIVO_DIAGNOSTICS_BUFFER` | `2000` | Log records kept in that buffer (at least 16); older ones are dropped. |
+
+## Other variables the backend honours
+
+| Variable | Effect |
+|---|---|
+| `CUDA_VISIBLE_DEVICES` | The GPUs the job was given. Workers are spread over them (see `VISIVO_GPU_ROUND_ROBIN`), and so are remote render views. |
+| `VTK_EGL_DEVICE_INDEX` | Binds every remote render view to this EGL device instead of spreading views over the job's GPUs. |
+| `SLURM_JOB_ID` | Marks the backend as running in a SLURM job, so the memory grant below is taken into account. |
+| `SLURM_MEM_PER_NODE` | Memory granted to the job, in MiB; counts as a memory limit. `0` (the whole node) sets none. |
+| `SLURM_MEM_PER_CPU`, `SLURM_CPUS_ON_NODE` | Used together as the memory grant when `SLURM_MEM_PER_NODE` is absent. |
+| `VISIVO_EXIT_WITH_PID` | Set by the desktop client on the backend it starts: the backend shuts down once that process is gone (checked every 2 s). If uvicorn is still waiting for open connections 10 s later, the backend exits outright. A shutdown that is already closing render views and the worker pool by then is given up to 8 s more to finish. A backend started by hand, without it, is not affected. Independently of this variable, the processes the backend starts end on their own however the backend ended. Worker-pool processes, render views and cube readers end within about a second. A pyramid build is first asked to stop and gets up to 5 s to remove its partial file. A process inside a long native call that holds the Python interpreter lock (a VTK render, some numpy work) ends when that call returns, except render views and cube readers on Linux, which the kernel kills. |
+| `ADMIN_SESSION_SECRET` | **Secret.** Fallback for `VISIVO_SNAPSHOT_SECRET`. |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | See [Copilot](#copilot). |
+
+## Desktop client
+
+These variables are read by the desktop client, not by the backend.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_BACKEND_URL` | unset | A remote backend for this run (the same as `--backend URL`); unset, the client runs on its local backend. The command line wins over the environment. See [Running the backend on a cluster](deployment/hpc-slurm.md). |
+| `VISIVO_BACKEND_TOKEN_FILE` | unset | File holding that backend's token (`--backend-token-file`). |
+| `VISIVO_BACKEND_TOKEN` | unset | **Secret.** The token itself, used when no token file is given. |
+| `VISIVO_BACKEND_NAME` | `host:port` | Name shown for that backend (`--backend-name`). |
+| `VISIVO_NO_BACKEND_AUTOSTART` | unset | Any non-empty value stops the client from starting its local backend (the same as `--no-backend-autostart`), to connect to one already running. |
+| `VISIVO_BACKEND_PYTHON` | unset | Python interpreter used to start the local backend, tried before an active virtual environment, the project's `.venv` and the bundled runtime. It must be Python 3.11 or newer. |
+| `VISIVO_PACKAGE_DIR` | set by the Linux launcher | The directory of the extracted Linux package; the client looks for the bundled backend runtime in its `python/` directory first. Set by `./VisIVOVisualAnalytics`, not by hand. |
+| `SAMP_HUB` | `~/.samp` | The standard SAMP variable: `std-lockurl:<url>` (a `file:` or `http(s):` URL) names the hub lockfile the client reads; otherwise it reads `~/.samp`. |
+| `VISIVO_QUEST_APK` | unset | The VisIVO VR app to install on a headset: the path to an `.apk` with its `.json` beside it, tried before the copy in the application's resources and a source tree's `tools/quest-app/out/`. See [The headset app](../user/reference/vr.md). |
+| `VISIVO_SUBVOLUME_PARALLEL` | `4` | Parallel requests a full-resolution cube or sub-cube load (`/v1/cube/subvolume_bin`) is split into, along the spectral axis (1 to 16). |
+
+### The local backend ends with the client
+
+The local backend the client starts (no `--backend` given) runs together with
+everything it starts in turn — its worker pool, render sessions, readers and
+Python's resource tracker — as one unit: on macOS and Linux a process group of
+its own, on Windows a job object. When the client quits, it first closes its
+render sessions, then asks the whole group to end (`SIGTERM`), waits up to
+3 seconds, and kills whatever is left (`SIGKILL`). If the backend stops by
+itself, the client ends the workers it left behind the same way. On Windows the
+job ends every process in it as soon as the client exits, even after a crash.
+After a client crash on macOS or Linux the backend notices that the client is
+gone (`VISIVO_EXIT_WITH_PID`) and shuts down. A backend started by hand, or a
+remote one, is never stopped by the client.

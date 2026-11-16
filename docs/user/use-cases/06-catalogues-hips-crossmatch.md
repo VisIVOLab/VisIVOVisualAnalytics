@@ -120,10 +120,10 @@ counterpart.
 
 ## Next
 
-- [Catalogues, HiPS, and SAMP](../../user-guide/catalogues-hips.md): the 3-D
+- [Catalogues, HiPS, and SAMP](../reference/catalogues-hips.md): the 3-D
   viewer's frames, cosmologies and glyphs, overlays and the HiPS viewer.
-- [Source finding and cross-matching](../../user-guide/source-finding.md).
-- [VBT tables](../../user-guide/vbt-viewer.md): VisIVO Binary Tables of
+- [Source finding and cross-matching](../reference/source-finding.md).
+- [VBT tables](../reference/vbt-viewer.md): VisIVO Binary Tables of
   points.
-- [Working with TOPCAT, Aladin and DS9](../../user-guide/interoperability.md):
+- [Working with TOPCAT, Aladin and DS9](../reference/interoperability.md):
   sending tables and images over SAMP.

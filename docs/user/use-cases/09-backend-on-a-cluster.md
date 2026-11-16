@@ -12,7 +12,7 @@ changes while you work.
 - On the frontend: a copy of the VisIVO Visual Analytics repository (its
   `scripts/launch_backend_slurm.sh` starts the backend), and the backend's
   container image, `backend-egl.sif`. Your site's support team or the
-  [cluster deployment page](../../deployment/hpc-slurm.md) tells you where
+  [cluster deployment page](../../technical/deployment/hpc-slurm.md) tells you where
   they are.
 - Your data on the cluster's disk, for example a large cube under
   `/scratch/<user>/data`.
@@ -111,13 +111,13 @@ and the tunnel yourself with the scripts, register the backend under
 describes both.
 
 A Meta Quest can show cubes from the cluster backend too; see
-[Headset with a cluster backend](../../user-guide/vr/cluster.md).
+[Headset with a cluster backend](../../technical/deployment/vr-cluster.md).
 
 ## Next
 
-- [Running the backend on a cluster](../../deployment/hpc-slurm.md): the
+- [Running the backend on a cluster](../../technical/deployment/hpc-slurm.md): the
   launcher, the tunnel script, container images and troubleshooting.
-- [Getting started](../../user-guide/getting-started.md): connecting to a
+- [Getting started](../reference/getting-started.md): connecting to a
   remote backend.
-- [Spectral cube viewer](../../user-guide/cube-viewer.md): Auto, Local and
+- [Spectral cube viewer](../reference/cube-viewer.md): Auto, Local and
   Remote rendering.

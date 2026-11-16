@@ -11,7 +11,7 @@ Quest:
   Wi-Fi). It works offline, so it is the way for a computer without internet,
   for demos on a network you do not control, and when no pairing server is
   configured. Over the cable the desktop installs and starts the
-  [VisIVO VR headset app](headset-app.md), which puts you straight in VR.
+  [VisIVO VR headset app](../../user/reference/vr.md), which puts you straight in VR.
 
 Both open the cube in the same backend session as the desktop, and the page in
 the headset is the same.
@@ -22,7 +22,7 @@ page open in this session first. When there is one, the dialog offers **Show
 on Headset**, which switches that headset to this cube with no new code and
 no new browser window; the cube window's **Tools → Views → Show on Headset**
 does the same in one click. Pairing stays under **Pair Another Headset**. See
-[The headset from the desktop](desktop.md).
+[The headset from the desktop](../../user/reference/vr.md).
 ```
 
 ## Pair by code
@@ -44,7 +44,7 @@ does the same in one click. Pairing stays under **Pair Another Headset**. See
 The first time you open the page, a short controls guide is on the 2-D page,
 before you enter VR (*Got it* hides it; in VR the hand menu's More → Guide
 shows it beside the cube). The grips move the cube,
-and the hand menu has the rest: see [Controls and the hand menu](controls.md).
+and the hand menu has the rest: see [Controls and the hand menu](../../user/reference/vr.md).
 
 ```{note}
 **No setup is needed.** The desktop application comes set up for the pairing
@@ -138,17 +138,17 @@ on purpose but is not written to the application's log.
   network, once paired: keep both on the same network for the best speed. On a
   network that keeps devices apart, the link goes through a relay server, if
   your institute runs one, more slowly (see
-  [Troubleshooting](troubleshooting.md#pairing-by-code)).
+  [Troubleshooting](../../technical/vr/troubleshooting.md#pairing-by-code)).
 - If the link drops (Wi-Fi, the computer asleep), the page says *Backend not
   reachable* and reconnects by itself for up to three minutes, without a new
   code and without reloading; the cube stays on show. If it cannot, it says
   *The pairing with the computer ended* with **Enter a new code**: ask the
   dialog for a new code (**New Code**) and type it there.
 - *Copy diagnostics* on the page names the link (the `transport:` line):
-  see [The transport line](public-loader.md#the-transport-line).
+  see [The transport line](../../technical/deployment/vr-public-loader.md#the-transport-line).
 
 How the page works behind the code is in
-[How the public loader works](public-loader.md).
+[How the public loader works](../../technical/deployment/vr-public-loader.md).
 
 ### The pairing settings
 
@@ -180,7 +180,7 @@ The values are read when the backend starts, so restart the application after
 changing them. The same variables set in the environment the application
 starts from take precedence over the fields and the defaults. A remote backend
 (a cluster's) uses its own configuration. Running the server is described in
-[Hosting headset pairing](../../deployment/vr-pairing.md).
+[Hosting headset pairing](../../technical/deployment/vr-pairing.md).
 
 ### When pairing is not available
 
@@ -189,7 +189,7 @@ configured*), cannot reach it (*The backend cannot reach its pairing service
 right now*), or is older than the desktop, the dialog opens **Advanced (USB
 cable)** by itself and says why: the [USB way](#advanced-usb-cable) then works
 as before. It can also be opened by hand at any time; adb is only run once it
-is open. See [Troubleshooting](troubleshooting.md#pairing-by-code).
+is open. See [Troubleshooting](../../technical/vr/troubleshooting.md#pairing-by-code).
 
 ## Advanced: USB cable
 
@@ -212,16 +212,16 @@ Headset…* dialog it is under **Advanced (USB cable)**.
 4. Put the headset on and press **Open on Headset**. With the release
    packages, the desktop installs the VisIVO VR app when needed and starts it
    straight in VR with the cube: no browser window and no Enter VR (see
-   [The headset app](headset-app.md)). A desktop without the app (built from
+   [The headset app](../../user/reference/vr.md)). A desktop without the app (built from
    source without it), or **Open in Browser**, opens the page in the Quest
    Browser instead: press **Enter VR** there.
 5. The first time, a short controls guide is on the 2-D page before you enter
    VR (*Got it* hides it; in VR the hand menu's More → Guide shows it beside
    the cube). The grips move the cube,
-   and the hand menu has the rest: see [Controls and the hand menu](controls.md).
+   and the hand menu has the rest: see [Controls and the hand menu](../../user/reference/vr.md).
 
 If something goes wrong, the page says so in the headset and offers the way
-out: see [Troubleshooting](troubleshooting.md).
+out: see [Troubleshooting](../../technical/vr/troubleshooting.md).
 
 ### Open a cube from the desktop
 
@@ -232,7 +232,7 @@ session: the headset's page
 receives the token, the session, the dataset and the cube's path, so there is
 nothing to paste or type on the headset. This is not *Open in VR*, which
 sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
-[Open in VR](../cube-viewer.md#open-in-vr)); it needs no VR runtime here.
+[Open in VR](../../user/reference/cube-viewer.md#open-in-vr)); it needs no VR runtime here.
 
 **Once, before the first time:**
 
@@ -282,7 +282,7 @@ sends the desktop's own 3-D view to an OpenXR runtime on this computer (see
    the headset (`adb reverse tcp:<port> tcp:<port>`). When it has the
    VisIVO VR app, it installs or updates the app when needed and starts it
    in VR with the cube, with a one-time launch ticket instead of the token
-   (see [The headset app](headset-app.md)). Without the app, or with
+   (see [The headset app](../../user/reference/vr.md)). Without the app, or with
    **Open in Browser**, it opens the page in the Quest Browser (`am start`
    with a view intent; in the headset's default browser if the Quest Browser
    is not installed): the cube loads on the page; press **Enter VR**. The
@@ -343,10 +343,10 @@ reaches at another address (a machine on the network at
 `http://192.168.x.y:8000`) cannot be reached from the headset this way, and
 the dialog says so: connect to it through an ssh tunnel
 (`ssh -L 8000:localhost:8000 host`) and open the cube from there. See
-[Headset with a cluster backend](cluster.md).
+[Headset with a cluster backend](../../technical/deployment/vr-cluster.md).
 
 Point tables, 3-D catalogues and velocity fields open from their own windows
-the same way: see [Opening one](data-types.md#opening-one).
+the same way: see [Opening one](../../user/reference/vr.md#opening-one).
 
 ### On the Quest 3, over USB, by hand
 
@@ -408,12 +408,12 @@ API to the network, protected only by the token). Prefer
 [pairing by code](#pair-by-code), or adb over Wi-Fi.
 
 Over Wi-Fi the refined frames can travel as video: see
-[Over Wi-Fi: refined frames as video](reference.md#over-wi-fi-refined-frames-as-video-webrtc).
+[Over Wi-Fi: refined frames as video](../../technical/vr/reference.md#over-wi-fi-refined-frames-as-video-webrtc).
 
 ## Opening it on the Mac (no headset)
 
 1. Start the backend as usual (the desktop application starts one on
-   `http://127.0.0.1:8000`; or by hand, see [Getting started](../getting-started.md)).
+   `http://127.0.0.1:8000`; or by hand, see [Getting started](../../user/reference/getting-started.md)).
 2. Open `http://127.0.0.1:8000/vr/` in Chrome, Edge or Safari and paste the
    backend token (the contents of `~/.visivo_token`) into the *Backend token*
    field. Opening `http://127.0.0.1:8000/vr/#token=<token>` works too: the
@@ -424,4 +424,4 @@ Over Wi-Fi the refined frames can travel as video: see
 
 *Synthetic* draws a generated cube of the chosen size without any backend, for
 checking the page and measuring frame rates. The hand menu can be shown in the
-page's 3-D view and used with the mouse (see [The hand menu](controls.md#the-hand-menu)).
+page's 3-D view and used with the mouse (see [The hand menu](../../user/reference/vr.md#the-hand-menu)).

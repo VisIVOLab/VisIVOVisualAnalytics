@@ -2,10 +2,10 @@
 
 Everything on this page is computed by the backend on the full cube, through
 the routes the desktop uses; the headset only draws. The tools are chosen and
-used as described in [Controls and the hand menu](controls.md): the selection
+used as described in [Controls and the hand menu](../../user/reference/vr.md): the selection
 tools on the menu's Select tab (it sets the Select mode, see
-[Modes](controls.md#modes)), the measurements on its Measure tab (see
-[The hand menu](controls.md#the-hand-menu); until
+[Modes](../../user/reference/vr.md#modes)), the measurements on its Measure tab (see
+[The hand menu](../../user/reference/vr.md#the-hand-menu); until
 [#257](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/257) both
 were on an Analysis tab).
 
@@ -16,7 +16,7 @@ shows where the trigger would land. On the Mac the same tools work with the
 mouse: a click (press and release without dragging) is the trigger, a drag
 still turns the cube. The tool is chosen on the tool palette (A), on the
 menu's Select tab (Kinematic Lasso, Spectrum probe, Box region; see
-[Modes](controls.md#modes)) or on the page (*Selection tool*).
+[Modes](../../user/reference/vr.md#modes)) or on the page (*Selection tool*).
 
 **Where a pick lands.** The ray is marched through the reduced cube the
 headset draws, with the same values, threshold and spatial crop as the
@@ -37,7 +37,7 @@ edge cannot win; the results window says which rule was used (*its brightest*
 or *its brightest 3×3 mean*).
 
 The results window (in the headset; it can be grabbed by its title bar, moved
-and closed, see [Controls](controls.md); under the page's controls on the Mac)
+and closed, see [Controls](../../user/reference/vr.md); under the page's controls on the Mac)
 shows the seed's position: right ascension and declination in ICRS from the
 file's full WCS (`/v1/datasets/pixel_to_sky`, what the desktop sends over
 SAMP), the velocity of its channel in km/s with its convention, the pixel and
@@ -87,7 +87,7 @@ from the headset adds the uncertainty with its channel-correlation label, the
 peak S/N, Vsys with its convention and frame, W20 and W50. Given
 SoFiA-2's mask, a selection reproduces SoFiA-2's catalogue (flux, widths,
 centroid, size to its precision; the locally measured noise within 7 %, see
-[the backend API](../../backend-api/cube.md#post-v1cubemask_stats_bin)).
+[the backend API](../../technical/backend-api/cube.md#post-v1cubemask_stats_bin)).
 
 The lasso's mask comes back at full resolution and is drawn in **green** on the
 reduced cube: a drawn voxel is green when any full-resolution voxel of its
@@ -98,7 +98,7 @@ defaults (reach 8, velocity coupling 1, threshold 2.5 σ, the noise measured by
 the backend, the Reach slider's level-field budget 64, no smoothing) and can be
 changed on the page (*Kinematic Lasso parameters*). The same seed and
 parameters give the same mask as the desktop, voxel for voxel (see
-[Selections and analysis](reference.md#selections-and-analysis)).
+[Selections and analysis](../../technical/vr/reference.md#selections-and-analysis)).
 
 A box corner is placed at the primary controller's tip when the tip is inside
 the cube (reach into it): two such corners make a 3-D box. A corner placed by
@@ -107,7 +107,7 @@ and declination of the point the ray picks (the first drawn sample, or the
 middle of the ray inside the box when nothing is drawn) and no depth; the box
 then spans the channels of the velocity range (the crop along the spectral
 axis, set on the Range tab or with the Range mode's trigger, see
-[Modes](controls.md#modes)).
+[Modes](../../user/reference/vr.md#modes)).
 The sky rectangle is therefore exactly the one you
 pointed at only when you look down the spectral axis; from an oblique view the
 two picked points may lie at other depths than you meant. The box measured is
@@ -124,7 +124,7 @@ drops a request still in flight: it neither draws nor records.
 
 **Recipes.** Each spectrum, lasso selection and box is recorded as the desktop
 records its products (`visivo-recipe/1`, see
-[Kinematic Lasso](../kinematic-lasso.md)): the dataset's path, the calls with their
+[Kinematic Lasso](../../user/reference/kinematic-lasso.md)): the dataset's path, the calls with their
 requests under the API's field names (for the lasso, the grow with exactly the
 request the desktop's recipe holds, then the statistics of the mask it
 returns), the parameters as the desktop's Provenance tab labels them, and where
@@ -156,7 +156,7 @@ too: it is written into the room the page keeps for cubes before you enter
 VR. Only a cube larger than that room waits until you leave VR (a notice
 says *The new cube is shown when you leave VR* and why), because the
 headset's browser cannot take a new cube's textures during a VR session (see
-[GPU context loss](troubleshooting.md#gpu-context-loss-at-the-first-lasso-on-a-quest-3)).
+[GPU context loss](../../technical/vr/troubleshooting.md#gpu-context-loss-at-the-first-lasso-on-a-quest-3)).
 The same holds for any cube loaded while you are in VR. Each
 mode makes one cube per selection: pressing *Isolate* or *Remove* again, or
 both at once, reuses the cube already made (or being made), and a moment uses
@@ -293,7 +293,7 @@ grows is one product, recorded again with its new points.
 
 The seeds, Isolate, Remove, the moments and the PV diagram were compared with
 the desktop's call by call on HCG 44, and the timings measured: see
-[Selections and analysis](reference.md#selections-and-analysis).
+[Selections and analysis](../../technical/vr/reference.md#selections-and-analysis).
 
 ## Mask layers: show, compare, refine and save a mask
 
@@ -371,7 +371,7 @@ needs the headset's page to work in the desktop's session, which is what
 
 **From the headset to the desktop.** Every lasso and box made in the page is
 published to the session's selection hub on the backend
-([Shared selections](../../backend-api/share.md)), which measures it on the full
+([Shared selections](../../technical/backend-api/share.md)), which measures it on the full
 cube. Once *Open in VR Headset…* has been used in a cube window, that window
 follows the hub (a long poll, nothing to press): the headset's selection is
 shown at once as the Kinematic Lasso's own selection, the mask on the 2-D
@@ -422,6 +422,6 @@ record), never as a request it was not grown with. Applying never records an
 ROI of its own, as before.
 
 How fast a selection crosses is under
-[Shared selections](reference.md#shared-selections); what to check with the
+[Shared selections](../../technical/vr/reference.md#shared-selections); what to check with the
 headset is under
-[Selections shared with the desktop, with the headset](reference.md#selections-shared-with-the-desktop-with-the-headset).
+[Selections shared with the desktop, with the headset](../../technical/vr/reference.md#selections-shared-with-the-desktop-with-the-headset).

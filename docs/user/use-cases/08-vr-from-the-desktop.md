@@ -133,10 +133,10 @@ VR is saved in the desktop's Workspace Exports with the steps that made it.
 
 ## Next
 
-- [Cubes in a VR headset](../../user-guide/vr/index.md) and
-  [Quickstart and pairing](../../user-guide/vr/quickstart.md).
-- [Controls and the hand menu](../../user-guide/vr/controls.md).
-- [Analysis in the headset](../../user-guide/vr/analysis.md) and
-  [Point tables, catalogues and velocity fields](../../user-guide/vr/data-types.md).
-- [The headset from the desktop](../../user-guide/vr/desktop.md) and
-  [Troubleshooting](../../user-guide/vr/troubleshooting.md).
+- [Cubes in a VR headset](../reference/vr.md) and
+  [Quickstart and pairing](../reference/vr.md).
+- [Controls and the hand menu](../reference/vr.md).
+- [Analysis in the headset](../reference/vr.md) and
+  [Point tables, catalogues and velocity fields](../reference/vr.md).
+- [The headset from the desktop](../reference/vr.md) and
+  [Troubleshooting](../../technical/vr/troubleshooting.md).

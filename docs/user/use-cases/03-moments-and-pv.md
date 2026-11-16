@@ -122,9 +122,9 @@ warp or to gas outside the disc.
 
 ## Next
 
-- [Moment maps](../../user-guide/moment-maps.md): all the orders, how to
+- [Moment maps](../reference/moment-maps.md): all the orders, how to
   choose channels and thresholds, and common pitfalls.
-- [Regions, PV diagrams, noise](../../user-guide/region-pv-noise.md): the PV
+- [Regions, PV diagrams, noise](../reference/region-pv-noise.md): the PV
   diagram in detail and the noise estimate.
-- [Spectral analysis](../../user-guide/spectral-tools.md): line-width maps
+- [Spectral analysis](../reference/spectral-tools.md): line-width maps
   and baseline subtraction.

@@ -126,9 +126,9 @@ product's *Parameters* tab lists what made it.
 
 ## Next
 
-- [Kinematic Lasso](../../user-guide/kinematic-lasso.md): the controls, what
+- [Kinematic Lasso](../reference/kinematic-lasso.md): the controls, what
   the lasso is good at, and the selection shared with the headset.
-- [Source finding](../../user-guide/source-finding.md): the SoFiA-2 dialog,
+- [Source finding](../reference/source-finding.md): the SoFiA-2 dialog,
   the suggested parameters and troubleshooting.
-- [Kinematic model](../../kinematic-model.md): how the geometry and the
+- [Kinematic model](../../technical/design/kinematic-model.md): how the geometry and the
   widths are derived.

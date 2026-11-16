@@ -138,9 +138,9 @@ the same import and export, so the steps above work on a 2-D image too.
 
 ## Next
 
-- [Regions, PV diagrams, noise](../../user-guide/region-pv-noise.md): every
+- [Regions, PV diagrams, noise](../reference/region-pv-noise.md): every
   shape, gesture and statistic, and the import rules.
-- [Image viewer](../../user-guide/image-viewer.md): regions on 2-D images and
+- [Image viewer](../reference/image-viewer.md): regions on 2-D images and
   the region analysis window.
-- [Working with TOPCAT, Aladin and DS9](../../user-guide/interoperability.md):
+- [Working with TOPCAT, Aladin and DS9](../reference/interoperability.md):
   sending images, catalogues and sky positions over SAMP.
