@@ -92,6 +92,7 @@ class ModesMixin:
             self._apply_cube_render_mode_on_thread(self.view.cube_render_mode)
             if self._cutting_plane_actor is not None:
                 self._cutting_plane_actor.SetVisibility(0)
+            self._place_regions_with_plane()   # the regions go with the plane
             # Bright outline so the cube box reads against the dark
             # background while it's almost the only thing on screen.
             if self._outline_actor is not None:
@@ -153,6 +154,14 @@ class ModesMixin:
             if self._cutting_plane_actor is not None:
                 self._cutting_plane_actor.SetVisibility(
                     1 if self.view.cutting_plane_visible else 0)
+            self._place_regions_with_plane()   # ...and come back with it
+
+    def _place_regions_with_plane(self) -> None:
+        # A session drawing the desktop's regions (RegionsMixin, #356); the
+        # point sessions share these modes and have none.
+        place = getattr(self, "_place_regions_on_thread", None)
+        if place is not None:
+            place()
 
     def _apply_lod_level_on_thread(self) -> None:
         """Set the volume mapper to the current drag level (see _LOD_LEVELS)."""

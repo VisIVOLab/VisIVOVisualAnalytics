@@ -10,6 +10,7 @@
 #include "RegionImportResult.h"
 #include "RegionModel.h"
 #include "RegionPanePlacement.h"
+#include "RegionPlaneDrawing.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -837,5 +838,65 @@ void TestRegionModel::editsOnOnePaneShowOnTheOthers()
     // One undo step puts it back on all three.
     QVERIFY(list.undo());
     QVERIFY(near(list.find(id)->center[0], 50.0, 1e-12));
+}
+
+// ── The Remote 3-D view's plane (issue #356) ─────────────────────────────────
+
+void TestRegionModel::remotePlaneDrawingIsTheLocalOne()
+{
+    RegionList list;
+    Region box;
+    box.shape = Shape::Box;
+    box.center = { 12.0, 8.0 };
+    box.size = { 8.0, 8.0 };
+    box.color = QStringLiteral("#00ff00");
+    box.props.insert(QStringLiteral("text"), QStringLiteral("src A"));
+    const int boxId = list.add(box);
+    Region point;
+    point.shape = Shape::Point;
+    point.center = { 3.25, 4.5 };
+    list.add(point);
+    Region line;
+    line.shape = Shape::Line;
+    line.points = { { 1.0, 1.0 }, { 2.0, 3.0 } };
+    list.add(line);
+    list.select(boxId);
+    const auto colour = [](const Region &r) {
+        return r.color.isEmpty() ? std::array<unsigned char, 3>{ 51, 230, 255 }
+                                 : std::array<unsigned char, 3>{ 0, 255, 0 };
+    };
+    const QJsonObject cmd = planeDrawingCommand(list, colour);
+    QCOMPARE(cmd.value(QStringLiteral("type")).toString(), QStringLiteral("set_regions"));
+    const QJsonArray regions = cmd.value(QStringLiteral("regions")).toArray();
+    QCOMPARE(regions.size(), 3);
+    // The box: one closed outline through its corners, in cube pixels, as
+    // the local overlay draws it; selected; its file label above its middle.
+    const QJsonObject b = regions[0].toObject();
+    QVERIFY(b.value(QStringLiteral("selected")).toBool());
+    QCOMPARE(b.value(QStringLiteral("rgb")).toArray(), (QJsonArray{ 0, 255, 0 }));
+    const QJsonArray loop = b.value(QStringLiteral("loops")).toArray().at(0).toArray();
+    const auto corners = outlines(box).front();
+    QCOMPARE(loop.size(), int(corners.size()));
+    for (int i = 0; i < loop.size(); ++i) {
+        QVERIFY(near(loop[i].toArray()[0].toDouble(), corners[std::size_t(i)][0], 1e-3));
+        QVERIFY(near(loop[i].toArray()[1].toDouble(), corners[std::size_t(i)][1], 1e-3));
+    }
+    const QJsonObject label = b.value(QStringLiteral("labels")).toArray().at(0).toObject();
+    QCOMPARE(label.value(QStringLiteral("text")).toString(), QStringLiteral("src A"));
+    QCOMPARE(label.value(QStringLiteral("at")).toArray(), (QJsonArray{ 12.0, 12.0 }));
+    // A point region is a marker, a line an open path.
+    const QJsonObject p = regions[1].toObject();
+    QVERIFY(!p.value(QStringLiteral("selected")).toBool());
+    QCOMPARE(p.value(QStringLiteral("points")).toArray().at(0).toArray(), (QJsonArray{ 3.25, 4.5 }));
+    QCOMPARE(p.value(QStringLiteral("rgb")).toArray(), (QJsonArray{ 51, 230, 255 }));
+    QCOMPARE(regions[2].toObject().value(QStringLiteral("paths")).toArray().at(0).toArray().size(), 2);
+    QVERIFY(!regions[2].toObject().contains(QStringLiteral("loops")));
+    // The session's world is the cube's voxels at full resolution: the local
+    // placement at scale 1 puts pixel (x, y) on channel c at (x, y, c), which
+    // is where the session draws the pixel it is sent.
+    const auto w = planePoint({ 12.0, 4.0 }, 37, CubeLodGeometry::Sampling{});
+    QVERIFY(near(w[0], 12.0, 1e-12) && near(w[1], 4.0, 1e-12) && near(w[2], 37.0, 1e-12));
+    // An empty list clears the plane.
+    QVERIFY(planeDrawingCommand(RegionList(), colour).value(QStringLiteral("regions")).toArray().isEmpty());
 }
 

@@ -171,7 +171,13 @@ cube pixel *i* of the slice is where the volume shows that pixel, on a
 strided or block-mean preview as at full resolution, and the plane sits at
 the channel's height in the volume. They hide with the plane (*Cutting plane*
 in **LAYERS**). With the 3-D view rendered on the backend (*Remote*), the
-plane and its regions are the backend's and the regions are not drawn there.
+backend draws the regions on its own plane, placed by the same rule: the
+desktop sends the list whenever it changes, and the regions are in the frames
+it receives, drawn against the volume by the backend's depth buffer (their
+labels always on top), and hidden while the view is dragged, as the plane is. A list
+of several thousand imported shapes is too large to send; the status bar then
+says so, and the regions stay on the 2-D views and on the plane in Local
+rendering.
 
 ### Slice animation (movie mode)
 

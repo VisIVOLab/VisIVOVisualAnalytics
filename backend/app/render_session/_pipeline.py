@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from ._regions import parse_regions
 from ._common import (
     SessionStats,
     SessionViewState,
@@ -106,6 +107,8 @@ class PipelineMixin:
         ``{"type": "set_show_outline",   "visible": bool}``
         ``{"type": "set_show_axes",      "visible": bool}``
         ``{"type": "set_show_rendering",  "visible": bool}``    — volume/iso on/off
+        ``{"type": "set_regions", "regions": [...]}``            — the desktop's
+          regions on the cutting plane (_regions.py); replaces the previous ones
 
         Viewport / encoding:
 
@@ -194,6 +197,9 @@ class PipelineMixin:
                     self.view.cutting_plane_opacity)
             self._update_cutting_plane_slice_on_thread(
                 self.view.cutting_plane_slice_index)
+            # The plane may already have been on that channel, and the update
+            # then places nothing: the regions follow its visibility here.
+            self._place_regions_on_thread()
             # Camera back to the cube-fitting default.
             if self._renderer is not None:
                 self._renderer.ResetCamera()
@@ -281,6 +287,7 @@ class PipelineMixin:
                 if self._cutting_plane_actor is not None:
                     self._cutting_plane_actor.SetVisibility(
                         1 if self.view.cutting_plane_visible else 0)
+                self._place_regions_on_thread()   # the regions go with the plane
             if "opacity" in command:
                 self.view.cutting_plane_opacity = max(0.0, min(1.0,
                         float(command["opacity"])))
@@ -305,6 +312,16 @@ class PipelineMixin:
                     self._cutting_plane_slice_index,
                 )
                 self._update_cutting_plane_slice_on_thread(idx)
+            self.request_idr()
+
+        elif ctype == "set_regions":
+            try:
+                regions = parse_regions(command)
+            except ValueError as exc:
+                logger.warning("[render-session %s] set_regions refused: %s",
+                               self.session_id, exc)
+                return
+            self._apply_regions_on_thread(regions)
             self.request_idr()
 
         # ── Chrome toggles ───────────────────────────────────────────

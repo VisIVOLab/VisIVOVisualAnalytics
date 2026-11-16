@@ -8,6 +8,15 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop and backend: regions on the cutting plane with Remote rendering
+  (#356).** With the 3-D view rendered on the backend, the render session now
+  draws the window's regions on its cutting plane, as the desktop does in
+  Local rendering: the desktop sends the drawing (outlines, paths, markers,
+  labels in cube pixels) whenever the list changes (`set_regions`), and the
+  session places it at the plane's channel, so the regions are in the frames
+  it sends, depth-tested against the volume, and never lag the camera.
+  The backend's plane now spans -0.5 to n - 0.5, as the desktop's: it used to
+  sit half a voxel off the volume it cuts.
 - **Desktop: regions on moment maps in Product panes (#355).** Every pane
   showing a map of the cube's sky plane (moment maps, line-width maps, the
   Channels pane, Faraday maps of a boxed RM synthesis) draws the window's

@@ -497,6 +497,9 @@ void vtkWindowCube::onRegionListChanged()
         if (win && win->GetInteractor() && win->GetInteractor()->GetInitialized())
             win->Render();
     this->renderRegionPanes();
+    // The Remote 3-D view's session draws them on its own plane (#356): sent
+    // once per change too, and only when the drawing changed.
+    this->pushRegionsToRemote();
     // The 3-D view too when the plane shows them: once per change, not per
     // mouse move of a drag (a volume render is not free).
     if ((planeWasShown || this->m_planeRegionOverlay.visible()) && ui->vtkCube
