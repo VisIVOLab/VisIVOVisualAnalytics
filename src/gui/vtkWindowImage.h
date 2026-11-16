@@ -341,6 +341,11 @@ private:
     void onImageCameraFrame();            ///< EndEvent → arm the debounce if the camera moved
     LinkedCameraSync::Pose imageCameraPose() const;
     LinkedCameraSync::Watch m_lodCameraWatch;
+    // Issue #362: the WCS axis and catalogue labels are recomputed by EndEvent observers, after
+    // the frame is drawn, so a frame that moved the camera (Shift+R, a zoom to a source, ...) is
+    // drawn once more when the camera settles. The redraw is at the same camera: no loop.
+    LinkedCameraSync::OverlayFollow m_overlayFollow;
+    QTimer *m_overlayRedrawTimer{ nullptr };
     void maybeStreamViewportLod();        ///< compute visible region + level, fetch if changed
     void onViewportLodReady();            ///< apply a viewport tile assembly (camera preserved)
     // Issue #85: while the backend builds the image's averaged pyramid, tiles

@@ -13,6 +13,7 @@
 
 using LinkedCameraSync::Pose;
 using LinkedCameraSync::Tracker;
+using LinkedCameraSync::OverlayFollow;
 using LinkedCameraSync::Watch;
 
 namespace {
@@ -438,4 +439,78 @@ void TestLinkedCameraSync::twoD_lastFrameMoved_coversEveryFrameOfTheMove()
     broken.position[0] = std::numeric_limits<double>::quiet_NaN();
     QVERIFY(!t.frame(broken, false));
     QVERIFY(!t.lastFrameMoved());
+}
+
+void TestLinkedCameraSync::overlay_firstFrame_asksForARedraw()
+{
+    // The labels of the first frame are computed after it is on screen.
+    OverlayFollow f;
+    QVERIFY(f.frame(sliceView()));
+    QVERIFY(!f.frame(sliceView()));
+}
+
+void TestLinkedCameraSync::overlay_resetInCode_redrawsOnceWithoutALoop()
+{
+    // Shift+R draws one frame at the reset view and no interaction follows.
+    // That frame asks for one redraw; the redraw is at the same camera, so it
+    // asks for nothing: drive the window as it would be, redraw while asked.
+    OverlayFollow f;
+    f.frame(sliceView());
+    Pose zoomed = sliceView();
+    zoomed.parallelScale = 40.0;
+    zoomed.position[0] = zoomed.focalPoint[0] = 60.0;
+    f.frame(zoomed);   // the user's zoom, then its redraw
+    f.frame(zoomed);
+
+    int redraws = 0;
+    bool asked = f.frame(sliceView());   // the reset frame
+    while (asked && redraws < 10) {
+        ++redraws;
+        asked = f.frame(sliceView());   // the redraw, at the camera the reset left
+    }
+    QCOMPARE(redraws, 1);
+}
+
+void TestLinkedCameraSync::overlay_everyFrameOfADrag_asks()
+{
+    // Every frame of a drag asks; the window restarts one timer on each, so a
+    // single redraw follows the last frame.
+    OverlayFollow f;
+    f.frame(sliceView());
+    Pose p = sliceView();
+    for (int i = 1; i <= 5; ++i) {
+        p.position[0] = p.focalPoint[0] = 98.0 + i;
+        QVERIFY(f.frame(p));
+    }
+    QVERIFY(!f.frame(p));
+}
+
+void TestLinkedCameraSync::overlay_cameraFromALinkedView_asks()
+{
+    // A camera adopted from a linked view is not sent back (Tracker), but its
+    // labels must still follow it: the overlay redraw does not look at who
+    // moved the camera.
+    Tracker t = seenAt(sliceView());
+    OverlayFollow f;
+    f.frame(sliceView());
+    Pose peer = sliceView();
+    peer.parallelScale = 77.0;
+    t.adopt(peer);
+    QVERIFY(!t.frame(peer, true));
+    QVERIFY(f.frame(peer));
+    QVERIFY(!f.frame(peer));
+}
+
+void TestLinkedCameraSync::overlay_nonFinitePose_neverAsks()
+{
+    // A broken camera would never equal itself and redraw for ever.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    OverlayFollow f;
+    Pose broken = sliceView();
+    broken.parallelScale = nan;
+    QVERIFY(!f.frame(broken));
+    QVERIFY(!f.frame(broken));
+    QVERIFY(f.frame(sliceView()));   // still a first frame
+    QVERIFY(!f.frame(broken));
+    QVERIFY(!f.frame(sliceView()));
 }

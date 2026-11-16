@@ -2503,6 +2503,21 @@ protected:
     void refitSliceCamera();                   // camera refitted in code: not news either
     LinkedCameraSync::Pose sliceCameraPose() const;
     LinkedCameraSync::Tracker m_sliceCameraTracker;
+    // Issue #362: the 2-D axis labels (and the catalogue labels) are recomputed by EndEvent
+    // observers, after the frame is drawn, so a frame that moved the camera is drawn once more
+    // when the camera settles: Shift+R, a fit, a zoom to a region or a camera taken from a linked
+    // view left the old labels up until the next interaction. The redraw is at the same camera,
+    // so it asks for no other. The slice's check runs in onSliceCameraFrame.
+    void onMomentCameraFrame();                // moment EndEvent → redraw if the camera moved
+    LinkedCameraSync::OverlayFollow m_sliceOverlayFollow;
+    LinkedCameraSync::OverlayFollow m_momentOverlayFollow;
+    QTimer m_sliceOverlayRedraw;
+    QTimer m_momentOverlayRedraw;
+    // Tags of this window's EndEvent observers on sliceWin / momentWin. The member-function
+    // AddObserver overload is not removed with this object, and the QVTK widgets holding the
+    // render windows outlive the members above: the destructor removes them.
+    std::vector<unsigned long> m_sliceFrameTags;
+    std::vector<unsigned long> m_momentFrameTags;
     QPointer<QToolButton> m_linkCameraChip;    // per-facet toggle (camera)
     QPointer<QToolButton> m_linkChannelChip;   // per-facet toggle
     QPointer<QToolButton> m_linkLutChip;       // per-facet toggle
