@@ -842,6 +842,57 @@ void TestVrHeadsetHub::followingTheLookIsOnUntilUnticked()
     QVERIFY(VrHub::followLookEnabled(again));
 }
 
+void TestVrHeadsetHub::aVariableSwitchedInTheHeadsetIsFollowedByItsWindow()
+{
+    // Issue #317: the headset's picker switched rho → vx1; the window showing
+    // rho (with vx1 and prs among its Field products) follows, once.
+    const QString rho = u"/d/rho.0000.flt::pluto-var=rho"_s;
+    const QString vx1 = u"/d/rho.0000.flt::pluto-var=vx1"_s;
+    const QString prs = u"/d/rho.0000.flt::pluto-var=prs"_s;
+    const QList<QPair<QString, QString>> siblings{ { u"rho"_s, rho }, { u"vx1"_s, vx1 }, { u"prs"_s, prs } };
+    const auto variable = [](qint64 seq, const QString &to, const QString &field, const QString &from) {
+        VrHub::Event e = hubEvent(seq, u"cube"_s, to);
+        e.payload.insert(u"field"_s, field);
+        e.payload.insert(u"from"_s, from);
+        return e;
+    };
+    VrHub::ActivityLog log;
+    log.add({ hubEvent(1, u"cube"_s, rho), variable(2, vx1, u"vx1"_s, rho) });
+    QPair<int, qint64> mark{ -1, 0 };
+    const auto f = VrHub::fieldToFollow(log.events(), siblings, rho, mark);
+    QVERIFY(f.has_value());
+    QCOMPARE(f->first, u"vx1"_s);
+    QCOMPARE(f->second, vx1);
+    QCOMPARE(mark.second, qint64(2));
+    // Once.
+    QVERIFY(!VrHub::fieldToFollow(log.events(), siblings, rho, mark).has_value());
+    // Not the window of another cube (vx1's own, another file's): left to the window it came from.
+    QPair<int, qint64> other{ -1, 0 };
+    QVERIFY(!VrHub::fieldToFollow(log.events(), siblings, vx1, other).has_value());
+    QVERIFY(!VrHub::fieldToFollow(log.events(), {}, u"/d/m33.fits"_s, other).has_value());
+    QCOMPARE(other.second, qint64(0));
+    // An ordinary switch (no field) after it: the older variable switch is overtaken.
+    log.add({ hubEvent(3, u"cube"_s, u"/d/m33.fits"_s) });
+    QPair<int, qint64> late{ -1, 0 };
+    QVERIFY(!VrHub::fieldToFollow(log.events(), siblings, rho, late).has_value());
+    // A variable that is not among this window's siblings: marked, nothing opened.
+    VrHub::ActivityLog alien;
+    alien.add({ variable(4, u"/d/x.bin::vbt-field=1"_s, u"T"_s, rho) });
+    QPair<int, qint64> m2{ -1, 0 };
+    QVERIFY(!VrHub::fieldToFollow(alien.events(), siblings, rho, m2).has_value());
+    QCOMPARE(m2.second, qint64(4));
+    // A switch older than the window: marked, not followed.
+    VrHub::ActivityLog before;
+    VrHub::Event old = variable(5, vx1, u"vx1"_s, rho);
+    old.timeMs = 1000;
+    before.add({ old });
+    QPair<int, qint64> m3{ -1, 0 };
+    QVERIFY(!VrHub::fieldToFollow(before.events(), siblings, rho, m3, 2000).has_value());
+    QCOMPARE(m3.second, qint64(5));
+    QPair<int, qint64> m4{ -1, 0 };
+    QVERIFY(VrHub::fieldToFollow(before.events(), siblings, rho, m4, 500).has_value());
+}
+
 void TestVrHeadsetHub::theLookIsFollowedWhileTheCubeIsOnShow()
 {
     const QString cube = u"/d/m33.fits"_s;

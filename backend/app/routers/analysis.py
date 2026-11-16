@@ -42,50 +42,66 @@ class SkeletonRequest(BaseModel):
     persistence_threshold: FiniteFloat | None = None
 
 
-# ── Full-cube statistics (out-of-core; the client's local stats are only the
-#    decimated preview) ─────────────────────────────────────────────────────────
-# Small in-process cache keyed by (path, size, mtime): the client requests cube
-# stats once per open, and a full-res scan of a large cube is not free.
-_CUBE_STATS_CACHE: dict[tuple[str, str], dict] = {}
+# ── Full-cube statistics (bounded memory; the client's local stats are only
+#    the decimated preview) ────────────────────────────────────────────────────
+# Small in-process cache keyed by (path, file version, exact): the client
+# requests cube stats once per open, and even a bounded pass is not free.
+_CUBE_STATS_CACHE: dict[tuple[str, str, bool], dict] = {}
 _CUBE_STATS_CACHE_MAX = 64
+
+
+def _cache_stats(key: tuple[str, str, bool], result: dict) -> None:
+    if len(_CUBE_STATS_CACHE) >= _CUBE_STATS_CACHE_MAX:
+        _CUBE_STATS_CACHE.pop(next(iter(_CUBE_STATS_CACHE)))
+    _CUBE_STATS_CACHE[key] = result
 
 
 @router.get("/v1/analysis/cube-stats/{dataset_id}", tags=["analysis"])
 async def cube_stats(
     dataset_id: str,
+    exact: bool = False,
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> dict:
-    """Whole-cube pixel statistics computed on the FULL-resolution data.
+    """Whole-cube pixel statistics: min / max / mean / median / std / rms /
+    sum + finite/blank counts, with ``median_exact``, ``source``,
+    ``exact_fields`` and ``sample_count``.
 
-    Returns min / max / mean / median / std / rms / sum + finite/blank counts
-    (and ``median_exact``). Streamed out-of-core in z-slab chunks, so it is safe
-    on cubes far larger than RAM. Cached per file version (``file_identity``: a
-    replaced or rewritten file is a miss).
+    Bounded memory whatever the cube's size (issue #333). Below the
+    full-resolution threshold, or with ``exact=true``, one exact pass read
+    slab by slab; above it (a cube the desktop opens as a preview) the
+    extremes and mean of its ready brick pyramid plus a sample
+    (``source: pyramid``), or a sample alone (``source: sampled``). Cached per
+    file version (``file_identity``: a replaced or rewritten file is a miss).
     """
     from ..compute import worker_cube_stats  # noqa: PLC0415
 
     entry = _require_dataset(session, dataset_id)
     path = entry["path"]
     identity = file_identity(path)
-    key = (path, identity) if identity else None
+    key = (path, identity, bool(exact)) if identity else None
     if key is not None and key in _CUBE_STATS_CACHE:
         record_history(session, operation="cube-stats", dataset_id=dataset_id,   # E-06
-                       endpoint="/v1/analysis/cube-stats", params={"cached": True})
+                       endpoint="/v1/analysis/cube-stats",
+                       params={"cached": True, "exact": bool(exact)})
         return {"valid": True, "error": "", "cached": True, **_CUBE_STATS_CACHE[key]}
     try:
-        result = await asyncio.to_thread(worker_cube_stats, path)
+        result = await asyncio.to_thread(worker_cube_stats, path, bool(exact))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("[cube-stats] failed dataset_id=%s error=%s", dataset_id, exc)
         raise HTTPException(500, str(exc)) from exc
-    if key is not None:
-        if len(_CUBE_STATS_CACHE) >= _CUBE_STATS_CACHE_MAX:
-            _CUBE_STATS_CACHE.pop(next(iter(_CUBE_STATS_CACHE)))
-        _CUBE_STATS_CACHE[key] = result
+    # A sampled answer is not kept: it reads only its sample (a file
+    # compressed as a whole, where it would not, gets an exact pass), and
+    # once the cube's pyramid is ready the next request takes its numbers.
+    if key is not None and result.get("source") != "sampled":
+        _cache_stats(key, result)
+        if result.get("source") == "exact" and not exact:
+            # The same numbers answer an explicit request for exact ones.
+            _cache_stats((path, identity, True), result)
     record_history(session, operation="cube-stats", dataset_id=dataset_id,
-                   endpoint="/v1/analysis/cube-stats")   # E-06
+                   endpoint="/v1/analysis/cube-stats", params={"exact": bool(exact)})   # E-06
     return {"valid": True, "error": "", "cached": False, **result}
 
 

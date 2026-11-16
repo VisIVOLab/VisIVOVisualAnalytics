@@ -37,6 +37,7 @@ private slots:
     void colormapsMapToTheDesktops();
     void followingTheLookIsOnUntilUnticked();
     void theLookIsFollowedWhileTheCubeIsOnShow();
+    void aVariableSwitchedInTheHeadsetIsFollowedByItsWindow();
     void aFollowedLookIsNeverAppliedTwice();
     void followedChangesAreSaid();
     void clientCallsTheHubRoutes();

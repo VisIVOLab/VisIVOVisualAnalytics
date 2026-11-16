@@ -109,6 +109,29 @@ export function isHeadsetBrowser(ua) {
 }
 
 /**
+ * What the page says while the backend builds a cube's brick pyramid for the
+ * load under way (issue #329): {title, lines, toast}. `prep`: {progress
+ * 0..1, ms since the wait began, silentMs since the backend last answered};
+ * `name` the file's name (on the first line: in the title a long one would
+ * cut the percentage off). After 10 s with no answer it says so (the build
+ * goes on on the computer; the page keeps asking).
+ */
+export function prepText(prep, name = '') {
+  const p = prep || {};
+  const pct = Math.round(100 * Math.min(1, Math.max(0, Number(p.progress) || 0)));
+  const sec = Math.max(0, Math.round((Number(p.ms) || 0) / 1000));
+  const quiet = Math.max(0, Math.round((Number(p.silentMs) || 0) / 1000));
+  const title = `Preparing the cube… ${pct} %`;
+  const silent = quiet >= 10;
+  return {
+    title,
+    lines: [`${name ? `${name}: the` : 'The'} computer builds its brick pyramid, once for this cube (${sec} s so far).`,
+      silent ? `The computer has not answered for ${quiet} s: still waiting.` : 'It is shown as soon as it is ready.'],
+    toast: silent ? `${title}: no answer for ${quiet} s` : title,
+  };
+}
+
+/**
  * The notice for a lifecycle state: {id, level, title, lines, actions,
  * sticky, badge}. `actions` are {id, label} the page wires: 'retry',
  * 'reload', 'exit-vr', 'dismiss', 'hide', 'reopen', 'enter-vr', 'new-code'
@@ -228,7 +251,12 @@ export function noticeFor(kind, ctx = {}) {
             : 'The cube on show stays until then: Exit VR to see the new one, then Enter VR again.'],
         actions: [...exit, { id: 'dismiss', label: 'OK' }], autoHideMs: 20000 };
     case 'app-loading':
-      // The headset app (#255): in VR from the start, the cube on its way.
+      // The headset app (#255): in VR from the start, the cube on its way;
+      // while the computer builds its brick pyramid, how far it is (#329).
+      if (ctx.prep) {
+        const p = prepText(ctx.prep, ctx.name);
+        return { id: 'app-room', level: 'info', title: p.title, lines: p.lines, actions: [...exit] };
+      }
       return { id: 'app-room', level: 'info', title: ctx.name ? `Opening ${ctx.name}…` : 'Connecting to the computer…',
         lines: [ctx.name ? 'Sent from VisIVO Visual Analytics on the computer: it appears here as soon as it is loaded.'
           : `VisIVO VR is reaching VisIVO Visual Analytics on the computer (${ctx.origin || 'localhost'}).`],
@@ -249,6 +277,13 @@ export function noticeFor(kind, ctx = {}) {
         actions: [...exit] };
     case 'cube-from-desktop':
       // Issue #237: the desktop sent a cube to this page (its `show` command).
+      if (ctx.prep && !ctx.done) {
+        // Its brick pyramid being built (#329): said again at each poll, so
+        // the toast stays on show with the progress until the cube comes.
+        const p = prepText(ctx.prep, ctx.detail);
+        return { id: 'cube-from-desktop', level: 'info', title: p.title, lines: p.lines,
+          actions: [{ id: 'dismiss', label: 'OK' }], autoHideMs: 15000, toast: p.toast };
+      }
       return { id: 'cube-from-desktop', level: 'info',
         title: ctx.done ? `Showing ${ctx.detail || 'the cube'} from the computer` : `Opening ${ctx.detail || 'a cube'} from the computer…`,
         lines: [ctx.done ? 'Sent from VisIVO Visual Analytics on the computer.' : 'Sent from VisIVO Visual Analytics on the computer: it is shown here as soon as it is loaded.'],

@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--variables] [--pyramid-wait] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -61,6 +61,8 @@ import { runMaskChecks } from './vr_masks.mjs';
 import { runSpectatorChecks } from './vr_spectator.mjs';
 import { runSimulationChecks } from './vr_simulation.mjs';
 import { runCropDetailChecks } from './vr_crop_detail.mjs';
+import { runVariableChecks } from './vr_variables.mjs';
+import { runPyramidWaitChecks } from './vr_pyramid_wait.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -83,9 +85,13 @@ const MASKS = !!args.masks && !XRFAKE && !args.paired;
 const ENTRY = !!args.entry && !XRFAKE && !args.paired;
 // --crop-detail (issue #328): the crop's region in more detail, in and out of VR, alone (also part of --xrfake and --regressions).
 const CROP_DETAIL = !!args['crop-detail'] && !XRFAKE && !args.paired;
+// --variables (issue #317): a simulation volume's variable picker in a VR session, alone (also part of --xrfake and --regressions).
+const VARIABLES = !!args.variables && !XRFAKE && !args.paired;
+// --pyramid-wait (issue #329): a brick pyramid build that outlasts the page's request deadline, alone (also part of --xrfake and --regressions).
+const PYRAMID_WAIT = !!args['pyramid-wait'] && !XRFAKE && !args.paired;
 // --simulation (issue #317): a simulation volume (also part of --regressions).
 const SIMULATION = (!!args.simulation || !!args.regressions) && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['crop-detail'];
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['crop-detail'] || !!args.variables || !!args['pyramid-wait'];
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -611,9 +617,9 @@ try {
   // WebGL objects and their bytes, counted from before the page's scripts run.
   if (ALLOC) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: GL_PROBE });
   // A WebXR stand-in, active only on an address with ?xrfake.
-  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
+  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL || VARIABLES || PYRAMID_WAIT) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
   // Texture calls split by the VR session (issue #229), before the page's scripts.
-  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
+  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL || VARIABLES) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
   if (PAIRED) {
@@ -694,6 +700,10 @@ try {
     // Issue #328: the crop's region in more detail (no 3-D allocation in VR).
     results.cropDetail = await runCropDetailChecks({ c, check, waitFor, base: BASE, token: tokenA, out: OUT,
       cube: makeCube('synthetic_detail.fits', { shape: [64, 128, 128], ra: 153 }) });
+    // Issue #317: a simulation volume's variables switched in one VR session (no 3-D allocation, each its own look).
+    results.variables = await runVariableChecks({ c, check, waitFor, api, base: BASE, token: tokenA, python: PY });
+    // Issue #329: a pyramid build longer than the page's request deadline (the app's room, the status line).
+    results.pyramidWait = await runPyramidWaitChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
     // Issue #279: the source list (window, visit, flags, a found source, the VOTable and the hub's product).
     results.sources = await runSourceListChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
     // Issue #282: mask layers (load, modes, the desktop's mask command, pick, refine, undo, save).
@@ -714,6 +724,8 @@ try {
   if (ENTRY) await runEntryChecks({ c, check, waitFor, base: BASE, token: tokenA, cube });
   if (CROP_DETAIL) results.cropDetail = await runCropDetailChecks({ c, check, waitFor, base: BASE, token: tokenA, out: OUT,
     cube: makeCube('synthetic_detail.fits', { shape: [64, 128, 128], ra: 153 }) });
+  if (VARIABLES) results.variables = await runVariableChecks({ c, check, waitFor, api, base: BASE, token: tokenA, python: PY });
+  if (PYRAMID_WAIT) results.pyramidWait = await runPyramidWaitChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
   // Issue #317: a simulation volume (log scale, box to the grid spacing, no spectral wording or tools).
   if (SIMULATION) results.simulation = await runSimulationChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, cube });
 
