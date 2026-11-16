@@ -342,6 +342,9 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   const withMenu = await c.evaluate('window.__vrXR()');
   if (expectLayers) check(`xrfake ${label}: X opens the menu as a quad, and it stays open once X is let go`, (withMenu.quads.shown || []).includes('menu'), JSON.stringify(withMenu.quads.shown));
   else check(`xrfake ${label}: X opens the menu (in the scene), and it stays open once X is let go`, await c.evaluate('window.__vrMenu.ui.menu.open'));
+  // The menu's pose is taken at the first XR frame after it opens: on a slow
+  // runner the check can come before that frame.
+  await waitFor(c, '!!window.__vrMenu.ui.menuModel', 3000);
   // The left grip is at (-0.2, 1.3, -0.35), the eyes at the fake's head.
   const place = await c.evaluate(`(() => { const m = window.__vrMenu.ui.menuModel, h = window.__xrfake.head || [0, 1.6, 0];
     return { p: [m[12], m[13], m[14]], head: h }; })()`);
@@ -354,10 +357,12 @@ export async function runXRFakeChecks({ c, check, waitFor, label = 'layers', exp
   await pressX();
   // A recentre (#276 review): the open menu, left behind by it, is placed again above the hand.
   await pressX();
+  await waitFor(c, '!!window.__vrMenu.ui.menuModel', 3000);
   const placed = await c.evaluate('Array.from(window.__vrMenu.ui.menuModel.slice(12, 15))');
   await c.evaluate('window.__vrMenu.ui.menuModel[12] += 3; window.__vrMenu.ui.menuModel[14] += 3');
   await c.evaluate('window.__xrfake.recentre()');
   await sleep(200);
+  await waitFor(c, '!!window.__vrMenu.ui.menuModel', 3000);
   const again = await c.evaluate('({ open: window.__vrMenu.ui.menu.open, p: Array.from(window.__vrMenu.ui.menuModel.slice(12, 15)) })');
   check(`xrfake ${label}: a recentre places the open menu again above the hand`,
     again.open && again.p.every((v, i) => Math.abs(v - placed[i]) < 1e-3), JSON.stringify({ placed, again }));
