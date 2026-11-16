@@ -132,17 +132,23 @@ test('σ on a log scale: k σ found on the logarithm, zero below the codes', () 
   assert.ok(LV.sigmaMarks(1e-7, -12, -5, [3], 0.06, 'log').length === 1);
 });
 
-test('the refined frames\' transfer function: points spread over log10 of the values', () => {
+test('the refined frames\' transfer function: points in log10 of the values, the session told to draw in log10 (#328)', () => {
   const tf = transferFunction({ thrNorm: 4 / 7, cmaxNorm: 1, stretch: 'linear', stretchA: 0, opacity: 1, mode: 0,
     lo: -12, hi: -5, scale: 'log', factors: [1, 1, 1], lut: colormapTable('viridis') }, 6);
+  assert.equal(tf.scale, 'log');
   const xs = tf.color.map((c) => c[0]);
-  close(xs[0], 1e-8, 1e-9);
-  close(xs[xs.length - 1], 1e-5, 1e-9);
-  // Evenly spaced in log10: a factor of 10^(3/6) between neighbours.
-  for (let i = 1; i < xs.length; i++) close(xs[i] / xs[i - 1], 10 ** 0.5, 1e-9);
-  // The transparent point just below the threshold, relative to it.
-  assert.ok(tf.opacity[0][0] < 1e-8 && tf.opacity[0][0] > 0.999e-8);
+  close(xs[0], -8, 1e-9);
+  close(xs[xs.length - 1], -5, 1e-9);
+  // Evenly spaced in log10: half a decade between neighbours.
+  for (let i = 1; i < xs.length; i++) close(xs[i] - xs[i - 1], 0.5, 1e-9);
+  // The transparent point just below the threshold.
+  assert.ok(tf.opacity[0][0] < -8 && tf.opacity[0][0] > -8.001);
   assert.equal(tf.opacity[0][1], 0);
+  // A linear cube: values, no scale.
+  const lin = transferFunction({ thrNorm: 0.5, cmaxNorm: 1, stretch: 'linear', stretchA: 0, opacity: 1, mode: 0,
+    lo: 0, hi: 2, scale: 'linear', factors: [1, 1, 1], lut: colormapTable('viridis') }, 4);
+  assert.equal(lin.scale, undefined);
+  close(lin.color[0][0], 1, 1e-9);
 });
 
 test('the desktop is told Log for the page\'s Linear on a log-scaled cube', () => {

@@ -26,6 +26,19 @@ are preserved here unedited; the branch names they refer to are historical.
   example *Preview: block means, pyramid level 3*. On the 2048³ PLUTO density,
   a level-0 box of four 256³ blocks took 2.9 s from the click to the refined
   view on a local backend.
+- **VR: the crop shows its region in more detail (#328).** Once the spatial
+  crop has settled, the page reads the cropped region at the finest level of
+  detail that fits the room kept for cubes (`region_level_bin`, from the
+  brick pyramid), codes it on the whole cube's codes and draws it in the
+  crop's place, from the room's spare half: there is no new 3-D texture in
+  VR. A quarter of the 2048³ density comes at 2× binning instead of 8×,
+  about 0.4 s after the crop settles. Clearing the crop shows the coarse cube
+  again at once. The refined frames of a log-scaled cube are now drawn in
+  log10 of the values. Drawn in values, VTK's lookup textures put the faint
+  decades in one texel, and 29 % of a seven-decade density's pixels were
+  lost against a log10 render. For a cube read from its pyramid, *Max side*
+  384 gives the same 256³ cube as 256 and takes 171 MB instead of 51 MB, so
+  256 stays the default.
 
 - **VR: a variable picker for simulation volumes (#317).** For a file with
   several fields (a PLUTO output's variables on disk, a VBT volume's fields),
