@@ -1591,36 +1591,24 @@ def _rescale(nr: dict[str, Any], src_unit: str, dst_unit: str, along, iso: float
     nr["unit"] = dst_unit
 
 
+def rescale_angle_units(region: dict[str, Any], dst_unit: str) -> None:
+    """Rewrite a sky region's sizes from its own angle unit to ``dst_unit``
+    (deg, arcmin or arcsec) in place. Pixel sizes are not handled here: a
+    region moved onto the sky by :func:`convert_regions` already has its
+    sizes in an angle unit, measured along its own axes."""
+    src_unit = region.get("unit", "deg")
+    if src_unit == dst_unit or not _has_sizes(region):
+        region["unit"] = dst_unit
+        return
+    if src_unit not in _ANGLE_TO_DEG or dst_unit not in _ANGLE_TO_DEG:
+        raise RegionParseError(f"Cannot rescale sizes from '{src_unit}' to '{dst_unit}'.")
+    f = _ANGLE_TO_DEG[src_unit] / _ANGLE_TO_DEG[dst_unit]
+    _scale_sizes(region, f, f, f)
+    region["unit"] = dst_unit
+
+
 def _has_sizes(region: dict[str, Any]) -> bool:
     return any(k in region for k in _ISO_SIZE_KEYS + _AXIS_SIZE_KEYS + ("length",))
-
-
-def sizes_in_unit(region: dict[str, Any], unit: str, wcs=None, origin: int = 1) -> None:
-    """Express the sizes of a sky-frame region in ``unit`` (an angle, or
-    ``pix``), in place. Angles change by a factor; between pixels and angles a
-    size is measured along its own axis through the local grid at the
-    region's centre, as ``convert_regions`` does, which needs ``wcs``."""
-    src = region.get("unit", "deg")
-    if src == unit or not _has_sizes(region):
-        region["unit"] = unit
-        return
-    if src != "pix" and unit != "pix":
-        f = _ANGLE_TO_DEG[src] / _ANGLE_TO_DEG[unit]
-        _scale_sizes(region, f, f, f)
-        region["unit"] = unit
-        return
-    if wcs is None:
-        raise RegionParseError("Converting between pixel and angular sizes needs the dataset's WCS (dataset_id).")
-    pf = _PixelFrame(wcs, origin)
-    cur = sky_frame(region["frame"])
-    centre = region["points"][0] if region["shape"] in _POINT_LIST_SHAPES else region["center"]
-    lon, lat = [float(centre[0])], [float(centre[1])]
-    angle = float(region.get("angle_deg", 0.0) or 0.0) if region["shape"] in _ANGLED_SHAPES else 0.0
-    if not cur.is_equivalent_frame(pf.frame):
-        angle += _north_rotation(lon[0], lat[0], cur, pf.frame)
-        lon, lat = _transform(lon, lat, cur, pf.frame)
-    jac = pf.jacobian(float(lon[0]), float(lat[0]))
-    _rescale(region, src, unit, lambda k: _sky_dir_ppd(jac, angle + 90.0 * k), _iso_ppd(jac))
 
 
 def _batch_sky_to_image(regions: list[dict[str, Any]], pf: _PixelFrame) -> dict[int, tuple]:

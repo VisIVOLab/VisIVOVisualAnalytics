@@ -262,13 +262,13 @@ async def convert_regions(
     except (KeyError, IndexError, TypeError) as exc:   # a malformed region dict
         raise HTTPException(422, f"Malformed region: {exc!r}") from exc
     if unit and to_frame != "image":
+        # On the sky, convert_regions has already measured sizes along each
+        # region's own axes in an angle unit: only that unit changes here.
         try:
             for r in regions:
-                R.sizes_in_unit(r, unit, wcs, origin=request.origin)
+                R.rescale_angle_units(r, unit)
         except (R.RegionParseError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
-        except KeyError as exc:   # the region's own unit is not one we know
-            raise HTTPException(422, f"Unknown size unit {exc}.") from exc
     return {"valid": True, "error": "", "frame": to_frame, "native_frame": native, "regions": regions}
 
 

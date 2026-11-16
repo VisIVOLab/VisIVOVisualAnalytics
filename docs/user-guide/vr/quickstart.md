@@ -5,8 +5,8 @@ Quest:
 
 - **[Pair by code](#pair-by-code)**, the usual way: a short code shown on the
   computer, typed on the headset (or a QR code scanned). No cable, no adb, no
-  developer mode. It needs an internet connection and a pairing server that
-  your institute hosts.
+  developer mode. It needs an internet connection; the pairing server is
+  hosted by INAF for everyone and set up already.
 - **[Advanced: USB cable](#advanced-usb-cable)**: adb and a cable (or adb over
   Wi-Fi). It works offline, so it is the way for a computer without internet,
   for demos on a network you do not control, and when no pairing server is
@@ -31,8 +31,9 @@ does the same in one click. Pairing stays under **Pair Another Headset**. See
 2. Choose **Tools → Views → Open in VR Headset…** (or the same entry in
    Inspector ▸ Analysis). The dialog shows a large code, such as `K7Q-4MX`, the
    time it has left (five minutes), and a QR code.
-3. **On the Quest**, open the *VisIVO VR* page in the Quest Browser (the
-   address your institute gives you), or its icon once installed (step 4).
+3. **On the Quest**, open the *VisIVO VR* page in the Quest Browser
+   (`https://vr.visivolab.oact.inaf.it/`, or the address your institute gives
+   you if it runs its own server), or its icon once installed (step 4).
    Type the code and press **Connect**. Or scan the QR code with the headset
    (where the Quest's software offers QR scanning): it opens the page with the
    code already in it. The cube loads in the page: press **Enter VR**.
@@ -46,10 +47,9 @@ shows it beside the cube). The grips move the cube,
 and the hand menu has the rest: see [Controls and the hand menu](controls.md).
 
 ```{note}
-**Before the first time**, the desktop application needs to know your
-institute's pairing server: two addresses, typed once in **Settings ▸ Backends
-▸ Headset Pairing** (see [below](#the-pairing-settings)). Until then, the dialog
-opens its USB section and says that pairing is not configured.
+**No setup is needed.** The desktop application comes set up for the pairing
+server hosted by INAF. To use your institute's own server, or to switch
+pairing off, see [The pairing settings](#the-pairing-settings).
 ```
 
 ### One page for the whole session
@@ -162,12 +162,25 @@ Backends ▸ Headset Pairing**:
 | *Pairing service* | `VISIVO_VR_PAIR_URL` | the pairing service, `wss://…` |
 | *Headset page* | `VISIVO_VR_PAGE_URL` | the *VisIVO VR* page the headset opens, `https://…/` |
 
-Your institute gives you both values. Both fields are empty after
-installation, and no server is built in. They are read when the backend
-starts, so restart the application after changing them. The same variables set
-in the environment the application starts from take precedence over the
-fields. A remote backend (a cluster's) uses its own configuration. Running the
-server is described in [Hosting headset pairing](../../deployment/vr-pairing.md).
+Both fields are empty after installation, and an empty field uses the
+default shown in it in grey: the server hosted by INAF,
+`wss://vr.visivolab.oact.inaf.it/pair` and `https://vr.visivolab.oact.inaf.it/`
+(a build made for a site may show that site's server instead). Type an address
+only to use another server, such as your institute's. The default page goes
+with the default service only: with another service typed, also type its page,
+or the dialog shows the code without a QR code.
+
+- **Pair headsets by code**, on by default: switched off, the desktop passes
+  nothing to the backend (only the variables below, if you set them in the
+  environment, still reach it), and the dialog opens its USB section.
+- **Restore Pairing Defaults** empties both fields and switches pairing on again (it
+  applies when you press OK).
+
+The values are read when the backend starts, so restart the application after
+changing them. The same variables set in the environment the application
+starts from take precedence over the fields and the defaults. A remote backend
+(a cluster's) uses its own configuration. Running the server is described in
+[Hosting headset pairing](../../deployment/vr-pairing.md).
 
 ### When pairing is not available
 

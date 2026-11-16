@@ -2,7 +2,7 @@
 
 #include "BackendUrl.h"
 #include "BackendWebrtcEnv.h"
-#include "VrPair.h"
+#include "VrPairService.h"
 
 #include "BackendClient.h"
 
@@ -1195,9 +1195,14 @@ void BackendLauncher::launchProcess()
     // and the next client used it and saw requests fail with "Broken pipe".
     QProcessEnvironment env = backendEnvironment();
     env.insert(u"VISIVO_EXIT_WITH_PID"_s, QString::number(QCoreApplication::applicationPid()));
-    // Headset pairing: the operator's server, never a built-in one (issue #214).
-    VrPair::applyServiceSettings(env, m_vrPairUrl, m_vrPageUrl);
-    if (!env.value(u"VISIVO_VR_PAIR_URL"_s).isEmpty()) {
+    // Headset pairing: the environment, else Settings, else this build's
+    // defaults (issue #344). The backend has none of its own.
+    VrPairService::apply(env, m_vrPairing, VrPairService::buildDefaults());
+    if (env.value(u"VISIVO_VR_PAIR_URL"_s).isEmpty()) {
+        appendLog(m_vrPairing.enabled
+                          ? u"[launcher] Headset pairing: no service configured"_s
+                          : u"[launcher] Headset pairing: off (Settings)"_s);
+    } else {
         // Logged without any user:password the address may carry.
         const auto shown = [&env](const QString &name) {
             const QString v = env.value(name);

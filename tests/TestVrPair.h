@@ -43,6 +43,13 @@ private slots:
     void headsetConnectedBeforeTheCodeIsNotTheNewOne();
     void onlyARealRefreshOfTheCurrentTokenIsKept();
     void serviceSettingsReachTheBackendUnlessTheEnvironmentSetsThem();
+    void emptyFieldsUseTheBuildDefaults();
+    void theDefaultLoaderGoesOnlyWithTheDefaultService();
+    void pairingSwitchedOffPassesNothing();
+    void restoreDefaultsEmptiesTheFieldsAndSwitchesPairingOn();
+    void loaderAddressGetsItsTrailingSlashAsTheBackendGivesIt_data();
+    void loaderAddressGetsItsTrailingSlashAsTheBackendGivesIt();
+    void pairingSettingsKeepWhatWasTyped();
     void clientCallsTheThreeRoutes();
     void aFailingPollIsLoggedOncePerOutage();
 };
