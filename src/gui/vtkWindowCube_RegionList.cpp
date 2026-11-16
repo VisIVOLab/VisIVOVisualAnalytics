@@ -18,6 +18,8 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
 
+#include "Pane2DView.h"
+#include <vtkLookupTable.h>
 #include "ProductOrigin.h"
 #include "ProfileWidget.h"
 #include "RegionCubeSampling.h"
@@ -128,28 +130,114 @@ ListRegionStatistics statisticsOnImage(vtkImageData *image, const visivo::Displa
 
 // ── Geometry of the panes ────────────────────────────────────────────────────
 
+int vtkWindowCube::regionPaneSlot(vtkRenderWindow *win) const
+{
+    if (!win)
+        return -1;
+    for (int i = 0; i < 4; ++i) {
+        Pane2DView *pv = m_paneViews[i];
+        if (pv && pv->renderer() && pv->renderer()->GetRenderWindow() == win)
+            return i;
+    }
+    return -1;
+}
+
+std::optional<visivo::regions::MapPlacement>
+vtkWindowCube::regionPlacement(vtkRenderWindow *win) const
+{
+    if (!win)
+        return std::nullopt;
+    vtkImageData *image = nullptr;
+    std::optional<std::array<int, 2>> crop;
+    bool skyMap = false;
+    if (win == this->sliceWin.GetPointer()) {
+        image = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    } else if (win == this->momentWin.GetPointer()) {
+        image = vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
+    } else {
+        const int slot = this->regionPaneSlot(win);
+        if (slot < 0 || m_slots[slot].view.kind != ViewId::Product)
+            return std::nullopt;
+        const auto it = m_products2d.constFind(m_slots[slot].view.productId);
+        if (it == m_products2d.constEnd() || !m_paneViews[slot])
+            return std::nullopt;
+        // The pane's own image: the one it draws, whatever the cache holds now.
+        image = m_paneViews[slot]->imageData();
+        if (it->hasRegionOrigin)
+            crop = std::array<int, 2>{ it->regionOrigin.x(), it->regionOrigin.y() };
+        skyMap = true;
+    }
+    if (!image)
+        return std::nullopt;
+    double origin[3], spacing[3];
+    int extent[6];
+    image->GetOrigin(origin);
+    image->GetSpacing(spacing);
+    image->GetExtent(extent);
+    // extent[2], not extent[1]: the Y index has bitten before.
+    const std::array<int, 2> extent0{ extent[0], extent[2] };
+    if (!skyMap)
+        return visivo::regions::worldIsCube({ origin[0], origin[1] }, { spacing[0], spacing[1] },
+                                            extent0);
+    return visivo::regions::skyMapPlacement(
+            { extent[1] - extent[0] + 1, extent[3] - extent[2] + 1 }, { origin[0], origin[1] },
+            { spacing[0], spacing[1] }, extent0,
+            { this->remoteDatasetWidth, this->remoteDatasetHeight }, crop);
+}
+
+bool vtkWindowCube::isRegionMapPane(int slot) const
+{
+    if (slot < 0 || slot > 3 || !m_paneViews[slot] || m_slots[slot].view.kind != ViewId::Product
+        || !m_slots[slot].frame || !m_slots[slot].frame->isVisible()
+        || m_paneProductId[slot] != m_slots[slot].view.productId)
+        return false;
+    auto *ren = m_paneViews[slot]->renderer();
+    return ren && this->regionPlacement(ren->GetRenderWindow()).has_value();
+}
+
+bool vtkWindowCube::anyRegionMapPaneVisible() const
+{
+    for (int i = 0; i < 4; ++i)
+        if (this->isRegionMapPane(i))
+            return true;
+    return false;
+}
+
+bool vtkWindowCube::anyRegionToolArmed() const
+{
+    const auto armed = [](const QAction *a) { return a && a->isChecked(); };
+    return armed(actionBoxRegion.data()) || armed(actionCircleRegion.data())
+            || armed(actionPolygonRegion.data()) || armed(actionAnnulusRegion.data());
+}
+
+QWidget *vtkWindowCube::regionViewWidget(vtkRenderWindow *win) const
+{
+    if (!win)
+        return nullptr;
+    if (win == this->sliceWin.GetPointer())
+        return ui->vtkImage;
+    if (win == this->momentWin.GetPointer())
+        return m_vtkMoment.data();
+    const int slot = this->regionPaneSlot(win);
+    return slot >= 0 ? static_cast<QWidget *>(m_paneViews[slot]->widget()) : nullptr;
+}
+
 vtkImageData *vtkWindowCube::regionPaneImage(vtkRenderWindow *win) const
 {
-    if (win && win == this->sliceWin.GetPointer())
+    if (!this->regionPlacement(win))
+        return nullptr;
+    if (win == this->sliceWin.GetPointer())
         return vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
-    if (win && win == this->momentWin.GetPointer())
+    if (win == this->momentWin.GetPointer())
         return vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
-    return nullptr;
+    const int slot = this->regionPaneSlot(win);
+    return slot >= 0 ? m_paneViews[slot]->imageData() : nullptr;
 }
 
 visivo::DisplayGrid vtkWindowCube::regionDisplayGrid(vtkRenderWindow *win) const
 {
-    visivo::DisplayGrid grid;
-    if (auto *image = this->regionPaneImage(win)) {
-        double origin[3], spacing[3];
-        int extent[6];
-        image->GetOrigin(origin);
-        image->GetSpacing(spacing);
-        image->GetExtent(extent);
-        // extent[2], not extent[1]: the Y index has bitten before.
-        grid = { origin[0], origin[1], spacing[0], spacing[1], extent[0], extent[2] };
-    }
-    return grid;
+    const auto placement = this->regionPlacement(win);
+    return placement ? placement->displayGrid() : visivo::DisplayGrid{};
 }
 
 bool vtkWindowCube::regionDisplayToWorld(vtkRenderWindow *win, int displayX, int displayY,
@@ -168,6 +256,17 @@ bool vtkWindowCube::regionDisplayToWorld(vtkRenderWindow *win, int displayX, int
     return true;
 }
 
+bool vtkWindowCube::regionDisplayToList(vtkRenderWindow *win, int displayX, int displayY,
+                                        Vec2 *list) const
+{
+    const auto placement = this->regionPlacement(win);
+    Vec2 w{};
+    if (!placement || !this->regionDisplayToWorld(win, displayX, displayY, &w))
+        return false;
+    *list = placement->toCube(w[0], w[1]);
+    return true;
+}
+
 double vtkWindowCube::regionWorldPerDisplayPixel(vtkRenderWindow *win) const
 {
     Vec2 a{}, b{};
@@ -175,6 +274,65 @@ double vtkWindowCube::regionWorldPerDisplayPixel(vtkRenderWindow *win) const
         return 1.0;
     const double d = std::hypot(b[0] - a[0], b[1] - a[1]) / 100.0;
     return d > 0.0 && std::isfinite(d) ? d : 1.0;
+}
+
+double vtkWindowCube::regionListPerDisplayPixel(vtkRenderWindow *win) const
+{
+    const auto placement = this->regionPlacement(win);
+    const double perWorld = placement ? placement->cubePerWorld() : 1.0;
+    const double d = this->regionWorldPerDisplayPixel(win) * perWorld;
+    return d > 0.0 && std::isfinite(d) ? d : 1.0;
+}
+
+vtkRenderWindow *vtkWindowCube::regionDraftWin() const
+{
+    // A Product pane the draft was started on, while it still shows a sky map;
+    // the slice, where the drawing tools have always drawn, when the draft is
+    // its own. A draft never moves to another view: its voxels are counted on
+    // the grid it started on, so a pane that left the screen or changed map
+    // gives null and the draft is dropped (regionDraftOrphaned).
+    if (m_regionDraftWin && m_regionDraftWin != this->sliceWin.GetPointer()) {
+        const int slot = this->regionPaneSlot(m_regionDraftWin);
+        if (m_regionDraftWin == this->momentWin.GetPointer() || this->isRegionMapPane(slot))
+            return m_regionDraftWin;
+        return nullptr;
+    }
+    return this->active2dWin();
+}
+
+bool vtkWindowCube::regionDraftOrphaned() const
+{
+    return m_regionDraftWin && this->regionDraftWin() == nullptr;
+}
+
+vtkRenderWindow *vtkWindowCube::regionAnalysisWin() const
+{
+    const auto paneWin = [this](int slot) -> vtkRenderWindow * {
+        if (slot < 0 || slot > 3)
+            return nullptr;
+        if (m_slots[slot].view.kind == ViewId::Slice2D && m_slots[slot].frame
+            && m_slots[slot].frame->isVisible())
+            return this->sliceWin.GetPointer();
+        if (this->isRegionMapPane(slot))
+            return m_paneViews[slot]->renderer()->GetRenderWindow();
+        return nullptr;
+    };
+    // The pane the user is working in decides.
+    if (vtkRenderWindow *w = paneWin(m_activePane))
+        return w;
+    // Then the view the region was last drawn or handled in, while on screen.
+    if (m_regionFocusWin) {
+        if (m_regionFocusWin == this->sliceWin.GetPointer() && this->slice2dVisible())
+            return m_regionFocusWin;
+        if (vtkRenderWindow *w = paneWin(this->regionPaneSlot(m_regionFocusWin)))
+            return w;
+    }
+    if (this->slice2dVisible())
+        return this->sliceWin.GetPointer();
+    for (int i = 0; i < 4; ++i)
+        if (vtkRenderWindow *w = paneWin(i))
+            return w;
+    return nullptr;
 }
 
 // ── Draft → list ─────────────────────────────────────────────────────────────
@@ -193,7 +351,7 @@ std::optional<Region> vtkWindowCube::draftRegion() const
     }
     // Drawn in the voxels of the pane shown: those are what the anchor, the
     // current point and the vertices count.
-    return visivo::regionFromDisplayed(shape, this->regionDisplayGrid(this->active2dWin()),
+    return visivo::regionFromDisplayed(shape, this->regionDisplayGrid(this->regionDraftWin()),
                                        this->regionAnchorVoxel, this->regionCurrentVoxel,
                                        this->regionPolygonVertices, this->regionAnnulusInnerRadius);
 }
@@ -300,12 +458,15 @@ void vtkWindowCube::setupRegionListActions()
     QObject::connect(m_actRegionProperties, &QAction::triggered, this,
                      [this]() { this->openRegionProperties(); });
     QObject::connect(m_actAnalyseRegion, &QAction::triggered, this, [this]() {
-        if (!this->ensureSliceForTools()) {
+        // On the focused 2-D view when it shows the sky, a moment map included
+        // (#355): measured where it is, never turned into the slice first.
+        vtkRenderWindow *win = this->regionAnalysisWin();
+        if (!win) {
             this->statusBar()->showMessage(
                     u"Show the 2D Slice or a moment map in a pane to measure the region."_s, 5000);
             return;
         }
-        this->analyzeRegion();
+        this->analyzeRegion(-1, win);
     });
     QObject::connect(m_actDeleteRegion, &QAction::triggered, this,
                      &vtkWindowCube::deleteSelectedRegion);
@@ -335,6 +496,7 @@ void vtkWindowCube::onRegionListChanged()
     for (auto *win : { this->sliceWin.GetPointer(), this->momentWin.GetPointer() })
         if (win && win->GetInteractor() && win->GetInteractor()->GetInitialized())
             win->Render();
+    this->renderRegionPanes();
     // The 3-D view too when the plane shows them: once per change, not per
     // mouse move of a drag (a volume render is not free).
     if ((planeWasShown || this->m_planeRegionOverlay.visible()) && ui->vtkCube
@@ -352,7 +514,72 @@ void vtkWindowCube::refreshRegionListOverlay()
     this->m_regionKnobOffset[1] = kKnobPx * this->regionWorldPerDisplayPixel(this->momentWin);
     this->m_sliceRegionOverlay.update(this->m_regions, this->m_regionKnobOffset[0]);
     this->m_momentRegionOverlay.update(this->m_regions, this->m_regionKnobOffset[1]);
+    this->refreshPaneRegionOverlays();
     this->refreshPlaneRegionOverlay();
+}
+
+void vtkWindowCube::refreshPaneRegionOverlays()
+{
+    for (int i = 0; i < 4; ++i) {
+        Pane2DView *pv = m_paneViews[i];
+        if (!pv || !pv->renderer())
+            continue;
+        // Hooked once the edit callback and the Delete action exist: a pane
+        // seen earlier would be left with neither.
+        if (m_paneRegionHooked[i] != pv && m_regionEditCommand && m_actDeleteRegion) {
+            // First time this view is seen: the overlays go on its renderer and
+            // the edit callback on its interactor, ahead of its interactor
+            // style, whose LEFT drag is window/level: a press the regions use
+            // is aborted so the contrast does not move with it.
+            m_paneRegionOverlays[i].detach();
+            m_paneDraftOverlays[i].detach();
+            m_paneRegionOverlays[i].attach(pv->renderer());
+            RegionListOverlay::Style draft;
+            draft.lineWidth = 2.0;
+            draft.selectedLineWidth = 2.0;
+            m_paneDraftOverlays[i].attach(pv->renderer(), draft);
+            vtkRenderWindow *win = pv->renderer()->GetRenderWindow();
+            if (win && win->GetInteractor())
+                for (unsigned long event :
+                     { vtkCommand::LeftButtonPressEvent, vtkCommand::MouseMoveEvent,
+                       vtkCommand::LeftButtonReleaseEvent, vtkCommand::LeftButtonDoubleClickEvent,
+                       vtkCommand::RightButtonPressEvent })
+                    win->GetInteractor()->AddObserver(event, m_regionEditCommand, 10.0f);
+            if (auto *camera = pv->renderer()->GetActiveCamera())
+                camera->AddObserver(vtkCommand::ModifiedEvent, this,
+                                    &vtkWindowCube::onRegionCameraChanged);
+            // Delete while the pane has the focus, as on the slice.
+            if (pv->widget())
+                pv->widget()->addAction(m_actDeleteRegion);
+            m_paneRegionHooked[i] = pv;
+        }
+        vtkRenderWindow *win = pv->renderer()->GetRenderWindow();
+        const auto placement = this->regionPlacement(win);
+        // Not tied to the frame being visible: a layout pass mounts a pane
+        // before it shows its frame, and nothing redraws the list after that.
+        const bool shown = placement && m_slots[i].view.kind == ViewId::Product
+                && m_paneProductId[i] == m_slots[i].view.productId;
+        m_paneRegionOverlays[i].setVisible(shown && !this->m_regions.isEmpty());
+        if (!shown) {
+            m_paneDraftOverlays[i].setVisible(false);
+            continue;
+        }
+        const visivo::regions::MapPlacement place = *placement;
+        const auto toWorld = [place](const Vec2 &p) { return place.toWorld(p); };
+        m_paneKnobOffset[i] = kKnobPx * this->regionListPerDisplayPixel(win);
+        m_paneRegionOverlays[i].update(this->m_regions, m_paneKnobOffset[i], toWorld);
+    }
+    if (this->regionDraftOrphaned())
+        this->clearRegion();   // its pane left the screen or shows another map
+    this->refreshRegionOverlay();   // the draft, wherever it is drawn
+}
+
+void vtkWindowCube::renderRegionPanes()
+{
+    for (int i = 0; i < 4; ++i)
+        if (m_paneViews[i] && m_paneRegionHooked[i] == m_paneViews[i] && m_slots[i].frame
+            && m_slots[i].frame->isVisible() && m_slots[i].view.kind == ViewId::Product)
+            m_paneViews[i]->render();
 }
 
 void vtkWindowCube::refreshPlaneRegionOverlay()
@@ -386,7 +613,14 @@ void vtkWindowCube::onRegionCameraChanged(vtkObject *, unsigned long, void *)
     const auto moved = [](double now, double drawn) {
         return std::abs(now - drawn) > 1e-3 * std::max(now, 1e-12);
     };
-    if (moved(slice, m_regionKnobOffset[0]) || moved(moment, m_regionKnobOffset[1]))
+    bool paneMoved = false;
+    for (int i = 0; i < 4 && !paneMoved; ++i)
+        if (this->isRegionMapPane(i))
+            paneMoved = moved(kKnobPx
+                                      * this->regionListPerDisplayPixel(
+                                              m_paneViews[i]->renderer()->GetRenderWindow()),
+                              m_paneKnobOffset[i]);
+    if (moved(slice, m_regionKnobOffset[0]) || moved(moment, m_regionKnobOffset[1]) || paneMoved)
         this->refreshRegionListOverlay();
 }
 
@@ -414,8 +648,42 @@ void vtkWindowCube::regionEditCallback(vtkObject *caller, unsigned long eventId,
     for (auto *w : { self->sliceWin.GetPointer(), self->momentWin.GetPointer() })
         if (w && w->GetInteractor() == caller)
             win = w;
-    if (win && self->handleRegionEditEvent(win, eventId))
+    int paneSlot = -1;
+    if (!win) {
+        for (int i = 0; i < 4; ++i) {
+            Pane2DView *pv = self->m_paneViews[i];
+            auto *w = pv && pv->renderer() ? pv->renderer()->GetRenderWindow() : nullptr;
+            if (w && w->GetInteractor() == caller) {
+                win = w;
+                paneSlot = i;
+            }
+        }
+    }
+    if (!win)
+        return;
+    if (self->handleRegionEditEvent(win, eventId)) {
         self->m_regionEditCommand->SetAbortFlag(1);   // nobody after us sees this event
+        return;
+    }
+    // A Product pane has no tool observers of its own: the drawing tools take
+    // their presses, moves and releases here (the slice's come through
+    // toggleProbeFreeze / mouseCallback / finishRegionInteraction).
+    if (paneSlot < 0 || self->regionMode == RegionMode::None || !self->isRegionMapPane(paneSlot))
+        return;
+    auto *iren = win->GetInteractor();
+    const int *pos = iren ? iren->GetEventPosition() : nullptr;
+    if (!pos)
+        return;
+    if (eventId == vtkCommand::LeftButtonPressEvent) {
+        self->regionDraftPress(win, pos[0], pos[1]);
+        self->m_regionEditCommand->SetAbortFlag(1);
+    } else if (eventId == vtkCommand::MouseMoveEvent) {
+        self->regionDraftMove(win, pos[0], pos[1]);
+    } else if (eventId == vtkCommand::LeftButtonReleaseEvent) {
+        if (self->regionDraftWin() == win && !self->isBusy() && !self->m_lassoEditActive)
+            self->finishRegionDraft();
+        self->m_regionEditCommand->SetAbortFlag(1);
+    }
 }
 
 bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long eventId)
@@ -433,7 +701,7 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
     auto *iren = win->GetInteractor();
     const int *pos = iren ? iren->GetEventPosition() : nullptr;
     Vec2 p{};
-    if (!pos || !this->regionDisplayToWorld(win, pos[0], pos[1], &p))
+    if (!pos || !this->regionDisplayToList(win, pos[0], pos[1], &p))
         return false;
 
     if (eventId == vtkCommand::MouseMoveEvent) {
@@ -465,13 +733,17 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
     }
     if (!this->regionEditingAllowed(win))
         return false;
-    const int paneIndex = win == this->sliceWin.GetPointer() ? 0 : 1;
-    const double tolerance = kPickPx * this->regionWorldPerDisplayPixel(win);
+    // The knob distance each view drew the selection with, in list pixels.
+    const int paneSlot = this->regionPaneSlot(win);
+    const double knobOffset = paneSlot >= 0 ? m_paneKnobOffset[paneSlot]
+            : this->m_regionKnobOffset[win == this->sliceWin.GetPointer() ? 0 : 1];
+    const double tolerance = kPickPx * this->regionListPerDisplayPixel(win);
     Hit hit;
-    const int id = this->m_regions.regionAt(p, tolerance, this->m_regionKnobOffset[paneIndex], &hit);
+    const int id = this->m_regions.regionAt(p, tolerance, knobOffset, &hit);
     // A catalogue source under the cursor keeps its click: it is selected by
     // clicking on it, and a region drawn around it must not swallow that.
     if (id >= 0 && hit.kind == Hit::Body && this->catalogueOverlayLoaded
+        && paneSlot < 0
         && this->catalogueSourceIndexNearDisplayPosition(pos[0], pos[1],
                                                          win->GetRenderers()->GetFirstRenderer())
                    >= 0)
@@ -488,6 +760,7 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
             return false;
         }
         this->m_regions.select(id);
+        m_regionFocusWin = win;
         m_regionDrag.active = true;
         m_regionDrag.window = win;
         m_regionDrag.hit = hit;
@@ -500,8 +773,7 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
         this->m_regions.beginGesture();
         this->onRegionListChanged();
         // So Delete and Undo reach the view the region was picked in.
-        if (QWidget *w = (paneIndex == 0) ? static_cast<QWidget *>(ui->vtkImage)
-                                          : static_cast<QWidget *>(m_vtkMoment.data()))
+        if (QWidget *w = this->regionViewWidget(win))
             w->setFocus(Qt::MouseFocusReason);
         return true;
     }
@@ -509,6 +781,7 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
         if (id < 0)
             return false;
         this->m_regions.select(id);
+        m_regionFocusWin = win;
         this->onRegionListChanged();
         this->openRegionProperties(id);
         return true;
@@ -517,6 +790,7 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
         if (id < 0)
             return false;
         this->m_regions.select(id);
+        m_regionFocusWin = win;
         this->onRegionListChanged();
         // Out of the VTK callback: a menu runs its own event loop.
         QPointer<vtkWindowCube> self(this);
@@ -655,7 +929,7 @@ std::optional<std::array<int, 4>> vtkWindowCube::selectedRegionPixelBox() const
 
 // ── Analysis ─────────────────────────────────────────────────────────────────
 
-void vtkWindowCube::analyzeRegion(int id)
+void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
 {
     if (id < 0)
         id = this->m_regions.selectedId();
@@ -670,18 +944,42 @@ void vtkWindowCube::analyzeRegion(int id)
                 5000);
         return;
     }
-    vtkRenderWindow *win = this->active2dWin();
+    if (!win)
+        win = this->regionAnalysisWin();
+    if (!win)
+        win = this->active2dWin();
     vtkImageData *imageData = this->regionPaneImage(win);
     const visivo::DisplayGrid grid = this->regionDisplayGrid(win);
     const ListRegionStatistics stats = statisticsOnImage(imageData, grid, region);
     const auto fmt = [](double v) { return QString::number(v, 'g', 8); };
     const QString label = region.name;
-    const QString statsScope =
-            this->viewingSlice() ? u"current 2D slice"_s : u"current moment map"_s;
+    // A Product pane measures its own map: named, so the numbers say which.
+    const int paneSlot = this->regionPaneSlot(win);
+    const QString paneProduct = paneSlot >= 0 ? m_slots[paneSlot].view.productId : QString();
+    const bool onChannels = !paneProduct.isEmpty() && paneProduct == channelMirrorId();
+    const QString mapLabel = paneProduct.isEmpty() ? QString()
+                                                   : m_products2d.value(paneProduct).label;
+    const QString statsScope = paneProduct.isEmpty()
+            ? (this->viewingSlice() ? u"current 2D slice"_s : u"current moment map"_s)
+            : onChannels ? u"current channel (Channels pane)"_s
+                         : u"%1 (pane %2)"_s.arg(mapLabel).arg(paneSlot + 1);
     // The measured region goes into the product, so opening its Session Data
     // row puts it back in the list (restoreProductOrigin).
-    const QVariantMap origin = this->stampRegionSurface(visivo::encodeListRegionOrigin(
-            visivo::regions::toCanonical(region, 0.0).toVariantMap()));
+    QVariantMap origin = visivo::encodeListRegionOrigin(
+            visivo::regions::toCanonical(region, 0.0).toVariantMap());
+    if (paneProduct.isEmpty()) {
+        origin = this->stampRegionSurface(std::move(origin));
+    } else if (onChannels) {
+        // The Channels pane shows the channel the slice would (the slice
+        // itself shows a map as its background then).
+        origin = visivo::withMeasuredSurface(std::move(origin), u"slice"_s,
+                                             this->m_displayedSliceIndex);
+    } else {
+        // Which map, and which version of it: the id survives a recompute.
+        origin = visivo::withMeasuredSurface(std::move(origin), u"moment"_s, -1);
+        origin.insert(u"momentProduct"_s, paneProduct);
+        origin.insert(u"momentGeneration"_s, this->m_momentProductGeneration.value(paneProduct, 0));
+    }
 
     // ── Mean spectrum over the cube shown in 3-D ───────────────────────────
     // The 3-D view's cube is the full cube, a region of it, or a preview that
@@ -814,9 +1112,7 @@ void vtkWindowCube::analyzeRegion(int id)
             }
             this->probePlotWidget->setRegionContext(
                     label, stats.validCount, stats.totalCount,
-                    (this->viewingSlice() ? u"2D stats: current slice  ·  "_s
-                                          : u"2D stats: current moment map  ·  "_s)
-                            + spectrumScope);
+                    u"2D stats: %1  ·  "_s.arg(statsScope) + spectrumScope);
             this->probePlotWidget->updateSpectrumPlot(spectral, meanValues, plotTitle, /*live=*/false);
             if (pane < 0) {
                 this->probePlotWidget->show();

@@ -3351,10 +3351,15 @@ vtkWindowCube::~vtkWindowCube()
     // §3.2 B3: destroy the per-slot Pane2DViews FIRST — their destructors remove the
     // render-window EndEvent observer, so it can't fire against a half-torn-down widget
     // once `delete ui` starts tearing the pane hierarchy down.
+    for (auto &overlay : m_paneRegionOverlays)
+        overlay.detach();
+    for (auto &overlay : m_paneDraftOverlays)
+        overlay.detach();
     for (auto *&pv : m_paneViews) {
         delete pv;
         pv = nullptr;
     }
+    m_paneRegionHooked.fill(nullptr);
     delete ui;
 }
 
@@ -9016,7 +9021,7 @@ QList<QPair<QString, QString>> vtkWindowCube::sliceBackdropCandidates() const
     const QString mirror = channelMirrorId();
     for (auto it = m_products2d.constBegin(); it != m_products2d.constEnd(); ++it) {
         const Product2D &p = it.value();
-        if (!p.imageData || !p.regionOrigin.isNull() || it.key() == mirror)
+        if (!p.imageData || p.hasRegionOrigin || it.key() == mirror)
             continue;   // a cropped map is not on the slice's pixel grid; channels are channels
         int pd[3] = { 0, 0, 0 };
         p.imageData->GetDimensions(pd);
@@ -10797,7 +10802,8 @@ void vtkWindowCube::refreshPaneActiveStyles()
     for (int i = 0; i < 4; ++i) {
         const bool active = (m_activePane == i);
         const bool armedHere = (armed3d && m_slots[i].view.kind == ViewId::View3D)
-                || (armed2d && m_slots[i].view.kind == ViewId::Slice2D);
+                || (armed2d && m_slots[i].view.kind == ViewId::Slice2D)
+                || (m_slots[i].view.kind == ViewId::Product && paneIsArmedTarget(i));
         if (m_slots[i].frame)
             m_slots[i].frame->setStyleSheet(
                     armedHere
@@ -10843,9 +10849,10 @@ void vtkWindowCube::refreshPaneCursors()
                 w->setCursor((m_activePane == i || paneIsArmedTarget(i)) ? Qt::CrossCursor
                                                                         : Qt::ArrowCursor);
         } else if (k == ViewId::Product && m_paneViews[i] && m_paneViews[i]->widget()) {
-            // Display-only: always the plain arrow, never a crosshair — a moment pane
-            // takes no probe/region/PV (those act on the 2-D Slice). §3.2 B3.
-            m_paneViews[i]->widget()->setCursor(Qt::ArrowCursor);
+            // The plain arrow, but for a sky map with a region tool armed: regions
+            // are drawn there too (#355). Probe and PV still act on the 2-D Slice.
+            m_paneViews[i]->widget()->setCursor(paneIsArmedTarget(i) ? Qt::CrossCursor
+                                                                     : Qt::ArrowCursor);
         }
     }
 }
@@ -10868,8 +10875,15 @@ bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
     // Cmd+Z / Shift+Cmd+Z on a 2-D view undo the region list while it has a
     // change to undo. The window-wide copilot undo holds the same key, so the
     // view claims it (ShortcutOverride) and handles the key press itself.
+    const auto isMapPaneWidget = [this](QObject *w) {
+        for (int i = 0; i < 4; ++i)
+            if (m_paneViews[i] && w == m_paneViews[i]->widget() && isRegionMapPane(i))
+                return true;
+        return false;
+    };
     if ((et == QEvent::ShortcutOverride || et == QEvent::KeyPress)
-        && (watched == ui->vtkImage || (m_vtkMoment && watched == m_vtkMoment.data()))) {
+        && (watched == ui->vtkImage || (m_vtkMoment && watched == m_vtkMoment.data())
+            || isMapPaneWidget(watched))) {
         auto *key = static_cast<QKeyEvent *>(event);
         const bool free = !this->regionDragRunning();
         const bool undo = free && key->matches(QKeySequence::Undo) && m_regions.canUndo();
@@ -11484,6 +11498,10 @@ bool vtkWindowCube::paneIsArmedTarget(int slot) const
         return anyTool2dArmed();
     if (k == ViewId::View3D)
         return anyTool3dArmed();
+    // A map of the sky plane takes the region tools (#355): they draw there
+    // too, so it keeps its input while one is armed, as the slice does.
+    if (k == ViewId::Product)
+        return anyRegionToolArmed() && isRegionMapPane(slot);
     return false;
 }
 
@@ -12313,6 +12331,14 @@ void vtkWindowCube::mountView(int slot)
     // drops a path that does not belong to its product).
     if (pv)
         this->refreshPvOverlay();
+    // …and the region list, when the map is of the cube's sky plane (#355).
+    if (pv) {
+        this->refreshPaneRegionOverlays();
+        // A sky map on screen enables the region tools. Queued: a layout pass
+        // mounts before it shows the frames, and a gate run now would see no
+        // map and no slice and un-arm a tool for good.
+        QTimer::singleShot(0, this, [this]() { this->applyMomentToolGate(); });
+    }
     // …and refit once the move has settled: the pane's own resize refit runs a tick
     // later, when VTK may still report the OLD size, and the view then keeps a camera
     // for the old pane (an image shrunk into a corner after a swap or a relayout).
@@ -14337,13 +14363,21 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
         }
     } else if (surface == u"moment"_s) {
         const QString measuredOn = origin.value(u"momentProduct"_s).toString();
-        if (this->viewingSlice())
-            m_originRestoreNote = u" - measured on a moment map, not on this slice"_s;
-        else if (!measuredOn.isEmpty() && measuredOn != this->m_momentPipelineProductId)
-            m_originRestoreNote = u" - measured on a different moment map than the one shown"_s;
-        else if (!measuredOn.isEmpty() && !this->m_products2d.contains(measuredOn))
+        // The regions are drawn on every sky map (#355): what matters is
+        // whether the map measured is still there, and still the same.
+        bool shown = !measuredOn.isEmpty() && measuredOn == this->m_sliceBackdropProductId
+                && this->slice2dVisible();
+        for (int i = 0; i < 4 && !shown; ++i)
+            shown = isRegionMapPane(i) && m_slots[i].view.productId == measuredOn;
+        // An old record names no map: nothing more to say about it.
+        if (measuredOn.isEmpty())
+            m_originRestoreNote.clear();
+        else if (this->m_products2d.contains(measuredOn) && !shown)
+            m_originRestoreNote = u" - measured on %1, which no pane shows"_s.arg(
+                    this->m_products2d.value(measuredOn).label);
+        else if (!this->m_products2d.contains(measuredOn))
             m_originRestoreNote = u" - the moment map it was measured on is no longer loaded"_s;
-        else if (origin.contains(u"momentGeneration"_s) && !measuredOn.isEmpty()
+        else if (origin.contains(u"momentGeneration"_s)
                  && origin.value(u"momentGeneration"_s).toInt()
                          != this->m_momentProductGeneration.value(measuredOn, 0))
             // Same product id, different image: the id is stable across a
@@ -14627,6 +14661,7 @@ void vtkWindowCube::applyMomentToolGate()
     in.slice2dVisible = slice2dVisible();
     in.view3dVisible = view3dVisible();
     in.slicePaneAvailable = momentPaneForSliceTools() >= 0;
+    in.regionMapVisible = anyRegionMapPaneVisible();
     // What the data is (issue #83): a VBT field's third axis is Z, not a
     // spectrum, and its axes carry no sky coordinates. Before the header
     // arrives (empty CTYPE3, no WCS yet) every tool stays.
@@ -14672,9 +14707,9 @@ void vtkWindowCube::applyMomentToolGate()
     const bool keepArmedSlice = !d.slice2dTools && zoomed && viewAssigned(ViewId::Slice2D);
     const bool keepArmed3d = !d.view3dTools && zoomed && viewAssigned(ViewId::View3D);
 
-    // The slice family. Import Region belongs here too: it draws the parsed
-    // region onto the 2-D view and runs the region analysis on it, so without
-    // that view on screen it is the same no-op as drawing one by hand.
+    // The slice family, and the region tools with it. Import Region belongs
+    // with those: it puts the parsed regions in the list and measures the
+    // first on the 2-D view, the slice or a sky map in a pane (#355).
     const std::array<QAction *, 7> sliceTools{ ui->actionExtractSpectrum,
                                                actionExtractPvDiagram.data(),
                                                actionBoxRegion.data(),
@@ -14689,11 +14724,16 @@ void vtkWindowCube::applyMomentToolGate()
         // flight); the rest share the cube-open baseline.
         const bool baseline = (a == actionExtractPvDiagram.data()) ? m_pvBaselineEnabled
                                                                    : m_cubeActionsEnabled;
+        // The region tools also draw on the sky maps of the Product panes
+        // (#355); Extract Spectrum and PV stay on the slice.
+        const bool regionTool = a != ui->actionExtractSpectrum
+                && a != actionExtractPvDiagram.data();
+        const bool viewShown = regionTool ? d.regionTools : d.slice2dTools;
         // A REASON un-arms; a baseline denial only greys out. PV drops its
         // baseline the moment an extraction starts, and un-arming there runs
         // clearPv() while the controller is still reading the path it was handed
         // — the first extraction then submits an empty polyline.
-        if (!d.slice2dTools) {
+        if (!viewShown) {
             if (keepArmedSlice && a->isChecked())
                 continue;   // running, and its pane is only hidden by the zoom
             applyGate(a, false, reasonNoSlice);
@@ -14701,9 +14741,12 @@ void vtkWindowCube::applyMomentToolGate()
             applyGate(a, baseline, QString());
             // Enabled because a moment pane could become the slice — but a tool
             // ALREADY armed listens on the slice, which has just left the screen:
-            // un-arm it (arming again draws on the moment pane).
+            // un-arm it (arming again draws on the moment pane). A region tool
+            // keeps drawing while a sky map is on screen.
             const bool sliceHiddenByZoom = zoomed && viewAssigned(ViewId::Slice2D);
-            if (!in.slice2dVisible && !sliceHiddenByZoom && a->isCheckable() && a->isChecked())
+            const bool stillListening =
+                    in.slice2dVisible || (regionTool && in.regionMapVisible);
+            if (!stillListening && !sliceHiddenByZoom && a->isCheckable() && a->isChecked())
                 a->setChecked(false);
         }
     }

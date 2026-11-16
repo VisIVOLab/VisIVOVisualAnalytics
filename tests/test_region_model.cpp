@@ -9,6 +9,7 @@
 #include "RegionFullRes.h"
 #include "RegionImportResult.h"
 #include "RegionModel.h"
+#include "RegionPanePlacement.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -719,3 +720,122 @@ void TestRegionModel::planeAndRegionsShareOnePlacement()
     // Full resolution: the identity.
     QVERIFY(near(planePoint({ 12.25, 7.5 }, 3, Sampling{})[0], 12.25));
 }
+
+// ── Regions on the maps of the Product panes (issue #355) ────────────────────
+
+void TestRegionModel::momentPaneMatchesTheSlice()
+{
+    using CubeLodGeometry::Sampling;
+    // A 120 x 90 cube: the slice and a moment map are both served at full
+    // resolution, origin 0, spacing 1, whatever the 3-D view shows (a strided
+    // or block-mean preview of the same cube).
+    const std::array<int, 2> cube{ 120, 90 };
+    const MapPlacement slice = worldIsCube({ 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 });
+    const auto moment = skyMapPlacement(cube, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {});
+    QVERIFY(moment.has_value());
+    for (const Vec2 &p : { Vec2{ 0.0, 0.0 }, Vec2{ 17.25, 33.5 }, Vec2{ 119.0, 89.0 } }) {
+        const auto a = slice.toWorld(p), b = moment->toWorld(p);
+        QVERIFY(near(a[0], b[0], 1e-12) && near(a[1], b[1], 1e-12));
+        const Vec2 back = moment->toCube(b[0], b[1]);
+        QVERIFY(near(back[0], p[0], 1e-12) && near(back[1], p[1], 1e-12));
+    }
+    // A box drawn on either view from the same voxels is the same region.
+    const auto onSlice = visivo::regionFromDisplayed(QStringLiteral("box"), slice.displayGrid(), { 10, 20 },
+                                                     { 30, 40 }, {}, 0.0);
+    const auto onMoment = visivo::regionFromDisplayed(QStringLiteral("box"), moment->displayGrid(), { 10, 20 },
+                                                      { 30, 40 }, {}, 0.0);
+    QVERIFY(onSlice && onMoment);
+    QVERIFY(visivo::regions::sameGeometry(*onSlice, *onMoment));
+    // The 3-D preview does not enter the 2-D placement: under every display
+    // sampling the region lands on the plane where the slice puts it.
+    for (const Sampling &s : { Sampling{}, Sampling::strided(4), Sampling::blockMean(4) }) {
+        const auto a = planePoint(onSlice->center, 5, s), b = planePoint(onMoment->center, 5, s);
+        QVERIFY(near(a[0], b[0], 1e-12) && near(a[1], b[1], 1e-12));
+    }
+    // A reduced slice (a 2 x 2 block mean, world still in cube pixels: origin
+    // 0.5, spacing 2) keeps the list where it is, and measures in blocks.
+    const MapPlacement reduced = worldIsCube({ 0.5, 0.5 }, { 2.0, 2.0 }, { 0, 0 });
+    const auto w = reduced.toWorld({ 41.0, 7.0 });
+    QVERIFY(near(w[0], 41.0, 1e-12) && near(w[1], 7.0, 1e-12));
+    QVERIFY(near(reduced.displayGrid().sourceX(3), 6.5, 1e-12));
+    QVERIFY(near(reduced.cubePerWorld(), 1.0, 1e-12));
+}
+
+void TestRegionModel::croppedAndForeignMaps()
+{
+    const std::array<int, 2> cube{ 120, 90 };
+    // RM synthesis over a box from cube pixel (40, 30), 25 x 20: map pixel k
+    // is cube pixel 40 + k.
+    const auto crop = skyMapPlacement({ 25, 20 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube,
+                                      std::array<int, 2>{ 40, 30 });
+    QVERIFY(crop.has_value());
+    const auto w = crop->toWorld({ 45.0, 33.0 });
+    QVERIFY(near(w[0], 5.0, 1e-12) && near(w[1], 3.0, 1e-12));
+    const visivo::DisplayGrid g = crop->displayGrid();
+    QVERIFY(near(g.sourceX(5), 45.0, 1e-12) && near(g.sourceY(3), 33.0, 1e-12));
+    // A box over cube pixels 44..46 x 32..34 holds map pixels 4..6 x 2..4.
+    Region box;
+    box.shape = Shape::Box;
+    box.center = { 45.0, 33.0 };
+    box.size = { 3.0, 3.0 };
+    const auto b = visivo::displayedVoxelBounds(box, g);
+    QCOMPARE(b[0], 4);
+    QCOMPARE(b[1], 6);
+    QCOMPARE(b[2], 2);
+    QCOMPARE(b[3], 4);
+    QVERIFY(visivo::displayedVoxelIn(box, g, 4, 2));
+    QVERIFY(!visivo::displayedVoxelIn(box, g, 7, 2));
+    // A map whose VTK extent starts elsewhere still counts from its first voxel.
+    const auto shifted = skyMapPlacement({ 25, 20 }, { 10.0, 10.0 }, { 1.0, 1.0 }, { 3, 3 }, cube,
+                                         std::array<int, 2>{ 40, 30 });
+    QVERIFY(shifted.has_value());
+    QVERIFY(near(shifted->displayGrid().sourceX(3), 40.0, 1e-12));
+    QVERIFY(near(shifted->toWorld({ 40.0, 30.0 })[0], 10.0, 1e-12));
+    // Not on the sky grid: a crop running off the cube, a map of another size
+    // with no crop (a fit over a selection's box), an empty map.
+    QVERIFY(!skyMapPlacement({ 25, 20 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube,
+                             std::array<int, 2>{ 100, 30 }));
+    QVERIFY(!skyMapPlacement({ 60, 45 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {}));
+    QVERIFY(!skyMapPlacement({ 0, 0 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {}));
+}
+
+void TestRegionModel::editsOnOnePaneShowOnTheOthers()
+{
+    // One list, three views: the slice, a full-field moment and a cropped
+    // Faraday-depth map. A drag on the cropped map is read in list pixels, so
+    // the slice and the moment show the region where it was dropped.
+    const std::array<int, 2> cube{ 120, 90 };
+    const MapPlacement slice = worldIsCube({ 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 });
+    const auto moment = *skyMapPlacement(cube, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {});
+    const auto crop = *skyMapPlacement({ 25, 20 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube,
+                                       std::array<int, 2>{ 40, 30 });
+    RegionList list;
+    Region c;
+    c.shape = Shape::Circle;
+    c.center = { 50.0, 40.0 };
+    c.radius = 4.0;
+    const int id = list.add(c);
+    // Picked on the cropped map: its world position goes back to the list.
+    const auto at = crop.toWorld(c.center);
+    const Vec2 picked = crop.toCube(at[0], at[1]);
+    Hit hit;
+    QCOMPARE(list.regionAt(picked, 0.5, 1.0, &hit), id);
+    // Dragged by 3 map pixels right and 2 down there: 3 and 2 cube pixels.
+    const Vec2 from = crop.toCube(at[0], at[1]);
+    const Vec2 to = crop.toCube(at[0] + 3.0, at[1] - 2.0);
+    list.beginGesture();
+    list.replace(visivo::regions::moved(*list.find(id), to[0] - from[0], to[1] - from[1]));
+    list.endGesture();
+    const Region &now = *list.find(id);
+    QVERIFY(near(now.center[0], 53.0, 1e-12) && near(now.center[1], 38.0, 1e-12));
+    const auto onSlice = slice.toWorld(now.center);
+    const auto onMoment = moment.toWorld(now.center);
+    const auto onCrop = crop.toWorld(now.center);
+    QVERIFY(near(onSlice[0], 53.0, 1e-12) && near(onSlice[1], 38.0, 1e-12));
+    QVERIFY(near(onMoment[0], onSlice[0], 1e-12) && near(onMoment[1], onSlice[1], 1e-12));
+    QVERIFY(near(onCrop[0], 13.0, 1e-12) && near(onCrop[1], 8.0, 1e-12));
+    // One undo step puts it back on all three.
+    QVERIFY(list.undo());
+    QVERIFY(near(list.find(id)->center[0], 50.0, 1e-12));
+}
+
