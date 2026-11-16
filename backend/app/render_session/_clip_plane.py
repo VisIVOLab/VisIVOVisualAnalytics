@@ -168,12 +168,84 @@ def tf_threshold(points) -> float:
     return float("inf")
 
 
+
+
+#: Pixels unprojected at once (a tile of rows): bounds the temporary memory
+#: (about 60 bytes a pixel in float32) whatever the eye's size.
+TILE_PIXELS = 1 << 18
+
+
+@dataclass(frozen=True)
+class Section:
+    """One eye's section, sparse: the pixels it covers (``rows``, ``cols``,
+    rows bottom-up as VTK reads them), their premultiplied colour (N, 3), the
+    opacity, and their window depth (N)."""
+    size: tuple[int, int]
+    rows: np.ndarray
+    cols: np.ndarray
+    rgb: np.ndarray
+    alpha: float
+    depth: np.ndarray
+    examined: int          # pixels unprojected (the screen box of the section)
+
+    def dense(self) -> tuple[np.ndarray, np.ndarray]:
+        """``(rgba (h, w, 4) premultiplied float32, window depth (h, w), 1 where none)``."""
+        w, h = self.size
+        rgba = np.zeros((h, w, 4), np.float32)
+        rgba[self.rows, self.cols, :3] = self.rgb
+        rgba[self.rows, self.cols, 3] = self.alpha
+        depth = np.ones((h, w), np.float32)
+        depth[self.rows, self.cols] = self.depth
+        return rgba, depth
+
+
+def _box_corners(lo, hi) -> np.ndarray:
+    return np.array([[hi[a] if (i >> a) & 1 else lo[a] for a in range(3)] for i in range(8)], dtype=np.float64)
+
+
+def _plane_box_points(origin, normal, corners) -> np.ndarray:
+    """The points where the plane meets the edges of the box ``corners`` (corner
+    i has the high end of axis a when bit a of i is set): the section's outline."""
+    s = (corners - origin) @ normal
+    pts = []
+    for i in range(8):
+        for bit in (1, 2, 4):
+            if i & bit:
+                continue
+            j = i | bit
+            a, b = s[i], s[j]
+            if (a < 0 and b < 0) or (a > 0 and b > 0):
+                continue
+            f = 0.0 if a == b else a / (a - b)
+            pts.append(corners[i] + f * (corners[j] - corners[i]))
+    return np.array(pts, dtype=np.float64).reshape(-1, 3)
+
+
+def _screen_box(points: np.ndarray, to_clip: np.ndarray, size) -> tuple[int, int, int, int] | None:
+    """The pixel rectangle ``(c0, c1, r0, r1)`` (end exclusive, rows bottom-up)
+    covering ``points`` (voxels) through ``to_clip``; the whole eye when one is
+    behind the eye (its projection would not bound the rest); None when none."""
+    w, h = size
+    if not len(points):
+        return None
+    q = np.concatenate([points, np.ones((len(points), 1))], axis=1) @ to_clip.T
+    if np.any(q[:, 3] <= 1e-9):
+        return 0, w, 0, h
+    ndc = q[:, :2] / q[:, 3:4]
+    x0, y0 = ndc.min(axis=0)
+    x1, y1 = ndc.max(axis=0)
+    if x1 < -1 or y1 < -1 or x0 > 1 or y0 > 1:
+        return None
+    c0 = int(np.clip(np.floor((x0 + 1) / 2 * w) - 1, 0, w))
+    c1 = int(np.clip(np.ceil((x1 + 1) / 2 * w) + 1, 0, w))
+    r0 = int(np.clip(np.floor((y0 + 1) / 2 * h) - 1, 0, h))
+    r1 = int(np.clip(np.ceil((y1 + 1) / 2 * h) + 1, 0, h))
+    return (c0, c1, r0, r1) if c1 > c0 and r1 > r0 else None
+
+
 def section_layer(clip: ClipPlane, eye: dict, size: tuple[int, int], shape_xyz,
-                  sample, colour_points, opacity_points, crop=None):
-    """The section of one stereo eye: ``(rgba, window_depth)``, premultiplied
-    float RGBA (h, w, 4) and the window depth of the section (h, w; 1 where
-    there is none), rows bottom-up as VTK reads them; or None when the eye
-    sees no section.
+                  sample, colour_points, opacity_points, crop=None) -> Section | None:
+    """The section one stereo eye sees (:class:`Section`), or None.
 
     ``eye`` is :func:`_stereo.stereo_eye`'s (its view, stretch and
     projection: voxel *v* is at ``stretch @ v`` in the world the rigid view
@@ -182,49 +254,71 @@ def section_layer(clip: ClipPlane, eye: dict, size: tuple[int, int], shape_xyz,
     ``(x0, x1, y0, y1, z0, z1)`` (``_pipeline.crop_planes``), or None.
     A pixel shows the section where its ray, from the eye's near plane, enters
     the kept part through a face of the plane, inside the cube and the box,
-    at a value the opacity transfer function draws."""
+    at a value the opacity transfer function draws. Only the pixels of the
+    screen rectangle of the section's outline (the plane's faces within the
+    box) are unprojected, a tile of rows at a time, in float32."""
     w, h = size
     proj = np.asarray(eye["projection"], dtype=np.float64)
     view = np.asarray(eye["view"], dtype=np.float64)
     stretch = np.asarray(eye["stretch"], dtype=np.float64)
-    # Pixel centres in NDC, rows bottom-up.
-    xs = (np.arange(w) + 0.5) / w * 2.0 - 1.0
-    ys = (np.arange(h) + 0.5) / h * 2.0 - 1.0
-    X, Y = np.meshgrid(xs, ys)
-    inv = np.linalg.inv(stretch) @ np.linalg.inv(view) @ np.linalg.inv(proj)   # clip -> voxels
-    ones = np.ones_like(X)
-
-    def unproject(z):
-        q = np.stack([X, Y, z * ones, ones], axis=-1) @ inv.T
-        return q[..., :3] / q[..., 3:4]
-
-    near, far = unproject(-1.0), unproject(1.0)
-    d = far - near
-    n = np.asarray(clip.normal)
-    s0 = (near - np.asarray(clip.origin)) @ n
-    sd = d @ n
-    with np.errstate(divide="ignore", invalid="ignore"):
-        if clip.half is None:
-            t = np.where((s0 < 0) & (sd > 0), -s0 / sd, np.nan)
-        else:
-            t = np.where((s0 < -clip.half) & (sd > 0), (-clip.half - s0) / sd,
-                         np.where((s0 > clip.half) & (sd < 0), (clip.half - s0) / sd, np.nan))
-    hit = np.isfinite(t) & (t >= 0.0) & (t <= 1.0)
-    if not hit.any():
-        return None
-    rows, cols = np.nonzero(hit)
-    p = near[rows, cols] + d[rows, cols] * t[rows, cols, None]
+    to_clip = proj @ view @ stretch                     # voxels -> clip
     lo = np.full(3, -0.5)
     hi = np.asarray(shape_xyz, dtype=np.float64) - 0.5
     if crop is not None:
         c = np.asarray(crop, dtype=np.float64)
         lo = np.maximum(lo, c[0::2])
         hi = np.minimum(hi, c[1::2])
-    eps = 1e-6
-    inside = np.all((p >= lo - eps) & (p <= hi + eps), axis=1)
-    rows, cols, p = rows[inside], cols[inside], p[inside]
-    if not len(p):
+    if np.any(hi <= lo):
         return None
+    o = np.asarray(clip.origin, dtype=np.float64)
+    n = np.asarray(clip.normal, dtype=np.float64)
+    corners = _box_corners(lo, hi)
+    offsets = (0.0,) if clip.half is None else (-clip.half, clip.half)
+    outline = np.concatenate([_plane_box_points(o + k * n, n, corners) for k in offsets])
+    rect = _screen_box(outline, to_clip, size)
+    if rect is None:
+        return None
+    c0, c1, r0, r1 = rect
+    inv = np.linalg.inv(to_clip)                        # clip -> voxels
+    # A ray's point at NDC depth z is (A x + B y + C z + D) / its w: float32 per pixel.
+    A, B, C, D = (inv[:, k].astype(np.float32) for k in range(4))
+    of, nf = o.astype(np.float32), n.astype(np.float32)
+    xs = ((np.arange(c0, c1) + 0.5) / w * 2.0 - 1.0).astype(np.float32)
+    rows_per_tile = max(1, TILE_PIXELS // max(1, c1 - c0))
+    eps = 1e-4
+    lo32, hi32 = (lo - eps).astype(np.float32), (hi + eps).astype(np.float32)
+    found_r, found_c, found_p = [], [], []
+    for t0 in range(r0, r1, rows_per_tile):
+        t1 = min(r1, t0 + rows_per_tile)
+        ys = ((np.arange(t0, t1) + 0.5) / h * 2.0 - 1.0).astype(np.float32)
+        X, Y = np.meshgrid(xs, ys)
+        base = X[..., None] * A + Y[..., None] * B + D      # (rows, cols, 4)
+        near = base - C
+        far = base + C
+        near = near[..., :3] / near[..., 3:4]
+        d = far[..., :3] / far[..., 3:4] - near
+        s0 = (near - of) @ nf
+        sd = d @ nf
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if clip.half is None:
+                t = np.where((s0 < 0) & (sd > 0), -s0 / sd, np.nan)
+            else:
+                hh = np.float32(clip.half)
+                t = np.where((s0 < -hh) & (sd > 0), (-hh - s0) / sd,
+                             np.where((s0 > hh) & (sd < 0), (hh - s0) / sd, np.nan))
+        hit = np.isfinite(t) & (t >= 0.0) & (t <= 1.0)
+        if not hit.any():
+            continue
+        rr, cc = np.nonzero(hit)
+        p = near[rr, cc] + d[rr, cc] * t[rr, cc, None]
+        inside = np.all((p >= lo32) & (p <= hi32), axis=1)
+        found_r.append(rr[inside] + t0)
+        found_c.append(cc[inside] + c0)
+        found_p.append(p[inside].astype(np.float64))
+    examined = (c1 - c0) * (r1 - r0)
+    if not found_p or not sum(len(p) for p in found_p):
+        return None
+    rows, cols, p = np.concatenate(found_r), np.concatenate(found_c), np.concatenate(found_p)
     array, origin, spacing = sample
     values = _trilinear(array, (p - np.asarray(origin, dtype=np.float64)) / float(spacing))
     seen = values >= tf_threshold(opacity_points)
@@ -232,36 +326,31 @@ def section_layer(clip: ClipPlane, eye: dict, size: tuple[int, int], shape_xyz,
     if not len(p):
         return None
     a = clip.section_opacity
-    rgba = np.zeros((h, w, 4), dtype=np.float32)
-    rgba[rows, cols, :3] = tf_colour(colour_points, values) * a
-    rgba[rows, cols, 3] = a
-    # The window depth of each section point, through the eye's projection.
-    q = np.concatenate([p, np.ones((len(p), 1))], axis=1) @ (proj @ view @ stretch).T
-    depth = np.ones((h, w), dtype=np.float32)
-    depth[rows, cols] = np.clip(0.5 * q[:, 2] / q[:, 3] + 0.5, 0.0, 1.0)
-    return rgba, depth
+    q = np.concatenate([p, np.ones((len(p), 1))], axis=1) @ to_clip.T
+    depth = np.clip(0.5 * q[:, 2] / q[:, 3] + 0.5, 0.0, 1.0).astype(np.float32)
+    return Section((w, h), rows, cols, (tf_colour(colour_points, values) * a).astype(np.float32),
+                   float(a), depth, examined)
 
 
-def composite_section(rgba: np.ndarray, depth: np.ndarray | None, layer, premultiplied: bool):
+def composite_section(rgba: np.ndarray, depth: np.ndarray | None, layer: Section | None, premultiplied: bool):
     """The section ``layer`` (:func:`section_layer`) in front of an eye's
     ``rgba`` (uint8, h, w, 4: the volume mapper's premultiplied colour over
     a transparent clear value, or the window's pixels over the background)
     and its window ``depth`` (or None). Returns new arrays."""
     if layer is None:
         return rgba, depth
-    s, sdepth = layer
-    on = s[..., 3] > 0
+    r, c = layer.rows, layer.cols
     out = np.array(rgba, copy=True)
-    base = out[on].astype(np.float32) / 255.0
-    sa = s[on][:, 3:4]
+    base = out[r, c].astype(np.float32) / 255.0
+    sa = np.float32(layer.alpha)
     if premultiplied:
         # The mapper's clear value is transparent white: its colour is the
         # opacity's at most (see _stereo.over_background).
         base[:, :3] = np.minimum(base[:, :3], base[:, 3:4])
-    base[:, :3] = s[on][:, :3] + (1.0 - sa) * base[:, :3]
-    base[:, 3:4] = sa + (1.0 - sa) * base[:, 3:4] if premultiplied else 1.0
-    out[on] = np.clip(np.rint(base * 255.0), 0, 255).astype(np.uint8)
+    base[:, :3] = layer.rgb + (1.0 - sa) * base[:, :3]
+    base[:, 3] = sa + (1.0 - sa) * base[:, 3] if premultiplied else 1.0
+    out[r, c] = np.clip(np.rint(base * 255.0), 0, 255).astype(np.uint8)
     if depth is not None:
         depth = np.array(depth, copy=True)
-        depth[on] = np.minimum(depth[on], sdepth[on])
+        depth[r, c] = np.minimum(depth[r, c], layer.depth)
     return out, depth
