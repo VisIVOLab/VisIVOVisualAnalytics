@@ -1461,14 +1461,20 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         }));
     });
 
-    // Region export — save the active drawn ROI for CASA/CARTA/ds9. Loading
-    // region files (incl. CRTF) goes through Load Catalogue Overlay (one loader).
+    // Region files (issue #342): read by the backend with the image's WCS into
+    // the region list, and the list written back for CASA/CARTA/ds9.
     ui->menuTools->addSeparator();
+    m_actImportRegions = ui->menuTools->addAction(u"Import Region (CRTF/DS9)…"_s);
+    m_actImportRegions->setToolTip(
+            u"Read a ds9 or CASA CRTF region file into this window's regions: every region "
+            u"and shape, in any frame, placed with the image's WCS. Lines that cannot be "
+            u"shown are listed with the reason."_s);
+    QObject::connect(m_actImportRegions, &QAction::triggered, this,
+                     [this]() { this->importRegionsFromFile(); });
     m_actExportRegions = ui->menuTools->addAction(u"Export Region (CRTF/DS9)…"_s);
     m_actExportRegions->setToolTip(
             u"Save the regions of this window, all of them or the selected one, as a "
-            u"CASA CRTF or DS9 region file. To *load* regions (incl. CRTF) use "
-            u"Tools ▸ Load Catalogue Overlay."_s);
+            u"CASA CRTF or DS9 region file."_s);
     QObject::connect(m_actExportRegions, &QAction::triggered, this,
                      [this]() { this->exportRegionsToFile(); });
     this->setupRegionListActions();

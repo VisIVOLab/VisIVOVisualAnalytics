@@ -211,7 +211,7 @@ void RegionPropertiesDialog::rebuildFields()
                                              : u"dd:mm:ss or degrees"_s)
                                : u"degrees"_s;
 
-    if (m_region.shape == Shape::Polygon) {
+    if (isPointList(m_region.shape)) {
         m_vertices = new QTableWidget(0, 2, m_fieldsHost);
         m_vertices->setHorizontalHeaderLabels({ lonName, latName });
         m_vertices->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
@@ -241,8 +241,10 @@ void RegionPropertiesDialog::rebuildFields()
             markEdited();
         });
         connect(remove, &QPushButton::clicked, this, [this]() {
-            if (m_vertices->rowCount() <= 3) {
-                setStatus(u"A polygon keeps at least three vertices."_s, true);
+            if (m_vertices->rowCount() <= minVertices(m_region.shape)) {
+                setStatus(m_region.shape == Shape::Line ? u"A line keeps at least two vertices."_s
+                                                        : u"A polygon keeps at least three vertices."_s,
+                          true);
                 return;
             }
             m_vertices->removeRow(m_vertices->currentRow() >= 0 ? m_vertices->currentRow()
@@ -438,7 +440,21 @@ void RegionPropertiesDialog::finishApply(Region edited)
 {
     edited.id = m_region.id;
     edited.color = m_region.color;
+    // What the numbers do not set: the file's properties, a text's string,
+    // the line of the file it came from.
+    edited.props = m_region.props;
+    edited.text = m_region.text;
+    edited.sourceLine = m_region.sourceLine;
+    edited.batch = m_region.batch;
     edited.name = m_name->text().trimmed().isEmpty() ? m_region.name : m_name->text().trimmed();
+    if (edited.name != m_region.name) {
+        // The name is what is drawn: a text region's string, or the label a
+        // region file gave (`text={…}`), which an export writes back.
+        if (edited.shape == Shape::Text)
+            edited.text = edited.name;
+        if (edited.props.contains(u"text"_s))
+            edited.props[u"text"_s] = edited.name;
+    }
     m_dirty = false;
     setStatus(u"Applied."_s, false);
     emit regionEdited(edited);

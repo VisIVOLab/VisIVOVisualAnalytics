@@ -20,6 +20,31 @@ are preserved here unedited; the branch names they refer to are historical.
   after any camera change as well: after Shift+R on a zoomed large image it
   used to keep only the zoomed patch.
 
+- **Desktop: the cube's regions on the 3-D cutting plane (#343).** The
+  region list is drawn on the cutting plane of the 3-D view as on the 2-D
+  slice, in its colours with the selected region thicker, pulled towards the
+  camera so the textured plane never hides it. It follows the channel, the
+  preview or full-resolution cube on screen, and every edit, and hides with
+  the plane. The plane is now placed by the same rule as the regions: cube
+  pixel *i* of the slice it wears is where the volume shows that pixel, and
+  its height is the channel's in the volume. On a strided preview the plane
+  used to span the preview's bounds and sit at a fraction of its depth, so its
+  last texels and its height were up to a sample off; a pick on the plane
+  reads the pixel under the cursor by the same rule.
+- **Desktop: region files are imported whole in both viewers, with the
+  reason for every line not read (#342).** *Tools ▸ Regions ▸ Import Region*
+  is now in the image viewer too, and both viewers read the file through the
+  backend with the dataset's WCS into the region list: every region (one
+  Undo takes the import back), at sub-pixel precision, in any frame and
+  coordinate format. Lines, vectors, text, elliptical and box annuli are drawn
+  (the last two measured between their edges); the rings of a multi-radius
+  annulus are named as one group and move together; colours, `text={…}`
+  labels and the other properties are kept for export. Every line that does
+  not become a region is listed in a non-modal report with its number, text
+  and reason. A `.reg` or `.crtf` picked in *Load Catalogue Overlay* is read
+  as regions too; the overlay's own ds9 reader, which skipped galactic,
+  physical and sexagesimal positions and image-frame shapes, no longer sees
+  region files.
 - **Desktop: regions in the cube viewer are a list you edit and keep
   (#341).** The 2-D slice (and a moment map shown under it) draws every
   region of the window's list, as the image viewer does: click selects, drag
@@ -39,40 +64,6 @@ are preserved here unedited; the branch names they refer to are historical.
   the file in the list at the backend's sub-pixel position (rotation kept);
   Export Region writes all regions or the selected one; a Session Data row
   puts its region back in the list.
-
-- **Pairing service: security review, attack tests and host hardening
-  (#345).** The public pairing service was audited and attacked on a local
-  copy of its production configuration
-  (`services/vr-pair/tools/attack_harness.py`). These fixes came out of it:
-  - Failing on purpose no longer stops everybody's pairing. The global failure
-    count now only tightens each address's limit, and a right code from a
-    clean address pairs.
-  - Connections are bounded, with separate budgets for hosts and pages, plus
-    a cap on upgrades per address per minute (HTTP 503 and 429).
-  - Each connection has a budget of bytes and frames, so a flood of pings is
-    dropped. A client that does not read is dropped too. Before, a ping flood
-    delayed every other pairing by 8 s or more.
-  - The relay carries signalling only, where before it relayed megabytes of
-    arbitrary data between two peers.
-  - Bookkeeping costs the same however many codes are held: 0.015 ms per new
-    code at 100 000 codes, against 5.6 ms before.
-  - IPv6 clients are counted per /56.
-  - Repeated `Origin` or `X-Forwarded-For` headers, deeply nested JSON, huge
-    numbers and lone surrogates no longer end a connection with a traceback.
-  - Origins compare without case.
-  - Log lines about clients are capped.
-  - An empty or loose secret file is reported.
-  - `websockets` is pinned to 17.4.
-
-  New `services/vr-pair/deploy/` files:
-  - a hardened systemd unit (`systemd-analyze security`: 0.9 SAFE, against
-    8.4 EXPOSED);
-  - an Apache block. Per-path tunnel pools keep the service from taking the
-    workers of the other sites on a shared server.
-
-  The README and *Hosting headset pairing* gained a *Security and hardening*
-  section, with values for institutes behind one shared address.
-
 - **Desktop: headset pairing works with no setup (#344).** *Settings ▸
   Backends ▸ Headset Pairing* now offers the pairing service and loader hosted
   by INAF (`wss://vr.visivolab.oact.inaf.it/pair`,

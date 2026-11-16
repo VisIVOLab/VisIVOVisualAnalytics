@@ -411,8 +411,9 @@ void vtkWindowImage::extractSpectrum2D()
     // The region being drawn, else the selected region of the list (issue #341).
     const std::optional<visivo::regions::Region> region =
             this->draftRegion() ? this->draftRegion()
-            : this->m_regions.selected() ? std::optional<visivo::regions::Region>(*this->m_regions.selected())
-                                         : std::nullopt;
+            : (this->m_regions.selected() && visivo::regions::hasArea(this->m_regions.selected()->shape))
+                    ? std::optional<visivo::regions::Region>(*this->m_regions.selected())
+                    : std::nullopt;
     const bool fromRegion = region.has_value();
     if (fromRegion) {
         // The region's BOUNDING BOX, said so in the product: collapsing a circle

@@ -8,7 +8,10 @@
 #include <vtkPolyData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
+#include <vtkCoordinate.h>
 #include <vtkRenderer.h>
+#include <vtkTextActor.h>
+#include <vtkTextProperty.h>
 #include <vtkUnsignedCharArray.h>
 
 #include <QColor>
@@ -141,6 +144,10 @@ void RegionListOverlay::detach()
     for (vtkActor *a : { m_listActor.Get(), m_selectedActor.Get(), m_fillActor.Get(),
                          m_pointActor.Get(), m_handleActor.Get() })
         m_renderer->RemoveActor(a);
+    for (const auto &t : m_labels)
+        m_renderer->RemoveViewProp(t);
+    m_labels.clear();
+    m_labelsShown = 0;
     m_renderer = nullptr;
 }
 
@@ -151,6 +158,8 @@ void RegionListOverlay::setVisible(bool visible)
                          m_handleActor.Get() })
         a->SetVisibility(visible);
     m_fillActor->SetVisibility(visible && m_haveFill);
+    for (int i = 0; i < int(m_labels.size()); ++i)
+        m_labels[std::size_t(i)]->SetVisibility(visible && i < m_labelsShown);
 }
 
 void RegionListOverlay::update(const visivo::regions::RegionList &list, double knobOffset,
@@ -175,8 +184,48 @@ void RegionListOverlay::update(const visivo::regions::RegionList &list, double k
     vtkNew<vtkCellArray> handleCells;
 
     const int selectedId = list.selectedId();
+    // A label: a text region's string at its position, or the text a region
+    // file gave another region, just above it (as ds9 places it).
+    int labels = 0;
+    const auto label = [&](const QString &text, const Vec2 &at, const std::array<unsigned char, 3> &rgb,
+                           bool selected) {
+        if (text.isEmpty() || !m_renderer)
+            return;
+        if (labels >= int(m_labels.size())) {
+            auto t = vtkSmartPointer<vtkTextActor>::New();
+            t->GetPositionCoordinate()->SetCoordinateSystemToWorld();
+            t->GetTextProperty()->SetJustificationToCentered();
+            t->GetTextProperty()->SetVerticalJustificationToBottom();
+            t->GetTextProperty()->SetFontSize(13);
+            t->GetTextProperty()->ShadowOn();
+            t->PickableOff();
+            m_renderer->AddViewProp(t);
+            m_labels.push_back(t);
+        }
+        vtkTextActor *t = m_labels[std::size_t(labels++)];
+        t->SetInput(text.toUtf8().constData());
+        const auto w = toWorld(at);
+        t->GetPositionCoordinate()->SetValue(w[0], w[1], w[2]);
+        t->GetTextProperty()->SetColor(rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0);
+        t->GetTextProperty()->SetBold(selected);
+    };
     for (const Region &r : list.regions()) {
         const auto rgb = colour(r);
+        const bool isSel = r.id == selectedId;
+        if (r.shape == visivo::regions::Shape::Text) {
+            label(r.text, r.center, rgb, isSel);
+        } else {
+            const QString fileLabel = r.props.value(QStringLiteral("text")).toString();
+            if (!fileLabel.isEmpty()) {
+                const auto b = visivo::regions::bounds(r);
+                label(fileLabel, { (b[0] + b[1]) / 2.0, b[3] }, rgb, isSel);
+            }
+        }
+        const auto paths = visivo::regions::openPaths(r);
+        for (const auto &path : paths)
+            appendLoops({ path }, toWorld, isSel ? selPoints.Get() : listPoints.Get(),
+                        isSel ? selLines.Get() : listLines.Get(),
+                        isSel ? selColours.Get() : listColours.Get(), rgb, /*closed=*/false);
         if (r.shape == visivo::regions::Shape::Point) {
             const auto w = toWorld(r.center);
             const vtkIdType id = markerPoints->InsertNextPoint(w[0], w[1], w[2]);
@@ -206,14 +255,12 @@ void RegionListOverlay::update(const visivo::regions::RegionList &list, double k
             const vtkIdType id = handlePoints->InsertNextPoint(w[0], w[1], w[2]);
             handleCells->InsertNextCell(1, &id);
             if (h.kind == visivo::regions::HandleKind::Rotate) {
-                const double edge = sel->shape == visivo::regions::Shape::Box ? sel->size[1] / 2.0
-                                                                              : sel->semiAxes[1];
-                const Vec2 base = visivo::regions::toWorld(*sel, { 0.0, edge });
+                const Vec2 base = visivo::regions::toWorld(*sel, { 0.0, visivo::regions::knobEdge(*sel) });
                 appendLoops({ { base, h.pos } }, toWorld, selPoints, selLines, selColours,
                             colour(*sel), /*closed=*/false);
             }
         }
-        if (sel->shape == visivo::regions::Shape::Point) {
+        if (sel->shape == visivo::regions::Shape::Point || sel->shape == visivo::regions::Shape::Text) {
             const auto w = toWorld(sel->center);
             const vtkIdType id = handlePoints->InsertNextPoint(w[0], w[1], w[2]);
             handleCells->InsertNextCell(1, &id);
@@ -231,7 +278,8 @@ void RegionListOverlay::update(const visivo::regions::RegionList &list, double k
     // its rings (the inner loop runs the other way round, a hole).
     m_fillData->Initialize();
     m_haveFill = false;
-    if (m_style.fill && sel && sel->shape != visivo::regions::Shape::Point) {
+    if (m_style.fill && sel && visivo::regions::hasArea(sel->shape)
+        && sel->shape != visivo::regions::Shape::Point) {
         auto loops = visivo::regions::outlines(*sel);
         if (loops.size() > 1)
             std::reverse(loops[1].begin(), loops[1].end());
@@ -246,6 +294,9 @@ void RegionListOverlay::update(const visivo::regions::RegionList &list, double k
     }
     m_fillData->Modified();
     m_fillActor->SetVisibility(m_visible && m_haveFill);
+    m_labelsShown = labels;
+    for (int i = 0; i < int(m_labels.size()); ++i)
+        m_labels[std::size_t(i)]->SetVisibility(m_visible && i < m_labelsShown);
     m_listData->Modified();
     m_selectedData->Modified();
     m_pointData->Modified();

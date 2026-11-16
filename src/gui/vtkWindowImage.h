@@ -479,6 +479,7 @@ private:
     QPointer<QAction> m_actFilterFits;
     QPointer<QAction> m_actExportToWorkspace;
     QPointer<QAction> m_actExportRegions;
+    QPointer<QAction> m_actImportRegions;
     vtkSmartPointer<vtkFlyingEdges2D> m_contourFilter;
     vtkSmartPointer<vtkActor>         m_contourActor;
     bool                     m_contoursVisible{ false };
@@ -660,6 +661,10 @@ private:
     // selected one. Loading region files (incl. CRTF) is handled by
     // loadCatalogueOverlay (single loader).
     void exportRegionsToFile();
+    /// Tools ▸ Regions ▸ Import Region (issue #342): a region file read by the
+    /// backend with this image's WCS into the list (RegionImport.h); @p path
+    /// skips the file dialog.
+    void importRegionsFromFile(const QString &path = QString(), const QString &note = QString());
 
     // ── The region list (issue #341) ─────────────────────────────────────────
     // Regions drawn, restored or typed in are kept in m_regions, in full-
@@ -674,6 +679,9 @@ private:
         visivo::regions::Hit hit;
         visivo::regions::Vec2 start{ 0.0, 0.0 };
         visivo::regions::Region original;
+        /// The other rings of a multi-radius annulus, as they were: a move
+        /// carries them along (RegionList::ringGroup).
+        std::vector<visivo::regions::Region> companions;
     };
     RegionDrag m_regionDrag;
     vtkSmartPointer<vtkCallbackCommand> m_regionEditCommand;

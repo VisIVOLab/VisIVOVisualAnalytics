@@ -49,6 +49,7 @@ class vtkCallbackCommand;
 #include "CubeLodAuto.h"
 #include "CubeLodGeometry.h"
 #include "RegionFullRes.h"
+#include "RegionImportResult.h"
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
 
@@ -2110,10 +2111,11 @@ protected:
     QPointer<QAction> m_actExportCubeRegion;
     QPointer<QAction> m_actImportCubeRegion;
     void exportRegionsToFile();
-    void importRegionsFromFile();
-    /// Put the parsed canonical regions (image frame, 1-based pixels) in the
-    /// region list, select the first, and analyse it.
-    void applyImportedRegion(const QJsonArray &regions);
+    /// Tools ▸ Regions ▸ Import Region; @p path skips the file dialog.
+    void importRegionsFromFile(const QString &path = QString(), const QString &note = QString());
+    /// Put the regions read from a file in the list as one change, select
+    /// the first, and analyse the first with an area.
+    void applyImportedRegions(const visivo::regions::ImportResult &result);
 
     // ── The region list (issue #341, vtkWindowCube_RegionList.cpp) ───────────
     // Regions drawn, imported, restored or typed in are kept in m_regions until
@@ -2125,6 +2127,16 @@ protected:
     /// The list on the 2-D slice and on the moment window (each its own renderer).
     RegionListOverlay m_sliceRegionOverlay;
     RegionListOverlay m_momentRegionOverlay;
+    /// The list on the 3-D view's cutting plane (issue #343), at the channel
+    /// the plane shows (m_planeChannel; -1 before the plane is placed).
+    RegionListOverlay m_planeRegionOverlay;
+    int m_planeChannel{ -1 };
+    /// Place the plane's regions at the plane's channel and the display's
+    /// sampling, shown with the plane. The caller renders.
+    void refreshPlaneRegionOverlay();
+    /// Put the cutting plane at @p channel with the display's sampling
+    /// (RegionCubeSampling.h cuttingPlane), the regions on it too.
+    void placeCuttingPlane(int channel);
     struct RegionDrag
     {
         bool active{ false };
@@ -2132,6 +2144,9 @@ protected:
         visivo::regions::Hit hit;
         visivo::regions::Vec2 start{ 0.0, 0.0 };
         visivo::regions::Region original;
+        /// The other rings of a multi-radius annulus, as they were: a move
+        /// carries them along (RegionList::ringGroup).
+        std::vector<visivo::regions::Region> companions;
     };
     RegionDrag m_regionDrag;
     vtkSmartPointer<vtkCallbackCommand> m_regionEditCommand;

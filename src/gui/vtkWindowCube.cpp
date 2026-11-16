@@ -208,6 +208,7 @@
 #include <limits>
 #include <sstream>
 #include "CubeRegionGeom.h"
+#include "RegionCubeSampling.h"
 
 using namespace Qt::StringLiterals;
 using namespace CubeWcs;
@@ -2989,9 +2990,11 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // Region IO (CRTF/DS9) on the 2-D view — interop parity with the image viewer.
     m_actImportCubeRegion = ui->menuTools->addAction(u"Import Region (CRTF/DS9)…"_s);
     m_actImportCubeRegion->setToolTip(
-            u"Load a CASA CRTF or DS9 (.reg) region file onto the 2-D view and analyse it."_s);
-    QObject::connect(m_actImportCubeRegion, &QAction::triggered,
-                     this, &vtkWindowCube::importRegionsFromFile);
+            u"Read a ds9 or CASA CRTF region file into this window's regions: every region "
+            u"and shape, in any frame, placed with the cube's WCS. Lines that cannot be shown "
+            u"are listed with the reason."_s);
+    QObject::connect(m_actImportCubeRegion, &QAction::triggered, this,
+                     [this]() { this->importRegionsFromFile(); });
     m_actExportCubeRegion = ui->menuTools->addAction(u"Export Region (CRTF/DS9)…"_s);
     m_actExportCubeRegion->setToolTip(
             u"Save the drawn region as a CASA CRTF or DS9 (.reg) file."_s);
@@ -6891,6 +6894,8 @@ void vtkWindowCube::setRemoteCuttingPlaneVisible(bool visible)
         this->remoteCuttingPlaneActor->SetVisibility(visible ? 1 : 0);
     if (this->remoteCuttingPlaneEdgeActor)
         this->remoteCuttingPlaneEdgeActor->SetVisibility(visible ? 1 : 0);
+    // The regions on it come and go with it (#343).
+    this->refreshPlaneRegionOverlay();
 }
 
 void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
@@ -6930,26 +6935,11 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
     const int clampedSlice = this->clampRemoteSliceIndex(sliceIndex);
     double bounds[6];
     cubeImage->GetBounds(bounds);
-
-    double z = 0.5 * (bounds[4] + bounds[5]);
-    const int realDepth = this->remoteSliceCount();
-    if (realDepth > 1) {
-        const double fraction =
-                static_cast<double>(clampedSlice) / static_cast<double>(realDepth - 1);
-        z = bounds[4] + fraction * (bounds[5] - bounds[4]);
-    }
-
-    this->remoteCuttingPlaneSource->SetOrigin(bounds[0], bounds[2], z);
-    this->remoteCuttingPlaneSource->SetPoint1(bounds[1], bounds[2], z);
-    this->remoteCuttingPlaneSource->SetPoint2(bounds[0], bounds[3], z);
-    this->remoteCuttingPlaneSource->Modified();
-    this->remoteCuttingPlaneSource->Update();
-    if (auto *mapper = this->remoteCuttingPlaneActor->GetMapper()) {
-        mapper->Modified();
-    }
-    this->remoteCuttingPlaneActor->Modified();
+    this->placeCuttingPlane(clampedSlice);
+    const double z = this->remoteCuttingPlaneSource->GetOrigin()[2];
     // From the checkbox, not unconditionally on: switching the plane off and
-    // then changing channel used to bring it straight back.
+    // then changing channel used to bring it straight back. (This also
+    // refreshes the regions drawn on it.)
     this->setRemoteCuttingPlaneVisible(!this->actionShowCuttingPlane
                                        || this->actionShowCuttingPlane->isChecked());
     qDebug().noquote()
@@ -6968,6 +6958,29 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
     // afterwards — and during the full-res swap that internal Render was
     // firing the synchronous GPU volume upload *before* the deferred render
     // in applyCubeOpenResult, causing the macOS beach-ball.
+}
+
+void vtkWindowCube::placeCuttingPlane(int channel)
+{
+    // One formula for the plane and for whatever is drawn on it (the regions,
+    // #343): cube pixel i, of the full-resolution slice the plane wears, is at
+    // cubeToDisplay(i), and the channel at cubeToDisplay(channel). The plane
+    // used to span the preview's bounds and sit at a fraction of its depth,
+    // which on a strided preview put the last texel and the plane's height a
+    // fraction of a sample away from where the volume shows the same voxels.
+    const auto rect = visivo::regions::cuttingPlane(
+            std::max(1, this->remoteDatasetWidth), std::max(1, this->remoteDatasetHeight),
+            channel, this->m_displaySampling);
+    this->remoteCuttingPlaneSource->SetOrigin(rect.x0, rect.y0, rect.z);
+    this->remoteCuttingPlaneSource->SetPoint1(rect.x1, rect.y0, rect.z);
+    this->remoteCuttingPlaneSource->SetPoint2(rect.x0, rect.y1, rect.z);
+    this->m_planeChannel = channel;
+    this->remoteCuttingPlaneSource->Modified();
+    this->remoteCuttingPlaneSource->Update();
+    if (auto *mapper = this->remoteCuttingPlaneActor->GetMapper()) {
+        mapper->Modified();
+    }
+    this->remoteCuttingPlaneActor->Modified();
 }
 
 void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
@@ -15912,7 +15925,16 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
     const int dsX1 = static_cast<int>(std::lround(origin[0] / spacing[0])) + extent[1];
     const int dsY0 = static_cast<int>(std::lround(origin[1] / spacing[1])) + extent[2];
     const int dsY1 = static_cast<int>(std::lround(origin[1] / spacing[1])) + extent[3];
-    if (voxelX < dsX0 || voxelX > dsX1 || voxelY < dsY0 || voxelY > dsY1) {
+    // The cutting plane wears the whole full-resolution slice and reaches half
+    // a cube pixel past the outer texel centres (cuttingPlane): a hit on it is
+    // a pixel of the cube, inside or outside the displayed volume's box.
+    const bool outside = planeHit
+            ? (std::lround(this->displayToCube(world[0])) < 0
+               || std::lround(this->displayToCube(world[0])) > this->remoteDatasetWidth - 1
+               || std::lround(this->displayToCube(world[1])) < 0
+               || std::lround(this->displayToCube(world[1])) > this->remoteDatasetHeight - 1)
+            : (voxelX < dsX0 || voxelX > dsX1 || voxelY < dsY0 || voxelY > dsY1);
+    if (outside) {
         this->statusBar()->showMessage(u"Pick outside cube bounds."_s, 1500);
         return;
     }
@@ -15924,20 +15946,16 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
     const bool preview = this->m_displaySampling.scale > 1.0;
     int hitZ = rayZ;
     if (preview && planeHit) {
-        // The cutting plane spans the preview's bounds and wears the
-        // FULL-resolution slice as its texture: the pixel is the texel under
-        // the hit, not a preview voxel (whose last one is the cube's
-        // (n - 1) - (n - 1) mod stride, short of the texture's right edge).
-        double bounds[6];
-        cubeImage->GetBounds(bounds);
-        const auto texel = [](double w, double lo, double hi, int count) {
-            if (count <= 1 || !(hi > lo))
-                return 0;
-            const double u = std::clamp((w - lo) / (hi - lo), 0.0, 1.0);
-            return std::clamp(static_cast<int>(std::floor(u * count)), 0, count - 1);
+        // The cutting plane wears the FULL-resolution slice, its texel i
+        // centred at cubeToDisplay(i) (visivo::regions::cuttingPlane): the
+        // pixel is the texel under the hit, not a preview voxel.
+        const auto texel = [this](double w, int count) {
+            return std::clamp(static_cast<int>(std::lround(
+                                      visivo::regions::planeToCube(w, this->m_displaySampling))),
+                              0, std::max(0, count - 1));
         };
-        voxelX = texel(world[0], bounds[0], bounds[1], this->remoteDatasetWidth);
-        voxelY = texel(world[1], bounds[2], bounds[3], this->remoteDatasetHeight);
+        voxelX = texel(world[0], this->remoteDatasetWidth);
+        voxelY = texel(world[1], this->remoteDatasetHeight);
     } else if (preview) {
         // The hit itself, not the preview voxel it rounded to: a block mean's
         // centre is between cube voxels.

@@ -632,6 +632,10 @@ set(PROJECT_SOURCES
         src/gui/RegionListOverlay.h
         src/gui/RegionListExport.cpp
         src/gui/RegionListExport.h
+        src/gui/RegionImport.cpp
+        src/gui/RegionImport.h
+        src/gui/RegionImportResult.h
+        src/gui/RegionCubeSampling.h
         src/gui/ToolResultDialog.cpp
         src/gui/ToolResultDialog.h
         src/gui/CosmologyCalculatorDialog.cpp

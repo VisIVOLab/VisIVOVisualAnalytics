@@ -77,6 +77,9 @@ BackendRegionParseResult BackendClient::parseRegions(const QString &text,
     result.error   = obj.value(QStringLiteral("error")).toString();
     result.format  = obj.value(QStringLiteral("format")).toString();
     result.regions = obj.value(QStringLiteral("regions")).toArray();
+    result.diagnostics = obj.value(QStringLiteral("diagnostics")).toArray();
+    result.skipped = obj.value(QStringLiteral("n_skipped")).toInt(result.diagnostics.size());
+    result.diagnosticsTruncated = obj.value(QStringLiteral("diagnostics_truncated")).toBool();
     return result;
 }
 
