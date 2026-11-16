@@ -87,6 +87,10 @@ public:
     /// selected box at a finer level over its preview. On by default.
     bool getLodEnabled() const;
     void setLodEnabled(bool enabled);
+    /// With level of detail on, refine the part of the cube in view each time
+    /// the camera settles (#321 phase 4). On by default.
+    bool getLodAutoRefine() const;
+    void setLodAutoRefine(bool enabled);
     /// MB the finer blocks of a refined box may take (float32, ghosts
     /// included); 0 means automatic: min(512 MB, the machine's memory / 16).
     int  getLodBudgetMb() const;
@@ -444,6 +448,7 @@ private:
     // Level of detail of the 3-D view of a large cube (issue #321).
     static const std::pair<QString, QVariant> LodEnabled;
     static const std::pair<QString, QVariant> LodBudgetMb;
+    static const std::pair<QString, QVariant> LodAutoRefine;
 };
 
 #endif
