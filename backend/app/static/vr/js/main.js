@@ -2269,6 +2269,9 @@ function setMode(m) {
   ui.pin = null;
 }
 function setClipTool(t) { ui.clipTool = t; finishCropDrag(); clipPlane.finishGrab(); }
+/** The Clipping plane tool is a simulation volume's (#369): with other data
+ *  shown (a radio cube, a point table, a field) the crop takes its place. */
+function planeToolCheck() { if (ui.clipTool === 'plane' && !simulationShown()) setClipTool('box'); }
 
 /** Haptics on the hand in `role` (issue #201): 'press', 'done' or 'error'. */
 function buzz(role, kind) {
@@ -2933,6 +2936,7 @@ function setPage(page) {
   // A point table, a velocity field or a simulation volume (#317) has no
   // velocity range: Range is the crop (#277).
   // A simulation volume's Range also has the clipping plane (#369).
+  planeToolCheck();
   if (page === 'range' && ((!state.cube && layers.hasScene()) || simulationShown()) && ui.clipTool === 'slab') setClipTool('box');
 }
 
@@ -3754,6 +3758,7 @@ function desktopFrame(time) {
   if (xr || !single.active) { desktopRunning = false; return; }
   requestAnimationFrame(desktopFrame);
   if (gl.isContextLost()) return;      // until it is restored (epic #166)
+  planeToolCheck();
   const t0 = performance.now();
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const w = Math.floor(canvas.clientWidth * dpr), h = Math.floor(canvas.clientHeight * dpr);
@@ -4632,6 +4637,7 @@ function pressedEdge(key, pressed) {
 }
 
 function handleInput(frame, dtS) {
+  planeToolCheck();
   const hands = {};
   const handKeys = new Set();
   for (const src of xr.session.inputSources) {

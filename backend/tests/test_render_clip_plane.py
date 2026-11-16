@@ -111,7 +111,7 @@ def test_the_section_is_the_value_on_the_plane_where_the_rays_enter_the_kept_hal
     clip = CP.parse_clip_plane({"origin": [c, c, c], "normal": [0, 0, -1]})
     layer = CP.section_layer(clip, eye, (size, size), (N, N, N), (field, (0.0, 0.0, 0.0), 1.0), COLOUR, OPACITY)
     assert layer is not None
-    rgba, depth = layer
+    rgba, depth = layer.dense()
     on = rgba[..., 3] > 0
     # The cube's cross-section seen from 1 m: 0.5 m wide, a quarter of the 90° field.
     cols = np.nonzero(on.any(0))[0]
@@ -133,7 +133,7 @@ def test_the_section_is_the_value_on_the_plane_where_the_rays_enter_the_kept_hal
     # Inside the clipping box only: x below 16 voxels.
     boxed = CP.section_layer(clip, eye, (size, size), (N, N, N), (field, (0.0, 0.0, 0.0), 1.0), COLOUR, OPACITY,
                              crop=(-0.5, 15.5, -0.5, 63.5, -0.5, 63.5))
-    assert boxed is not None and 0 < boxed[0][..., 3].astype(bool).any(0).sum() < 0.08 * size
+    assert boxed is not None and 0 < boxed.dense()[0][..., 3].astype(bool).any(0).sum() < 0.08 * size
 
 
 def test_a_slab_shows_the_face_the_ray_enters_through():
@@ -141,7 +141,7 @@ def test_a_slab_shows_the_face_the_ray_enters_through():
     eye, size = _eye(64), 64
     c = (N - 1) / 2
     slab = CP.parse_clip_plane({"origin": [c, c, c], "normal": [0, 0, 1], "thickness": 8})
-    rgba, depth = CP.section_layer(slab, eye, (size, size), (N, N, N), (field, (0.0, 0.0, 0.0), 1.0), COLOUR, OPACITY)
+    rgba, depth = CP.section_layer(slab, eye, (size, size), (N, N, N), (field, (0.0, 0.0, 0.0), 1.0), COLOUR, OPACITY).dense()
     on = rgba[..., 3] > 0
     # The near face, 4 voxels (4 / 64 * 0.5 m) nearer than the centre.
     assert np.allclose(S.eye_distance(depth[on], eye["depth_projection"]), DIST - 4 / N * 0.5, atol=2e-3)
@@ -151,16 +151,49 @@ def test_the_section_goes_in_front_of_the_volume():
     rgba = np.zeros((2, 2, 4), np.uint8)
     rgba[0, 0] = [100, 50, 0, 128]                 # premultiplied volume colour
     rgba[1, 1] = [255, 255, 255, 0]                # the mapper's clear value
-    layer = np.zeros((2, 2, 4), np.float32)
-    layer[0, 0] = [0.5, 0.0, 0.0, 0.5]
-    layer[1, 1] = [0.0, 0.5, 0.0, 0.5]
+    layer = CP.Section((2, 2), np.array([0, 1]), np.array([0, 1]),
+                       np.array([[0.5, 0.0, 0.0], [0.0, 0.5, 0.0]], np.float32), 0.5,
+                       np.array([0.5, 0.5], np.float32), 4)
     depth = np.full((2, 2), 0.9, np.float32)
-    sdepth = np.full((2, 2), 0.5, np.float32)
-    out, d = CP.composite_section(rgba, depth, (layer, sdepth), premultiplied=True)
+    out, d = CP.composite_section(rgba, depth, layer, premultiplied=True)
     assert out[0, 0].tolist() == [round(255 * 0.5 + 50), 25, 0, round(255 * (0.5 + 0.5 * 128 / 255))]
     assert out[1, 1].tolist() == [0, 128, 0, 128], "the clear white is not mixed in"
     assert out[0, 1].tolist() == [0, 0, 0, 0] and d[0, 0] == pytest.approx(0.5) and d[0, 1] == pytest.approx(0.9)
     assert rgba[0, 0].tolist() == [100, 50, 0, 128], "the input is not changed"
+
+
+def test_only_the_sections_screen_box_is_unprojected_a_tile_at_a_time():
+    # A headset-sized eye (2064 x 2208) looking at a small cube: the section
+    # covers a few thousand pixels, and only its screen box is examined.
+    import time
+    import tracemalloc
+    size = (2064, 2208)
+    p = S.parse_pose(pose(1, 64, ipd=0.0))
+    eye = S.stereo_eye(p.eyes[0].view, S.projection_from_fov(
+        {"left": -0.9, "right": 0.9, "up": 0.95, "down": -0.95, "near": 0.1, "far": 100.0}),
+        p.model, (N, N, N), 1.0)
+    field = np.full((N, N, N), 10.0, np.float32)
+    c = (N - 1) / 2
+    clip = CP.parse_clip_plane({"origin": [c, c, c], "normal": [0.2, 0.1, -1.0]})
+    tracemalloc.start()
+    t = time.perf_counter()
+    sec = CP.section_layer(clip, eye, size, (N, N, N), (field, (0.0, 0.0, 0.0), 1.0), COLOUR, OPACITY)
+    elapsed = time.perf_counter() - t
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert sec is not None and len(sec.rows) > 100_000
+    # The box of the section, not the eye: at most twice the pixels it covers.
+    assert sec.examined < 2 * len(sec.rows) and sec.examined < 0.2 * size[0] * size[1]
+    # Bounded temporaries (a tile of rows) and time, on any machine.
+    assert peak < 200e6, f"{peak / 1e6:.0f} MB"
+    assert elapsed < 1.0, f"{elapsed:.2f} s"
+    # Whatever the tiling, the same pixels as a single tile.
+    CP.TILE_PIXELS, keep = 1 << 30, CP.TILE_PIXELS
+    try:
+        whole = CP.section_layer(clip, eye, size, (N, N, N), (field, (0.0, 0.0, 0.0), 1.0), COLOUR, OPACITY)
+    finally:
+        CP.TILE_PIXELS = keep
+    assert np.array_equal(np.sort(sec.rows * size[0] + sec.cols), np.sort(whole.rows * size[0] + whole.cols))
 
 
 def test_the_threshold_is_the_opacity_functions_first_point_above_zero():

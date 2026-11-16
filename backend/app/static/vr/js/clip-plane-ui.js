@@ -31,7 +31,7 @@ export function createClipPlane(deps) {
   let grab = null;             // a trigger or mouse drag under way
   let hover = false;           // the ray on the plane's section
   let linesKey = '';
-  let cache = { plane: null, shader: null, cmd: null };
+  let cache = { plane: null, avail: false, shader: null, cmd: null };
 
   const dims = () => (state.info && Array.isArray(state.info.full_shape) ? state.info.full_shape.map(Number) : null);
   /** Is there a plane to cut with (a simulation volume on show)? */
@@ -40,9 +40,12 @@ export function createClipPlane(deps) {
   const current = () => (available() && plane.on ? plane : null);
 
   function refresh() {
-    if (cache.plane === plane) return;
+    // Kept until the plane changes or stops (or starts) applying: a radio cube
+    // of the same shape after a simulation volume is never cut by its plane.
+    const avail = available();
+    if (cache.plane === plane && cache.avail === avail) return;
     const cur = current();
-    cache = { plane, shader: cur ? CP.shaderParams(cur) : null, cmd: CP.command(cur) };
+    cache = { plane, avail, shader: cur ? CP.shaderParams(cur) : null, cmd: CP.command(cur) };
   }
 
   function set(p, { undoSnap = null } = {}) {
@@ -59,6 +62,8 @@ export function createClipPlane(deps) {
     finishGrab();
     if (!d || d.length !== 3) { plane = null; cache.plane = undefined; return; }
     if (!CP.fitsCube(plane, d)) { plane = CP.defaultPlane(d); cache.plane = undefined; linesKey = ''; }
+    // Not a simulation volume: no plane (a radio cube of the same shape starts without one).
+    if (!deps.isSimulation() && plane.on) { plane = { ...CP.copyPlane(plane), on: false }; cache.plane = undefined; linesKey = ''; }
   }
 
   // ── The menu ─────────────────────────────────────────────────────────────
@@ -124,9 +129,10 @@ export function createClipPlane(deps) {
     }
     hover = !!ray && onSection(ray);
     if (edge && ray && handWorld) {
-      const snap = deps.snapshot();
-      if (!plane.on) plane = { ...CP.copyPlane(plane), on: true };
-      grab = { g: CP.startGrab(plane, state.extent, ray, toModel(handWorld)), snap, before: JSON.stringify(plane) };
+      // The undo step's plane before the grab, before it is turned on: a click that only turns it on is a step too.
+      const snap = deps.snapshot(), before = JSON.stringify(plane);
+      if (!plane.on) { plane = { ...CP.copyPlane(plane), on: true }; cache.plane = undefined; }
+      grab = { g: CP.startGrab(plane, state.extent, ray, toModel(handWorld)), snap, before };
       deps.buzz('press');
       deps.changed();
       return true;
@@ -144,7 +150,9 @@ export function createClipPlane(deps) {
     deps.changed();
   }
 
-  /** The primary stick with the plane tool: ↕ along the normal, ↔ the slab's thickness. */
+  /** The primary stick with the plane tool: ↕ along the normal, ↔ the slab's thickness.
+   *  Its undo step is main.js's: one per push of a stick, from rest to rest
+   *  (the look, the plane in it, taken before the push's first change). */
   function stick(action, v, dtS) {
     if (!available() || !plane.on) return false;
     if (action === 'plane-move') {
@@ -167,9 +175,10 @@ export function createClipPlane(deps) {
     if (!available() || !deps.toolOn()) return false;
     const ray = modelRay(worldRay);
     if (!(current() && onSection(ray)) && !shift) return false;
-    if (!plane.on) plane = { ...CP.copyPlane(plane), on: true };
+    const snap = deps.snapshot(), before = JSON.stringify(plane);
+    if (!plane.on) { plane = { ...CP.copyPlane(plane), on: true }; cache.plane = undefined; }
     grab = { mouse: true, shift, d0: ray.d, u0: CP.alongNormal(plane, state.extent, ray), p0: CP.copyPlane(plane),
-      snap: deps.snapshot(), before: JSON.stringify(plane) };
+      snap, before };
     deps.changed();
     return true;
   }
