@@ -8,13 +8,6 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
-- **Desktop: WCS axis labels follow every camera change (#362).** The axis
-  labels of the 2-D views (the cube's slice and moment map, its Product panes
-  and the image viewer) were computed after each frame was drawn, so a single
-  frame (Shift+R, a fit, a zoom to a region, a restored product, a camera
-  taken from a linked view) left the old labels on screen until the next
-  interaction. A frame that moved the camera is now drawn once more when the
-  camera settles; the catalogue labels follow the same way.
 - **VR: overlay two or three variables of a simulation volume (#357).** The
   hand menu's new *Overlay* page (from *Display ▸ Rendering*) shows two or
   three variables of a VBT volume or a PLUTO output in one view, each with
