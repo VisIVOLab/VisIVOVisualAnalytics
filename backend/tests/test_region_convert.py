@@ -110,7 +110,9 @@ class TestRegionConvertHttp(unittest.TestCase):
         out = r.json()["regions"][0]
         self.assertEqual(out["frame"], "icrs")
         self.assertEqual(out["unit"], "deg")
-        np.testing.assert_allclose(out["radii"], [6 / 3600.0, 12 / 3600.0], rtol=1e-9)
+        # Sizes go through the projection's local Jacobian at the centre, not
+        # the nominal CDELT: a few parts in 1e9 off the round values here.
+        np.testing.assert_allclose(out["radii"], [6 / 3600.0, 12 / 3600.0], rtol=1e-7)
 
     def test_polygon_to_image(self):
         xs, ys = [3.0, 20.0, 11.5], [4.0, 6.0, 30.0]

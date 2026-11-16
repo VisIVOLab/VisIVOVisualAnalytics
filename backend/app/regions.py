@@ -1591,6 +1591,22 @@ def _rescale(nr: dict[str, Any], src_unit: str, dst_unit: str, along, iso: float
     nr["unit"] = dst_unit
 
 
+def rescale_angle_units(region: dict[str, Any], dst_unit: str) -> None:
+    """Rewrite a sky region's sizes from its own angle unit to ``dst_unit``
+    (deg, arcmin or arcsec) in place. Pixel sizes are not handled here: a
+    region moved onto the sky by :func:`convert_regions` already has its
+    sizes in an angle unit, measured along its own axes."""
+    src_unit = region.get("unit", "deg")
+    if src_unit == dst_unit or not _has_sizes(region):
+        region["unit"] = dst_unit
+        return
+    if src_unit not in _ANGLE_TO_DEG or dst_unit not in _ANGLE_TO_DEG:
+        raise RegionParseError(f"Cannot rescale sizes from '{src_unit}' to '{dst_unit}'.")
+    f = _ANGLE_TO_DEG[src_unit] / _ANGLE_TO_DEG[dst_unit]
+    _scale_sizes(region, f, f, f)
+    region["unit"] = dst_unit
+
+
 def _has_sizes(region: dict[str, Any]) -> bool:
     return any(k in region for k in _ISO_SIZE_KEYS + _AXIS_SIZE_KEYS + ("length",))
 
