@@ -49,6 +49,12 @@ uniform vec3 uCamTex, uBoxMin, uBoxMax, uVoxDims, uCellDims, uTexScale;
 // linear filtering never reads past the cube's last voxel. For a storage of
 // the cube's own size this is what CLAMP_TO_EDGE does.
 uniform vec3 uSampleScale, uStoreLo, uStoreHi;
+// The crop in more detail (issue #328): the texture may hold a region of the
+// cube, its own box q = (p - uRegLo) * uRegScale of the cube's box p (the
+// whole cube: lo 0, scale 1). uVoxRatio, the region's voxel over the coarse
+// cube's, keeps the opacity per unit length the coarse cube's.
+uniform vec3 uRegLo, uRegScale;
+uniform float uVoxRatio;
 uniform float uCell, uThr, uCmin, uCmax, uStretchA, uOpacity, uSpv;
 uniform int uEnc, uMaxSteps, uMode, uSkip;
 // The colour scale's stretch (issue #258, levels.js stretchValue): 0 linear,
@@ -95,8 +101,9 @@ bool cellMeetsMask(vec3 cf) {
 // p is a box coordinate (0..1 over the cube's full-resolution extent); the
 // texture covers whole blocks, so a partial last block makes the texture a
 // little longer than the box: uTexScale = full pixels / (blocks * factor).
+vec3 toReg(vec3 p) { return (p - uRegLo) * uRegScale; }
 float normAt(vec3 p) {
-  float s = texture(uVol, clamp(p * uSampleScale, uStoreLo, uStoreHi)).r;
+  float s = texture(uVol, clamp(toReg(p) * uSampleScale, uStoreLo, uStoreHi)).r;
   return uEnc == 0 ? (s * 255.0 - 1.0) / 254.0 : s;
 }
 
@@ -110,9 +117,9 @@ void main() {
   float tn = max(max(tlo.x, tlo.y), max(tlo.z, 0.0));
   float tf = min(min(thi.x, thi.y), thi.z);
   if (tf <= tn) discard;
-  vec3 vox = uVoxDims * uTexScale;                  // reduced voxels per box unit
-  float dt = 1.0 / (length(d * vox) * uSpv);         // one step = 1/uSpv voxels
-  float stepVox = 1.0 / uSpv;
+  vec3 vox = uVoxDims * uTexScale;                  // reduced voxels per box unit (of the region)
+  float dt = 1.0 / (length(d * uRegScale * vox) * uSpv);   // one step = 1/uSpv voxels
+  float stepVox = uVoxRatio / uSpv;                  // in coarse voxels: the same opacity per length
   float jit = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   float t = tn + dt * jit;
   vec4 acc = vec4(0.0);
@@ -123,14 +130,14 @@ void main() {
     if (i >= uMaxSteps || t > tf) break;
     vec3 p = o + d * t;
     if (uSkip == 1) {
-      vec3 cf = clamp(floor(p * vox / uCell), vec3(0.0), uCellDims - 1.0);
+      vec3 cf = clamp(floor(toReg(p) * vox / uCell), vec3(0.0), uCellDims - 1.0);
       float m = texelFetch(uMacro, ivec3(cf), 0).r;
       float need = (uMaskOnly == 1 || uMaskMode == 2) ? 2.0 : (uMode == 1 ? max(uThr, best) : uThr);
       // A selected voxel is drawn below the threshold too (the lasso grows into
       // the faint margin), so the cells it meets are never skipped.
       if (m < need && !(uMaskOn == 1 && uMaskCells == 0 && cellMeetsMask(cf))) {
-        vec3 a = (cf * uCell / vox - o) * inv;
-        vec3 b = ((cf + 1.0) * uCell / vox - o) * inv;
+        vec3 a = (cf * uCell / vox / uRegScale + uRegLo - o) * inv;
+        vec3 b = ((cf + 1.0) * uCell / vox / uRegScale + uRegLo - o) * inv;
         float texit = min(min(max(a.x, b.x), max(a.y, b.y)), max(a.z, b.z));
         t = max(t, texit) + 0.01 * dt;
         continue;
@@ -758,6 +765,7 @@ export class Renderer {
    */
   useVolume(slot) {
     if (!slot || slot.lost || slot.released) throw new Error('that volume is no longer on the GPU');
+    if (slot !== this.region) this.region = null;
     if (slot !== this.slot) { this.mask = null; this._maskInput = null; this._layer = null; }
     this.slot = slot;
     this.volTex = slot.volTex;
@@ -1031,8 +1039,41 @@ export class Renderer {
 
   /** A cube written into the capacity (writeVolume, beginWrite) put on show;
    *  a volume of its own shown before is given back. */
+  /**
+   * The crop's region in more detail (issue #328) put on show from a written
+   * slot. The selection and the mask layer are on the coarse cube's grid:
+   * kept, not drawn, while the region is on show (setMask stores them).
+   */
+  showRegion(slot, cube) {
+    const keep = { sel: this._maskInput, layer: this._layer };
+    // The coarse cube stays the volume a lost context is restored from
+    // (restore()): the region is never put back as if it were the cube.
+    const coarse = this._volume;
+    const up = this.showWritten(slot, cube);
+    this._volume = coarse;
+    this.region = slot;
+    this._maskInput = keep.sel;
+    this._layer = keep.layer;
+    this.mask = null;
+    return up;
+  }
+
+  /** Back to the coarse cube's slot (still in its bank), with its selection
+   *  and mask layer drawn again. */
+  showCoarse(slot, cube) {
+    const keep = { sel: this._maskInput, layer: this._layer };
+    this.region = null;
+    const up = this.showWritten(slot, cube);
+    if (keep.sel || keep.layer) {
+      this._maskInput = keep.sel;
+      this.setMaskLayer(keep.layer);
+    }
+    return up;
+  }
+
   showWritten(slot, { data, dims, encoding }) {
     const old = this.slot;
+    this.region = null;              // a cube or the coarse cube: showRegion sets it again
     this._volume = { data, dims, encoding, cell: slot.cell };
     this.useVolume(slot);
     if (old && !old.cap) this.releaseVolume(old);
@@ -1045,6 +1086,12 @@ export class Renderer {
    *  an allocation, so it is safe in VR (issue #229). The shader reads only
    *  [origin, origin + dims), so what lies beyond in the storage is never seen. */
   setMask(reduced) {
+    if (this.region && this.slot === this.region) {
+      // The crop's region on show (#328): kept for the coarse cube, drawn with it.
+      this._maskInput = reduced && reduced.count ? reduced : null;
+      this.mask = null;
+      return;
+    }
     if (this._layer) { this._composeMask(reduced && reduced.count ? reduced : null); return; }
     if (!reduced || !reduced.count) {
       this._maskInput = null;
@@ -1552,6 +1599,10 @@ export class Renderer {
     gl.uniform3fv(u.uStoreLo, [0, 1, 2].map((i) => 0.5 / st[i]));
     gl.uniform3fv(u.uStoreHi, [0, 1, 2].map((i) => (this.dims[i] - 0.5) / st[i]));
     gl.uniform3fv(u.uCellDims, this.macroDims);
+    const reg = p.region || null;
+    gl.uniform3fv(u.uRegLo, reg ? reg.lo : [0, 0, 0]);
+    gl.uniform3fv(u.uRegScale, reg ? reg.scale : [1, 1, 1]);
+    gl.uniform1f(u.uVoxRatio, reg ? reg.voxRatio : 1);
     gl.uniform1f(u.uCell, this.cell);
     gl.uniform1f(u.uThr, p.thr);
     gl.uniform1f(u.uCmin, p.cmin);
