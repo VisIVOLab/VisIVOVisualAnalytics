@@ -19,7 +19,10 @@
 // A simulation volume (ctx.simulation, issue #317) is a cube without a
 // spectral axis: no noise σ (Display offers the 90 % and 99 % percentiles
 // where a cube has 3σ and 5σ), no velocity range (its z is cropped as x and
-// y are), no Kinematic Lasso, Spectrum probe, moments or PV slices.
+// y are), no Kinematic Lasso, Spectrum probe, moments or PV slices; its
+// Range page has the clipping plane (issue #369) where a cube has its
+// velocity range: on/off, flip, snap to an axis, a slab, reset, and the
+// Clipping plane tool beside the Spatial crop.
 // Its Overlay page (issue #357, one press from Display's Rendering row)
 // overlays two or three of its variables, each with its own colour map,
 // scale, threshold, colour max and opacity.
@@ -157,6 +160,8 @@ export function defaultContext() {
     // storage), fieldPage}, or null (not a simulation with two variables).
     ov: null,
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
+    // The clipping plane of a simulation volume (#369): {available, on, slab}.
+    plane: { available: false, on: false, slab: false },
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     src: { total: 0, shown: false, canAdd: false },
     mask: { loaded: false, shown: false, picking: false, canUndo: false, canSave: false },
@@ -428,23 +433,49 @@ function dataPage(ctx) {
 function rangePage(ctx) {
   const cube = ctx.kind === 'cube';
   const sim = cube && !!ctx.simulation;
+  if (sim) return simRangePage(ctx);
   const rows = [['slab', ctx.spectralName], ['trigger', 'Trigger'], ['crop0', 'Crop x'], ['crop1', 'Crop y'], ['crop2', 'Crop z'],
     ['crop', 'Spatial crop']];
-  // A simulation volume's z is cropped as x and y are: no spectral range.
-  const notCube = sim ? WHY.simulation : cube ? '' : WHY.noSpectral;
+  const notCube = cube ? '' : WHY.noSpectral;
   const w = [
     { id: 'slab', kind: 'range', rect: [X0, rowY(0), 560, WH], disabled: notCube },
     btn('slab-all', [X0 + 570, rowY(0), RIGHT - X0 - 570, WH], 'Full band', { disabled: notCube }),
-    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && !sim && ctx.clipTool === 'slab', disabled: notCube,
+    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && ctx.clipTool === 'slab', disabled: notCube,
       tip: 'The trigger centres the range on the emission' }),
     // The crop is drawn and grabbed on every kind of data (#277).
-    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.kind !== 'none' && (sim || ctx.clipTool === 'box'),
+    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.kind !== 'none' && ctx.clipTool === 'box',
       tip: 'Drag a dot, the inside, or elsewhere for a new box' }),
   ];
+  cropRows(w, cube, false);
+  return { rows, widgets: w, status: 6 };
+}
+
+function cropRows(w, cube, sim) {
   for (const a of [0, 1, 2]) {
     w.push({ id: `crop:${a}`, kind: 'range', rect: [X0, rowY(2 + a), RIGHT - X0, WH], axis: a, disabled: cube && !sim && a === 2 ? WHY.cubeZ : '' });
   }
   w.push(btn('crop-reset', [X0, rowY(5), 300, WH], 'Reset crop'));
+}
+
+/** A simulation volume's Range page (#317, #369): no spectral range; its z
+ *  is cropped as x and y are, and the first row is the clipping plane. */
+function simRangePage(ctx) {
+  const pl = ctx.plane || {};
+  const rows = [['plane', 'Plane'], ['trigger', 'Trigger'], ['crop0', 'Crop x'], ['crop1', 'Crop y'], ['crop2', 'Crop z'],
+    ['crop', 'Spatial crop']];
+  const p = (k) => span(0, 5, k);
+  const w = [
+    btn('plane:on', p(0), pl.on ? 'On' : 'Off', { group: 'plane', on: !!pl.on, tip: 'The clipping plane: on or off' }),
+    btn('plane:flip', p(1), 'Flip', { tip: 'Keep the other side of the plane' }),
+    btn('plane:snap', p(2), 'Snap', { tip: 'Turn the plane to the box axis nearest to it' }),
+    btn('plane:slab', p(3), 'Slab', { on: !!pl.on && !!pl.slab, tip: 'Keep a slab between two parallel planes; stick ↔ sets its thickness' }),
+    btn('plane:reset', p(4), 'Reset', { tip: 'Back through the centre, across x' }),
+    btn('sub:clip:box', span(1, 2, 0), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.clipTool !== 'plane',
+      tip: 'Drag a dot, the inside, or elsewhere for a new box' }),
+    btn('sub:clip:plane', span(1, 2, 1), 'Clipping plane', { group: 'sub-clip', value: 'plane', icon: 'plane', on: ctx.clipTool === 'plane',
+      tip: 'Hold the trigger to move and turn the plane; stick ↕ along its normal' }),
+  ];
+  cropRows(w, true, true);
   return { rows, widgets: w, status: 6 };
 }
 

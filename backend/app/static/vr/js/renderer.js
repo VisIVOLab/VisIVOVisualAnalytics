@@ -12,6 +12,7 @@ import { mulInto, imageUses } from './gltf.js';
 import { guardTex3D, tex3dInXRError } from './xr-gl-guard.js';
 import { composeMask, layerCells } from './mask-layer.js';
 import { lutAtlas, LUT_ROWS, apronBlocksC, prepareOverlay, overlayBytes, bytesPerVoxel } from './overlay.js';
+import { CLIP_GLSL, setClipUniforms } from './clip-plane.js';
 
 /** The eye's position from a rigid view matrix (−Rᵀt), into `out`. */
 function eyeOf(v, out) {
@@ -79,6 +80,8 @@ const vec3 MASK_COLOR = vec3(0.25, 1.0, 0.45);
 uniform int uMaskMode;
 uniform int uMaskCells;
 const vec3 OUTLINE_COLOR = vec3(1.0, 0.78, 0.3);
+// The free clipping plane (issue #369, clip-plane.js).
+${CLIP_GLSL}
 
 float stretchFn(float x) {
   if (uStretch == 1) return log(1.0 + uStretchA * x) / log(1.0 + uStretchA);
@@ -118,6 +121,8 @@ void main() {
   float tn = max(max(tlo.x, tlo.y), max(tlo.z, 0.0));
   float tf = min(min(thi.x, thi.y), thi.z);
   if (tf <= tn) discard;
+  float cut = clipRay(o, d, tn, tf);
+  if (cut < 0.0) discard;
   vec3 vox = uVoxDims * uTexScale;                  // reduced voxels per box unit (of the region)
   float dt = 1.0 / (length(d * uRegScale * vox) * uSpv);   // one step = 1/uSpv voxels
   float stepVox = uVoxRatio / uSpv;                  // in coarse voxels: the same opacity per length
@@ -126,6 +131,15 @@ void main() {
   vec4 acc = vec4(0.0);
   float best = -1.0;
   float bestMask = 0.0;
+  // The plane's section (issue #369): where the ray enters through the plane,
+  // the value there in the colour map, above the threshold only.
+  if (cut > 0.0 && uMode == 0 && uMaskOnly == 0 && uMaskMode <= 1) {
+    float v = normAt(o + d * tn);
+    if (v >= uThr) {
+      float x = stretchFn(clamp((v - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0));
+      acc = vec4(texture(uLut, vec2(x, 0.5)).rgb * uSectionA, uSectionA);
+    }
+  }
   int i = 0;
   for (; i < ${MAX_LOOP}; i++) {
     if (i >= uMaxSteps || t > tf) break;
@@ -219,6 +233,7 @@ uniform float uCell, uSpv;
 uniform int uEnc, uMaxSteps, uMode, uSkip;
 uniform vec3 uThr, uCmin, uCmax, uStretchA, uOpacity;
 uniform ivec3 uStretch;
+${CLIP_GLSL}
 
 float stretchK(float x, int s, float a) {
   if (s == 1) return log(1.0 + a * x) / log(1.0 + a);
@@ -243,6 +258,8 @@ void main() {
   float tn = max(max(tlo.x, tlo.y), max(tlo.z, 0.0));
   float tf = min(min(thi.x, thi.y), thi.z);
   if (tf <= tn) discard;
+  float cut = clipRay(o, d, tn, tf);
+  if (cut < 0.0) discard;
   vec3 vox = uVoxDims * uTexScale;
   float dt = 1.0 / (length(d * vox) * uSpv);
   float stepVox = 1.0 / uSpv;
@@ -251,6 +268,20 @@ void main() {
   vec4 acc = vec4(0.0);
   float best = -1.0;
   int bestField = 0;
+  if (cut > 0.0 && uMode == 0) {
+    // The section (#369): the fields above their thresholds, weighted as a step's colour.
+    vec3 s = texture(uVol, clamp((o + d * tn) * uSampleScale, uStoreLo, uStoreHi)).rgb;
+    vec3 v = uEnc == 0 ? (s * 255.0 - 1.0) / 254.0 : s;
+    vec3 on = vec3(greaterThanEqual(v, uThr));
+    vec3 x = colourIn(v);
+    vec3 w = on * (0.04 + x);
+    float W = w.x + w.y + w.z;
+    if (W > 0.0) {
+      vec3 col = (w.x * texture(uLut, vec2(x.x, 0.125)).rgb + w.y * texture(uLut, vec2(x.y, 0.375)).rgb
+        + w.z * texture(uLut, vec2(x.z, 0.625)).rgb) / W;
+      acc = vec4(col * uSectionA, uSectionA);
+    }
+  }
   int i = 0;
   for (; i < ${MAX_LOOP}; i++) {
     if (i >= uMaxSteps || t > tf) break;
@@ -695,6 +726,7 @@ export class Renderer {
     this.selLines = lineVao();     // selections (model space): rebuilt when they change
     this.cropLines = lineVao();    // the spatial crop's box (#277, model space): rebuilt when it changes
     this.pselLines = lineVao();    // a point table's box selection (#259, model space): rebuilt when it changes
+    this.planeLines = lineVao();   // the clipping plane's outline and arrow (#369, model space): rebuilt when it changes
 
     this.labelVao = gl.createVertexArray();
     this.labelBuf = gl.createBuffer();
@@ -1521,7 +1553,7 @@ export class Renderer {
   /** Segments: array of {a: [x,y,z], b: [x,y,z], color: [r,g,b,a]} in model space. */
   setLines(segments, target = this.boxLines) {
     const gl = this.gl;
-    for (const name of ['boxLines', 'tmpLines', 'selLines', 'cropLines', 'pselLines']) if (this[name] === target) this._lineSegs[name] = segments;
+    for (const name of ['boxLines', 'tmpLines', 'selLines', 'cropLines', 'pselLines', 'planeLines']) if (this[name] === target) this._lineSegs[name] = segments;
     const arr = new Float32Array(segments.length * 14);
     segments.forEach((s, i) => {
       arr.set([...s.a, ...s.color, ...s.b, ...s.color], i * 14);
@@ -1984,6 +2016,7 @@ export class Renderer {
     gl.uniform3i(u.uMaskDims, ...(mk ? mk.dims : [0, 0, 0]));
     gl.uniform1i(u.uMaskMode, mk && this._layer ? (p.maskMode || 0) : 0);
     gl.uniform1i(u.uMaskCells, mk && this._layer ? 1 : 0);
+    setClipUniforms(gl, u, p.clipPlane || null);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.FRONT);             // back faces: works with the eye inside the box
     gl.disable(gl.DEPTH_TEST);
@@ -2039,6 +2072,7 @@ export class Renderer {
     gl.uniform3fv(u.uStretchA, q.stretchA);
     gl.uniform3fv(u.uOpacity, q.opacity);
     gl.uniform3i(u.uStretch, q.stretch[0], q.stretch[1], q.stretch[2]);
+    setClipUniforms(gl, u, p.clipPlane || null);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, ov.volTex);
     gl.uniform1i(u.uVol, 0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, ov.macroTex);

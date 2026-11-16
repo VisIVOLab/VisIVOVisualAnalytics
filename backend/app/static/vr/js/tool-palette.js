@@ -9,7 +9,8 @@
 // secondary stick ←/→ steps through the same list, in the same order. A
 // simulation volume (kind 'volume', issue #317) has no spectral axis: the
 // spectral tools (Kinematic Lasso, Spectrum probe, Velocity range, Moment, PV
-// slice) are greyed on it.
+// slice) are greyed on it, and its Clipping plane (issue #369) stands where
+// a cube has the Velocity range.
 //
 // Layout, placement, the active tool and the picks are pure
 // (backend/tests/vr/tool-palette.test.mjs); drawPalette needs a 2-D context.
@@ -50,13 +51,20 @@ export const TOOLS = [
   { id: 'pv', group: 'measure', short: 'PV slice', name: 'PV slice', measure: 'pv', kinds: ['cube'],
     desc: 'The trigger adds the points of a position-velocity slice.' },
 ];
-export const toolById = (id) => TOOLS.find((t) => t.id === id) || null;
+/** A simulation volume's clipping plane (issue #369): in the palette where a
+ *  cube has its Velocity range (a volume has no spectral axis; the plane is
+ *  its slab along any direction). */
+export const PLANE_TOOL = { id: 'plane', group: 'range', short: 'Plane', name: 'Clipping plane', mode: 'clip', sub: 'plane', kinds: ['volume'],
+  desc: 'Hold the trigger to move and turn a plane that cuts the volume.' };
+export const toolById = (id) => TOOLS.find((t) => t.id === id) || (id === PLANE_TOOL.id ? PLANE_TOOL : null);
+/** The palette's tools for data `kind`: on a simulation volume the plane where the Velocity range is. */
+export const toolsFor = (kind) => (kind === 'volume' ? TOOLS.map((t) => (t.id === 'slab' ? PLANE_TOOL : t)) : TOOLS);
 
 /** The tool in use, from the mode and its tool (a PV slice being drawn first). */
 export function activeTool(mode, sub, pvArmed = false) {
   if (pvArmed) return 'pv';
   if (mode === 'select') return ['lasso', 'probe', 'box'].includes(sub) ? sub : 'lasso';
-  if (mode === 'clip') return sub === 'box' ? 'crop' : 'slab';
+  if (mode === 'clip') return sub === 'box' ? 'crop' : sub === 'plane' ? 'plane' : 'slab';
   return 'explore';
 }
 
@@ -65,6 +73,7 @@ export function activeTool(mode, sub, pvArmed = false) {
 export function whyNot(t, kind) {
   if (kind === 'none' || !kind) return 'Open a cube, a point table or a velocity field first.';
   if (t.kinds.includes(kind)) return '';
+  if (t.kinds.length === 1 && t.kinds[0] === 'volume') return 'Simulation volumes only: a cube has its velocity range.';
   return kind === 'volume' ? 'Spectral cubes only: a simulation volume has no spectral axis.'
     : 'Cubes only: not on a point table or a velocity field.';
 }
@@ -77,7 +86,7 @@ export const TOOLTIP_Y = Y_ICON + CELL + LABEL_H + 18;
 export function paletteLayout(ctx = { kind: 'none', active: 'explore' }) {
   const out = [];
   let x = X0, prev = null;
-  for (const t of TOOLS) {
+  for (const t of toolsFor(ctx.kind)) {
     if (prev) x += prev === t.group ? GAP : GROUP_GAP;
     out.push({ id: `tool:${t.id}`, kind: 'button', rect: [x, Y_ICON, CELL, CELL + LABEL_H], tool: t.id, group: t.group,
       label: t.short, on: ctx.active === t.id, disabled: whyNot(t, ctx.kind) });
@@ -121,7 +130,7 @@ export function tooltip(hoverId, ctx) {
  *  that applies to `kind` (Moment computes the intensity map when stepped on,
  *  PV slice starts drawing one, as when picked). */
 export function stepTool(from, kind, step = 1) {
-  const list = TOOLS.filter((t) => !whyNot(t, kind));
+  const list = toolsFor(kind).filter((t) => !whyNot(t, kind));
   if (!list.length) return null;
   const i = list.findIndex((t) => t.id === from);
   const n = list.length;
