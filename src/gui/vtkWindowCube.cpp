@@ -1686,6 +1686,21 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->upperBound = 1.f;
     }
 
+    // Issue #362: one redraw of a 2-D view once its camera settles, so the axis labels computed
+    // after the last frame are on screen (onSliceCameraFrame, onMomentCameraFrame).
+    for (QTimer *redraw : { &this->m_sliceOverlayRedraw, &this->m_momentOverlayRedraw }) {
+        redraw->setSingleShot(true);
+        redraw->setInterval(LinkedCameraSync::kOverlayRedrawDelayMs);
+    }
+    QObject::connect(&this->m_sliceOverlayRedraw, &QTimer::timeout, this, [this]() {
+        if (this->sliceWin)
+            this->sliceWin->Render();
+    });
+    QObject::connect(&this->m_momentOverlayRedraw, &QTimer::timeout, this, [this]() {
+        if (this->momentWin)
+            this->momentWin->Render();
+    });
+
     // Setup Renderers
     this->setupCubeRenderer();
     this->setupSliceRenderer();
@@ -10343,10 +10358,12 @@ void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], dou
         this->sliceWin->Render();
 }
 
-LinkedCameraSync::Pose vtkWindowCube::sliceCameraPose() const
+namespace {
+// The camera of a 2-D window's first renderer (no camera: a default pose).
+LinkedCameraSync::Pose firstRendererPose(vtkRenderWindow *win)
 {
     LinkedCameraSync::Pose pose;
-    auto *rc = this->sliceWin ? this->sliceWin->GetRenderers() : nullptr;
+    auto *rc = win ? win->GetRenderers() : nullptr;
     auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
     auto *cam = renderer ? renderer->GetActiveCamera() : nullptr;
     if (!cam)
@@ -10357,6 +10374,18 @@ LinkedCameraSync::Pose vtkWindowCube::sliceCameraPose() const
     pose.viewAngle = cam->GetViewAngle();
     pose.parallelScale = cam->GetParallelScale();
     return pose;
+}
+}  // namespace
+
+LinkedCameraSync::Pose vtkWindowCube::sliceCameraPose() const
+{
+    return firstRendererPose(this->sliceWin);
+}
+
+void vtkWindowCube::onMomentCameraFrame()
+{
+    if (this->m_momentOverlayFollow.frame(firstRendererPose(this->momentWin)))
+        this->m_momentOverlayRedraw.start();
 }
 
 void vtkWindowCube::adoptSliceCamera()
@@ -10379,8 +10408,12 @@ void vtkWindowCube::onSliceCameraFrame()
     // EndInteractionEvent, which only mouse gestures raise; Shift+R reset the slice and left the
     // linked views behind. The pose is tracked even while unlinked, so it is never stale when
     // linking is switched on.
-    const bool schedule =
-            this->m_sliceCameraTracker.frame(this->sliceCameraPose(), this->m_applyingLinkedUpdate);
+    const LinkedCameraSync::Pose pose = this->sliceCameraPose();
+    // Issue #362: this frame went out with the labels of the camera before it. Draw it again once
+    // the camera settles, whatever moved it (a camera taken from a linked view included).
+    if (this->m_sliceOverlayFollow.frame(pose))
+        this->m_sliceOverlayRedraw.start();
+    const bool schedule = this->m_sliceCameraTracker.frame(pose, this->m_applyingLinkedUpdate);
     if (!this->m_sliceCameraTracker.lastFrameMoved())
         return;
     // Record the new view as the shared one on every frame of the move, not when the send goes

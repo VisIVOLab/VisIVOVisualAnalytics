@@ -1884,6 +1884,8 @@ void vtkWindowCube::setupMomentRenderer()
     this->momentWcsOverlayInitialized = true;
     this->set2dWcsOverlayVisible(this->showWcsAxes);
     this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateMomentWcsOverlay);
+    // Issue #362: redraw once the camera settles, so the labels just computed are on screen.
+    this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::onMomentCameraFrame);
     this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateCatalogueOverlayLabels);
 
     ren->ResetCamera();                        // keep: establishes a sane camera distance
