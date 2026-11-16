@@ -11,6 +11,12 @@ import { MESH_STRIDE } from './models.js';
 import { mulInto, imageUses } from './gltf.js';
 import { guardTex3D, tex3dInXRError } from './xr-gl-guard.js';
 import { composeMask, layerCells } from './mask-layer.js';
+import { lutAtlas, LUT_ROWS, apronBlocksC, prepareOverlay, overlayBytes, bytesPerVoxel } from './overlay.js';
+import { CLIP_GLSL, setClipUniforms } from './clip-plane.js';
+
+/** The overlay's atlas rows of its three channels (fields 1-3), and an upper bound that bounds nothing. */
+const OV_ROWS = new Float32Array([0.125, 0.375, 0.625]);
+const NO_UPPER = new Float32Array([2, 2, 2]);
 
 /** The eye's position from a rigid view matrix (−Rᵀt), into `out`. */
 function eyeOf(v, out) {
@@ -78,6 +84,8 @@ const vec3 MASK_COLOR = vec3(0.25, 1.0, 0.45);
 uniform int uMaskMode;
 uniform int uMaskCells;
 const vec3 OUTLINE_COLOR = vec3(1.0, 0.78, 0.3);
+// The free clipping plane (issue #369, clip-plane.js).
+${CLIP_GLSL}
 
 float stretchFn(float x) {
   if (uStretch == 1) return log(1.0 + uStretchA * x) / log(1.0 + uStretchA);
@@ -117,6 +125,8 @@ void main() {
   float tn = max(max(tlo.x, tlo.y), max(tlo.z, 0.0));
   float tf = min(min(thi.x, thi.y), thi.z);
   if (tf <= tn) discard;
+  float cut = clipRay(o, d, tn, tf);
+  if (cut < 0.0) discard;
   vec3 vox = uVoxDims * uTexScale;                  // reduced voxels per box unit (of the region)
   float dt = 1.0 / (length(d * uRegScale * vox) * uSpv);   // one step = 1/uSpv voxels
   float stepVox = uVoxRatio / uSpv;                  // in coarse voxels: the same opacity per length
@@ -125,6 +135,15 @@ void main() {
   vec4 acc = vec4(0.0);
   float best = -1.0;
   float bestMask = 0.0;
+  // The plane's section (issue #369): where the ray enters through the plane,
+  // the value there in the colour map, above the threshold only.
+  if (cut > 0.0 && uMode == 0 && uMaskOnly == 0 && uMaskMode <= 1) {
+    float v = normAt(o + d * tn);
+    if (v >= uThr) {
+      float x = stretchFn(clamp((v - uCmin) / max(uCmax - uCmin, 1e-6), 0.0, 1.0));
+      acc = vec4(texture(uLut, vec2(x, 0.5)).rgb * uSectionA, uSectionA);
+    }
+  }
   int i = 0;
   for (; i < ${MAX_LOOP}; i++) {
     if (i >= uMaxSteps || t > tf) break;
@@ -186,6 +205,142 @@ void main() {
     float a = clamp(0.25 + 0.75 * x, 0.0, 1.0);
     vec3 col = texture(uLut, vec2(x, 0.5)).rgb;
     if (bestMask > 0.5) col = mix(col, MASK_COLOR, 0.7);
+    outColor = vec4(col * a, a);
+    return;
+  }
+  if (acc.a < 0.002) discard;
+  outColor = acc;
+}`;
+
+// Two or three fields overlaid (issue #357, overlay.js): one multi-channel
+// texture (RG8 or RGB8, field i in channel i, each on its own codes), a LUT
+// atlas (row i field i's colour map) and per-field uniforms (x, y, z of each
+// vec3: fields 1, 2, 3). The skip grid keeps each field's maximum in its own
+// channel: a cell is skipped only when every field is below its own threshold
+// there (a field switched off has a threshold of 2). uMode 0: the fields'
+// extinctions add up and a step's colour is their colours weighted by their
+// shares (one field alone draws as VOL_FS does); 1: MIP, the brightest field
+// value in its own colour window along the ray; 2: steps per ray. The crop's
+// region in more detail and the selection mask are not drawn here.
+// The pieces of an exploded view (issue #371, explode.js) draw with the same
+// program: uThrHi an upper bound (a value range of one field; 2 draws every
+// value from the threshold up) and uLutRows the atlas row of each channel
+// (the overlay's fields 0.125, 0.375, 0.625; a piece its own row).
+const VOL_OV_FS = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler3D;
+in vec3 vTex;
+out vec4 outColor;
+uniform sampler3D uVol;
+uniform sampler3D uMacro;
+uniform sampler2D uLut;
+uniform vec3 uCamTex, uBoxMin, uBoxMax, uVoxDims, uCellDims, uTexScale;
+uniform vec3 uSampleScale, uStoreLo, uStoreHi;
+uniform float uCell, uSpv;
+uniform int uEnc, uMaxSteps, uMode, uSkip;
+uniform vec3 uThr, uThrHi, uCmin, uCmax, uStretchA, uOpacity, uLutRows;
+uniform ivec3 uStretch;
+${CLIP_GLSL}
+
+float stretchK(float x, int s, float a) {
+  if (s == 1) return log(1.0 + a * x) / log(1.0 + a);
+  if (s == 2) return sqrt(x);
+  if (s == 3) return x * x;
+  if (s == 4) return pow(x, a);
+  return x;
+}
+
+vec3 colourIn(vec3 v) {
+  vec3 x = clamp((v - uCmin) / max(uCmax - uCmin, vec3(1e-6)), 0.0, 1.0);
+  return vec3(stretchK(x.x, uStretch.x, uStretchA.x), stretchK(x.y, uStretch.y, uStretchA.y), stretchK(x.z, uStretch.z, uStretchA.z));
+}
+
+void main() {
+  vec3 o = uCamTex;
+  vec3 d = vTex - uCamTex;
+  d = mix(d, vec3(1e-7), lessThan(abs(d), vec3(1e-7)));
+  vec3 inv = 1.0 / d;
+  vec3 t1 = (uBoxMin - o) * inv, t2 = (uBoxMax - o) * inv;
+  vec3 tlo = min(t1, t2), thi = max(t1, t2);
+  float tn = max(max(tlo.x, tlo.y), max(tlo.z, 0.0));
+  float tf = min(min(thi.x, thi.y), thi.z);
+  if (tf <= tn) discard;
+  float cut = clipRay(o, d, tn, tf);
+  if (cut < 0.0) discard;
+  vec3 vox = uVoxDims * uTexScale;
+  float dt = 1.0 / (length(d * vox) * uSpv);
+  float stepVox = 1.0 / uSpv;
+  float jit = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+  float t = tn + dt * jit;
+  vec4 acc = vec4(0.0);
+  float best = -1.0;
+  int bestField = 0;
+  if (cut > 0.0 && uMode == 0) {
+    // The section (#369): the fields above their thresholds, weighted as a step's colour.
+    vec3 s = texture(uVol, clamp((o + d * tn) * uSampleScale, uStoreLo, uStoreHi)).rgb;
+    vec3 v = uEnc == 0 ? (s * 255.0 - 1.0) / 254.0 : s;
+    vec3 on = vec3(greaterThanEqual(v, uThr));
+    vec3 x = colourIn(v);
+    vec3 w = on * (0.04 + x);
+    float W = w.x + w.y + w.z;
+    if (W > 0.0) {
+      vec3 col = (w.x * texture(uLut, vec2(x.x, 0.125)).rgb + w.y * texture(uLut, vec2(x.y, 0.375)).rgb
+        + w.z * texture(uLut, vec2(x.z, 0.625)).rgb) / W;
+      acc = vec4(col * uSectionA, uSectionA);
+    }
+  }
+  int i = 0;
+  for (; i < ${MAX_LOOP}; i++) {
+    if (i >= uMaxSteps || t > tf) break;
+    vec3 p = o + d * t;
+    if (uSkip == 1) {
+      vec3 cf = clamp(floor(p * vox / uCell), vec3(0.0), uCellDims - 1.0);
+      vec3 m = texelFetch(uMacro, ivec3(cf), 0).rgb;
+      if (!any(greaterThanEqual(m, uThr))) {
+        vec3 a = (cf * uCell / vox - o) * inv;
+        vec3 b = ((cf + 1.0) * uCell / vox - o) * inv;
+        float texit = min(min(max(a.x, b.x), max(a.y, b.y)), max(a.z, b.z));
+        t = max(t, texit) + 0.01 * dt;
+        continue;
+      }
+    }
+    vec3 s = texture(uVol, clamp(p * uSampleScale, uStoreLo, uStoreHi)).rgb;
+    vec3 v = uEnc == 0 ? (s * 255.0 - 1.0) / 254.0 : s;
+    vec3 on = vec3(greaterThanEqual(v, uThr)) * vec3(lessThan(v, uThrHi));
+    if (on.x + on.y + on.z > 0.0) {
+      vec3 x = colourIn(v);
+      if (uMode == 1) {
+        vec3 c = mix(vec3(-1.0), x, on);
+        if (c.x > best) { best = c.x; bestField = 0; }
+        if (c.y > best) { best = c.y; bestField = 1; }
+        if (c.z > best) { best = c.z; bestField = 2; }
+      } else {
+        vec3 tau = on * uOpacity * (0.04 + x) * stepVox;
+        float T = tau.x + tau.y + tau.z;
+        if (T > 0.0) {
+          vec3 col = vec3(0.0);
+          if (tau.x > 0.0) col += tau.x * texture(uLut, vec2(x.x, uLutRows.x)).rgb;
+          if (tau.y > 0.0) col += tau.y * texture(uLut, vec2(x.y, uLutRows.y)).rgb;
+          if (tau.z > 0.0) col += tau.z * texture(uLut, vec2(x.z, uLutRows.z)).rgb;
+          float a = 1.0 - exp(-T);
+          acc.rgb += (1.0 - acc.a) * a * (col / T);
+          acc.a += (1.0 - acc.a) * a;
+          if (acc.a > 0.98) break;
+        }
+      }
+    }
+    t += dt;
+  }
+  if (uMode == 2) {
+    outColor = vec4(vec3(float(i) / float(${MAX_LOOP})), 1.0);
+    return;
+  }
+  if (uMode == 1) {
+    if (best < 0.0) discard;
+    float a = clamp(0.25 + 0.75 * best, 0.0, 1.0);
+    float row = bestField == 0 ? uLutRows.x : (bestField == 1 ? uLutRows.y : uLutRows.z);
+    vec3 col = texture(uLut, vec2(best, row)).rgb;
     outColor = vec4(col * a, a);
     return;
   }
@@ -468,6 +623,30 @@ function zero3D(gl, dims, kind = 'uint8') {
 }
 const zeroR8 = (gl, dims) => zero3D(gl, dims, 'uint8');
 
+/** A multi-channel 3-D storage format (the overlay, #357): `channels` 1-4 of
+ *  'uint8', 'float16' or 'float32'. {internal, format, type, bpe (bytes an
+ *  element), channels, Arr}. */
+function fmtC(gl, channels, kind) {
+  const T = {
+    uint8: { type: gl.UNSIGNED_BYTE, bpe: 1, Arr: Uint8Array, f: [gl.R8, gl.RG8, gl.RGB8, gl.RGBA8] },
+    float16: { type: gl.HALF_FLOAT, bpe: 2, Arr: Uint16Array, f: [gl.R16F, gl.RG16F, gl.RGB16F, gl.RGBA16F] },
+    float32: { type: gl.FLOAT, bpe: 4, Arr: Float32Array, f: [gl.R32F, gl.RG32F, gl.RGB32F, gl.RGBA32F] },
+  }[kind] || null;
+  if (!T || !(channels >= 1 && channels <= 4)) throw new Error(`no 3-D storage of ${channels} ${kind} channels`);
+  return { internal: T.f[channels - 1], format: [gl.RED, gl.RG, gl.RGB, gl.RGBA][channels - 1], type: T.type, bpe: T.bpe, channels, Arr: T.Arr };
+}
+
+/** zero3D for a multi-channel storage (fmtC's `f`), a slab of planes at a time. */
+function zeroC(gl, dims, f) {
+  const plane = dims[0] * dims[1] * f.channels;
+  const planes = Math.max(1, Math.min(dims[2], Math.floor(ZERO_SLAB_BYTES / Math.max(plane * f.bpe, 1))));
+  const zeros = new f.Arr(plane * planes);
+  for (let z = 0; z < dims[2]; z += planes) {
+    const n = Math.min(planes, dims[2] - z);
+    gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, dims[0], dims[1], n, f.format, f.type, n === planes ? zeros : zeros.subarray(0, plane * n));
+  }
+}
+
 function params3D(gl, filter) {
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, filter);
   gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, filter);
@@ -494,6 +673,13 @@ export class Renderer {
     // fits is written into the bank not on show, in VR too. null when none.
     this.cap = null;
     this._capPlan = null;          // {dims, encoding, cell} of this.cap, for restore()
+    // The overlay storage (issue #357): one multi-channel texture and its skip
+    // grid, allocated outside VR beside the capacity; null when none.
+    this.ov = null;
+    this._ovPlan = null;           // {dims, channels, encoding, cell}, for restore()
+    this._ovInput = null;          // the overlay on show: {data, dims, channels, fields, encoding, prep}, for restore()
+    this._ovMaps = [];
+    this._pieceMaps = [];          // the exploded view's colour maps, one a piece (#371)
     this._maskInput = null;
     this._lineSegs = {};           // target name -> the last segments
     this._labels = null;
@@ -508,6 +694,7 @@ export class Renderer {
   _init() {
     const gl = this.gl;
     this.vol = compile(gl, VOL_VS, VOL_FS);
+    this.volOv = compile(gl, VOL_VS, VOL_OV_FS);     // overlaid fields (#357)
     this.line = compile(gl, LINE_VS, LINE_FS);
     this.label = compile(gl, LABEL_VS, TEX_FS);
     this.quad = compile(gl, QUAD_VS, TEX_FS);
@@ -523,6 +710,13 @@ export class Renderer {
     const loc = gl.getAttribLocation(this.vol.p, 'aPos');
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 3, gl.FLOAT, false, 0, 0);
+    // The overlay's program may place aPos elsewhere: a vertex array of its own.
+    this.ovCubeVao = gl.createVertexArray();
+    gl.bindVertexArray(this.ovCubeVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, cb);
+    const locOv = gl.getAttribLocation(this.volOv.p, 'aPos');
+    gl.enableVertexAttribArray(locOv);
+    gl.vertexAttribPointer(locOv, 3, gl.FLOAT, false, 0, 0);
 
     const lineVao = () => {
       const vao = gl.createVertexArray();
@@ -542,6 +736,7 @@ export class Renderer {
     this.selLines = lineVao();     // selections (model space): rebuilt when they change
     this.cropLines = lineVao();    // the spatial crop's box (#277, model space): rebuilt when it changes
     this.pselLines = lineVao();    // a point table's box selection (#259, model space): rebuilt when it changes
+    this.planeLines = lineVao();   // the clipping plane's outline and arrow (#369, model space): rebuilt when it changes
 
     this.labelVao = gl.createVertexArray();
     this.labelBuf = gl.createBuffer();
@@ -596,6 +791,20 @@ export class Renderer {
 
     this.lut = gl.createTexture();
     this.setColormap(this._cmap);
+    // The overlay's LUT atlas (#357): a 2-D texture, re-specified when the
+    // fields' maps change (2-D textures are safe in VR, #229).
+    this.ovLut = gl.createTexture();
+    this.setOverlayColormaps(this._ovMaps || []);
+    // The exploded view's atlas (#371): one row a piece, immutable storage
+    // made here, rows written with texSubImage2D (nothing allocated in VR).
+    this.pieceLut = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.pieceLut);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 256, LUT_ROWS);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.setPieceColormaps(this._pieceMaps || []);
     this.volTex = null;
     this.macroTex = null;
     // The selection overlay of a volume without a mask storage of its own
@@ -635,6 +844,9 @@ export class Renderer {
     this.macroDims = null;
     const maskInput = this._maskInput;     // useVolume() clears it
     const layer = this._layer;             // and the mask layer (#282)
+    const ovPlan = this._ovPlan, ovInput = this._ovInput && this.ov && this.ov.shown ? this._ovInput : null;
+    this.ov = null;                        // its textures went with the context
+    this._ovInput = null;
     this._init();
     const plan = this._capPlan;
     this.capacityError = '';
@@ -642,6 +854,12 @@ export class Renderer {
       // A capacity the restored context cannot hold: none (the cube in storage
       // of its own, cubes in VR wait), and the rest restored all the same.
       try { this.allocCapacity(plan.dims, plan.encoding, plan.cell); } catch (e) { this.capacityError = String(e.message || e); }
+    }
+    if (ovPlan) {
+      try {
+        this.allocOverlay(ovPlan.dims, ovPlan.channels, ovPlan.encoding, ovPlan.cell);
+        if (ovInput) this.showOverlay(this.writeOverlay(ovInput, ovPlan.cell, ovInput.prep), ovInput);
+      } catch (e) { this.overlayError = String(e.message || e); }
     }
     if (this._volume) this.showVolume(this._volume, this._volume.cell);
     if (layer && this.slot) this._layer = layer;
@@ -680,6 +898,8 @@ export class Renderer {
       if (o !== s) { otherBytes += b; others++; }
     }
     const capacityBytes = cap ? cap.totalBytes : 0;
+    const ov = this.ov;
+    const overlayBytes = ov ? ov.totalBytes : 0;
     let modelBytes = 0;
     for (const h of this._models) modelBytes += h.bytes;
     // The capacity's other bank, not on show (or all of it, with a volume of its own on show).
@@ -690,10 +910,13 @@ export class Renderer {
         volumeBytes: cap.volBytes, macroBytes: cap.macroBytes, maskBytes: cap.maskBytes, totalBytes: cap.totalBytes,
         spareBytes, onShow: inCap } : null,
       capacityBytes,
-      // Everything the cubes hold on the GPU: the capacity and the storages of their own.
-      cubeBytes: capacityBytes + ownBytes,
+      overlay: ov ? { dims: ov.dims.slice(), channels: ov.channels, encoding: ov.encoding, volumeBytes: ov.volBytes, macroBytes: ov.macroBytes,
+        totalBytes: ov.totalBytes, onShow: !!ov.shown } : null,
+      overlayBytes,
+      // Everything the cubes hold on the GPU: the capacity, the overlay storage and the storages of their own.
+      cubeBytes: capacityBytes + overlayBytes + ownBytes,
       models: this._models.size, modelBytes,
-      totalBytes: panelBytes + labelBytes + capacityBytes + ownBytes + modelBytes + 256 * 4 + 1 };
+      totalBytes: panelBytes + labelBytes + capacityBytes + overlayBytes + ownBytes + modelBytes + 256 * 4 + 1 + 2 * 256 * 4 * LUT_ROWS };
   }
 
   setColormap(name) {
@@ -1080,6 +1303,199 @@ export class Renderer {
     return { uploadMs: slot.uploadMs, macroMs: slot.macroMs, maskMs: 0, textureBytes: slot.textureBytes, capacity: true };
   }
 
+  // ── Overlaid fields (issue #357, overlay.js) ───────────────────────────────
+
+  /** The overlay's colour maps (one name a field) into the LUT atlas. */
+  setOverlayColormaps(names) {
+    const gl = this.gl;
+    this._ovMaps = names.slice();
+    gl.bindTexture(gl.TEXTURE_2D, this.ovLut);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, LUT_ROWS, 0, gl.RGBA, gl.UNSIGNED_BYTE, lutAtlas(names));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  /** The exploded view's colour maps (#371), one name a piece, into its
+   *  atlas (texSubImage2D only: allowed in VR). */
+  setPieceColormaps(names) {
+    const gl = this.gl;
+    this._pieceMaps = names.slice();
+    gl.bindTexture(gl.TEXTURE_2D, this.pieceLut);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, LUT_ROWS, gl.RGBA, gl.UNSIGNED_BYTE, lutAtlas(names));
+  }
+
+  /**
+   * The overlay storage, allocated now, outside VR (throws `tex3d-in-xr` in
+   * VR): one texture of `dims` voxels and `channels` (2: RG8, 3: RGB8; R/RG/
+   * RGB16F for float16) and its skip grid (RGBA32F), both immutable storage
+   * zeroed with texSubImage3D. An overlay storage held before is given back
+   * first; an overlay on show in it is no longer drawn.
+   */
+  allocOverlay(dims, channels, encoding = 'uint8', cell = 8) {
+    if (this.xrActive) throw tex3dInXRError('allocOverlay');
+    if (Math.max(...dims) > this.maxTex3D) throw new Error(`an overlay of ${dims.join(' x ')} exceeds this GPU's 3-D texture limit (${this.maxTex3D})`);
+    this.releaseOverlay();
+    const gl = this.gl;
+    const f = fmtC(gl, channels, encoding);
+    const macroDims = dims.map((v) => Math.ceil(v / cell));
+    const t0 = performance.now();
+    for (let i = 0; i < 16 && gl.getError(); i++) { /* clear earlier errors */ }
+    const made = [];
+    const make = (d, ff, filter) => {
+      const t = gl.createTexture();
+      made.push(t);
+      gl.bindTexture(gl.TEXTURE_3D, t);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texStorage3D(gl.TEXTURE_3D, 1, ff.internal, d[0], d[1], d[2]);
+      params3D(gl, filter);
+      zeroC(gl, d, ff);
+      return t;
+    };
+    let volTex, macroTex;
+    try {
+      volTex = make(dims, f, gl.LINEAR);
+      macroTex = make(macroDims, fmtC(gl, 4, 'float32'), gl.NEAREST);
+      const err = gl.getError();
+      if (err && err !== gl.NO_ERROR) throw new Error(`the overlay storage ${dims.join(' x ')} could not be allocated (GL error ${err})`);
+    } catch (e) {
+      for (const t of made) gl.deleteTexture(t);
+      throw e;
+    }
+    const b = overlayBytes(dims, channels, encoding, cell);
+    this.ov = { dims: dims.slice(), channels, encoding, cell, macroDims, volTex, macroTex, volBytes: b.volumeBytes, macroBytes: b.macroBytes,
+      totalBytes: b.totalBytes, allocMs: performance.now() - t0, shown: null, job: null, gen: 0 };
+    this._ovPlan = { dims: dims.slice(), channels, encoding, cell };
+    this.overlayError = '';
+    return this.ov;
+  }
+
+  /** Gives the overlay storage back (outside VR). */
+  releaseOverlay() {
+    const ov = this.ov;
+    this._ovPlan = null;
+    this._ovInput = null;
+    if (!ov) return;
+    this.ov = null;
+    if (ov.job) ov.job.cancelled = true;
+    const gl = this.gl;
+    gl.deleteTexture(ov.volTex);
+    gl.deleteTexture(ov.macroTex);
+  }
+
+  /** Does an overlay of `dims`, `channels` and `encoding` fit the overlay storage? */
+  fitsOverlay({ dims, channels, encoding = 'uint8' }, cell = 8) {
+    const o = this.ov;
+    return !!o && o.channels === channels && o.encoding === encoding && o.cell === cell && fitsStore(dims, o.dims);
+  }
+
+  /**
+   * Writes interleaved fields ({data, dims, channels, encoding}) into the
+   * overlay storage in steps (texSubImage3D only: allowed in VR), as
+   * beginWrite does for a cube: z-slabs, the apron, the skip grid (`prep`,
+   * overlay.js prepareOverlay, or built here). The storage is not drawn from
+   * the first step on (hideOverlay); showOverlay(job.slot) puts it back. A
+   * newer write, the storage given back or a lost context cancels it
+   * (step() throws `write-cancelled`).
+   */
+  beginOverlayWrite({ data, dims, channels, encoding = 'uint8', fields }, cell = 8, prep = null) {
+    const ov = this.ov;
+    if (!this.fitsOverlay({ dims, channels, encoding }, cell)) throw new Error(`an overlay of ${dims.join(' x ')} (${channels} channels) does not fit the overlay storage`);
+    const gl = this.gl;
+    const f = fmtC(gl, channels, encoding);
+    if (ov.job) ov.job.cancelled = true;
+    ov.shown = null;
+    this._ovInput = null;
+    const gen = ++ov.gen;
+    const [w, h, d] = dims;
+    const plane = w * h * channels;
+    const slab = Math.max(1, Math.min(d, Math.floor(WRITE_SLAB_BYTES / (plane * f.bpe))));
+    const renderer = this;
+    let z = 0, stage = 0, uploadMs = 0, macroMs = 0, macro = null;
+    const job = {
+      cancelled: false, slot: null, slabs: Math.ceil(d / slab), steps: 0, maxStepMs: 0,
+      step(budgetMs = Infinity) {
+        if (job.slot) return true;
+        if (job.cancelled || renderer.ov !== ov || ov.gen !== gen || gl.isContextLost()) {
+          job.cancelled = true;
+          if (ov.job === job) ov.job = null;
+          const e = new Error('the write into the overlay storage was cancelled');
+          e.code = 'write-cancelled';
+          throw e;
+        }
+        const t0 = performance.now();
+        let build = 0;
+        do {
+          gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+          if (stage === 0) {
+            const n = Math.min(slab, d - z);
+            const part = n === d ? data : data.subarray(z * plane, (z + n) * plane);
+            gl.bindTexture(gl.TEXTURE_3D, ov.volTex);
+            gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, w, h, n, f.format, f.type, part);
+            z += n;
+            if (z >= d) stage = 1;
+          } else if (stage === 1) {
+            const same = prep && prep.apron && prep.store && prep.store.every((v, i) => v === ov.dims[i]);
+            gl.bindTexture(gl.TEXTURE_3D, ov.volTex);
+            for (const a of same ? prep.apron : apronBlocksC(data, dims, ov.dims, channels)) {
+              gl.texSubImage3D(gl.TEXTURE_3D, 0, a.offset[0], a.offset[1], a.offset[2], a.size[0], a.size[1], a.size[2], f.format, f.type, a.data);
+            }
+            stage = 2;
+          } else {
+            const want = dims.map((v) => Math.ceil(v / cell));
+            if (prep && prep.macro && prep.cell === cell && prep.macro.dims.every((v, i) => v === want[i])) { macro = prep.macro; macroMs = prep.ms; }
+            else {
+              const tb = performance.now();
+              macro = prepareOverlay(data, dims, encoding, { cell, channels, fields: Array.isArray(fields) ? fields.length : channels }).macro;
+              build = macroMs = performance.now() - tb;
+            }
+            gl.bindTexture(gl.TEXTURE_3D, ov.macroTex);
+            gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, macro.dims[0], macro.dims[1], macro.dims[2], gl.RGBA, gl.FLOAT, macro.data);
+            stage = 3;
+          }
+        } while (stage < 3 && performance.now() - t0 < budgetMs);
+        const ms = performance.now() - t0;
+        uploadMs += ms - build;
+        job.steps++;
+        job.maxStepMs = Math.max(job.maxStepMs, ms);
+        if (stage < 3) return false;
+        job.slot = { ov, gen, dims: [w, h, d], channels, encoding, cell, macroDims: macro.dims, uploadMs, macroMs,
+          textureBytes: w * h * d * bytesPerVoxel(channels, encoding) };
+        ov.job = null;
+        return true;
+      },
+    };
+    ov.job = job;
+    return job;
+  }
+
+  /** The same write all at once. */
+  writeOverlay(input, cell = 8, prep = null) {
+    const job = this.beginOverlayWrite(input, cell, prep);
+    while (!job.step(Infinity)) { /* all at once */ }
+    return job.slot;
+  }
+
+  /** A written overlay (job.slot) drawn from now on; `input` kept for a lost context. */
+  showOverlay(slot, input) {
+    const ov = this.ov;
+    if (!slot || slot.ov !== ov || ov.gen !== slot.gen) throw new Error('that overlay is no longer in the overlay storage');
+    ov.shown = slot;
+    this._ovInput = input || null;
+    return slot;
+  }
+
+  /** The overlay no longer drawn (the storage and what it holds are kept). */
+  hideOverlay() {
+    if (this.ov) this.ov.shown = null;
+  }
+
+  /** Is an overlay ready to be drawn? */
+  get overlayShown() { return !!(this.ov && this.ov.shown); }
+
   /** The selection on the drawn grid (selection.reduceMask's answer), or null
    *  to clear it. A sub-image upload into the volume's own mask storage
    *  (prepareVolume: the whole reduced grid, allocated with the cube), never
@@ -1167,7 +1583,7 @@ export class Renderer {
   /** Segments: array of {a: [x,y,z], b: [x,y,z], color: [r,g,b,a]} in model space. */
   setLines(segments, target = this.boxLines) {
     const gl = this.gl;
-    for (const name of ['boxLines', 'tmpLines', 'selLines', 'cropLines', 'pselLines']) if (this[name] === target) this._lineSegs[name] = segments;
+    for (const name of ['boxLines', 'tmpLines', 'selLines', 'cropLines', 'pselLines', 'planeLines']) if (this[name] === target) this._lineSegs[name] = segments;
     const arr = new Float32Array(segments.length * 14);
     segments.forEach((s, i) => {
       arr.set([...s.a, ...s.color, ...s.b, ...s.color], i * 14);
@@ -1630,6 +2046,7 @@ export class Renderer {
     gl.uniform3i(u.uMaskDims, ...(mk ? mk.dims : [0, 0, 0]));
     gl.uniform1i(u.uMaskMode, mk && this._layer ? (p.maskMode || 0) : 0);
     gl.uniform1i(u.uMaskCells, mk && this._layer ? 1 : 0);
+    setClipUniforms(gl, u, p.clipPlane || null);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.FRONT);             // back faces: works with the eye inside the box
     gl.disable(gl.DEPTH_TEST);
@@ -1637,6 +2054,105 @@ export class Renderer {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.bindVertexArray(this.cubeVao);
+    gl.drawArrays(gl.TRIANGLES, 0, 36);
+    gl.disable(gl.CULL_FACE);
+  }
+
+  /**
+   * The overlaid fields for one eye (issue #357): as drawVolume, from the
+   * overlay storage, with `p.ov` the per-field uniforms (overlay.js
+   * overlayUniforms) and `p.mode` 0 (summed emission-absorption), 1 (MIP)
+   * or 2 (steps). No region, no mask. Returns false when nothing is drawn.
+   */
+  drawOverlay(view, model, p) {
+    const ov = this.ov;
+    const s = ov && ov.shown;
+    if (!s) return false;
+    const src = this._ovSrc || (this._ovSrc = {});
+    Object.assign(src, { volTex: ov.volTex, macroTex: ov.macroTex, dims: s.dims, store: ov.dims, macroDims: s.macroDims, cell: s.cell, encoding: s.encoding });
+    this._drawFields(view, model, p, src, this.ovLut, OV_ROWS, NO_UPPER);
+    return true;
+  }
+
+  /**
+   * One piece of an exploded view for one eye (issue #371, explode.js): the
+   * overlay's program over textures already resident, nothing allocated:
+   * `p.src` 'overlay' (the overlay storage on show) or 'cube' (the single
+   * cube's texture, its own channel x; its region in more detail is not
+   * drawn here), `p.ov` the per-channel uniforms of overlayUniforms plus
+   * `thrHi` (upper bounds) and `rows` (each channel's row in the pieces'
+   * atlas, setPieceColormaps), `p.mode` as drawOverlay's. Returns false when
+   * there is nothing to draw from.
+   */
+  drawPiece(view, model, p) {
+    const src = this._pieceSrc || (this._pieceSrc = {});
+    if (p.src === 'overlay') {
+      const ov = this.ov;
+      const s = ov && ov.shown;
+      if (!s) return false;
+      Object.assign(src, { volTex: ov.volTex, macroTex: ov.macroTex, dims: s.dims, store: ov.dims, macroDims: s.macroDims, cell: s.cell, encoding: s.encoding });
+    } else {
+      if (!this.volTex || !this.dims) return false;
+      Object.assign(src, { volTex: this.volTex, macroTex: this.macroTex, dims: this.dims, store: this.store || this.dims, macroDims: this.macroDims,
+        cell: this.cell, encoding: this.encoding });
+    }
+    this._drawFields(view, model, p, src, this.pieceLut, p.ov.rows, p.ov.thrHi);
+    return true;
+  }
+
+  /** The overlay program's draw (drawOverlay, drawPiece): `src` the textures
+   *  and their grids, `lut` the atlas, `rows` and `thrHi` vec3s. */
+  _drawFields(view, model, p, src, lut, rows, thrHi) {
+    const gl = this.gl;
+    const mv = M.multiply(view.view, model);
+    const mvp = M.multiply(view.proj, mv);
+    const inv = M.invert(mv);
+    const camModel = M.transformPoint(inv, [0, 0, 0]);
+    const camTex = [0, 1, 2].map((i) => camModel[i] / p.extent[i] + 0.5);
+    const { u } = this.volOv;
+    gl.useProgram(this.volOv.p);
+    gl.uniformMatrix4fv(u.uMVP, false, mvp);
+    gl.uniform3fv(u.uExtent, p.extent);
+    gl.uniform3fv(u.uBoxMin, p.boxMin);
+    gl.uniform3fv(u.uBoxMax, p.boxMax);
+    gl.uniform3fv(u.uCamTex, camTex);
+    gl.uniform3fv(u.uVoxDims, src.dims);
+    const ts = p.texScale || [1, 1, 1];
+    gl.uniform3fv(u.uTexScale, ts);
+    const st = src.store;
+    gl.uniform3fv(u.uSampleScale, [0, 1, 2].map((i) => ts[i] * src.dims[i] / st[i]));
+    gl.uniform3fv(u.uStoreLo, [0, 1, 2].map((i) => 0.5 / st[i]));
+    gl.uniform3fv(u.uStoreHi, [0, 1, 2].map((i) => (src.dims[i] - 0.5) / st[i]));
+    gl.uniform3fv(u.uCellDims, src.macroDims);
+    gl.uniform1f(u.uCell, src.cell);
+    gl.uniform1f(u.uSpv, p.spv);
+    gl.uniform1i(u.uEnc, src.encoding === 'uint8' ? 0 : 1);
+    gl.uniform1i(u.uMaxSteps, Math.min(MAX_LOOP, p.maxSteps || MAX_LOOP));
+    gl.uniform1i(u.uMode, p.mode || 0);
+    gl.uniform1i(u.uSkip, p.skip ? 1 : 0);
+    const q = p.ov;
+    gl.uniform3fv(u.uThr, q.thr);
+    gl.uniform3fv(u.uThrHi, thrHi);
+    gl.uniform3fv(u.uCmin, q.cmin);
+    gl.uniform3fv(u.uCmax, q.cmax);
+    gl.uniform3fv(u.uStretchA, q.stretchA);
+    gl.uniform3fv(u.uOpacity, q.opacity);
+    gl.uniform3fv(u.uLutRows, rows);
+    gl.uniform3i(u.uStretch, q.stretch[0], q.stretch[1], q.stretch[2]);
+    setClipUniforms(gl, u, p.clipPlane || null);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, src.volTex);
+    gl.uniform1i(u.uVol, 0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, src.macroTex);
+    gl.uniform1i(u.uMacro, 1);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, lut);
+    gl.uniform1i(u.uLut, 2);
+    gl.enable(gl.CULL_FACE);
+    gl.cullFace(gl.FRONT);
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindVertexArray(this.ovCubeVao);
     gl.drawArrays(gl.TRIANGLES, 0, 36);
     gl.disable(gl.CULL_FACE);
   }

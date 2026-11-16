@@ -47,10 +47,16 @@ test('a simulation volume: no spectral tools, percentiles for σ, z cropped as x
   for (const id of ['tool:lasso', 'tool:probe', 'seed:new', 'seed:add', 'seed:carve']) assert.equal(why('select', id), HM.WHY.simulation, id);
   assert.equal(why('select', 'tool:box'), '');
   for (const id of ['moment:0', 'moment:1', 'moment:2', 'pv-draw', 'pv-wide', 'spec-pin']) assert.equal(why('measure', id), HM.WHY.simulation, id);
-  assert.equal(why('range', 'slab'), HM.WHY.simulation);
-  assert.equal(why('range', 'sub:clip:slab'), HM.WHY.simulation);
+  // No velocity range: its row is the clipping plane's (#369), its tool beside the crop.
+  const range = HM.menuLayout('range', sim);
+  assert.ok(!range.some((w) => w.id === 'slab' || w.id === 'sub:clip:slab'));
+  for (const id of ['plane:on', 'plane:flip', 'plane:snap', 'plane:slab', 'plane:reset', 'sub:clip:plane']) assert.equal(why('range', id), '', id);
   assert.equal(why('range', 'crop:2'), '', 'z is cropped as x and y');
-  assert.ok(HM.widgetById(HM.menuLayout('range', sim), 'sub:clip:box').on);
+  assert.ok(HM.widgetById(range, 'sub:clip:box').on);
+  const planeTool = HM.menuLayout('range', { ...sim, clipTool: 'plane', plane: { available: true, on: true, slab: true } });
+  assert.ok(HM.widgetById(planeTool, 'sub:clip:plane').on && !HM.widgetById(planeTool, 'sub:clip:box').on);
+  assert.ok(HM.widgetById(planeTool, 'plane:on').on && HM.widgetById(planeTool, 'plane:slab').on);
+  assert.equal(HM.widgetById(planeTool, 'plane:on').label, 'On');
   // Display: the 90 % and 99 % percentiles where a cube has 3σ and 5σ, at the same places.
   const d = HM.menuLayout('display', sim), c = HM.menuLayout('display', CONTEXTS.cube);
   assert.ok(!d.some((w) => w.group === 'sig'));
@@ -228,7 +234,7 @@ test('lasso a galaxy and Isolate it: two presses in all, the trigger on the gala
 });
 
 test('choosing a tab sets the mode; the menu opens on the tab of the mode', () => {
-  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', debug: null });
+  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', explode: 'explore', iso: 'explore', debug: null });
   assert.equal(HM.pageOnOpen('display', 'select'), 'select', 'A changed the mode: its tab');
   assert.equal(HM.pageOnOpen('measure', 'explore'), 'measure', 'Measure keeps the explore mode');
   assert.equal(HM.pageOnOpen('more', 'clip'), 'more', 'More sets no mode');

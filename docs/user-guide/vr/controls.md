@@ -165,6 +165,32 @@ spectral axis; *Spectral range* on a cube without a velocity axis) or the
 *Full band*, *Reset crop*, the range's two ends and the crop's are on the
 Range tab.
 
+**The clipping plane of a simulation volume** ([#369](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/369)).
+A simulation volume has no velocity range; in its place the Range tab has a
+clipping plane, and the tool palette a **Clipping plane** tool (where a cube
+has *Velocity range*). The plane hides one half of the volume and draws the
+section on it, in the current colour map, where the value is above the
+threshold.
+
+| Control | Clipping plane |
+|---|---|
+| Primary trigger (hold) | the plane is held on the end of the ray: it moves as you move or point the controller and tilts as you turn your wrist; let go to leave it there (one undo step) |
+| Primary stick ↕ | moves the plane along its normal |
+| Primary stick ↔ | the slab's thickness (with *Slab* on) |
+
+The first row of the Range tab: **On/Off**, **Flip** (keep the other side),
+**Snap** (turn the plane to the nearest box axis), **Slab** (keep only a slab
+between two parallel planes, a tenth of the box thick to begin with),
+**Reset** (back through the centre, across x). The status line gives the
+plane in the cube's pixels: its point, its normal and what it keeps. With
+the tool in use the plane's outline is drawn in yellow, with an arrow
+towards the side it keeps and a dot at its point. On the 2-D page, with the
+tool on, a drag on the plane moves it along its normal and Shift and a drag
+tilts it. The full-quality frames from the backend are cut by the same plane
+and show the same section (a backend from before #369 cannot, and its frames
+are then not shown). The plane stays when you switch to another variable or
+snapshot of the same grid.
+
 **The crop you can see and grab** ([#277](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/277)).
 While the Spatial crop tool is on, the crop box is drawn: its twelve edges
 (light blue), a faint fill, and a **dot on each of its six faces**. The dot
@@ -316,13 +342,36 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     in the cube's unit and in multiples of the noise (*= 3.2 σ*, with σ), *3σ*
     and *5σ*, and *Reset* (the default threshold and colour range);
     **Colour max** (its value in the cube's unit) and *Levels ▸*; **Opacity**;
-    **Rendering**: *Emission* or *MIP*; **Catalogue**: *Overlay*, *Labels*,
+    **Rendering**: *Emission* or *MIP*, and *Surfaces ▸*; **Catalogue**: *Overlay*, *Labels*,
     *Through velocity*, with the catalogue's summary or its first warning
     (greyed until a catalogue is placed, on the page or from the desktop).
     Under the rows, the cube's **info line**: the rest frequency (*HI rest
     1420.406 MHz*), the channel width in km/s (and the drawn channel's when
     the cube is binned along the band, *drawn ×2*) and the restoring beam
     (*beam 15.0″ × 12.0″, PA 33°*) when the header has BMAJ/BMIN/BPA.
+  - *Surfaces* (a cube, from *Surfaces ▸*;
+    [#370](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/370)):
+    up to four **isosurfaces**, each a level of the field with its own colour
+    and opacity. *+ Add* puts one at the volume's threshold (the next ones
+    between the threshold and the colour max); the numbered chips pick the one
+    the rows below set. **Level** is a slider on the cube's own scale (on a
+    log-scaled density it moves in decades), its value written in the field's
+    unit; *Threshold* puts it back at the volume's threshold. **Colour** and
+    **Opacity** (a surface at full opacity hides what is behind it, a lower
+    one lets the volume and the other surfaces show through); *Shown* or
+    *Hidden*. **Show**: *With the volume*, or *Surfaces only* (the volume
+    hidden). **Export**: the picked surface saved as *PLY* or *glTF* in the
+    workspace's exports (`isosurfaces/`), in the cube's own coordinates for a
+    simulation (code units of a PLUTO run), else in voxels.
+    The backend extracts each surface from the original data, not from the
+    headset's reduced copy: the full cube when it is small, else the finest
+    level of its brick pyramid that fits (512³ of a 2048³ run), decimated to
+    150 000 triangles. Under the rows each surface says how many triangles it
+    has, from how many, and from which level; while one is made it says
+    *extracting n %*, and it appears whole when ready (a level moved back to
+    one already made comes back at once). The surfaces are cut by the crop
+    and, on a simulation volume, by the clipping plane, as the volume is.
+    While the model is exploded (*Explode ▸*) they are not drawn.
   - *Levels* (a cube, from *Levels ▸*; the Display tab stays lit, *◂ Display*
     goes back): **Values**, a histogram of the drawn cube's values on the
     threshold slider's scale, counts on a log scale, yellow lines at 1, 3, 5
@@ -381,6 +430,9 @@ toasts, the windows and the notices: a notice's hint line (*Controls guide:
     convention and its channels below it; *Full band*.
   - **Trigger**: *Velocity range* or *Spatial crop*, what the trigger moves in
     the cube.
+  - On a simulation volume (#369) the first row is the **Plane** (*On/Off*,
+    *Flip*, *Snap*, *Slab*, *Reset*) and the trigger tools are *Spatial crop*
+    and *Clipping plane*; see [Range](#range).
   - **Crop x**, **Crop y**, **Crop z**: the spatial crop, one range per axis
     (pixels of the full cube below; on a cube *Crop z* is greyed, the third
     axis being the velocity range); *Reset crop*.

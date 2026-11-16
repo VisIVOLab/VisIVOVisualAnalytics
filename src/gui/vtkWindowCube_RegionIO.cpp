@@ -75,14 +75,14 @@ void vtkWindowCube::applyImportedRegions(const visivo::regions::ImportResult &re
     if (ids.empty())
         return;
     this->onRegionListChanged();
-    // The first region with an area is measured on the 2-D Slice (a moment
-    // pane becomes the slice with that map as background); with neither on
-    // screen the regions are kept, unmeasured.
+    // The first region with an area is measured on the 2-D Slice or on the
+    // sky map of the focused pane (#355); with neither on screen the regions
+    // are kept, unmeasured.
     for (int id : ids) {
         const auto *r = this->m_regions.find(id);
         if (r && visivo::regions::hasArea(r->shape)) {
-            if (this->ensureSliceForTools())
-                this->analyzeRegion(id);
+            if (vtkRenderWindow *win = this->regionAnalysisWin())
+                this->analyzeRegion(id, win);
             break;
         }
     }

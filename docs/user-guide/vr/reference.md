@@ -1851,6 +1851,78 @@ axis at the finer level.
    threshold, go back to the first one, and check that it comes back as it
    was left (and on its own scale, *log* for a density). On the desktop,
    *Headset Activity* lists *Variable … of …*.
+7. Overlay (#357), with the same file of three variables or more (a PLUTO
+   output with `rho`, `prs`, `vx1`, or the synthetic VBT that
+   `validation/vr_overlay.mjs` writes): on the 2-D page, before entering VR,
+   the debug HUD (`?debug`) or *GPU memory* lists the overlay storage
+   (3 channels). In VR open *Display ▸ Overlay ▸* and press *Off* so it reads
+   *On*. Within about a second the three fields must appear in red, green
+   and blue, with three colour bars beside the box, and no *The new cube is
+   shown when you leave VR* notice. Check:
+   - *Edit 2*, *Hidden*: the green field goes, the other two stay.
+   - *Edit 1*, colour map *grey*, threshold and colour max sliders: only the
+     first field changes, and its bar follows.
+   - *Log* on a velocity field: it loads again on a log scale (values ≤ 0
+     blank).
+   - *MIP*: the brightest field wins each pixel, in its own colours.
+   - The readout lists `rho … prs … vx1 …`.
+   - Display ▸ *Variable*: another variable alone; the overlay is off;
+     *Overlay ▸ On* brings it back.
+
+   Note **FPS** and **missed %** in the HUD with the single variable and
+   with the three fields (Sum and MIP), at the same distance and with the box
+   filling about half the view; and **samples/voxel** (the governor lowers
+   it first). A drop larger than the single variable's at the same settings
+   is the overlay's cost. On the desktop, *Headset Activity* must read
+   *Overlay (emission): …*.
+8. Exploded view (#371), with the same file and the overlay on: open
+   *Display ▸ Explode ▸*, choose *Fields*, *Row*, and press *Explode*. The
+   three fields must slide apart in about 0.6 s, each in its own colours and
+   at about 58 % of the cube's size, with three colour bars. Check:
+   - Grip inside the middle piece and move and turn the hand: only that
+     piece follows. Grip outside every piece: the whole model moves.
+   - The piece's chip on *Shown*: it goes; pressed again, it comes back.
+   - *Value ranges*, *4*, *Ring*: four nested shells of the density in blue,
+     green, orange and red; the chips read the ranges in data values.
+   - *Assemble*: the pieces slide back and the overlay (or the single
+     variable) is drawn as before; *Reset* after moving pieces puts them back
+     in the layout.
+   - No *The new cube is shown when you leave VR* notice, no black frame.
+
+   Note **FPS**, **missed %** and **samples/voxel** in the HUD with the
+   overlay assembled and exploded (Fields, then 4 value ranges), at the same
+   distance; the HUD's `exploded …` line says how many pieces were drawn.
+9. Isosurfaces (#370), with the 2048³ PLUTO density (`rho.0000.flt`, its
+   brick pyramid built): *Display ▸ Surfaces ▸*, *+ Add*. The status line
+   under the rows must say *extracting n %*, then within about 3 s (at once
+   for a level made before) *150 k triangles of 0.7 M, 512×512×512 pyramid
+   level 2* for 1e-6, and the orange surface must appear in the box with no stall of the
+   head motion while it is made (the HUD's **missed %** stays as it was).
+   Check:
+   - **Level** slider: the value under it moves in decades (log scale); on
+     release the surface is made again (1–5 s); moved back, it comes back at
+     once. Put it at 1e-6 and 2e-6 (the run's code units; the dense shell
+     of the remnant) and compare with the desktop's *Isosurface* at the
+     same value: the same shape in the same place (on the Mac the two
+     surfaces' vertices lie a median 2.4 cube voxels apart, within the
+     desktop's 8-voxel sampling of this cube).
+   - *+ Add* twice more (cyan, magenta), *Opacity* about 0.5 on one: the
+     others show through it; *Surfaces only*: the volume goes.
+   - Walk into a surface and around it: both sides lit, no white or black
+     patches (fp16 normals), no flicker between the surfaces.
+   - *Range* crop, and the clipping plane (*Range*, *Clipping plane* on,
+     *Slab* too): the surfaces are cut where the volume is, and the cut
+     edge follows the plane while it moves.
+   - *Export ▸ PLY*: a toast, and the file in the desktop's workspace
+     exports under `isosurfaces/` (open it in any mesh viewer: it is in the
+     run's code units, centred on 0).
+
+   With the debug HUD (`?debug`) read **FPS**, **missed %**, **GPU ms** and
+   the HUD's `surfaces …: … k triangles drawn` line with the volume alone,
+   with one opaque surface, and with three surfaces (one translucent), the
+   box filling about half the view. Report them: the budget (150 000
+   triangles a surface, 600 000 at most) is chosen for 72 Hz and is to be
+   lowered (`?isotris=`) if the three surfaces miss frames.
 
 ### The headset's view on the desktop, with the headset (#281)
 

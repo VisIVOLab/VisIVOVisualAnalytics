@@ -467,6 +467,10 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     auto *sliceRenderer = this->sliceWin->GetRenderers()->GetFirstRenderer();
     refitParallelSliceCamera(sliceRenderer, result.imageData, this->sliceWin);
     sliceRenderer->ResetCameraClippingRange();
+    // A new channel refits the slice in code: not a move to send to the linked views. Recorded
+    // before the letterbox below draws, since that draws the plain refit as it is when the
+    // letterbox cannot run (issue #358).
+    this->refitSliceCamera();
     this->layout2dPaneFor(/*slice=*/true, true);   // gutter-aware letterbox supersedes the plain refit
     if (this->probeModeActive && this->probeValid) {
         this->refreshProbeOverlay();

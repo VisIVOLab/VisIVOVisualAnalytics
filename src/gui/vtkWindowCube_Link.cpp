@@ -414,8 +414,8 @@ void vtkWindowCube::broadcastLinked2DCamera(const double dataCenterXY[2], double
 void vtkWindowCube::applyLinked2DCamera(const double dataCenterXY[2], double worldHeight)
 {
     // Receiver: adopt the shared 2-D view on every visible 2-D pane. m_applyingLinkedUpdate guards
-    // against re-broadcast; the pane setters are themselves echo-guarded (Pane2DView) or fire no
-    // InteractionEvent (slice programmatic set), so this cannot loop.
+    // against re-broadcast; the pane and slice setters adopt the camera before drawing it
+    // (LinkedCameraSync), so their frames do not send it back and this cannot loop.
     if (!this->m_linkViews || !this->m_linkCamera || !(worldHeight > 0.))
         return;
     QScopedValueRollback<bool> guard(this->m_applyingLinkedUpdate, true);

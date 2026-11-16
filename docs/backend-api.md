@@ -124,6 +124,7 @@ rendering, remote-service allowlists, limits) is documented in the
 | Server-side rendering | `/v1/render/*` | [Server-side rendering](backend-api/render.md) |
 | Ray-traced particles | `/v1/particle_render/*`, `/v1/tasks/particle_render` | [Ray-traced particle rendering](backend-api/particle-render.md) |
 | Ray-traced volumes | `/v1/volume_render/*`, `/v1/tasks/volume_render` | [Ray-traced volume rendering](backend-api/volume-render.md) |
+| Isosurfaces | `/v1/isosurface/*` | [Isosurfaces for the headset and for export](backend-api/isosurface.md) |
 | VR headset layers | `/v1/points/*`, `/v1/cube/catalogue_pixels`, `/v1/catalogue/classified_votable`, `/v1/cube/mask_layer_bin`, `/v1/cube/mask_layer_save`, `/v1/velocity/lines_bin` | [Points, catalogues and flows for the headset](backend-api/vr-layers.md) |
 | Headset pairing | `/v1/vr/pair` | [Headset pairing by code](backend-api/vr-pair.md) |
 | Headset hub (presence, commands, activity, spectator view) | `/v1/vr/headset*`, `/v1/vr/activity` | [Headset hub](backend-api/headset-hub.md) |
@@ -156,6 +157,7 @@ backend-api/share
 backend-api/render
 backend-api/particle-render
 backend-api/volume-render
+backend-api/isosurface
 backend-api/vr-layers
 backend-api/vr-pair
 backend-api/headset-hub

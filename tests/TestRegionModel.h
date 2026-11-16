@@ -35,4 +35,9 @@ private slots:
     void addAllIsOneUndoStep();
     void newShapesRoundTripAndGeometry();
     void importKeepsEveryRegionAndSaysWhy();
+    void planeAndRegionsShareOnePlacement();
+    void momentPaneMatchesTheSlice();
+    void croppedAndForeignMaps();
+    void editsOnOnePaneShowOnTheOthers();
+    void remotePlaneDrawingIsTheLocalOne();
 };

@@ -8,6 +8,108 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **VR: take a simulation model apart (#371).** The hand menu's new
+  *Explode* page (from *Display ▸ Rendering*) pulls a simulation volume
+  apart into pieces: the overlaid fields, each in its own colours, or 2–4
+  value ranges of one field (shells and layers between its threshold and
+  colour max, equal in decades on a log scale), each in a colour of its own
+  with its own colour bar. Pieces sit in a row, a column or a ring, animate
+  between assembled and exploded, can be hidden, and a grip inside one moves
+  and turns it; *Reset* puts them back. Every piece is the same resident 3-D
+  texture (the overlay storage or the cube's) drawn again with its own
+  matrix and uniforms, so nothing is allocated in VR. The pieces are scaled
+  so that together they cover no more than the cube alone, and the animation
+  shrinks the model before parting it, so no frame of it costs more. The plane
+  split (opening the model like a book, after #369) and isosurface pieces
+  (#370) are follow-ups.
+- **VR: isosurfaces of a cube's field (#370).** The hand menu's new
+  *Surfaces* page (from *Display ▸ Rendering*) shows up to four
+  isosurfaces, each a level of the field with its own colour and opacity,
+  with the volume or on their own, cut by the crop and the clipping plane. The level is set on the
+  cube's own scale (in decades on a log-scaled density) and written in the
+  field's unit. The surfaces are extracted on the backend from the original
+  data by the new `POST /v1/isosurface/extract` task: the cube itself, or
+  the finest level of its brick pyramid within 512³ voxels, read slab by
+  slab and contoured with flying edges (in log space on a log scale), then
+  decimated to 150 000 triangles and cached per field, level, scale and
+  level of detail. The headset gets a compact mesh (16-bit positions, 8-bit
+  normals, `GET /v1/isosurface/mesh/{id}`) into buffers sized once (no
+  allocation per frame, no 3-D texture); the clipping plane (#369) cuts
+  them as it cuts the volume. Each surface exports as PLY or binary glTF, in a simulation's
+  world coordinates (`.../export`). On the 2048³ PLUTO density, three
+  surfaces from the pyramid's 512³ level take 3.0 s (2.6 MB each on the
+  wire) and come back from the cache in 10 ms.
+- **VR: a free clipping plane for simulation volumes (#369).** On a
+  simulation volume (a VBT volume or a PLUTO output) the hand menu's *Range*
+  page has a clipping plane where a cube has its velocity range, and the tool
+  palette a *Clipping plane* tool in place of *Velocity range*. Hold the
+  trigger and the plane moves with the controller and tilts with the wrist;
+  the primary stick moves it along its normal. It hides one half-space and
+  draws the section on the plane with the current colour map and threshold;
+  *Flip* keeps the other side, *Snap* turns it to the nearest box axis,
+  *Slab* keeps a slab between two parallel planes (the stick ↔ sets its
+  thickness), *Reset* puts it back through the centre. On the 2-D page a drag
+  on the plane moves it, Shift and a drag tilts it. The plane is sent to the
+  render session (`set_clip_plane`, in the cube's voxel coordinates as
+  `set_crop` and the desktop's cutting plane), which clips the volume with it
+  and draws the same section in the refined stereo frames; a frame drawn
+  without it (an older backend) is not shown. Nothing new is allocated in VR:
+  the plane is a few shader uniforms. The plane's state and GLSL are exposed
+  (`clip-plane.js`, `clip-plane-ui.js`) for other draws to be clipped by it.
+- **VR: overlay two or three variables of a simulation volume (#357).** The
+  hand menu's new *Overlay* page (from *Display ▸ Rendering*) shows two or
+  three variables of a VBT volume or a PLUTO output in one view, each with
+  its own colour map, scale (log or linear), threshold, colour max and
+  opacity, and its own colour bar. *Sum* composites the fields as emitting
+  and absorbing media with per-field opacity; *MIP* takes the brightest field
+  value. The fields come from the new `POST /v1/cube/reduced_fields_bin`
+  (fields reduced with the cube's factors, each on its own scale,
+  interleaved) into one multi-channel 3-D texture (RG8 or RGB8) with a LUT
+  atlas and a per-field skip grid. Its storage is allocated before VR, beside
+  the capacity, when the device's share allows, so an overlay shown in VR
+  allocates no 3-D texture. The readout gives each field's value; the
+  desktop's *Headset Activity* says which fields are overlaid.
+- **Desktop and backend: regions on the cutting plane with Remote rendering
+  (#356).** With the 3-D view rendered on the backend, the render session now
+  draws the window's regions on its cutting plane, as the desktop does in
+  Local rendering: the desktop sends the drawing (outlines, paths, markers,
+  labels in cube pixels) whenever the list changes (`set_regions`), and the
+  session places it at the plane's channel, so the regions are in the frames
+  it sends, depth-tested against the volume, and never lag the camera.
+  The backend's plane now spans -0.5 to n - 0.5, as the desktop's: it used to
+  sit half a voxel off the volume it cuts.
+- **Desktop: regions on moment maps in Product panes (#355).** Every pane
+  showing a map of the cube's sky plane (moment maps, line-width maps, the
+  Channels pane, Faraday maps of a boxed RM synthesis) draws the window's
+  region list, with selection, handles, editing, Region Properties, the
+  context menu, Delete, Cmd+Z and Analyse, as on the 2-D slice. The drawing
+  tools draw on the map itself instead of turning the pane into the slice, and
+  the new region joins the same list. Each pane places the regions by its own
+  grid and crop origin, and an edit in one pane shows in all of them.
+  *Analyse* on a map pane measures that map and says which one.
+- **Desktop: linked 2-D views follow every camera change (#358).** In the
+  cube viewer, the 2-D slice and the Product panes (a moment map, say) used to
+  share their pan and zoom only from mouse gestures; Shift+R reset one view
+  and left the linked panes and the linked windows behind. They now compare
+  the camera after every frame, as the 3-D view does since #338, so a reset
+  or any other camera change made in code is followed too. Refits the window
+  makes itself (a new channel, a resized pane, a new colour bar) are not
+  pushed onto the other views, and a view never sends back a camera it took
+  from another. The image viewer streams the tiles of the region on screen
+  after any camera change as well: after Shift+R on a zoomed large image it
+  used to keep only the zoomed patch.
+
+- **Desktop: the cube's regions on the 3-D cutting plane (#343).** The
+  region list is drawn on the cutting plane of the 3-D view as on the 2-D
+  slice, in its colours with the selected region thicker, pulled towards the
+  camera so the textured plane never hides it. It follows the channel, the
+  preview or full-resolution cube on screen, and every edit, and hides with
+  the plane. The plane is now placed by the same rule as the regions: cube
+  pixel *i* of the slice it wears is where the volume shows that pixel, and
+  its height is the channel's in the volume. On a strided preview the plane
+  used to span the preview's bounds and sit at a fraction of its depth, so its
+  last texels and its height were up to a sample off; a pick on the plane
+  reads the pixel under the cursor by the same rule.
 - **Desktop: region files are imported whole in both viewers, with the
   reason for every line not read (#342).** *Tools ▸ Regions ▸ Import Region*
   is now in the image viewer too, and both viewers read the file through the

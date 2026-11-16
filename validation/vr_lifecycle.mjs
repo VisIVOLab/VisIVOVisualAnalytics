@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--variables] [--pyramid-wait] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--clip-plane] [--variables] [--overlay] [--explode] [--isosurface] [--pyramid-wait] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -19,10 +19,13 @@
 // issue #201; --menu runs that alone on the smoke run) and every canvas's
 // text fitting its box (vr_text_fit.mjs, issue #276; --text-fit alone). CI
 // runs both; the full lifecycle run remains separate.
+// --isosurface (issue #370) adds the isosurfaces' checks to the smoke run
+// (validation/vr_isosurface.mjs; about two seconds; --regressions runs them too).
 // --simulation (issue #317) adds a simulation volume's checks to the smoke run
 // (validation/vr_simulation.mjs: a VBT density over seven decades on a log
 // scale, its box drawn to the grid spacing, no spectral wording or tools);
-// --regressions runs them too.
+// --regressions runs them too. --clip-plane (issue #369) adds the clipping
+// plane's checks to that run (validation/vr_clip_plane.mjs; --regressions too).
 // --measure (issue #224) adds the measurement record's checks to the smoke
 // run (validation/vr_measure.mjs): recording on vs off, a guided run through
 // every condition, the record read back and the report script run on it.
@@ -62,7 +65,10 @@ import { runSpectatorChecks } from './vr_spectator.mjs';
 import { runSimulationChecks } from './vr_simulation.mjs';
 import { runCropDetailChecks } from './vr_crop_detail.mjs';
 import { runVariableChecks } from './vr_variables.mjs';
+import { runOverlayChecks } from './vr_overlay.mjs';
+import { runExplodeChecks } from './vr_explode.mjs';
 import { runPyramidWaitChecks } from './vr_pyramid_wait.mjs';
+import { runIsosurfaceChecks } from './vr_isosurface.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -87,11 +93,21 @@ const ENTRY = !!args.entry && !XRFAKE && !args.paired;
 const CROP_DETAIL = !!args['crop-detail'] && !XRFAKE && !args.paired;
 // --variables (issue #317): a simulation volume's variable picker in a VR session, alone (also part of --xrfake and --regressions).
 const VARIABLES = !!args.variables && !XRFAKE && !args.paired;
+// --overlay (issue #357): two or three variables overlaid in a VR session, alone (also part of --xrfake and --regressions).
+const OVERLAY = !!args.overlay && !XRFAKE && !args.paired;
+// --explode (issue #371): a simulation model taken apart in a VR session, alone (also part of --xrfake and --regressions, after --overlay's checks).
+const EXPLODE = !!args.explode && !XRFAKE && !args.paired;
+// --overlay-shape NZ,NY,NX: the synthetic fields' grid (default 24,48,64), for frame-cost measurements on a larger cube (--overlay, --explode).
+const OVERLAY_SHAPE = typeof args['overlay-shape'] === 'string' ? args['overlay-shape'].split(',').map(Number) : undefined;
 // --pyramid-wait (issue #329): a brick pyramid build that outlasts the page's request deadline, alone (also part of --xrfake and --regressions).
 const PYRAMID_WAIT = !!args['pyramid-wait'] && !XRFAKE && !args.paired;
+// --isosurface (issue #370): isosurfaces of the smoke's cube (extracted, drawn, cached, exported; about 2 s; also part of --regressions).
+const ISOSURFACE = (!!args.isosurface || !!args.regressions) && !args.paired;
 // --simulation (issue #317): a simulation volume (also part of --regressions).
-const SIMULATION = (!!args.simulation || !!args.regressions) && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['crop-detail'] || !!args.variables || !!args['pyramid-wait'];
+const SIMULATION = (!!args.simulation || !!args.regressions || !!args['clip-plane']) && !args.paired;
+// --clip-plane (issue #369): a simulation volume's clipping plane, checked on the simulation run (also part of --regressions).
+const CLIP_PLANE = (!!args['clip-plane'] || !!args.regressions) && !args.paired;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['clip-plane'] || !!args['crop-detail'] || !!args.variables || !!args.overlay || !!args.explode || !!args['pyramid-wait'] || ISOSURFACE;
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -617,9 +633,9 @@ try {
   // WebGL objects and their bytes, counted from before the page's scripts run.
   if (ALLOC) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: GL_PROBE });
   // A WebXR stand-in, active only on an address with ?xrfake.
-  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL || VARIABLES || PYRAMID_WAIT) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
+  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL || VARIABLES || OVERLAY || EXPLODE || PYRAMID_WAIT) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
   // Texture calls split by the VR session (issue #229), before the page's scripts.
-  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL || VARIABLES) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
+  if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL || VARIABLES || OVERLAY || EXPLODE) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
   if (PAIRED) {
@@ -662,6 +678,8 @@ try {
   const errs = await c.evaluate(`window.__vrShell.diag.items.filter((e) => e.level === 'error'
     && !(e.event === 'request-failed' && e.message.includes('/v1/render/'))).map((e) => e.event + ': ' + e.message)`);
   check('no page error', !errs.length && !c.pageErrors.length, [...errs, ...c.pageErrors].join(' / '));
+  // Issue #370: isosurfaces of this cube, on the page as loaded.
+  if (ISOSURFACE) results.isosurface = await runIsosurfaceChecks({ c, check, waitFor, api, token: tokenA, results: {} });
 
   if (args.regressions || args.menu) await runMenuChecks({ c, check, waitFor, results });
   // Issue #276: every canvas's text inside its box, with this page's fonts and values (vr_text_fit.mjs).
@@ -702,6 +720,10 @@ try {
       cube: makeCube('synthetic_detail.fits', { shape: [64, 128, 128], ra: 153 }) });
     // Issue #317: a simulation volume's variables switched in one VR session (no 3-D allocation, each its own look).
     results.variables = await runVariableChecks({ c, check, waitFor, api, base: BASE, token: tokenA, python: PY });
+    // Issue #357: two or three variables overlaid in one VR session (no 3-D allocation, each its own look).
+    results.overlay = await runOverlayChecks({ c, check, waitFor, api, base: BASE, token: tokenA, python: PY, shape: OVERLAY_SHAPE });
+    // Issue #371: the same volume taken apart (no new load, one short session, few timed draws).
+    results.explode = await runExplodeChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, reuse: true, cheap: true });
     // Issue #329: a pyramid build longer than the page's request deadline (the app's room, the status line).
     results.pyramidWait = await runPyramidWaitChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
     // Issue #279: the source list (window, visit, flags, a found source, the VOTable and the hub's product).
@@ -725,9 +747,12 @@ try {
   if (CROP_DETAIL) results.cropDetail = await runCropDetailChecks({ c, check, waitFor, base: BASE, token: tokenA, out: OUT,
     cube: makeCube('synthetic_detail.fits', { shape: [64, 128, 128], ra: 153 }) });
   if (VARIABLES) results.variables = await runVariableChecks({ c, check, waitFor, api, base: BASE, token: tokenA, python: PY });
+  if (OVERLAY) results.overlay = await runOverlayChecks({ c, check, waitFor, api, base: BASE, token: tokenA, python: PY, shape: OVERLAY_SHAPE });
+  // With --overlay too: on the page its checks leave, as --regressions runs it.
+  if (EXPLODE) results.explode = await runExplodeChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, shape: OVERLAY_SHAPE, reuse: OVERLAY, cheap: OVERLAY, out: OUT });
   if (PYRAMID_WAIT) results.pyramidWait = await runPyramidWaitChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
   // Issue #317: a simulation volume (log scale, box to the grid spacing, no spectral wording or tools).
-  if (SIMULATION) results.simulation = await runSimulationChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, cube });
+  if (SIMULATION) results.simulation = await runSimulationChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, cube, clipPlane: CLIP_PLANE });
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────

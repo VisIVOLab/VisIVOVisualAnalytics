@@ -8,6 +8,7 @@ Provides:
   - client                : httpx.AsyncClient wired to the FastAPI test app
   - opened_image          : pre-opened image dataset_id + session_id
   - opened_cube           : pre-opened cube  dataset_id + session_id
+  - worker_pool           : compute-pool worker started, app.compute loaded
 """
 
 from __future__ import annotations
@@ -181,6 +182,35 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         base_url="http://testserver",
     ) as ac:
         yield ac
+
+
+# ── Worker pool ───────────────────────────────────────────────────────────────
+
+# Spawning a pool worker and importing app.compute in it, measured on an M-series
+# Mac: about 3 s; the bound leaves room for a loaded CI runner or a cold disk.
+_POOL_WARM_TIMEOUT_S = 120.0
+
+
+@pytest.fixture(scope="session")
+def worker_pool() -> None:
+    """Start a compute-pool worker and load the compute code into it.
+
+    The pool (app.dependencies._POOL) uses the 'spawn' start method and starts
+    its workers on the first submit: a fresh interpreter, then the import of
+    app.compute when the first job is unpickled. That costs seconds, once per
+    run. Tests that start a task and poll it for about a second (moment, PV)
+    passed in the full suite only because an earlier test had already paid it;
+    run alone they timed out. Asking for this fixture pays the cost up front,
+    under a generous bound, so such a test needs no earlier test. The polls
+    keep their short deadlines, which still check that a task completes
+    promptly once a worker is up.
+    """
+    from app import dependencies  # noqa: PLC0415 - after VISIVO_TOKEN is set
+
+    # exec is a builtin, so the job pickles by name and returns None; the
+    # worker that runs it keeps app.compute imported for every later job.
+    # Tests submit one job at a time, so that worker is the one they get.
+    dependencies._POOL.submit(exec, "import app.compute").result(timeout=_POOL_WARM_TIMEOUT_S)
 
 
 # ── Pre-opened datasets ───────────────────────────────────────────────────────

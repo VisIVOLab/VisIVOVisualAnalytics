@@ -19,7 +19,16 @@
 // A simulation volume (ctx.simulation, issue #317) is a cube without a
 // spectral axis: no noise σ (Display offers the 90 % and 99 % percentiles
 // where a cube has 3σ and 5σ), no velocity range (its z is cropped as x and
-// y are), no Kinematic Lasso, Spectrum probe, moments or PV slices.
+// y are), no Kinematic Lasso, Spectrum probe, moments or PV slices; its
+// Range page has the clipping plane (issue #369) where a cube has its
+// velocity range: on/off, flip, snap to an axis, a slab, reset, and the
+// Clipping plane tool beside the Spatial crop.
+// Its Overlay page (issue #357, one press from Display's Rendering row)
+// overlays two or three of its variables, each with its own colour map,
+// scale, threshold, colour max and opacity.
+// A cube's Surfaces page (issue #370, from the same row) adds up to four
+// isosurfaces, each with its level, colour and opacity, extracted by the
+// backend (isosurface-ui.js).
 //
 // The layout is a pure function of a context (what is shown and chosen), so
 // the hit tests, the greying and the "two presses from opening" rule are
@@ -30,11 +39,12 @@
 // form as its tooltip (`tip`), written under its row while the ray is on it.
 
 import * as M from './mat4.js';
-import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
+import { COLORMAP_NAMES, OVERLAY_COLORMAPS, colormapTable } from './colormaps.js';
 import { drawIcon } from './tool-icons.js';
 import { fitLine, wrapFit, measureWith } from './text-fit.js';
 import { STRETCHES, STRETCH_LABELS, STRETCH_TIPS, SIGMA_PRESETS, PERCENTILE_PRESETS } from './levels.js';
 import { variableChips } from './sim-controls.js';
+import { explodePage } from './explode.js';
 
 export const TITLE_H = 64;
 export const TAB_H = 88;
@@ -70,11 +80,11 @@ export const TABS = [
 ];
 /** Every page: the tabs', the cube's Levels and a point table's Data (under
  *  Display) and the technical settings (?debug only, under More). */
-export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'data', 'debug'];
+export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'data', 'overlay', 'explode', 'iso', 'debug'];
 /** The sub-pages and the tab each belongs to. */
-export const SUB_PAGES = { levels: 'display', data: 'display', debug: 'more' };
+export const SUB_PAGES = { levels: 'display', data: 'display', overlay: 'display', explode: 'display', iso: 'display', debug: 'more' };
 /** The mode a tab sets (null: the mode stays). */
-export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', debug: null };
+export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', explode: 'explore', iso: 'explore', debug: null };
 /** The tab of a mode, for the page shown when the menu opens. */
 export const MODE_TAB = { explore: 'display', clip: 'range', select: 'select' };
 export const KINDS = ['cube', 'points', 'flow', 'none'];
@@ -135,6 +145,12 @@ export const WHY = {
   simulation: 'A simulation volume has no spectral axis: no channels or spectra.',
   simSigma: 'A simulation volume has no noise σ: use a percentile.',
   varLoading: 'A variable is being loaded: wait for it.',
+  noOverlay: 'Overlays are for a simulation volume with two variables or more.',
+  ovLoading: 'The overlay is being loaded: wait for it.',
+  ovFields: 'Pick two fields or three first (the Fields row).',
+  ovOn: 'The overlay is on: its fields are set on the Overlay page.',
+  noExplode: 'An exploded view is for a simulation volume.',
+  bandsOnly: 'For value ranges only (Pieces above).',
 };
 
 /** The default context: nothing shown, nothing chosen. main.js fills it. */
@@ -145,7 +161,18 @@ export function defaultContext() {
     simulation: false,
     // Its variables (#317): {names, current, pending} with two or more, else null.
     vars: null,
+    // Overlaid variables (#357): {fields: [{name, colormap, log, on}], edit,
+    // composite ('sum' | 'mip'), shown, loading, room ('' or why there is no
+    // storage), fieldPage}, or null (not a simulation with two variables).
+    ov: null,
+    // An exploded view (#371, explode-ui.js menuContext), or null (not a simulation volume).
+    ex: null,
+    // Isosurfaces (#370, isosurface-ui.js menuContext): {none, surfaces:
+    // [{colour, shown, made}], edit, volumeHidden, max, busy}, or null (no cube).
+    iso: null,
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
+    // The clipping plane of a simulation volume (#369): {available, on, slab}.
+    plane: { available: false, on: false, slab: false },
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     src: { total: 0, shown: false, canAdd: false },
     mask: { loaded: false, shown: false, picking: false, canUndo: false, canSave: false },
@@ -196,9 +223,25 @@ function displayCube(ctx) {
     { id: 'cmax', kind: 'slider', rect: [X0, rowY(2), 560, WH] },
     btn('levels-page', [X0 + 570, rowY(2), RIGHT - X0 - 570, WH], 'Levels ▸', { tip: sim ? 'Levels: histogram, percentiles, stretch' : 'Levels: histogram, σ, percentiles, stretch' }),
     { id: 'opacity', kind: 'slider', rect: [X0, rowY(3), RIGHT - X0, WH] },
-    btn('render:0', span(4, 2, 0), 'Emission', { group: 'render', value: 0, on: ctx.render === 0, tip: 'Emission: the voxels add up along each ray' }),
-    btn('render:1', span(4, 2, 1), 'MIP', { group: 'render', value: 1, on: ctx.render === 1, tip: 'MIP: the brightest value along each ray' }),
   ];
+  const ov = sim && ctx.vars && ctx.ov ? ctx.ov : null;
+  const ex = sim && ctx.ex ? ctx.ex : null;
+  const iso = ctx.iso;
+  const nr = 2 + (ov ? 1 : 0) + (ex ? 1 : 0) + (iso ? 1 : 0);
+  w.push(btn('render:0', span(4, nr, 0), 'Emission', { group: 'render', value: 0, on: ctx.render === 0, tip: 'Emission: the voxels add up along each ray' }),
+    btn('render:1', span(4, nr, 1), 'MIP', { group: 'render', value: 1, on: ctx.render === 1, tip: 'MIP: the brightest value along each ray' }));
+  if (ov) {
+    // Two or three variables overlaid (#357): their own page.
+    w.push(btn('overlay-page', span(4, nr, 2), 'Overlay ▸', { on: !!ov.shown, tip: 'Overlay: two or three variables in one view' }));
+    // While it is drawn (a field shown), the single variable's look is not what is drawn.
+    if (ov.drawing ?? ov.shown) {
+      for (const x of w) if (x.id !== 'overlay-page' && !x.disabled) x.disabled = WHY.ovOn;
+    }
+  }
+  // A simulation model taken apart (#371): its own page.
+  if (ex) w.push(btn('explode-page', span(4, nr, nr - 1 - (iso ? 1 : 0)), 'Explode ▸', { on: !!ex.exploded, tip: 'Explode: the fields or value ranges pulled apart' }));
+  // Isosurfaces (#370): their own page, the row's last cell, whatever is drawn.
+  if (iso) w.push(btn('iso-page', span(4, nr, nr - 1), 'Surfaces ▸', { on: iso.surfaces.length > 0, tip: 'Surfaces: isosurfaces at chosen levels' }));
   const v = sim ? ctx.vars : null;
   if (v && v.names && v.names.length > 1) {
     // A simulation volume with several variables (#317): the last row picks
@@ -310,6 +353,114 @@ function levelsPage(ctx) {
   return { rows, widgets: w, status: 6 };
 }
 
+/** The variables' chips on the Overlay page's Fields row: all when they fit
+ *  `perPage`, else page `page` of `perPage - 1` and a last cell that pages on. */
+export function overlayFieldChips(names, page = 0, perPage = 5) {
+  if (names.length <= perPage) return { chips: names.slice(), more: false, pages: 1 };
+  const per = perPage - 1, pages = Math.ceil(names.length / per);
+  const p = ((page % pages) + pages) % pages;
+  return { chips: names.slice(p * per, p * per + per), more: true, pages };
+}
+
+/**
+ * Two or three variables of a simulation volume overlaid (#357): the Fields
+ * row picks them (a press adds or takes one out; the number is its channel
+ * and its colour bar's place), Edit the one the rows below set (its colour
+ * map, Log, threshold, colour max, opacity, shown or hidden), then the
+ * compositing (Emission: the fields' extinctions add up; MIP: the brightest
+ * field value) and the overlay switched on or off.
+ */
+function overlayPage(ctx) {
+  const ov = ctx.ov;
+  const rows = [['fields', 'Fields'], ['edit', 'Edit'], ['cmap', 'Colour map'], ['thr', 'Threshold'], ['cmax', 'Colour max'],
+    ['opacity', 'Opacity']];
+  const none = ctx.kind === 'cube' && ctx.simulation && ctx.vars && ov ? '' : WHY.noOverlay;
+  const names = !none ? ctx.vars.names : [];
+  const fields = !none ? ov.fields : [];
+  const busy = !none && ov.loading ? WHY.ovLoading : '';
+  const room = none || (ov.room || '');
+  const w = [];
+  const { chips, more } = overlayFieldChips(names, ov ? ov.fieldPage || 0 : 0);
+  const n = Math.max(1, chips.length + (more ? 1 : 0));
+  chips.forEach((name, k) => {
+    const at = fields.findIndex((f) => f.name === name);
+    w.push(btn(`ov-field:${name}`, span(0, n, k), at >= 0 ? `${at + 1} ${name}` : name, { group: 'ov-field', value: name, on: at >= 0, free: true,
+      disabled: room || busy, tip: at >= 0 ? `${name}: channel ${at + 1}, pressed again taken out` : fields.length >= (ov.max || 3) ? `${name}: ${ov.max === 2 ? 'two' : 'three'} fields at most here, take one out first` : `Add ${name}` }));
+  });
+  if (more) w.push(btn('ov-fields-more', span(0, n, n - 1), 'more ▸', { disabled: room, tip: 'The next variables' }));
+  if (!chips.length) w.push(btn('ov-field:', span(0, 1, 0), 'Fields', { disabled: none }));
+  // Edit: one chip a field in the overlay, then its Shown toggle.
+  const cells = weighted(1, [...fields.map(() => 3), 2.4]);
+  fields.forEach((f, i) => w.push(btn(`ov-edit:${i}`, cells(i), `${i + 1} ${f.name}`, { group: 'ov-edit', value: i, on: ov.edit === i, free: true,
+    disabled: room, tip: `Set ${f.name}'s look below` })));
+  const cur = fields[ov && ov.edit < fields.length ? ov.edit : 0] || null;
+  const noField = room || (cur ? '' : WHY.ovFields);
+  w.push(btn('ov-show-field', fields.length ? cells(fields.length) : span(1, 1, 0), cur && cur.on === false ? 'Hidden' : 'Shown',
+    { on: !!cur && cur.on !== false, disabled: noField, tip: 'This field shown or hidden in the overlay' }));
+  const nm = OVERLAY_COLORMAPS.length;
+  OVERLAY_COLORMAPS.forEach((name, k) => w.push({ id: `ov-cmap:${name}`, kind: 'swatch', rect: span(2, nm, k), label: name,
+    group: 'ov-cmap', value: name, on: !!cur && cur.colormap === name, disabled: noField }));
+  const bw = 130, gap = 10, sl = RIGHT - X0 - 2 * (bw + gap);
+  w.push({ id: 'ov-thr', kind: 'slider', rect: [X0, rowY(3), sl, WH], disabled: noField });
+  w.push(btn('ov-log', [X0 + sl + gap, rowY(3), bw, WH], 'Log', { on: !!cur && !!cur.log, disabled: noField || busy,
+    tip: 'Log: the field quantised on log10 of its values (loaded again)' }));
+  w.push(btn('ov-thr-reset', [X0 + sl + gap + bw + gap, rowY(3), bw, WH], 'Reset', { disabled: noField, tip: 'Reset: the field\'s own threshold and colour max' }));
+  w.push({ id: 'ov-cmax', kind: 'slider', rect: [X0, rowY(4), RIGHT - X0, WH], disabled: noField });
+  const cell5 = weighted(5, [3.4, 1.6, 1.6, 2]);
+  w.push({ id: 'ov-opacity', kind: 'slider', rect: cell5(0), disabled: noField });
+  w.push(btn('ov-comp:sum', cell5(1), 'Sum', { group: 'ov-comp', value: 'sum', on: !!ov && ov.composite !== 'mip', disabled: room,
+    tip: 'Sum: the fields emit and absorb together, each with its opacity' }));
+  w.push(btn('ov-comp:mip', cell5(2), 'MIP', { group: 'ov-comp', value: 'mip', on: !!ov && ov.composite === 'mip', disabled: room,
+    tip: 'MIP: the brightest field value along each ray, in its colours' }));
+  w.push(btn('ov-on', cell5(3), ov && ov.shown ? 'On' : 'Off', { on: !!ov && !!ov.shown, armed: !!ov && !!ov.loading,
+    disabled: room || (fields.length >= 2 ? '' : WHY.ovFields), tip: 'The overlay on, or the single variable back' }));
+  return { rows, widgets: w, status: 6, placeholder: { edit: 'The fields picked above, to set one by one.' } };
+}
+
+/** The isosurfaces' colours (isosurface.js PALETTE), in order. */
+export const ISO_COLOURS = ['Orange', 'Cyan', 'Magenta', 'Lime', 'Yellow', 'White'];
+const ISO_DOTS = { Orange: '#ff993d', Cyan: '#3dc7ff', Magenta: '#ff4fd9', Lime: '#9ce663', Yellow: '#ffe04d', White: '#e8e8e8' };
+
+/**
+ * Isosurfaces of the cube (#370): the Surfaces row picks the one the rows
+ * below set (its level on the cube's scale, its colour and opacity, shown
+ * or hidden) or adds one; then the volume with them or not, and the
+ * export of the one picked (saved in the workspace's exports).
+ */
+function isoPage(ctx) {
+  const iso = ctx.iso;
+  const rows = [['isolist', 'Surfaces'], ['isolevel', 'Level'], ['isocolour', 'Colour'], ['isoopacity', 'Opacity'],
+    ['isoshow', 'Show'], ['isoexport', 'Export']];
+  const none = ctx.kind !== 'cube' || !iso ? 'Isosurfaces are of a cube.' : iso.none || '';
+  const list = !none ? iso.surfaces : [];
+  const w = [];
+  const cells = weighted(0, [...list.map(() => 1.4), 2, 2]);
+  list.forEach((s, i) => w.push(btn(`iso-edit:${i}`, cells(i), `${i + 1}`, { group: 'iso-edit', value: i, on: iso.edit === i, free: true,
+    dot: s.colour, tip: `Surface ${i + 1} (${s.colour.toLowerCase()}): set it below` })));
+  const full = !none && list.length >= (iso.max || 4) ? 'Four surfaces at most: remove one first.' : '';
+  w.push(btn('iso-add', cells(list.length), '+ Add', { disabled: none || full, tip: 'A new surface, at the threshold first' }));
+  const cur = list[iso && iso.edit < list.length ? iso.edit : -1] || null;
+  const noSurface = none || (cur ? '' : 'Add a surface first.');
+  w.push(btn('iso-remove', cells(list.length + 1), 'Remove', { disabled: noSurface, tip: 'This surface removed' }));
+  const bw = 200, gap = 10, sl = RIGHT - X0 - bw - gap;
+  w.push({ id: 'iso-level', kind: 'slider', rect: [X0, rowY(1), sl, WH], disabled: noSurface });
+  w.push(btn('iso-thr', [X0 + sl + gap, rowY(1), bw, WH], 'Threshold', { disabled: noSurface, tip: 'The level at the volume\'s threshold' }));
+  const nc = ISO_COLOURS.length;
+  ISO_COLOURS.forEach((name, k) => w.push(btn(`iso-colour:${name}`, span(2, nc, k), name, { group: 'iso-colour', value: name, on: !!cur && cur.colour === name,
+    dot: name, free: true, disabled: noSurface })));
+  w.push({ id: 'iso-opacity', kind: 'slider', rect: [X0, rowY(3), sl, WH], disabled: noSurface });
+  w.push(btn('iso-shown', [X0 + sl + gap, rowY(3), bw, WH], cur && !cur.shown ? 'Hidden' : 'Shown', { on: !!cur && cur.shown, disabled: noSurface,
+    tip: 'This surface shown or hidden' }));
+  w.push(btn('iso-show:volume', span(4, 2, 0), 'With the volume', { group: 'iso-show', value: 'volume', on: !!iso && !iso.volumeHidden, disabled: none }));
+  w.push(btn('iso-show:surfaces', span(4, 2, 1), 'Surfaces only', { group: 'iso-show', value: 'surfaces', on: !!iso && !!iso.volumeHidden, disabled: none,
+    tip: 'The volume hidden while a surface is shown' }));
+  const noMesh = noSurface || (cur.made ? '' : 'The surface is not made yet.');
+  w.push(btn('iso-export:ply', span(5, 3, 0), 'PLY', { disabled: noMesh, tip: 'Saved as PLY in the workspace\'s exports' }));
+  w.push(btn('iso-export:glb', span(5, 3, 1), 'glTF', { disabled: noMesh, tip: 'Saved as binary glTF in the workspace\'s exports' }));
+  w.push(btn('iso-back', span(5, 3, 2), '◂ Display'));
+  return { rows, widgets: w, status: 6 };
+}
+
 /** A point table's Data page (#259): the snapshot beside it, the X/Y/Z
  *  columns, the splats sized by a column (a smoothing length). */
 function dataPage(ctx) {
@@ -343,23 +494,49 @@ function dataPage(ctx) {
 function rangePage(ctx) {
   const cube = ctx.kind === 'cube';
   const sim = cube && !!ctx.simulation;
+  if (sim) return simRangePage(ctx);
   const rows = [['slab', ctx.spectralName], ['trigger', 'Trigger'], ['crop0', 'Crop x'], ['crop1', 'Crop y'], ['crop2', 'Crop z'],
     ['crop', 'Spatial crop']];
-  // A simulation volume's z is cropped as x and y are: no spectral range.
-  const notCube = sim ? WHY.simulation : cube ? '' : WHY.noSpectral;
+  const notCube = cube ? '' : WHY.noSpectral;
   const w = [
     { id: 'slab', kind: 'range', rect: [X0, rowY(0), 560, WH], disabled: notCube },
     btn('slab-all', [X0 + 570, rowY(0), RIGHT - X0 - 570, WH], 'Full band', { disabled: notCube }),
-    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && !sim && ctx.clipTool === 'slab', disabled: notCube,
+    btn('sub:clip:slab', span(1, 2, 0), ctx.spectralName, { group: 'sub-clip', value: 'slab', icon: 'slab', on: cube && ctx.clipTool === 'slab', disabled: notCube,
       tip: 'The trigger centres the range on the emission' }),
     // The crop is drawn and grabbed on every kind of data (#277).
-    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.kind !== 'none' && (sim || ctx.clipTool === 'box'),
+    btn('sub:clip:box', span(1, 2, 1), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.kind !== 'none' && ctx.clipTool === 'box',
       tip: 'Drag a dot, the inside, or elsewhere for a new box' }),
   ];
+  cropRows(w, cube, false);
+  return { rows, widgets: w, status: 6 };
+}
+
+function cropRows(w, cube, sim) {
   for (const a of [0, 1, 2]) {
     w.push({ id: `crop:${a}`, kind: 'range', rect: [X0, rowY(2 + a), RIGHT - X0, WH], axis: a, disabled: cube && !sim && a === 2 ? WHY.cubeZ : '' });
   }
   w.push(btn('crop-reset', [X0, rowY(5), 300, WH], 'Reset crop'));
+}
+
+/** A simulation volume's Range page (#317, #369): no spectral range; its z
+ *  is cropped as x and y are, and the first row is the clipping plane. */
+function simRangePage(ctx) {
+  const pl = ctx.plane || {};
+  const rows = [['plane', 'Plane'], ['trigger', 'Trigger'], ['crop0', 'Crop x'], ['crop1', 'Crop y'], ['crop2', 'Crop z'],
+    ['crop', 'Spatial crop']];
+  const p = (k) => span(0, 5, k);
+  const w = [
+    btn('plane:on', p(0), pl.on ? 'On' : 'Off', { group: 'plane', on: !!pl.on, tip: 'The clipping plane: on or off' }),
+    btn('plane:flip', p(1), 'Flip', { tip: 'Keep the other side of the plane' }),
+    btn('plane:snap', p(2), 'Snap', { tip: 'Turn the plane to the box axis nearest to it' }),
+    btn('plane:slab', p(3), 'Slab', { on: !!pl.on && !!pl.slab, tip: 'Keep a slab between two parallel planes; stick ↔ sets its thickness' }),
+    btn('plane:reset', p(4), 'Reset', { tip: 'Back through the centre, across x' }),
+    btn('sub:clip:box', span(1, 2, 0), 'Spatial crop', { group: 'sub-clip', value: 'box', icon: 'crop', on: ctx.clipTool !== 'plane',
+      tip: 'Drag a dot, the inside, or elsewhere for a new box' }),
+    btn('sub:clip:plane', span(1, 2, 1), 'Clipping plane', { group: 'sub-clip', value: 'plane', icon: 'plane', on: ctx.clipTool === 'plane',
+      tip: 'Hold the trigger to move and turn the plane; stick ↕ along its normal' }),
+  ];
+  cropRows(w, true, true);
   return { rows, widgets: w, status: 6 };
 }
 
@@ -492,6 +669,9 @@ export function pageSpec(page, ctx = defaultContext()) {
   if (page === 'display') s = ctx.kind === 'points' ? displayPoints(ctx) : ctx.kind === 'flow' ? displayFlow(ctx) : displayCube(ctx);
   else if (page === 'levels') s = levelsPage(ctx);
   else if (page === 'data') s = dataPage(ctx);
+  else if (page === 'overlay') s = overlayPage(ctx);
+  else if (page === 'explode') s = explodePage(ctx, { btn, span, weighted, rowY, X0, RIGHT, WH }, WHY);
+  else if (page === 'iso') s = isoPage(ctx);
   else if (page === 'range') s = rangePage(ctx);
   else if (page === 'select') s = selectPage(ctx);
   else if (page === 'measure') s = measurePage(ctx);
@@ -732,8 +912,14 @@ function drawButton(c, w, hover) {
   c.fill();
   if (hover && !off) { c.strokeStyle = C.edge; c.lineWidth = 2; c.stroke(); }
   // A tool's button carries the palette's icon on its left (#257).
-  const is = w.icon ? hh - 16 : 0;
+  let is = w.icon ? hh - 16 : 0;
   if (is) drawIcon(c, w.icon, x + 8, y + 8, is, off ? C.off : w.on || w.armed ? C.onFg : C.fg);
+  // A surface's colour (#370): a dot where an icon would be.
+  if (w.dot && !is) {
+    is = 22;
+    c.fillStyle = ISO_DOTS[w.dot] || '#ccc';
+    c.beginPath(); c.arc(x + 8 + is / 2, y + hh / 2, is / 2, 0, 2 * Math.PI); c.fill();
+  }
   c.fillStyle = off ? C.off : w.on || w.armed ? C.onFg : C.fg;
   c.textAlign = 'center';
   c.textBaseline = 'middle';

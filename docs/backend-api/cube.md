@@ -456,6 +456,76 @@ On HCG 44 (700 × 700 × 158) the automatic factors are 3 × 3 × 1, giving
 234 × 234 × 158 voxels, 8.7 MB in 8 bits; the reduction takes 0.6 s on an
 M-series Mac.
 
+### `POST /v1/cube/reduced_fields_bin`
+
+Two or three fields of one simulation volume reduced on **one grid**, for the
+VR page's overlay ([#357](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/357)):
+a VBT volume's fields or a PLUTO output's variables, drawn together from one
+multi-channel 3-D texture. The dataset is any field of the source (as the
+variable picker opens them); the fields are named as `reduced_info`'s
+`fields[].name`.
+
+Request: every `reduced_info`/`reduced_bin` field above (`dataset_id`,
+`factor_xy`, `factor_z`, `max_dim`, `mode`, `encoding`, `source`, `scale`),
+plus:
+
+| Field | Default | Values | Meaning |
+|---|---|---|---|
+| `fields` | (required) | 2 or 3 names | the fields, in channel order; each must be listed beside the dataset, none twice |
+| `scales` | `[]` | `auto`, `log`, `linear` per field | each field's value scale; empty: `scale` for every field |
+| `channels` | `0` | 0 to 4 | channels per voxel in the answer; 0 is one per field, more pads every voxel with zero codes (two fields uploaded into a three-channel texture) |
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "max_dim": 256, "fields": ["rho", "prs", "vx1"], "scales": ["auto", "auto", "linear"] }
+```
+
+**The grid.** The first field is reduced with the request's factors (0:
+automatic, planned as `reduced_bin` plans them, so the overlay lies on the
+grid of the cube on show when the first field is that cube); every other field
+is reduced with the first field's factors given explicitly. Each field keeps
+its own source (its own brick pyramid, or the whole cube when it has none, as
+`reduced_bin` falls back), its own value scale (under `auto`: log for a
+positive field spanning more than three decades, such as a density or a
+temperature; linear for a signed velocity), its own range and threshold. Every
+channel is byte for byte what `reduced_bin` answers for that field with the
+same factors, mode, encoding and scale. Fields of different shapes are refused
+(422); fields that come out on different reduced grids are an error (500).
+
+**The answer** is raw voxels, x fastest, then y, then z, the channel
+innermost: voxel (x, y, z), channel c is element ((z · h + y) · w + x) · C + c,
+of `uint8` codes or little-endian `float16` (each channel coded as
+`reduced_bin` codes its cube, on that field's own range and scale). Headers:
+`X-Visivo-Width`, `X-Visivo-Height`, `X-Visivo-Depth`, `X-Visivo-Scalar-Type`,
+`X-Visivo-Byte-Order: little`, `X-Visivo-Full-Shape`, `X-Visivo-Bin-Factors`,
+`X-Visivo-Bin-Mode`, `X-Visivo-Channels` (C) and `X-Visivo-Fields`, compact
+ASCII JSON, one object per field in request order:
+
+```json
+[{"name": "rho", "path": "/data/rho.0000.flt::pluto-var=rho", "scale": "log",
+  "range_min": 1.8e-12, "range_max": 2.1e-05, "log_min": -11.74, "log_max": -4.68,
+  "threshold": 3.2e-07, "nonpositive_voxels": 0, "bunit": "", "source": "pyramid",
+  "pyramid_level": 3, "file_revision": "9f…", "source_note": ""}, …]
+```
+
+`range_min`/`range_max` are values (on a log scale the positive ones'),
+`log_min`/`log_max` the base-10 range the codes span (null on a linear scale),
+`threshold` the field's default threshold for this binning (as
+`X-Visivo-Threshold`), `pyramid_level` null from the cube, `source_note` why a
+field fell back to the whole cube (empty otherwise). Non-finite numbers are
+null.
+
+While any field's brick pyramid is being built the route answers **202**
+(`{valid: false, preparing: true, progress, error}`, progress over all the
+fields) after starting every field's build, so the page waits once for all of
+them. Each field is reduced as a heavy task (a compute slot each, one after
+the other). The answer (all channels) is at most 128 MiB, checked once the
+first field is reduced, before the others. Errors: 404,
+422 (not a field of a multi-field source, an unknown or repeated field, one or
+more than three fields, `scales` of another length, `channels` below the
+number of fields, a field's reduced cube or the whole answer too large,
+fields of different shapes;
+`text/plain` once the computation began), 500 (`text/plain`).
+
 ### `POST /v1/cube/kinematic_model_bin`
 
 Builds a tilted-ring model PPV cube of a rotating disc with the same spatial

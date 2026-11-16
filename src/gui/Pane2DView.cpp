@@ -7,6 +7,7 @@
 
 #include <QDebug>
 #include <QScopedValueRollback>
+#include <QTimer>
 #include <QVTKInteractor.h>
 #include <QVTKOpenGLNativeWidget.h>
 
@@ -203,20 +204,17 @@ Pane2DView::Pane2DView(QObject *parent)
     style->setRange = [this](double lo, double hi) { this->setRange(lo, hi); };
     if (auto *iren = m_window->GetInteractor()) {
         iren->SetInteractorStyle(style);
-        // Linked 2D: pan/zoom (InteractionEvent) → emit cameraChanged so the viewer can sync
-        // same-WCS peers. Guarded so an applied (synced) camera doesn't echo back.
-        m_cameraObserver = vtkSmartPointer<vtkCallbackCommand>::New();
-        m_cameraObserver->SetClientData(this);
-        m_cameraObserver->SetCallback([](vtkObject *, unsigned long, void *cd, void *) {
-            if (auto *self = static_cast<Pane2DView *>(cd))
-                if (!self->m_applyingCamera)
-                    emit self->cameraChanged();
-        });
-        // InteractionEvent follows live pan/dolly; EndInteractionEvent catches mouse-WHEEL
-        // zoom, which does NOT emit InteractionEvent (same as the 3-D linked-camera path).
-        m_camTagInteract = iren->AddObserver(vtkCommand::InteractionEvent, m_cameraObserver);
-        m_camTagEnd = iren->AddObserver(vtkCommand::EndInteractionEvent, m_cameraObserver);
     }
+    // Linked 2D: a frame that shows the camera moved → cameraChanged, so the viewer can sync
+    // same-WCS peers. The frames, not the interactor (issue #358): Shift+R resets the camera
+    // without any interaction event.
+    m_cameraObserver = vtkSmartPointer<vtkCallbackCommand>::New();
+    m_cameraObserver->SetClientData(this);
+    m_cameraObserver->SetCallback([](vtkObject *, unsigned long, void *cd, void *) {
+        if (auto *self = static_cast<Pane2DView *>(cd))
+            self->onCameraFrame();
+    });
+    m_camTagFrame = m_window->AddObserver(vtkCommand::EndEvent, m_cameraObserver);
 
     // --- display pipeline: source → colors(LUT) → slice mapper → slice actor ----
     m_source = vtkSmartPointer<vtkTrivialProducer>::New();
@@ -314,21 +312,19 @@ Pane2DView::Pane2DView(QObject *parent)
 
     m_renderer->ResetCamera();     // sane camera distance; fit() letterboxes into the gutter
     this->fit(true);
+    m_cameraTracker.refit(this->cameraPose());   // also when fit() had no size yet
 }
 
 Pane2DView::~Pane2DView()
 {
     if (m_window && m_endObserver)
         m_window->RemoveObserver(m_endObserver);
+    if (m_window && m_camTagFrame)
+        m_window->RemoveObserver(m_camTagFrame);
     // §5.2: detach the window/level style FIRST — its getLo/getHi/setRange closures
     // capture `this`, so it must not survive us and fire on a late interactor event.
     if (m_window && m_window->GetInteractor()) {
-        auto *iren = m_window->GetInteractor();
-        if (m_camTagInteract)
-            iren->RemoveObserver(m_camTagInteract);
-        if (m_camTagEnd)
-            iren->RemoveObserver(m_camTagEnd);
-        iren->SetInteractorStyle(nullptr);
+        m_window->GetInteractor()->SetInteractorStyle(nullptr);
     }
     // m_widget is owned by its Qt parent (whoever mounts it); if never mounted it
     // is parentless — delete it so the render window is released cleanly.
@@ -675,9 +671,36 @@ void Pane2DView::setCameraState(const double focalXY[2], double parallelScale)
     cam->SetFocalPoint(f);
     cam->SetPosition(p);
     cam->SetParallelScale(parallelScale);
+    // Not this pane's move: adopted before any frame shows it, so it is never sent back.
+    m_cameraTracker.adopt(this->cameraPose());
     if (m_window)
         m_window->Render();
     // cameraGuard restores m_applyingCamera on scope exit (RAII).
+}
+
+LinkedCameraSync::Pose Pane2DView::cameraPose() const
+{
+    LinkedCameraSync::Pose pose;
+    auto *cam = m_renderer ? m_renderer->GetActiveCamera() : nullptr;
+    if (!cam)
+        return pose;
+    cam->GetPosition(pose.position.data());
+    cam->GetFocalPoint(pose.focalPoint.data());
+    cam->GetViewUp(pose.viewUp.data());
+    pose.viewAngle = cam->GetViewAngle();
+    pose.parallelScale = cam->GetParallelScale();
+    return pose;
+}
+
+void Pane2DView::onCameraFrame()
+{
+    if (!m_cameraTracker.frame(this->cameraPose(), m_applyingCamera))
+        return;
+    // Sent on the next turn of the event loop: a drag's burst of frames joins one send.
+    QTimer::singleShot(0, this, [this]() {
+        if (m_cameraTracker.takePending())
+            emit this->cameraChanged();
+    });
 }
 
 bool Pane2DView::cameraStateNormalized(double dataCenterXY[2], double &worldHeight) const
@@ -788,6 +811,9 @@ void Pane2DView::fit(bool force)
                                std::numeric_limits<double>::quiet_NaN(),
                                std::numeric_limits<double>::quiet_NaN() };
     m_overlayViewportSize = { -1, -1 };
+    // A fit is not the user's move: its frame is not sent to the linked views (issue #358).
+    if (didFit)
+        m_cameraTracker.refit(this->cameraPose());
     m_window->Render();
     // STEP6-P2: a fit() re-letterboxes to this pane's own bounds, discarding any shared Linked-2D
     // zoom/pan. Tell the window so it can re-assert the shared camera on a linked receiver. Guarded

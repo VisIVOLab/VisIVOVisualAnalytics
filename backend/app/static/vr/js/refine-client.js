@@ -490,7 +490,7 @@ export class Refiner {
    * Called once per displayed frame, before drawing. `ctx`: {t (ms), eyes:
    * [{eye, view, proj, width, height}] (two; the same twice in a desktop
    * browser), aCentre (view * model of the head), model, zStretch, look:
-   * {tf, crop} (session commands from refine.js), lookKey, background (the
+   * {tf, crop, plane} (session commands from refine.js and clip-plane.js), lookKey, background (the
    * colour the page clears to: the backend composites over it), and for a
    * point table (issue #190) look.commands and poseExtra (data_to_model)}.
    */
@@ -523,19 +523,21 @@ export class Refiner {
       } else {
         // A cube's look is its transfer function and crop; a point table's
         // (issue #190) a list of the point session's commands.
-        for (const cmd of ctx.look.commands || [ctx.look.tf, ctx.look.crop]) this._send(cmd);
+        // (and, issue #369, its clipping plane: always sent, a null plane when off).
+        for (const cmd of ctx.look.commands || [ctx.look.tf, ctx.look.crop, ctx.look.plane]) if (cmd) this._send(cmd);
         this.sentKey = this.key;
         if (this.error.startsWith('clipping box')) this.error = '';
       }
     }
     if (this.incoming && ctx.accept && !ctx.accept(this.incoming.header)) {
       // Drawn by another rule than the page's (a point table's splats with
-      // a backend from before #263): dropped, and said why.
+      // a backend from before #263, a cube without the clipping plane with
+      // one from before #369): dropped, and said why.
       if (this.incoming.bitmap) this.incoming.bitmap.close();
       this.incoming = null;
-      this.error = 'backend draws splats by an older rule: update it to refine them';
+      this.error = ctx.acceptError || 'backend draws splats by an older rule: update it to refine them';
     }
-    if (this.incoming && this.error.startsWith('backend draws splats')) this.error = '';
+    if (this.incoming && /^backend draws (splats|no clipping plane)/.test(this.error)) this.error = '';
     if (this.incoming) {
       const up = this.draw.upload(this.incoming);
       this.stats.upload.push(up);

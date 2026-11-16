@@ -578,10 +578,12 @@ class SceneMixin:
 
         plane = vtk.vtkPlaneSource()
         # XY plane at z = slice_index, spanning the full cube footprint.
-        # Position is refreshed by _update_cutting_plane_slice.
-        plane.SetOrigin(0.0, 0.0, 0.0)
-        plane.SetPoint1(float(self._nx), 0.0, 0.0)
-        plane.SetPoint2(0.0, float(self._ny), 0.0)
+        # Position is refreshed by _update_cutting_plane_slice. From -0.5
+        # to n - 0.5: texel i of the slice is then centred at i, where the
+        # volume draws voxel i and the desktop's regions put pixel i (#356).
+        plane.SetOrigin(-0.5, -0.5, 0.0)
+        plane.SetPoint1(self._nx - 0.5, -0.5, 0.0)
+        plane.SetPoint2(-0.5, self._ny - 0.5, 0.0)
         self._cutting_plane_source = plane
 
         mapper = vtk.vtkPolyDataMapper()
@@ -641,7 +643,8 @@ class SceneMixin:
         # Re-position the plane at z=slice_index in world space.
         if self._cutting_plane_source is not None:
             zf = float(z)
-            self._cutting_plane_source.SetOrigin(0.0, 0.0, zf)
-            self._cutting_plane_source.SetPoint1(float(self._nx), 0.0, zf)
-            self._cutting_plane_source.SetPoint2(0.0, float(self._ny), zf)
+            self._cutting_plane_source.SetOrigin(-0.5, -0.5, zf)
+            self._cutting_plane_source.SetPoint1(self._nx - 0.5, -0.5, zf)
+            self._cutting_plane_source.SetPoint2(-0.5, self._ny - 0.5, zf)
             self._cutting_plane_source.Modified()
+        self._place_regions_on_thread()   # the regions follow the channel

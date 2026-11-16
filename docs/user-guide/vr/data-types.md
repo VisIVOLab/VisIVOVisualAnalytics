@@ -44,7 +44,9 @@ backend says it is a *simulation volume* and the page treats it as one:
   offers the 90th and 99th percentiles where a cube has 3σ and 5σ), no beam
   or rest line, and the Kinematic Lasso, the Spectrum probe, moments and PV
   slices are greyed with the reason. The *Box region* gives the statistics of
-  a box. The default threshold is the 99th percentile of the values, not the
+  a box. Instead of the velocity range, *Range* has a **clipping plane** you
+  hold and tilt with the controller, or a slab of two parallel planes
+  ([controls](controls.md#range), #369). The default threshold is the 99th percentile of the values, not the
   noise rule. The readout gives X, Y, Z in the axes' unit, the cell, and the
   value.
 
@@ -65,6 +67,61 @@ backend says it is a *simulation volume* and the page treats it as one:
   A cube window of the variable left behind, with *Follow the headset's
   look* on, brings forward the window of the new variable when one is open,
   else opens its *Field* product.
+
+- **Two or three variables overlaid.** With two variables or more, the
+  *Rendering* row of *Display* has *Overlay ▸*. Its page overlays two or
+  three variables of the same grid in one view, for example a density with a
+  temperature, or the abundances of O, Si and Fe:
+  - *Fields*: a press adds a variable or takes it out. Its number is its
+    place (1, 2, 3) and its colour bar's.
+  - *Edit*: the field the rows below set. Each field keeps its own colour
+    map (red, green and blue to start with, as a three-colour composite),
+    *Log* (its scale: a press loads it again on the other scale), threshold,
+    colour max and opacity. *Shown*/*Hidden* leaves a field out without
+    loading again.
+  - *Sum* (the default): the fields emit and absorb together, each with its
+    opacity; where two overlap, their colours mix in proportion to their
+    opacity there. *MIP*: along each ray, the brightest field value in its
+    own colour window, in that field's colours.
+  - *On*/*Off*: the overlay, or the single variable back.
+
+  One colour bar per field stands beside the box, numbered as on the page.
+  The readout gives each field's value by name. While the overlay is on, the
+  single variable's look on *Display* is greyed, the refined frames from the
+  desktop are not shown (they hold one variable), and the crop is drawn at
+  the cube's own binning (no detail). The fields are loaded at the cube's
+  binning. In VR they are written into room kept for them before the
+  session, so no 3-D texture is allocated during it. That room exists only
+  when it fits the device's share beside the cube's; otherwise the page says
+  how much it needs. Picking a variable on *Display* turns the overlay off.
+  The desktop is told (*Headset Activity*: *Overlay (emission): rho red log,
+  T green log, vx blue*).
+
+- **The model taken apart.** On a simulation volume the *Rendering* row of
+  *Display* also has *Explode ▸*. Its page pulls the model apart into
+  pieces, to look at each one and put them back:
+  - *Pieces*: *Fields* (the overlaid fields, each in its own colours; the
+    overlay must be on) or *Value ranges* (the variable on show, or the
+    field edited on the *Overlay* page, split into 2, 3 or 4 ranges of equal
+    width between its threshold and its colour max: on a log scale, equal in
+    decades). Each range has its own colour (blue, green, orange, red from
+    the lowest) over its own values; the top one keeps everything above the
+    colour max.
+  - *Layout*: *Row* (side by side), *Column* (one above the other) or
+    *Ring*; *Spread*: the gap between pieces. The pieces are scaled down so
+    that together they cover no more than the cube alone did.
+  - *Shown*: one chip a piece; a press hides it or shows it again. A
+    field's chip is the same switch as its *Shown* on the *Overlay* page.
+  - *Explode* / *Assemble* animate between the two: the model first shrinks
+    to the pieces' size, then the pieces part (and the reverse). *Reset*
+    puts every piece back in its place in the layout and shows them all.
+
+  With the pieces apart, a grip that starts inside a piece moves and turns
+  that piece; a grip elsewhere moves the whole model, pieces included. One
+  colour bar per piece stands beside the box. While the model is apart the
+  box's outline, ticks and labels, the refined frames and the crop's detail
+  are not shown, and the trigger still picks on the assembled box. With
+  *Fields*, switching the overlay off puts the model back together.
 
 ## Opening one
 

@@ -139,8 +139,11 @@ void RegionListOverlay::attach(vtkRenderer *renderer, const Style &style)
 
 void RegionListOverlay::detach()
 {
-    if (!m_renderer)
+    if (!m_renderer) {
+        m_labels.clear();
+        m_labelsShown = 0;
         return;
+    }
     for (vtkActor *a : { m_listActor.Get(), m_selectedActor.Get(), m_fillActor.Get(),
                          m_pointActor.Get(), m_handleActor.Get() })
         m_renderer->RemoveActor(a);

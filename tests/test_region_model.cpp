@@ -9,6 +9,8 @@
 #include "RegionFullRes.h"
 #include "RegionImportResult.h"
 #include "RegionModel.h"
+#include "RegionPanePlacement.h"
+#include "RegionPlaneDrawing.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -681,3 +683,220 @@ void TestRegionModel::importKeepsEveryRegionAndSaysWhy()
     QCOMPARE(int(list.ringGroup(again[0]).size()), 2);
     QCOMPARE(int(list.ringGroup(ids[0]).size()), 2);
 }
+
+// ── Regions on the cube's cutting plane (issue #343) ─────────────────────────
+
+void TestRegionModel::planeAndRegionsShareOnePlacement()
+{
+    using CubeLodGeometry::Sampling;
+    const int width = 101, height = 61, channel = 37;
+    for (const Sampling &s : { Sampling{}, Sampling::strided(4), Sampling::blockMean(4),
+                               Sampling::pyramidLevel(2) }) {
+        const PlaneRect rect = cuttingPlane(width, height, channel, s);
+        // Texel i of the full-resolution slice is centred at u = (i + 0.5) / W
+        // on the plane: that is exactly where a region puts cube pixel i.
+        for (int i : { 0, 7, 50, width - 1 }) {
+            const double u = (i + 0.5) / width;
+            const double texelX = rect.x0 + u * (rect.x1 - rect.x0);
+            QVERIFY(near(texelX, planePoint({ double(i), 0.0 }, channel, s)[0], 1e-9));
+            QCOMPARE(int(std::lround(planeToCube(texelX, s))), i);   // the pick goes back
+        }
+        for (int j : { 0, 30, height - 1 }) {
+            const double v = (j + 0.5) / height;
+            const double texelY = rect.y0 + v * (rect.y1 - rect.y0);
+            QVERIFY(near(texelY, planePoint({ 0.0, double(j) }, channel, s)[1], 1e-9));
+        }
+        // Plane and regions at one height: the channel's.
+        QVERIFY(near(rect.z, planePoint({ 3.0, 4.0 }, channel, s)[2], 1e-12));
+        // And where the volume shows that channel's samples.
+        QVERIFY(near(rect.z, CubeLodGeometry::toWorld(channel, s), 1e-12));
+    }
+    // Strided by 4: preview sample k shows cube voxel 4k, at world k. A region
+    // corner on cube pixel 40 sits on preview sample 10, and channel 36 on
+    // sample 9 (the old plane, at a fraction of the preview's depth, did not).
+    QVERIFY(near(planePoint({ 40.0, 20.0 }, 36, Sampling::strided(4))[0], 10.0));
+    QVERIFY(near(planePoint({ 40.0, 20.0 }, 36, Sampling::strided(4))[2], 9.0));
+    // Block means of 4: sample k is the mean of 4k..4k+3, centred at 4k + 1.5.
+    QVERIFY(near(planePoint({ 41.5, 0.0 }, 0, Sampling::blockMean(4))[0], 10.0));
+    // Full resolution: the identity.
+    QVERIFY(near(planePoint({ 12.25, 7.5 }, 3, Sampling{})[0], 12.25));
+}
+
+// ── Regions on the maps of the Product panes (issue #355) ────────────────────
+
+void TestRegionModel::momentPaneMatchesTheSlice()
+{
+    using CubeLodGeometry::Sampling;
+    // A 120 x 90 cube: the slice and a moment map are both served at full
+    // resolution, origin 0, spacing 1, whatever the 3-D view shows (a strided
+    // or block-mean preview of the same cube).
+    const std::array<int, 2> cube{ 120, 90 };
+    const MapPlacement slice = worldIsCube({ 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 });
+    const auto moment = skyMapPlacement(cube, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {});
+    QVERIFY(moment.has_value());
+    for (const Vec2 &p : { Vec2{ 0.0, 0.0 }, Vec2{ 17.25, 33.5 }, Vec2{ 119.0, 89.0 } }) {
+        const auto a = slice.toWorld(p), b = moment->toWorld(p);
+        QVERIFY(near(a[0], b[0], 1e-12) && near(a[1], b[1], 1e-12));
+        const Vec2 back = moment->toCube(b[0], b[1]);
+        QVERIFY(near(back[0], p[0], 1e-12) && near(back[1], p[1], 1e-12));
+    }
+    // A box drawn on either view from the same voxels is the same region.
+    const auto onSlice = visivo::regionFromDisplayed(QStringLiteral("box"), slice.displayGrid(), { 10, 20 },
+                                                     { 30, 40 }, {}, 0.0);
+    const auto onMoment = visivo::regionFromDisplayed(QStringLiteral("box"), moment->displayGrid(), { 10, 20 },
+                                                      { 30, 40 }, {}, 0.0);
+    QVERIFY(onSlice && onMoment);
+    QVERIFY(visivo::regions::sameGeometry(*onSlice, *onMoment));
+    // The 3-D preview does not enter the 2-D placement: under every display
+    // sampling the region lands on the plane where the slice puts it.
+    for (const Sampling &s : { Sampling{}, Sampling::strided(4), Sampling::blockMean(4) }) {
+        const auto a = planePoint(onSlice->center, 5, s), b = planePoint(onMoment->center, 5, s);
+        QVERIFY(near(a[0], b[0], 1e-12) && near(a[1], b[1], 1e-12));
+    }
+    // A reduced slice (a 2 x 2 block mean, world still in cube pixels: origin
+    // 0.5, spacing 2) keeps the list where it is, and measures in blocks.
+    const MapPlacement reduced = worldIsCube({ 0.5, 0.5 }, { 2.0, 2.0 }, { 0, 0 });
+    const auto w = reduced.toWorld({ 41.0, 7.0 });
+    QVERIFY(near(w[0], 41.0, 1e-12) && near(w[1], 7.0, 1e-12));
+    QVERIFY(near(reduced.displayGrid().sourceX(3), 6.5, 1e-12));
+    QVERIFY(near(reduced.cubePerWorld(), 1.0, 1e-12));
+}
+
+void TestRegionModel::croppedAndForeignMaps()
+{
+    const std::array<int, 2> cube{ 120, 90 };
+    // RM synthesis over a box from cube pixel (40, 30), 25 x 20: map pixel k
+    // is cube pixel 40 + k.
+    const auto crop = skyMapPlacement({ 25, 20 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube,
+                                      std::array<int, 2>{ 40, 30 });
+    QVERIFY(crop.has_value());
+    const auto w = crop->toWorld({ 45.0, 33.0 });
+    QVERIFY(near(w[0], 5.0, 1e-12) && near(w[1], 3.0, 1e-12));
+    const visivo::DisplayGrid g = crop->displayGrid();
+    QVERIFY(near(g.sourceX(5), 45.0, 1e-12) && near(g.sourceY(3), 33.0, 1e-12));
+    // A box over cube pixels 44..46 x 32..34 holds map pixels 4..6 x 2..4.
+    Region box;
+    box.shape = Shape::Box;
+    box.center = { 45.0, 33.0 };
+    box.size = { 3.0, 3.0 };
+    const auto b = visivo::displayedVoxelBounds(box, g);
+    QCOMPARE(b[0], 4);
+    QCOMPARE(b[1], 6);
+    QCOMPARE(b[2], 2);
+    QCOMPARE(b[3], 4);
+    QVERIFY(visivo::displayedVoxelIn(box, g, 4, 2));
+    QVERIFY(!visivo::displayedVoxelIn(box, g, 7, 2));
+    // A map whose VTK extent starts elsewhere still counts from its first voxel.
+    const auto shifted = skyMapPlacement({ 25, 20 }, { 10.0, 10.0 }, { 1.0, 1.0 }, { 3, 3 }, cube,
+                                         std::array<int, 2>{ 40, 30 });
+    QVERIFY(shifted.has_value());
+    QVERIFY(near(shifted->displayGrid().sourceX(3), 40.0, 1e-12));
+    QVERIFY(near(shifted->toWorld({ 40.0, 30.0 })[0], 10.0, 1e-12));
+    // Not on the sky grid: a crop running off the cube, a map of another size
+    // with no crop (a fit over a selection's box), an empty map.
+    QVERIFY(!skyMapPlacement({ 25, 20 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube,
+                             std::array<int, 2>{ 100, 30 }));
+    QVERIFY(!skyMapPlacement({ 60, 45 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {}));
+    QVERIFY(!skyMapPlacement({ 0, 0 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {}));
+}
+
+void TestRegionModel::editsOnOnePaneShowOnTheOthers()
+{
+    // One list, three views: the slice, a full-field moment and a cropped
+    // Faraday-depth map. A drag on the cropped map is read in list pixels, so
+    // the slice and the moment show the region where it was dropped.
+    const std::array<int, 2> cube{ 120, 90 };
+    const MapPlacement slice = worldIsCube({ 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 });
+    const auto moment = *skyMapPlacement(cube, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube, {});
+    const auto crop = *skyMapPlacement({ 25, 20 }, { 0.0, 0.0 }, { 1.0, 1.0 }, { 0, 0 }, cube,
+                                       std::array<int, 2>{ 40, 30 });
+    RegionList list;
+    Region c;
+    c.shape = Shape::Circle;
+    c.center = { 50.0, 40.0 };
+    c.radius = 4.0;
+    const int id = list.add(c);
+    // Picked on the cropped map: its world position goes back to the list.
+    const auto at = crop.toWorld(c.center);
+    const Vec2 picked = crop.toCube(at[0], at[1]);
+    Hit hit;
+    QCOMPARE(list.regionAt(picked, 0.5, 1.0, &hit), id);
+    // Dragged by 3 map pixels right and 2 down there: 3 and 2 cube pixels.
+    const Vec2 from = crop.toCube(at[0], at[1]);
+    const Vec2 to = crop.toCube(at[0] + 3.0, at[1] - 2.0);
+    list.beginGesture();
+    list.replace(visivo::regions::moved(*list.find(id), to[0] - from[0], to[1] - from[1]));
+    list.endGesture();
+    const Region &now = *list.find(id);
+    QVERIFY(near(now.center[0], 53.0, 1e-12) && near(now.center[1], 38.0, 1e-12));
+    const auto onSlice = slice.toWorld(now.center);
+    const auto onMoment = moment.toWorld(now.center);
+    const auto onCrop = crop.toWorld(now.center);
+    QVERIFY(near(onSlice[0], 53.0, 1e-12) && near(onSlice[1], 38.0, 1e-12));
+    QVERIFY(near(onMoment[0], onSlice[0], 1e-12) && near(onMoment[1], onSlice[1], 1e-12));
+    QVERIFY(near(onCrop[0], 13.0, 1e-12) && near(onCrop[1], 8.0, 1e-12));
+    // One undo step puts it back on all three.
+    QVERIFY(list.undo());
+    QVERIFY(near(list.find(id)->center[0], 50.0, 1e-12));
+}
+
+// ── The Remote 3-D view's plane (issue #356) ─────────────────────────────────
+
+void TestRegionModel::remotePlaneDrawingIsTheLocalOne()
+{
+    RegionList list;
+    Region box;
+    box.shape = Shape::Box;
+    box.center = { 12.0, 8.0 };
+    box.size = { 8.0, 8.0 };
+    box.color = QStringLiteral("#00ff00");
+    box.props.insert(QStringLiteral("text"), QStringLiteral("src A"));
+    const int boxId = list.add(box);
+    Region point;
+    point.shape = Shape::Point;
+    point.center = { 3.25, 4.5 };
+    list.add(point);
+    Region line;
+    line.shape = Shape::Line;
+    line.points = { { 1.0, 1.0 }, { 2.0, 3.0 } };
+    list.add(line);
+    list.select(boxId);
+    const auto colour = [](const Region &r) {
+        return r.color.isEmpty() ? std::array<unsigned char, 3>{ 51, 230, 255 }
+                                 : std::array<unsigned char, 3>{ 0, 255, 0 };
+    };
+    const QJsonObject cmd = planeDrawingCommand(list, colour);
+    QCOMPARE(cmd.value(QStringLiteral("type")).toString(), QStringLiteral("set_regions"));
+    const QJsonArray regions = cmd.value(QStringLiteral("regions")).toArray();
+    QCOMPARE(regions.size(), 3);
+    // The box: one closed outline through its corners, in cube pixels, as
+    // the local overlay draws it; selected; its file label above its middle.
+    const QJsonObject b = regions[0].toObject();
+    QVERIFY(b.value(QStringLiteral("selected")).toBool());
+    QCOMPARE(b.value(QStringLiteral("rgb")).toArray(), (QJsonArray{ 0, 255, 0 }));
+    const QJsonArray loop = b.value(QStringLiteral("loops")).toArray().at(0).toArray();
+    const auto corners = outlines(box).front();
+    QCOMPARE(loop.size(), int(corners.size()));
+    for (int i = 0; i < loop.size(); ++i) {
+        QVERIFY(near(loop[i].toArray()[0].toDouble(), corners[std::size_t(i)][0], 1e-3));
+        QVERIFY(near(loop[i].toArray()[1].toDouble(), corners[std::size_t(i)][1], 1e-3));
+    }
+    const QJsonObject label = b.value(QStringLiteral("labels")).toArray().at(0).toObject();
+    QCOMPARE(label.value(QStringLiteral("text")).toString(), QStringLiteral("src A"));
+    QCOMPARE(label.value(QStringLiteral("at")).toArray(), (QJsonArray{ 12.0, 12.0 }));
+    // A point region is a marker, a line an open path.
+    const QJsonObject p = regions[1].toObject();
+    QVERIFY(!p.value(QStringLiteral("selected")).toBool());
+    QCOMPARE(p.value(QStringLiteral("points")).toArray().at(0).toArray(), (QJsonArray{ 3.25, 4.5 }));
+    QCOMPARE(p.value(QStringLiteral("rgb")).toArray(), (QJsonArray{ 51, 230, 255 }));
+    QCOMPARE(regions[2].toObject().value(QStringLiteral("paths")).toArray().at(0).toArray().size(), 2);
+    QVERIFY(!regions[2].toObject().contains(QStringLiteral("loops")));
+    // The session's world is the cube's voxels at full resolution: the local
+    // placement at scale 1 puts pixel (x, y) on channel c at (x, y, c), which
+    // is where the session draws the pixel it is sent.
+    const auto w = planePoint({ 12.0, 4.0 }, 37, CubeLodGeometry::Sampling{});
+    QVERIFY(near(w[0], 12.0, 1e-12) && near(w[1], 4.0, 1e-12) && near(w[2], 37.0, 1e-12));
+    // An empty list clears the plane.
+    QVERIFY(planeDrawingCommand(RegionList(), colour).value(QStringLiteral("regions")).toArray().isEmpty());
+}
+

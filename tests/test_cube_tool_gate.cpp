@@ -59,6 +59,25 @@ void TestCubeToolGate::slice2dTools_alsoOnAMomentPane()
     QVERIFY(evaluate(in).slice2dTools);
 }
 
+void TestCubeToolGate::regionTools_alsoOnAnySkyMap()
+{
+    // A cropped Faraday-depth map alone (no slice, no full-field map the slice
+    // could take): the region tools draw on it (#355); Extract Spectrum and
+    // PV still need the slice.
+    Inputs in = layout(false, false);
+    in.regionMapVisible = true;
+    Decision d = evaluate(in);
+    QVERIFY(d.regionTools);
+    QVERIFY(!d.slice2dTools);
+    QVERIFY(!d.analyseRegion);   // nothing selected yet
+    in.haveRegion = true;
+    in.haveSelectedRegion = true;
+    QVERIFY(evaluate(in).analyseRegion);
+    // The slice alone still enables them.
+    QVERIFY(evaluate(layout(true, false)).regionTools);
+    QVERIFY(!evaluate(layout(false, true)).regionTools);
+}
+
 void TestCubeToolGate::noViews_disablesBothFamilies()
 {
     // e.g. two panes both showing derived products.

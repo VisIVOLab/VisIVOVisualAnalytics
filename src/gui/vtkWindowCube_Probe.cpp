@@ -192,10 +192,22 @@ void vtkWindowCube::mouseCallback()
         }
         return;
     }
-    if (this->regionMode != RegionMode::None && this->regionDragging) {
-        if (this->updateRegionFromDisplayPosition(position[0], position[1])) {
-            this->active2dWin()->Render();
-        }
+    if (this->regionMode != RegionMode::None) {
+        this->regionDraftMove(this->active2dWin(), position[0], position[1]);
+    }
+}
+
+void vtkWindowCube::regionDraftMove(vtkRenderWindow *win, int displayX, int displayY)
+{
+    // Only the view the draft is drawn on moves it: hovering another one
+    // while a polygon is open must not pull its vertex there.
+    if (this->regionMode == RegionMode::None || !this->regionDragging || !win
+        || this->regionDraftWin() != win || this->isBusyForPvInteraction()
+        || this->m_lassoEditActive) {
+        return;
+    }
+    if (this->updateRegionFromDisplayPosition(displayX, displayY)) {
+        win->Render();
     }
 }
 
@@ -255,36 +267,7 @@ void vtkWindowCube::toggleProbeFreeze()
     }
 
     if (this->regionMode != RegionMode::None) {
-        if (this->updateRegionFromDisplayPosition(position[0], position[1])) {
-            if (this->regionMode == RegionMode::Polygon) {
-                if (!this->regionDragging) {
-                    this->regionPolygonVertices.clear();
-                    this->regionPolygonVertices.push_back(this->regionCurrentVoxel);
-                    this->regionDragging = true;
-                    this->ignoreNextPolygonRelease = true;
-                } else if (this->regionPolygonVertices.size() >= 3
-                           && distance2d(this->regionCurrentVoxel, this->regionPolygonVertices.front())
-                                   <= polygonClosureTolerance) {
-                    this->regionCurrentVoxel = this->regionPolygonVertices.front();
-                    this->ignoreNextPolygonRelease = false;
-                    if (this->finalizePolygonRegion()) {
-                        this->active2dWin()->Render();
-                    }
-                    return;
-                } else if (this->regionPolygonVertices.empty()
-                           || this->regionPolygonVertices.back() != this->regionCurrentVoxel) {
-                    this->regionPolygonVertices.push_back(this->regionCurrentVoxel);
-                    this->ignoreNextPolygonRelease = true;
-                }
-                this->regionValid = !this->regionPolygonVertices.empty();
-            } else {
-                this->regionAnchorVoxel = this->regionCurrentVoxel;
-                this->regionDragging = true;
-                this->regionValid = true;
-            }
-            this->refreshRegionOverlay();
-            this->active2dWin()->Render();
-        }
+        this->regionDraftPress(this->active2dWin(), position[0], position[1]);
         return;
     }
 
@@ -748,4 +731,55 @@ void vtkWindowCube::setProbeModeActive(bool active)
             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     this->updateProbeReadout(currentImage);
     this->updateProbePlot();
+}
+
+void vtkWindowCube::regionDraftPress(vtkRenderWindow *win, int displayX, int displayY)
+{
+    if (!win || this->regionMode == RegionMode::None || this->isBusyForPvInteraction()
+        || this->m_lassoEditActive) {
+        return;
+    }
+    // A draft whose pane went away is dropped; a polygon open on another
+    // view keeps its clicks there; a new draft belongs to the view it starts
+    // on (the slice, or a Product pane, #355).
+    if (this->regionDraftOrphaned()) {
+        this->clearRegion();
+    }
+    if (this->regionDragging && this->regionDraftWin() != win) {
+        return;
+    }
+    if (!this->regionDragging) {
+        this->m_regionDraftWin = win;
+    }
+    this->m_regionFocusWin = win;
+    if (this->updateRegionFromDisplayPosition(displayX, displayY)) {
+        if (this->regionMode == RegionMode::Polygon) {
+            if (!this->regionDragging) {
+                this->regionPolygonVertices.clear();
+                this->regionPolygonVertices.push_back(this->regionCurrentVoxel);
+                this->regionDragging = true;
+                this->ignoreNextPolygonRelease = true;
+            } else if (this->regionPolygonVertices.size() >= 3
+                       && distance2d(this->regionCurrentVoxel, this->regionPolygonVertices.front())
+                               <= polygonClosureTolerance) {
+                this->regionCurrentVoxel = this->regionPolygonVertices.front();
+                this->ignoreNextPolygonRelease = false;
+                if (this->finalizePolygonRegion()) {
+                    win->Render();
+                }
+                return;
+            } else if (this->regionPolygonVertices.empty()
+                       || this->regionPolygonVertices.back() != this->regionCurrentVoxel) {
+                this->regionPolygonVertices.push_back(this->regionCurrentVoxel);
+                this->ignoreNextPolygonRelease = true;
+            }
+            this->regionValid = !this->regionPolygonVertices.empty();
+        } else {
+            this->regionAnchorVoxel = this->regionCurrentVoxel;
+            this->regionDragging = true;
+            this->regionValid = true;
+        }
+        this->refreshRegionOverlay();
+        win->Render();
+    }
 }

@@ -14,6 +14,7 @@ private slots:
     void view3dTools_followThe3dViewBeingOnScreen();
     void families_areIndependentNotExclusive();
     void slice2dTools_alsoOnAMomentPane();
+    void regionTools_alsoOnAnySkyMap();
     void noViews_disablesBothFamilies();
 
     void pinSpectrum_followsTheProbedSpectrumOnly();
