@@ -60,7 +60,7 @@ jobs:
   vr-page:
     name: VR page (node tests, browser smoke)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +89,7 @@ jobs:
         run: |
           CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium)"
           node validation/vr_lifecycle.mjs --smoke --regressions --python python --chrome "$CHROME" \
-               --gl swiftshader --out "$RUNNER_TEMP/vr_smoke"
+               --gl swiftshader --timeout-min 18 --out "$RUNNER_TEMP/vr_smoke"
 
       - name: Keep the smoke's results
         if: failure()

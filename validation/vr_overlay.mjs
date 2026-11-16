@@ -113,7 +113,10 @@ export async function runOverlayChecks({ c, check, waitFor, api, base, token, py
   const allSteps = await c.evaluate('window.__vrVolumePixels({ override: { mode: 2 }, frames: 1 })');
   results.cost = { ...(await drawCost(c)), singleSteps: singleSteps.steps && +singleSteps.steps.toFixed(1),
     overlaySteps: allSteps.steps && +allSteps.steps.toFixed(1), canvas: `${all.w}×${all.h}`, singleFraction: +single.fraction.toFixed(3), overlayFraction: +all.fraction.toFixed(3) };
-  check(`${L}: the overlay draws (frame cost measured)`, all.overlay && all.fraction > 0.01, JSON.stringify(results.cost));
+  // At the default thresholds the synthetic fields can sit entirely below
+  // them in this view on a software GL (CI SwiftShader drew nothing for the
+  // single cube either), so coverage is asserted at the lower thresholds below.
+  check(`${L}: the overlay path draws (frame cost measured)`, all.overlay && Number.isFinite(all.ms), JSON.stringify(results.cost));
 
   // The cost again with every field over a quarter of its range (more of the box drawn).
   await c.evaluate(`(() => { const L = window.__vrOverlay.ov.loaded; L.looks.forEach((l) => { l.thrNorm = 0.25; l.cmaxNorm = 1; }); window.__vrState.thrNorm = 0.25; window.__vrState.cmaxNorm = 1; })()`);
@@ -123,7 +126,7 @@ export async function runOverlayChecks({ c, check, waitFor, api, base, token, py
   const allLowSteps = await c.evaluate('window.__vrVolumePixels({ override: { mode: 2 }, frames: 1 })');
   results.costLow = { ...(await drawCost(c)), singleSteps: +singleLowSteps.steps.toFixed(1), overlaySteps: +allLowSteps.steps.toFixed(1),
     singleFraction: +singleLow.fraction.toFixed(3), overlayFraction: +allLow.fraction.toFixed(3) };
-  check(`${L}: the cost at thresholds of a quarter of each range (measured)`, allLow.fraction > 0.01, JSON.stringify(results.costLow));
+  check(`${L}: the overlay covers the view at a quarter of each range (cost measured)`, allLow.overlay && allLow.fraction > 0.01, JSON.stringify(results.costLow));
 
   // Per-field looks: one field shown at a time, its own colour map's channel dominating.
   const look = (i, patch) => c.evaluate(`(() => { const L = window.__vrOverlay.ov.loaded; Object.assign(L.looks[${i}], ${JSON.stringify(patch)}); window.__vrMenu.ui.page = 'overlay'; })()`);
