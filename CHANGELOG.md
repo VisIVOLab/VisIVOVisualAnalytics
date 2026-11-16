@@ -8,6 +8,18 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: linked 2-D views follow every camera change (#358).** In the
+  cube viewer, the 2-D slice and the Product panes (a moment map, say) used to
+  share their pan and zoom only from mouse gestures; Shift+R reset one view
+  and left the linked panes and the linked windows behind. They now compare
+  the camera after every frame, as the 3-D view does since #338, so a reset
+  or any other camera change made in code is followed too. Refits the window
+  makes itself (a new channel, a resized pane, a new colour bar) are not
+  pushed onto the other views, and a view never sends back a camera it took
+  from another. The image viewer streams the tiles of the region on screen
+  after any camera change as well: after Shift+R on a zoomed large image it
+  used to keep only the zoomed patch.
+
 - **Desktop: regions in the cube viewer are a list you edit and keep
   (#341).** The 2-D slice (and a moment map shown under it) draws every
   region of the window's list, as the image viewer does: click selects, drag

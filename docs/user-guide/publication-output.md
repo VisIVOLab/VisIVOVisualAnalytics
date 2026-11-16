@@ -111,6 +111,11 @@ what makes a genuine comparison possible between two cubes of the same field.
     sizes covering the same sky still frame the same region rather than the same
     pixel coordinates. Every camera change is followed: rotate, pan, wheel
     zoom, the *Camera* menu presets and a reset.
+* - **2-D pan and zoom**
+  - The 2-D slice and the Product panes (a moment map, say) share their pan
+    and zoom, within the window and with linked windows on the same sky grid.
+    The wheel, a drag, Shift+R (reset the view) and a centring on a catalogue
+    source are all followed; changing channel or resizing a pane is not sent.
 * - **Channel**
   - Matched by **spectral value**, not channel index. Two cubes with different
     channel widths will show the same velocity, which is the comparison you

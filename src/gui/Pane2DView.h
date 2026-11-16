@@ -22,6 +22,7 @@
 
 #include <vtkSmartPointer.h>
 
+#include "LinkedCameraSync.h"
 #include "LutScale.h"
 
 class QWidget;
@@ -119,7 +120,7 @@ public:
     void setRange(double lo, double hi);                   // authoritative TableRange → colorbar
 
     // Linked 2D: read/write the pan+zoom of the parallel camera (world focal x/y + parallel
-    // scale). setCameraState applies without re-emitting cameraChanged (echo guard).
+    // scale). setCameraState adopts the camera it sets, so cameraChanged is not emitted for it.
     void cameraState(double focalXY[2], double &parallelScale) const;
     void setCameraState(const double focalXY[2], double parallelScale);
 
@@ -140,11 +141,13 @@ signals:
     /// decides how to tell the user.
     void logScaleUnavailable();   // pane's range changed (drag or dock) → dock syncs
     void lutChanged();                          // colormap / scale / invert changed → strip + Linked
-    void cameraChanged();                       // pan/zoom via interaction → Linked-2D propagate
+    void cameraChanged();                       // camera moved, not by a fit → Linked-2D propagate
     void fitted();                              // fit() re-letterboxed → Linked-2D may re-assert
 
 private:
     void updateWcsOverlay();                                // EndEvent target; uses m_wcs
+    void onCameraFrame();                                   // EndEvent target; Linked-2D send
+    LinkedCameraSync::Pose cameraPose() const;
     void rebuildLut();                                      // §5.2: apply name+scale+invert at range
     void ensureOverlayTickActors();
     void setOverlayVisible(bool visible);
@@ -176,9 +179,12 @@ private:
     std::vector<vtkSmartPointer<vtkTextActor>> m_overlayYTicks;
 
     vtkSmartPointer<vtkCallbackCommand> m_endObserver;
-    vtkSmartPointer<vtkCallbackCommand> m_cameraObserver;   // interactor Interaction/EndInteraction
-    unsigned long m_camTagInteract{ 0 };                    // observer tags (removed in dtor)
-    unsigned long m_camTagEnd{ 0 };
+    // Issue #358: the camera is sent to the linked views when a drawn frame shows it moved,
+    // whatever moved it (wheel, drag, Shift+R). fit() and setCameraState() adopt the camera they
+    // set, so a refit or a camera taken from a linked view is never sent.
+    vtkSmartPointer<vtkCallbackCommand> m_cameraObserver;   // render window EndEvent
+    unsigned long m_camTagFrame{ 0 };                       // observer tag (removed in dtor)
+    LinkedCameraSync::Tracker m_cameraTracker;
     bool m_applyingCamera{ false };                          // Linked-2D echo guard
 
     WcsContext m_wcs;

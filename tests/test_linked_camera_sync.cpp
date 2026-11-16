@@ -1,7 +1,7 @@
 // test_linked_camera_sync.cpp
-// Unit tests for LinkedCameraSync (issue #338): a linked cube window sends its
-// camera when a drawn frame shows it moved, whatever moved it, and never sends
-// back a camera it adopted from a peer.
+// Unit tests for LinkedCameraSync (issues #338 and #358): a linked view sends
+// its camera when a drawn frame shows it moved, whatever moved it, and never
+// sends back a camera it adopted from a peer or set itself in a refit.
 
 #include "TestLinkedCameraSync.h"
 #include "LinkedCameraSync.h"
@@ -13,6 +13,7 @@
 
 using LinkedCameraSync::Pose;
 using LinkedCameraSync::Tracker;
+using LinkedCameraSync::Watch;
 
 namespace {
 Pose frontView()
@@ -23,6 +24,18 @@ Pose frontView()
     p.viewUp = { 0.0, 1.0, 0.0 };
     p.viewAngle = 30.0;
     p.parallelScale = 1.0;
+    return p;
+}
+
+// A 2-D view: parallel projection looking down -Z at a 196 x 280 image.
+Pose sliceView()
+{
+    Pose p;
+    p.position = { 98.0, 140.0, 500.0 };
+    p.focalPoint = { 98.0, 140.0, 0.0 };
+    p.viewUp = { 0.0, 1.0, 0.0 };
+    p.viewAngle = 30.0;
+    p.parallelScale = 154.0;
     return p;
 }
 
@@ -249,4 +262,180 @@ void TestLinkedCameraSync::nonFinitePose_isNeitherSentNorRecorded()
     QVERIFY(!t.pending());
     QVERIFY(!t.frame(moved, false));   // last recorded pose is still `moved`
     QVERIFY(frontView().finite());
+}
+
+
+void TestLinkedCameraSync::twoD_resetInCode_isSent()
+{
+    // Shift+R on a zoomed slice: vtkInteractorStyle resets the camera in code
+    // and draws, with no interaction event. The frame shows the move, so it is
+    // sent like a wheel zoom.
+    Tracker t = seenAt(sliceView());
+    Pose zoomed = sliceView();
+    zoomed.focalPoint = { 60.0, 90.0, 0.0 };
+    zoomed.position = { 60.0, 90.0, 500.0 };
+    zoomed.parallelScale = 40.0;
+    QVERIFY(t.frame(zoomed, false));   // the wheel zoom
+    QVERIFY(t.takePending());
+    Pose reset = sliceView();
+    reset.position[2] = 742.0;   // ResetCamera also moves the camera back
+    QVERIFY(t.frame(reset, false));
+    QVERIFY(t.takePending());
+}
+
+void TestLinkedCameraSync::twoD_refitInCode_isAdoptedNotSent()
+{
+    // A new channel, a resized pane or a new colour bar letterboxes the view
+    // again in code. The view adopts that camera before drawing it, so the
+    // refit is not pushed onto the linked views; the user's next zoom is.
+    Tracker t = seenAt(sliceView());
+    Pose refit = sliceView();
+    refit.parallelScale = 160.0;
+    t.adopt(refit);
+    QVERIFY(!t.frame(refit, false));
+    QVERIFY(!t.pending());
+    Pose zoomed = refit;
+    zoomed.parallelScale = 80.0;
+    QVERIFY(t.frame(zoomed, false));
+}
+
+void TestLinkedCameraSync::twoD_paneAndSliceShareAView_withoutEcho()
+{
+    // The slice is zoomed; the Product pane below it and the linked window's
+    // slice adopt the shared view (each against its own colour-bar gutter, so
+    // three different cameras). None of them sends, and the slice's repaint
+    // does not either: one send settles the group.
+    Tracker slice = seenAt(sliceView());
+    Tracker pane = seenAt(sliceView());
+    Tracker peer = seenAt(sliceView());
+    Pose zoomed = sliceView();
+    zoomed.parallelScale = 50.0;
+    QVERIFY(slice.frame(zoomed, false));
+    QVERIFY(slice.takePending());
+    Pose paneView = zoomed;
+    paneView.focalPoint[0] += 6.0;   // a wider colour bar shifts the data area
+    paneView.position[0] += 6.0;
+    Pose peerView = zoomed;
+    peerView.parallelScale = 51.0;
+    pane.adopt(paneView);
+    peer.adopt(peerView);
+    QVERIFY(!pane.frame(paneView, true));
+    QVERIFY(!peer.frame(peerView, true));
+    QVERIFY(!pane.frame(paneView, false));
+    QVERIFY(!peer.frame(peerView, false));
+    QVERIFY(!slice.frame(zoomed, false));
+}
+
+void TestLinkedCameraSync::watch_firstFrame_isNotAMove()
+{
+    Watch w;
+    QVERIFY(!w.moved(sliceView()));
+    QVERIFY(!w.moved(sliceView()));
+}
+
+void TestLinkedCameraSync::watch_everyChange_isAMove()
+{
+    // Unlike the Tracker, every frame of a burst counts: the image viewer
+    // restarts its settle debounce on each, so it streams once the view is quiet.
+    Watch w;
+    w.moved(sliceView());
+    Pose p = sliceView();
+    p.parallelScale = 100.0;
+    QVERIFY(w.moved(p));
+    p.parallelScale = 90.0;
+    QVERIFY(w.moved(p));
+    QVERIFY(!w.moved(p));   // a repaint at the same view
+}
+
+void TestLinkedCameraSync::watch_adoptedPose_isNotAMove()
+{
+    // A fresh load resets the camera onto the image it just loaded: that view
+    // needs no tiles streamed for it.
+    Watch w;
+    w.moved(sliceView());
+    Pose loaded = sliceView();
+    loaded.parallelScale = 300.0;
+    w.adopt(loaded);
+    QVERIFY(!w.moved(loaded));
+    Pose zoomed = loaded;
+    zoomed.parallelScale = 30.0;
+    QVERIFY(w.moved(zoomed));
+}
+
+void TestLinkedCameraSync::watch_nonFinitePose_isIgnored()
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    Watch w;
+    Pose broken = sliceView();
+    broken.focalPoint[1] = nan;
+    QVERIFY(!w.moved(broken));   // not recorded as the first frame either
+    QVERIFY(!w.moved(sliceView()));
+    QVERIFY(!w.moved(broken));
+    w.adopt(broken);              // nothing recorded
+    QVERIFY(!w.moved(sliceView()));
+}
+
+void TestLinkedCameraSync::twoD_refit_keepsTheUsersWaitingSend()
+{
+    // The user wheel-zooms the slice; before the send goes out (next turn of
+    // the event loop) a slice of the scrub arrives and refits the view in
+    // code, putting the shared view back. The refit is not a move, but the
+    // zoom's send still goes out; adopt() (a linked view's camera) would drop it.
+    Tracker t = seenAt(sliceView());
+    Pose zoomed = sliceView();
+    zoomed.parallelScale = 60.0;
+    QVERIFY(t.frame(zoomed, false));
+    Pose refitted = zoomed;
+    refitted.position[2] = 520.0;   // the letterbox redone at the shared view
+    t.refit(refitted);
+    QVERIFY(!t.frame(refitted, false));   // the refit's frame is not a second move
+    QVERIFY(t.takePending());             // the zoom is still sent
+    QVERIFY(!t.takePending());
+
+    Tracker u = seenAt(sliceView());
+    QVERIFY(u.frame(zoomed, false));
+    u.adopt(refitted);
+    QVERIFY(!u.takePending());
+}
+
+void TestLinkedCameraSync::twoD_refit_ofANonFinitePose_recordsNothing()
+{
+    Tracker t = seenAt(sliceView());
+    Pose broken = sliceView();
+    broken.parallelScale = std::numeric_limits<double>::quiet_NaN();
+    t.refit(broken);
+    QVERIFY(!t.frame(sliceView(), false));   // last pose is still the original
+    Pose zoomed = sliceView();
+    zoomed.parallelScale = 70.0;
+    QVERIFY(t.frame(zoomed, false));
+    t.refit(broken);
+    QVERIFY(t.pending());   // a refit never drops a waiting send
+}
+
+void TestLinkedCameraSync::twoD_lastFrameMoved_coversEveryFrameOfTheMove()
+{
+    // The slice keeps the shared view current on every frame of a drag, also
+    // the ones that join a send already waiting; peer frames, repaints and
+    // refits are not the user's move.
+    Tracker t = seenAt(sliceView());
+    Pose p = sliceView();
+    p.parallelScale = 100.0;
+    QVERIFY(t.frame(p, false));
+    QVERIFY(t.lastFrameMoved());
+    p.parallelScale = 90.0;
+    QVERIFY(!t.frame(p, false));   // joins the waiting send
+    QVERIFY(t.lastFrameMoved());
+    QVERIFY(!t.frame(p, false));   // repaint
+    QVERIFY(!t.lastFrameMoved());
+    p.parallelScale = 80.0;
+    QVERIFY(!t.frame(p, true));    // a peer's camera
+    QVERIFY(!t.lastFrameMoved());
+    p.parallelScale = 70.0;
+    t.refit(p);
+    QVERIFY(!t.frame(p, false));   // the refit's frame
+    QVERIFY(!t.lastFrameMoved());
+    Pose broken = p;
+    broken.position[0] = std::numeric_limits<double>::quiet_NaN();
+    QVERIFY(!t.frame(broken, false));
+    QVERIFY(!t.lastFrameMoved());
 }

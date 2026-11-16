@@ -3,6 +3,7 @@
 
 #include "CatalogueOverlayUtils.h"
 #include "ImageLayerLoadTask.h"
+#include "LinkedCameraSync.h"
 #include "ProductRegistry.h"   // ReplayStep
 #include "PowerSpectrumSlope.h"
 #include "RegionFullRes.h"
@@ -332,7 +333,14 @@ private:
     std::array<int, 5> m_lodPending{ { -1, -1, -1, -1, -1 } };  ///< signature of the in-flight request
     QTimer *m_lodSettleTimer{ nullptr };  ///< debounce camera-settle bursts
     QFutureWatcher<ImageLayerLoadResult> m_viewportLodWatcher;
-    void onImageInteractionSettled();     ///< EndInteractionEvent → (re)arm the debounce
+    void onImageInteractionSettled();     ///< camera moved → (re)arm the debounce
+    // Issue #358: the debounce follows the camera on every drawn frame, not the interactor's
+    // EndInteractionEvent, which a camera reset by a key (Shift+R), a double-click zoom on a
+    // catalogue source or a copilot reset never raised: the view then kept the tiles of the
+    // old region. A fresh load's reset is adopted (that view is the one just loaded).
+    void onImageCameraFrame();            ///< EndEvent → arm the debounce if the camera moved
+    LinkedCameraSync::Pose imageCameraPose() const;
+    LinkedCameraSync::Watch m_lodCameraWatch;
     void maybeStreamViewportLod();        ///< compute visible region + level, fetch if changed
     void onViewportLodReady();            ///< apply a viewport tile assembly (camera preserved)
     // Issue #85: while the backend builds the image's averaged pyramid, tiles
