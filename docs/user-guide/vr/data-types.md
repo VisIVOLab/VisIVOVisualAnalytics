@@ -66,6 +66,35 @@ backend says it is a *simulation volume* and the page treats it as one:
   look* on, brings forward the window of the new variable when one is open,
   else opens its *Field* product.
 
+- **Two or three variables overlaid.** With two variables or more, the
+  *Rendering* row of *Display* has *Overlay ▸*. Its page overlays two or
+  three variables of the same grid in one view, for example a density with a
+  temperature, or the abundances of O, Si and Fe:
+  - *Fields*: a press adds a variable or takes it out. Its number is its
+    place (1, 2, 3) and its colour bar's.
+  - *Edit*: the field the rows below set. Each field keeps its own colour
+    map (red, green and blue to start with, as a three-colour composite),
+    *Log* (its scale: a press loads it again on the other scale), threshold,
+    colour max and opacity. *Shown*/*Hidden* leaves a field out without
+    loading again.
+  - *Sum* (the default): the fields emit and absorb together, each with its
+    opacity; where two overlap, their colours mix in proportion to their
+    opacity there. *MIP*: along each ray, the brightest field value in its
+    own colour window, in that field's colours.
+  - *On*/*Off*: the overlay, or the single variable back.
+
+  One colour bar per field stands beside the box, numbered as on the page.
+  The readout gives each field's value by name. While the overlay is on, the
+  single variable's look on *Display* is greyed, the refined frames from the
+  desktop are not shown (they hold one variable), and the crop is drawn at
+  the cube's own binning (no detail). The fields are loaded at the cube's
+  binning. In VR they are written into room kept for them before the
+  session, so no 3-D texture is allocated during it. That room exists only
+  when it fits the device's share beside the cube's; otherwise the page says
+  how much it needs. Picking a variable on *Display* turns the overlay off.
+  The desktop is told (*Headset Activity*: *Overlay (emission): rho red log,
+  T green log, vx blue*).
+
 ## Opening one
 
 From the desktop: *Tools → Open in VR Headset…* in a point

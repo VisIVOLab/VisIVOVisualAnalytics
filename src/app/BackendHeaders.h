@@ -29,6 +29,7 @@ inline constexpr const char *BOX_MPC = "X-Visivo-Box-Mpc";
 inline constexpr const char *BUNIT = "X-Visivo-Bunit";
 inline constexpr const char *BYTEORDER = "X-Visivo-Byte-Order";
 inline constexpr const char *CALIBRATED = "X-Visivo-Calibrated";
+inline constexpr const char *CHANNELS = "X-Visivo-Channels";
 inline constexpr const char *COLOR_FIELD = "X-Visivo-Color-Field";
 inline constexpr const char *COLOR_LOG = "X-Visivo-Color-Log";
 inline constexpr const char *COLOR_RANGE = "X-Visivo-Color-Range";
@@ -44,6 +45,7 @@ inline constexpr const char *DIV_MIN = "X-Visivo-Div-Min";
 inline constexpr const char *DOWNSAMPLE_FACTOR = "X-Visivo-Downsample-Factor";
 inline constexpr const char *DOWNSAMPLE_FACTORS = "X-Visivo-Downsample-Factors";
 inline constexpr const char *EXPOSURE = "X-Visivo-Exposure";
+inline constexpr const char *FIELDS = "X-Visivo-Fields";
 inline constexpr const char *FILE_REVISION = "X-Visivo-File-Revision";
 inline constexpr const char *FRAME = "X-Visivo-Frame";
 inline constexpr const char *FRAME_AGE_MS = "X-Visivo-Frame-Age-Ms";
@@ -115,7 +117,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 101> kAll = {
+inline constexpr std::array<const char *, 103> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -133,6 +135,7 @@ inline constexpr std::array<const char *, 101> kAll = {
     BUNIT,
     BYTEORDER,
     CALIBRATED,
+    CHANNELS,
     COLOR_FIELD,
     COLOR_LOG,
     COLOR_RANGE,
@@ -148,6 +151,7 @@ inline constexpr std::array<const char *, 101> kAll = {
     DOWNSAMPLE_FACTOR,
     DOWNSAMPLE_FACTORS,
     EXPOSURE,
+    FIELDS,
     FILE_REVISION,
     FRAME,
     FRAME_AGE_MS,

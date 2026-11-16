@@ -8,6 +8,7 @@
 
 import { buildMacrocells, normQuantile, apronBlocks } from './volume.js';
 import { normHistogram, sortedSample } from './levels.js';
+import { prepareOverlay } from './overlay.js';
 
 /** The colour range's top: this quantile of the values above the threshold,
  *  from a stride sample of about this many voxels (main.js thresholdNorms). */
@@ -22,7 +23,11 @@ export const CMAX_SAMPLE = 4_000_000;
  * (a sorted sample of the values, for the percentiles: levels.js
  * sortedSample) and `ms`, the time it took.
  */
-export function prepareCube(data, dims, encoding, { cell = 8, aboves = [], store = null } = {}) {
+export function prepareCube(data, dims, encoding, opts = {}) {
+  // An overlay's interleaved fields (issue #357, overlay.js): per-channel skip
+  // grid, apron and colour ranges.
+  if (opts.channels > 1) return prepareOverlay(data, dims, encoding, opts);
+  const { cell = 8, aboves = [], store = null } = opts;
   const t0 = Date.now();
   const macro = buildMacrocells(data, dims, encoding, cell);
   const quantiles = [];

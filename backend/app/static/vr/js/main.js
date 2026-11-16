@@ -10,6 +10,8 @@ import { isPaired, PAIRED_TOKEN, onLinkChange, requestNewCode, transportInfo, li
 import * as V from './volume.js';
 import * as CD from './crop-detail.js';
 import * as SC from './sim-controls.js';
+// Two or three variables overlaid in one view (issue #357).
+import { createOverlay } from './overlay-ui.js';
 import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
@@ -202,6 +204,8 @@ function refineFrame(t, eyes, centreView, background) {
   if (!state.cube) { if (layers) layers.refineFrame(t, eyes, centreView, background); return; }
   // Mask only and Residuals (issue #282) are the headset's own: the backend's frame shows the whole cube.
   if (masks && masks.hidesRefined()) return;
+  // Overlaid fields (#357): the refined frames show one variable; the headset's own picture is drawn.
+  if (overlay.visible()) return;
   const look = currentLook();
   refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model,
     zStretch: state.zStretch, aspect: V.voxelAspect(state.info), look: look.look, lookKey: look.key, background });
@@ -1108,6 +1112,8 @@ function switchVariable(name) {
   const v = simulationShown() ? SC.variablesOf(state.info) : null;
   if (!v || !name || name === v.current || !Object.prototype.hasOwnProperty.call(v.paths, name) || !state.open) return false;
   const path = v.paths[name];
+  // The picker shows one variable: the overlay (#357) goes off.
+  overlay.off('a variable was picked');
   keepVariableLook();
   const look = variableLooks.get(path);
   // The reduced cube's scale: the one this variable was last shown with,
@@ -1280,7 +1286,8 @@ function ensureCapacity(cube, { reshow = true, page = false } = {}) {
   // cubes, a cube shown from them): the cube shown from its voxels is given
   // back or moved into the capacity, so it is not counted.
   const g = R.gpuStats();
-  let held = g.cubeBytes - g.capacityBytes;
+  // The overlay storage (#357) is planned after the capacity, in what is left.
+  let held = g.cubeBytes - g.capacityBytes - g.overlayBytes;
   const s = R.slot;
   if (s && !s.cap && s.volume && s.volume === R._volume) held -= s.textureBytes + s.macroBytes + s.maskBytes;
   const limitBytes = cubeLimitBytes() - held;
@@ -1290,15 +1297,24 @@ function ensureCapacity(cube, { reshow = true, page = false } = {}) {
   // forth between a larger cube and smaller ones): same Max side and texture,
   // the cube fits it, and it fits the share.
   if (R.cap && capacitySide === side && R.cap.encoding === encoding && R.cap.totalBytes <= limitBytes
-      && (!cube || R.fitsCapacity(cube))) return moveIntoCapacity(cube, reshow);
+      && (!cube || R.fitsCapacity(cube))) {
+    const fits = moveIntoCapacity(cube, reshow);
+    if (!cube || cube === state.cube) overlay.ensureStorage();
+    return fits;
+  }
   let plan = planCapacity({ side, encoding,
     atLeast: cube && cube.encoding === encoding ? cube.dims : null, maxTex3D: R.maxTex3D, limitBytes });
   if (plan && cube && !(cube.encoding === plan.encoding && V.fitsStore(cube.dims, plan.dims))) {
     const own = cubeBudget(cube, { maxTex3D: R.maxTex3D, headset: isHeadsetBrowser(navigator.userAgent), deviceMemoryGB: navigator.deviceMemory });
     if (plan.totalBytes + own.gpuBytes > limitBytes) plan = null;
   }
+  // A cube held in storage of its own is allocated next: the overlay storage
+  // (#357), not counted in the limit above, goes first (planned again after).
+  if (cube && !(plan && cube.encoding === plan.encoding && V.fitsStore(cube.dims, plan.dims))) overlay.releaseStorage();
   capacitySide = side;
   if (!sameCapacity(plan, R.cap)) {
+    // The overlay storage goes first (never beside both capacities); planned again below.
+    overlay.releaseStorage();
     const mask = R._maskInput;      // the selection shown, kept through a failure below
     try {
       R.reallocCapacity(plan, { reshow });
@@ -1318,7 +1334,10 @@ function ensureCapacity(cube, { reshow = true, page = false } = {}) {
     shell.log('info', 'capacity', c ? `${c.dims.join('×')} ${c.encoding}, two banks and a mask, ${(c.totalBytes / 1e6).toFixed(1)} MB, ${c.allocMs.toFixed(0)} ms`
       : 'none: cubes that arrive in VR wait for its end');
   }
-  return moveIntoCapacity(cube, reshow);
+  const fits = moveIntoCapacity(cube, reshow);
+  // For the cube on show (not one about to replace it: showInstalled plans it then).
+  if (!cube || cube === state.cube) overlay.ensureStorage();
+  return fits;
 }
 
 /** The cube on show, held in storage of its own though the capacity holds
@@ -1456,6 +1475,8 @@ function afterXREnd(wasBench = false) {
   if (restoreAfterXR) { restoreAfterXR = false; rebuildGraphics(); }
   if (afterXR.benchEnded) { afterXR.benchEnded = false; releaseBench(); }
   installStaged();
+  // The overlay storage (#357) given back for a benchmark is planned again for the cube on show.
+  overlay.ensureStorage();
 }
 /** afterXREnd's state: a benchmark's end not yet acted on; runs (debug: __vrTex3D). */
 const afterXR = { benchEnded: false, ran: 0, deferred: 0 };
@@ -1493,6 +1514,22 @@ async function installStaged() {
 // ?noworker: the synchronous path, as where no worker can be made.
 const cubePrep = new CubePrep(typeof Worker === 'function' && !query.has('noworker')
   ? () => new Worker(new URL('./cube-prep-worker.js', import.meta.url), { type: 'module' }) : null);
+
+// Overlaid variables of a simulation volume (issue #357, overlay-ui.js). Its
+// storage is planned outside VR with the capacity (ensureCapacity, showInstalled).
+const overlay = createOverlay({
+  R, state,
+  backend: () => (state.open ? ensureBackend() : null),
+  cubePrep, nextTask: () => nextTask(), get writeStepMs() { return WRITE_STEP_MS; },
+  limitBytes: () => cubeLimitBytes(),
+  isSimulation: () => simulationShown(),
+  log: (level, event, detail) => shell.log(level, event, detail),
+  event: (name, data) => measure.event(name, data),
+  toast: (text, key) => toast(text, key),
+  changed: () => { menu.key = ''; labelsChanged(); },
+  dropDetail: (why) => dropDetail(why),
+  sliderToNorm: (v) => sliderToNorm(v), normToSlider: (v) => normToSlider(v),
+});
 /** The newest cube put on show wins over one still being prepared. */
 const installs = new Newest();
 /** The time a step of a write into the capacity may take in VR before the
@@ -1528,6 +1565,8 @@ async function detailTick() {
   const c = state.cube;
   // A mean-binned cube only: the pyramid's levels are block means.
   if (detail.off || !c || !state.open || !state.info || c.mode !== 'mean' || !R.cap || gl.isContextLost()) return;
+  // The overlay (#357) is drawn on the coarse grid: no detail while it is on or loading.
+  if (overlay.visible() || overlay.ov.loading) { if (detail.shown) dropDetail('the overlay is on'); detail.gate.note('', performance.now()); return; }
   if (detail.shown && (!CD.regionHolds(detail.shown.region, state.clip) || R.slot !== detail.shown.slot)) dropDetail('the crop left the region');
   if (CD.wholeCrop(state.clip) || state.loading > 0 || (xr && xr.bench)) { detail.gate.note('', performance.now()); return; }
   const r4 = (v) => Math.round(v * 1e4);
@@ -1772,6 +1811,11 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   ui.pin = null;
   ui.crop.drag = null;
   simulationControls(info, cube);
+  // The overlay (#357) is off with another cube; its storage follows the cube outside VR.
+  // The storage first (outside VR it is planned for this cube; in VR it only
+  // says what it allows), then the fields this cube starts with, within its channels.
+  overlay.ensureStorage();
+  overlay.onCube(info, path);
   applyExtent();
   $('thr-source').value = currentThresholdSource();
   resetThreshold();
@@ -1975,8 +2019,14 @@ function drawScene(view, override, eye = 0) {
   // With a refined frame on show (fading in or out included) the selection is
   // left out of the headset's own volume and drawn once, over the refined
   // frame (the backend's frame has none); then the box, ticks and labels.
-  const refined = refineMode !== 'off' && refiner.showing && !(masks && masks.hidesRefined());
-  if (!CUT.novolume) { R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override)); cutCounts.volumeDraws++; }
+  const ovOn = overlay.visible();
+  const refined = !ovOn && refineMode !== 'off' && refiner.showing && !(masks && masks.hidesRefined());
+  if (!CUT.novolume) {
+    // Overlaid fields (#357): their own program, no region or mask.
+    if (ovOn) R.drawOverlay(view, state.model, overlay.params(volParams({ ...override, showMask: false }), override || {}));
+    else R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override));
+    cutCounts.volumeDraws++;
+  }
   if (refined) {
     refiner.composite(view, state.model, eye);
     if (R.mask && !CUT.novolume) { R.drawVolume(view, state.model, volParams({ ...override, mode: 0, maskOnly: true })); cutCounts.volumeDraws++; }
@@ -2076,6 +2126,11 @@ function hudLines(targetHz) {
     lines.push(`volume ${c.dims.join('×')} ${c.encoding} ${(R.textureBytes / 1e6).toFixed(1)} MB`);
     lines.push(c.mode === 'synthetic' ? 'synthetic cube' : `binning ${c.factors.join('×')} ${c.mode}${V.sourceNote(c)} of ${c.fullShape.join('×')}`);
     lines.push(`threshold ${fmt(dataValue(state.thrNorm))} ${c.bunit || ''}  (${$('thr-source').selectedOptions[0].text})`);
+    // Overlaid variables (#357): what is drawn instead of the single cube.
+    if (overlay.visible()) {
+      const o = overlay.ov, g = R.gpuStats().overlay;
+      lines.push(`overlay ${o.loaded.fields.map((f) => f.name).join('+')} ${o.composite} ${g ? `${g.channels} ch ${(g.totalBytes / 1e6).toFixed(1)} MB` : ''}`.trim());
+    }
   }
   lines.push(...selection.hudLines());
   lines.push(...layers.hudLines());
@@ -2213,7 +2268,8 @@ function lookSnapshot() {
   // the whole box in `clip` is only its placeholder.
   if (kind !== 'cube') return { kind, colormap: state.colormap, clip, layer: layers.undoState(), cropEmpty: layers.cropEmpty };
   return { kind, thrNorm: state.thrNorm, cmaxNorm: state.cmaxNorm, opacity: state.opacity, colormap: state.colormap,
-    mode: state.mode, stretch: state.stretch, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState() };   // the catalogue's toggles too
+    mode: state.mode, stretch: state.stretch, gamma: state.gamma, thrSource: $('thr-source').value, clip, layer: layers.undoState(),   // the catalogue's toggles too
+    ov: overlay.snapshot() };     // the overlaid fields' looks (#357)
 }
 function pushUndo() { if (lookKind()) ui.undo.push(lookSnapshot()); }
 function undo() {
@@ -2241,6 +2297,7 @@ function undo() {
     clip: { min: [...s.clip.min], max: [...s.clip.max] } });
   setColormap(s.colormap);
   if (s.layer) layers.restoreUndo(s.layer);
+  if (s.ov) overlay.restore(s.ov);
   $('rmode').value = String(state.mode);
   $('opacity').value = Math.round(state.opacity * 100);
   $('gamma').value = String(state.gamma);
@@ -2422,6 +2479,7 @@ function menuContext() {
     kind, debug: DEBUG_HUD, colormap: state.colormap, render: state.mode, spectralName: spectralName(),
     simulation: simulationShown(),
     vars: variablesMenu(),
+    ov: overlay.menuContext(),
     cat: lc.cat, clipTool: ui.clipTool,
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
@@ -2498,6 +2556,7 @@ function menuView(ctx = menuContext()) {
     }
   }
   if (page === 'debug') status.push(`Refinement: ${refineShort()}`);
+  if (page === 'overlay' && ctx.ov) overlay.view(values, notes, status);
   const hist = page === 'levels' && c ? {
     density: histDensity(c), thr: normToSlider(state.thrNorm) / 1000, cmax: normToSlider(state.cmaxNorm) / 1000,
     marks: LV.sigmaMarks(LV.sigmaOf(state.info), c.lo, c.hi, undefined, undefined, c.scale).map(({ at, label }) => ({ at, label })),
@@ -2536,6 +2595,7 @@ function menuLayout() {
   if (ui.page === 'debug' && !ctx.debug) ui.page = 'more';
   if (ui.page === 'levels' && ctx.kind !== 'cube') ui.page = 'display';
   if (ui.page === 'data' && ctx.kind !== 'points') ui.page = 'display';
+  if (ui.page === 'overlay' && !ctx.ov) ui.page = 'display';
   menu.ctx = ctx;
   menu.spec = HM.pageSpec(ui.page, ctx);
   menu.pointer.layout = HM.menuLayout(ui.page, ctx);
@@ -2903,6 +2963,10 @@ function applyMenu(a, ray = null, eye = null) {
     return;
   }
   if (id === 'levels-page') { ui.page = 'levels'; return; }
+  // Overlaid variables (#357): their page; a look change is one undo step.
+  if (id === 'overlay-page') { ui.page = 'overlay'; return; }
+  if (w.group === 'ov-cmap' || id === 'ov-show-field' || id === 'ov-thr-reset' || w.group === 'ov-comp') pushUndo();
+  if (overlay.press(id, w)) return;
   if (id === 'levels-back') { ui.page = 'display'; return; }
   // A point table's Data page (#259) and its box selection's Clear.
   if (id === 'pt-data') { ui.page = 'data'; return; }
@@ -2973,6 +3037,7 @@ function menuSlide(a) {
     if (a.id === 'thr' || a.id === 'hist') state.thrNorm = Math.min(state.cmaxNorm - 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'cmax') state.cmaxNorm = Math.max(state.thrNorm + 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
+    else if (overlay.slide(a.id, a.value)) { /* an overlaid field's (#357) */ }
     else layers.slide(a.id, a.value);
     labelsChanged();
     return;
@@ -3004,13 +3069,14 @@ const readout = {
 };
 /** The readout's lines at box point p (or the mode alone). */
 function readoutAt(p) {
-  return RO.readoutLines(modeText(), p, { info: state.info, cube: state.cube, texScale: state.texScale });
+  return RO.readoutLines(modeText(), p, { info: state.info, cube: state.cube, texScale: state.texScale, overlay: overlay.readout() });
 }
 /** The same, kept while the point, the mode and the cube's look are the same (per frame in VR). */
 function readoutCached(card, p) {
   const mt = modeText();
-  if (card.p !== p || card.mt !== mt || card.cube !== state.cube || card.thr !== state.thrNorm) {
-    Object.assign(card, { p, mt, cube: state.cube, thr: state.thrNorm, lines: readoutAt(p) });
+  const ovr = overlay.readout();
+  if (card.p !== p || card.mt !== mt || card.cube !== state.cube || card.thr !== state.thrNorm || card.ovr !== ovr) {
+    Object.assign(card, { p, mt, cube: state.cube, thr: state.thrNorm, ovr, lines: readoutAt(p) });
   }
   return card.lines;
 }
@@ -3330,7 +3396,33 @@ function volumeColourBar() {
 }
 /** The bar beside the box's lower corner, turned to the eye; redrawn and
  *  uploaded only when it changes (a 2-D texture). */
+/** The overlaid fields' bars (#357): one panel each, made once (2-D textures). */
+const overlayBars = [];
+function drawOverlayBars(v, eye) {
+  const bars = overlay.bars();
+  const e = state.extent;
+  const corner = M.transformPoint(state.model, [e[0] / 2, -e[1] / 2, e[2] / 2]);
+  const face = RO.faceEye(corner, eye);
+  bars.forEach((bar, i) => {
+    let p = overlayBars[i];
+    if (!p) {
+      p = overlayBars[i] = { canvas: Object.assign(document.createElement('canvas'), { width: CB.BAR_PX[0], height: CB.BAR_PX[1] }), tex: R.createPanel(), key: '' };
+    }
+    if (p.key !== bar.key) {
+      CB.drawColourBar(p.canvas.getContext('2d'), { ...bar, lut: colormapTable(bar.colormap) });
+      R.updatePanel(p.tex, p.canvas);
+      p.key = bar.key;
+    }
+    // Stacked upwards from the box's lower corner, field 1 at the bottom.
+    const m = M.multiply(face, M.translation(CB.BAR_SIZE[0] / 2 + 0.02, -CB.BAR_SIZE[1] / 2 + i * (CB.BAR_SIZE[1] + 0.006), 0));
+    R.drawPanel(v, m, p.tex, CB.BAR_SIZE);
+  });
+  return bars.length;
+}
+
 function drawColourBar(v, eye) {
+  // Overlaid variables (#357): one bar a field shown.
+  if (overlay.visible() && drawOverlayBars(v, eye)) return;
   const sim = simulationShown();
   if (!sim && (state.cube || !layers.hasScene() || !layers.state.s.box)) return;
   // The same object while it is unchanged.
@@ -3848,8 +3940,12 @@ function shownName() {
 function hubLook(id) {
   const c = state.cube;
   if (!c || !state.open) return null;
-  return HUB.lookPayload({ colormap: state.colormap, threshold: dataValue(state.thrNorm), colourMax: dataValue(state.cmaxNorm),
+  const p = HUB.lookPayload({ colormap: state.colormap, threshold: dataValue(state.thrNorm), colourMax: dataValue(state.cmaxNorm),
     opacity: state.opacity, gamma: state.gamma, stretch: HUB.desktopStretch(state.stretch, c.scale), mode: state.mode, zStretch: state.zStretch, datasetId: id });
+  // Overlaid variables (#357): the desktop is told which, with each one's look.
+  const o = overlay.hub();
+  if (o) p.overlay = o.payload;
+  return p;
 }
 function hubClip(id) {
   // Only a cube's clip is reported (a point table has no state.cube); an empty
@@ -3893,7 +3989,8 @@ function hubTick() {
     if (clip) hub.rebase('clip', path, clip);
     return;
   }
-  if (look) hub.look(path, look, `Look: ${state.colormap}, threshold ${fmt(look.threshold)}${state.cube.bunit ? ` ${state.cube.bunit}` : ''}`);
+  const ovHub = look && look.overlay ? overlay.hub() : null;
+  if (look) hub.look(path, look, ovHub ? ovHub.summary : `Look: ${state.colormap}, threshold ${fmt(look.threshold)}${state.cube.bunit ? ` ${state.cube.bunit}` : ''}`);
   if (clip) hub.clip(path, clip);
 }
 setInterval(hubTick, 250);
@@ -4951,6 +5048,9 @@ function setBenchButton() {
 async function prepareBench() {
   if (benchPrep) return;
   if (R.xrActive) throw new Error('leave VR first');
+  // The overlay storage (#357) is given back for the benchmark's cubes (planned
+  // again with the next cube on show).
+  overlay.releaseStorage();
   // The device's share, less what the cube on show keeps on the GPU beside them.
   // (The capacity of issue #235 and any volume of its own: g.cubeBytes.)
   const g = R.gpuStats();
@@ -5038,6 +5138,7 @@ function benchPlan(includeLoaded, sizes = BENCH_SIZES) {
 
 function makeBench() {
   dropDetail('the headset benchmark');      // its saved cube is the coarse one (#328)
+  overlay.off('the headset benchmark');     // its cubes are single variables (#357)
   const saved = state.cube && R.slot ? { info: state.info, cube: state.cube, open: state.open, openPath: state.openPath, slot: R.slot } : null;
   const b = {
     plan: benchPlan(!!saved, benchPrep.cubes.map((e) => e.n)), i: -1, t0: 0, saved, results: [], status: 'benchmark starting',
@@ -5119,6 +5220,9 @@ function finishBench(b) {
     state.cube = b.saved.cube; state.info = b.saved.info; state.open = b.saved.open; state.openPath = b.saved.openPath;
     applyExtent(); resetThreshold();
     if (b.saved.open) share.start(b.saved.open.dataset_id);   // the synthetic cubes stopped it
+    // Its variables offered for an overlay again (#357; the synthetic cubes had none).
+    overlay.onCube(b.saved.info, b.saved.openPath);
+    if (!R.xrActive) overlay.ensureStorage();
   }
 }
 
@@ -5237,6 +5341,9 @@ if (query.has('debug')) {
   window.__vrState = state;
   // The crop in more detail (#328): {shown, last, busy}.
   window.__vrDetail = detail;
+  window.__vrOverlay = overlay;     // #357
+  window.__vrOverlaySetMaps = (maps) => R.setOverlayColormaps(maps);
+  window.__vrReadoutAt = (p) => readoutAt(p);
   // The variables of a simulation volume (#317): the menu's row, a switch, the looks kept.
   window.__vrVariables = { menu: () => variablesMenu(), show: (name) => switchVariable(name), looks: variableLooks, pending: () => pendingVariable };
   // The page's backend handle, for checks that ask it what the page asked (?debug only).
@@ -5299,6 +5406,48 @@ if (query.has('debug')) {
     },
   };
   /** The share of canvas pixels the cube draws over the background, now. */
+  // The volume alone drawn into the page's canvas (issue #357): the overlay
+  // when it is drawn (`single` forces the single cube), with `override`
+  // (volParams: mode 2 counts the steps). {fraction, mean [r, g, b] of the
+  // drawn pixels, steps (mode 2: mean steps per drawn ray), ms (the draws'
+  // GPU time with gl.finish, `frames` of them)}.
+  window.__vrVolumePixels = ({ single = false, override = {}, frames = 1 } = {}) => {
+    const w = canvas.width, h = canvas.height;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    const ovOn = !single && overlay.visible();
+    // A three-quarter view with the box filling most of the canvas, the same
+    // for every call (so draws can be compared and timed).
+    const model = M.identity();
+    const d = 0.62 * Math.max(...state.extent) / Math.tan(25 * Math.PI / 180) + 0.5 * Math.max(...state.extent);
+    const cam = M.multiply(M.rotation([0, 1, 0], 0.5), M.multiply(M.rotation([1, 0, 0], -0.35), M.translation(0, 0, d)));
+    const view = { proj: M.perspective(50 * Math.PI / 180, w / h, 0.02, 50), view: M.invert(cam) };
+    const draw = () => {
+      gl.clearColor(...DESKTOP_BG, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      if (ovOn) R.drawOverlay(view, model, overlay.params(volParams({ ...override, showMask: false }), override));
+      else R.drawVolume(view, model, volParams(override));
+    };
+    // A one-pixel read waits for the GPU (finish() may return before it is done).
+    const one = new Uint8Array(4);
+    const sync = () => gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, one);
+    draw();
+    sync();
+    const t0 = performance.now();
+    for (let i = 0; i < frames; i++) { draw(); sync(); }
+    const ms = (performance.now() - t0) / frames;
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const bg = DESKTOP_BG.map((v) => Math.round(v * 255));
+    let n = 0;
+    const sum = [0, 0, 0];
+    for (let i = 0; i < px.length; i += 4) {
+      const dv = Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]);
+      if (dv > 12) { n++; sum[0] += px[i]; sum[1] += px[i + 1]; sum[2] += px[i + 2]; }
+    }
+    const mean = sum.map((v) => (n ? v / n : 0));
+    return { overlay: ovOn, fraction: n / (w * h), mean, steps: override.mode === 2 ? (mean[0] / 255) * 4096 : null, ms, w, h };
+  };
   window.__vrDrawnFraction = () => {
     const w = canvas.width, h = canvas.height;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -5624,6 +5773,8 @@ function rebuildGraphics() {
     menu.key = '';
     for (const w of Object.values(wins)) w.barKey = '';
     colourBar.bar = null;            // its texture was on the lost context (#259)
+    overlay.afterRestore();          // the overlay written again by R.restore (#357)
+    for (const b of overlayBars) b.key = '';
     ui.psel.g = null;
     for (const k of [readout.live, readout.pin]) k.key = '';
     for (const k of Object.values(wristCards)) { k.key = ''; k.level = -1; }

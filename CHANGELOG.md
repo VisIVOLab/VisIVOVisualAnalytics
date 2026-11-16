@@ -15,6 +15,19 @@ are preserved here unedited; the branch names they refer to are historical.
   taken from a linked view) left the old labels on screen until the next
   interaction. A frame that moved the camera is now drawn once more when the
   camera settles; the catalogue labels follow the same way.
+- **VR: overlay two or three variables of a simulation volume (#357).** The
+  hand menu's new *Overlay* page (from *Display ▸ Rendering*) shows two or
+  three variables of a VBT volume or a PLUTO output in one view, each with
+  its own colour map, scale (log or linear), threshold, colour max and
+  opacity, and its own colour bar. *Sum* composites the fields as emitting
+  and absorbing media with per-field opacity; *MIP* takes the brightest field
+  value. The fields come from the new `POST /v1/cube/reduced_fields_bin`
+  (fields reduced with the cube's factors, each on its own scale,
+  interleaved) into one multi-channel 3-D texture (RG8 or RGB8) with a LUT
+  atlas and a per-field skip grid. Its storage is allocated before VR, beside
+  the capacity, when the device's share allows, so an overlay shown in VR
+  allocates no 3-D texture. The readout gives each field's value; the
+  desktop's *Headset Activity* says which fields are overlaid.
 - **Desktop and backend: regions on the cutting plane with Remote rendering
   (#356).** With the 3-D view rendered on the backend, the render session now
   draws the window's regions on its cutting plane, as the desktop does in
