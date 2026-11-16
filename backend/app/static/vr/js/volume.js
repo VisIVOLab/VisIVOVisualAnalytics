@@ -488,19 +488,28 @@ export function reducedShape(fullShape, factors) {
  * 'timeout' past `totalMs` in all. A build of a few hundred GB takes minutes
  * (about 45 s for 23 GiB on PLEIADI, 14 s for 11 GiB on an M5 Max), so the
  * defaults (5 min still, 2 h in all) only catch a build that is gone.
+ * see(null, now, false) is a poll nothing answered (issue #329): the build
+ * goes on meanwhile, so it is only 'silent' once nothing has answered for
+ * `silentMs` (3 min: longer than a poll's own deadline, so one poll that
+ * hangs to its end is not enough). silentMs(now) is how long that is so far.
  */
-export function buildWatch(stallMs = 300000, totalMs = 7200000) {
-  let start = null, last = null, best = -1;
+export function buildWatch(stallMs = 300000, totalMs = 7200000, silentMs = 180000) {
+  let start = null, last = null, best = -1, heard = null;
   return {
-    see(progress, now) {
-      if (start === null) { start = now; last = now; }
-      const p = Number.isFinite(progress) ? progress : 0;
-      if (p > best + 1e-6) { best = p; last = now; }
+    see(progress, now, answered = true) {
+      if (start === null) { start = now; last = now; heard = now; }
+      if (answered) {
+        heard = now;
+        const p = Number.isFinite(progress) ? progress : 0;
+        if (p > best + 1e-6) { best = p; last = now; }
+      }
       if (now - start > totalMs) return 'timeout';
+      if (now - heard > silentMs) return 'silent';
       if (now - last > stallMs) return 'stalled';
       return '';
     },
     progress() { return Math.max(0, best); },
+    silentMs(now) { return heard === null ? 0 : Math.max(0, now - heard); },
   };
 }
 

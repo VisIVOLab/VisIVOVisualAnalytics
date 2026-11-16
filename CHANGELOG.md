@@ -27,6 +27,46 @@ are preserved here unedited; the branch names they refer to are historical.
   a level-0 box of four 256³ blocks took 2.9 s from the click to the refined
   view on a local backend.
 
+- **VR: a variable picker for simulation volumes (#317).** For a file with
+  several fields (a PLUTO output's variables on disk, a VBT volume's fields),
+  the last row of the hand menu's *Display* page picks the variable on show.
+  In VR the chosen variable is written into the room kept for cubes (no new
+  3-D texture during the session) and shown within about 0.1 s for a
+  64×48×24 field in the headless check. The crop stays, and each variable
+  keeps its own colour map, stretch, scale, threshold and colour max. With
+  one field the row is the catalogue's, as before. `reduced_info` now lists
+  `fields` and `field_name`, so a cube sent from the desktop has its picker
+  too. The desktop's *Headset Activity* says *Variable vx1 of rho.0000.flt*.
+  The window of the variable left behind, with *Follow the headset's look*
+  on, brings forward the new variable's window, or opens its *Field*
+  product.
+
+- **VR: a cube sent to the headset during its first brick pyramid build
+  waits for it (#329).** A large cube opened on the headset while the backend
+  was building its brick pyramid for the first time (a 2048³ PLUTO density,
+  for example) failed at the page's second progress check with "the backend
+  did not answer", although the backend had answered: the page took the 202
+  "still building" answer to a request with a deadline for no answer. The
+  page now shows *Preparing the cube… N %* for the whole build, in the
+  headset app's room in VR too, and loads the cube when the build ends. A
+  progress check that gets no answer is sent again. The page gives up only
+  after 3 minutes without any answer, and a backend that cannot be reached
+  at all is still reported at once. Measured on a synthetic 2048³ PLUTO
+  output (32 GiB, 49 s build): every route the page uses kept answering in
+  under 80 ms during the build.
+
+- **Bounded memory for a large cube's statistics (#333).** Opening a 32 GB
+  cube made the backend read every voxel for the Inspector's whole-cube
+  statistics through a memory map, and it grew past 40 GB until macOS ran out
+  of application memory. A cube opened as a preview is no longer read whole:
+  the minimum, maximum and mean come from its brick pyramid when there is one,
+  the rest from a sample of about 4 million voxels (0.7 s and 0.2 GB on the
+  2048³ density, where the backend used to grow by 3 GB/s). An exact pass,
+  for smaller cubes or with `?exact=true`, reads slab by slab and holds one
+  slab at a time (16 s and under 0.4 GB for the same 32 GB cube). The answer
+  says which (`source`: `exact`, `pyramid` or `sampled`) and which numbers
+  are exact (`exact_fields`). Scaled FITS (BSCALE, BZERO, BLANK) now work
+  too.
 - **One brick pyramid per file, whatever the letter case of its path
   (#325).** On macOS (and Windows) the same file opened as
   `.../step62/rho.0000.flt` and `.../STEP62/rho.0000.flt` got two pyramids

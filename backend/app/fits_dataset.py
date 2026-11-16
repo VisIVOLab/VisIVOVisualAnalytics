@@ -621,6 +621,16 @@ class ScientificFitsDataset:
             threshold = min(threshold, limit // self._FULL_RES_MEMORY_FRACTION)
         return threshold
 
+    def recommended_load_mode(self) -> str:
+        """``preview_only`` when the data is at or above the full-resolution
+        threshold (the desktop then opens it as a preview, and whole-cube
+        passes on it are bounded: ``app.cube_stats``), else ``auto_full``."""
+        return self._load_mode(self._file_size_bytes_safe(), self._full_res_threshold_bytes())
+
+    @staticmethod
+    def _load_mode(size: int, threshold: int) -> str:
+        return "preview_only" if size >= threshold else "auto_full"
+
     def geometry_metadata(self) -> dict[str, Any]:
         spacing = [self._cdelt(1), self._cdelt(2), self._cdelt(3)]
         origin = [
@@ -710,7 +720,7 @@ class ScientificFitsDataset:
             # Each read once: the threshold probes the memory limit.
             "file_size_bytes": (size := self._file_size_bytes_safe()),
             "full_res_threshold_bytes": (threshold := self._full_res_threshold_bytes()),
-            "recommended_load_mode": "preview_only" if size >= threshold else "auto_full",
+            "recommended_load_mode": self._load_mode(size, threshold),
         }
 
     # FITS CTYPE prefixes that denote a spectral axis (frequency, velocity,

@@ -168,6 +168,24 @@ test('a pyramid build is given up when it stalls or takes too long, not while it
   assert.equal(V.buildWatch().see(undefined, 0), '');
 });
 
+test('polls nothing answered are waited through until the backend has been silent for silentMs (#329)', () => {
+  const w = V.buildWatch(10000, 100000, 3000);
+  assert.equal(w.see(0.2, 0), '');
+  assert.equal(w.see(null, 1000, false), '');
+  assert.equal(w.silentMs(2500), 2500);
+  assert.equal(w.see(null, 2900, false), '');
+  assert.equal(w.progress(), 0.2, 'a poll with no answer leaves the progress as it was');
+  assert.equal(w.see(0.3, 3500), '', 'an answer ends the silence');
+  assert.equal(w.silentMs(3500), 0);
+  assert.equal(w.see(null, 6400, false), '');        // 2900 ms after the answer at 3500
+  assert.equal(w.see(null, 6600, false), 'silent');  // 3100 ms
+  // A build moving with every poll answered is never silent, however long.
+  const m = V.buildWatch(10000, 1e9, 3000);
+  for (let t = 0, p = 0; t < 60000; t += 1000, p += 0.01) assert.equal(m.see(p, t), '');
+  // The first poll may itself be one with no answer.
+  assert.equal(V.buildWatch(10000, 1e9, 3000).see(null, 50, false), '');
+});
+
 // ── Longitudes across 0° ──────────────────────────────────────────────────
 
 test('an RA axis crossing 0° is interpolated and ticked through 0, not 180', () => {
