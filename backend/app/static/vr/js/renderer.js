@@ -13,6 +13,10 @@ import { guardTex3D, tex3dInXRError } from './xr-gl-guard.js';
 import { composeMask, layerCells } from './mask-layer.js';
 import { lutAtlas, LUT_ROWS, apronBlocksC, prepareOverlay, overlayBytes, bytesPerVoxel } from './overlay.js';
 
+/** The overlay's atlas rows of its three channels (fields 1-3), and an upper bound that bounds nothing. */
+const OV_ROWS = new Float32Array([0.125, 0.375, 0.625]);
+const NO_UPPER = new Float32Array([2, 2, 2]);
+
 /** The eye's position from a rigid view matrix (−Rᵀt), into `out`. */
 function eyeOf(v, out) {
   for (let i = 0; i < 3; i++) out[i] = -(v[4 * i] * v[12] + v[4 * i + 1] * v[13] + v[4 * i + 2] * v[14]);
@@ -204,6 +208,10 @@ void main() {
 // shares (one field alone draws as VOL_FS does); 1: MIP, the brightest field
 // value in its own colour window along the ray; 2: steps per ray. The crop's
 // region in more detail and the selection mask are not drawn here.
+// The pieces of an exploded view (issue #371, explode.js) draw with the same
+// program: uThrHi an upper bound (a value range of one field; 2 draws every
+// value from the threshold up) and uLutRows the atlas row of each channel
+// (the overlay's fields 0.125, 0.375, 0.625; a piece its own row).
 const VOL_OV_FS = `#version 300 es
 precision highp float;
 precision highp int;
@@ -217,7 +225,7 @@ uniform vec3 uCamTex, uBoxMin, uBoxMax, uVoxDims, uCellDims, uTexScale;
 uniform vec3 uSampleScale, uStoreLo, uStoreHi;
 uniform float uCell, uSpv;
 uniform int uEnc, uMaxSteps, uMode, uSkip;
-uniform vec3 uThr, uCmin, uCmax, uStretchA, uOpacity;
+uniform vec3 uThr, uThrHi, uCmin, uCmax, uStretchA, uOpacity, uLutRows;
 uniform ivec3 uStretch;
 
 float stretchK(float x, int s, float a) {
@@ -268,7 +276,7 @@ void main() {
     }
     vec3 s = texture(uVol, clamp(p * uSampleScale, uStoreLo, uStoreHi)).rgb;
     vec3 v = uEnc == 0 ? (s * 255.0 - 1.0) / 254.0 : s;
-    vec3 on = vec3(greaterThanEqual(v, uThr));
+    vec3 on = vec3(greaterThanEqual(v, uThr)) * vec3(lessThan(v, uThrHi));
     if (on.x + on.y + on.z > 0.0) {
       vec3 x = colourIn(v);
       if (uMode == 1) {
@@ -281,9 +289,9 @@ void main() {
         float T = tau.x + tau.y + tau.z;
         if (T > 0.0) {
           vec3 col = vec3(0.0);
-          if (tau.x > 0.0) col += tau.x * texture(uLut, vec2(x.x, 0.125)).rgb;
-          if (tau.y > 0.0) col += tau.y * texture(uLut, vec2(x.y, 0.375)).rgb;
-          if (tau.z > 0.0) col += tau.z * texture(uLut, vec2(x.z, 0.625)).rgb;
+          if (tau.x > 0.0) col += tau.x * texture(uLut, vec2(x.x, uLutRows.x)).rgb;
+          if (tau.y > 0.0) col += tau.y * texture(uLut, vec2(x.y, uLutRows.y)).rgb;
+          if (tau.z > 0.0) col += tau.z * texture(uLut, vec2(x.z, uLutRows.z)).rgb;
           float a = 1.0 - exp(-T);
           acc.rgb += (1.0 - acc.a) * a * (col / T);
           acc.a += (1.0 - acc.a) * a;
@@ -300,7 +308,8 @@ void main() {
   if (uMode == 1) {
     if (best < 0.0) discard;
     float a = clamp(0.25 + 0.75 * best, 0.0, 1.0);
-    vec3 col = texture(uLut, vec2(best, (float(bestField) + 0.5) / 4.0)).rgb;
+    float row = bestField == 0 ? uLutRows.x : (bestField == 1 ? uLutRows.y : uLutRows.z);
+    vec3 col = texture(uLut, vec2(best, row)).rgb;
     outColor = vec4(col * a, a);
     return;
   }
@@ -639,6 +648,7 @@ export class Renderer {
     this._ovPlan = null;           // {dims, channels, encoding, cell}, for restore()
     this._ovInput = null;          // the overlay on show: {data, dims, channels, fields, encoding, prep}, for restore()
     this._ovMaps = [];
+    this._pieceMaps = [];          // the exploded view's colour maps, one a piece (#371)
     this._maskInput = null;
     this._lineSegs = {};           // target name -> the last segments
     this._labels = null;
@@ -753,6 +763,16 @@ export class Renderer {
     // fields' maps change (2-D textures are safe in VR, #229).
     this.ovLut = gl.createTexture();
     this.setOverlayColormaps(this._ovMaps || []);
+    // The exploded view's atlas (#371): one row a piece, immutable storage
+    // made here, rows written with texSubImage2D (nothing allocated in VR).
+    this.pieceLut = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.pieceLut);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, 256, LUT_ROWS);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.setPieceColormaps(this._pieceMaps || []);
     this.volTex = null;
     this.macroTex = null;
     // The selection overlay of a volume without a mask storage of its own
@@ -864,7 +884,7 @@ export class Renderer {
       // Everything the cubes hold on the GPU: the capacity, the overlay storage and the storages of their own.
       cubeBytes: capacityBytes + overlayBytes + ownBytes,
       models: this._models.size, modelBytes,
-      totalBytes: panelBytes + labelBytes + capacityBytes + overlayBytes + ownBytes + modelBytes + 256 * 4 + 1 + 256 * 4 * 4 };
+      totalBytes: panelBytes + labelBytes + capacityBytes + overlayBytes + ownBytes + modelBytes + 256 * 4 + 1 + 2 * 256 * 4 * LUT_ROWS };
   }
 
   setColormap(name) {
@@ -1264,6 +1284,16 @@ export class Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  /** The exploded view's colour maps (#371), one name a piece, into its
+   *  atlas (texSubImage2D only: allowed in VR). */
+  setPieceColormaps(names) {
+    const gl = this.gl;
+    this._pieceMaps = names.slice();
+    gl.bindTexture(gl.TEXTURE_2D, this.pieceLut);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, LUT_ROWS, gl.RGBA, gl.UNSIGNED_BYTE, lutAtlas(names));
   }
 
   /**
@@ -2002,10 +2032,45 @@ export class Renderer {
    * or 2 (steps). No region, no mask. Returns false when nothing is drawn.
    */
   drawOverlay(view, model, p) {
-    const gl = this.gl;
     const ov = this.ov;
     const s = ov && ov.shown;
     if (!s) return false;
+    const src = this._ovSrc || (this._ovSrc = {});
+    Object.assign(src, { volTex: ov.volTex, macroTex: ov.macroTex, dims: s.dims, store: ov.dims, macroDims: s.macroDims, cell: s.cell, encoding: s.encoding });
+    this._drawFields(view, model, p, src, this.ovLut, OV_ROWS, NO_UPPER);
+    return true;
+  }
+
+  /**
+   * One piece of an exploded view for one eye (issue #371, explode.js): the
+   * overlay's program over textures already resident, nothing allocated:
+   * `p.src` 'overlay' (the overlay storage on show) or 'cube' (the single
+   * cube's texture, its own channel x; its region in more detail is not
+   * drawn here), `p.ov` the per-channel uniforms of overlayUniforms plus
+   * `thrHi` (upper bounds) and `rows` (each channel's row in the pieces'
+   * atlas, setPieceColormaps), `p.mode` as drawOverlay's. Returns false when
+   * there is nothing to draw from.
+   */
+  drawPiece(view, model, p) {
+    const src = this._pieceSrc || (this._pieceSrc = {});
+    if (p.src === 'overlay') {
+      const ov = this.ov;
+      const s = ov && ov.shown;
+      if (!s) return false;
+      Object.assign(src, { volTex: ov.volTex, macroTex: ov.macroTex, dims: s.dims, store: ov.dims, macroDims: s.macroDims, cell: s.cell, encoding: s.encoding });
+    } else {
+      if (!this.volTex || !this.dims) return false;
+      Object.assign(src, { volTex: this.volTex, macroTex: this.macroTex, dims: this.dims, store: this.store || this.dims, macroDims: this.macroDims,
+        cell: this.cell, encoding: this.encoding });
+    }
+    this._drawFields(view, model, p, src, this.pieceLut, p.ov.rows, p.ov.thrHi);
+    return true;
+  }
+
+  /** The overlay program's draw (drawOverlay, drawPiece): `src` the textures
+   *  and their grids, `lut` the atlas, `rows` and `thrHi` vec3s. */
+  _drawFields(view, model, p, src, lut, rows, thrHi) {
+    const gl = this.gl;
     const mv = M.multiply(view.view, model);
     const mvp = M.multiply(view.proj, mv);
     const inv = M.invert(mv);
@@ -2018,32 +2083,34 @@ export class Renderer {
     gl.uniform3fv(u.uBoxMin, p.boxMin);
     gl.uniform3fv(u.uBoxMax, p.boxMax);
     gl.uniform3fv(u.uCamTex, camTex);
-    gl.uniform3fv(u.uVoxDims, s.dims);
+    gl.uniform3fv(u.uVoxDims, src.dims);
     const ts = p.texScale || [1, 1, 1];
     gl.uniform3fv(u.uTexScale, ts);
-    const st = ov.dims;
-    gl.uniform3fv(u.uSampleScale, [0, 1, 2].map((i) => ts[i] * s.dims[i] / st[i]));
+    const st = src.store;
+    gl.uniform3fv(u.uSampleScale, [0, 1, 2].map((i) => ts[i] * src.dims[i] / st[i]));
     gl.uniform3fv(u.uStoreLo, [0, 1, 2].map((i) => 0.5 / st[i]));
-    gl.uniform3fv(u.uStoreHi, [0, 1, 2].map((i) => (s.dims[i] - 0.5) / st[i]));
-    gl.uniform3fv(u.uCellDims, s.macroDims);
-    gl.uniform1f(u.uCell, s.cell);
+    gl.uniform3fv(u.uStoreHi, [0, 1, 2].map((i) => (src.dims[i] - 0.5) / st[i]));
+    gl.uniform3fv(u.uCellDims, src.macroDims);
+    gl.uniform1f(u.uCell, src.cell);
     gl.uniform1f(u.uSpv, p.spv);
-    gl.uniform1i(u.uEnc, s.encoding === 'uint8' ? 0 : 1);
+    gl.uniform1i(u.uEnc, src.encoding === 'uint8' ? 0 : 1);
     gl.uniform1i(u.uMaxSteps, Math.min(MAX_LOOP, p.maxSteps || MAX_LOOP));
     gl.uniform1i(u.uMode, p.mode || 0);
     gl.uniform1i(u.uSkip, p.skip ? 1 : 0);
     const q = p.ov;
     gl.uniform3fv(u.uThr, q.thr);
+    gl.uniform3fv(u.uThrHi, thrHi);
     gl.uniform3fv(u.uCmin, q.cmin);
     gl.uniform3fv(u.uCmax, q.cmax);
     gl.uniform3fv(u.uStretchA, q.stretchA);
     gl.uniform3fv(u.uOpacity, q.opacity);
+    gl.uniform3fv(u.uLutRows, rows);
     gl.uniform3i(u.uStretch, q.stretch[0], q.stretch[1], q.stretch[2]);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, ov.volTex);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, src.volTex);
     gl.uniform1i(u.uVol, 0);
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, ov.macroTex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, src.macroTex);
     gl.uniform1i(u.uMacro, 1);
-    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.ovLut);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, lut);
     gl.uniform1i(u.uLut, 2);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.FRONT);
@@ -2054,7 +2121,6 @@ export class Renderer {
     gl.bindVertexArray(this.ovCubeVao);
     gl.drawArrays(gl.TRIANGLES, 0, 36);
     gl.disable(gl.CULL_FACE);
-    return true;
   }
 
   drawLines(view, model, target = this.boxLines) {

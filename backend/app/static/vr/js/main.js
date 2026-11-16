@@ -12,6 +12,8 @@ import * as CD from './crop-detail.js';
 import * as SC from './sim-controls.js';
 // Two or three variables overlaid in one view (issue #357).
 import { createOverlay } from './overlay-ui.js';
+// A simulation model taken apart: fields and value ranges as pieces (issue #371).
+import { createExplode } from './explode-ui.js';
 import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
 import { COLORMAP_NAMES, colormapTable } from './colormaps.js';
@@ -205,7 +207,7 @@ function refineFrame(t, eyes, centreView, background) {
   // Mask only and Residuals (issue #282) are the headset's own: the backend's frame shows the whole cube.
   if (masks && masks.hidesRefined()) return;
   // Overlaid fields (#357): the refined frames show one variable; the headset's own picture is drawn.
-  if (overlay.visible()) return;
+  if (overlay.visible() || explode.active()) return;
   const look = currentLook();
   refiner.frame({ t, eyes, aCentre: M.multiply(centreView, state.model), model: state.model,
     zStretch: state.zStretch, aspect: V.voxelAspect(state.info), look: look.look, lookKey: look.key, background });
@@ -1530,6 +1532,14 @@ const overlay = createOverlay({
   dropDetail: (why) => dropDetail(why),
   sliderToNorm: (v) => sliderToNorm(v), normToSlider: (v) => normToSlider(v),
 });
+// The exploded view (issue #371, explode-ui.js): drawn in place of the volume while active.
+const explode = createExplode({
+  R, state, overlay,
+  volParams: (o) => volParams(o), dataValue: (n) => dataValue(n), isSimulation: () => simulationShown(),
+  log: (level, event, detail) => shell.log(level, event, detail),
+  changed: () => { menu.key = ''; labelsChanged(); },
+  dropDetail: (why) => dropDetail(why), now: () => performance.now(),
+});
 /** The newest cube put on show wins over one still being prepared. */
 const installs = new Newest();
 /** The time a step of a write into the capacity may take in VR before the
@@ -1566,7 +1576,8 @@ async function detailTick() {
   // A mean-binned cube only: the pyramid's levels are block means.
   if (detail.off || !c || !state.open || !state.info || c.mode !== 'mean' || !R.cap || gl.isContextLost()) return;
   // The overlay (#357) is drawn on the coarse grid: no detail while it is on or loading.
-  if (overlay.visible() || overlay.ov.loading) { if (detail.shown) dropDetail('the overlay is on'); detail.gate.note('', performance.now()); return; }
+  // Nor while the model is taken apart (#371).
+  if (overlay.visible() || overlay.ov.loading || explode.active()) { if (detail.shown) dropDetail('the overlay or the exploded view is on'); detail.gate.note('', performance.now()); return; }
   if (detail.shown && (!CD.regionHolds(detail.shown.region, state.clip) || R.slot !== detail.shown.slot)) dropDetail('the crop left the region');
   if (CD.wholeCrop(state.clip) || state.loading > 0 || (xr && xr.bench)) { detail.gate.note('', performance.now()); return; }
   const r4 = (v) => Math.round(v * 1e4);
@@ -2019,11 +2030,14 @@ function drawScene(view, override, eye = 0) {
   // With a refined frame on show (fading in or out included) the selection is
   // left out of the headset's own volume and drawn once, over the refined
   // frame (the backend's frame has none); then the box, ticks and labels.
-  const ovOn = overlay.visible();
-  const refined = !ovOn && refineMode !== 'off' && refiner.showing && !(masks && masks.hidesRefined());
+  // The model taken apart (#371): its pieces in place of the volume.
+  const exOn = explode.active();
+  const ovOn = !exOn && overlay.visible();
+  const refined = !exOn && !ovOn && refineMode !== 'off' && refiner.showing && !(masks && masks.hidesRefined());
   if (!CUT.novolume) {
     // Overlaid fields (#357): their own program, no region or mask.
-    if (ovOn) R.drawOverlay(view, state.model, overlay.params(volParams({ ...override, showMask: false }), override || {}));
+    if (exOn) explode.draw(view, state.model, override);
+    else if (ovOn) R.drawOverlay(view, state.model, overlay.params(volParams({ ...override, showMask: false }), override || {}));
     else R.drawVolume(view, state.model, volParams(refined ? { ...override, showMask: false } : override));
     cutCounts.volumeDraws++;
   }
@@ -2131,6 +2145,8 @@ function hudLines(targetHz) {
       const o = overlay.ov, g = R.gpuStats().overlay;
       lines.push(`overlay ${o.loaded.fields.map((f) => f.name).join('+')} ${o.composite} ${g ? `${g.channels} ch ${(g.totalBytes / 1e6).toFixed(1)} MB` : ''}`.trim());
     }
+    const exLine = explode.hudLine();
+    if (exLine) lines.push(exLine);
   }
   lines.push(...selection.hudLines());
   lines.push(...layers.hudLines());
@@ -2480,6 +2496,7 @@ function menuContext() {
     simulation: simulationShown(),
     vars: variablesMenu(),
     ov: overlay.menuContext(),
+    ex: explode.menuContext(),
     cat: lc.cat, clipTool: ui.clipTool,
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
@@ -2557,6 +2574,7 @@ function menuView(ctx = menuContext()) {
   }
   if (page === 'debug') status.push(`Refinement: ${refineShort()}`);
   if (page === 'overlay' && ctx.ov) overlay.view(values, notes, status);
+  if (page === 'explode' && ctx.ex) explode.view(values, notes, status);
   const hist = page === 'levels' && c ? {
     density: histDensity(c), thr: normToSlider(state.thrNorm) / 1000, cmax: normToSlider(state.cmaxNorm) / 1000,
     marks: LV.sigmaMarks(LV.sigmaOf(state.info), c.lo, c.hi, undefined, undefined, c.scale).map(({ at, label }) => ({ at, label })),
@@ -2596,6 +2614,7 @@ function menuLayout() {
   if (ui.page === 'levels' && ctx.kind !== 'cube') ui.page = 'display';
   if (ui.page === 'data' && ctx.kind !== 'points') ui.page = 'display';
   if (ui.page === 'overlay' && !ctx.ov) ui.page = 'display';
+  if (ui.page === 'explode' && !ctx.ex) ui.page = 'display';
   menu.ctx = ctx;
   menu.spec = HM.pageSpec(ui.page, ctx);
   menu.pointer.layout = HM.menuLayout(ui.page, ctx);
@@ -2967,6 +2986,9 @@ function applyMenu(a, ray = null, eye = null) {
   if (id === 'overlay-page') { ui.page = 'overlay'; return; }
   if (w.group === 'ov-cmap' || id === 'ov-show-field' || id === 'ov-thr-reset' || w.group === 'ov-comp') pushUndo();
   if (overlay.press(id, w)) return;
+  // The model taken apart (#371): its page and its presses.
+  if (id === 'explode-page') { ui.page = 'explode'; return; }
+  if (explode.press(id, w)) return;
   if (id === 'levels-back') { ui.page = 'display'; return; }
   // A point table's Data page (#259) and its box selection's Clear.
   if (id === 'pt-data') { ui.page = 'data'; return; }
@@ -3038,6 +3060,7 @@ function menuSlide(a) {
     else if (a.id === 'cmax') state.cmaxNorm = Math.max(state.thrNorm + 1e-3, sliderToNorm(a.value * 1000));
     else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
     else if (overlay.slide(a.id, a.value)) { /* an overlaid field's (#357) */ }
+    else if (explode.slide(a.id, a.value)) { /* the exploded view's spread (#371) */ }
     else layers.slide(a.id, a.value);
     labelsChanged();
     return;
@@ -3398,8 +3421,7 @@ function volumeColourBar() {
  *  uploaded only when it changes (a 2-D texture). */
 /** The overlaid fields' bars (#357): one panel each, made once (2-D textures). */
 const overlayBars = [];
-function drawOverlayBars(v, eye) {
-  const bars = overlay.bars();
+function drawOverlayBars(v, eye, bars = overlay.bars()) {
   const e = state.extent;
   const corner = M.transformPoint(state.model, [e[0] / 2, -e[1] / 2, e[2] / 2]);
   const face = RO.faceEye(corner, eye);
@@ -3421,6 +3443,8 @@ function drawOverlayBars(v, eye) {
 }
 
 function drawColourBar(v, eye) {
+  // The model taken apart (#371): one bar a piece shown, in its colours.
+  if (explode.active()) { drawOverlayBars(v, eye, explode.bars()); return; }
   // Overlaid variables (#357): one bar a field shown.
   if (overlay.visible() && drawOverlayBars(v, eye)) return;
   const sim = simulationShown();
@@ -4688,11 +4712,16 @@ function handleInput(frame, dtS) {
     state.model = M.grabTwo(xr.grab.model0, xr.grab.l0, xr.grab.r0, hands.left.pos, hands.right.pos);
   } else if (L || Rr) {
     const h = L ? 'left' : 'right';
-    if (!xr.grab || xr.grab.kind !== h) xr.grab = { kind: h, rel: M.multiply(M.invert(hands[h].m), state.model) };
-    state.model = M.grabOne(hands[h].m, xr.grab.rel);
+    // A grip that starts inside a piece of the exploded view (#371) holds that piece.
+    if ((!xr.grab || xr.grab.kind === `piece:${h}`) && explode.grab(h, hands[h].m, state.model, !xr.grab)) xr.grab = { kind: `piece:${h}` };
+    else {
+      if (!xr.grab || xr.grab.kind !== h) xr.grab = { kind: h, rel: M.multiply(M.invert(hands[h].m), state.model) };
+      state.model = M.grabOne(hands[h].m, xr.grab.rel);
+    }
   } else {
     xr.grab = null;
   }
+  if (!xr.grab || !xr.grab.kind.startsWith('piece:')) explode.release();
   state.moving = !!xr.grab;
 
   const stick = (g) => (g.axes.length >= 4 ? [g.axes[2], g.axes[3]] : [g.axes[0] || 0, g.axes[1] || 0]);
@@ -5342,6 +5371,7 @@ if (query.has('debug')) {
   // The crop in more detail (#328): {shown, last, busy}.
   window.__vrDetail = detail;
   window.__vrOverlay = overlay;     // #357
+  window.__vrExplode = explode;     // #371
   window.__vrOverlaySetMaps = (maps) => R.setOverlayColormaps(maps);
   window.__vrReadoutAt = (p) => readoutAt(p);
   // The variables of a simulation volume (#317): the menu's row, a switch, the looks kept.
@@ -5415,7 +5445,9 @@ if (query.has('debug')) {
     const w = canvas.width, h = canvas.height;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, w, h);
-    const ovOn = !single && overlay.visible();
+    // The exploded view's pieces (#371) when it is on, else the overlay when drawn.
+    const exOn = !single && explode.active();
+    const ovOn = !single && !exOn && overlay.visible();
     // A three-quarter view with the box filling most of the canvas, the same
     // for every call (so draws can be compared and timed).
     const model = M.identity();
@@ -5425,7 +5457,8 @@ if (query.has('debug')) {
     const draw = () => {
       gl.clearColor(...DESKTOP_BG, 1);
       gl.clear(gl.COLOR_BUFFER_BIT);
-      if (ovOn) R.drawOverlay(view, model, overlay.params(volParams({ ...override, showMask: false }), override));
+      if (exOn) explode.draw(view, model, override);
+      else if (ovOn) R.drawOverlay(view, model, overlay.params(volParams({ ...override, showMask: false }), override));
       else R.drawVolume(view, model, volParams(override));
     };
     // A one-pixel read waits for the GPU (finish() may return before it is done).
@@ -5446,7 +5479,7 @@ if (query.has('debug')) {
       if (dv > 12) { n++; sum[0] += px[i]; sum[1] += px[i + 1]; sum[2] += px[i + 2]; }
     }
     const mean = sum.map((v) => (n ? v / n : 0));
-    return { overlay: ovOn, fraction: n / (w * h), mean, steps: override.mode === 2 ? (mean[0] / 255) * 4096 : null, ms, w, h };
+    return { overlay: ovOn, explode: exOn, fraction: n / (w * h), mean, steps: override.mode === 2 ? (mean[0] / 255) * 4096 : null, ms, w, h };
   };
   window.__vrDrawnFraction = () => {
     const w = canvas.width, h = canvas.height;

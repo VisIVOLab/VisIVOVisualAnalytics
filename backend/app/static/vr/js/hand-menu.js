@@ -38,6 +38,7 @@ import { drawIcon } from './tool-icons.js';
 import { fitLine, wrapFit, measureWith } from './text-fit.js';
 import { STRETCHES, STRETCH_LABELS, STRETCH_TIPS, SIGMA_PRESETS, PERCENTILE_PRESETS } from './levels.js';
 import { variableChips } from './sim-controls.js';
+import { explodePage } from './explode.js';
 
 export const TITLE_H = 64;
 export const TAB_H = 88;
@@ -73,11 +74,11 @@ export const TABS = [
 ];
 /** Every page: the tabs', the cube's Levels and a point table's Data (under
  *  Display) and the technical settings (?debug only, under More). */
-export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'data', 'overlay', 'debug'];
+export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'data', 'overlay', 'explode', 'debug'];
 /** The sub-pages and the tab each belongs to. */
-export const SUB_PAGES = { levels: 'display', data: 'display', overlay: 'display', debug: 'more' };
+export const SUB_PAGES = { levels: 'display', data: 'display', overlay: 'display', explode: 'display', debug: 'more' };
 /** The mode a tab sets (null: the mode stays). */
-export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', debug: null };
+export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', explode: 'explore', debug: null };
 /** The tab of a mode, for the page shown when the menu opens. */
 export const MODE_TAB = { explore: 'display', clip: 'range', select: 'select' };
 export const KINDS = ['cube', 'points', 'flow', 'none'];
@@ -142,6 +143,8 @@ export const WHY = {
   ovLoading: 'The overlay is being loaded: wait for it.',
   ovFields: 'Pick two fields or three first (the Fields row).',
   ovOn: 'The overlay is on: its fields are set on the Overlay page.',
+  noExplode: 'An exploded view is for a simulation volume.',
+  bandsOnly: 'For value ranges only (Pieces above).',
 };
 
 /** The default context: nothing shown, nothing chosen. main.js fills it. */
@@ -156,6 +159,8 @@ export function defaultContext() {
     // composite ('sum' | 'mip'), shown, loading, room ('' or why there is no
     // storage), fieldPage}, or null (not a simulation with two variables).
     ov: null,
+    // An exploded view (#371, explode-ui.js menuContext), or null (not a simulation volume).
+    ex: null,
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
     sel: { tool: 'lasso', seedMode: 'new', lasso: false, box: false, applied: false },
     src: { total: 0, shown: false, canAdd: false },
@@ -209,7 +214,8 @@ function displayCube(ctx) {
     { id: 'opacity', kind: 'slider', rect: [X0, rowY(3), RIGHT - X0, WH] },
   ];
   const ov = sim && ctx.vars && ctx.ov ? ctx.ov : null;
-  const nr = ov ? 3 : 2;
+  const ex = sim && ctx.ex ? ctx.ex : null;
+  const nr = 2 + (ov ? 1 : 0) + (ex ? 1 : 0);
   w.push(btn('render:0', span(4, nr, 0), 'Emission', { group: 'render', value: 0, on: ctx.render === 0, tip: 'Emission: the voxels add up along each ray' }),
     btn('render:1', span(4, nr, 1), 'MIP', { group: 'render', value: 1, on: ctx.render === 1, tip: 'MIP: the brightest value along each ray' }));
   if (ov) {
@@ -220,6 +226,8 @@ function displayCube(ctx) {
       for (const x of w) if (x.id !== 'overlay-page' && !x.disabled) x.disabled = WHY.ovOn;
     }
   }
+  // A simulation model taken apart (#371): its own page.
+  if (ex) w.push(btn('explode-page', span(4, nr, nr - 1), 'Explode ▸', { on: !!ex.exploded, tip: 'Explode: the fields or value ranges pulled apart' }));
   const v = sim ? ctx.vars : null;
   if (v && v.names && v.names.length > 1) {
     // A simulation volume with several variables (#317): the last row picks
@@ -578,6 +586,7 @@ export function pageSpec(page, ctx = defaultContext()) {
   else if (page === 'levels') s = levelsPage(ctx);
   else if (page === 'data') s = dataPage(ctx);
   else if (page === 'overlay') s = overlayPage(ctx);
+  else if (page === 'explode') s = explodePage(ctx, { btn, span, weighted, rowY, X0, RIGHT, WH }, WHY);
   else if (page === 'range') s = rangePage(ctx);
   else if (page === 'select') s = selectPage(ctx);
   else if (page === 'measure') s = measurePage(ctx);
