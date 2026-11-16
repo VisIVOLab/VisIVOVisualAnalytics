@@ -1412,7 +1412,8 @@ void vtkWindowCube::setupSliceRenderer()
     // STEP6-P1 / #358: the 2-D slice participates in the Linked-2D camera. It watches the frames,
     // not the interactor: a camera moved by a key (Shift+R) or by code raises no interaction
     // event. Comparing one pose per frame is cheap, and only a change schedules a send.
-    this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::onSliceCameraFrame);
+    this->m_sliceFrameTags.push_back(
+            this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::onSliceCameraFrame));
     this->coordinate->SetCoordinateSystemToDisplay();
     this->coordinate->SetViewport(ren);
 
@@ -1642,8 +1643,10 @@ void vtkWindowCube::setupSliceRenderer()
     this->ensureOverlayTickActors(ren, this->sliceOverlayXTickActors, this->sliceOverlayYTickActors);
     this->sliceWcsOverlayInitialized = true;
     this->set2dWcsOverlayVisible(this->showWcsAxes);
-    this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateSliceWcsOverlay);
-    this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateCatalogueOverlayLabels);
+    this->m_sliceFrameTags.push_back(
+            this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateSliceWcsOverlay));
+    this->m_sliceFrameTags.push_back(
+            this->sliceWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateCatalogueOverlayLabels));
 
     // ── Loading placeholder text actor ────────────────────────────────────────
     // Shown until the first remote slice tile arrives from the backend.
@@ -1883,10 +1886,13 @@ void vtkWindowCube::setupMomentRenderer()
     this->ensureOverlayTickActors(ren, this->momentOverlayXTickActors, this->momentOverlayYTickActors);
     this->momentWcsOverlayInitialized = true;
     this->set2dWcsOverlayVisible(this->showWcsAxes);
-    this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateMomentWcsOverlay);
+    this->m_momentFrameTags.push_back(
+            this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateMomentWcsOverlay));
     // Issue #362: redraw once the camera settles, so the labels just computed are on screen.
-    this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::onMomentCameraFrame);
-    this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateCatalogueOverlayLabels);
+    this->m_momentFrameTags.push_back(
+            this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::onMomentCameraFrame));
+    this->m_momentFrameTags.push_back(
+            this->momentWin->AddObserver(vtkCommand::EndEvent, this, &vtkWindowCube::updateCatalogueOverlayLabels));
 
     ren->ResetCamera();                        // keep: establishes a sane camera distance
     this->layout2dPaneFor(/*slice=*/false, true); // then letterbox it into the gutter

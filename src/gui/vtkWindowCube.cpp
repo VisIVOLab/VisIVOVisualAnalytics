@@ -3363,6 +3363,17 @@ vtkWindowCube::~vtkWindowCube()
     if (this->m_cubeCameraRenderWindow && this->m_cubeCameraFrameTag != 0)
         this->m_cubeCameraRenderWindow->RemoveObserver(this->m_cubeCameraFrameTag);
     this->m_cubeCameraFrameTag = 0;
+    // The 2-D windows' frame observers (WCS labels, catalogue labels, camera, #362 redraw): the
+    // render windows can still draw a frame while the widgets go away, after the timers and
+    // trackers those observers use are gone.
+    this->m_sliceOverlayRedraw.stop();
+    this->m_momentOverlayRedraw.stop();
+    for (const unsigned long tag : this->m_sliceFrameTags)
+        this->sliceWin->RemoveObserver(tag);
+    for (const unsigned long tag : this->m_momentFrameTags)
+        this->momentWin->RemoveObserver(tag);
+    this->m_sliceFrameTags.clear();
+    this->m_momentFrameTags.clear();
     // §3.2 B3: destroy the per-slot Pane2DViews FIRST — their destructors remove the
     // render-window EndEvent observer, so it can't fire against a half-torn-down widget
     // once `delete ui` starts tearing the pane hierarchy down.

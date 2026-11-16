@@ -2513,6 +2513,11 @@ protected:
     LinkedCameraSync::OverlayFollow m_momentOverlayFollow;
     QTimer m_sliceOverlayRedraw;
     QTimer m_momentOverlayRedraw;
+    // Tags of this window's EndEvent observers on sliceWin / momentWin. The member-function
+    // AddObserver overload is not removed with this object, and the QVTK widgets holding the
+    // render windows outlive the members above: the destructor removes them.
+    std::vector<unsigned long> m_sliceFrameTags;
+    std::vector<unsigned long> m_momentFrameTags;
     QPointer<QToolButton> m_linkCameraChip;    // per-facet toggle (camera)
     QPointer<QToolButton> m_linkChannelChip;   // per-facet toggle
     QPointer<QToolButton> m_linkLutChip;       // per-facet toggle

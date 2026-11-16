@@ -243,8 +243,9 @@ void vtkWindowImage::setupRenderer()
     this->m_overlayRedrawTimer->setInterval(LinkedCameraSync::kOverlayRedrawDelayMs);
     QObject::connect(this->m_overlayRedrawTimer, &QTimer::timeout, this, [this]() {
         if (ui && ui->vtk && ui->vtk->renderWindow()) {
+            // Render() alone: the widget presents the frame it draws, as for the
+            // Product panes; an update() on top would draw it a second time.
             ui->vtk->renderWindow()->Render();
-            ui->vtk->update();
         }
     });
     win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::onImageCameraFrame);
