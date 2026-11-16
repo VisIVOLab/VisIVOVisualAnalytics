@@ -233,11 +233,11 @@ void vtkWindowImage::setupRenderer()
     // worked); this is the other half of "point at it, look closer".
     win->GetInteractor()->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, this,
                                       &vtkWindowImage::zoomToCatalogueSourceUnderCursor);
-    // Viewport-driven LOD: when a camera interaction (pan / zoom) ends, re-arm a
-    // short debounce; if the view settled on a different region/zoom we stream
-    // the visible tiles at the appropriate pyramid level.
-    win->GetInteractor()->AddObserver(vtkCommand::EndInteractionEvent, this,
-                                      &vtkWindowImage::onImageInteractionSettled);
+    // Viewport-driven LOD: when a drawn frame shows the camera moved (pan, zoom,
+    // a reset, a zoom to a source), re-arm a short debounce; if the view settled
+    // on a different region/zoom we stream the visible tiles at the appropriate
+    // pyramid level.
+    win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::onImageCameraFrame);
     this->m_lodSettleTimer = new QTimer(this);
     this->m_lodSettleTimer->setSingleShot(true);
     this->m_lodSettleTimer->setInterval(150);

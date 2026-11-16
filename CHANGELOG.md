@@ -17,6 +17,18 @@ are preserved here unedited; the branch names they refer to are historical.
   the new region joins the same list. Each pane places the regions by its own
   grid and crop origin, and an edit in one pane shows in all of them.
   *Analyse* on a map pane measures that map and says which one.
+- **Desktop: linked 2-D views follow every camera change (#358).** In the
+  cube viewer, the 2-D slice and the Product panes (a moment map, say) used to
+  share their pan and zoom only from mouse gestures; Shift+R reset one view
+  and left the linked panes and the linked windows behind. They now compare
+  the camera after every frame, as the 3-D view does since #338, so a reset
+  or any other camera change made in code is followed too. Refits the window
+  makes itself (a new channel, a resized pane, a new colour bar) are not
+  pushed onto the other views, and a view never sends back a camera it took
+  from another. The image viewer streams the tiles of the region on screen
+  after any camera change as well: after Shift+R on a zoomed large image it
+  used to keep only the zoomed patch.
+
 - **Desktop: the cube's regions on the 3-D cutting plane (#343).** The
   region list is drawn on the cutting plane of the 3-D view as on the 2-D
   slice, in its colours with the selected region thicker, pulled towards the

@@ -2489,18 +2489,20 @@ protected:
     // camera too — it uses the SAME CubeGeom letterbox, so the gutter-independent math transfers.
     int  sliceSlot() const;                    // the visible slot showing Slice2D, or -1
     bool sliceCameraNormalized(double dataCenterXY[2], double &worldHeight) const;
+    // refit: the shared view is being put back after this slice's own letterbox, not taken
+    // from another view, so a send the user's move left waiting is kept (#358).
     void applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
-                                    bool render = true);
-    void onSliceCameraInteraction();           // slice interactor pan/zoom → propagate
-    void captureSliceCamPose();                // record the slice camera's pan/zoom as "seen"
-    // STEP6-P1: last-seen slice camera PAN/ZOOM pose (focal x/y + parallel scale). Tracking the
-    // POSE — not the raw MTime — means a window/level LEFT-drag (no pan/zoom) or a bare
-    // ResetCameraClippingRange (kinematic/lasso overlays) does NOT look like a camera move, so
-    // onSliceCameraInteraction only propagates on a real pan/zoom. Seeded by the initial
-    // fit + every programmatic slice-camera set.
-    double m_sliceCamFocalX{ 0. };
-    double m_sliceCamFocalY{ 0. };
-    double m_sliceCamScale{ 0. };
+                                    bool render = true, bool refit = false);
+    // Issue #358: the slice camera is sent to the linked 2-D views when a drawn frame shows it
+    // moved, whatever moved it (wheel, drag, the Shift+R reset, a catalogue centring). The pose
+    // is compared, not the camera's MTime, so a window/level drag or a bare
+    // ResetCameraClippingRange (overlays) is not a move. Refits made in code (a new channel, a
+    // resized pane) and a camera taken from a linked view are adopted, so they are not sent.
+    void onSliceCameraFrame();                 // slice EndEvent → schedule a send if it moved
+    void adoptSliceCamera();                   // camera taken from a linked view: not news
+    void refitSliceCamera();                   // camera refitted in code: not news either
+    LinkedCameraSync::Pose sliceCameraPose() const;
+    LinkedCameraSync::Tracker m_sliceCameraTracker;
     QPointer<QToolButton> m_linkCameraChip;    // per-facet toggle (camera)
     QPointer<QToolButton> m_linkChannelChip;   // per-facet toggle
     QPointer<QToolButton> m_linkLutChip;       // per-facet toggle
