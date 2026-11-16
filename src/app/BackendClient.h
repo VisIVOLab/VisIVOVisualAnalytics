@@ -25,6 +25,7 @@
 #include <chrono>
 
 #include <array>
+#include <functional>
 #include <atomic>
 #include <limits>
 #include <map>
@@ -350,7 +351,56 @@ struct BackendCubePreviewResult
     /// from an older backend.
     bool hasDefaultThreshold{ false };
     double defaultThreshold{ 0. };
+    /// Which preview it is (#320): "pyramid" (block means of a pyramid level)
+    /// or "strided" (every stride-th voxel); empty from an older backend,
+    /// which only made strided ones.
+    QString source;
+    int level{ -1 };          ///< the pyramid level read, -1 when strided
+    int stride{ 0 };          ///< cube voxels per preview voxel (factors); 0 when not sent
+    /// Preview voxel i stands for cube voxel i * stride + voxelOffset.
+    double voxelOffset{ 0. };
     QByteArray data;
+};
+
+/// POST /v1/cube/pyramid_status (#321): the cube's brick pyramid and the
+/// levels a region of the cube can be read at.
+struct BackendPyramidStatus
+{
+    bool valid{ false };
+    QString error;
+    int httpStatus{ 0 };      ///< 404: a backend without the route
+    /// ready, building, missing, failed or unsupported.
+    QString state;
+    double progress{ 0. };
+    int levels{ 0 };
+    int brick{ 0 };
+    /// Level shapes, level 0 first, as x, y, z (the backend sends z, y, x).
+    QVector<std::array<int, 3>> shapes;
+    qint64 bytesEstimate{ 0 };
+
+    bool ready() const { return valid && state == QLatin1String("ready"); }
+};
+
+/// POST /v1/cube/region_level_bin (#321): one box of one level of the cube,
+/// with its ghost samples.
+struct BackendRegionLevelResult
+{
+    bool valid{ false };
+    QString error;
+    int httpStatus{ 0 };
+    int width{ 0 };           ///< samples along x, ghosts included
+    int height{ 0 };
+    int depth{ 0 };
+    int level{ 0 };
+    /// cube (level 0), pyramid (block means) or strided.
+    QString source;
+    /// The level index of sample 0 (ghost included), x, y, z.
+    std::array<int, 3> levelOrigin{ 0, 0, 0 };
+    /// Level voxel i stands for cube voxel i * 2^level + voxelOffset.
+    double voxelOffset{ 0. };
+    double rangeMin{ 0. };
+    double rangeMax{ 0. };
+    QByteArray data;          ///< float32, x fastest, NaN for blanks
 };
 
 struct BackendCubeSliceResult
@@ -2316,6 +2366,19 @@ public:
                                                     const QString &filename) const;
 
     BackendCubePreviewResult requestPreview(const QString &datasetId, int downsample) const;
+    /// The state of the cube's brick pyramid (POST /v1/cube/pyramid_status);
+    /// @p build asks the backend to start one when it is missing or stale.
+    /// BackendClient_CubeLod.cpp.
+    BackendPyramidStatus requestPyramidStatus(const QString &datasetId, bool build = false) const;
+    /// The pyramid_status answer, parsed (public for the tests).
+    static BackendPyramidStatus parsePyramidStatus(const QJsonObject &object);
+    /// One box of level @p level of the cube (POST /v1/cube/region_level_bin):
+    /// the inclusive box @p x0..@p z1 in level voxels, with @p ghost samples
+    /// of the neighbours on every side; @p source auto, pyramid or strided.
+    /// Blocking: call it from a worker thread. BackendClient_CubeLod.cpp.
+    BackendRegionLevelResult requestRegionLevel(const QString &datasetId, int level, int x0, int x1,
+                                                int y0, int y1, int z0, int z1, int ghost = 1,
+                                                const QString &source = QStringLiteral("auto")) const;
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,
                                         int index) const;
     BackendCubeSubvolumeResult requestSubvolume(const QString &datasetId, int x0, int x1, int y0,
@@ -3147,6 +3210,25 @@ public:
             const QVariantMap &params = {});
 
 private:
+    /// One binary POST as the hand-rolled binary routes send it, safe to run
+    /// on any thread (see binaryPoster).
+    struct BinaryReply
+    {
+        bool ok{ false };       ///< HTTP 200 and no transport error
+        int status{ 0 };
+        QMap<QByteArray, QByteArray> headers;   ///< names in lower case
+        QByteArray body;
+        QString error;
+    };
+    using BinaryPoster = std::function<BinaryReply(const QString &path, const QJsonObject &body)>;
+    /// A function that POSTs a JSON body to a binary route of this backend
+    /// with this client's identity (token, session), on whichever thread calls
+    /// it, through that thread's own network manager. The identity is
+    /// resolved here, once, so several workers can send at the same time
+    /// without touching this object (the z-slabs of requestSubvolume, the
+    /// blocks of a refined 3-D view).
+    BinaryPoster binaryPoster() const;
+
     /// createDecompressTask's request itself, on the calling thread.
     BackendTaskCreateResult postDecompressTask(const QString &path) const;
 

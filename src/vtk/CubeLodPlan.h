@@ -47,6 +47,7 @@ struct Inputs
 enum class Reason {
     Refined,          ///< the whole box at the level the zoom asks for (or the budget allows)
     Shrunk,           ///< a box around the focal point: the budget cannot hold the whole box
+    BoxShrunk,        ///< part of an explicit box, around its centre: the budget cannot hold it all
     NotInView,        ///< the box is empty: nothing of the cube to refine
     PreviewFineEnough,///< the preview already has the detail the view can show
     BudgetTooSmall,   ///< not even one node fits the budget
@@ -61,9 +62,18 @@ struct Plan
     /// The node side the nodes are on (effectiveNodeSize): turn a node into
     /// its samples with this, not with Inputs::nodeSize.
     int nodeSize{ 0 };
-    Box cubeBox;               ///< cube voxels the nodes cover (empty when !refine)
+    Box cubeBox;               ///< cube voxels the blocks cover (empty when !refine)
+    /// The samples of the level the nodes are clipped to: the whole level for
+    /// a view's plan, the selected box (rounded outward to the level's
+    /// samples) for an explicit one, so a node at its edge is read and drawn
+    /// only as far as the box. blockLevelBox gives each node's part.
+    Box levelBox;
     Reason reason{ Reason::BadInputs };
 };
+
+/// The samples of @p plan.level a node of @p plan reads (without ghosts):
+/// the node clipped to the plan's levelBox.
+Box blockLevelBox(const Plan &plan, const Dims &cubeShape, const Node &node);
 
 /// The ghost samples per side every block carries.
 inline constexpr int kGhost = 1;
@@ -73,8 +83,12 @@ inline constexpr int kGhost = 1;
 /// grid). 0 when nothing fits.
 int effectiveNodeSize(const Inputs &in);
 
-/// GPU bytes of @p nodes (float32, ghost samples included).
-std::int64_t nodeBytes(const Inputs &in, const std::vector<Node> &nodes);
+/// GPU bytes of @p nodes (float32, ghost samples included), each clipped to
+/// @p levelBox when it is given (samples of the nodes' level).
+std::int64_t nodeBytes(const Inputs &in, const std::vector<Node> &nodes, const Box *levelBox = nullptr);
+
+/// GPU bytes of the blocks of @p plan.
+std::int64_t planBytes(const Inputs &in, const Plan &plan);
 
 /// floor(log2(voxelsPerPixel)), at least 0: the level whose samples are about
 /// one screen pixel apart at the focal depth.
@@ -94,10 +108,13 @@ int pixelLevel(double voxelsPerPixel);
 Plan planFocus(const Inputs &in);
 
 /// The plan for an explicit box of the cube (the "Refine selected box"
-/// action): the finest level whose nodes covering @p cubeBox fit, regardless
-/// of the zoom; when none finer than the preview fits, a box of that level
-/// around the box's centre. @p in.visibleBox, focalPoint and voxelsPerPixel
-/// are not used.
+/// action): the finest level whose samples covering @p cubeBox fit, regardless
+/// of the zoom. The nodes are clipped to the box, so the plan covers the box
+/// itself (rounded outward to the level's samples only), never the rest of
+/// the nodes it touches. When no level finer than the preview holds all of
+/// it, part of the box around its centre, at the coarsest such level
+/// (Reason::BoxShrunk). @p in.visibleBox, focalPoint and voxelsPerPixel are
+/// not used.
 Plan planBox(const Box &cubeBox, const Inputs &in);
 
 /// A short sentence for the status line or a tooltip.

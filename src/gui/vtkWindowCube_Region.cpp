@@ -733,34 +733,12 @@ void vtkWindowCube::setNoiseRegionPreview(int x0, int x1, int y0, int y1,
     // drawn against.
     this->m_regionPreviewBounds = { int(xLo), int(xHi), int(yLo), int(yHi), int(zLo), int(zHi) };
     this->m_regionPreviewActive = true;
-    {
-        double sx = 1.0, sy = 1.0, sz = 1.0;
-        double bx = 0.0, by = 0.0, bz = 0.0;
-        // A high-resolution ROI load is ALREADY in full-res world coordinates —
-        // its display image carries the ROI corner as origin and spacing 1, so
-        // the indices map identically and scaling them would both shrink the box
-        // and shift it. Only the decimated preview needs the mapping. (Same
-        // distinction the lasso makes in updateLassoDisplayPlacement.)
-        if (auto *disp = !this->usingHighResCube && this->cubeDisplaySource
-                    ? vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0))
-                    : nullptr) {
-            int ddim[3];
-            double dorg[3], dspc[3];
-            disp->GetDimensions(ddim);
-            disp->GetOrigin(dorg);
-            disp->GetSpacing(dspc);
-            const auto scale = [](int ddim1, int full1) -> double {
-                return (full1 > 1 && ddim1 > 1) ? double(ddim1 - 1) / double(full1 - 1) : 1.0;
-            };
-            sx = scale(ddim[0], std::max(1, this->remoteDatasetWidth))  * dspc[0];
-            sy = scale(ddim[1], std::max(1, this->remoteDatasetHeight)) * dspc[1];
-            sz = scale(ddim[2], std::max(1, this->remoteDatasetDepth))  * dspc[2];
-            bx = dorg[0];  by = dorg[1];  bz = dorg[2];
-        }
-        this->noisePreviewCubeSource->SetBounds(bx + xLo * sx, bx + xHi * sx,
-                                                by + yLo * sy, by + yHi * sy,
-                                                bz + zLo * sz, bz + zHi * sz);
-    }
+    // A high-resolution ROI load is already in full-res world coordinates (its
+    // origin is the ROI corner, spacing 1) and cubeToDisplay is the identity
+    // there; a preview places cube voxel c at (c - offset) / stride.
+    this->noisePreviewCubeSource->SetBounds(this->cubeToDisplay(xLo), this->cubeToDisplay(xHi),
+                                            this->cubeToDisplay(yLo), this->cubeToDisplay(yHi),
+                                            this->cubeToDisplay(zLo), this->cubeToDisplay(zHi));
     this->noisePreviewCubeFaceActor->VisibilityOn();
     this->noisePreviewCubeEdgeActor->VisibilityOn();
 

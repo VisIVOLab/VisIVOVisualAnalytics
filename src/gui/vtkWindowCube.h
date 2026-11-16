@@ -40,8 +40,10 @@ class QPushButton;
 class QCheckBox;
 class QListWidget;
 class SkeletonSettings;
+class CubeLodVolumes;
 
 #include "CubeViewportGeometry.h"
+#include "CubeLodGeometry.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkWeakPointer.h>
@@ -64,6 +66,7 @@ class SkeletonSettings;
 #include <QVector>
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -75,6 +78,7 @@ struct AnalysisProduct;
 class QActionGroup;
 class QMenu;
 class QShortcut;
+class QDialog;
 class SidebarPanel;
 class CatalogueTableModel;
 class QDockWidget;
@@ -169,6 +173,14 @@ struct RemoteCubePreviewResult
     /// The backend's default threshold for the cube, from its noise (#93).
     bool hasDefaultThreshold{ false };
     double defaultThreshold{ 0. };
+    /// Which preview it is (#320): "pyramid" or "strided", the pyramid level,
+    /// and how it samples the cube (voxel i stands for i * stride + offset).
+    QString source;
+    int level{ -1 };
+    CubeLodGeometry::Sampling sampling;
+    /// The cube's brick pyramid, asked before the preview (#321): its levels
+    /// are the ones a refined box can be read at.
+    BackendPyramidStatus pyramid;
 };
 
 struct RemoteCubeSliceResult
@@ -1377,13 +1389,82 @@ protected:
     QList<QPair<QString, QString>> m_siblingFieldList;
     QHash<QString, QString> m_fieldProductIds;
     qint64 m_headsetFieldSinceMs{ 0 };   ///< switches before this are not followed
-    /// The stride of the displayed preview (1: full resolution or a region):
-    /// a displayed voxel i is the cube's voxel i × stride.
-    int m_displayStride{ 1 };
+    /// How the displayed cube samples the cube. The 3-D view's world is the
+    /// displayed cube's sample index: world = (cube - offset) / scale
+    /// (CubeLodGeometry::toWorld). Scale 1, offset 0 for the full cube or a
+    /// region (their world is the cube's voxels, a region's origin its
+    /// corner); a strided preview has offset 0, a block-mean one (#320)
+    /// (stride - 1) / 2. Every conversion between the 3-D view and cube
+    /// voxels goes through displayToCube / cubeToDisplay.
+    CubeLodGeometry::Sampling m_displaySampling;
     int m_previewStride{ 1 };   ///< the preview being fetched
-    /// The displayed cube's stride changed (a preview, the full cube): the
-    /// ray-traced view's camera, in the displayed coordinates, follows it.
-    void setDisplayStride(int stride);
+    /// The displayed cube changed (a preview, the full cube): the pick marker
+    /// and the ray-traced view's camera, both in the displayed coordinates,
+    /// follow it.
+    void setDisplaySampling(const CubeLodGeometry::Sampling &sampling);
+    /// The cube voxel (along any axis) at world coordinate @p world of the 3-D view.
+    double displayToCube(double world) const
+    {
+        return CubeLodGeometry::toCube(world, m_displaySampling);
+    }
+    /// The 3-D view's world coordinate of cube voxel @p cube.
+    double cubeToDisplay(double cube) const
+    {
+        return CubeLodGeometry::toWorld(cube, m_displaySampling);
+    }
+
+    // ── Level of detail (issue #321, vtkWindowCube_Lod.cpp) ───────────────────
+    /// The preview the 3-D view holds: its source ("pyramid" or "strided"),
+    /// pyramid level and stride, for the status line and the refined box.
+    QString m_previewSource;
+    int m_previewLevel{ -1 };
+    /// The cube's pyramid as last asked (levels a box can be read at).
+    BackendPyramidStatus m_lodPyramid;
+    /// The finer blocks and coarse pieces drawn in place of the volume while a
+    /// box is refined; null otherwise.
+    std::unique_ptr<CubeLodVolumes> m_lod;
+    /// Bumped by every refine and every clear: a block of an older request
+    /// arriving late is dropped, and one not sent yet is not sent at all (the
+    /// workers read the shared copy).
+    quint64 m_lodGeneration{ 0 };
+    std::shared_ptr<std::atomic<quint64>> m_lodLiveGeneration;
+    /// The Refine Selected Box action, its settings and its gate (Lod.cpp).
+    void setupLevelOfDetail();
+    /// The blocks of the request in flight, as they arrive.
+    struct LodPending;
+    std::shared_ptr<LodPending> m_lodPending;
+    QString m_lodStatus;   ///< "Detail: level 0 in ...", empty when not refined
+    QPointer<QAction> m_actRefineBox;
+    QPointer<QDialog> m_refineBoxDialog;
+    /// Whether a refined box may be shown now, and why not (CubeLodGate).
+    struct LodGateResult
+    {
+        bool active{ false };
+        QString reason;
+    };
+    LodGateResult lodGate() const;
+    /// Tools ▸ Views ▸ Refine Selected Box: the box dialog, seeded from the
+    /// drawn region.
+    void showRefineBoxDialog();
+    /// Read the box @p cubeBox (inclusive cube voxels x0, x1, y0, y1, z0, z1)
+    /// at the finest level the detail budget allows, and draw it over the
+    /// preview once every block has arrived.
+    void refineBox(const std::array<int, 6> &cubeBox);
+    /// Back to the plain preview volume; cancels a refine in flight.
+    /// @p why, when given, goes to the status line.
+    void clearLod(const QString &why = QString());
+    /// One block of the request @p generation arrived (or failed).
+    void onLodBlock(quint64 generation, int index, const BackendRegionLevelResult &block);
+    /// Every block arrived: build the volumes and swap them in.
+    void applyLodSet();
+    /// Refresh the Refine action's enabled state and tooltip from the gate.
+    void updateRefineBoxAction();
+    /// The volume layer as the user sees it: the preview's volume, or the
+    /// refined box's blocks in its place.
+    bool volumeLayerShown(vtkRenderer *renderer) const;
+    void setVolumeLayerVisible(bool visible);
+    /// The headset's clip box, in the 3-D view's world, applied to the blocks.
+    void applyLodUserCrop();
     void updateVolumeModeVisibility(bool volumeActive);
 
     // ── Moment card state machine ─────────────────────────────────────────────

@@ -511,11 +511,11 @@ void vtkWindowCube::updateProbePlot()
     // probeVoxel is a FULL-resolution pixel (the slice is fetched at full
     // resolution). The window's cube holds that line of sight only when it is
     // the cube's own voxels: the whole cube, or a cropped region containing the
-    // pixel. A preview samples the cube with a stride (m_displayStride): its
+    // pixel. A preview samples the cube with a stride (m_displaySampling): its
     // voxel at the same index is another line of sight, and most pixels lie
     // outside its smaller extent, where the pane stayed empty. The backend
     // reads the line of sight instead (ProbeSpectrumFetch.h).
-    const bool fullResolution = cubeImage && this->m_displayStride == 1;
+    const bool fullResolution = cubeImage && this->m_displaySampling.scale == 1.0;
     const int localX = std::lround(extent[0] + (this->probeVoxel[0] - origin[0]) / spacing[0]);
     const int localY = std::lround(extent[2] + (this->probeVoxel[1] - origin[1]) / spacing[1]);
     if (!fullResolution || localX < extent[0] || localX > extent[1] || localY < extent[2]

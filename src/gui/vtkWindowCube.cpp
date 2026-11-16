@@ -56,6 +56,8 @@
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
 #include "Settings.h"
+#include "CubeLodStatus.h"
+#include "CubeLodVolumes.h"
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
@@ -878,7 +880,22 @@ RemoteCubePreviewResult fetchRemotePreview(const QString &backendUrl, const QStr
     RemoteCubePreviewResult result;
     BackendClient client(backendUrl, backendToken);
     client.setSessionId(sessionId);
-    const auto response = client.requestPreview(datasetId, downsample);
+    // The cube's brick pyramid first (#320, #321). When one is ready the
+    // backend previews from it, and a power-of-two stride is one of its levels
+    // exactly: every preview voxel is the mean of a whole block. Rounded up,
+    // so the preview stays within the size the stride was chosen for. Its
+    // levels are also the ones a refined box can be read at later. Asking
+    // never starts a build; an older backend without the route answers 404,
+    // which leaves the stride as it is.
+    result.pyramid = client.requestPyramidStatus(datasetId, /*build=*/false);
+    int stride = std::max(1, downsample);
+    if (result.pyramid.ready() && stride > 1) {
+        int pow2 = 1;
+        while (pow2 < stride)
+            pow2 *= 2;
+        stride = pow2;
+    }
+    const auto response = client.requestPreview(datasetId, stride);
     qDebug().noquote() << QStringLiteral("[preview-debug] fetcher response valid=%1 error=%2 w=%3 h=%4 d=%5")
                                   .arg(response.valid).arg(response.error)
                                   .arg(response.width).arg(response.height).arg(response.depth);
@@ -905,6 +922,19 @@ RemoteCubePreviewResult fetchRemotePreview(const QString &backendUrl, const QStr
     result.dataExtent = { 0, response.width - 1, 0, response.height - 1, 0, response.depth - 1 };
     result.hasDefaultThreshold = response.hasDefaultThreshold;
     result.defaultThreshold = response.defaultThreshold;
+    // How the preview samples the cube, from the answer (an older backend
+    // sends no source and only makes strided previews of the stride asked).
+    const int s = response.stride > 0 ? response.stride : stride;
+    result.source = response.source.isEmpty() ? u"strided"_s : response.source;
+    result.level = response.level;
+    result.sampling = result.source == u"pyramid"_s ? CubeLodGeometry::Sampling::blockMean(s)
+                                                    : CubeLodGeometry::Sampling::strided(s);
+    if (std::abs(result.sampling.offset - response.voxelOffset) > 1e-6 && response.stride > 0)
+        qWarning().noquote() << QStringLiteral("[preview] voxel_offset %1 differs from the %2 "
+                                               "preview's %3")
+                                        .arg(response.voxelOffset)
+                                        .arg(result.source)
+                                        .arg(result.sampling.offset);
     return result;
 }
 
@@ -1824,7 +1854,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          }
 
                          this->usingHighResCube = true;
-                         this->setDisplayStride(1);   // the cube's own voxels
+                         this->setDisplaySampling({});   // the cube's own voxels
                          this->m_deferredPreview.reset();   // superseded by the full grid
                          this->applyCubeOpenResult({ true,
                                                      { },
@@ -2683,6 +2713,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                      u"preview to load and try again."_s);
                 return;
             }
+            // The headset shows the window's single volume, which must be the
+            // one on screen to open: the refined box goes first.
+            this->clearLod(u"Refined box removed: the cube is shown in VR."_s);
             if (!m_vrController) {
                 m_vrController = new CubeVRController(this);
                 // Reflect session-end (whether from desktop close or from
@@ -2732,6 +2765,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuTools->addAction(this->m_actOpenInVrHeadset);
     this->setupShowInHeadsetAction();   // issue #188, vtkWindowCube_VrShare.cpp
     this->setupHeadsetHub();            // issue #238, vtkWindowCube_VrActivity.cpp
+    this->setupLevelOfDetail();         // issue #321, vtkWindowCube_Lod.cpp
 
     // ANALYSIS: Estimate Noise goes at the head of the group (before Compute
     // Moment), to match the sidebar's "Estimate Noise → Moment Map" order.
@@ -3290,6 +3324,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
+    // The refined box's blocks leave the renderer while it still exists.
+    this->clearLod();
     // Child widgets (PV diagram, probe/profile plots, …) are deleted later by ~QWidget, when
     // this object is already half destroyed — but their destroyed() lambdas use `this` as the
     // context and would still run (Qt drops receiver connections only in ~QObject, after the
@@ -3558,6 +3594,11 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
         this->volumeMapper->SetBlendModeToComposite();
         break;
     }
+    // MIP and MinIP take an extremum along the whole ray, which separate
+    // volumes cannot combine: a refined box ends there (issue #321).
+    this->updateRefineBoxAction();
+    if (this->m_lod)
+        this->m_lod->copySettingsFrom(this->volumeMapper);
     if (ui->vtkCube->renderWindow()) {
         ui->vtkCube->renderWindow()->Render();
     }
@@ -3844,8 +3885,18 @@ void vtkWindowCube::applyDeferredPreviewWhenLocal()
 
 void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &result)
 {
-    if (result.valid && result.cubeImageData)
-        this->setDisplayStride(this->m_previewStride);   // a strided sample of the cube
+    if (result.valid && result.cubeImageData) {
+        // The preview's own samples, strided or block means (#320).
+        this->m_previewStride = int(result.sampling.scale);
+        this->m_previewSource = result.source;
+        this->m_previewLevel = result.level;
+        // An answer, or a backend without the route (404): either decides
+        // what Refine Selected Box can do. A transient failure keeps what
+        // was known.
+        if (result.pyramid.valid || result.pyramid.httpStatus == 404)
+            this->m_lodPyramid = result.pyramid;
+        this->setDisplaySampling(result.sampling);
+    }
     if (!result.valid || !result.cubeImageData) {
         this->m_cube3dLoadingActor->VisibilityOff();
         this->m_slice2dLoadingActor->VisibilityOff();
@@ -3931,6 +3982,13 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
 
     this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
     qDebug().noquote() << QStringLiteral("[remote-plane] preview valid");
+    // Which preview this is (#320): block means of a pyramid level, or every
+    // N-th voxel. Said once here and kept in the data-state badge.
+    if (this->m_previewStride > 1)
+        this->statusBar()->showMessage(CubeLodStatus::previewText(this->m_previewSource, this->m_previewLevel,
+                                                                  this->m_previewStride),
+                                       8000);
+    this->updateRefineBoxAction();
     // A look the headset set before the cube's bounds were known (issue
     // #268): after the default scale chosen above, whichever threshold the
     // field started from.
@@ -5087,6 +5145,55 @@ void vtkWindowCube::exportSubCubeAsFits()
                     return c.saveCubeSubregion(datasetId, b[0], b[1], b[2], b[3], b[4], b[5],
                                                basename);
                 }));
+    });
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
+}
+
+void vtkWindowCube::showRefineBoxDialog()
+{
+    // The box to refine (issue #321): a drawn region's bounding box on the
+    // sky, else the middle half of the cube; along the third axis the middle
+    // half too. The amber box shows it in the volume while it is edited.
+    qDebug().noquote() << u"[lod] Refine Selected Box dialog"_s;
+    if (m_refineBoxDialog) {
+        m_refineBoxDialog->show();
+        m_refineBoxDialog->raise();
+        m_refineBoxDialog->activateWindow();
+        return;
+    }
+    const auto middleHalf = [](int n) {
+        return std::array<int, 2>{ std::max(0, n / 4), std::max(0, (3 * n) / 4 - 1) };
+    };
+    const auto mx = middleHalf(this->remoteDatasetWidth);
+    const auto my = middleHalf(this->remoteDatasetHeight);
+    const auto mz = middleHalf(this->remoteDatasetDepth);
+    int defX0 = mx[0], defX1 = mx[1], defY0 = my[0], defY1 = my[1];
+    if (this->regionValid && this->regionMode != RegionMode::None) {
+        const auto b = this->currentRegionBounds2D();
+        defX0 = b[0];
+        defX1 = b[1];
+        defY0 = b[2];
+        defY1 = b[3];
+    }
+    auto *dlg = new CubeBoxToolDialog(
+            this, u"Refine Selected Box"_s,
+            u"Show this box of the cube at a finer level over the 3-D preview. It is read from "
+            u"the backend at the finest level the detail budget allows (Settings \u25b8 General "
+            u"\u25b8 Large Cubes); a box larger than the budget is refined around its centre. "
+            u"Loading full resolution, a region, MIP or MinIP, the isosurface or the backend's "
+            u"rendering go back to the plain preview."_s,
+            u"Refine"_s,
+            this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
+            defX0, defX1, defY0, defY1, mz[0], mz[1],
+            QString(), nullptr);
+    m_refineBoxDialog = dlg;
+    previewBoxWhileEditing(this, dlg);
+    QPointer<vtkWindowCube> self(this);
+    dlg->onAction([self, dlg]() {
+        if (self)
+            self->refineBox(dlg->bounds());
     });
     dlg->show();
     dlg->raise();
@@ -6484,39 +6591,21 @@ std::array<int, 6> vtkWindowCube::computeVisibleROI()
         }
     }
 
-    const auto convertAxis = [&](double worldMin, double worldMax, double displayMin, double displayMax,
-                                 int fullSize) -> std::array<int, 2> {
+    // The visible world range to cube voxels, through the displayed cube's
+    // sampling (the identity for the full cube or a region).
+    const auto convertAxis = [&](double worldMin, double worldMax, int fullSize) -> std::array<int, 2> {
         const int maxIndex = std::max(0, fullSize - 1);
         if (maxIndex <= 0 || !std::isfinite(worldMin) || !std::isfinite(worldMax)) {
             return { 0, maxIndex };
         }
-
-        if (this->usingHighResCube) {
-            const int start = std::clamp(static_cast<int>(std::floor(worldMin)), 0, maxIndex);
-            const int end = std::clamp(static_cast<int>(std::ceil(worldMax)), 0, maxIndex);
-            return { std::min(start, end), std::max(start, end) };
-        }
-
-        const double span = displayMax - displayMin;
-        if (span <= 1e-9) {
-            return { 0, maxIndex };
-        }
-
-        const double normalizedMin = std::clamp((worldMin - displayMin) / span, 0.0, 1.0);
-        const double normalizedMax = std::clamp((worldMax - displayMin) / span, 0.0, 1.0);
-        const int start =
-                std::clamp(static_cast<int>(std::floor(normalizedMin * maxIndex)), 0, maxIndex);
-        const int end =
-                std::clamp(static_cast<int>(std::ceil(normalizedMax * maxIndex)), 0, maxIndex);
+        const int start = std::clamp(static_cast<int>(std::floor(this->displayToCube(worldMin))), 0, maxIndex);
+        const int end = std::clamp(static_cast<int>(std::ceil(this->displayToCube(worldMax))), 0, maxIndex);
         return { std::min(start, end), std::max(start, end) };
     };
 
-    auto x = convertAxis(clippedBounds[0], clippedBounds[1], displayedBounds[0], displayedBounds[1],
-                         this->remoteDatasetWidth);
-    auto y = convertAxis(clippedBounds[2], clippedBounds[3], displayedBounds[2], displayedBounds[3],
-                         this->remoteDatasetHeight);
-    auto z = convertAxis(clippedBounds[4], clippedBounds[5], displayedBounds[4], displayedBounds[5],
-                         this->remoteDatasetDepth);
+    auto x = convertAxis(clippedBounds[0], clippedBounds[1], this->remoteDatasetWidth);
+    auto y = convertAxis(clippedBounds[2], clippedBounds[3], this->remoteDatasetHeight);
+    auto z = convertAxis(clippedBounds[4], clippedBounds[5], this->remoteDatasetDepth);
 
     const auto padAxis = [](std::array<int, 2> roi, int fullSize) -> std::array<int, 2> {
         const int maxIndex = std::max(0, fullSize - 1);
@@ -6625,12 +6714,27 @@ std::array<int, 6> vtkWindowCube::computeVisibleROI()
 
     int extent[6];
     cubeImage->GetExtent(extent);
+    double imageOrigin[3];
+    cubeImage->GetOrigin(imageOrigin);
+    // The scan runs over the displayed cube's own samples: the viewport ROI
+    // (cube voxels) goes to sample indices, and what the scan finds comes back
+    // to cube voxels. A preview's sample i stands for cube voxel
+    // displayToCube(i); a region's index is its world minus its origin.
     const auto clampAxisToExtent = [&](std::array<int, 2> roi, int axis) -> std::array<int, 2> {
         const int minExtent = extent[axis * 2];
         const int maxExtent = extent[axis * 2 + 1];
-        roi[0] = std::clamp(roi[0], minExtent, maxExtent);
-        roi[1] = std::clamp(roi[1], minExtent, maxExtent);
+        const double o = imageOrigin[axis];
+        roi[0] = std::clamp(static_cast<int>(std::floor(this->cubeToDisplay(roi[0]) - o)), minExtent, maxExtent);
+        roi[1] = std::clamp(static_cast<int>(std::ceil(this->cubeToDisplay(roi[1]) - o)), minExtent, maxExtent);
         return roi;
+    };
+    // Half a sample's span either side of a preview sample: the cube voxels it
+    // stands for (none for the cube's own voxels).
+    const int sampleHalfSpan = static_cast<int>(this->m_displaySampling.scale / 2.0);
+    const auto sampleToCube = [&](int index, int axis, int side, int fullSize) {
+        const double cube = this->displayToCube(index + imageOrigin[axis]);
+        return std::clamp(static_cast<int>(std::lround(cube)) + side * sampleHalfSpan, 0,
+                          std::max(0, fullSize - 1));
     };
 
     auto contentX = clampAxisToExtent({ viewportRoi[0], viewportRoi[1] }, 0);
@@ -6693,6 +6797,13 @@ std::array<int, 6> vtkWindowCube::computeVisibleROI()
                  std::min(maxBound, std::min(maxIndex, maxValue + padding)) };
     };
 
+    // Back to cube voxels: the first and last cube voxels the found samples stand for.
+    minContentX = sampleToCube(minContentX, 0, -1, this->remoteDatasetWidth);
+    maxContentX = sampleToCube(maxContentX, 0, +1, this->remoteDatasetWidth);
+    minContentY = sampleToCube(minContentY, 1, -1, this->remoteDatasetHeight);
+    maxContentY = sampleToCube(maxContentY, 1, +1, this->remoteDatasetHeight);
+    minContentZ = sampleToCube(minContentZ, 2, -1, this->remoteDatasetDepth);
+    maxContentZ = sampleToCube(maxContentZ, 2, +1, this->remoteDatasetDepth);
     contentX = padContentAxis(minContentX, maxContentX, this->remoteDatasetWidth, viewportRoi[0],
                               viewportRoi[1]);
     contentY = padContentAxis(minContentY, maxContentY, this->remoteDatasetHeight, viewportRoi[2],
@@ -6781,6 +6892,9 @@ bool vtkWindowCube::requestHighResCube()
         // caller that cleared a flag ahead of this call puts it back.
         return false;
     }
+    // Full-resolution data replaces the preview a refined box was drawn on
+    // (only once the load really starts: a refused one keeps the box).
+    this->clearLod(u"Refined box removed: loading full-resolution data."_s);
     this->currentRemoteRoi = roi;
     qDebug().noquote()
             << QStringLiteral("[remote-roi] mode=%1 request x=%2..%3 y=%4..%5 z=%6..%7")
@@ -6890,6 +7004,9 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     if (!result.cubeImageData) {
         return;
     }
+    // Another cube on screen (a new preview, the full cube, a region): a
+    // refined box belonged to the one it replaces.
+    this->clearLod();
 
     QElapsedTimer totalTimer;
     totalTimer.start();
@@ -7269,7 +7386,11 @@ void vtkWindowCube::updateDataStatePanel()
                                                 std::max(0, this->remoteDatasetDepth - 1) };
         switch (this->remoteCubeDisplayState) {
         case RemoteCubeDisplayState::Preview:
-            representation = u"Preview proxy"_s;
+            // Which preview (#320): "Preview: block means, pyramid level 3".
+            representation = this->m_previewStride > 1
+                    ? CubeLodStatus::previewText(this->m_previewSource, this->m_previewLevel,
+                                                 this->m_previewStride)
+                    : u"Preview proxy"_s;
             break;
         case RemoteCubeDisplayState::LoadingFullResolution:
             representation = u"Preview -> full loading"_s;
@@ -7318,6 +7439,11 @@ void vtkWindowCube::updateDataStatePanel()
                                  : u"on this machine"_s);
     if (!degenerateSummary.isEmpty()) {
         tip += u"\n\u26a0 Collapsed axes: %1"_s.arg(degenerateSummary);
+    }
+    // A refined box over the preview (#321).
+    if (!this->m_lodStatus.isEmpty()) {
+        badge += u" \u00b7 refined box"_s;
+        tip += u"\n"_s + this->m_lodStatus;
     }
 
     CubeUiAssembler::DataStateUiData d;
@@ -7850,6 +7976,8 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Views"_s, self->m_actShowInHeadset);
     add(u"Views"_s, self->m_actShowCubeOnHeadset);
     add(u"Views"_s, self->m_actHeadsetActivity);
+    // Issue #321: a box of the 3-D preview at a finer level of the cube.
+    add(u"Views"_s, self->m_actRefineBox);
     return t;
 }
 
@@ -15351,17 +15479,15 @@ void vtkWindowCube::refresh3dWcsAxes()
     this->wcs3dAxesActor->SetYTitle(axisLabel(1).c_str());
     this->wcs3dAxesActor->SetZTitle(axisLabel(2).c_str());
 
-    // The bounds are the displayed image's: a decimated preview spans
-    // 0..n-1 of its own samples, which cover the whole cube, while the
-    // full-resolution or ROI cube is laid out in the cube's own voxels.
-    int dims[3] = { 0, 0, 0 };
-    cubeImage->GetDimensions(dims);
+    // The bounds are the displayed image's: a preview spans its own samples,
+    // which stand for cube voxels by its sampling, while the full-resolution
+    // or ROI cube is laid out in the cube's own voxels.
+    // Clamped to the cube: a block-mean preview whose last block is partial
+    // has its last sample placed as if the block were whole, past n - 1.
     const int fullDims[3] = { this->remoteDatasetWidth, this->remoteDatasetHeight,
                               this->remoteDatasetDepth };
-    const auto toCubeVoxel = [&](int axis, double b) {
-        if (this->usingHighResCube || dims[axis] <= 1 || fullDims[axis] <= 1)
-            return b;
-        return b * (fullDims[axis] - 1) / (dims[axis] - 1);
+    const auto toCubeVoxel = [this, &fullDims](int axis, double b) {
+        return std::clamp(this->displayToCube(b), 0.0, double(std::max(0, fullDims[axis] - 1)));
     };
     const auto setRange = [this, bounds, &toCubeVoxel](int axis, vtkCubeAxesActor *a) {
         const int idxMin = axis * 2;
@@ -15516,8 +15642,8 @@ void vtkWindowCube::showPick3dMarker(const double world[3])
     }
     m_pick3dMarkerSource->SetRadius(radius);
     m_pick3dMarkerSource->SetCenter(world[0], world[1], world[2]);
-    const double stride = std::max(1, this->m_displayStride);
-    m_pick3dMarkerCubeVoxel = { world[0] * stride, world[1] * stride, world[2] * stride };
+    m_pick3dMarkerCubeVoxel = { this->displayToCube(world[0]), this->displayToCube(world[1]),
+                                this->displayToCube(world[2]) };
     m_pick3dMarkerSource->Modified();
     m_pick3dMarkerActor->VisibilityOn();
     ui->vtkCube->renderWindow()->Render();
@@ -15527,9 +15653,9 @@ void vtkWindowCube::refreshPick3dMarkerAfterDisplaySwap()
 {
     if (!m_pick3dMarkerActor || !m_pick3dMarkerActor->GetVisibility())
         return;
-    const double stride = std::max(1, this->m_displayStride);
     const std::array<double, 3> voxel = m_pick3dMarkerCubeVoxel;
-    const double world[3] = { voxel[0] / stride, voxel[1] / stride, voxel[2] / stride };
+    const double world[3] = { this->cubeToDisplay(voxel[0]), this->cubeToDisplay(voxel[1]),
+                              this->cubeToDisplay(voxel[2]) };
     this->showPick3dMarker(world);   // the radius follows the new cube too
 }
 
@@ -15673,8 +15799,7 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
         picker->GetPickPosition(world);
         haveWorld = true;
         rayChannel = channelAtWorldZ(world[2]);
-    } else if (m_show3dRendering && this->volume && this->volume->GetVisibility()
-               && renderer->HasViewProp(this->volume)
+    } else if (m_show3dRendering && this->volumeLayerShown(renderer)
                && pickVolumeAlongRay(renderer, pos, world, rayChannel)) {
         // Clicked the volume — and only when the volume is actually the thing on
         // screen. Marching unconditionally meant that in isosurface mode, or with
@@ -15724,13 +15849,14 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
         this->statusBar()->showMessage(u"Pick outside cube bounds."_s, 1500);
         return;
     }
-    // A strided preview is drawn in its own voxels: voxel i of it is the
-    // cube's i × stride. The probe works in the cube's voxels (the slice is
-    // full resolution), so the pick is converted, and its spectrum is the
-    // cube's line of sight, read on the backend (updateProbePlot).
-    const int stride = std::max(1, this->m_displayStride);
+    // A preview is drawn in its own voxels: voxel i of it stands for cube
+    // voxel i × stride (+ (stride - 1) / 2 for block means, #320). The probe
+    // works in the cube's voxels (the slice is full resolution), so the pick
+    // is converted, and its spectrum is the cube's line of sight, read on the
+    // backend (updateProbePlot).
+    const bool preview = this->m_displaySampling.scale > 1.0;
     int hitZ = rayZ;
-    if (stride > 1 && planeHit) {
+    if (preview && planeHit) {
         // The cutting plane spans the preview's bounds and wears the
         // FULL-resolution slice as its texture: the pixel is the texel under
         // the hit, not a preview voxel (whose last one is the cube's
@@ -15745,10 +15871,16 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
         };
         voxelX = texel(world[0], bounds[0], bounds[1], this->remoteDatasetWidth);
         voxelY = texel(world[1], bounds[2], bounds[3], this->remoteDatasetHeight);
-    } else if (stride > 1) {
-        voxelX = visivo::previewToFullIndex(voxelX, stride, this->remoteDatasetWidth);
-        voxelY = visivo::previewToFullIndex(voxelY, stride, this->remoteDatasetHeight);
-        hitZ = visivo::previewToFullIndex(rayZ, stride, this->remoteDatasetDepth);
+    } else if (preview) {
+        // The hit itself, not the preview voxel it rounded to: a block mean's
+        // centre is between cube voxels.
+        const auto toCubeIndex = [this](double w, int count) {
+            return std::clamp(static_cast<int>(std::lround(this->displayToCube(w))), 0,
+                              std::max(0, count - 1));
+        };
+        voxelX = toCubeIndex(world[0], this->remoteDatasetWidth);
+        voxelY = toCubeIndex(world[1], this->remoteDatasetHeight);
+        hitZ = toCubeIndex(world[2], this->remoteDatasetDepth);
     }
     const int voxelZ = (rayChannel >= 0)
             ? this->clampRemoteSliceIndex(hitZ)
@@ -15791,9 +15923,9 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
                       .arg(voxelX).arg(voxelY).arg(voxelZ + 1);
     this->statusBar()->showMessage(where, 6000);
     this->showPick3dMarker(world);   // mark WHERE the click landed, in the 3-D view
-    if (planeHit && stride > 1) {
+    if (planeHit && preview) {
         // On the cutting plane the cube voxel is the slice texel under the
-        // click, not world × stride (showPick3dMarker's rule for the volume):
+        // click, not the preview sample's cube voxel (showPick3dMarker's rule):
         // keep it, so the marker lands on it once the full cube is shown.
         m_pick3dMarkerCubeVoxel = { double(voxelX), double(voxelY), double(voxelZ) };
     }
@@ -15814,7 +15946,7 @@ void vtkWindowCube::apply3dRenderingVisibility()
 {
     // Applied to BOTH props, not just the mounted one: the mode can change while
     // the layer is off, and the newly mounted prop has to come up hidden too.
-    this->volume->SetVisibility(m_show3dRendering ? 1 : 0);
+    this->setVolumeLayerVisible(m_show3dRendering);
     if (this->currentIsosurfaceActor)
         this->currentIsosurfaceActor->SetVisibility(m_show3dRendering ? 1 : 0);
     this->refreshVolumeColorbar();
@@ -15865,6 +15997,8 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
     cmd[u"mode"_s] = isosurfaceMode ? u"isosurface"_s : u"volume"_s;
     this->sendRemoteRenderStateCommand(cmd);
     this->refreshVolumeColorbar();
+    // The isosurface replaces the volume layer: a refined box goes with it.
+    this->updateRefineBoxAction();
 }
 
 void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
@@ -15923,23 +16057,13 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
     }
 
     if (cubeImage && validBounds(cubeBounds) && !result.meshInDisplayCoordinates) {
-        const double fullBounds[6] = { 0.0,
-                                       std::max(0, this->remoteDatasetWidth - 1) * 1.0,
-                                       0.0,
-                                       std::max(0, this->remoteDatasetHeight - 1) * 1.0,
-                                       0.0,
-                                       std::max(0, this->remoteDatasetDepth - 1) * 1.0 };
-        const double fullSizeX = std::max(1e-9, fullBounds[1] - fullBounds[0]);
-        const double fullSizeY = std::max(1e-9, fullBounds[3] - fullBounds[2]);
-        const double fullSizeZ = std::max(1e-9, fullBounds[5] - fullBounds[4]);
-        const double displaySizeX = cubeBounds[1] - cubeBounds[0];
-        const double displaySizeY = cubeBounds[3] - cubeBounds[2];
-        const double displaySizeZ = cubeBounds[5] - cubeBounds[4];
-
+        // The mesh is in cube voxels; the 3-D view is in the displayed cube's
+        // samples: world = (cube - offset) / scale. vtkTransform pre-multiplies,
+        // so the translation written second is applied to the point first.
+        const CubeLodGeometry::Sampling &ds = this->m_displaySampling;
         vtkNew<vtkTransform> meshToDisplay;
-        meshToDisplay->Scale(displaySizeX / fullSizeX, displaySizeY / fullSizeY,
-                             displaySizeZ / fullSizeZ);
-        meshToDisplay->Translate(cubeBounds[0], cubeBounds[2], cubeBounds[4]);
+        meshToDisplay->Scale(1.0 / ds.scale, 1.0 / ds.scale, 1.0 / ds.scale);
+        meshToDisplay->Translate(-ds.offset, -ds.offset, -ds.offset);
 
         vtkNew<vtkTransformPolyDataFilter> transformFilter;
         transformFilter->SetTransform(meshToDisplay);

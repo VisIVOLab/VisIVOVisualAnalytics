@@ -7,8 +7,10 @@
 class AuthWrapper;
 class BackendsSettingsWidget;
 class Settings;
+class QCheckBox;
 class QComboBox;
 class QLineEdit;
+class QSpinBox;
 
 enum class AuthService;
 
@@ -53,7 +55,11 @@ private:
     QLineEdit *m_vrPairUrl{ nullptr };
     QLineEdit *m_vrPageUrl{ nullptr };
     QWidget *buildVrPairingSection();   ///< build the group, pre-filled from Settings
-    void buildTabs(QWidget *copilotSection, QWidget *vrPairingSection);
+    // Level of detail of the 3-D view of a large cube (issue #321).
+    QCheckBox *m_lodEnabled{ nullptr };
+    QSpinBox *m_lodBudget{ nullptr };
+    QWidget *buildLargeCubesSection();   ///< build the group, pre-filled from Settings
+    void buildTabs(QWidget *copilotSection, QWidget *vrPairingSection, QWidget *largeCubesSection);
 
     void setVLKBAuthStatus();
 };

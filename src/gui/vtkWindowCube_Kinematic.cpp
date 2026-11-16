@@ -141,19 +141,17 @@ QDoubleSpinBox *makeSpin(double lo, double hi, double val, int decimals,
 // Worker (runs on a QtConcurrent thread): fetch the model and build the overlay
 // actor entirely off the GUI thread. Captures only plain copies. `nx/ny/nz` are
 // the data cube's FULL grid (the model is built there). The overlay is mapped
-// onto the live display geometry (`ddx/ddy/ddz` dims, `dox/doy/doz` origin), a
-// GUI-thread snapshot:
-//   * display origin = 0 (downsampled preview OR full-res, origin 0 / unit
-//     spacing): scale so the model spans the displayed extent —
-//     spacing = (dispDim-1)/(fullDim-1) (→ 1 at full res).
-//   * display origin ≠ 0 (ROI sub-volume at its global voxel offset, unit
-//     spacing): keep the model in global voxel coords (origin 0, spacing 1).
+// onto the live display through its sampling (a GUI-thread snapshot,
+// vtkWindowCube::m_displaySampling): cube voxel c is drawn at
+// (c - sampleOffset) / sampleScale, the identity for the full cube or a ROI
+// sub-volume (whose world is the cube's voxels), a preview's own sample
+// index otherwise (strided or block means, #320).
 // Appearance is left at defaults here (cyan, wireframe, kInitialOpacity); the
 // live panel takes over once the overlay is shown.
 RemoteKinematicModelResult fetchKinematicModelWorker(
         QString url, QString token, QString session, QString datasetId,
-        int nx, int ny, int nz, int ddx, int ddy, int ddz,
-        double dox, double doy, double doz, double x0, double y0, double pa, double incl,
+        int nx, int ny, int nz, double sampleScale, double sampleOffset,
+        double x0, double y0, double pa, double incl,
         double vsys, double vrot, double rmax, double sigma,
         QVector<std::array<double, 4>> rings)
 {
@@ -189,18 +187,14 @@ RemoteKinematicModelResult fetchKinematicModelWorker(
         return out;
     }
 
-    const bool roi = (dox != 0.0 || doy != 0.0 || doz != 0.0);
-    double sx = 1.0, sy = 1.0, sz = 1.0;
-    if (!roi) {
-        sx = (nx > 1) ? double(ddx - 1) / double(nx - 1) : 1.0;
-        sy = (ny > 1) ? double(ddy - 1) / double(ny - 1) : 1.0;
-        sz = (nz > 1) ? double(ddz - 1) / double(nz - 1) : 1.0;
-    }
+    const CubeLodGeometry::Sampling display{ sampleScale, sampleOffset };
+    const double origin = CubeLodGeometry::toWorld(0.0, display);
+    const double spacing = 1.0 / display.scale;
 
     auto img = vtkSmartPointer<vtkImageData>::New();
     img->SetDimensions(m.width, m.height, m.depth);
-    img->SetOrigin(0., 0., 0.);
-    img->SetSpacing(sx, sy, sz);
+    img->SetOrigin(origin, origin, origin);
+    img->SetSpacing(spacing, spacing, spacing);
     auto scalars = vtkSmartPointer<vtkFloatArray>::New();
     scalars->SetNumberOfComponents(1);
     scalars->SetNumberOfTuples(qint64(m.width) * m.height * m.depth);
@@ -651,7 +645,7 @@ void vtkWindowCube::showKinematicModelDialog()
     this->m_kinematicWatcher.setFuture(QtConcurrent::run(
             &fetchKinematicModelWorker, this->remoteBackendUrl, this->remoteBackendToken,
             this->remoteSessionId, this->remoteDatasetId, nx, ny, nz,
-            ddim[0], ddim[1], ddim[2], dorg[0], dorg[1], dorg[2],
+            this->m_displaySampling.scale, this->m_displaySampling.offset,
             spinX0->value(), spinY0->value(), spinPa->value(), spinIncl->value(),
             spinVsys->value(), spinVrot->value(), spinRmax->value(), spinSig->value(),
             rings));

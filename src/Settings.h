@@ -83,6 +83,14 @@ public:
     void setPreviewTargetMb(int mb);
     int  getLocalFullThresholdMb() const;
     void setLocalFullThresholdMb(int mb);
+    /// "Level of detail" (#321): the 3-D view of a large cube may draw a
+    /// selected box at a finer level over its preview. On by default.
+    bool getLodEnabled() const;
+    void setLodEnabled(bool enabled);
+    /// MB the finer blocks of a refined box may take (float32, ghosts
+    /// included); 0 means automatic: min(512 MB, the machine's memory / 16).
+    int  getLodBudgetMb() const;
+    void setLodBudgetMb(int mb);
 
     /**
    * @return Python absolute path
@@ -433,6 +441,9 @@ private:
     //   stream. User can still override via the View menu.
     static const std::pair<QString, QVariant> PreviewTargetMb;
     static const std::pair<QString, QVariant> LocalFullThresholdMb;
+    // Level of detail of the 3-D view of a large cube (issue #321).
+    static const std::pair<QString, QVariant> LodEnabled;
+    static const std::pair<QString, QVariant> LodBudgetMb;
 };
 
 #endif

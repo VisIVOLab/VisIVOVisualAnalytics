@@ -112,26 +112,26 @@ void vtkWindowCube::raytraceCamera(
     });
 }
 
-void vtkWindowCube::setDisplayStride(int stride)
+void vtkWindowCube::setDisplaySampling(const CubeLodGeometry::Sampling &sampling)
 {
-    stride = std::max(1, stride);
-    const int before = std::exchange(this->m_displayStride, stride);
-    if (before != stride)
+    const CubeLodGeometry::Sampling before = std::exchange(this->m_displaySampling, sampling);
+    const bool same = before.scale == sampling.scale && before.offset == sampling.offset;
+    if (!same)
         this->refreshPick3dMarkerAfterDisplaySwap();   // drawn in the displayed voxels
-    if (before == stride || !this->m_rtView || this->m_rtFromRemote
-        || this->m_rtView->camera().isEmpty())
+    if (same || !this->m_rtView || this->m_rtFromRemote || this->m_rtView->camera().isEmpty())
         return;
-    // The displayed coordinates are the cube's over the stride: the same
-    // view, scaled by the ratio of the strides.
-    const double k = double(before) / stride;
+    // The same view in the new displayed coordinates: a point is taken back to
+    // the cube's voxels with the old sampling, then out with the new one. The
+    // parallel scale is a length, so only the ratio of the scales applies.
     QJsonObject cam = this->m_rtView->camera();
     for (const QString &key : { u"position"_s, u"focal_point"_s }) {
         QJsonArray v = cam.value(key).toArray();
         for (int i = 0; i < 3; ++i)
-            v[i] = v.at(i).toDouble() * k;
+            v[i] = CubeLodGeometry::toWorld(CubeLodGeometry::toCube(v.at(i).toDouble(), before), sampling);
         cam.insert(key, v);
     }
-    cam.insert(u"parallel_scale"_s, cam.value(u"parallel_scale"_s).toDouble(1.0) * k);
+    cam.insert(u"parallel_scale"_s,
+               cam.value(u"parallel_scale"_s).toDouble(1.0) * before.scale / sampling.scale);
     this->m_rtView->setCamera(cam);
     if (this->m_renderStack && this->m_renderStack->currentWidget() == this->m_rtView)
         this->m_rtView->refresh();   // the grid's box is in the new coordinates
@@ -140,17 +140,16 @@ void vtkWindowCube::setDisplayStride(int stride)
 QJsonArray vtkWindowCube::raytraceBox() const
 {
     // The backend view places the cube at its voxel coordinates: the
-    // backend's default box. This window places what it shows there, a
-    // strided preview at the preview's coordinates (voxel i of it is the
-    // cube's i × stride), so the whole cube spans (n - 1) / stride.
+    // backend's default box. This window places what it shows in the
+    // displayed coordinates (a preview's own samples), so the cube's first
+    // and last voxels sit at cubeToDisplay(0) and cubeToDisplay(n - 1).
     if (this->m_rtFromRemote)
         return {};
-    const double s = std::max(1, this->m_displayStride);
     const int n[3] = { this->remoteDatasetWidth, this->remoteDatasetHeight,
                        this->remoteDatasetDepth };
     QJsonArray box;
     for (int a = 0; a < 3; ++a)
-        box << 0.0 << std::max(0, n[a] - 1) / s;
+        box << this->cubeToDisplay(0.0) << this->cubeToDisplay(std::max(0, n[a] - 1));
     return box;
 }
 

@@ -1,6 +1,7 @@
 #include "TestProbeSpectrumFetch.h"
 
 #include "gui/ProbeSpectrumFetch.h"
+#include "CubeLodGeometry.h"
 
 #include <QtTest>
 
@@ -86,14 +87,21 @@ void TestProbeSpectrumFetch::aProbeSwitchedOffShowsNothing()
 
 void TestProbeSpectrumFetch::previewVoxelsAreStridedCubeVoxels()
 {
-    // worker_cube_preview takes data[::s, ::s, ::s]: a 700-pixel axis at
-    // stride 4 has 175 preview voxels, the last being the cube's 696, not 699.
-    QCOMPARE(visivo::previewToFullIndex(0, 4, 700), 0);
-    QCOMPARE(visivo::previewToFullIndex(1, 4, 700), 4);
-    QCOMPARE(visivo::previewToFullIndex(174, 4, 700), 696);
-    // Stride 1 is the cube itself; out-of-range indices are clamped.
-    QCOMPARE(visivo::previewToFullIndex(123, 1, 700), 123);
-    QCOMPARE(visivo::previewToFullIndex(500, 4, 700), 699);
-    QCOMPARE(visivo::previewToFullIndex(-3, 4, 700), 0);
-    QCOMPARE(visivo::previewToFullIndex(5, 4, 1), 0);
+    // The 3-D pick turns a hit on the preview into a cube voxel with the
+    // preview's sampling (vtkWindowCube::displayToCube). A strided preview
+    // takes data[::s, ::s, ::s]: a 700-pixel axis at stride 4 has 175 preview
+    // voxels, the last being the cube's 696, not 699.
+    using CubeLodGeometry::Sampling;
+    QCOMPARE(CubeLodGeometry::toCube(0, Sampling::strided(4)), 0.0);
+    QCOMPARE(CubeLodGeometry::toCube(1, Sampling::strided(4)), 4.0);
+    QCOMPARE(CubeLodGeometry::toCube(174, Sampling::strided(4)), 696.0);
+    // A block-mean preview (#320): voxel i is the mean of cube voxels
+    // 8i .. 8i + 7, so it stands for their centre, 8i + 3.5.
+    QCOMPARE(CubeLodGeometry::toCube(0, Sampling::blockMean(8)), 3.5);
+    QCOMPARE(CubeLodGeometry::toCube(10, Sampling::blockMean(8)), 83.5);
+    // The pick's marker goes back to where it was drawn.
+    for (const Sampling &s : { Sampling::strided(6), Sampling::blockMean(8), Sampling{} })
+        QCOMPARE(CubeLodGeometry::toWorld(CubeLodGeometry::toCube(12.25, s), s), 12.25);
+    // Stride 1 is the cube itself.
+    QCOMPARE(CubeLodGeometry::toCube(123, Sampling{}), 123.0);
 }

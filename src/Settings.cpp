@@ -61,6 +61,8 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::CopilotModel.first, Settings::CopilotModel.second);
     this->settings->setValue(Settings::VrPairUrl.first, Settings::VrPairUrl.second);
     this->settings->setValue(Settings::VrPageUrl.first, Settings::VrPageUrl.second);
+    this->settings->setValue(Settings::LodEnabled.first, Settings::LodEnabled.second);
+    this->settings->setValue(Settings::LodBudgetMb.first, Settings::LodBudgetMb.second);
 
     emit this->updated();
 }
@@ -361,6 +363,32 @@ int Settings::getLocalFullThresholdMb() const
 void Settings::setLocalFullThresholdMb(int mb)
 {
     this->settings->setValue(Settings::LocalFullThresholdMb.first, std::clamp(mb, 16, 16384));
+}
+
+const std::pair<QString, QVariant> Settings::LodEnabled  = { u"Cube/lod_enabled"_s,   true };
+const std::pair<QString, QVariant> Settings::LodBudgetMb = { u"Cube/lod_budget_mb"_s, 0 };
+
+bool Settings::getLodEnabled() const
+{
+    return this->settings->value(Settings::LodEnabled.first, Settings::LodEnabled.second).toBool();
+}
+
+void Settings::setLodEnabled(bool enabled)
+{
+    this->settings->setValue(Settings::LodEnabled.first, enabled);
+}
+
+int Settings::getLodBudgetMb() const
+{
+    // 0 is automatic; otherwise at least one 256^3 block (about 70 MB), and
+    // no more than a desktop GPU holds.
+    const int v = this->settings->value(Settings::LodBudgetMb.first, Settings::LodBudgetMb.second).toInt();
+    return v <= 0 ? 0 : std::clamp(v, 64, 16384);
+}
+
+void Settings::setLodBudgetMb(int mb)
+{
+    this->settings->setValue(Settings::LodBudgetMb.first, mb <= 0 ? 0 : std::clamp(mb, 64, 16384));
 }
 
 QString Settings::getBackendToken() const

@@ -1458,6 +1458,13 @@ BackendCubePreviewResult BackendClient::requestPreview(const QString &datasetId,
     const QJsonValue threshold = object.value(QStringLiteral("default_threshold"));
     result.hasDefaultThreshold = threshold.isDouble();
     result.defaultThreshold = threshold.toDouble();
+    // Which preview it is (#320). An older backend sends none of these and
+    // only makes strided previews: the caller then assumes its own stride.
+    result.source = object.value(QStringLiteral("source")).toString();
+    result.level = object.value(QStringLiteral("level")).toInt(-1);
+    const QJsonArray factors = object.value(QStringLiteral("factors")).toArray();
+    result.stride = factors.isEmpty() ? 0 : factors.first().toInt();
+    result.voxelOffset = object.value(QStringLiteral("voxel_offset")).toDouble(0.0);
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {
@@ -1610,6 +1617,50 @@ static QByteArray performBinaryPost(QNetworkAccessManager *nam,
 }
 
 
+BackendClient::BinaryPoster BackendClient::binaryPoster() const
+{
+    // Resolve exactly like buildRequest(): own id -> this backend's minted id
+    // -> the process-wide default. Sending nothing here would put these
+    // requests in a different session than the rest of the client's traffic.
+    // The mint may adopt a refreshed token, so capture the token AFTER it: the
+    // auth header and the session id must come from the same identity.
+    const SessionMint mint = this->ensureSessionMinted();
+    const QString token = this->m_token;
+    const QString sessionId = !this->m_sessionId.isEmpty()
+            ? this->m_sessionId
+            : BackendClient::sessionIdForUrl(this->m_baseUrl, token);
+    const QString baseUrl = m_baseUrl;
+    // One timeout for every route of the poster: the binary routes share the
+    // budget of the request they belong to (subvolume_bin's, generous).
+    const int timeoutMs = static_cast<int>(
+            this->requestTimeoutFor(QUrl(baseUrl + QStringLiteral("/v1/cube/subvolume_bin"))).count());
+    // Captures values only: the function may outlive this object and runs on
+    // worker threads, each with its own network manager.
+    return [baseUrl, token, sessionId, timeoutMs, mint](const QString &path,
+                                                         const QJsonObject &body) {
+        BinaryReply r;
+        // performBinaryPost() reads t_lastMint, which buildRequest() would have
+        // set; this request is built by hand on a worker thread, where that
+        // thread_local is still at its default. Carry the verdict across.
+        t_lastMint = mint;
+        QNetworkRequest req{ QUrl(baseUrl + path) };
+        req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+        if (!token.isEmpty())
+            req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), token.toUtf8());
+        if (!sessionId.isEmpty())
+            req.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), sessionId.toUtf8());
+        QString err;
+        r.body = performBinaryPost(getThreadLocalNam(), req,
+                                   QJsonDocument(body).toJson(QJsonDocument::Compact), timeoutMs,
+                                   r.status, r.headers, err);
+        r.ok = r.status == 200 && err.isEmpty();
+        if (!r.ok)
+            r.error = err.isEmpty() ? QStringLiteral("HTTP %1 on %2").arg(r.status).arg(path.section(u'/', -1))
+                                    : err;
+        return r;
+    };
+}
+
 BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datasetId, int x0,
                                                            int x1, int y0, int y1, int z0,
                                                            int z1, bool keepSlabs) const
@@ -1651,20 +1702,7 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
             QString error;
         };
 
-        const QUrl binUrl(m_baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
-        const int timeoutMs =
-                static_cast<int>(this->requestTimeoutFor(binUrl).count());
-        // Resolve exactly like buildRequest(): own id → this backend's minted id
-        // → the process-wide default. Sending nothing here would put these slab
-        // requests in a different session than the rest of the client's traffic.
-        // The mint may adopt a refreshed token, so capture the token AFTER it:
-        // the auth header and the session id must come from the same identity.
-        const SessionMint mint = this->ensureSessionMinted();
-        const QString token = this->m_token;
-        const QString sessionId = !this->m_sessionId.isEmpty()
-                ? this->m_sessionId
-                : BackendClient::sessionIdForUrl(this->m_baseUrl, token);
-        const QString baseUrl = m_baseUrl;
+        const BinaryPoster post = this->binaryPoster();
 
         // Split [z0, z1] in N slabs. Sub-Z-axis chunks are concatenated
         // back along the spectral axis. We use 4 by default — empirically
@@ -1697,48 +1735,23 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
         // Worker lambda: fetch a single slab through its own thread-local
         // QNAM. Captures by value the small POD-ish state it needs so the
         // lambda is safely runnable from a worker thread.
-        auto fetchSlab = [baseUrl, token, sessionId, timeoutMs, datasetId, mint,
-                          x0, x1, y0, y1](int sz0, int sz1) -> SlabResult {
+        auto fetchSlab = [post, datasetId, x0, x1, y0, y1](int sz0, int sz1) -> SlabResult {
             SlabResult r;
-            // performBinaryPost() reads t_lastMint, which buildRequest() would
-            // have set — but we build the request by hand on a worker thread,
-            // where that thread_local is still at its default. Carry the
-            // parent's verdict across so the guard applies here too.
-            t_lastMint = mint;
-            const QJsonDocument body(QJsonObject{
-                    { QStringLiteral("dataset_id"), datasetId },
-                    { QStringLiteral("x0"), x0 }, { QStringLiteral("x1"), x1 },
-                    { QStringLiteral("y0"), y0 }, { QStringLiteral("y1"), y1 },
-                    { QStringLiteral("z0"), sz0 }, { QStringLiteral("z1"), sz1 } });
-            const QByteArray bytes = body.toJson(QJsonDocument::Compact);
-
-            // Inline buildRequest() — we can't call the member from a
-            // worker thread without capturing ``this``, and capturing
-            // ``this`` would tie the worker's lifetime to the
-            // BackendClient instance for no benefit (the synchronous
-            // QFuture::waitForFinished() guarantees the instance
-            // outlives every dispatched thread).
-            QNetworkAccessManager *nam = getThreadLocalNam();
-            const QUrl url(baseUrl + QStringLiteral("/v1/cube/subvolume_bin"));
-            QNetworkRequest req(url);
-            req.setHeader(QNetworkRequest::ContentTypeHeader,
-                          QStringLiteral("application/json"));
-            if (!token.isEmpty()) {
-                req.setRawHeader(QByteArrayLiteral("X-Visivo-Token"), token.toUtf8());
-            }
-            if (!sessionId.isEmpty()) {
-                req.setRawHeader(QByteArrayLiteral("X-Visivo-Session"), sessionId.toUtf8());
-            }
-            QMap<QByteArray, QByteArray> headers;
-            QString err;
-            const QByteArray slabBody =
-                    performBinaryPost(nam, req, bytes, timeoutMs, r.status, headers, err);
-            if (r.status != 200) {
-                r.error = err.isEmpty()
-                                ? QStringLiteral("HTTP %1 on subvolume_bin").arg(r.status)
-                                : err;
+            const BinaryReply reply = post(QStringLiteral("/v1/cube/subvolume_bin"),
+                                           QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                                                        { QStringLiteral("x0"), x0 },
+                                                        { QStringLiteral("x1"), x1 },
+                                                        { QStringLiteral("y0"), y0 },
+                                                        { QStringLiteral("y1"), y1 },
+                                                        { QStringLiteral("z0"), sz0 },
+                                                        { QStringLiteral("z1"), sz1 } });
+            r.status = reply.status;
+            if (!reply.ok) {
+                r.error = reply.error;
                 return r;
             }
+            const QMap<QByteArray, QByteArray> &headers = reply.headers;
+            const QByteArray &slabBody = reply.body;
             const auto hget = [&](const char *name) -> QByteArray {
                 return visivoHeader(headers, name);
             };

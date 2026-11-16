@@ -647,6 +647,10 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Catalogue.cpp
         src/gui/vtkWindowCube_RemoteRender.cpp
         src/gui/vtkWindowCube_Wcs.cpp
+        src/gui/vtkWindowCube_Lod.cpp
+        src/gui/CubeLodVolumes.cpp
+        src/gui/CubeLodVolumes.h
+        src/gui/CubeLodStatus.h
         src/gui/vtkWindowCube_Samp.cpp
         src/gui/vtkWindowCube_RemoteSlice.cpp
         src/gui/vtkWindowCube_Probe.cpp
