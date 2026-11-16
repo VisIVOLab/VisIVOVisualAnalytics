@@ -34,6 +34,7 @@
 #include "wcs.h"
 
 #include <vtkCamera.h>
+#include <vtkCallbackCommand.h>
 #include <vtkAxisActor2D.h>
 #include <vtkContourTriangulator.h>
 #include <vtkCoordinate.h>
@@ -201,6 +202,18 @@ void vtkWindowImage::setupRenderer()
 
     vtkNew<vtkInteractorStyleImage> style;
     win->GetInteractor()->SetInteractorStyle(style);
+    // Selecting, moving and editing a region of the list come first: a press on
+    // a region must neither pan the image nor start a new region under it. The
+    // callback runs ahead of the interactor style (higher priority) and aborts
+    // the events it uses, so nothing after it sees them.
+    this->m_regionEditCommand = vtkSmartPointer<vtkCallbackCommand>::New();
+    this->m_regionEditCommand->SetClientData(this);
+    this->m_regionEditCommand->SetCallback(&vtkWindowImage::regionEditCallback);
+    for (unsigned long event : { vtkCommand::LeftButtonPressEvent, vtkCommand::MouseMoveEvent,
+                                 vtkCommand::LeftButtonReleaseEvent,
+                                 vtkCommand::LeftButtonDoubleClickEvent,
+                                 vtkCommand::RightButtonPressEvent })
+        win->GetInteractor()->AddObserver(event, this->m_regionEditCommand, 10.0f);
     win->GetInteractor()->AddObserver(vtkCommand::MouseMoveEvent, this,
                                       &vtkWindowImage::mouseCallback);
     win->GetInteractor()->AddObserver(vtkCommand::LeftButtonPressEvent, this,
@@ -380,6 +393,8 @@ void vtkWindowImage::setupRenderer()
     this->regionPolygonFillActor->GetProperty()->SetOpacity(0.18);
     this->regionPolygonFillActor->VisibilityOff();
     ren->AddActor(this->regionPolygonFillActor);
+    // The regions the user keeps (issue #341), drawn over the one being drawn.
+    this->setupRegionList(ren);
     this->catalogueOverlayData->SetPoints(this->catalogueOverlayPoints);
     this->catalogueOverlayData->SetLines(this->catalogueOverlayCells);
     vtkNew<vtkPolyDataMapper> catalogueOverlayMapper;
@@ -1255,6 +1270,11 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Regions"_s, self->actionCircleRegion);
     add(u"Regions"_s, self->actionPolygonRegion);
     add(u"Regions"_s, self->actionAnnulusRegion);
+    add(u"Regions"_s, self->m_actRegionProperties);
+    add(u"Regions"_s, self->m_actAnalyseRegion);
+    add(u"Regions"_s, self->m_actDeleteRegion);
+    add(u"Regions"_s, self->m_actUndoRegion);
+    add(u"Regions"_s, self->m_actRedoRegion);
     add(u"Regions"_s, self->m_actExportRegions);
 
     add(u"Catalogue"_s, self->actionLoadCatalogueOverlay);

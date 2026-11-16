@@ -8,6 +8,23 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: the image viewer keeps a list of editable regions, with positions
+  typed in a chosen frame (part of #341).** Every region drawn stays until it
+  is deleted, in full-resolution pixels at double precision, so it survives the
+  swap from overview to full resolution. Click selects, drag moves, handles
+  reshape (box corners, radii, ellipse axes, polygon vertices, a rotation knob
+  for boxes and ellipses); Delete/Backspace and a right-click menu
+  (Properties…, Analyse, Delete) remove and edit; Cmd+Z undoes any change.
+  **Region Properties** sets the centre, sizes, angle or vertices in image
+  pixels (1-based, as ds9), ICRS or FK5 (degrees or sexagesimal) or galactic
+  degrees; the numbers follow the region while it is moved. Analysis runs on
+  the selected region, Export Region writes all regions or the selected one
+  (optionally each in the frame it was typed in), and a Session Data row puts
+  its region back in the list. The cube viewer's slice and moment panes still
+  keep a single region; they follow next.
+- **Backend: `POST /v1/regions/convert`** moves canonical regions between
+  pixels (0- or 1-based) and sky frames with the dataset's full celestial WCS,
+  and reports the dataset's sky frame (empty without a celestial WCS).
 - **Backend: region files are read whole, with a reason for every line not
   read (part of #342).** `/v1/regions/parse` now reads every ds9 shape (line,
   vector, text, ruler, segment, projection, every point style, annuli with

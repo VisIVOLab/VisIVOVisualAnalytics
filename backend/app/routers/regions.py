@@ -8,6 +8,7 @@ in (and back), or moves it to another sky frame.
 
   * POST /v1/regions/parse   {format?, text, dataset_id?, to_frame?}
   * POST /v1/regions/export  {format, regions, dataset_id?, to_frame?}
+  * POST /v1/regions/convert {regions, to_frame, dataset_id?, origin?, unit?}
 """
 import asyncio
 import logging
@@ -38,6 +39,14 @@ class RegionExportRequest(BaseModel):
     format: str                   # crtf | ds9
     dataset_id: str = ""
     to_frame: str = ""
+
+
+class RegionConvertRequest(BaseModel):
+    regions: list[dict[str, Any]] = []
+    to_frame: str                 # "image" | a sky frame | "native" (the dataset's own)
+    dataset_id: str = ""          # needed whenever pixels are involved
+    origin: int = 1               # pixel base of image-frame regions, in and out
+    unit: str = ""                # sizes of the result; "" = pix in image, else as converted
 
 
 class RegionStatsRequest(BaseModel):
@@ -80,6 +89,15 @@ def _celestial_wcs(path: str):
     if wcs is None:
         raise HTTPException(422, "Dataset has no celestial WCS; cannot convert region frames.")
     return wcs
+
+
+def _celestial_wcs_or_none(path: str):
+    """The dataset's 2-D celestial WCS, or None when it has none (or no FITS
+    header to read one from: a catalogue or a VBT field)."""
+    try:
+        return _celestial_wcs(path)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _convert(regions, to_frame, wcs, origin):
@@ -185,6 +203,74 @@ async def export_regions(
         logger.warning("[regions/export] failed: %s", exc)
         raise HTTPException(500, str(exc)) from exc
     return {"valid": True, "error": "", "format": request.format, "text": text}
+
+
+@router.post("/v1/regions/convert", tags=["regions"])
+async def convert_regions(
+    request: RegionConvertRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Convert canonical regions between frames with the dataset's WCS.
+
+    What a region properties editor needs: the region the viewer holds (image
+    frame, ``origin``-based pixels) shown in the frame the user picked, and
+    the numbers typed in that frame brought back to pixels. With no regions
+    it only reports the dataset's sky frame (``native_frame``), so a client
+    can tell which frames to offer: an empty ``native_frame`` means the
+    dataset has no celestial WCS and only pixels make sense.
+    """
+    if request.origin not in (0, 1):
+        raise HTTPException(422, "origin must be 0 or 1.")
+    unit = request.unit
+    if unit and unit != "pix" and unit not in R._ANGLE_TO_DEG:
+        raise HTTPException(422, f"Unknown size unit '{unit}'.")
+    to_frame = request.to_frame
+    if to_frame not in ("image", "native") and to_frame not in R._WORLD_FRAMES:
+        raise HTTPException(422, f"Unknown region frame '{to_frame}'.")
+    wcs = None
+    native = ""
+    if request.dataset_id:
+        entry = _require_dataset(session, request.dataset_id)
+        wcs = _celestial_wcs_or_none(entry["path"])
+        if wcs is not None:
+            try:
+                native = R.native_frame_name(wcs)
+            except ValueError:   # a celestial WCS astropy cannot name a frame for
+                wcs = None
+    if to_frame == "native":
+        if not native:
+            raise HTTPException(422, "Dataset has no celestial WCS; cannot convert region frames.")
+        to_frame = native
+    if to_frame == "image" and unit and unit != "pix":
+        raise HTTPException(422, "Image-frame regions are converted to pixel sizes.")
+    if not request.regions:
+        return {"valid": True, "error": "", "frame": to_frame, "native_frame": native, "regions": []}
+    def _needs_wcs(r: dict[str, Any]) -> bool:
+        src = r.get("frame", "image")
+        if (src == "image") != (to_frame == "image"):
+            return True   # pixels <-> sky
+        # pixel sizes on the sky, or angular sizes on pixels
+        return src == "image" and r.get("unit", "pix") != "pix"
+
+    if wcs is None and any(_needs_wcs(r) for r in request.regions):
+        if not request.dataset_id:
+            raise HTTPException(422, "Converting between pixels and sky needs dataset_id.")
+        raise HTTPException(422, "Dataset has no celestial WCS; cannot convert region frames.")
+    try:
+        regions = _convert(request.regions, to_frame, wcs, origin=request.origin)
+    except (KeyError, IndexError, TypeError) as exc:   # a malformed region dict
+        raise HTTPException(422, f"Malformed region: {exc!r}") from exc
+    if unit and to_frame != "image":
+        pf = R._PixelFrame(wcs, request.origin) if wcs is not None else None
+        try:
+            for r in regions:
+                R._rescale_sizes(r, r.get("unit", "deg"), unit, pf)
+        except (R.RegionParseError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except KeyError as exc:   # the region's own unit is not one we know
+            raise HTTPException(422, f"Unknown size unit {exc}.") from exc
+    return {"valid": True, "error": "", "frame": to_frame, "native_frame": native, "regions": regions}
 
 
 @router.post("/v1/regions/stats/{dataset_id}", tags=["regions"])

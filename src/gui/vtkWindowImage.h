@@ -5,6 +5,8 @@
 #include "ImageLayerLoadTask.h"
 #include "ProductRegistry.h"   // ReplayStep
 #include "PowerSpectrumSlope.h"
+#include "RegionFullRes.h"
+#include "RegionModel.h"
 
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
@@ -44,6 +46,9 @@ class QProgressDialog;
 class QFrame;
 class QLabel;
 class ToolResultDialog;
+class RegionPropertiesDialog;
+class vtkCallbackCommand;
+class vtkObject;
 class AngularPowerSettings;
 class SkeletonSettings;
 struct BackendAngularPowerResult;
@@ -640,11 +645,74 @@ private:
     bool updateRegionFromDisplayPosition(int displayX, int displayY);
     void refreshRegionOverlay();
     void clearRegion();
-    void analyzeCurrentRegion();
-    // Region export (CRTF / DS9) — save the active drawn ROI. Loading region
-    // files (incl. CRTF) is handled by loadCatalogueOverlay (single loader).
-    QJsonObject currentRegionToJson() const;            ///< active drawn ROI → canonical dict (1-based px)
+    /// Statistics of region `id` of the list (the selected one by default).
+    void analyzeRegion(int id = -1);
+    // Region export (CRTF / DS9) — save the regions of the list, all or the
+    // selected one. Loading region files (incl. CRTF) is handled by
+    // loadCatalogueOverlay (single loader).
     void exportRegionsToFile();
+
+    // ── The region list (issue #341) ─────────────────────────────────────────
+    // Regions drawn, restored or typed in are kept in m_regions, in full-
+    // resolution 0-based pixels, until the user deletes them. The plain region
+    // members above (regionMode, regionAnchorVoxel, …) are now only the region
+    // being DRAWN; once finished it joins the list and those are cleared.
+    visivo::regions::RegionList m_regions;
+    struct RegionDrag
+    {
+        bool active{ false };
+        int id{ -1 };
+        visivo::regions::Hit hit;
+        visivo::regions::Vec2 start{ 0.0, 0.0 };
+        visivo::regions::Region original;
+    };
+    RegionDrag m_regionDrag;
+    vtkSmartPointer<vtkCallbackCommand> m_regionEditCommand;
+    double m_regionKnobOffset{ 1.0 };   ///< rotation knob distance last drawn (image pixels)
+    vtkNew<vtkPolyData> m_regionListData;        ///< outlines of the unselected regions
+    vtkNew<vtkActor> m_regionListActor;
+    vtkNew<vtkPolyData> m_regionSelectedData;    ///< outline of the selected one
+    vtkNew<vtkActor> m_regionSelectedActor;
+    vtkNew<vtkPolyData> m_regionSelectedFillData;
+    vtkNew<vtkContourTriangulator> m_regionSelectedTriangulator;
+    vtkNew<vtkActor> m_regionSelectedFillActor;
+    vtkNew<vtkPolyData> m_regionHandleData;      ///< handles and point markers
+    vtkNew<vtkActor> m_regionHandleActor;
+    vtkNew<vtkPolyData> m_regionPointData;
+    vtkNew<vtkActor> m_regionPointActor;
+    QPointer<RegionPropertiesDialog> m_regionPropertiesDialog;
+    QAction *m_actRegionProperties{ nullptr };
+    QAction *m_actDeleteRegion{ nullptr };
+    QAction *m_actUndoRegion{ nullptr };
+    QAction *m_actRedoRegion{ nullptr };
+    QAction *m_actAnalyseRegion{ nullptr };
+    void setupRegionList(vtkRenderer *renderer);
+    void setupRegionListActions();
+    /// The displayed image's voxel grid: displayed voxel → full-resolution pixel.
+    visivo::DisplayGrid displayGrid() const;
+    /// The region being drawn, as a list region (full-resolution pixels).
+    std::optional<visivo::regions::Region> draftRegion() const;
+    /// The finished draft joins the list and is selected; the draft is cleared.
+    int commitDraftRegion();
+    /// Redraw the list, refresh the readout, the properties dialog and the
+    /// actions after any change to it.
+    void onRegionListChanged();
+    void refreshRegionListOverlay();
+    void onRegionCameraChanged();
+    /// Image pixels per screen pixel at the current zoom (for pick tolerances).
+    double worldPerDisplayPixel() const;
+    bool displayToWorld(int displayX, int displayY, visivo::regions::Vec2 *world) const;
+    static void regionEditCallback(vtkObject *caller, unsigned long eventId, void *clientData,
+                                   void *callData);
+    /// A mouse event that selects, moves or edits a region of the list.
+    /// True when it was consumed (the camera and the drawing tools never see it).
+    bool handleRegionEditEvent(unsigned long eventId);
+    bool regionEditingAllowed() const;
+    void showRegionContextMenu(int id);
+    void openRegionProperties(int id = -1);
+    void deleteSelectedRegion();
+    void undoRegionEdit();
+    void redoRegionEdit();
     bool finalizePolygonRegion();
     void updateLargeImageMode(vtkImageData *imageData, const char *context);
     void loadCatalogueOverlay();

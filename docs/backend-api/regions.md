@@ -203,6 +203,34 @@ text and vector regions are written behind `#`, as ds9 writes them, and a
 line of more than two vertices as a ds9 `segment`; a vector becomes a CRTF
 `vector` between its two ends.
 
+### `POST /v1/regions/convert`
+Move canonical regions to another frame with the dataset's WCS, for a client
+that shows a region in the frame a user picks and reads typed numbers back
+(the image viewer's Region Properties).
+
+```json
+{ "regions": [{ "shape": "circle", "frame": "image", "center": [119.0, 59.0],
+                "radius": 4, "unit": "pix" }],
+  "to_frame": "icrs", "dataset_id": "…", "origin": 0, "unit": "arcsec" }
+```
+
+`to_frame` is `image`, a sky frame, or `native` (the dataset's own sky frame).
+`origin` (0 or 1, default 1) is the pixel base of image-frame regions, in the
+request and in the answer: 0 for numpy-style indices, 1 for the convention of
+region files. `unit` sets the size unit of sky-frame results (`deg`,
+`arcmin`, `arcsec` or `pix`); empty keeps the conversion's own (arcsec when
+pixels go to the sky). Image-frame results are always in pixels. Positions,
+sizes and angles convert as in [Frame conversion](#frame-conversion).
+
+Response: `{valid, error, frame, native_frame, regions}`. `native_frame` is
+the dataset's sky frame (`icrs`, `fk5`, `fk4`, `galactic`, `ecliptic`), or empty
+when the dataset has no celestial WCS: with an empty `regions` list the route
+only reports it, which is how a client learns which frames to offer. Pixels to
+pixels needs no dataset. An unknown frame or unit, an `origin` other than 0 or
+1, angular units asked for an image-frame result, a malformed region, a
+conversion involving pixels without a celestial WCS, or a region off the
+projection is 422.
+
 ### `POST /v1/regions/stats/{dataset_id}`
 Pixel statistics inside one region.
 

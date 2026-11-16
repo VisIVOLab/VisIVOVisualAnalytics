@@ -27,11 +27,55 @@ Pick a shape from *Tools → Regions* in the viewer:
 | **Polygon** | Click each vertex, double-click to close | Arbitrary shape. Concave polygons are supported. |
 | **Annulus** | Click centre, drag the outer radius, then type the inner one | Useful for background subtraction around a source. |
 
-While drawing, the live preview is rendered in red on the slice. Once
-released, the region becomes selectable; right-click to remove it.
+While drawing, the live preview is rendered on the slice. What happens once
+it is released depends on the viewer: the image viewer keeps it in a list of
+regions you can edit (below); the cube viewer still keeps one region at a time,
+as described in the note.
+
+### Editing regions (image viewer)
+
+In the image viewer every region you draw stays on the image until you delete
+it, so you can keep a source aperture and a background ring side by side and
+come back to either. One region at a time is **selected**: it is drawn thicker,
+lightly filled, with white handles.
+
+| Action | Effect |
+|---|---|
+| Click a region | selects it; clicking empty image deselects |
+| Drag a region | moves it |
+| Drag a handle | box corner (the opposite corner stays put), circle radius, annulus inner or outer radius, ellipse semi-axis, polygon vertex; the knob above a box or ellipse rotates it |
+| Double-click a region | opens **Region Properties** |
+| Right-click a region | *Properties…*, *Analyse*, *Delete* |
+| **Delete** / **Backspace** | deletes the selected region (the image must have the keyboard focus) |
+| **Cmd+Z** / **Shift+Cmd+Z** | undoes / redoes the last change to the regions: drawing, moving, reshaping, typing, deleting |
+
+The same entries are in *Tools ▸ Regions*. A click on a catalogue marker still
+selects the source, even inside a region. Where regions overlap, a click on an
+outline picks that region; inside, the smallest region under the cursor wins.
+*Analyse* (or the menu entry *Analyse Region*) measures the selected region
+exactly as drawing it does; the Σ / μ readout follows the selected region while
+you drag it.
+
+**Region Properties** sets a region by numbers: its centre (or polygon
+vertices), sizes, and angle for a box or an ellipse. The *Frame* list chooses
+what the numbers mean:
+
+- *Image pixels (1-based, as ds9)*: the first pixel is 1, sizes in pixels;
+- *ICRS* or *FK5 (J2000)*, in degrees or sexagesimal (`hh:mm:ss.s`,
+  `±dd:mm:ss`; `13h29m52.7s`, `+47 11 43` and plain degrees are read too);
+- *Galactic*, in degrees.
+
+Sizes on the sky are in arcseconds, and an angle is counter-clockwise from the
+longitude axis, as ds9 writes it. Sky frames are offered only when the image
+has a celestial WCS. Every conversion is done by the backend with the image's
+full WCS (projection, rotation, distortion), never by the viewer's own axis
+labels, so a catalogue position typed in ICRS lands on the pixel ds9 would put
+it on. The numbers follow the region while you move it on screen, unless you
+have started typing; **Apply** puts the typed values on the image. The dialog
+opens in the frame the region was last typed in, or the image's own sky frame.
 
 ```{note}
-Only **one** region shape can be active at a time — the four region
+In the cube viewer only **one** region shape can be active at a time — the four region
 actions (Box / Circle / Polygon / Annulus) are an exclusive group in
 both the menu and the sidebar (`ExclusiveOptional`: at most one
 checked, or none). Clicking the currently-active shape again unchecks
@@ -102,7 +146,9 @@ the source aperture's pixel count, from the aperture's sum.
 ```
 
 Every region analysis leaves a row in **Session Data** carrying both its numbers
-and the shape they were measured on. Opening that row **redraws the region** and
+and the shape they were measured on (in the image viewer, one row per region:
+measuring the same region again replaces its row). Opening that row **redraws the
+region** (in the image viewer it goes back into the region list, selected) and
 reopens the statistics, so a measurement taken twenty minutes and three regions
 ago can still be traced back to the pixels that produced it. The same holds for a
 pinned spectrum in the cube viewer: opening its row puts the crosshair back on
@@ -123,7 +169,10 @@ and the ring appeared only after you had already chosen.)
   measured with.
 - *Tools ▸ Regions ▸ Export Region (CRTF/DS9)…* writes the region itself, for
   CARTA, CASA or DS9, in sky (FK5) or pixel coordinates; FK5 is written
-  whatever the image's own frame. *Import Region (CRTF/DS9)…* reads one back:
+  whatever the image's own frame. In the image viewer it asks first whether to
+  write all the regions or the selected one, and offers a third frame choice:
+  each region in the frame it was typed in (FK5 for a region drawn on the
+  image). *Import Region (CRTF/DS9)…* reads one back:
   FK5, ICRS, FK4 (B1950), galactic and ecliptic regions are converted to the
   image's frame through its WCS, rotated or skewed grids and unequal pixel
   scales included, ds9 `physical` coordinates through the image's LTM/LTV
