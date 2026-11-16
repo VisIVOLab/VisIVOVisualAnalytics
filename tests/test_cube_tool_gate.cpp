@@ -84,6 +84,31 @@ void TestCubeToolGate::exportRegion_followsRegionExistence()
     QVERIFY(evaluate(in).exportRegion);
 }
 
+void TestCubeToolGate::regionList_selectionAndUndoGates()
+{
+    // Properties and Delete act on the selected region wherever it was drawn:
+    // no view needed. Analyse measures on the slice, so it needs that view too.
+    Inputs in = layout(false, true);
+    in.haveRegion = true;
+    Decision d = evaluate(in);
+    QVERIFY(!d.editSelectedRegion);
+    QVERIFY(!d.analyseRegion);
+    in.haveSelectedRegion = true;
+    d = evaluate(in);
+    QVERIFY(d.editSelectedRegion);
+    QVERIFY(!d.analyseRegion);   // no slice on screen
+    in.slicePaneAvailable = true;   // a moment pane the slice can take over
+    QVERIFY(evaluate(in).analyseRegion);
+    in = layout(true, false);
+    QVERIFY(!evaluate(in).undoRegion);
+    QVERIFY(!evaluate(in).redoRegion);
+    in.regionUndo = true;
+    QVERIFY(evaluate(in).undoRegion);
+    QVERIFY(!evaluate(in).redoRegion);
+    in.regionRedo = true;
+    QVERIFY(evaluate(in).redoRegion);
+}
+
 void TestCubeToolGate::sendSlice_followsAnOpenImageViewer()
 {
     Inputs in = layout(true, false);

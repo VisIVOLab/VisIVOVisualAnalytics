@@ -51,41 +51,10 @@ using visivo::regions::Vec2;
 
 namespace {
 
-/// The cyan the drawing tools have always used.
-constexpr unsigned char kDefaultColour[3] = { 51, 230, 255 };
-
 /// How far the rotation knob stands off a box or an ellipse, and how close a
 /// press has to land on a handle or an outline, in screen pixels.
 constexpr double kKnobPx = 22.0;
 constexpr double kPickPx = 7.0;
-
-std::array<unsigned char, 3> regionColour(const Region &r)
-{
-    const QColor c(r.color);
-    if (r.color.isEmpty() || !c.isValid())
-        return { kDefaultColour[0], kDefaultColour[1], kDefaultColour[2] };
-    return { static_cast<unsigned char>(c.red()), static_cast<unsigned char>(c.green()),
-             static_cast<unsigned char>(c.blue()) };
-}
-
-/// Append closed loops as polylines to `points`/`lines`, colouring each cell.
-void appendLoops(const std::vector<std::vector<Vec2>> &loops, vtkPoints *points, vtkCellArray *lines,
-                 vtkUnsignedCharArray *colours, const std::array<unsigned char, 3> &rgb)
-{
-    for (const auto &loop : loops) {
-        if (loop.size() < 2)
-            continue;
-        const vtkIdType first = points->GetNumberOfPoints();
-        for (const Vec2 &p : loop)
-            points->InsertNextPoint(p[0], p[1], 0.0);
-        lines->InsertNextCell(static_cast<vtkIdType>(loop.size() + 1));
-        for (vtkIdType i = 0; i < static_cast<vtkIdType>(loop.size()); ++i)
-            lines->InsertCellPoint(first + i);
-        lines->InsertCellPoint(first);   // closed
-        if (colours)
-            colours->InsertNextTypedTuple(rgb.data());
-    }
-}
 
 }   // namespace
 
@@ -151,42 +120,7 @@ int vtkWindowImage::commitDraftRegion()
 
 void vtkWindowImage::setupRegionList(vtkRenderer *renderer)
 {
-    const auto lineActor = [renderer](vtkPolyData *data, vtkActor *actor, double width) {
-        vtkNew<vtkPolyDataMapper> mapper;
-        mapper->SetInputData(data);
-        mapper->SetScalarModeToUseCellData();
-        mapper->SetColorModeToDirectScalars();
-        actor->SetMapper(mapper);
-        actor->GetProperty()->SetLineWidth(width);
-        actor->PickableOff();
-        renderer->AddActor(actor);
-    };
-    lineActor(this->m_regionListData, this->m_regionListActor, 2.0);
-    lineActor(this->m_regionSelectedData, this->m_regionSelectedActor, 3.5);
-
-    this->m_regionSelectedTriangulator->SetInputData(this->m_regionSelectedFillData);
-    vtkNew<vtkPolyDataMapper> fillMapper;
-    fillMapper->SetInputConnection(this->m_regionSelectedTriangulator->GetOutputPort());
-    fillMapper->ScalarVisibilityOff();
-    this->m_regionSelectedFillActor->SetMapper(fillMapper);
-    this->m_regionSelectedFillActor->GetProperty()->SetOpacity(0.15);
-    this->m_regionSelectedFillActor->PickableOff();
-    this->m_regionSelectedFillActor->VisibilityOff();
-    renderer->AddActor(this->m_regionSelectedFillActor);
-
-    // Point regions: a marker of fixed size on screen, in the region's colour.
-    lineActor(this->m_regionPointData, this->m_regionPointActor, 1.0);
-    this->m_regionPointActor->GetProperty()->SetPointSize(11.0);
-
-    // Handles of the selected region: white squares of fixed size on screen.
-    vtkNew<vtkPolyDataMapper> handleMapper;
-    handleMapper->SetInputData(this->m_regionHandleData);
-    handleMapper->ScalarVisibilityOff();
-    this->m_regionHandleActor->SetMapper(handleMapper);
-    this->m_regionHandleActor->GetProperty()->SetColor(1.0, 1.0, 1.0);
-    this->m_regionHandleActor->GetProperty()->SetPointSize(9.0);
-    this->m_regionHandleActor->PickableOff();
-    renderer->AddActor(this->m_regionHandleActor);
+    this->m_regionOverlay.attach(renderer);
 
     // The rotation knob stands a fixed distance off the edge ON SCREEN: a zoom
     // has to move it, and the hit test reads the distance it was drawn at.
@@ -276,99 +210,9 @@ void vtkWindowImage::refreshRegionListOverlay()
     // Positions are full-resolution pixels, which is the world frame of this
     // renderer at every level of detail (world = origin + (voxel - extent0) *
     // spacing): no per-actor transform, unlike the draft's actors.
-    vtkNew<vtkPoints> listPoints;
-    vtkNew<vtkCellArray> listLines;
-    vtkNew<vtkUnsignedCharArray> listColours;
-    listColours->SetNumberOfComponents(3);
-    vtkNew<vtkPoints> selPoints;
-    vtkNew<vtkCellArray> selLines;
-    vtkNew<vtkUnsignedCharArray> selColours;
-    selColours->SetNumberOfComponents(3);
-    vtkNew<vtkPoints> markerPoints;
-    vtkNew<vtkCellArray> markerCells;
-    vtkNew<vtkUnsignedCharArray> markerColours;
-    markerColours->SetNumberOfComponents(3);
-    vtkNew<vtkPoints> handlePoints;
-    vtkNew<vtkCellArray> handleCells;
-
     // The knob distance the hit test will use is the one drawn now.
     this->m_regionKnobOffset = kKnobPx * this->worldPerDisplayPixel();
-
-    const int selectedId = this->m_regions.selectedId();
-    for (const Region &r : this->m_regions.regions()) {
-        const auto rgb = regionColour(r);
-        const bool selected = r.id == selectedId;
-        if (r.shape == visivo::regions::Shape::Point) {
-            const vtkIdType id = markerPoints->InsertNextPoint(r.center[0], r.center[1], 0.0);
-            markerCells->InsertNextCell(1, &id);
-            markerColours->InsertNextTypedTuple(rgb.data());
-        }
-        if (selected)
-            appendLoops(visivo::regions::outlines(r), selPoints, selLines, selColours, rgb);
-        else
-            appendLoops(visivo::regions::outlines(r), listPoints, listLines, listColours, rgb);
-    }
-
-    this->m_regionListData->Initialize();
-    this->m_regionListData->SetPoints(listPoints);
-    this->m_regionListData->SetLines(listLines);
-    this->m_regionListData->GetCellData()->SetScalars(listColours);
-    this->m_regionPointData->Initialize();
-    this->m_regionPointData->SetPoints(markerPoints);
-    this->m_regionPointData->SetVerts(markerCells);
-    this->m_regionPointData->GetCellData()->SetScalars(markerColours);
-
-    const Region *sel = this->m_regions.selected();
-    if (sel) {
-        // The knob hangs on a short stem from the edge it turns.
-        const auto hs = visivo::regions::handles(*sel, this->m_regionKnobOffset);
-        for (const auto &h : hs) {
-            const vtkIdType id = handlePoints->InsertNextPoint(h.pos[0], h.pos[1], 0.0);
-            handleCells->InsertNextCell(1, &id);
-            if (h.kind == visivo::regions::HandleKind::Rotate) {
-                const double edge = sel->shape == visivo::regions::Shape::Box ? sel->size[1] / 2.0
-                                                                              : sel->semiAxes[1];
-                const Vec2 base = visivo::regions::toWorld(*sel, { 0.0, edge });
-                appendLoops({ { base, h.pos } }, selPoints, selLines, selColours, regionColour(*sel));
-            }
-        }
-        if (sel->shape == visivo::regions::Shape::Point) {
-            const vtkIdType id = handlePoints->InsertNextPoint(sel->center[0], sel->center[1], 0.0);
-            handleCells->InsertNextCell(1, &id);
-        }
-    }
-    this->m_regionSelectedData->Initialize();
-    this->m_regionSelectedData->SetPoints(selPoints);
-    this->m_regionSelectedData->SetLines(selLines);
-    this->m_regionSelectedData->GetCellData()->SetScalars(selColours);
-    this->m_regionHandleData->Initialize();
-    this->m_regionHandleData->SetPoints(handlePoints);
-    this->m_regionHandleData->SetVerts(handleCells);
-
-    // A light fill says which region is selected; an annulus is filled between
-    // its rings (the inner loop runs the other way round, a hole).
-    this->m_regionSelectedFillData->Initialize();
-    bool fill = false;
-    if (sel && sel->shape != visivo::regions::Shape::Point) {
-        auto loops = visivo::regions::outlines(*sel);
-        if (loops.size() > 1)
-            std::reverse(loops[1].begin(), loops[1].end());
-        vtkNew<vtkPoints> fp;
-        vtkNew<vtkCellArray> fl;
-        appendLoops(loops, fp, fl, nullptr, {});
-        this->m_regionSelectedFillData->SetPoints(fp);
-        this->m_regionSelectedFillData->SetLines(fl);
-        const auto rgb = regionColour(*sel);
-        this->m_regionSelectedFillActor->GetProperty()->SetColor(rgb[0] / 255.0, rgb[1] / 255.0,
-                                                                 rgb[2] / 255.0);
-        fill = fl->GetNumberOfCells() > 0;
-    }
-    this->m_regionSelectedFillData->Modified();
-    this->m_regionSelectedFillActor->SetVisibility(fill);
-    this->m_regionListData->Modified();
-    this->m_regionSelectedData->Modified();
-    this->m_regionPointData->Modified();
-    this->m_regionHandleData->Modified();
+    this->m_regionOverlay.update(this->m_regions, this->m_regionKnobOffset);
 }
 
 bool vtkWindowImage::displayToWorld(int displayX, int displayY, Vec2 *world) const

@@ -242,7 +242,8 @@ int NoiseRegionDialog::y1()          const { return m_y1Spin->value(); }
 int NoiseRegionDialog::channelStart() const { return m_chStartSpin->value() - 1; }
 int NoiseRegionDialog::channelEnd()   const { return m_chEndSpin->value() - 1; }
 
-void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd)
+void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, int chEnd,
+                                  const QString &origin)
 {
     // The spinboxes clamp out-of-range values to the cube extent. Setting them
     // fires the valueChanged connections → validate() + emitRegion() run, so the
@@ -254,7 +255,9 @@ void NoiseRegionDialog::setRegion(int x0, int x1, int y0, int y1, int chStart, i
     m_chStartSpin->setValue(chStart + 1);   // 0-based in, shown from 1
     m_chEndSpin->setValue(chEnd + 1);
     if (m_restoredHint) {
-        m_restoredHint->show();   // called only when restoring a saved region
+        if (!origin.isEmpty())
+            m_restoredHint->setText(origin);
+        m_restoredHint->show();   // called only when the values were filled in for the user
     }
 }
 

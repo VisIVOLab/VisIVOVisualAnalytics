@@ -61,8 +61,13 @@ struct Inputs
     /// A spectrum has been probed (2-D click) or picked (3-D plane click), so
     /// Pin Spectrum has something to promote.
     bool haveProbeSpectrum{ false };
-    /// A region has been drawn or imported and is still current.
+    /// The window's region list holds at least one region (issue #341).
     bool haveRegion{ false };
+    /// One of them is selected.
+    bool haveSelectedRegion{ false };
+    /// The region list has a change to undo / to redo.
+    bool regionUndo{ false };
+    bool regionRedo{ false };
     /// At least one image viewer window is open to receive slice contours.
     bool imageViewerOpen{ false };
     /// More than one pane in this window, or more than one cube window open.
@@ -82,6 +87,13 @@ struct Decision
     bool view3dTools{ false };
     bool pinSpectrum{ false };
     bool exportRegion{ false };
+    /// Region Properties and Delete Region: the selected region, wherever it
+    /// was drawn; they need no view on screen.
+    bool editSelectedRegion{ false };
+    /// Analyse Region: the selected region, measured on the 2-D view.
+    bool analyseRegion{ false };
+    bool undoRegion{ false };
+    bool redoRegion{ false };
     bool sendSliceToImageViewer{ false };
     bool linkViews{ false };
     /// Line width, baseline, stacking, polarimetry, source finding, kinematic
@@ -106,6 +118,12 @@ inline Decision evaluate(const Inputs &in)
     // another window entirely; linking is about how many views exist.
     d.pinSpectrum = in.haveProbeSpectrum;
     d.exportRegion = in.haveRegion;
+    d.editSelectedRegion = in.haveSelectedRegion;
+    // The statistics are taken on the slice (or the map it shows), so the
+    // slice family's view rule applies on top of the selection.
+    d.analyseRegion = in.haveSelectedRegion && d.slice2dTools;
+    d.undoRegion = in.regionUndo;
+    d.redoRegion = in.regionRedo;
     d.sendSliceToImageViewer = in.imageViewerOpen;
     d.linkViews = in.haveLinkTargets;
     // What the data IS, not what is on screen: fixed for a dataset.

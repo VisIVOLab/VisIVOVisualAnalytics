@@ -262,10 +262,9 @@ async def convert_regions(
     except (KeyError, IndexError, TypeError) as exc:   # a malformed region dict
         raise HTTPException(422, f"Malformed region: {exc!r}") from exc
     if unit and to_frame != "image":
-        pf = R._PixelFrame(wcs, request.origin) if wcs is not None else None
         try:
             for r in regions:
-                R._rescale_sizes(r, r.get("unit", "deg"), unit, pf)
+                R.sizes_in_unit(r, unit, wcs, origin=request.origin)
         except (R.RegionParseError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from exc
         except KeyError as exc:   # the region's own unit is not one we know

@@ -627,6 +627,26 @@ public:
         return r.id;
     }
 
+    /// Add several regions as ONE change (a region file read whole): one undo
+    /// step takes them all back, and a file of hundreds does not push hundreds
+    /// of snapshots. The first one added is selected. Returns their ids.
+    std::vector<int> addAll(const std::vector<Region> &regions)
+    {
+        std::vector<int> ids;
+        if (regions.empty())
+            return ids;
+        pushUndo();
+        for (Region r : regions) {
+            r.id = m_nextId++;
+            if (r.name.isEmpty())
+                r.name = QStringLiteral("%1 %2").arg(shapeLabel(r.shape)).arg(++m_named[static_cast<std::size_t>(r.shape)]);
+            m_regions.push_back(r);
+            ids.push_back(r.id);
+        }
+        m_selected = ids.front();
+        return ids;
+    }
+
     /// Replace the geometry/properties of the region with `r.id`.
     bool replace(const Region &r)
     {

@@ -110,7 +110,29 @@ class TestRegionConvertHttp(unittest.TestCase):
         out = r.json()["regions"][0]
         self.assertEqual(out["frame"], "icrs")
         self.assertEqual(out["unit"], "deg")
-        np.testing.assert_allclose(out["radii"], [6 / 3600.0, 12 / 3600.0], rtol=1e-9)
+        # Radii go through the local grid at the centre (#342), which a few
+        # pixels off the reference point differs from CDELT by parts in 1e9.
+        np.testing.assert_allclose(out["radii"], [6 / 3600.0, 12 / 3600.0], rtol=1e-6)
+
+    def test_pixel_unit_for_a_sky_region(self):
+        # A sky region's sizes asked in pixels: the local grid at its centre
+        # (2"/px here, rotated), so 6" is 3 px and a box keeps its two axes.
+        lon, lat = self.wcs.pixel_to_world_values(32.0, 32.0)
+        regs = [{"shape": "circle", "frame": "icrs", "center": [float(lon), float(lat)],
+                 "radius": 6.0, "unit": "arcsec"},
+                {"shape": "box", "frame": "fk5", "center": [float(lon), float(lat)],
+                 "size": [20.0, 10.0], "angle_deg": 40.0, "unit": "arcsec"}]
+        r = self.post(to_frame="galactic", dataset_id=self.ids["sky"], origin=0, unit="pix",
+                      regions=regs)
+        self.assertEqual(r.status_code, 200, r.text)
+        circle, box = r.json()["regions"]
+        self.assertEqual(circle["unit"], "pix")
+        self.assertAlmostEqual(circle["radius"], 3.0, places=4)
+        np.testing.assert_allclose(box["size"], [10.0, 5.0], rtol=1e-4)
+        # And an angle to another angle is a plain factor.
+        r = self.post(to_frame="icrs", dataset_id=self.ids["sky"], origin=0, unit="arcmin",
+                      regions=regs[:1])
+        self.assertAlmostEqual(r.json()["regions"][0]["radius"], 0.1, places=9)
 
     def test_polygon_to_image(self):
         xs, ys = [3.0, 20.0, 11.5], [4.0, 6.0, 30.0]

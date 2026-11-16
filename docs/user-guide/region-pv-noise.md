@@ -27,17 +27,18 @@ Pick a shape from *Tools → Regions* in the viewer:
 | **Polygon** | Click each vertex, double-click to close | Arbitrary shape. Concave polygons are supported. |
 | **Annulus** | Click centre, drag the outer radius, then type the inner one | Useful for background subtraction around a source. |
 
-While drawing, the live preview is rendered on the slice. What happens once
-it is released depends on the viewer: the image viewer keeps it in a list of
-regions you can edit (below); the cube viewer still keeps one region at a time,
-as described in the note.
+While drawing, the live preview is rendered on the slice. Once it is
+released the region joins the window's list of regions you can edit (below),
+in the image viewer and in the cube viewer alike.
 
-### Editing regions (image viewer)
+### Editing regions
 
-In the image viewer every region you draw stays on the image until you delete
-it, so you can keep a source aperture and a background ring side by side and
-come back to either. One region at a time is **selected**: it is drawn thicker,
-lightly filled, with white handles.
+Every region you draw, import or bring back from Session Data stays on the
+image until you delete it, so you can keep a source aperture and a background
+ring side by side and come back to either. In the cube viewer the regions stay
+on the 2-D slice (and on a moment map shown under it) while you change channel,
+and after their spectra are closed. One region at a time is **selected**: it is
+drawn thicker, lightly filled, with white handles.
 
 | Action | Effect |
 |---|---|
@@ -46,10 +47,14 @@ lightly filled, with white handles.
 | Drag a handle | box corner (the opposite corner stays put), circle radius, annulus inner or outer radius, ellipse semi-axis, polygon vertex; the knob above a box or ellipse rotates it |
 | Double-click a region | opens **Region Properties** |
 | Right-click a region | *Properties…*, *Analyse*, *Delete* |
-| **Delete** / **Backspace** | deletes the selected region (the image must have the keyboard focus) |
+| **Delete** / **Backspace** | deletes the selected region (the image or the slice must have the keyboard focus) |
 | **Cmd+Z** / **Shift+Cmd+Z** | undoes / redoes the last change to the regions: drawing, moving, reshaping, typing, deleting |
 
-The same entries are in *Tools ▸ Regions*. A click on a catalogue marker still
+The same entries are in *Tools ▸ Regions* (*Region Properties…*, *Analyse
+Region*, *Delete Region*, *Undo Region Edit*, *Redo Region Edit*). In the cube
+viewer Cmd+Z undoes a region change while the slice has the keyboard focus and
+there is one to undo; elsewhere it still undoes the assistant's display
+changes. A click on a catalogue marker still
 selects the source, even inside a region. Where regions overlap, a click on an
 outline picks that region; inside, the smallest region under the cursor wins.
 *Analyse* (or the menu entry *Analyse Region*) measures the selected region
@@ -75,28 +80,39 @@ have started typing; **Apply** puts the typed values on the image. The dialog
 opens in the frame the region was last typed in, or the image's own sky frame.
 
 ```{note}
-In the cube viewer only **one** region shape can be active at a time — the four region
-actions (Box / Circle / Polygon / Annulus) are an exclusive group in
-both the menu and the sidebar (`ExclusiveOptional`: at most one
-checked, or none). Clicking the currently-active shape again unchecks
-it and disarms region drawing entirely. The region overlay drawn on
-the 2-D view **persists while its spectrum is still on screen**, so the shape
-you measured stays visible next to the curve it produced; it is wiped when the
-spectrum plot goes away, or when you arm another region shape.
+Only **one** drawing tool can be armed at a time: the four region actions
+(Box / Circle / Polygon / Annulus) are an exclusive group in both the menu and
+the sidebar. Clicking the armed shape again disarms it. With a tool armed, a
+press on an existing region still selects and edits it; a press on empty image
+draws a new one.
 ```
+
+In the cube viewer the analyses that take a box start from the **selected
+region's bounding box**: *Estimate Noise*, *Export Sub-Cube*, *Mask 3-D
+Region*, *Refine Selected Box* and *RM Synthesis*. *Export Region* writes all
+regions or the selected one. Regions are kept in the cube's full-resolution
+pixels at double precision, so a region typed or imported at a fractional
+position stays there.
 
 ### Region spectrum (per-channel mean over the region)
 
-Releasing the region produces a **SPEC product**: it appears in Session Data
-and is placed in a pane straight away — a free one, or by growing the layout,
-and if there is no room the status bar says where to find it (a pane's ▾ menu).
+Releasing the region (or *Analyse* on a selected one) produces a **SPEC
+product** named after the region (*Box 1 spectrum*): it appears in Session
+Data and is placed in a pane straight away — a free one, or by growing the
+layout; with no room it opens in a window of its own. Opening the row again
+puts its region back in the list, selected.
 The 2-D statistics of the region are **not** a separate window: they are the
 product's Provenance, so selecting the row in Session Data and opening
 Inspector ▸ Provenance shows the region shape, the valid-pixel count and
 min / max / mean / median / σ, while the status bar reports the headline numbers.
 
 The plot itself is **mean per channel over the region** across **all
-cube channels** (not just the current slice). The stats bar
+cube channels** (not just the current slice). It is read from the cube the
+3-D view holds: at full resolution every pixel of the region counts; on a
+preview (every *n*-th pixel, or block means) the preview's samples whose
+positions fall in the region count, and the provenance's *Spectrum from* line
+says which (a region smaller than the preview's spacing takes the sample
+nearest its centre). The stats bar
 (`N / Min / Max / Mean / RMS / ∫`), channel marker, theme, and CSV
 export all work identically to pixel-probe mode; so do
 [line identification](spectral-tools.md#line-identification-overlaying-a-line-list)
@@ -347,7 +363,9 @@ region and channel range.
 
    The region you pick is **remembered per dataset**: the next time you open
    this cube the dialog re-opens pre-filled with your last noise region, so you
-   don't have to hunt for the same line-free box again.
+   don't have to hunt for the same line-free box again. With a region selected
+   on the slice, its bounding box fills the spatial range instead (the
+   channels stay as last used).
 3. Click **Estimate**. The dialog closes and the backend starts computing.
 4. The result panel shows summary stats over the per-channel arrays:
    - **σ per channel** = 1.4826 × MAD (robust 1σ for Gaussian noise),

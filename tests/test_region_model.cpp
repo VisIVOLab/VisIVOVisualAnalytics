@@ -5,6 +5,7 @@
 
 #include "CubeRegionGeom.h"
 #include "RegionFrameText.h"
+#include "RegionCubeSampling.h"
 #include "RegionFullRes.h"
 #include "RegionModel.h"
 
@@ -495,4 +496,61 @@ void TestRegionModel::fieldsReportWhatIsWrong()
     f.sizes = { 0 };
     QVERIFY(!canonicalFromFields(f, FrameChoice::IcrsSexagesimal, &o, &why));
     QVERIFY(why.contains(u"Radius"_qs));
+}
+
+// ── The 3-D view's samples of a region (RegionCubeSampling.h) ────────────────
+
+void TestRegionModel::cubeSamplesFollowTheDisplaySampling()
+{
+    using CubeLodGeometry::Sampling;
+    // A box over cube pixels 8..15 in x and 4..11 in y.
+    const Region b = box(11.5, 7.5, 7.0, 7.0);
+    // Full resolution (or a refined box at level 0): every pixel, 8 x 8.
+    const AxisGrid full{ 0, 63, 0.0, 1.0 };
+    QCOMPARE(int(samplesInRegion(b, full, full, Sampling{}).size()), 64);
+    // A strided preview (stride 4, offset 0): samples at cube 0, 4, 8, 12, ...
+    // The box holds cube 8 and 12 along x, and 4 and 8 along y.
+    const AxisGrid preview{ 0, 15, 0.0, 1.0 };
+    auto s = samplesInRegion(b, preview, preview, Sampling::strided(4));
+    QCOMPARE(int(s.size()), 4);
+    QCOMPARE(s.front()[0], 2);   // cube 8
+    QCOMPARE(s.front()[1], 1);   // cube 4
+    // A block-mean preview: sample k is the mean of 4k..4k+3, centred at
+    // 4k + 1.5, so the box holds cube 9.5 and 13.5 along x, 5.5 and 9.5 along y.
+    s = samplesInRegion(b, preview, preview, Sampling::blockMean(4));
+    QCOMPARE(int(s.size()), 4);
+    QCOMPARE(s.front()[0], 2);
+    QCOMPARE(s.back()[0], 3);
+    QVERIFY(near(sampleToCube(preview, Sampling::blockMean(4), 2), 9.5));
+    QVERIFY(near(cubeToSample(preview, Sampling::blockMean(4), 9.5), 2.0));
+    // A box read at full resolution with its origin at its corner (40, 30):
+    // sample k is cube 40 + k.
+    const AxisGrid roiX{ 0, 23, 40.0, 1.0 }, roiY{ 0, 23, 30.0, 1.0 };
+    s = samplesInRegion(box(45.0, 32.0, 2.0, 0.0), roiX, roiY, Sampling{});
+    QCOMPARE(int(s.size()), 3);
+    QCOMPARE(s.front()[0], 4);   // cube 44
+    QCOMPARE(s.front()[1], 2);   // cube 32
+    // Smaller than the preview's spacing: the sample nearest its centre.
+    s = samplesInRegion(circle(10.2, 6.1, 0.5), preview, preview, Sampling::strided(4));
+    QCOMPARE(int(s.size()), 1);
+    QCOMPARE(s.front()[0], 3);   // cube 12, nearest 10.2 (10.2 / 4 = 2.55)
+    QCOMPARE(s.front()[1], 2);   // cube 8, nearest 6.1 (1.525 rounds to 2)
+    // Off the displayed cube: nothing.
+    QVERIFY(samplesInRegion(circle(500.0, 500.0, 2.0), preview, preview, Sampling::strided(4)).empty());
+}
+
+void TestRegionModel::addAllIsOneUndoStep()
+{
+    RegionList list;
+    list.add(circle(1.0, 1.0, 1.0));
+    const auto ids = list.addAll({ box(5.0, 5.0, 2.0, 2.0), circle(9.0, 9.0, 3.0) });
+    QCOMPARE(int(ids.size()), 2);
+    QCOMPARE(list.count(), 3);
+    QCOMPARE(list.selectedId(), ids.front());
+    QCOMPARE(list.find(ids.back())->name, QStringLiteral("Circle 2"));
+    QVERIFY(list.undo());
+    QCOMPARE(list.count(), 1);   // the whole import goes back at once
+    QVERIFY(list.canRedo());
+    QVERIFY(list.addAll({}).empty());
+    QVERIFY(list.canRedo());     // nothing added: no undo step, redo kept
 }

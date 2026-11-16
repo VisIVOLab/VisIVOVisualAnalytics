@@ -6,6 +6,7 @@
 #include "ProductRegistry.h"   // ReplayStep
 #include "PowerSpectrumSlope.h"
 #include "RegionFullRes.h"
+#include "RegionListOverlay.h"
 #include "RegionModel.h"
 
 #include <vtkNew.h>
@@ -669,17 +670,7 @@ private:
     RegionDrag m_regionDrag;
     vtkSmartPointer<vtkCallbackCommand> m_regionEditCommand;
     double m_regionKnobOffset{ 1.0 };   ///< rotation knob distance last drawn (image pixels)
-    vtkNew<vtkPolyData> m_regionListData;        ///< outlines of the unselected regions
-    vtkNew<vtkActor> m_regionListActor;
-    vtkNew<vtkPolyData> m_regionSelectedData;    ///< outline of the selected one
-    vtkNew<vtkActor> m_regionSelectedActor;
-    vtkNew<vtkPolyData> m_regionSelectedFillData;
-    vtkNew<vtkContourTriangulator> m_regionSelectedTriangulator;
-    vtkNew<vtkActor> m_regionSelectedFillActor;
-    vtkNew<vtkPolyData> m_regionHandleData;      ///< handles and point markers
-    vtkNew<vtkActor> m_regionHandleActor;
-    vtkNew<vtkPolyData> m_regionPointData;
-    vtkNew<vtkActor> m_regionPointActor;
+    RegionListOverlay m_regionOverlay;   ///< draws the list (shared with the cube viewer)
     QPointer<RegionPropertiesDialog> m_regionPropertiesDialog;
     QAction *m_actRegionProperties{ nullptr };
     QAction *m_actDeleteRegion{ nullptr };

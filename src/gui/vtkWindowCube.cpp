@@ -348,25 +348,6 @@ double computeBlankFraction(vtkImageData *imageData)
 
 
 
-std::array<int, 4> regionBounds2D(vtkWindowCube::RegionMode mode, const std::array<int, 2> &anchor,
-                                  const std::array<int, 2> &current,
-                                  const std::vector<std::array<int, 2>> &polygonVertices)
-{
-    // The third copy of this box (Export Sub-Cube and Mask 3-D Region default
-    // their extents from it), and it had the same quadrant bug: a circle or an
-    // annulus is a centre plus a rim point, not two opposite corners.
-    if (mode == vtkWindowCube::RegionMode::Polygon && !polygonVertices.empty()) {
-        auto b = CubeRegionGeom::polygonBounds(polygonVertices);
-        b[0] = std::min(b[0], current[0]);
-        b[1] = std::max(b[1], current[0]);
-        b[2] = std::min(b[2], current[1]);
-        b[3] = std::max(b[3], current[1]);
-        return b;
-    }
-    if (mode == vtkWindowCube::RegionMode::Circle || mode == vtkWindowCube::RegionMode::Annulus)
-        return CubeRegionGeom::circleBounds(anchor, current);
-    return CubeRegionGeom::boxBounds(anchor, current);
-}
 
 
 
@@ -1708,6 +1689,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->setupCubeRenderer();
     this->setupSliceRenderer();
     this->setupMomentRenderer();
+    // The region list's actors and its select/move/reshape observers on both.
+    this->setupRegionList();
     // SAMP: send this cube, or the sky position of a clicked pixel.
     this->setupSamp();
     // §3.0: bind the moment host widget now that momentWin has its renderer +
@@ -3014,6 +2997,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             u"Save the drawn region as a CASA CRTF or DS9 (.reg) file."_s);
     QObject::connect(m_actExportCubeRegion, &QAction::triggered,
                      this, &vtkWindowCube::exportRegionsToFile);
+    // Properties, Analyse, Delete, Undo and Redo of the region list.
+    this->setupRegionListActions();
 
     // Kinematic-model overlay (F2): contour a tilted-ring rotating-disk model
     // over the cube to highlight gas departing from regular rotation.
@@ -5024,33 +5009,23 @@ std::array<int, 4> vtkWindowCube::currentRegionBounds2D() const
 {
     const int maxX = std::max(0, this->remoteDatasetWidth - 1);
     const int maxY = std::max(0, this->remoteDatasetHeight - 1);
-    if (!this->regionValid || this->regionMode == RegionMode::None)
-        return { 0, maxX, 0, maxY };
-    const auto bounds = regionBounds2D(this->regionMode, this->regionAnchorVoxel,
-                                       this->regionCurrentVoxel, this->regionPolygonVertices);
-    const int x0 = std::clamp(bounds[0], 0, maxX);
-    const int y0 = std::clamp(bounds[2], 0, maxY);
-    return { x0, std::clamp(bounds[1], x0, maxX), y0, std::clamp(bounds[3], y0, maxY) };
+    if (const auto box = this->selectedRegionPixelBox())
+        return *box;
+    return { 0, maxX, 0, maxY };
 }
 
 void vtkWindowCube::exportSubCubeAsFits()
 {
-    // Pre-fill bounds from a drawn region if available. We can only do this
-    // for axis-aligned shapes (Box) trivially; for Circle / Annulus /
-    // Polygon use the AABB of the geometry (regionBounds2D — same helper
-    // used by analyzeCurrentRegion). Always fall back to the full extent.
+    // Pre-fill bounds from the selected region's bounding box, or the full
+    // extent with none selected.
     int defX0 = 0, defX1 = std::max(0, this->remoteDatasetWidth  - 1);
     int defY0 = 0, defY1 = std::max(0, this->remoteDatasetHeight - 1);
     int defZ0 = 0, defZ1 = std::max(0, this->remoteDatasetDepth  - 1);
-    if (this->regionValid && this->regionMode != RegionMode::None) {
-        const auto bounds = regionBounds2D(
-                this->regionMode,
-                this->regionAnchorVoxel, this->regionCurrentVoxel,
-                this->regionPolygonVertices);
-        defX0 = std::clamp(bounds[0], 0, defX1);
-        defX1 = std::clamp(bounds[1], defX0, std::max(0, this->remoteDatasetWidth  - 1));
-        defY0 = std::clamp(bounds[2], 0, defY1);
-        defY1 = std::clamp(bounds[3], defY0, std::max(0, this->remoteDatasetHeight - 1));
+    if (const auto box = this->selectedRegionPixelBox()) {
+        defX0 = (*box)[0];
+        defX1 = (*box)[1];
+        defY0 = (*box)[2];
+        defY1 = (*box)[3];
     }
 
     // One window with every parameter in it, kept open across the run. The
@@ -5169,12 +5144,11 @@ void vtkWindowCube::showRefineBoxDialog()
     const auto my = middleHalf(this->remoteDatasetHeight);
     const auto mz = middleHalf(this->remoteDatasetDepth);
     int defX0 = mx[0], defX1 = mx[1], defY0 = my[0], defY1 = my[1];
-    if (this->regionValid && this->regionMode != RegionMode::None) {
-        const auto b = this->currentRegionBounds2D();
-        defX0 = b[0];
-        defX1 = b[1];
-        defY0 = b[2];
-        defY1 = b[3];
+    if (const auto box = this->selectedRegionPixelBox()) {
+        defX0 = (*box)[0];
+        defX1 = (*box)[1];
+        defY0 = (*box)[2];
+        defY1 = (*box)[3];
     }
     auto *dlg = new CubeBoxToolDialog(
             this, u"Refine Selected Box"_s,
@@ -5206,13 +5180,11 @@ void vtkWindowCube::maskCubeRegion3d()
     int defX0 = 0, defX1 = std::max(0, this->remoteDatasetWidth  - 1);
     int defY0 = 0, defY1 = std::max(0, this->remoteDatasetHeight - 1);
     int defZ0 = 0, defZ1 = std::max(0, this->remoteDatasetDepth  - 1);
-    if (this->regionValid && this->regionMode != RegionMode::None) {
-        const auto bounds = regionBounds2D(this->regionMode, this->regionAnchorVoxel,
-                                           this->regionCurrentVoxel, this->regionPolygonVertices);
-        defX0 = std::clamp(bounds[0], 0, defX1);
-        defX1 = std::clamp(bounds[1], defX0, std::max(0, this->remoteDatasetWidth  - 1));
-        defY0 = std::clamp(bounds[2], 0, defY1);
-        defY1 = std::clamp(bounds[3], defY0, std::max(0, this->remoteDatasetHeight - 1));
+    if (const auto box = this->selectedRegionPixelBox()) {
+        defX0 = (*box)[0];
+        defX1 = (*box)[1];
+        defY0 = (*box)[2];
+        defY1 = (*box)[3];
     }
 
     // One window, with the mask mode in it. This tool used to borrow the
@@ -7949,6 +7921,12 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->actionPolygonRegion);
     add(u"Regions"_s, self->actionAnnulusRegion);
     add(u"Regions"_s, self->m_actMaskRegion);
+    // The region list (issue #341): what acts on the selected region.
+    add(u"Regions"_s, self->m_actRegionProperties);
+    add(u"Regions"_s, self->m_actAnalyseRegion);
+    add(u"Regions"_s, self->m_actDeleteRegion);
+    add(u"Regions"_s, self->m_actUndoRegion);
+    add(u"Regions"_s, self->m_actRedoRegion);
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
 
@@ -9376,6 +9354,7 @@ void vtkWindowCube::setSliceBackdrop(const QString &productId)
     this->refreshPvOverlay();
     if (this->regionValid)
         this->refreshRegionOverlay();
+    this->refreshRegionListOverlay();
     this->layout2dPaneFor(/*slice=*/true, /*force=*/false);
     if (this->sliceWin)
         this->sliceWin->Render();
@@ -10852,6 +10831,26 @@ void vtkWindowCube::changeEvent(QEvent *event)
 bool vtkWindowCube::eventFilter(QObject *watched, QEvent *event)
 {
     const QEvent::Type et = event->type();
+    // Cmd+Z / Shift+Cmd+Z on a 2-D view undo the region list while it has a
+    // change to undo. The window-wide copilot undo holds the same key, so the
+    // view claims it (ShortcutOverride) and handles the key press itself.
+    if ((et == QEvent::ShortcutOverride || et == QEvent::KeyPress)
+        && (watched == ui->vtkImage || (m_vtkMoment && watched == m_vtkMoment.data()))) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        const bool free = !this->regionDragRunning();
+        const bool undo = free && key->matches(QKeySequence::Undo) && m_regions.canUndo();
+        const bool redo = free && key->matches(QKeySequence::Redo) && m_regions.canRedo();
+        if (undo || redo) {
+            event->accept();
+            if (et == QEvent::KeyPress) {
+                if (undo)
+                    this->undoRegionEdit();
+                else
+                    this->redoRegionEdit();
+            }
+            return true;
+        }
+    }
     // Closing a detached-pane window re-docks the pane into its grid slot (never destroys it).
     if (et == QEvent::Close)
         for (int i = 0; i < 4; ++i)
@@ -14249,26 +14248,37 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
     }
     if (kind != u"region"_s)
         return false;
-    const QString shape = visivo::originShape(origin);
-    if (shape == u"polygon"_s) {
-        const auto verts = visivo::originPolygon(origin);
-        if (verts.size() < 3)
+    // The measured region goes back into the region list (issue #341) and is
+    // selected; a region of the list with the same geometry is selected rather
+    // than duplicated, so opening a row twice does not stack two copies.
+    std::optional<visivo::regions::Region> restored;
+    const QVariantMap listRegion = visivo::originListRegion(origin);
+    if (!listRegion.isEmpty()) {
+        visivo::regions::Region r;
+        if (!visivo::regions::fromCanonical(QJsonObject::fromVariantMap(listRegion), 0.0, &r))
             return false;
-        this->regionPolygonVertices = verts;
-        this->regionMode = RegionMode::Polygon;
+        restored = r;
     } else {
-        int a[2] = { 0, 0 }, c[2] = { 0, 0 };
-        if (!visivo::originPoint(origin, u"anchor"_s, a, 2)
-            || !visivo::originPoint(origin, u"current"_s, c, 2))
-            return false;   // half a geometry is worse than none
-        this->regionAnchorVoxel = { a[0], a[1] };
-        this->regionCurrentVoxel = { c[0], c[1] };
-        this->regionAnnulusInnerRadius = visivo::originInnerRadius(origin);
-        this->regionMode = shape == u"box"_s     ? RegionMode::Box
-                         : shape == u"circle"_s  ? RegionMode::Circle
-                         : shape == u"annulus"_s ? RegionMode::Annulus
-                                                 : RegionMode::None;
-        if (this->regionMode == RegionMode::None)
+        // A product measured before the list: anchor/current (or vertices) in
+        // the slice's voxels, which are the cube's full-resolution pixels.
+        const QString shape = visivo::originShape(origin);
+        std::array<int, 2> anchor{ 0, 0 }, current{ 0, 0 };
+        std::vector<std::array<int, 2>> verts;
+        if (shape == u"polygon"_s) {
+            verts = visivo::originPolygon(origin);
+            if (verts.size() < 3)
+                return false;
+        } else {
+            int a[2] = { 0, 0 }, c[2] = { 0, 0 };
+            if (!visivo::originPoint(origin, u"anchor"_s, a, 2)
+                || !visivo::originPoint(origin, u"current"_s, c, 2))
+                return false;   // half a geometry is worse than none
+            anchor = { a[0], a[1] };
+            current = { c[0], c[1] };
+        }
+        restored = visivo::regionFromDisplayed(shape, visivo::DisplayGrid{}, anchor, current, verts,
+                                               visivo::originInnerRadius(origin));
+        if (!restored)
             return false;
     }
     // Back to the surface the numbers came from. Redrawing a channel-10 region
@@ -14307,11 +14317,17 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
             m_originRestoreNote =
                     u" - the moment map has been recomputed since this was measured"_s;
     }
-    this->regionDragging = false;
-    this->regionValid = true;
-    this->refreshRegionOverlay();
-    if (auto *win = this->active2dWin())
-        win->Render();
+    int id = -1;
+    for (const auto &r : this->m_regions.regions()) {
+        if (visivo::regions::sameGeometry(r, *restored)) {
+            id = r.id;
+            break;
+        }
+    }
+    if (id < 0)
+        id = this->m_regions.add(*restored);
+    this->m_regions.select(id);
+    this->onRegionListChanged();
     return true;
 }
 
@@ -14525,12 +14541,14 @@ void vtkWindowCube::applyMomentToolGate()
             u"nothing to link yet, split into 2 panes or open a second cube viewer"_s;
     static const QString reasonNoMoment =
             u"compute a moment map first (Tools \u25b8 Maps \u25b8 Compute Moment)"_s;
+    static const QString reasonNoSelectedRegion =
+            u"select a region first (click it on the 2D Slice)"_s;
     // Every reason this function writes, so a tooltip of ours is never mistaken
     // for the tool's own sentence and cached over it.
     static const QSet<QString> ourReasons{ reasonNoSlice,      reasonNo3d,
                                            reasonNoProbe,      reasonNoRegion,
                                            reasonNoImageView,  reasonNoLinkTargets,
-                                           reasonNoMoment };
+                                           reasonNoMoment,     reasonNoSelectedRegion };
 
     // enabled=false with a reason disables + explains; otherwise the action goes
     // back to its own baseline and its own tooltip.
@@ -14687,11 +14705,12 @@ void vtkWindowCube::applyMomentToolGate()
     // Pin Spectrum promotes the LAST probed spectrum, which the 2-D probe and the
     // 3-D plane pick both feed (updateProbePlot is the single writer).
     stateIn.haveProbeSpectrum = !m_lastProbeValues.isEmpty();
-    // Region export serialises the live shape, or the last finalised one after
-    // analysis reset regionMode (same fallback exportRegionsToFile() uses).
-    stateIn.haveRegion = this->regionValid
-            && (this->regionMode != RegionMode::None
-                || this->m_exportableRegionShape != RegionMode::None);
+    // The region list (issue #341): export writes it, the edit actions act on
+    // its selected region, and undo/redo walk its history.
+    stateIn.haveRegion = !this->m_regions.isEmpty();
+    stateIn.haveSelectedRegion = this->m_regions.selected() != nullptr;
+    stateIn.regionUndo = this->m_regions.canUndo() && !this->m_regionDrag.active;
+    stateIn.regionRedo = this->m_regions.canRedo() && !this->m_regionDrag.active;
     // "Send Slice to Image Viewer" emits contourDataReady, which MainWindow
     // relays to the first open image viewer — with none open the click did
     // nothing at all, no message, no window. Checked by class name so this file
@@ -14711,6 +14730,15 @@ void vtkWindowCube::applyMomentToolGate()
     applyGate(m_actPinSpectrum.data(), m_cubeActionsEnabled && sd.pinSpectrum, reasonNoProbe);
     applyGate(m_actExportCubeRegion.data(), m_cubeActionsEnabled && sd.exportRegion,
               reasonNoRegion);
+    // One "select a region first" under the group's first entry is enough: the
+    // menu shows every reason as a line of its own, and five identical lines
+    // under one group read as noise. Undo and Redo grey out as an Edit menu does.
+    applyGate(m_actRegionProperties.data(), sd.editSelectedRegion, reasonNoSelectedRegion);
+    applyGate(m_actDeleteRegion.data(), sd.editSelectedRegion, QString());
+    applyGate(m_actAnalyseRegion.data(), m_cubeActionsEnabled && sd.analyseRegion,
+              sd.editSelectedRegion ? reasonNoSlice : QString());
+    applyGate(m_actUndoRegion.data(), sd.undoRegion, QString());
+    applyGate(m_actRedoRegion.data(), sd.redoRegion, QString());
     applyGate(m_actSendSliceToImage.data(), m_cubeActionsEnabled && sd.sendSliceToImageViewer,
               reasonNoImageView);
     applyGate(m_actLinkViews.data(), sd.linkViews, reasonNoLinkTargets);
@@ -14907,6 +14935,7 @@ void vtkWindowCube::changeImageRenderer()
     if (this->regionMode != RegionMode::None && this->regionValid) {
         this->refreshRegionOverlay();
     }
+    this->refreshRegionListOverlay();
     if (this->pvModeActive && this->pvValid) {
         this->refreshPvOverlay();
     }

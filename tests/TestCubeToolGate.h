@@ -18,6 +18,7 @@ private slots:
 
     void pinSpectrum_followsTheProbedSpectrumOnly();
     void exportRegion_followsRegionExistence();
+    void regionList_selectionAndUndoGates();
     void sendSlice_followsAnOpenImageViewer();
     void linkViews_followsLinkTargets();
     void stateGates_ignoreTheLayout();

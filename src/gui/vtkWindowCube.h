@@ -42,10 +42,15 @@ class QCheckBox;
 class QListWidget;
 class SkeletonSettings;
 class CubeLodVolumes;
+class RegionPropertiesDialog;
+class vtkCallbackCommand;
 
 #include "CubeViewportGeometry.h"
 #include "CubeLodAuto.h"
 #include "CubeLodGeometry.h"
+#include "RegionFullRes.h"
+#include "RegionListOverlay.h"
+#include "RegionModel.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkWeakPointer.h>
@@ -1639,9 +1644,8 @@ protected:
     /// The 2-D product currently visible in a pane, preferring the focused one,
     /// or an empty string when no map is on screen.
     QString displayedImageProductId() const;
-    /// Pixel bounds {x0, x1, y0, y1} of the drawn region, or the full extent
-    /// when none is drawn. Wraps the file-local regionBounds2D() so callers
-    /// outside vtkWindowCube.cpp get the same answer as Export Sub-Cube.
+    /// Pixel bounds {x0, x1, y0, y1} of the selected region, or the full
+    /// extent when none is selected (selectedRegionPixelBox).
     std::array<int, 4> currentRegionBounds2D() const;
     /// The Stokes plane this cube itself is, parsed from the collapsed-axis
     /// summary ("Collapsed axes: STOKES=2 (1)" → "Q"), or empty.
@@ -1931,11 +1935,10 @@ protected:
     bool useCameraRoiRefinement{ false };
     bool pendingRemoteRefinementReload{ false };
     bool probeModeActive{ false };
+    /// The drawing tool armed (Box, Circle, …). The draft members below
+    /// (regionAnchorVoxel, regionCurrentVoxel, …) are the region being DRAWN;
+    /// once finished it joins m_regions and they are cleared.
     RegionMode regionMode{ RegionMode::None };
-    // The shape of the last finalised region, kept after analysis sets
-    // regionMode back to None (geometry + regionValid persist while the result
-    // dialogs are open) so Region IO export still knows the shape to serialise.
-    RegionMode m_exportableRegionShape{ RegionMode::None };
     bool pvModeActive{ false };
 
     // ── SAMP actions (issue #130, vtkWindowCube_Samp.cpp) ────────────────────
@@ -2103,19 +2106,85 @@ protected:
     void clearProbe();
     void clearRegion();
     void clearPv();
-    void analyzeCurrentRegion();
     // Region IO (CRTF/DS9) on the cube's 2-D view (vtkWindowCube_RegionIO.cpp).
     QPointer<QAction> m_actExportCubeRegion;
     QPointer<QAction> m_actImportCubeRegion;
-    QJsonObject currentRegionToJson() const;   ///< active drawn ROI → canonical dict (1-based px)
     void exportRegionsToFile();
     void importRegionsFromFile();
-    /// Map the first parsed canonical region (image-frame, 1-based px) onto the
-    /// cube's region model, draw it and run region analysis.
+    /// Put the parsed canonical regions (image frame, 1-based pixels) in the
+    /// region list, select the first, and analyse it.
     void applyImportedRegion(const QJsonArray &regions);
-    /// Clear the 2D region overlay once both result-dialog and spectrum plot
-    /// have been closed. Wired to QObject::destroyed of both widgets.
-    void maybeClearRegionAfterDisplay();
+
+    // ── The region list (issue #341, vtkWindowCube_RegionList.cpp) ───────────
+    // Regions drawn, imported, restored or typed in are kept in m_regions until
+    // the user deletes them, in the cube's full-resolution 0-based pixels (x,
+    // y): the world frame of the 2-D slice and of the moment window, which are
+    // served at full resolution with origin 0 and spacing 1. The 3-D view's
+    // preview is reached through CubeLodGeometry::Sampling (cubeToDisplay).
+    visivo::regions::RegionList m_regions;
+    /// The list on the 2-D slice and on the moment window (each its own renderer).
+    RegionListOverlay m_sliceRegionOverlay;
+    RegionListOverlay m_momentRegionOverlay;
+    struct RegionDrag
+    {
+        bool active{ false };
+        vtkRenderWindow *window{ nullptr };   ///< the pane the drag started in
+        visivo::regions::Hit hit;
+        visivo::regions::Vec2 start{ 0.0, 0.0 };
+        visivo::regions::Region original;
+    };
+    RegionDrag m_regionDrag;
+    vtkSmartPointer<vtkCallbackCommand> m_regionEditCommand;
+    /// Rotation-knob distance last drawn on the slice and on the moment window
+    /// (list pixels): the hit test reads the one it was drawn at.
+    std::array<double, 2> m_regionKnobOffset{ 1.0, 1.0 };
+    QPointer<RegionPropertiesDialog> m_regionPropertiesDialog;
+    QPointer<QAction> m_actRegionProperties;
+    QPointer<QAction> m_actAnalyseRegion;
+    QPointer<QAction> m_actDeleteRegion;
+    QPointer<QAction> m_actUndoRegion;
+    QPointer<QAction> m_actRedoRegion;
+    void setupRegionList();
+    void setupRegionListActions();
+    /// The voxel grid of the image shown in @p win (slice or moment window).
+    visivo::DisplayGrid regionDisplayGrid(vtkRenderWindow *win) const;
+    vtkImageData *regionPaneImage(vtkRenderWindow *win) const;
+    /// The region being drawn, as a list region (full-resolution pixels).
+    std::optional<visivo::regions::Region> draftRegion() const;
+    /// The finished draft joins the list and is selected; the draft is cleared.
+    /// Returns its id, or -1 when it had no area.
+    int commitDraftRegion();
+    /// Redraw the list and refresh the actions, the gate and the properties
+    /// dialog after any change to it.
+    void onRegionListChanged();
+    void refreshRegionListOverlay();
+    void onRegionCameraChanged(vtkObject *caller, unsigned long, void *);
+    /// List pixels per screen pixel in @p win at its current zoom.
+    double regionWorldPerDisplayPixel(vtkRenderWindow *win) const;
+    bool regionDisplayToWorld(vtkRenderWindow *win, int displayX, int displayY,
+                              visivo::regions::Vec2 *world) const;
+    static void regionEditCallback(vtkObject *caller, unsigned long eventId, void *clientData,
+                                   void *callData);
+    /// A mouse event in @p win that selects, moves or edits a region of the
+    /// list. True when it was consumed (the camera and the tools never see it).
+    bool handleRegionEditEvent(vtkRenderWindow *win, unsigned long eventId);
+    bool regionEditingAllowed(vtkRenderWindow *win) const;
+    void showRegionContextMenu(int id);
+    void openRegionProperties(int id = -1);
+    /// Whether a region drag is running; one whose release was lost is ended.
+    bool regionDragRunning();
+    void deleteSelectedRegion();
+    void undoRegionEdit();
+    void redoRegionEdit();
+    /// Statistics on the pane shown and the mean spectrum over the cube of
+    /// region @p id (the selected one by default).
+    void analyzeRegion(int id = -1);
+public:
+    /// {x0, x1, y0, y1} cube pixels of the selected region's bounds, clamped
+    /// to the cube; empty with no region selected. Seeds the box tools (noise,
+    /// sub-cube, mask, refine, RM synthesis).
+    std::optional<std::array<int, 4>> selectedRegionPixelBox() const;
+protected:
     /// Tools → "Export Sub-Cube as FITS…". Opens a small dialog asking for
     /// X / Y / Z bounds (pre-filled from the current region if drawn, else
     /// full extent), then posts to /v1/cube/save_subregion. Async — uses

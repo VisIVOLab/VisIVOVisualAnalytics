@@ -83,7 +83,7 @@ settles* switches this off; a box chosen as below still works.
 
 **Tools → Views → Refine Selected Box…** shows one box of a cube at a finer
 level over the 3-D preview, and leaves the preview everywhere else. The box
-starts from the drawn region (its bounding box on the sky) or the middle half
+starts from the selected region (its bounding box on the sky) or the middle half
 of the cube, and the amber box in the volume follows it while you edit the
 bounds. **Refine** reads the box from the backend at the finest level the
 detail budget allows: level 0, the cube itself, when it fits, else level 1, 2
@@ -515,7 +515,9 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
 - **<kbd>Esc</kbd>** disarms whatever is armed (and, with nothing armed, restores
   a maximized pane).
 - A few tools are gated on **state** rather than on a view, and again say why:
-  *Pin Spectrum* needs a probed spectrum, *Export Region* a drawn region, *Overlay
+  *Pin Spectrum* needs a probed spectrum, *Export Region* a region in the
+  list, *Region Properties*, *Analyse Region* and *Delete Region* a selected
+  region, *Overlay
   Slice on an Open Image* an open image viewer to send contours to, *Link Views*
   something to link to (a second pane or a second cube window).
 
@@ -544,6 +546,7 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - Full-Stokes cubes, see [Polarimetry](polarimetry).
 * - **Regions**
   - Box / Circle / Polygon / Annulus Region Analysis, Mask 3-D Region,
+    Region Properties, Analyse / Delete Region, Undo / Redo Region Edit,
     Import / Export Region (CRTF/DS9)
   - Draw a shape and measure inside it, or exchange one with CASA / DS9. See
     [Regions, PV, noise](region-pv-noise).
@@ -836,7 +839,7 @@ several regions' spectra on the same axes:
    spectrum appears as the live **Current** curve (brand blue).
 2. Click **Compare** → the current curve is frozen in place with its
    own colour and a **legend** entry labelled from its title (e.g.
-   *"1. Mean per channel — Circle region"*).
+   *"1. Mean per channel, Circle 1"*).
 3. Draw another region → its spectrum becomes the new **Current** curve
    while the compared one stays overlaid. Repeat to accumulate more.
 4. **Clear Overlays (N)** removes all comparison curves and hides the legend.

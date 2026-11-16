@@ -8,6 +8,29 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: regions in the cube viewer are a list you edit and keep
+  (#341).** The 2-D slice (and a moment map shown under it) draws every
+  region of the window's list, as the image viewer does: click selects, drag
+  moves, handles reshape, double-click opens Region Properties (positions in
+  pixels or a sky frame through the cube's WCS), Delete/Backspace and the
+  right-click menu remove, and Cmd+Z undoes while the slice has the focus.
+  Regions no longer vanish when their spectrum closes or the channel changes.
+  *Tools ▸ Regions* gains Region Properties, Analyse Region, Delete Region,
+  Undo and Redo Region Edit, gated on a selected region. Analysis runs on the
+  selected region: its statistics on the slice shown, and its mean spectrum
+  over the cube shown in 3-D, now read through the preview's sampling (a
+  strided or block-mean preview counts its own samples inside the region,
+  and the spectral axis is placed at the samples' channels). The spectrum
+  opens in a pane, or in a window only when no pane is free. Estimate Noise,
+  Export Sub-Cube, Mask 3-D Region, Refine Selected Box and RM Synthesis start
+  from the selected region's bounding box; Import Region puts every region of
+  the file in the list at the backend's sub-pixel position (rotation kept);
+  Export Region writes all regions or the selected one; a Session Data row
+  puts its region back in the list.
+- **Backend: `/v1/regions/convert` with a size `unit` works again** after the
+  region parser's rewrite: sky sizes are expressed in the asked unit along
+  each region's own axes through the local grid, as the rest of the
+  conversion does.
 - **Desktop: the image viewer keeps a list of editable regions, with positions
   typed in a chosen frame (part of #341).** Every region drawn stays until it
   is deleted, in full-resolution pixels at double precision, so it survives the
@@ -20,8 +43,7 @@ are preserved here unedited; the branch names they refer to are historical.
   degrees; the numbers follow the region while it is moved. Analysis runs on
   the selected region, Export Region writes all regions or the selected one
   (optionally each in the frame it was typed in), and a Session Data row puts
-  its region back in the list. The cube viewer's slice and moment panes still
-  keep a single region; they follow next.
+  its region back in the list.
 - **Backend: `POST /v1/regions/convert`** moves canonical regions between
   pixels (0- or 1-based) and sky frames with the dataset's full celestial WCS,
   and reports the dataset's sky frame (empty without a celestial WCS).

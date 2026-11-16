@@ -626,6 +626,10 @@ set(PROJECT_SOURCES
         src/gui/RegionPropertiesDialog.h
         src/gui/RegionModel.h
         src/gui/RegionFrameText.h
+        src/gui/RegionListOverlay.cpp
+        src/gui/RegionListOverlay.h
+        src/gui/RegionListExport.cpp
+        src/gui/RegionListExport.h
         src/gui/ToolResultDialog.cpp
         src/gui/ToolResultDialog.h
         src/gui/CosmologyCalculatorDialog.cpp
@@ -673,6 +677,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_VrShare.cpp
         src/gui/vtkWindowCube_Raytrace.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
+        src/gui/vtkWindowCube_RegionList.cpp
         src/gui/Pane2DView.cpp
         src/gui/Pane2DView.h
         src/gui/CubeViewportGeometry.cpp

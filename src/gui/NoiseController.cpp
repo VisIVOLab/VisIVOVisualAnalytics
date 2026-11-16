@@ -146,9 +146,18 @@ void NoiseController::startEstimation()
                 AnalysisParamStore().load(cube->datasetPersistKey(), u"noise"_s);
         // Require the full set so a truncated/old settings file doesn't silently
         // default missing axes to 0.
-        if (saved.contains(u"x0"_s) && saved.contains(u"x1"_s) && saved.contains(u"y0"_s)
-            && saved.contains(u"y1"_s) && saved.contains(u"chStart"_s)
-            && saved.contains(u"chEnd"_s)) {
+        const bool haveSaved = saved.contains(u"x0"_s) && saved.contains(u"x1"_s)
+                && saved.contains(u"y0"_s) && saved.contains(u"y1"_s)
+                && saved.contains(u"chStart"_s) && saved.contains(u"chEnd"_s);
+        if (const auto box = cube->selectedRegionPixelBox()) {
+            // A region selected in the window (issue #341) is where the user
+            // is looking: its bounding box is the spatial box, and the
+            // channels stay as last used (all of them the first time).
+            const int c0 = haveSaved ? saved.value(u"chStart"_s).toInt() : 0;
+            const int c1 = haveSaved ? saved.value(u"chEnd"_s).toInt() : std::max(0, m_depth - 1);
+            dlg.setRegion((*box)[0], (*box)[1], (*box)[2], (*box)[3], c0, c1,
+                          u"Spatial box from the selected region's bounds."_s);
+        } else if (haveSaved) {
             dlg.setRegion(saved.value(u"x0"_s).toInt(), saved.value(u"x1"_s).toInt(),
                           saved.value(u"y0"_s).toInt(), saved.value(u"y1"_s).toInt(),
                           saved.value(u"chStart"_s).toInt(), saved.value(u"chEnd"_s).toInt());
