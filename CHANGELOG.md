@@ -8,6 +8,22 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Backend: region files are read whole, with a reason for every line not
+  read (part of #342).** `/v1/regions/parse` now reads every ds9 shape (line,
+  vector, text, ruler, segment, projection, every point style, annuli with
+  any number of radii, elliptical and box annuli) and the CRTF line, vector,
+  text, `ann` and `-` forms, and keeps colour, width, dash, font, text, tags,
+  include/exclude and the `global` properties. ds9 `physical` coordinates go
+  through the dataset's LTM/LTV keywords, and CRTF pixel positions are read
+  as 0-based (they were one pixel off) and CRTF ellipse axes as CASA writes
+  them (they were swapped). Each statement that does not become a
+  region comes back in `diagnostics` with its line, text and reason, next to
+  the regions that were read, instead of being skipped or failing the whole
+  file. Sizes are converted along each region's own axes through the local
+  grid, so rotated and skewed CD matrices and unequal pixel scales give the
+  right pixel sizes, and a file of thousands of sky regions converts in a
+  fraction of a second. Region statistics take elliptical and box annuli.
+
 - **Desktop: the 3-D view of a large cube refines where the camera looks
   (closes #321).** About 200 ms after a rotation, pan or zoom, the viewer plans
   the part of the cube in view at the level the zoom can show, within the
