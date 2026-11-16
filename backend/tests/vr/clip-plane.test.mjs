@@ -225,3 +225,32 @@ test('the Clipping plane tool\'s controls: the trigger holds the plane, the stic
   assert.equal(C.modeLine('clip', 'plane'), 'RANGE · Clipping plane');
   assert.ok(C.SUBTOOLS.clip.includes('plane'));
 });
+
+test('the page\'s plane: a radio cube of the same shape is never cut; a click that only turns it on is an undo step', async () => {
+  const { createClipPlane } = await import('../../app/static/vr/js/clip-plane-ui.js');
+  let sim = true;
+  const undo = [];
+  const state = { cube: {}, extent: [1, 1, 1], info: { full_shape: [64, 64, 64] }, clip: { min: [0, 0, 0], max: [1, 1, 1] }, model: M.identity() };
+  const cp = createClipPlane({ R: {}, state, isSimulation: () => sim, toolOn: () => true,
+    snapshot: () => ({ plane: cp.snapshot() }), pushUndo: (s) => undo.push(s), changed() {}, buzz() {}, dot() {} });
+  cp.onCube();
+  cp.press('plane:on');
+  assert.equal(cp.shader().mode, 1);
+  // A radio cube of the same shape: no plane in its shader or its command, and off for good.
+  sim = false; state.cube = {}; cp.onCube();
+  assert.equal(cp.available(), false);
+  assert.equal(cp.shader(), null);
+  assert.deepEqual(cp.command(), { type: 'set_clip_plane', plane: null });
+  // Back to the simulation: the plane is there, off.
+  sim = true; cp.onCube();
+  assert.equal(cp.current(), null);
+  assert.equal(cp.shader(), null, 'the cache follows availability, not only the plane object');
+  // A trigger click (press and let go, no move) that turns it on: one undo step, the plane off in it.
+  undo.length = 0;
+  const ray = { o: [0, 0, 2], d: [0, 0, -1] };
+  cp.pointer(ray, true, true, M.translation(0, 0, 2));
+  cp.pointer(ray, false, false, M.translation(0, 0, 2));
+  assert.equal(undo.length, 1);
+  assert.equal(undo[0].plane.on, false);
+  assert.equal(cp.current().on, true);
+});
