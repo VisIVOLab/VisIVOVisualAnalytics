@@ -43,7 +43,7 @@ import { RefineDraw } from './refine-gl.js';
 // Lifecycle, notices, guide, diagnostics, quality (epic #166).
 import { createShell } from './shell.js';
 import { CARD_PX, CARD_SIZE } from './notice.js';
-import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen, pendingMaskVerdict } from './lifecycle.js';
+import { pageBuild, PAGE_VR_API, isHeadsetBrowser, reopenCube, LoadTracker, supersededLoad, PendingReopen, pendingMaskVerdict, prepText } from './lifecycle.js';
 import { shouldShowGuide } from './onboarding.js';
 import { EyeBufferGovernor, qualityNote, cubeBudget, spvAtFloor, qualityPolicy, textureLimitBytes, planCapacity, sameCapacity } from './quality.js';
 // The first Quest 3 session's fixes (issue #226): composition layers for the
@@ -99,6 +99,9 @@ if (isHeadsetBrowser(navigator.userAgent) || query.has('xrfake')) setTimeout(() 
 const state = {
   info: null,          // /v1/cube/reduced_info answer (or the synthetic one)
   cube: null,          // {data, dims, encoding, lo, hi, factors, mode, reducedThreshold, ...}
+  // A brick pyramid build the newest load waits for (issue #329): {progress,
+  // ms, silentMs, name, ticket}, null when none (reducedInfoWhenReady).
+  prep: null,
   // The colour scale's stretch and the Power exponent (issue #258, levels.js);
   // sqrt is the look the page had before (gamma 0.5).
   thrNorm: 0.1, cmaxNorm: 1, stretch: LV.DEFAULT_STRETCH, gamma: LV.DEFAULT_GAMMA, opacity: 0.4,
@@ -832,54 +835,102 @@ function layerLoad(b, ticket) {
 /**
  * reduced_info, waiting while the backend builds the cube's brick pyramid
  * (202 with the fraction done): a large cube's reduced cube is read from a
- * pyramid level, not from the whole cube. The status shows the progress; a
- * newer load ends the wait (stillCurrent), and a build that does not move is
- * given up (V.buildWatch).
+ * pyramid level, not from the whole cube. The status line, the headset
+ * app's room and the notice of a cube the desktop sent show the progress
+ * (showPrep, issue #329); a newer load ends the wait (stillCurrent), and a
+ * build that does not move, or a backend that stops answering for minutes,
+ * is given up (V.buildWatch).
  */
 async function reducedInfoWhenReady(b, req, ticket) {
   const t0 = performance.now();
   const watch = V.buildWatch();
   let waited = false;
-  for (;;) {
-    let info = null, progress = 0;
-    try {
-      // The first request without a deadline of its own (opening a large
-      // cube can take long); the polls of a build, two minutes each.
-      info = await b.reducedInfo(req, waited ? { timeoutMs: REDUCED_POLL_TIMEOUT_MS } : {});
-    } catch (e) {
-      if (e && e.preparing) {
-        progress = e.progress;              // 202: the pyramid is being built
-      } else if (e && e.timedOut && waited) {
-        progress = watch.progress();        // a poll that did not answer: asked again
-      } else {
-        // Any other error ends the load. One met after the build started is
-        // not the pairing's dataset check (pairingFallback: loadPaired must
-        // not open the path again for it).
-        if (e && waited) e.duringBuild = true;
+  // Once the build is under way, the time and the silence shown move every
+  // second, also while a poll is still waiting for its answer.
+  let ticker = null;
+  const tick = () => {
+    const now = performance.now();
+    showPrep({ progress: watch.progress(), ms: now - t0, silentMs: watch.silentMs(now) }, ticket);
+  };
+  try {
+    for (;;) {
+      let info = null, progress = 0, answered = true;
+      try {
+        // The first request without a deadline of its own (opening a large
+        // cube can take long); the polls of a build, one minute each.
+        info = await b.reducedInfo(req, waited ? { timeoutMs: REDUCED_POLL_TIMEOUT_MS } : {});
+      } catch (e) {
+        if (e && e.preparing) {
+          progress = e.progress;              // 202: the pyramid is being built
+        } else if (waited && e && ((e.network && !e.aborted) || [502, 503, 504].includes(e.status))) {
+          // A poll nothing answered (its deadline, a lost connection, a
+          // proxy's gateway error): the build goes on on the backend, so it is
+          // asked again. The lifecycle was told, and says whether the backend
+          // can be reached at all.
+          answered = false;
+        } else {
+          // Any other error ends the load. One met after the build started is
+          // not the pairing's dataset check (pairingFallback: loadPaired must
+          // not open the path again for it).
+          if (e && waited) e.duringBuild = true;
+          throw e;
+        }
+      }
+      stillCurrent(ticket);
+      if (info) {
+        ticket.pyramidBuildMs = waited ? performance.now() - t0 : undefined;
+        return info;
+      }
+      waited = true;
+      const now = performance.now();
+      const verdict = watch.see(answered ? progress : null, now, answered);
+      const pct = (100 * watch.progress()).toFixed(0);
+      if (verdict === 'silent') {
+        const e = new Error(`the backend has not answered for ${Math.round(watch.silentMs(now) / 60000)} min while it built the cube's`
+          + ` brick pyramid (at ${pct} %): check the computer, then open the cube again`);
+        e.network = true;
+        e.duringBuild = true;
         throw e;
       }
+      if (verdict) {
+        throw new Error(`the brick pyramid's build ${verdict === 'stalled' ? 'has not moved for 5 minutes' : 'took over 2 hours'}`
+          + ` (at ${pct} %): choose "Read from: whole cube" and load again`);
+      }
+      tick();
+      if (!ticker) ticker = setInterval(() => { if (loads.isCurrent(ticket)) tick(); }, 1000);
+      await new Promise((res) => setTimeout(res, 1000));
+      stillCurrent(ticket);
     }
-    stillCurrent(ticket);
-    if (info) {
-      ticket.pyramidBuildMs = waited ? performance.now() - t0 : undefined;
-      return info;
-    }
-    waited = true;
-    const verdict = watch.see(progress, performance.now());
-    if (verdict) {
-      throw new Error(`the brick pyramid's build ${verdict === 'stalled' ? 'has not moved for 5 minutes' : 'took over 2 hours'}`
-        + ` (at ${(100 * watch.progress()).toFixed(0)} %): choose "Read from: whole cube" and load again`);
-    }
-    const sec = ((performance.now() - t0) / 1000).toFixed(0);
-    setStatus(`Building the cube's brick pyramid on the backend… ${(100 * (progress || 0)).toFixed(0)} % (${sec} s)\n`
-      + 'once for this cube: the headset\'s reduced cube is then read from one of its levels');
-    await new Promise((res) => setTimeout(res, 1000));
-    stillCurrent(ticket);
+  } finally {
+    if (ticker) clearInterval(ticker);
+    if (state.prep && state.prep.ticket === ticket) state.prep = null;
   }
 }
 
-/** The deadline of each poll of reduced_info while a brick pyramid builds. */
-const REDUCED_POLL_TIMEOUT_MS = 120000;
+/**
+ * A brick pyramid build under way for the load `ticket` (issue #329), said
+ * where the user looks: the status line; state.prep, which the headset app's
+ * room shows (appTick); and the notice of the cube the desktop sent, when it
+ * is this load's (a toast in VR, said again at each poll so it stays).
+ */
+function showPrep(prep, ticket) {
+  const name = HUB.fileName(ticket.path || '');
+  state.prep = { ...prep, name, ticket };
+  const t = prepText(prep, name);
+  setStatus(`${t.title}\n${t.lines.join('\n')}`);
+  if (desktopShow && desktopShow.loadId === ticket.id && loads.isCurrent(ticket)) {
+    // Not forced: a notice the user closed stays closed.
+    shell.notify('cube-from-desktop', { detail: desktopShow.name, prep }, { force: false });
+  }
+}
+
+/** The deadline of each poll of reduced_info while a brick pyramid builds:
+ *  a 202 comes in milliseconds, the final answer in seconds (2.9 s for the
+ *  2048³ density); three that never answer are V.buildWatch's 3 min of
+ *  silence. With ?debug, ?polltimeout=MS sets it (validation/vr_pyramid_wait.mjs:
+ *  a build that outlasts it, checked in seconds). */
+const REDUCED_POLL_TIMEOUT_MS = query.has('debug') && Number(query.get('polltimeout')) > 0
+  ? Number(query.get('polltimeout')) : 60000;
 
 async function loadFromBackend() {
   ensureBackend();
@@ -3790,17 +3841,28 @@ function showFromDesktop(cmd) {
   }
   shell.notify('cube-from-desktop', { detail: name });
   $('path').value = cmd.path;
-  withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky }))
+  // Its notice tells a brick pyramid build's progress (showPrep, #329): the
+  // load this show starts is the one loadLinked begins at once (its ticket).
+  const show = { path: cmd.path, name, loadId: -1, seq: ++desktopShowSeq };
+  desktopShow = show;
+  const done = () => { if (desktopShow === show) desktopShow = null; };
+  // The notice is this show's to clear only while no newer show was sent.
+  const clearOwn = () => { if (show.seq === desktopShowSeq) shell.clearNotice('cube-from-desktop'); };
+  const before = loads.latest;
+  const loading = withLoading(() => loadLinked({ session, dataset: cmd.dataset_id, path: cmd.path, kind, box: '', ...sky }));
+  if (loads.latest > before) show.loadId = loads.latest;
+  loading
+    .finally(done)
     .then(() => {
       // Waiting for the end of the VR session (larger than the room kept for
       // cubes in VR): its box is applied when it is shown (installStaged).
-      if (stagedCube && stagedCube.path === cmd.path) { pendingBox = cmd.box ? { path: cmd.path, cmd } : null; shell.clearNotice('cube-from-desktop'); return; }
-      if (state.openPath !== cmd.path) { shell.clearNotice('cube-from-desktop'); return; }
+      if (stagedCube && stagedCube.path === cmd.path) { pendingBox = cmd.box ? { path: cmd.path, cmd } : null; clearOwn(); return; }
+      if (state.openPath !== cmd.path) { clearOwn(); return; }
       applyCommandBox(cmd);
       shell.notify('cube-from-desktop', { detail: name, done: true });
     })
     .catch((err) => {
-      shell.clearNotice('cube-from-desktop');
+      clearOwn();
       if (err.superseded) return;
       setStatus(`The cube sent from the desktop could not be opened: ${err.message || err}`);
       shell.log('warning', 'hub-show-failed', `${name}: ${err.message || err}`);
@@ -3809,6 +3871,10 @@ function showFromDesktop(cmd) {
 
 /** A commanded box for a cube that waits for the end of the VR session: {path, cmd} or null. */
 let pendingBox = null;
+/** The cube the desktop sent last while its load runs: {path, name, loadId, seq}, else null. */
+let desktopShow = null;
+/** The desktop's shows that started a load, counted (the newest owns the notice). */
+let desktopShowSeq = 0;
 
 /** A `show` with a voxel box: the cube's clipping box (not reported back). */
 function applyCommandBox(cmd) {
@@ -4027,7 +4093,8 @@ function appTick() {
   if (!single.active) return;
   const r = APP.roomState({ immersive: true, exchanging: appLaunch.exchanging || !appLaunch.settled, error: appLaunch.error,
     connected: !!(tokenField.value.trim() && hubAuth()), loading: state.loading > 0, shown: !!state.cube || layers.hasScene(),
-    name: HUB.fileName(pairing.path || ''), origin: APP.originLabel(window.location) });
+    name: HUB.fileName(pairing.path || ''), origin: APP.originLabel(window.location),
+    prep: state.prep && loads.isCurrent(state.prep.ticket) ? { progress: state.prep.progress, ms: state.prep.ms, silentMs: state.prep.silentMs } : null });
   // Said again on entering VR: the way out (Quit) is offered only in VR.
   const key = r ? JSON.stringify([r, !!xr]) : '';
   if (key === appLaunch.roomKey) return;

@@ -115,13 +115,16 @@ export async function exchangeTicket(ticket, { fetch, url, timeoutMs = EXCHANGE_
  * notices (lifecycle.js noticeFor 'app-…'), or null when nothing is to be
  * said (a cube on show, not the app). `s`: {immersive, exchanging,
  * error ({kind, message}), connected (a token), loading, shown, name,
- * origin}.
+ * origin, prep}. `prep`: the brick pyramid build the load waits for
+ * ({progress, ms, silentMs}, issue #329), shown while loading.
  */
 export function roomState(s) {
   if (!s || !s.immersive || s.shown) return null;
   if (s.exchanging) return { kind: 'app-loading', ctx: { name: '', origin: s.origin } };
   if (s.error) return { kind: 'app-failed', ctx: { why: s.error.kind || 'failed', detail: String(s.error.message || ''), origin: s.origin } };
-  if (s.loading) return { kind: 'app-loading', ctx: { name: s.name || '', origin: s.origin } };
+  if (s.loading) {
+    return { kind: 'app-loading', ctx: { name: s.name || '', origin: s.origin, ...(s.prep ? { prep: s.prep } : {}) } };
+  }
   return { kind: 'app-empty', ctx: { connected: !!s.connected, origin: s.origin } };
 }
 

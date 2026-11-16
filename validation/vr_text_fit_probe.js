@@ -323,6 +323,9 @@
       WR.resultToast('done', null, '', 'moment of the selection…'), WR.resultToast('error', null, 'The backend answered: 503 Service Unavailable while computing the spectrum'),
       ...['restarted', 'reopened'].map((k) => LC.noticeFor(k).toast),
       LC.noticeFor('cube-from-desktop', { detail: LONG_FILE }).toast, LC.noticeFor('cube-from-desktop', { detail: LONG_FILE, done: true }).toast,
+      // A brick pyramid build's progress (issue #329), the backend answering or silent for a while.
+      LC.noticeFor('cube-from-desktop', { detail: LONG_FILE, prep: { progress: 1, ms: 3599000, silentMs: 0 } }).toast,
+      LC.noticeFor('cube-from-desktop', { detail: LONG_FILE, prep: { progress: 0.99, ms: 3599000, silentMs: 179000 } }).toast,
       CG.CROP_TOAST,
       ...(opts.extraToasts || []),
     ].filter(Boolean);
@@ -336,7 +339,8 @@
     const notices = [];
     for (const k of kinds) {
       for (const v of [{}, { inVR: true }, { inVR: true, app: true }, { paired: true }, { loopback: true, headset: true, inVR: true, app: true },
-        { soft: true }, { wasInVR: true }, { connected: true }, { why: 'expired' }, { done: true }]) {
+        { soft: true }, { wasInVR: true }, { connected: true }, { why: 'expired' }, { done: true },
+        { inVR: true, app: true, prep: { progress: 1, ms: 3599000, silentMs: 0 } }, { inVR: true, prep: { progress: 0.99, ms: 3599000, silentMs: 179000 } }]) {
         notices.push([`${k} ${JSON.stringify(v)}`, LC.noticeFor(k, { ...ctxs, ...v, ...(v.why ? { why: v.why } : {}) })]);
       }
     }

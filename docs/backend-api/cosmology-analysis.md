@@ -91,15 +91,56 @@ failure.
 
 ### `GET /v1/analysis/cube-stats/{dataset_id}`
 Whole-dataset pixel statistics on the full-resolution data (the client's own
-statistics are computed on the decimated preview). Streamed out-of-core in
-z-slabs, so it is safe on cubes larger than memory, and cached per file
-version (path, device, inode, size, modification and change times, so a file
-replaced or rewritten in place is computed again; up to 64 files).
+statistics are computed on the decimated preview), in bounded memory whatever
+the cube's size (`backend/app/cube_stats.py`). Cached per file version (path,
+device, inode, size, modification and change times, so a file replaced or
+rewritten in place is computed again; up to 64 entries) and per `exact`. A
+`sampled` answer is not cached: it reads only its sample, and once the
+cube's pyramid is ready the next request takes the pyramid's numbers.
+
+How the numbers are made depends on the dataset's size against the
+full-resolution threshold, the rule of `recommended_load_mode` in
+[`/v1/datasets/open`](datasets.md):
+
+- **Below the threshold, or with `?exact=true`** (`source: "exact"`): one pass
+  over every voxel, read slab by slab (32 MB of values) with positional reads,
+  so the backend holds one slab at a time and nothing of the file stays
+  mapped. A FITS file compressed as a whole (gzip, bzip2, xz) is read the same
+  way through its decompressing stream, a tile-compressed image tile by tile.
+  Such a stream is always given the exact pass, whatever its size: reaching a
+  sample would decompress nearly all of it anyway.
+  The median is of every finite voxel of a cube under 8 M voxels, else of a
+  strided sample of about 4 M of them (`median_exact: false`). A 32 GB cube
+  takes about 16 s on a laptop SSD, and the request cannot be cancelled.
+- **At or above it** (`preview_only`; for a compressed file, the size of its
+  cube counts too), never a pass over the whole file:
+  - with a ready brick pyramid (`source: "pyramid"`): `min` and `max` are
+    those of the level-0 bricks (the pyramid holds float32: exact for float32
+    data and integers of up to 16 bits, rounded otherwise), `mean` is the
+    voxel-weighted mean of the finest level of at most 2^24 voxels
+    (`pyramid_level`). That is the cube's mean, to float32 rounding, when the
+    cube has no blank voxels and its axes are multiples of the level's block;
+    otherwise partial blocks weigh slightly off (2e-4 of the mean on a
+    67 x 97 x 131 gradient). The rest comes from a sample as below;
+  - without one (`source: "sampled"`): everything from a sample of about 4 M
+    voxels, bands of whole rows spread evenly over the planes. `min` and `max`
+    are then the sample's, so inside the true range.
+
+  Counts are the sample's share of finite voxels times `total_count`, and
+  `sum` is `mean × valid_count`.
+
+A file that can only be read whole (a FITS file in a zip archive) above the
+threshold is 422 unless `exact=true`.
 
 Response: `valid`, `error`, `cached`, `total_count`, `valid_count`,
 `blanked_count`, `min`, `max`, `mean`, `median`, `std`, `rms`, `mad_sigma`
 (1.4826 × MAD), `sum`, `bunit`, `median_exact` (`false` when the median was
-estimated from a strided sample).
+estimated from a sample), `source` (`exact`, `pyramid` or `sampled`),
+`exact_fields` (the fields that are exact: all but a sampled median for
+`exact`; `total_count`, plus `min` and `max` when the pyramid holds them
+without rounding, for `pyramid`; `total_count` for `sampled`),
+`sample_count` (voxels in the median sample for `exact`, voxels read for the
+others) and, for `pyramid`, `pyramid_level`.
 
 ### `POST /v1/analysis/hi-products/{dataset_id}`
 Optically thin HI column density and integrated HI mass from the moment-0 map.
