@@ -253,6 +253,7 @@ void SettingsDialog::accept()
     if (this->m_lodEnabled) {
         this->settings->setLodEnabled(this->m_lodEnabled->isChecked());
         this->settings->setLodBudgetMb(this->m_lodBudget->value());
+        this->settings->setLodAutoRefine(this->m_lodAuto->isChecked());
     }
     QDialog::accept();   // emits accepted → Settings::updated (the Copilot panel re-applies)
 }
@@ -389,8 +390,9 @@ QWidget *SettingsDialog::buildLargeCubesSection()
     auto *form = new QFormLayout(group);
     m_lodEnabled = new QCheckBox(tr("Level of detail"), group);
     m_lodEnabled->setToolTip(
-            tr("In the 3-D view of a cube shown as a preview, Tools > Views > Refine Selected Box "
-               "draws a box at a finer level of the cube over the preview."));
+            tr("In the 3-D view of a cube shown as a preview, draw finer levels of the cube over "
+               "the preview: where the camera looks, and in a box chosen with Tools > Views > "
+               "Refine Selected Box."));
     m_lodBudget = new QSpinBox(group);
     // 0 shows as "Automatic": min(512 MB, the machine's memory / 16).
     m_lodBudget->setRange(0, 16384);
@@ -399,12 +401,21 @@ QWidget *SettingsDialog::buildLargeCubesSection()
     m_lodBudget->setSpecialValueText(tr("Automatic"));
     m_lodBudget->setToolTip(tr("Memory the finer blocks of a refined box may take, on the GPU "
                                "and in this application."));
+    m_lodAuto = new QCheckBox(tr("Refine automatically when the view settles"), group);
+    m_lodAuto->setToolTip(
+            tr("After each rotation or zoom, the part of the cube in view is read at the level "
+               "the zoom can show, within the detail budget, and drawn over the preview. A box "
+               "chosen with Refine Selected Box stays until it is cleared."));
     form->addRow(m_lodEnabled);
+    form->addRow(m_lodAuto);
     form->addRow(tr("Detail budget"), m_lodBudget);
     m_lodEnabled->setChecked(this->settings->getLodEnabled());
     m_lodBudget->setValue(this->settings->getLodBudgetMb());
+    m_lodAuto->setChecked(this->settings->getLodAutoRefine());
     QObject::connect(m_lodEnabled, &QCheckBox::toggled, m_lodBudget, &QWidget::setEnabled);
+    QObject::connect(m_lodEnabled, &QCheckBox::toggled, m_lodAuto, &QWidget::setEnabled);
     m_lodBudget->setEnabled(m_lodEnabled->isChecked());
+    m_lodAuto->setEnabled(m_lodEnabled->isChecked());
     return group;
 }
 

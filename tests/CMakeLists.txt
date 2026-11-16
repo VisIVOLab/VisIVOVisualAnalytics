@@ -132,6 +132,8 @@ add_executable(VisIVOTests
     test_cube_lod_gate.cpp
     TestCubeLodAssembly.h
     test_cube_lod_assembly.cpp
+    TestCubeLodAuto.h
+    test_cube_lod_auto.cpp
     TestSpectralAxisInfer.h
     test_spectral_axis_infer.cpp
     TestKinematicLevelField.h

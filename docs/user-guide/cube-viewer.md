@@ -45,6 +45,40 @@ regions, the headset clip and the kinematic model are all placed with the
 preview's own sampling: a block mean stands for the centre of its block, half
 a block from where every N-th voxel would put it.
 
+### Finer detail where the camera looks
+
+When the 3-D view of a large cube shows a preview, it refines itself as you
+look around. About 200 ms after the camera stops moving (a rotation, pan,
+wheel zoom, a Camera menu view, a linked view, a resized view; a drag paused
+with the button held counts as stopped only after 3 s), the viewer works
+out the part of the cube in view, how many cube voxels one screen pixel covers
+at the focal point, and the level that matches: zoomed in on a quarter of the
+cube, it reads that part at level 1 or level 0; zoomed out so that the preview
+already shows all the detail the screen can, it goes back to the plain
+preview. When the budget cannot hold everything in view, the part around the
+focal point is refined. Blocks are read in the background, and the view
+changes only once all of them have arrived. The camera never waits for them.
+
+Blocks already read stay in memory, up to twice the detail budget, and the
+blocks on screen that a new view still needs stay on the GPU. Turning back to
+a part seen before therefore reads nothing new. They stay through *Clear
+Refined Box*, MIP or MinIP, the isosurface and the backend's rendering, and go
+only when another cube (a new preview, a region, the full resolution) is
+shown or the window closes. Clicking a refined part of the
+volume (3-D pick, spectrum probe, lasso seed) lands on the finer voxel drawn
+there, not on the preview's.
+
+Rotating a refined view costs one ray-casting pass per block. In an offscreen
+2200 × 1400 view on an Apple M5 Max, with the viewer's own block code, it ran
+at 64 frames/s with 7 volumes (one fine block), 29 with 14 (eight fine
+blocks) and 23 with 17 (twelve fine blocks). On the 2048³ PLUTO density, a
+settled view of seven 256³ blocks was read by a local backend in 0.4–1.3 s
+(level 0 from the file, levels 1 and 2 from its pyramid); without a pyramid,
+levels above 0 are read every 2^l-th voxel at about the same speed.
+
+*Settings → General → Large Cubes → Refine automatically when the view
+settles* switches this off; a box chosen as below still works.
+
 ### Refining a box of a large cube
 
 **Tools → Views → Refine Selected Box…** shows one box of a cube at a finer
@@ -57,7 +91,9 @@ and so on. The refined part is the box you chose, rounded outward only to the
 level's samples (at level 2, to multiples of 4 voxels), not the whole blocks
 of the pyramid it touches. A box larger than the budget allows at any level
 finer than the preview is refined around its centre, inside the box, and the
-status line says so. The view changes only once the whole
+status line says so. A chosen box stays whatever the camera does, until
+**Tools → Views → Clear Refined Box**; the view then refines where the camera
+looks again. The view changes only once the whole
 box has arrived; the status line then reads, for example, *Detail: level 0 in
 x 512..1023, y 512..1023, z 768..1023; elsewhere block means, pyramid level 3*.
 
@@ -79,8 +115,15 @@ preview, and the status line says why. When the action is unavailable, its
 tooltip gives the reason.
 
 **Settings → General → Large Cubes** holds the *Level of detail* switch (on by
-default) and the *Detail budget*: the memory the finer blocks may take,
-*Automatic* being min(512 MB, the machine's memory / 16).
+default), *Refine automatically when the view settles* (on by default) and the
+*Detail budget*: the memory the finer blocks on screen may take, *Automatic*
+being min(512 MB, the machine's memory / 16). Blocks kept for later take up to
+twice as much again.
+
+The box dialogs (Refine Selected Box, Export Sub-Cube, Mask Region) label the
+third axis *Z (channels)* and count channels from 1 for a spectral cube; for a
+simulation volume, whose third axis is space, it is *Z*, counted from 0 like X
+and Y.
 
 You can constrain the full-resolution fetch to the **viewport ROI** of the
 3-D camera (toggle *Camera → Use Camera ROI*). This is useful for very large
@@ -521,7 +564,7 @@ A tool is bound to a **view**, not to the pane you happen to have selected:
   - Getting results out. See
     [Figures, movies and linked views](publication-output).
 * - **Views**
-  - Overlay Slice on an Open Image, Link Views, Open in VR, Open in VR Headset…, Refine Selected Box…
+  - Overlay Slice on an Open Image, Link Views, Open in VR, Open in VR Headset…, Refine Selected Box…, Clear Refined Box
   - Move the data to another view, or keep several in step.
 ```
 

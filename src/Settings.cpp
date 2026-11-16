@@ -63,6 +63,7 @@ void Settings::resetDefaults()
     this->settings->setValue(Settings::VrPageUrl.first, Settings::VrPageUrl.second);
     this->settings->setValue(Settings::LodEnabled.first, Settings::LodEnabled.second);
     this->settings->setValue(Settings::LodBudgetMb.first, Settings::LodBudgetMb.second);
+    this->settings->setValue(Settings::LodAutoRefine.first, Settings::LodAutoRefine.second);
 
     emit this->updated();
 }
@@ -367,6 +368,17 @@ void Settings::setLocalFullThresholdMb(int mb)
 
 const std::pair<QString, QVariant> Settings::LodEnabled  = { u"Cube/lod_enabled"_s,   true };
 const std::pair<QString, QVariant> Settings::LodBudgetMb = { u"Cube/lod_budget_mb"_s, 0 };
+const std::pair<QString, QVariant> Settings::LodAutoRefine = { u"Cube/lod_auto_refine"_s, true };
+
+bool Settings::getLodAutoRefine() const
+{
+    return this->settings->value(Settings::LodAutoRefine.first, Settings::LodAutoRefine.second).toBool();
+}
+
+void Settings::setLodAutoRefine(bool enabled)
+{
+    this->settings->setValue(Settings::LodAutoRefine.first, enabled);
+}
 
 bool Settings::getLodEnabled() const
 {

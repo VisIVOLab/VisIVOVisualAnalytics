@@ -20,16 +20,21 @@
 //   - the blend mode and jittering of the window's mapper are copied to
 //     every block; each block samples at half its own spacing.
 //
-// Each block owns its samples (a vtkFloatArray of its own), so the arrays the
-// blocks were built from can go as soon as they are handed over.
+// Each block holds its samples in a vtkFloatArray: its own copy of the
+// samples it was given, or an array shared with the window's cache of blocks
+// already read. replace() keeps the volumes of blocks present in both sets
+// (same key, same place), so a new set uploads only what is new to the GPU.
 
 #include "CubeLodAssembly.h"
+#include "CubeLodPick.h"
 
+#include <vtkFloatArray.h>
 #include <vtkSmartPointer.h>
 
 #include <array>
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 class vtkCallbackCommand;
@@ -48,8 +53,15 @@ public:
     /// they sit in the window's world, and the world box it owns.
     struct Block
     {
+        /// The samples, copied into the block; ignored when @p array is set.
         std::vector<float> samples;
+        /// The samples as an array the block shares (not copied).
+        vtkSmartPointer<vtkFloatArray> array;
         CubeLodAssembly::Geometry geometry;
+        /// What the block is (a node of a level, a piece of the preview): a
+        /// block of the shown set with the same key and geometry is kept as it
+        /// is, and then needs neither samples nor array.
+        std::string key;
     };
 
     /// Back-to-front order of the blocks (indices into what replace() got)
@@ -62,10 +74,15 @@ public:
     CubeLodVolumes(const CubeLodVolumes &) = delete;
     CubeLodVolumes &operator=(const CubeLodVolumes &) = delete;
 
-    /// Draw exactly @p blocks in @p renderer, in the order @p order gives;
-    /// what was shown before is removed (its GPU textures released). False,
-    /// with nothing shown, when a block's samples do not fill its dims.
+    /// Draw exactly @p blocks in @p renderer, in the order @p order gives.
+    /// Blocks already shown under the same key and geometry stay on the GPU
+    /// as they are; the rest of what was shown is removed (its GPU textures
+    /// released). False, with what was shown left unchanged, when a block's
+    /// samples do not fill its dims or a block without samples is not shown.
     bool replace(vtkRenderer *renderer, std::vector<Block> blocks, OrderFunction order);
+    /// True when a block of @p key and @p geometry is shown: replace() can
+    /// keep it, so its samples need not be built again.
+    bool holds(const std::string &key, const CubeLodAssembly::Geometry &geometry) const;
     /// Remove every block from the renderer and release them.
     void clear();
     /// True while blocks are shown in a renderer.
@@ -88,6 +105,11 @@ public:
     /// Re-sort the blocks for the renderer's current camera, and move the
     /// faces the camera sits on off it.
     void sortForCamera();
+    /// The view ray p0 → p1 (world) walked through the visible blocks, each
+    /// on its own grid within the box it draws (CubeLodPick::along).
+    CubeLodPick::Result pickAlong(const double p0[3], const double p1[3],
+                                  RayVoxelPick::Criterion criterion, double threshold,
+                                  const RayVoxelPick::BlankTest &isBlank) const;
 
 private:
     struct Entry
@@ -96,8 +118,10 @@ private:
         vtkSmartPointer<vtkGPUVolumeRayCastMapper> mapper;
         vtkSmartPointer<vtkVolume> volume;
         CubeLodAssembly::Geometry geometry;
+        std::string key;
     };
     void apply(Entry &e) const;
+    void release(Entry &e);
     void drawInOrder(const std::vector<int> &order);
     static void onRendererStart(vtkObject *caller, unsigned long eventId, void *clientData,
                                 void *callData);
