@@ -36,9 +36,10 @@ in the image viewer and in the cube viewer alike.
 Every region you draw, import or bring back from Session Data stays on the
 image until you delete it, so you can keep a source aperture and a background
 ring side by side and come back to either. In the cube viewer the regions stay
-on the 2-D slice (and on a moment map shown under it) while you change channel,
-and after their spectra are closed. One region at a time is **selected**: it is
-drawn thicker, lightly filled, with white handles.
+on the 2-D slice while you change channel, and after their spectra are closed.
+They are also drawn on every map of the cube's sky plane shown in a pane (see
+[Regions on moment maps](#regions-on-moment-maps)). One region at a time is
+**selected**: it is drawn thicker, lightly filled, with white handles.
 
 | Action | Effect |
 |---|---|
@@ -47,12 +48,12 @@ drawn thicker, lightly filled, with white handles.
 | Drag a handle | box corner (the opposite corner stays put), circle radius, annulus inner or outer radius, ellipse semi-axis, polygon vertex; the knob above a box or ellipse rotates it |
 | Double-click a region | opens **Region Properties** |
 | Right-click a region | *Properties…*, *Analyse*, *Delete* |
-| **Delete** / **Backspace** | deletes the selected region (the image or the slice must have the keyboard focus) |
+| **Delete** / **Backspace** | deletes the selected region (the image, the slice or a map pane must have the keyboard focus) |
 | **Cmd+Z** / **Shift+Cmd+Z** | undoes / redoes the last change to the regions: drawing, moving, reshaping, typing, deleting |
 
 The same entries are in *Tools ▸ Regions* (*Region Properties…*, *Analyse
 Region*, *Delete Region*, *Undo Region Edit*, *Redo Region Edit*). In the cube
-viewer Cmd+Z undoes a region change while the slice has the keyboard focus and
+viewer Cmd+Z undoes a region change while the slice or a map pane has the keyboard focus and
 there is one to undo; elsewhere it still undoes the assistant's display
 changes. A click on a catalogue marker still
 selects the source, even inside a region. Where regions overlap, a click on an
@@ -60,6 +61,28 @@ outline picks that region; inside, the smallest region under the cursor wins.
 *Analyse* (or the menu entry *Analyse Region*) measures the selected region
 exactly as drawing it does; the Σ / μ readout follows the selected region while
 you drag it.
+
+### Regions on moment maps
+
+In the cube viewer every pane that shows a map of the cube's sky plane carries
+the same region list as the 2-D slice: moment maps, line-width maps, the
+*Channels* pane, and the Faraday maps of an RM synthesis run over a box of the
+field (placed at that box). Selection, handles, dragging, double-click for
+Region Properties, the right-click menu, Delete and Cmd+Z work there as on
+the slice, and a change made in one pane shows at once in the others and on the
+3-D cutting plane.
+
+The drawing tools draw on the map itself: arm *Box*, *Circle*, *Polygon* or
+*Annulus* and draw in the moment pane, and the region joins the list. While a
+tool is armed, every pane it can draw in wears the amber border. A region is
+drawn in the pane it was started in; if that pane leaves the screen or changes
+map before the region is finished, the unfinished region is dropped.
+
+*Analyse* measures the map of the pane you are working in: on a moment pane the
+statistics are those of the moment map (the Inspector names it, with the pane),
+and the spectrum is, as always, the region's mean over the cube. A map that is
+not on the cube's pixel grid (a kinematic fit over a selection's box) does not
+show the regions.
 
 **Region Properties** sets a region by numbers: its centre (or polygon
 vertices), sizes, and angle for a box or an ellipse. The *Frame* list chooses
@@ -334,9 +357,10 @@ The file is computed from the path the **displayed** diagram was made from.
 ### Drawing on a moment map
 
 Open the moment map in a pane (Session Data, or the pane's menu), then arm the
-tool — *Extract PV Diagram*, a region or the probe. The tool draws on the map:
-the pane keeps the map's title and colours, and the path, region or probe sit
-on its pixels. This is the way to draw a PV path along a disk or a filament seen
+tool — *Extract PV Diagram* or the probe. The tool draws on the map:
+the pane keeps the map's title and colours, and the path or probe sit
+on its pixels. (Regions are drawn on the map pane directly, see
+[Regions on moment maps](#regions-on-moment-maps).) This is the way to draw a PV path along a disk or a filament seen
 in moment 0, or across the velocity gradient of moment 1.
 
 Click in the moment pane first, so that it is the active one: the tool always
