@@ -8,6 +8,39 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Pairing service: security review, attack tests and host hardening
+  (#345).** The public pairing service was audited and attacked on a local
+  copy of its production configuration
+  (`services/vr-pair/tools/attack_harness.py`). These fixes came out of it:
+  - Failing on purpose no longer stops everybody's pairing. The global failure
+    count now only tightens each address's limit, and a right code from a
+    clean address pairs.
+  - Connections are bounded, with separate budgets for hosts and pages, plus
+    a cap on upgrades per address per minute (HTTP 503 and 429).
+  - Each connection has a budget of bytes and frames, so a flood of pings is
+    dropped. A client that does not read is dropped too. Before, a ping flood
+    delayed every other pairing by 8 s or more.
+  - The relay carries signalling only, where before it relayed megabytes of
+    arbitrary data between two peers.
+  - Bookkeeping costs the same however many codes are held: 0.015 ms per new
+    code at 100 000 codes, against 5.6 ms before.
+  - IPv6 clients are counted per /56.
+  - Repeated `Origin` or `X-Forwarded-For` headers, deeply nested JSON, huge
+    numbers and lone surrogates no longer end a connection with a traceback.
+  - Origins compare without case.
+  - Log lines about clients are capped.
+  - An empty or loose secret file is reported.
+  - `websockets` is pinned to 17.4.
+
+  New `services/vr-pair/deploy/` files:
+  - a hardened systemd unit (`systemd-analyze security`: 0.9 SAFE, against
+    8.4 EXPOSED);
+  - an Apache block. Per-path tunnel pools keep the service from taking the
+    workers of the other sites on a shared server.
+
+  The README and *Hosting headset pairing* gained a *Security and hardening*
+  section, with values for institutes behind one shared address.
+
 - **Desktop: linked cube views follow every camera move (#338).** A linked
   window now sends its 3-D camera whenever a drawn frame shows it moved, not
   only on mouse gestures. Picking *Camera → Front/Back/Top/Right/Bottom/Left*
