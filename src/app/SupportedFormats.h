@@ -41,6 +41,7 @@ enum class FileType {
     Vbt,
     Hdf5,
     DelimitedText,    ///< comma, tab or semicolon text tables, for readers that take nothing else
+    Pluto,            ///< PLUTO simulation output (binary data files; the .out/grid.out beside them)
     AllFiles,         ///< every file, dotfiles included; stays LAST (the tests walk up to it)
 };
 
@@ -76,6 +77,10 @@ inline const QList<FileTypeInfo> &fileTypes()
         // The key stays "csv": it is the remembered choice in QSettings.
         { FileType::DelimitedText, "csv"_L1, u"Delimited text tables"_s,
           { u".csv"_s, u".tsv"_s, u".txt"_s } },
+        // PLUTO's binary output (#315): the data files, single precision or
+        // double; the dbl.out/flt.out and grid.out beside them describe it.
+        { FileType::Pluto, "pluto"_L1, u"PLUTO simulation output"_s,
+          { u".flt"_s, u".dbl"_s } },
         { FileType::AllFiles, "all-files"_L1, u"All files"_s, {} },
     };
     return table;
@@ -163,7 +168,7 @@ inline QString fileTypeDisplayLabel(FileType type)
 inline QList<FileType> openableFileTypes()
 {
     return { FileType::AllSupported, FileType::Fits, FileType::Catalogue, FileType::Vbt,
-             FileType::Hdf5 };
+             FileType::Hdf5, FileType::Pluto };
 }
 
 /// What a caller offers, in table order, with AllFiles always there: whatever
