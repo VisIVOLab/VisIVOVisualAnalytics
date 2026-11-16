@@ -11,6 +11,7 @@
 #include "SharedSelection.h"
 #include "VrHeadsetFollow.h"
 #include "VrHeadsetHub.h"
+#include "LinkedCameraSync.h"
 #include "LinkedWindowRegistry.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
@@ -2368,16 +2369,20 @@ protected:
     void showLinkNoReceiverHint(int srcSlot);  // §5.5 one-shot hint near the chip
     bool m_applyingLinkedUpdate{ false };                  // echo guard
     int m_lastLinkedChannel{ -1 };                         // dedup for channel broadcasts
-    unsigned long m_cubeCameraObserverTag{ 0 };       // InteractionEvent (drag)
-    unsigned long m_cubeCameraEndObserverTag{ 0 };    // EndInteractionEvent (wheel zoom / release)
-    // The exact interactor the camera observer was added to, kept weakly so the
-    // observer is removed from the right object (and only if still alive).
-    vtkWeakPointer<vtkRenderWindowInteractor> m_cubeCameraInteractor;
+    // Issue #338: the 3-D camera is sent to linked peers when a frame shows it
+    // moved, whatever moved it (mouse, Camera menu, R key, code). The EndEvent
+    // observer sits on the 3-D render window, kept weakly so the destructor
+    // removes it from the right object, and only if it is still alive.
+    unsigned long m_cubeCameraFrameTag{ 0 };
+    vtkWeakPointer<vtkRenderWindow> m_cubeCameraRenderWindow;
+    LinkedCameraSync::Tracker m_linkCameraTracker;
     QPointer<QAction> m_actLinkViews;
     /// Toggle this viewer's participation in the linked-views group.
     void setLinkViews(bool on);
-    /// Camera-interaction observer on the 3-D view → broadcast to linked peers.
-    void onCubeCameraInteraction();
+    /// After each 3-D frame: schedule a send to linked peers if the camera moved.
+    void onCubeCameraFrame();
+    /// The 3-D camera's pose, as linked peers see it (no camera: a default pose).
+    LinkedCameraSync::Pose cubeCameraPose() const;
     void broadcastLinkedCamera();
     // Camera is shared RELATIVE to each cube's own data bounds (direction,
     // view-up, and zoom/pan as fractions of the data diagonal), so cubes of

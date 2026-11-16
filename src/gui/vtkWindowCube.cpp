@@ -3350,21 +3350,16 @@ vtkWindowCube::~vtkWindowCube()
     this->sliceAnimationTimer.stop();
     this->remove3dPickObserver();
     // Leave the linked-views group and drop the camera observer from the exact
-    // interactor it was added to (weak ptr → only if still alive).
+    // render window it was added to (weak ptr → only if still alive).
     vtkWindowCube::s_registry.remove(this);
     // Closing a window removes a cross-window peer, so refresh the remaining
     // windows' facet chips (self is already out of the registry).
     for (const auto &w : vtkWindowCube::s_registry.snapshot())
         if (w)
             w->refreshLinkedFacetChips();
-    if (this->m_cubeCameraInteractor) {
-        if (this->m_cubeCameraObserverTag != 0)
-            this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraObserverTag);
-        if (this->m_cubeCameraEndObserverTag != 0)
-            this->m_cubeCameraInteractor->RemoveObserver(this->m_cubeCameraEndObserverTag);
-    }
-    this->m_cubeCameraObserverTag = 0;
-    this->m_cubeCameraEndObserverTag = 0;
+    if (this->m_cubeCameraRenderWindow && this->m_cubeCameraFrameTag != 0)
+        this->m_cubeCameraRenderWindow->RemoveObserver(this->m_cubeCameraFrameTag);
+    this->m_cubeCameraFrameTag = 0;
     // §3.2 B3: destroy the per-slot Pane2DViews FIRST — their destructors remove the
     // render-window EndEvent observer, so it can't fire against a half-torn-down widget
     // once `delete ui` starts tearing the pane hierarchy down.
@@ -7121,6 +7116,10 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
     cubeFitTimer.start();
     refitCubeCamera(cubeRenderer, result.cubeImageData);
     cubeRenderer->ResetCameraClippingRange();
+    // A refit for new data is not a camera move to share (#338): a camera-ROI
+    // or refined-box load frames its own crop, and sending that would pull
+    // every linked window off the view it shows.
+    this->m_linkCameraTracker.adopt(this->cubeCameraPose());
     // Keep the 3D WCS axes (if the user enabled them) aligned with the new
     // cube bounds and WCS range. No-op when the actor hasn't been created yet.
     if (this->wcs3dAxesActor) {

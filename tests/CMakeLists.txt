@@ -108,6 +108,8 @@ add_executable(VisIVOTests
     test_remote_slice_cache.cpp
     TestLinkedWindowRegistry.h
     test_linked_window_registry.cpp
+    TestLinkedCameraSync.h
+    test_linked_camera_sync.cpp
     TestSpectralUnitConvert.h
     test_spectral_unit_convert.cpp
     TestCubeRegionGeom.h

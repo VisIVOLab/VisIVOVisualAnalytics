@@ -10,7 +10,9 @@
 // Mechanism: a static registry of all open cube viewers. A change in a linked
 // viewer is broadcast to the other linked viewers; an `m_applyingLinkedUpdate`
 // guard plus the fact that programmatic slice/colour updates don't re-fire the
-// user-facing slots prevents echo loops.
+// user-facing slots prevents echo loops. The camera is sent when a drawn frame
+// shows it moved (LinkedCameraSync), and a follower records the camera it
+// adopts, so it never sends it back.
 
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
@@ -34,10 +36,12 @@
 #include <vtkTrivialProducer.h>
 
 #include <QAction>
+#include <QTimer>
 #include <QScopedValueRollback>
 #include <QSignalBlocker>
 
 #include <algorithm>
+#include <cmath>
 
 using namespace Qt::StringLiterals;
 
@@ -94,26 +98,22 @@ void vtkWindowCube::setLinkViews(bool on)
         this->m_paneLinkedBtn->setChecked(on);
     }
     if (!on) {
+        this->m_linkCameraTracker.reset();
         this->m_linked2DValid = false;   // STEP6-P2: drop the shared 2-D camera so a later relink starts fresh
         this->statusBar()->showMessage(u"Linked views: off."_s, 3000);
         return;
     }
 
-    // Install the camera observers once, lazily, remembering the exact
-    // interactor so the destructor removes them from the right object.
-    // InteractionEvent follows live drags (rotate / pan); EndInteractionEvent
-    // catches mouse-wheel zoom, which does NOT emit InteractionEvent.
-    if (this->m_cubeCameraObserverTag == 0) {
+    // Install the camera observer once, lazily, remembering the exact render
+    // window so the destructor removes it from the right object. It watches the
+    // frames rather than the interactor (issue #338): the interactor reports
+    // mouse gestures only, so a Camera-menu preset or the R key moved this
+    // view and left the linked ones behind.
+    if (this->m_cubeCameraFrameTag == 0) {
         if (auto *rw = ui->vtkCube->renderWindow()) {
-            if (auto *iren = rw->GetInteractor()) {
-                this->m_cubeCameraObserverTag = iren->AddObserver(
-                        vtkCommand::InteractionEvent, this,
-                        &vtkWindowCube::onCubeCameraInteraction);
-                this->m_cubeCameraEndObserverTag = iren->AddObserver(
-                        vtkCommand::EndInteractionEvent, this,
-                        &vtkWindowCube::onCubeCameraInteraction);
-                this->m_cubeCameraInteractor = iren;
-            }
+            this->m_cubeCameraFrameTag = rw->AddObserver(vtkCommand::EndEvent, this,
+                                                         &vtkWindowCube::onCubeCameraFrame);
+            this->m_cubeCameraRenderWindow = rw;
         }
     }
 
@@ -126,6 +126,8 @@ void vtkWindowCube::setLinkViews(bool on)
         if (p && p != this && p->m_linkViews)
             ++peers;
     this->broadcastLinkedCamera();
+    // The camera just sent is the shared one: frames at it are not a move.
+    this->m_linkCameraTracker.adopt(this->cubeCameraPose());
     // STEP6-P4: snap same-grid peers to this window's current 2-D view too. propagate2DCamera
     // no-ops when the active pane isn't a 2-D view, so this is safe to call unconditionally.
     this->propagate2DCamera(this->m_activePane);
@@ -139,10 +141,35 @@ void vtkWindowCube::setLinkViews(bool on)
             5000);
 }
 
-void vtkWindowCube::onCubeCameraInteraction()
+LinkedCameraSync::Pose vtkWindowCube::cubeCameraPose() const
 {
-    if (this->m_linkViews && !this->m_applyingLinkedUpdate)
-        this->broadcastLinkedCamera();
+    LinkedCameraSync::Pose pose;
+    auto *rw = ui->vtkCube->renderWindow();
+    auto *ren = rw ? rw->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *cam = ren ? ren->GetActiveCamera() : nullptr;
+    if (!cam)
+        return pose;
+    cam->GetPosition(pose.position.data());
+    cam->GetFocalPoint(pose.focalPoint.data());
+    cam->GetViewUp(pose.viewUp.data());
+    pose.viewAngle = cam->GetViewAngle();
+    pose.parallelScale = cam->GetParallelScale();
+    return pose;
+}
+
+void vtkWindowCube::onCubeCameraFrame()
+{
+    if (!this->m_linkViews)
+        return;
+    if (!this->m_linkCameraTracker.frame(this->cubeCameraPose(), this->m_applyingLinkedUpdate))
+        return;
+    // Sent on the next turn of the event loop, not from inside this frame: a
+    // drag draws a frame per mouse move and they join one send, and the peers
+    // do not draw while this window is still finishing its own frame.
+    QTimer::singleShot(0, this, [this]() {
+        if (this->m_linkCameraTracker.takePending() && this->m_linkViews)
+            this->broadcastLinkedCamera();
+    });
 }
 
 void vtkWindowCube::broadcastLinkedCamera()
@@ -164,6 +191,15 @@ void vtkWindowCube::broadcastLinkedCamera()
     cam->GetPosition(pos);
     cam->GetFocalPoint(foc);
     cam->GetViewUp(up);
+    // A broken camera (NaN) is not sent: peers would adopt it and, NaN never
+    // equalling itself, send it back on their next frame.
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(pos[i]) || !std::isfinite(foc[i]) || !std::isfinite(up[i])
+            || !std::isfinite(center[i]))
+            return;
+    if (!std::isfinite(diag) || !std::isfinite(cam->GetParallelScale())
+        || !std::isfinite(cam->GetViewAngle()))
+        return;
     // Express the camera RELATIVE to this cube's data: view direction (unit),
     // distance and parallel-scale as fractions of the data diagonal, and the
     // focal offset from the data centre as a fraction of the diagonal. Peers
@@ -214,6 +250,9 @@ void vtkWindowCube::applyLinkedCamera(const double dir[3], const double up[3],
     cam->SetParallelScale(relScale * diag);
     cam->SetViewAngle(viewAngle);
     ren->ResetCameraClippingRange();
+    // A peer's camera is not this window's move: record it before any frame
+    // shows it, so neither this render nor a later one sends it back.
+    this->m_linkCameraTracker.adopt(this->cubeCameraPose());
     rw->Render();
 }
 

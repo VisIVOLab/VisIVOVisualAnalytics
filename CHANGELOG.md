@@ -26,6 +26,13 @@ are preserved here unedited; the branch names they refer to are historical.
   pixels (0- or 1-based) and sky frames with the dataset's full celestial WCS,
   and reports the dataset's sky frame (empty without a celestial WCS).
 
+- **Desktop: linked cube views follow every camera move (#338).** A linked
+  window now sends its 3-D camera whenever a drawn frame shows it moved, not
+  only on mouse gestures. Picking *Camera → Front/Back/Top/Right/Bottom/Left*
+  in one window used to leave the other linked windows where they were; they
+  now follow, as they do for rotate, pan and wheel zoom. A window that adopts
+  a peer's camera never sends it back.
+
 - **Desktop: the 3-D view of a large cube refines where the camera looks
   (closes #321).** About 200 ms after a rotation, pan or zoom, the viewer plans
   the part of the cube in view at the level the zoom can show, within the

@@ -109,7 +109,8 @@ what makes a genuine comparison possible between two cubes of the same field.
 * - **Camera**
   - Shared **relative to each cube's data bounds**, so two cubes of different
     sizes covering the same sky still frame the same region rather than the same
-    pixel coordinates.
+    pixel coordinates. Every camera change is followed: rotate, pan, wheel
+    zoom, the *Camera* menu presets and a reset.
 * - **Channel**
   - Matched by **spectral value**, not channel index. Two cubes with different
     channel widths will show the same velocity, which is the comparison you
