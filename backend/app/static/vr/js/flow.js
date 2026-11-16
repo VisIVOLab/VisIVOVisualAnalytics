@@ -23,7 +23,7 @@ export function linesInfo(get, fallback = {}) {
   let spacing = list('X-Visivo-Spacing');
   let origin = list('X-Visivo-Origin');
   if (!spacing || !origin) {
-    // The velocity routes' grid (docs/backend-api/velocity.md): spacing per
+    // The velocity routes' grid (docs/technical/backend-api/velocity.md): spacing per
     // axis box/(n-1) (unit without a box), times the block factor; origin at
     // the full grid's first point.
     const full = (list('X-Visivo-Full-Shape') || []).slice().reverse();   // nz,ny,nx -> nx,ny,nz

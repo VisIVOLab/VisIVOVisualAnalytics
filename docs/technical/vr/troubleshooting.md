@@ -1,4 +1,4 @@
-# Troubleshooting
+# VR headset: troubleshooting in depth
 
 The page watches the backend (one small request every 5 s, and every 1 to
 5 s while it does not answer) and says what went wrong where you are: on a
@@ -44,7 +44,7 @@ In the [VisIVO VR app](../../user/reference/vr.md) there is no 2-D page and no *
 leaving VR quits the app, and its cards offer **Quit VisIVO VR** instead.
 Where a row above says *Enter VR*, press **Open on Headset** on the computer
 again. What the desktop says when it starts the app is in
-[The headset app](../../user/reference/vr.md#from-the-desktop).
+[The headset app](../methods/vr.md#from-the-desktop).
 
 Problems of the USB way (adb not found, the headset not authorised, no
 headset on USB) are named by the *Open in VR Headset…* dialog itself, with the

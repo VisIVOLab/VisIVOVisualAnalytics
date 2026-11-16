@@ -1,7 +1,3 @@
----
-orphan: true
----
-
 # Use cases
 
 Each page walks through one task in VisIVO Visual Analytics, step by step, on

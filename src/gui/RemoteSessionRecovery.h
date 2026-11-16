@@ -8,7 +8,7 @@
 // A render session can end under a connected client: its render process
 // crashed or was killed, or the backend closed it. Over the WebSocket the
 // backend then closes with the reason "session ended"
-// (docs/backend-api/render.md); WebRTC has no close reason, so a viewer asks
+// (docs/technical/backend-api/render.md); WebRTC has no close reason, so a viewer asks
 // the backend whether the session is still there (GET .../levels answers 404
 // for one that is gone) and decides as if that reason had come. Reconnecting
 // to an ended session is refused, so the view used to sit on "Remote

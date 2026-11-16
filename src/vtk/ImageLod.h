@@ -8,7 +8,7 @@
 /// viewport-driven tile streaming, kept free of VTK/Qt-GUI so it is unit
 /// testable. The viewer converts camera state into a visible source-pixel
 /// rectangle + viewport size and asks this module which pyramid level to show
-/// and which tiles cover the view. See docs/backend-api.md (`/v1/image/tile`).
+/// and which tiles cover the view. See docs/technical/backend-api.md (`/v1/image/tile`).
 namespace ImageLod {
 
 /// Geometry of the pyramid for one image (mirrors the backend tile contract:

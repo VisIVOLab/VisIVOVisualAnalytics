@@ -5,7 +5,7 @@
 // an immersive Horizon OS app (tools/quest-app/), installed over adb and
 // started by the desktop so that Open on Headset puts the user in VR, with
 // no browser window and no Enter VR. The contract is on issue #255 and in
-// docs/backend-api/vr-launch.md.
+// docs/technical/backend-api/vr-launch.md.
 //
 // What is here, as pure functions: where the APK and its visivo-vr.json are,
 // what that file says, the adb argument lists (version query, install,

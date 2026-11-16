@@ -3,7 +3,7 @@
 These routes analyse dynamic spectra and beamformed data: datasets of kind
 `dynspec`, a 2-D FITS image with time on `NAXIS1` and frequency on `NAXIS2`
 (HDF5 and PSRFITS inputs are converted to such a FITS sidecar when opened; see
-[Supported PSRFITS](../../user/reference/image-viewer.md#supported-psrfits) for how
+[Supported PSRFITS](../methods/image-viewer.md#supported-psrfits) for how
 PSRFITS fold and search layouts, `DAT_SCL`/`DAT_OFFS` and zero `DAT_WTS` are
 read). Any degenerate leading axes are dropped. The sampling is read from the
 header: `CRVAL1`, `CRPIX1`, `CDELT1` give the time of each sample in seconds

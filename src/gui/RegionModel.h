@@ -44,7 +44,7 @@ constexpr std::size_t kShapeCount = 11;
 
 using Vec2 = std::array<double, 2>;
 
-/// The canonical shape names of the backend's region model (docs/backend-api/regions.md).
+/// The canonical shape names of the backend's region model (docs/technical/backend-api/regions.md).
 inline QString shapeName(Shape s)
 {
     switch (s) {

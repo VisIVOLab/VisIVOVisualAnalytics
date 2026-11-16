@@ -127,5 +127,5 @@ def test_header_manifest_matches_declarations() -> None:
 
 def test_manifest_mirrored_to_docs() -> None:
     a = json.loads((CONTRACT / "visivo_headers.json").read_text())["headers"]
-    b = json.loads((BACKEND.parent / "docs/contract/visivo_headers.json").read_text())["headers"]
+    b = json.loads((BACKEND.parent / "docs/technical/contract/visivo_headers.json").read_text())["headers"]
     assert a == b, f"docs/contract mirror is stale. Regenerate: {_REGEN}"

@@ -11,7 +11,7 @@ class Settings;
 
 /// Process-wide cache of ``BackendClient`` instances, one per registered
 /// backend. Used by the distributed-backend architecture (see
-/// ``docs/distributed-backend-design.md``).
+/// ``docs/technical/design/distributed-backend-design.md``).
 ///
 /// Why a cache: each ``BackendClient`` accumulates a session id on the first
 /// ``openDataset()`` call, and subsequent calls on the same backend MUST

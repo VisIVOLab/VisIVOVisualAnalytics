@@ -179,7 +179,7 @@ it. When updating Bubblewrap, bump it in `package.json`, run
 ## How the desktop uses it
 
 The contract (install, launch, ticket, timeouts) is on issue #255 and in
-[docs/backend-api/vr-launch.md](../../docs/backend-api/vr-launch.md). The
+[docs/technical/backend-api/vr-launch.md](../../docs/technical/backend-api/vr-launch.md). The
 desktop's side is `src/app/VrAppLauncher` and `src/app/VrHeadsetApp.h`.
 
 The desktop looks for the APK (with its `.json` beside it) in

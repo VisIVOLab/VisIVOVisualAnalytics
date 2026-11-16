@@ -93,8 +93,6 @@ out for ds9, CARTA or CASA.
 
 ### Regions on the 3-D cutting plane
 
-<!-- TODO #353: this subsection describes PR #353 (open when written); check the wording once it is merged. -->
-
 10. Look at the *3D View*: every region of the list is drawn on the cutting
     plane, in its colour, at the channel shown. Rotate the view or move the
     channel bar and the regions move with the plane. You edit regions on the
@@ -108,7 +106,9 @@ out for ds9, CARTA or CASA.
     The same regions on the cutting plane in the 3-D view.
     ```
 
-<!-- TODO #356: regions on the cutting plane with Remote rendering. -->
+    The regions show on the plane with *Remote* rendering too (the 3-D view
+    drawn by the backend), placed and hidden behind the volume as in *Local*
+    rendering.
 
 ### Export
 
@@ -134,7 +134,10 @@ Synthesis* take its bounding box.
 The image viewer has the same region list, the same *Region Properties* and
 the same import and export, so the steps above work on a 2-D image too.
 
-<!-- TODO #355: regions on moment maps in Product panes. -->
+The list is also drawn on every pane that shows a map of the cube's sky
+plane: moment maps, line-width maps, the *Channels* pane and the Faraday maps
+of an RM synthesis box. You can draw on those panes as on the slice; *Analyse*
+then measures the map in that pane.
 
 ## Next
 

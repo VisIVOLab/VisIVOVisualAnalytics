@@ -99,6 +99,39 @@ in.
     *Refine automatically when the view settles* and the *Detail budget*,
     the memory the fine blocks may use.
 
+### Cut, contour and take apart in the VR headset
+
+These steps need a Meta Quest 3 paired with the desktop, as in
+[From the desktop to the VR headset](08-vr-from-the-desktop.md).
+
+12. With the density open, choose *Tools ▸ Views ▸ Show on Headset*. The
+    headset shows it as a simulation volume, on a log scale. Press *X* for
+    the hand menu.
+
+13. Clipping plane. On the *Range* tab, set *Plane* to *On*. The plane hides
+    one side of the volume and the cut face shows the density on it. Pick
+    the *Clipping plane* tool (*A* opens the tool palette), then hold the
+    trigger to carry and tilt the plane; the stick up and down moves it along
+    its normal. *Flip* shows the other side, *Snap* aligns it with the
+    nearest axis, and *Slab* keeps only a slab between two parallel planes
+    (the stick left and right sets its thickness). *Reset* puts it back.
+
+14. Isosurfaces. On the *Display* tab, open *Surfaces ▸* and press *+ Add*.
+    The backend computes the surface on the full-resolution data. Move
+    *Level* (on this field it moves in decades) and set *Colour* and
+    *Opacity*; an opaque surface also covers the glow in front of it, so
+    lower the opacity to see both. Add up to four levels, or choose
+    *Surfaces only* to hide the volume. *Export* saves the picked surface as
+    *PLY* or *glTF* in the Workspace Exports, in the simulation's own
+    coordinates.
+
+15. Exploded view. On the *Display* tab, open *Explode ▸*. Set *Pieces* to
+    *Value ranges* and *3*: the density is split into three ranges between
+    the threshold and the colour max. Choose a *Layout* (*Row*, *Column* or
+    *Ring*) and press *Explode*; *Spread* sets the distance between the
+    pieces, and a grip inside a piece moves it. *Assemble* puts the model
+    back together.
+
 ## What you get
 
 The preview, the remote view and the refined boxes all show the same data at

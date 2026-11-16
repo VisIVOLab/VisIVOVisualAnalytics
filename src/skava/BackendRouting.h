@@ -44,7 +44,7 @@ struct SkavaRouting
     bool valid() const { return !candidates.isEmpty(); }
 };
 
-/// The usable routes for a SKAVA dataset (docs/distributed-backend-
+/// The usable routes for a SKAVA dataset (docs/technical/design/distributed-backend-
 /// design.md §4.2). Descriptors are tried in SKAVA's ranking order; one is
 /// usable when a registered node matches it (same URL, or same SKAVA node
 /// code), it serves this kind of dataset (``supports_kinds``), the node holds

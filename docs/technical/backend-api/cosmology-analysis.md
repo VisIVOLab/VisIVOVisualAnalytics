@@ -6,7 +6,7 @@ and skeletons.
 ## Cosmology
 
 Every route on this page has a desktop entry; the table in
-[Cosmology tools](../../user/reference/cosmology.md#what-each-route-is-for) says which.
+[Cosmology tools](../methods/cosmology.md#routes-and-desktop-entries) says which.
 
 ### `POST /v1/cosmology/distance`
 Single redshift under a named preset.

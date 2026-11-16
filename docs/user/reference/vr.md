@@ -202,7 +202,10 @@ the original data.
 
 - *+ Add*, *Remove*; the numbered chips pick the surface to set.
 - *Level* (in the field's unit) and *Threshold* (back to the volume's).
-- *Colour*, *Opacity*, *Shown*/*Hidden*.
+- *Colour*, *Opacity*, *Shown*/*Hidden*. The surfaces are drawn over the
+  volume, so an opaque surface also covers the glow in front of it: lower its
+  opacity (or the volume's) to see both. A translucent surface lets the
+  other surfaces show through.
 - *Show*: *With the volume* or *Surfaces only*.
 - *Export*: *PLY* or *glTF* in the Workspace Exports (`isosurfaces/`).
 

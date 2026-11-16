@@ -53,7 +53,7 @@ never starves UI-driven calls:
 
 This is transparent to `BackendClient`: it just makes synchronous HTTP
 calls; the throttle lives entirely on the FastAPI side. See
-`docs/async-patterns.md` for the full classification table.
+`docs/technical/design/async-patterns.md` for the full classification table.
 
 ---
 

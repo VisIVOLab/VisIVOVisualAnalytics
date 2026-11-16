@@ -11,7 +11,7 @@
 // are tested by node (backend/tests/vr/refine-webrtc.test.mjs); RtcStereo is
 // the browser side (RTCPeerConnection, MediaStreamTrackProcessor or a video
 // element with requestVideoFrameCallback). Protocol and stripe:
-// docs/backend-api/render.md, "Stereo frames as WebRTC video".
+// docs/technical/backend-api/render.md, "Stereo frames as WebRTC video".
 
 // ── The pose id stripe (backend: render_session/_stereo_webrtc.py) ──────────
 

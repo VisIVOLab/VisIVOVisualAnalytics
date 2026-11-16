@@ -149,7 +149,7 @@ struct SkavaDiscoveryResponse
 /// Descriptor for a VisIVO backend co-located with a dataset at an SRC
 /// node. Returned by SKAVA inside ``service_descriptors[]`` under
 /// ``service_type == "visivo-backend"``. See
-/// docs/distributed-backend-design.md §5.2.
+/// docs/technical/design/distributed-backend-design.md §5.2.
 struct SkavaVisivoBackendDescriptor
 {
     QString endpoint;       ///< Base URL of the VisIVO backend at the SRC

@@ -302,4 +302,4 @@ export LD_LIBRARY_PATH="$HOME/Qt/6.10.x/gcc_64/lib:$HOME/opt/vtk/lib:$LD_LIBRARY
 
 ## Backend
 
-The Python backend is in `backend/`. See "Running it" in [README.md](README.md) for a pip setup and the Apptainer and SLURM launch, and [Running the backend on a cluster](docs/deployment/hpc-slurm.md) for the cluster details.
+The Python backend is in `backend/`. See "Running it" in [README.md](README.md) for a pip setup and the Apptainer and SLURM launch, and [Running the backend on a cluster](docs/technical/deployment/hpc-slurm.md) for the cluster details.

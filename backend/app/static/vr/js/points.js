@@ -13,7 +13,7 @@
 import * as M from './mat4.js';
 
 /** Rows drawn, per budget: the headset's (a Quest 3 at 72-90 Hz in stereo) and
- *  a desktop browser's. Measured in docs/user-guide/vr-headset.md. */
+ *  a desktop browser's. Measured in docs/user/reference/vr.md. */
 export const BUDGETS = {
   'quest-low': 500_000, quest: 1_000_000, 'quest-high': 2_000_000,
   desktop: 5_000_000, 'desktop-high': 10_000_000,

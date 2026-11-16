@@ -3,7 +3,7 @@
   FITS MIME type, for desktops whose shared-mime-info is too old to carry it.
   Most current distributions already define image/fits; installing this is
   harmless there (identical definition) and is what makes the .desktop file's
-  MimeType= line resolve on the ones that do not. See docs/user-guide for the
+  MimeType= line resolve on the ones that do not. See docs/user for the
   xdg-mime / xdg-desktop-menu commands (they cannot be written here: an XML
   comment may not contain a double hyphen, and every one of those flags has one).
 -->

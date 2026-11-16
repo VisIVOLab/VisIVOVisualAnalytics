@@ -2583,7 +2583,7 @@ protected:
     // Apply the scientific copilot's visualisation directives (from the Copilot
     // panel's `actionsRequested` signal) to this viewer, in order. Display-only
     // and reversible: a snapshot of the affected state is taken before the batch
-    // so undoCopilotActions() can restore it. See docs/copilot-backend.md.
+    // so undoCopilotActions() can restore it. See docs/technical/design/copilot-backend.md.
     void applyCopilotActions(const QList<QJsonObject> &actions);
     void undoCopilotActions();
     void setCopilotRenderMode(bool iso);   ///< flip Volume↔Isosurface + resync sidebar/menu

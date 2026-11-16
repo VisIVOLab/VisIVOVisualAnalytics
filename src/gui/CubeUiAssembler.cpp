@@ -96,7 +96,7 @@ QToolButton *CubeUiAssembler::makeSidebarButton(const QString &label)
 // ── Observatory Console design: flat sections separated by 1px dividers,
 // ── KV rows with muted label / monospace value, optional file badge header.
 // ──
-// ── See docs/architecture-note.md "Cube viewer (`vtkWindowCube`) — interactive extras" for the
+// ── See docs/technical/architecture-note.md "Cube viewer (`vtkWindowCube`) — interactive extras" for the
 // ── higher-level rationale.
 
 /// Section divider: a `QFrame` with a single bottom hairline border.

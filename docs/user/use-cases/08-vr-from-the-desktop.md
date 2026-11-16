@@ -115,7 +115,15 @@ a simulation volume to the same headset.
     chip per field. Each field keeps its own look, and the crop stays. Here
     only the density is on disk, so the row is not shown.
 
-<!-- TODO #357: overlay two or three variables of a simulation volume in one view. -->
+    With two or three fields, *Rendering ▸ Overlay ▸* on the *Display* tab
+    draws them in one view. *Fields* adds or removes a field, *Edit* picks
+    the one the rows below set (colour map, *Log*, threshold, colour max,
+    opacity), *Sum* adds their light and *MIP* shows the brightest, and
+    *On* shows the overlay. Each field has its own colour bar, and the
+    readout gives every field's value at the point.
+
+    The clipping plane, isosurfaces and the exploded view are described in
+    [Large cubes and simulations](05-large-cubes-and-simulations.md).
 
 ### Without internet: the USB cable
 

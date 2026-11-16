@@ -82,7 +82,7 @@ portal's certificate is not: prefer a plain `http` tunnel.
 The page measures, frame by frame, the
 round trip of its poses (pose sent to frame received, minus the time the
 backend spent on the frame). Over a far link (round trip above 30 ms) the
-numbers on the wrist (see [Controls](../../user/reference/vr.md#the-numbers-on-the-wrist))
+numbers on the wrist (see [Controls](../methods/vr.md#the-numbers-on-the-wrist))
 say `link far rtt <ms> ms  window <n>`: the page keeps enough
 poses in flight (and asks the backend for a matching ack window) to keep the
 cluster's GPU busy during the round trip, ceil((rtt + work) / work) with

@@ -2,7 +2,7 @@
 #define OPEN_RENDER_SESSIONS_H
 // OpenRenderSessions.h
 // The server-side render sessions this client holds (cube and point-table
-// views, docs/backend-api/render.md), so that quitting closes them.
+// views, docs/technical/backend-api/render.md), so that quitting closes them.
 //
 // A viewer gives its session back with a DELETE sent and forgotten
 // (RenderSessionCalls), from its teardown. At quit that teardown comes after

@@ -8,6 +8,19 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Docs: user and technical documentation (#359).** The documentation has
+  two parts. The user documentation (`docs/user/`) has nine use cases, step
+  by step with screenshots of the application, and a short reference page per
+  viewer and tool (`docs/user/reference/`), trimmed from the old user guide:
+  the eleven VR pages are one reference page. The technical documentation
+  (`docs/technical/`) has the architecture, backend API, contract,
+  configuration, testing, deployment (clusters, SRC nodes, headset pairing),
+  design notes, the VisIVO Server tools, and new methods pages
+  (`docs/technical/methods/`) with the implementation detail taken out of the
+  user pages. Every old page address forwards to the new one
+  (`sphinx-reredirects`, listed in `docs/conf.py`). Paths in code comments,
+  tests and scripts (`docs/technical/contract/visivo_headers.json`,
+  `docs/technical/demo-datasets.md`) follow the move.
 - **VR: take a simulation model apart (#371).** The hand menu's new
   *Explode* page (from *Display ▸ Rendering*) pulls a simulation volume
   apart into pieces: the overlaid fields, each in its own colours, or 2–4
@@ -549,7 +562,7 @@ are preserved here unedited; the branch names they refer to are historical.
   Backend: `POST /v1/vr/headset/spectator`, `GET|POST
   /v1/vr/headset/spectator/frame`, `POST /v1/vr/headset/spectator/snapshot`,
   and a `watch` command in the hub's queue
-  (docs/backend-api/headset-hub.md). Desktop: `src/app/VrSpectator.h`
+  (docs/technical/backend-api/headset-hub.md). Desktop: `src/app/VrSpectator.h`
   (widget-free), `VrSpectatorFeed`, `src/gui/VrSpectatorWindow`.
 - **3-D sky catalogues: the selected source follows a model change, and the
   cz < 1000 km/s flag reads the cz the file shows (#298).** Changing the
@@ -913,7 +926,7 @@ are preserved here unedited; the branch names they refer to are historical.
   and can be unticked; the choice is remembered in the app's settings. Only
   what the headset shows now is applied, once: a look from before the page
   switched to another cube is not, and the desktop sends no look back, so
-  nothing loops (src/app/VrHeadsetFollow.h, docs/user-guide/vr/desktop.md).
+  nothing loops (src/app/VrHeadsetFollow.h, docs/user/reference/vr.md).
 
 - **VR: result window title bars above their content, named after the
   window, long lines wrapped (#267, part of #253).** On the Quest 3 the
@@ -1093,7 +1106,7 @@ are preserved here unedited; the branch names they refer to are historical.
   spectrum is saved in the Workspace Exports by
   `POST /v1/products/spectrum_table` (the desktop's spectrum CSV, or a FITS
   table), next to `moment_fits` and `pv_fits`, so what the headset makes can
-  be opened on the desktop (docs/backend-api/headset-hub.md).
+  be opened on the desktop (docs/technical/backend-api/headset-hub.md).
 
 - **Desktop: Show on Headset, and the headset's activity on the desktop
   (#238, part of #234; needs the backend's headset hub, #236).** *Open in VR
@@ -1111,7 +1124,7 @@ are preserved here unedited; the branch names they refer to are historical.
   **Follow the headset's look** (off by default) applies its colour map,
   threshold and clip box to the 3-D view. One link per backend session
   follows the hub (presence every 5 s, a long poll of the activity); an older
-  backend is detected and left alone (docs/user-guide/vr/desktop.md).
+  backend is detected and left alone (docs/user/reference/vr.md).
 
 - **Desktop: Headset Activity follow-ups (#245, part of #234).** A spectrum
   the headset saved as a FITS table (`POST /v1/products/spectrum_table` with
@@ -1139,7 +1152,7 @@ are preserved here unedited; the branch names they refer to are historical.
   a context restored before the session ended is rebuilt after it. A guard on
   the WebGL context refuses any `texImage3D`/`texStorage3D` during a session
   before it reaches the GPU and logs `tex3d-in-xr`
-  (docs/user-guide/vr/troubleshooting.md, *GPU context loss at the first
+  (docs/technical/vr/troubleshooting.md, *GPU context loss at the first
   lasso on a Quest 3*; validation/vr_tex3d.mjs).
 
 - **VR: the controller models shaded correctly on the Quest 3 (part of #166
@@ -1172,7 +1185,7 @@ are preserved here unedited; the branch names they refer to are historical.
   address switches `nohover`, `nohud`, `noreadout`, `noselpanel`,
   `noseloutline` and `novolume` each leave one per-frame path out, without
   touching the selection; the diagnostics and the wrist numbers name the
-  active ones (docs/user-guide/vr/troubleshooting.md, *Diagnosing a GPU
+  active ones (docs/technical/vr/troubleshooting.md, *Diagnosing a GPU
   context loss*). The results panel kept one "changed" flag that only the
   headset's texture cleared: while the Selection window took no texture, the
   page repainted both 768×560 canvases at every hover update, about 36 times a
@@ -1452,7 +1465,7 @@ are preserved here unedited; the branch names they refer to are historical.
   tracking (palm up included), the menu, the windows and the readout;
   `validation/vr_menu.mjs` drives the menu with real mouse events in CI
   (`vr_lifecycle.mjs --regressions`, or `--menu`). The VR guide is now a
-  section, `docs/user-guide/vr/` (overview, quickstart, controls and the hand
+  section, `docs/user/reference/vr.md/` (overview, quickstart, controls and the hand
   menu, analysis, data types, cluster backends, troubleshooting, technical
   reference with every Quest 3 check list); `vr-headset.md` stays as a short
   page whose anchors lead there.
@@ -1558,7 +1571,7 @@ are preserved here unedited; the branch names they refer to are historical.
   draws a velocity field's streamlines and arrows traced by the backend with
   the desktop viewer's own filters on its display grid. New routes
   `/v1/points/info`, `/v1/points/sample_bin`, `/v1/cube/catalogue_pixels`,
-  `/v1/velocity/lines_bin` (docs/backend-api/vr-layers.md); the pairing link
+  `/v1/velocity/lines_bin` (docs/technical/backend-api/vr-layers.md); the pairing link
   gains `kind=` and `box=`, and the point and velocity windows an *Open in VR
   Headset…* entry. A catalogue opened from a VOTable, FITS or IPAC table keeps
   its columns' units (and a FITS table its `SPECSYS`); the stereo `xr_error`
@@ -1831,7 +1844,7 @@ are preserved here unedited; the branch names they refer to are historical.
   one on resume; a stale failed connection attempt no longer overwrites the
   refinement's error. Pairing, panel layout, hit-testing, pointer and settings
   are unit-tested (`backend/tests/vr/pairing.test.mjs`, `vr-panel.test.mjs`).
-  The user guide (`docs/user-guide/vr-headset.md`) starts from the desktop,
+  The user guide (`docs/user/reference/vr.md`) starts from the desktop,
   covers the panel and the settings, cluster backends through a tunnel, a
   Quest 3 checklist and the known limits.
 - **Refinement in the VR headset: full-cube frames from the Mac blended in
@@ -1871,7 +1884,7 @@ are preserved here unedited; the branch names they refer to are historical.
   M5 Max, 1024 x 1024 per eye: HCG 44 at 45 frames/s, pose to frame 29 ms
   median (59 frames/s without depth); a 2 GB Apertif cube at 24 frames/s,
   49 ms. Point tables and cubes drawn out of core are refused for now. See
-  *Stereo frames for a headset* in `docs/backend-api/render.md`.
+  *Stereo frames for a headset* in `docs/technical/backend-api/render.md`.
 - **Selections in the VR headset, analysis on the backend (#171, step 5 of
   #166).** On the `/vr/` page the right trigger (or a mouse click in a desktop
   browser) picks on the reduced cube the headset draws, with the renderer's
@@ -2002,7 +2015,7 @@ are preserved here unedited; the branch names they refer to are historical.
     delivery is at least once. Without `lease` the queue drains as before,
     for older clients.
   - New user-guide page, [Working with TOPCAT, Aladin and
-    DS9](docs/user-guide/interoperability.md). Spectra
+    DS9](docs/user/reference/interoperability.md). Spectra
     (`spectrum.load.*`) are not exchanged yet.
 - **Quitting cancels a ray-traced render (#149).** A still or movie being
   rendered by the backend (`POST /v1/tasks/volume_render`,

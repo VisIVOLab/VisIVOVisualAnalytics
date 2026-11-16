@@ -203,7 +203,7 @@ All viewers follow the same pattern:
 
 The cube preview→full-res path uses worker-side sanitization and a deferred-Render
 pattern to keep the UI thread reactive during the swap — see
-`docs/async-patterns.md` (sections *Worker-side data preparation* and
+`docs/technical/design/async-patterns.md` (sections *Worker-side data preparation* and
 *Deferred render after data swap*) for the details.
 
 ### Pagination (large datasets)
@@ -2272,7 +2272,7 @@ orchestrator also goes through `_run_heavy`, so its parallelism is bounded
 by the semaphore rather than by the pool size.
 
 Tunables: `VISIVO_HEAVY_SLOTS`, `VISIVO_LINEWIDTH_CHUNKS`,
-`VISIVO_LINEWIDTH_SNR` (see `docs/async-patterns.md`).
+`VISIVO_LINEWIDTH_SNR` (see `docs/technical/design/async-patterns.md`).
 
 ---
 

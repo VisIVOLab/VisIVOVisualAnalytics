@@ -55,6 +55,8 @@ extensions = [
     "sphinx_copybutton",
     # Grids / cards / dropdowns / tabs (modern docs UI primitives).
     "sphinx_design",
+    # Old page addresses forward to the pages' new places (see `redirects`).
+    "sphinx_reredirects",
 ]
 
 # Treat both .rst and .md as source documents.
@@ -105,6 +107,116 @@ exclude_patterns = [
     # one in their working tree.
     "context-chat.md",
 ]
+
+# ── Redirects for moved pages ────────────────────────────────────────────────
+# The documentation was split into user documentation (user/) and technical
+# documentation (technical/) for 1.2.0 (issue #359). Every page that moved
+# keeps its old address: sphinx-reredirects writes a small HTML page at the old
+# path that forwards to the new one. Pages merged into one (the VR user guide
+# pages into user/reference/vr) all forward to that page.
+_moved_pages = {
+    "architecture-note": "technical/architecture-note",
+    "async-patterns": "technical/design/async-patterns",
+    "backend-api": "technical/backend-api",
+    "backend-api/assistant": "technical/backend-api/assistant",
+    "backend-api/cosmology-analysis": "technical/backend-api/cosmology-analysis",
+    "backend-api/cube": "technical/backend-api/cube",
+    "backend-api/datasets": "technical/backend-api/datasets",
+    "backend-api/dynspec": "technical/backend-api/dynspec",
+    "backend-api/exports": "technical/backend-api/exports",
+    "backend-api/headset-hub": "technical/backend-api/headset-hub",
+    "backend-api/image": "technical/backend-api/image",
+    "backend-api/isosurface": "technical/backend-api/isosurface",
+    "backend-api/meta-files": "technical/backend-api/meta-files",
+    "backend-api/node-soda": "technical/backend-api/node-soda",
+    "backend-api/particle-render": "technical/backend-api/particle-render",
+    "backend-api/polarisation": "technical/backend-api/polarisation",
+    "backend-api/products": "technical/backend-api/products",
+    "backend-api/regions": "technical/backend-api/regions",
+    "backend-api/render": "technical/backend-api/render",
+    "backend-api/reproducibility": "technical/backend-api/reproducibility",
+    "backend-api/samp": "technical/backend-api/samp",
+    "backend-api/sed-simulations": "technical/backend-api/sed-simulations",
+    "backend-api/share": "technical/backend-api/share",
+    "backend-api/sky-services": "technical/backend-api/sky-services",
+    "backend-api/spectral": "technical/backend-api/spectral",
+    "backend-api/tasks-finders": "technical/backend-api/tasks-finders",
+    "backend-api/velocity": "technical/backend-api/velocity",
+    "backend-api/volume-render": "technical/backend-api/volume-render",
+    "backend-api/vr-launch": "technical/backend-api/vr-launch",
+    "backend-api/vr-layers": "technical/backend-api/vr-layers",
+    "backend-api/vr-pair": "technical/backend-api/vr-pair",
+    "brick-pyramid": "technical/design/brick-pyramid",
+    "catalogue3d-viewer": "technical/design/catalogue3d-viewer",
+    "configuration": "technical/configuration",
+    "copilot-backend": "technical/design/copilot-backend",
+    "demo-datasets": "technical/demo-datasets",
+    "deployment/hpc-slurm": "technical/deployment/hpc-slurm",
+    "deployment/src-node": "technical/deployment/src-node",
+    "deployment/vr-pairing": "technical/deployment/vr-pairing",
+    "distributed-backend-design": "technical/design/distributed-backend-design",
+    "kinematic-lasso": "technical/design/kinematic-lasso",
+    "kinematic-model": "technical/design/kinematic-model",
+    "large-cube-loading": "technical/design/large-cube-loading",
+    "linked-views": "technical/design/linked-views",
+    "movie-export": "technical/design/movie-export",
+    "multi-user-backend": "technical/multi-user-backend",
+    "roadmap": "technical/roadmap",
+    "server/visivo_filter": "technical/server/visivo_filter",
+    "server/visivo_importer": "technical/server/visivo_importer",
+    "server/visivo_server": "technical/server/visivo_server",
+    "server/visivo_utils": "technical/server/visivo_utils",
+    "server/visivo_viewer": "technical/server/visivo_viewer",
+    "service-mapping-note": "technical/design/service-mapping-note",
+    "testing": "technical/testing",
+    "user-guide/catalogues-hips": "user/reference/catalogues-hips",
+    "user-guide/copilot": "user/reference/copilot",
+    "user-guide/copilot-self-hosted": "technical/deployment/copilot-self-hosted",
+    "user-guide/cosmology": "user/reference/cosmology",
+    "user-guide/cube-viewer": "user/reference/cube-viewer",
+    "user-guide/getting-started": "user/reference/getting-started",
+    "user-guide/glossary": "user/reference/glossary",
+    "user-guide/image-viewer": "user/reference/image-viewer",
+    "user-guide/interoperability": "user/reference/interoperability",
+    "user-guide/kinematic-lasso": "user/reference/kinematic-lasso",
+    "user-guide/moment-maps": "user/reference/moment-maps",
+    "user-guide/pluto-output": "user/reference/pluto-output",
+    "user-guide/polarimetry": "user/reference/polarimetry",
+    "user-guide/publication-output": "user/reference/publication-output",
+    "user-guide/raytraced-particles": "user/reference/raytraced-particles",
+    "user-guide/raytraced-volumes": "user/reference/raytraced-volumes",
+    "user-guide/region-pv-noise": "user/reference/region-pv-noise",
+    "user-guide/sed-fitting": "user/reference/sed-fitting",
+    "user-guide/simulations": "user/reference/simulations",
+    "user-guide/skava-discovery": "user/reference/skava-discovery",
+    "user-guide/source-finding": "user/reference/source-finding",
+    "user-guide/spectral-tools": "user/reference/spectral-tools",
+    "user-guide/troubleshooting": "user/reference/troubleshooting",
+    "user-guide/vbt-viewer": "user/reference/vbt-viewer",
+    "user-guide/velocity-fields": "user/reference/velocity-fields",
+    "user-guide/vlkb-archive": "user/reference/vlkb-archive",
+    "user-guide/vr-headset": "user/reference/vr",
+    "user-guide/vr/analysis": "user/reference/vr",
+    "user-guide/vr/cluster": "technical/deployment/vr-cluster",
+    "user-guide/vr/controls": "user/reference/vr",
+    "user-guide/vr/data-types": "user/reference/vr",
+    "user-guide/vr/desktop": "user/reference/vr",
+    "user-guide/vr/headset-app": "user/reference/vr",
+    "user-guide/vr/index": "user/reference/vr",
+    "user-guide/vr/public-loader": "technical/deployment/vr-public-loader",
+    "user-guide/vr/quickstart": "user/reference/vr",
+    "user-guide/vr/reference": "technical/vr/reference",
+    "user-guide/vr/troubleshooting": "technical/vr/troubleshooting",
+    "velocity-field-viewer": "technical/design/velocity-field-viewer",
+}
+
+
+def _relative_target(old: str, new: str) -> str:
+    depth = old.count("/")
+    return "../" * depth + new + ".html"
+
+
+redirects = {old: _relative_target(old, new) for old, new in _moved_pages.items()}
 
 # ── HTML output ──────────────────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 """Data for the VR page's other layers (issue #190, VR epic #166): point
 tables sampled for a headset, catalogue sources placed in a cube's pixels,
 and a velocity field's streamlines and arrows. Every computation is on the
-backend; the page only draws (docs/backend-api/vr-layers.md).
+backend; the page only draws (docs/technical/backend-api/vr-layers.md).
 """
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def _point_table(entry: dict, spec: str, sky: dict | None = None):
 
 def _sky_headers(table) -> dict[str, str]:
     """A sky catalogue's placement in a sample's headers: what the page shows
-    in its status line (docs/backend-api/vr-layers.md)."""
+    in its status line (docs/technical/backend-api/vr-layers.md)."""
     if table.sky is None or not table.sky_settings:
         return {}
     st = table.sky_settings

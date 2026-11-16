@@ -62,6 +62,15 @@ Use a backend that has not yet built the pyramid of `rho.0000.flt` for shot 1 an
 | `05-large-cubes-and-simulations-2.png` | Same window after *Remote* and the pyramid build: the remote view of the full cube, *Remote* selected in the pane header's *Auto / Local / Remote*, status bar naming remote rendering. Same camera as shot 1 so the two compare. |
 | `05-large-cubes-and-simulations-3.png` | Back on *Local* with the pyramid built: camera zoomed onto a dense filament (about a quarter of the cube across the view) and settled, the refined part visibly sharper than the block-mean preview around it, the status line reading *Detail: level … in x …, y …, z …; elsewhere block means, pyramid level 3*. |
 
+Pending VR shots, not yet referenced by the pages (add the figure directives to steps 13 to 15 of 05 and step 13 of 08 once captured):
+
+| File | What must be on screen |
+|---|---|
+| `05-large-cubes-and-simulations-4.png` | In the headset, `rho.0000.flt` sent with *Show on Headset*, log scale: the clipping plane *On*, tilted about 30° from the X axis through the middle of the box, the cut face showing the density; the *Clipping plane* tool in hand, the hand menu closed. |
+| `05-large-cubes-and-simulations-5.png` | In the headset, same volume: two isosurfaces (*Surfaces ▸*, *+ Add* twice) at two levels a decade apart, in two colours, the outer one at about 40 % opacity, *With the volume*; the *Surfaces ▸* menu open beside the box with the chips and *Level* visible. |
+| `05-large-cubes-and-simulations-6.png` | In the headset, same volume exploded: *Explode ▸* with *Pieces* *Value ranges*, *3*, *Layout* *Row*, after *Explode*: three pieces side by side, the menu visible. |
+| `08-vr-from-the-desktop-5.png` | In the headset, a simulation volume with two or three fields (a PLUTO output with several variables, or a VBT volume with several fields) under *Overlay ▸* *On*, *Sum*: the fields in their own colour maps, one colour bar per field. |
+
 ## 06-catalogues-hips-crossmatch.md
 
 | File | What must be on screen |

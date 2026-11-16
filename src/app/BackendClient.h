@@ -2661,7 +2661,7 @@ public:
     BackendImageResult requestImage(const QString &datasetId) const;
     /// One out-of-core pyramid tile (POST /v1/image/tile). level 0 = full res,
     /// L decimates by 2^L. Used to assemble large mosaics tile-by-tile so the
-    /// backend never loads the whole plane. See docs/backend-api.md.
+    /// backend never loads the whole plane. See docs/technical/backend-api.md.
     BackendImageTileResult requestImageTile(const QString &datasetId, int level,
                                             int tileX, int tileY, int tileSize = 256) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;
@@ -2740,7 +2740,7 @@ public:
      *  cancelTask (@p timeoutMs, 0: 15 s). */
     bool deleteRender(const QString &taskId, QString &error, int timeoutMs = 0) const;
     /** DELETE /v1/render/{id} — close a server-side render session (a cube's
-     *  or a point table's view, docs/backend-api/render.md). Blocking and
+     *  or a point table's view, docs/technical/backend-api/render.md). Blocking and
      *  bounded as cancelTask (@p timeoutMs, 0: 15 s): the quit drain closes
      *  the sessions still open with it (OpenRenderSessions.h). */
     bool closeRenderSession(const QString &renderSessionId, QString &error,

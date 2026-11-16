@@ -324,7 +324,7 @@ private:
     /// followed by the next one in SKAVA's ranking. When no descriptor
     /// matches, fall back to ``doOpenDataFromUrl`` (download via local
     /// backend). ``preferredNode`` (a SKAVA node code) is tried first.
-    /// See docs/distributed-backend-design.md §4.2.
+    /// See docs/technical/design/distributed-backend-design.md §4.2.
     void doOpenSkavaDataset(const QString &obsId,
                               const struct SkavaDatalinkResponse &datalink,
                               const QString &preferredNode = QString());

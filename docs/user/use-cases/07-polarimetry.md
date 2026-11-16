@@ -78,7 +78,11 @@ get a Faraday depth map.
    never both in the viewer's memory. Draw a box on the slice and tick
    *Restrict to the drawn region* to start with a smaller area.
 
-<!-- TODO #355: measuring the RM map with a box region drawn on its Product pane. -->
+9. To measure the rotation measure over part of the field, choose *Tools ▸
+   Regions ▸ Box Region Analysis* and drag a box on the *Faraday depth (RM)*
+   pane. *Analyse* (right-click the region) gives the mean, median and
+   spread of the map inside the box; the Inspector names the map it
+   measured.
 
 ## What you get
 

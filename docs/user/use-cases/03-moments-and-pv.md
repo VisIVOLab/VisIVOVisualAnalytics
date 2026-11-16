@@ -96,8 +96,16 @@ then cut a position-velocity diagram along the galaxy's major axis.
     map, click its pane and choose *Tools ▸ Export*; the entry carries the
     map's name (*Export … as FITS…*).
 
-<!-- TODO #355: regions drawn on a moment map in a Product pane, as on the slice. -->
-<!-- TODO #358: linked 2-D views that follow every camera change across the slice and Product panes. -->
+14. To measure the map itself, choose *Tools ▸ Regions ▸ Box Region Analysis*
+    and drag a box on the *Moment 0* pane. The panes you can draw in get an
+    amber border. *Analyse* (right-click the region) gives the statistics of
+    the moment map, and the Inspector names the map it measured. The region
+    joins the window's region list, so it shows on the slice and on the other
+    map panes too, and moving it in one pane moves it everywhere.
+
+15. With *Tools ▸ Views ▸ Link Views* on, the 2-D slice and the map panes
+    share pan and zoom: zoom into the galaxy on one pane and the others
+    follow. *Shift+R* on any of them resets them all.
 
 ## What you get
 

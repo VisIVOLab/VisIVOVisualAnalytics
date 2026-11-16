@@ -1,4 +1,4 @@
-# Technical reference
+# VR headset: technical reference
 
 The page's settings, what the reduced cube keeps, how refinement works, the
 routes the page calls, and everything measured so far, with the checks still
@@ -60,7 +60,7 @@ to run on a Quest 3.
   taken back within two windows doubles the clean time the next one needs (up
   to 2 min), and showing something else (another cube, points, a style)
   resets that wait. The next *Enter VR* starts from the chosen resolution. The menu and the
-  [numbers on the wrist](../../user/reference/vr.md#the-numbers-on-the-wrist) say so, and the
+  [numbers on the wrist](../methods/vr.md#the-numbers-on-the-wrist) say so, and the
   diagnostics' *quality* line and the measurement record's *xr-start* event
   name the policy (*72 Hz; samples/voxel first (1 down to 0.25), then the eye
   buffer as a last resort (1× down to 0.85× at most)*); the page's log writes
@@ -122,7 +122,7 @@ to run on a Quest 3.
 The refinement's own settings are under
 [Refinement](#refinement-full-quality-frames-from-the-backend); which settings
 the browser keeps between visits is under
-[Settings kept in this browser](../../user/reference/vr.md#settings-kept-in-this-browser).
+[Settings kept in this browser](../methods/vr.md#settings-kept-in-this-browser).
 
 ## Fidelity of the reduced cube
 
@@ -394,7 +394,7 @@ In a desktop browser the same path runs with the mouse camera as both eyes
 headset.
 
 **On the numbers on the wrist** (the line starting *refine*; see
-[The numbers on the wrist](../../user/reference/vr.md#the-numbers-on-the-wrist)):
+[The numbers on the wrist](../methods/vr.md#the-numbers-on-the-wrist)):
 
 - the state: *off*, *connecting*, *waiting* (no usable refined frame),
   *refined NN %* (the fade weight), or *unavailable* with the reason; then
@@ -904,7 +904,7 @@ itself takes under 0.1 ms, so the cross follows the ray every other frame),
 spectrum 45-85 ms, lasso 570-710 ms plus 40-80 ms of statistics, box over 158
 channels 22 ms. The green overlay costs GPU time: 0.64 ms without it, 0.84 ms
 with it, for one 1600 × 1000 view on that Mac; the headset's own numbers are
-on its [numbers on the wrist](../../user/reference/vr.md#the-numbers-on-the-wrist).
+on its [numbers on the wrist](../methods/vr.md#the-numbers-on-the-wrist).
 
 **Timings of the analysis** (Apple M5 Max, Chrome, HCG 44, the mouse on the
 page): a grow with seeds 0.6-0.7 s as before, Isolate 0.18 s, Remove 0.12 s, a
@@ -1043,7 +1043,7 @@ percentile). Like the panel, the menu is redrawn only when what it shows
 changes, at most 30 times a second, and only while it is open. The cursor
 readout's text costs 4 µs a call (2000 calls); its card is redrawn at most 15
 times a second, when its text changes. The Quest 3's own figures are on its
-[numbers on the wrist](../../user/reference/vr.md#the-numbers-on-the-wrist) (*menu redraw … ms
+[numbers on the wrist](../methods/vr.md#the-numbers-on-the-wrist) (*menu redraw … ms
 + upload … ms* and *readout redraw … ms*).
 
 ### Large cube, out of core
@@ -1550,7 +1550,7 @@ settings left at their defaults the first time.
    Connect the Quest 3 with a USB-C cable, choose *Tools → Views → Open in VR
    Headset…*: the dialog must say *Ready* with the headset's model. Press
    *Open in Browser* (with the VisIVO VR app, *Open on Headset* starts the
-   app instead: see [The headset app](../../user/reference/vr.md#what-to-check-on-the-quest-3))
+   app instead: see [The headset app](../methods/vr.md#what-to-check-on-the-quest-3))
    and put the headset on. Within about 10 s the Quest
    Browser must show the page with the cube loaded and the status ending in
    *in the desktop's session*, without typing anything. Note the time from
