@@ -10,6 +10,7 @@ in (and back), or moves it to another sky frame.
   * POST /v1/regions/export  {format, regions, dataset_id?, to_frame?}
   * POST /v1/regions/convert {regions, to_frame, dataset_id?, origin?, unit?}
 """
+import asyncio
 import logging
 from typing import Any
 
@@ -53,19 +54,41 @@ class RegionStatsRequest(BaseModel):
     channel: int | None = None    # for cubes; defaults to 0
 
 
-def _celestial_wcs(path: str):
-    """The dataset's 2-D celestial WCS, or 422 when it has none."""
-    from astropy.io import fits  # noqa: PLC0415,F401
-    from astropy.wcs import WCS  # noqa: PLC0415
+#: Diagnostics returned by one parse; a file of garbage would otherwise echo
+#: every line. ``n_skipped`` always counts them all.
+_MAX_DIAGNOSTICS = 1000
 
+
+def _dataset_header(path: str):
+    """The header of the dataset's image HDU (a FITS file, or a VBT field)."""
     from ..fits_dataset import image_hdu_index  # noqa: PLC0415
 
     with _vs_open_fits(path) as hdul:
-        header = hdul[image_hdu_index(hdul)].header
-    wcs = WCS(header)
-    if not wcs.has_celestial:
+        return hdul[image_hdu_index(hdul)].header.copy()
+
+
+def _celestial_from_header(header):
+    """The 2-D celestial WCS of a header (an image or a cube's sky axes), or
+    None. A 3-D header with SIP terms makes astropy refuse the full WCS; its
+    first two axes are read then."""
+    from astropy.wcs import WCS  # noqa: PLC0415
+
+    try:
+        wcs = WCS(header)
+    except Exception:  # noqa: BLE001
+        try:
+            wcs = WCS(header, naxis=2)
+        except Exception:  # noqa: BLE001
+            return None
+    return wcs.celestial if wcs.has_celestial else None
+
+
+def _celestial_wcs(path: str):
+    """The dataset's 2-D celestial WCS, or 422 when it has none."""
+    wcs = _celestial_from_header(_dataset_header(path))
+    if wcs is None:
         raise HTTPException(422, "Dataset has no celestial WCS; cannot convert region frames.")
-    return wcs.celestial
+    return wcs
 
 
 def _celestial_wcs_or_none(path: str):
@@ -84,8 +107,20 @@ def _convert(regions, to_frame, wcs, origin):
         raise HTTPException(422, str(exc)) from exc
 
 
+def _resolve_to_frame(to_frame: str, wcs) -> str:
+    """``image``, a sky frame, or (any other value) the dataset's own sky frame."""
+    if to_frame == "image" or to_frame in R._WORLD_FRAMES:
+        return to_frame
+    if wcs is None:
+        raise HTTPException(422, "to_frame requires a dataset_id with a celestial WCS.")
+    try:
+        return R.native_frame_name(wcs)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 def _maybe_convert(regions, to_frame, session, dataset_id):
-    """Reframe regions for parse/export (1-based pixels, as in region files).
+    """Reframe regions for export (1-based pixels, as in region files).
 
     A sky-to-sky conversion needs no dataset; anything touching pixels, or a
     ``to_frame`` that names no sky frame (meaning "the dataset's own"), does.
@@ -96,14 +131,7 @@ def _maybe_convert(regions, to_frame, session, dataset_id):
     if dataset_id:
         entry = _require_dataset(session, dataset_id)
         wcs = _celestial_wcs(entry["path"])
-    if to_frame != "image" and to_frame not in R._WORLD_FRAMES:
-        if wcs is None:
-            raise HTTPException(422, "to_frame requires dataset_id for the WCS conversion.")
-        try:
-            to_frame = R.native_frame_name(wcs)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-    return _convert(regions, to_frame, wcs, origin=1)
+    return _convert(regions, _resolve_to_frame(to_frame, wcs), wcs, origin=1)
 
 
 @router.post("/v1/regions/parse", tags=["regions"])
@@ -112,17 +140,51 @@ async def parse_regions(
     _: None = _auth,
     session: Session = Depends(get_session),
 ):
-    """Parse CRTF/DS9 text into canonical region dicts (optionally reframed)."""
+    """Parse CRTF/DS9 text into canonical region dicts (optionally reframed).
+
+    Every statement that does not become a region comes back in
+    ``diagnostics`` with its line and the reason; the regions that did are
+    returned either way.
+    """
+    if request.format.lower() not in ("auto", "crtf", "ds9"):
+        raise HTTPException(422, f"Unknown region format '{request.format}'.")
+    path = _require_dataset(session, request.dataset_id)["path"] if request.dataset_id else ""
+
+    def work():
+        # Off the event loop: reading the header and converting a file of
+        # thousands of regions both take time.
+        wcs = physical = None
+        no_wcs_reason = ""
+        if path:
+            header = _dataset_header(path)
+            physical = R.PhysicalTransform.from_header(header)
+            wcs = _celestial_from_header(header)
+            if wcs is None:
+                no_wcs_reason = "the dataset has no celestial WCS, so a sky region cannot be placed on it"
+        to_frame = _resolve_to_frame(request.to_frame, wcs) if request.to_frame else ""
+        return R.parse_report(request.text, request.format, to_frame=to_frame, wcs=wcs, origin=1,
+                              physical=physical, no_wcs_reason=no_wcs_reason)
+
     try:
-        fmt = R.detect_format(request.text) if request.format == "auto" else request.format
-        regions = R.parse_regions(request.text, request.format)
+        rep = await asyncio.to_thread(work)
+    except HTTPException:
+        raise
     except R.RegionParseError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("[regions/parse] failed: %s", exc)
         raise HTTPException(500, str(exc)) from exc
-    regions = _maybe_convert(regions, request.to_frame, session, request.dataset_id)
-    return {"valid": True, "error": "", "format": fmt, "n_regions": len(regions), "regions": regions}
+    diags = rep["diagnostics"]
+    # Nothing read but something reported: say why in ``error`` too, for a
+    # client that shows only that.
+    valid = bool(rep["regions"]) or not diags
+    error = "" if valid else (f"No region could be read. Line {diags[0]['line']}: {diags[0]['reason']}"
+                              + (f" (and {len(diags) - 1} more)" if len(diags) > 1 else ""))
+    return {"valid": valid, "error": error, "format": rep["format"],
+            "n_regions": len(rep["regions"]), "n_skipped": len(diags),
+            "diagnostics": diags[:_MAX_DIAGNOSTICS],
+            "diagnostics_truncated": len(diags) > _MAX_DIAGNOSTICS,
+            "regions": rep["regions"]}
 
 
 @router.post("/v1/regions/export", tags=["regions"])
@@ -229,7 +291,6 @@ async def region_stats(
     if region.get("frame", "image") != "image" or region.get("unit", "pix") != "pix":
         region = _convert([region], "image", _celestial_wcs(entry["path"]), origin=0)[0]
     from ..compute import worker_region_stats  # noqa: PLC0415
-    import asyncio  # noqa: PLC0415
     try:
         result = await asyncio.to_thread(worker_region_stats, entry["path"], region, request.channel)
     except ValueError as exc:

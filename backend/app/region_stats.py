@@ -75,7 +75,8 @@ class Region:
             self.points = [(float(x), float(y)) for x, y in spec.get("points", ())]
             if len(self.points) < 3:
                 raise ValueError("A polygon needs at least three points.")
-        elif self.shape in ("circle", "annulus", "ellipse", "box", "point"):
+        elif self.shape in ("circle", "annulus", "ellipse", "box", "point",
+                            "ellipse_annulus", "box_annulus"):
             self.cx, self.cy = (float(v) for v in spec["center"])
         else:
             raise ValueError(f"Unsupported region shape '{self.shape}'.")
@@ -96,12 +97,12 @@ class Region:
                 rx = ry = float(s["radius"])
             elif self.shape == "annulus":
                 rx = ry = float(max(s["radii"]))
-            elif self.shape == "ellipse":
-                a, b = (float(v) for v in s["semi_axes"])
+            elif self.shape in ("ellipse", "ellipse_annulus"):
+                a, b = (float(v) for v in s["semi_axes" if self.shape == "ellipse" else "outer"])
                 rx = math.sqrt((a * cos) ** 2 + (b * sin) ** 2)
                 ry = math.sqrt((a * sin) ** 2 + (b * cos) ** 2)
             else:
-                hw, hh = (float(v) / 2.0 for v in s["size"])
+                hw, hh = (float(v) / 2.0 for v in s["size" if self.shape == "box" else "outer"])
                 rx, ry = hw * cos + hh * sin, hw * sin + hh * cos
             rx, ry = max(rx, 0.0), max(ry, 0.0)
             lo_x, hi_x, lo_y, hi_y = (self.cx - rx, self.cx + rx, self.cy - ry, self.cy + ry)
@@ -132,6 +133,16 @@ class Region:
         if self.shape == "ellipse":
             a, b = (float(v) for v in s["semi_axes"])
             return (xr / a) ** 2 + (yr / b) ** 2 <= 1.0
+        if self.shape == "ellipse_annulus":
+            # Inside the outer ellipse and not strictly inside the inner one
+            # (inner edge included, as for the circular annulus).
+            (ai, bi), (ao, bo) = ((float(v) for v in s[k]) for k in ("inner", "outer"))
+            return ((xr / ao) ** 2 + (yr / bo) ** 2 <= 1.0) & ((xr / ai) ** 2 + (yr / bi) ** 2 >= 1.0)
+        if self.shape == "box_annulus":
+            (wi, hi), (wo, ho) = ((float(v) for v in s[k]) for k in ("inner", "outer"))
+            outer = (np.abs(xr) <= wo / 2.0) & (np.abs(yr) <= ho / 2.0)
+            inner = (np.abs(xr) < wi / 2.0) & (np.abs(yr) < hi / 2.0)
+            return outer & ~inner
         w, h = (float(v) for v in s["size"])
         return (np.abs(xr) <= w / 2.0) & (np.abs(yr) <= h / 2.0)
 
