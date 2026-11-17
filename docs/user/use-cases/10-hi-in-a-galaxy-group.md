@@ -74,7 +74,12 @@ of each galaxy from a moment-0 map, to compare with the published ones.
    region on the same map and takes its scatter as the noise. (A ds9 line
    with the `background` property comes in already marked.)
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/10-hi-in-a-galaxy-group-5.png -->
+   ```{figure} img/10-hi-in-a-galaxy-group-5.png
+   :alt: The Session Data region list with the context menu of the Background row open and Background Region ticked, the row reading Background, Annulus, background.
+   :width: 80%
+
+   The Background row marked as the background region.
+   ```
 
 6. Choose *Tools ▸ Regions ▸ HI Mass Distance…* and type `25`, the distance
    in Mpc that Serra et al. (2013) adopt; the setting is kept. A redshift
