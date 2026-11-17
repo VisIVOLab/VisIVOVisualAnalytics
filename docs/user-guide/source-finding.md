@@ -234,7 +234,10 @@ rather than matching against meaningless coordinates.
 
 The backend queries a cone around the image centre whose radius is the larger
 of the **Search radius** and half the image diagonal, so on most images the
-whole field is searched whatever the radius. The sources returned are then
+whole field is searched whatever the radius. The catalogues work in ICRS, so
+on an image in another frame (a Galactic Hi-GAL cutout, an FK5 map) the centre
+is converted to ICRS for the query and the sources are converted back to the
+image's frame before they are placed. The sources returned are then
 cropped to the image: those outside the pixel grid, or on blank (NaN) pixels,
 are dropped. At most 500 are kept; in a denser field they are sub-sampled
 evenly over the field rather than taken nearest the centre, and the nearest

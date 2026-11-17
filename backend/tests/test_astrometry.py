@@ -810,6 +810,144 @@ class TestCrossmatchEndpoint:
                 assert call_kwargs.get("catalog") == expected_vizier
 
 
+class TestCrossmatchCelestialFrames:
+    """The cross-match speaks ICRS to the catalogue whatever the image frame.
+
+    Issue #379: on a Galactic image (Hi-GAL cutouts are GLON-CAR/GLAT-CAR) the
+    image's (l, b) were sent to SIMBAD as (RA, Dec), and the returned ICRS
+    positions were projected as if they were (l, b). The fake SIMBAD below
+    returns a real source inside the field plus a decoy sitting at
+    RA = l, Dec = b of the image centre, the position the bug queried.
+    """
+
+    NX, NY = 180, 181
+
+    @staticmethod
+    def _galactic_header(proj: str, nx: int, ny: int) -> fits.Header:
+        # Modelled on the Hi-GAL PSW cutout of issue #379: the reference pixel
+        # lies outside the cutout and CRVAL2 is not zero (an oblique CAR).
+        h = fits.Header()
+        h["NAXIS"] = 2
+        h["NAXIS1"] = nx
+        h["NAXIS2"] = ny
+        h["CTYPE1"] = f"GLON-{proj}"
+        h["CTYPE2"] = f"GLAT-{proj}"
+        h["CRVAL1"] = 35.7632
+        h["CRVAL2"] = 0.0283811
+        h["CRPIX1"] = 2633.0
+        h["CRPIX2"] = 108.0
+        h["CDELT1"] = -0.001666666667
+        h["CDELT2"] = 0.001666666667
+        h["CUNIT1"] = "deg"
+        h["CUNIT2"] = "deg"
+        return h
+
+    @staticmethod
+    def _icrs_header(nx: int, ny: int) -> fits.Header:
+        h = _wcs_image_header(nx=nx, ny=ny, ra_cen=286.1, dec_cen=6.4,
+                              cdelt_deg=0.001666666667)
+        h["RADESYS"] = "ICRS"
+        return h
+
+    def _run(self, tmp_path, header: fits.Header, source_pix=(120.0, 60.0)):
+        from astropy.coordinates import SkyCoord
+        from astropy.table import Table
+        from astropy.wcs.utils import wcs_to_celestial_frame
+        from app.compute import worker_crossmatch
+
+        path = str(tmp_path / "img.fits")
+        fits.PrimaryHDU(np.ones((self.NY, self.NX), dtype=np.float32),
+                        header=header).writeto(path, overwrite=True)
+        wcs = WCS(header)
+        frame = wcs_to_celestial_frame(wcs)
+
+        # Not pixel_to_skycoord: it pairs the first pixel coordinate with the
+        # longitude axis, which is wrong for a latitude-first header.
+        def native(px, py):
+            world = wcs.all_pix2world([[px, py]], 0)[0]
+            return world[wcs.wcs.lng], world[wcs.wcs.lat]
+
+        centre_native = native((self.NX - 1) / 2.0, (self.NY - 1) / 2.0)
+        truth_centre = SkyCoord(*centre_native, unit="deg", frame=frame).icrs
+        truth_source = SkyCoord(*native(*source_pix), unit="deg", frame=frame).icrs
+
+        table = Table({
+            "main_id": ["real source", "decoy at (l, b) read as (RA, Dec)"],
+            "ra": [float(truth_source.ra.deg), float(centre_native[0])],
+            "dec": [float(truth_source.dec.deg), float(centre_native[1])],
+        })
+        captured = {}
+
+        def _query_region(coord, radius=None, **_kw):
+            captured["centre"] = coord
+            captured["radius"] = radius
+            return table
+
+        simbad_instance = MagicMock()
+        simbad_instance.query_region.side_effect = _query_region
+        fake_simbad_module = MagicMock()
+        fake_simbad_module.Simbad = MagicMock(return_value=simbad_instance)
+        with patch.dict("sys.modules", {"astroquery.simbad": fake_simbad_module}):
+            result = worker_crossmatch(path, 60.0, "simbad", 500)
+
+        return result, captured, truth_centre, truth_source
+
+    def _check(self, result, captured, truth_centre, truth_source):
+        from astropy.coordinates import SkyCoord
+
+        sent = SkyCoord(captured["centre"]).icrs
+        assert sent.separation(truth_centre).arcsec < 0.1
+        assert abs(result["centre_ra_deg"] - truth_centre.ra.deg) < 1e-6
+        assert abs(result["centre_dec_deg"] - truth_centre.dec.deg) < 1e-6
+        names = [s["name"] for s in result["sources"]]
+        assert names == ["real source"]
+        got = result["sources"][0]
+        assert abs(got["ra_deg"] - truth_source.ra.deg) < 1e-9
+        assert abs(got["dec_deg"] - truth_source.dec.deg) < 1e-9
+        expected_sep = truth_centre.separation(truth_source).arcsec
+        assert abs(got["separation_arcsec"] - expected_sep) < 0.1
+
+    def test_galactic_car_queries_and_crops_in_icrs(self, tmp_path):
+        result, captured, centre, source = self._run(
+            tmp_path, self._galactic_header("CAR", self.NX, self.NY))
+        # The field is centred on l = 40, b = 0: in ICRS RA ~ 286.1, Dec ~ +6.3.
+        assert abs(centre.ra.deg - 286.1) < 0.1
+        assert abs(centre.dec.deg - 6.3) < 0.1
+        self._check(result, captured, centre, source)
+
+    def test_galactic_tan_queries_and_crops_in_icrs(self, tmp_path):
+        h = self._galactic_header("TAN", self.NX, self.NY)
+        # A TAN reference point far off the cutout would distort it; put it on
+        # the field instead, as a TAN image normally has.
+        h["CRPIX1"] = self.NX / 2.0
+        h["CRPIX2"] = self.NY / 2.0
+        h["CRVAL1"] = 40.0
+        h["CRVAL2"] = 0.0
+        result, captured, centre, source = self._run(tmp_path, h)
+        self._check(result, captured, centre, source)
+
+    def test_galactic_car_with_latitude_first(self, tmp_path):
+        # Same sky, axes swapped in the header: GLAT on axis 1, GLON on axis 2.
+        h = self._galactic_header("CAR", self.NX, self.NY)
+        swapped = fits.Header()
+        for key in ("NAXIS", "NAXIS1", "NAXIS2"):
+            swapped[key] = h[key]
+        for a, b in ((1, 2), (2, 1)):
+            for stem in ("CTYPE", "CRVAL", "CRPIX", "CDELT", "CUNIT"):
+                swapped[f"{stem}{a}"] = h[f"{stem}{b}"]
+        result, captured, centre, source = self._run(tmp_path, swapped)
+        self._check(result, captured, centre, source)
+
+    def test_icrs_tan_unchanged(self, tmp_path):
+        result, captured, centre, source = self._run(
+            tmp_path, self._icrs_header(self.NX, self.NY))
+        assert abs(centre.ra.deg - 286.1) < 0.01
+        # On an ICRS image the "decoy" is the image centre itself, a real hit.
+        names = sorted(s["name"] for s in result["sources"])
+        assert names == ["decoy at (l, b) read as (RA, Dec)", "real source"]
+        assert captured["centre"].separation(centre).arcsec < 0.1
+
+
 # ── A-02 direct worker tests ──────────────────────────────────────────────────
 
 class TestGaussFit2DEdgeCases:
