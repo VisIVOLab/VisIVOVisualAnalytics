@@ -64,8 +64,9 @@ void importRegionFile(QMainWindow *window, const ExportContext &ctx,
                                          u"%1 could not be read:\n%2"_s.arg(fileName, r.error));
                     return;
                 }
-                const ImportResult result = importFromParse(r.regions, r.diagnostics,
-                                                            r.diagnosticsTruncated, r.skipped, text);
+                ImportResult result = importFromParse(r.regions, r.diagnostics,
+                                                      r.diagnosticsTruncated, r.skipped, text);
+                result.fileName = fileName;
                 if (!result.regions.empty())
                     apply(result);
                 if (!guard)

@@ -834,3 +834,8 @@ void WorkspaceChrome::onPollFinished()
                 QStringLiteral("cache %1/%2").arg(s.cacheEntries).arg(s.cacheCapacity));
     }
 }
+
+SessionDataTree *WorkspaceChrome::sessionTree() const
+{
+    return m_sessionTree;
+}

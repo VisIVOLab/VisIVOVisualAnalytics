@@ -14,6 +14,8 @@
 
 #include <QString>
 
+#include <vector>
+
 class QMainWindow;
 
 namespace visivo::regions {
@@ -29,7 +31,15 @@ struct ExportContext
 
 /// Run the export dialogs over @p list and write the file. Messages go to
 /// @p window's status bar; nothing happens when the list is empty.
-void exportRegionList(QMainWindow *window, const RegionList &list, const ExportContext &ctx);
+///
+/// With @p only empty (Tools ▸ Regions ▸ Export Region) the user picks the
+/// visible regions, all of them hidden ones included, or the selected one;
+/// the visible ones come first, so a region hidden in Session Data is left
+/// out unless asked (#388). With @p only given (a row or a group of Session
+/// Data) those regions are written, asking only whether to keep the hidden
+/// ones of a group.
+void exportRegionList(QMainWindow *window, const RegionList &list, const ExportContext &ctx,
+                      const std::vector<int> &only = {});
 
 }   // namespace visivo::regions
 

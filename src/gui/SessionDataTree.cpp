@@ -1,5 +1,6 @@
 #include "SessionDataTree.h"
 
+#include "RegionTreeRows.h"
 #include "app/ProductRegistry.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
@@ -28,6 +29,46 @@ constexpr int kParentKeyRole = Qt::UserRole;       // dataset roots
 constexpr int kProductIdRole = Qt::UserRole + 1;   // product children
 constexpr int kViewTagRole = Qt::UserRole + 2;     // intrinsic view rows ("view3d"/"slice2d")
 constexpr int kPaneNumbersRole = Qt::UserRole + 3; // (#4) QVariantList of pane numbers (1..4)
+// (#388) The Regions node and its rows: what the row is, and its region id or
+// its import's batch.
+constexpr int kRegionNodeRole = Qt::UserRole + 4;
+constexpr int kRegionKeyRole = Qt::UserRole + 5;
+enum RegionNode { NotRegion = 0, RegionsRoot = 1, RegionGroup = 2, RegionRow = 3 };
+
+int regionNodeOf(const QModelIndex &idx) { return idx.data(kRegionNodeRole).toInt(); }
+
+Qt::CheckState qtCheck(visivo::regions::TreeCheck c)
+{
+    switch (c) {
+    case visivo::regions::TreeCheck::Unchecked: return Qt::Unchecked;
+    case visivo::regions::TreeCheck::Partial:   return Qt::PartiallyChecked;
+    case visivo::regions::TreeCheck::Checked:   return Qt::Checked;
+    }
+    return Qt::Checked;
+}
+
+/// A small square of the region's colour (the overlay's cyan when it has none).
+QIcon regionSwatch(const QString &color)
+{
+    QColor c(color);
+    if (color.isEmpty() || !c.isValid())
+        c = QColor(51, 230, 255);
+    QPixmap pm(12, 12);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setPen(QPen(c.darker(160), 1));
+    p.setBrush(c);
+    p.drawRect(QRectF(0.5, 0.5, 11, 11));
+    return QIcon(pm);
+}
+
+/// The text colour of a region row: muted while the region is hidden. A real
+/// colour in both cases (see styleItem in upsertProduct for why).
+QBrush regionForeground(bool visible)
+{
+    return QBrush(QColor(QString::fromLatin1(visible ? VisivoTheme::kOnSurface()
+                                                     : VisivoTheme::kOnSurfaceVariant())));
+}
 
 // (#4) The pane-number badges are laid out 16×16 from the RIGHT edge of the row, in
 // ascending pane order. Shared by the delegate (paint) and the viewport filter (hit-test)
@@ -179,6 +220,20 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);      // right-click → Show in ▸ menu
     connect(m_tree, &QTreeView::customContextMenuRequested, this, [this](const QPoint &pos) {
         const QModelIndex idx = m_tree->indexAt(pos);
+        const QPoint global = m_tree->viewport()->mapToGlobal(pos);
+        switch (regionNodeOf(idx)) {
+        case RegionRow:
+            emit regionContextMenuRequested(idx.data(kRegionKeyRole).toInt(), global);
+            return;
+        case RegionGroup:
+            emit regionGroupContextMenuRequested(idx.data(kRegionKeyRole).toInt(), global);
+            return;
+        case RegionsRoot:
+            emit regionGroupContextMenuRequested(-1, global);
+            return;
+        default:
+            break;
+        }
         const QString pid = idx.data(kProductIdRole).toString();
         const QString viewTag = idx.data(kViewTagRole).toString();
         if (!pid.isEmpty() || !viewTag.isEmpty())
@@ -217,6 +272,10 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     // menu had even opened, which made the menu pointless (user report).
     connect(m_tree->selectionModel(), &QItemSelectionModel::currentChanged, this,
             [this](const QModelIndex &cur, const QModelIndex &) {
+                // The region rows have their own signals (selectionChanged
+                // below): they are neither a product to inspect nor a view.
+                if (m_updatingRegions || regionNodeOf(cur) != NotRegion)
+                    return;
                 QStandardItem *it = m_model->itemFromIndex(cur);
                 const QString productId = it ? it->data(kProductIdRole).toString() : QString();
                 emit productSelected(productId);                 // → Inspector › Provenance
@@ -229,6 +288,23 @@ SessionDataTree::SessionDataTree(QWidget *parent)
                         emit rowSelected(viewTag, productId);
                 }
             });
+
+    // (#388) A region row the user selects selects the region on the image.
+    // On the selection, not the current row: setRegions() clears the
+    // highlight when the image lets go of the region and leaves the current
+    // row where it was, and pressing that row again must still select it.
+    connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+            [this](const QItemSelection &selected, const QItemSelection &) {
+                if (m_updatingRegions || m_selectingProgrammatically)
+                    return;
+                const QModelIndexList idx = selected.indexes();
+                if (idx.size() == 1 && regionNodeOf(idx.first()) == RegionRow)
+                    emit regionSelected(idx.first().data(kRegionKeyRole).toInt());
+            });
+    connect(m_model, &QStandardItemModel::itemChanged, this, [this](QStandardItem *item) {
+        if (!m_updatingRegions && item && item->data(kRegionNodeRole).toInt() != NotRegion)
+            onRegionCheckChanged(item);
+    });
 
     ProductRegistry &reg = ProductRegistry::instance();
     connect(&reg, &ProductRegistry::productAdded, this, &SessionDataTree::onProductAdded);
@@ -347,6 +423,7 @@ void SessionDataTree::setCurrentDataset(const QString &parentKey, const QString 
 {
     if (parentKey.isEmpty())
         return;
+    m_currentDatasetKey = parentKey;
     QStandardItem *ds = datasetItem(parentKey, label, kind, /*create=*/true);
     // Load any products already registered for this dataset (e.g. reopened).
     const QList<AnalysisProduct> existing = ProductRegistry::instance().productsFor(parentKey);
@@ -533,6 +610,17 @@ void SessionDataTree::onActivated(const QModelIndex &index)
     QStandardItem *it = m_model->itemFromIndex(index);
     if (!it)
         return;
+    switch (it->data(kRegionNodeRole).toInt()) {
+    case RegionRow:
+        emit regionActivated(it->data(kRegionKeyRole).toInt());
+        return;
+    case RegionGroup:
+    case RegionsRoot:
+        m_tree->setExpanded(index, !m_tree->isExpanded(index));
+        return;
+    default:
+        break;
+    }
     const QString productId = it->data(kProductIdRole).toString();
     const QString viewTag = it->data(kViewTagRole).toString();
     if (productId.isEmpty()) {
@@ -562,4 +650,211 @@ void SessionDataTree::onActivated(const QModelIndex &index)
     // No window (closed, or never created): not nothing — ask the viewer, which
     // knows whether this product can be reopened from a file it left behind.
     emit productReopenRequested(productId);
+}
+
+// ── Regions (#388) ───────────────────────────────────────────────────────────
+
+QStandardItem *SessionDataTree::regionsNode(bool createIfMissing)
+{
+    QStandardItem *ds = datasetItem(m_currentDatasetKey, QString(), QString(), /*create=*/false);
+    if (!ds)
+        return nullptr;
+    int afterViews = 0;
+    for (int i = 0; i < ds->rowCount(); ++i) {
+        QStandardItem *child = ds->child(i);
+        if (!child)
+            continue;
+        if (child->data(kRegionNodeRole).toInt() == RegionsRoot)
+            return child;
+        if (!child->data(kViewTagRole).toString().isEmpty())
+            afterViews = i + 1;
+    }
+    if (!createIfMissing)
+        return nullptr;
+    // Below the views of a cube (3D Volume, 2D Slice), above the products,
+    // which are appended as they are made.
+    auto *node = new QStandardItem(u"Regions"_s);
+    node->setData(RegionsRoot, kRegionNodeRole);
+    node->setData(-1, kRegionKeyRole);
+    node->setEditable(false);
+    node->setCheckable(true);
+    node->setToolTip(u"The regions of this window. Untick to hide them on every view; "
+                     u"right-click to show, hide, delete or export them all."_s);
+    node->setForeground(regionForeground(true));
+    ds->insertRow(afterViews, node);
+    m_tree->expand(ds->index());
+    m_tree->expand(node->index());
+    return node;
+}
+
+QStandardItem *SessionDataTree::regionItem(int regionId) const
+{
+    std::function<QStandardItem *(QStandardItem *)> walk = [&](QStandardItem *parent) -> QStandardItem * {
+        for (int i = 0; parent && i < parent->rowCount(); ++i) {
+            QStandardItem *it = parent->child(i);
+            if (!it)
+                continue;
+            if (it->data(kRegionNodeRole).toInt() == RegionRow
+                && it->data(kRegionKeyRole).toInt() == regionId)
+                return it;
+            if (QStandardItem *found = walk(it))
+                return found;
+        }
+        return nullptr;
+    };
+    return walk(m_model->invisibleRootItem());
+}
+
+QList<int> SessionDataTree::regionIdsUnder(const QStandardItem *item) const
+{
+    QList<int> ids;
+    if (!item)
+        return ids;
+    if (item->data(kRegionNodeRole).toInt() == RegionRow) {
+        ids << item->data(kRegionKeyRole).toInt();
+        return ids;
+    }
+    for (int i = 0; i < item->rowCount(); ++i)
+        ids << regionIdsUnder(item->child(i));
+    return ids;
+}
+
+void SessionDataTree::onRegionCheckChanged(QStandardItem *item)
+{
+    // A group shown in part goes to "all shown" on a click (Qt turns a
+    // partial box into a ticked one).
+    const bool visible = item->checkState() != Qt::Unchecked;
+    const QList<int> ids = regionIdsUnder(item);
+    if (ids.isEmpty())
+        return;
+    // After this event: the window edits the list and rewrites these rows
+    // through setRegions(), which must not run inside the model's own
+    // itemChanged emission for the very item it rewrites.
+    QTimer::singleShot(0, this, [this, ids, visible]() { emit regionVisibilityRequested(ids, visible); });
+}
+
+void SessionDataTree::setRegions(const visivo::regions::RegionTreeView &view)
+{
+    using visivo::regions::RegionTreeEntry;
+    using visivo::regions::RegionTreeRow;
+    // Everything below is the list's state written into the rows: no check
+    // box, current-row or selection change made here is a user's gesture.
+    QScopedValueRollback<bool> updating(m_updatingRegions, true);
+    QScopedValueRollback<bool> passive(m_selectingProgrammatically, true);
+
+    // Taken before rows go: removing the current row hands the highlight to a
+    // neighbour, which may be a product row the user never picked.
+    const int currentKind = regionNodeOf(m_tree->currentIndex());
+    QItemSelectionModel *sel = m_tree->selectionModel();
+
+    QStandardItem *node = regionsNode(/*createIfMissing=*/!view.isEmpty());
+    if (view.isEmpty()) {
+        if (node && node->parent())
+            node->parent()->removeRow(node->row());
+        if (currentKind != NotRegion)
+            sel->clearSelection();
+        m_regionSignature.clear();
+        m_lastRegionSelected = -1;
+        updateHeightToContents();
+        return;
+    }
+    if (!node)
+        return;   // no dataset row to hang it under yet
+    node->setText(view.title());
+    node->setCheckState(qtCheck(view.check));
+
+    const auto writeRow = [](QStandardItem *it, const RegionTreeRow &row) {
+        it->setText(row.text);
+        it->setToolTip(row.tooltip);
+        it->setIcon(regionSwatch(row.color));
+        it->setCheckState(row.visible ? Qt::Checked : Qt::Unchecked);
+        it->setForeground(regionForeground(row.visible));
+    };
+    const auto newRow = [&writeRow](const RegionTreeRow &row) {
+        auto *it = new QStandardItem;
+        it->setData(RegionRow, kRegionNodeRole);
+        it->setData(row.id, kRegionKeyRole);
+        it->setEditable(false);
+        it->setCheckable(true);
+        writeRow(it, row);
+        return it;
+    };
+    const auto writeGroup = [](QStandardItem *g, const RegionTreeEntry &e) {
+        g->setText(e.title);
+        g->setCheckState(qtCheck(e.check));
+        g->setToolTip(u"The regions read from %1. Untick to hide them all; right-click to "
+                      u"show, hide, delete or export them."_s.arg(e.title));
+    };
+
+    const QString signature = view.signature();
+    if (signature != m_regionSignature) {
+        // Other rows: rebuilt, keeping which groups the user opened or closed.
+        QHash<int, bool> expanded;
+        for (int i = 0; i < node->rowCount(); ++i) {
+            QStandardItem *child = node->child(i);
+            if (child && child->data(kRegionNodeRole).toInt() == RegionGroup)
+                expanded.insert(child->data(kRegionKeyRole).toInt(), m_tree->isExpanded(child->index()));
+        }
+        node->removeRows(0, node->rowCount());
+        for (const RegionTreeEntry &e : view.entries) {
+            if (e.batch == 0) {
+                node->appendRow(newRow(e.rows.front()));
+                continue;
+            }
+            auto *g = new QStandardItem;
+            g->setData(RegionGroup, kRegionNodeRole);
+            g->setData(e.batch, kRegionKeyRole);
+            g->setEditable(false);
+            g->setCheckable(true);
+            g->setForeground(regionForeground(true));
+            writeGroup(g, e);
+            for (const RegionTreeRow &row : e.rows)
+                g->appendRow(newRow(row));
+            node->appendRow(g);
+            // A small file opens, a catalogue of hundreds stays closed: the
+            // panel grows with every row shown.
+            constexpr int kOpenUpTo = 12;
+            m_tree->setExpanded(g->index(),
+                                expanded.value(e.batch, int(e.rows.size()) <= kOpenUpTo));
+        }
+        m_regionSignature = signature;
+    } else {
+        // Same rows: names, colours and check boxes written in place.
+        for (int i = 0; i < int(view.entries.size()) && i < node->rowCount(); ++i) {
+            const RegionTreeEntry &e = view.entries[std::size_t(i)];
+            QStandardItem *child = node->child(i);
+            if (!child)
+                continue;
+            if (e.batch == 0) {
+                writeRow(child, e.rows.front());
+                continue;
+            }
+            writeGroup(child, e);
+            for (int k = 0; k < int(e.rows.size()) && k < child->rowCount(); ++k)
+                if (QStandardItem *rowItem = child->child(k))
+                    writeRow(rowItem, e.rows[std::size_t(k)]);
+        }
+    }
+
+    // The selection, from the list. Moved only when the list's selection
+    // changed or a region row is already the current one, so an edit to the
+    // list does not take the highlight away from a product row picked since.
+    if (view.selectedId >= 0) {
+        QStandardItem *it = regionItem(view.selectedId);
+        const bool changed = view.selectedId != m_lastRegionSelected;
+        if (it && (changed || currentKind == RegionRow)) {
+            if (changed && it->parent())
+                m_tree->expand(it->parent()->index());   // a region picked on the image is shown
+            // Already there when the row itself was clicked: this runs inside
+            // that click's selectionChanged, which must not be re-entered.
+            if (m_tree->currentIndex() != it->index() || !sel->isSelected(it->index()))
+                m_tree->setCurrentIndex(it->index());
+        } else if (currentKind != NotRegion && regionNodeOf(m_tree->currentIndex()) == NotRegion) {
+            sel->clearSelection();   // a rebuild moved the highlight off the Regions node
+        }
+    } else if (currentKind != NotRegion) {
+        sel->clearSelection();   // the image let go of it; the current row stays
+    }
+    m_lastRegionSelected = view.selectedId;
+    updateHeightToContents();
 }

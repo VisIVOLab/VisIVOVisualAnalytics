@@ -51,6 +51,30 @@ Region*, *Delete Region*, *Undo Region Edit*, *Redo Region Edit*. Where
 regions overlap, a click on an outline picks that region, and inside, the
 smallest one wins. A click on a catalogue marker selects the source.
 
+### Regions in Session Data
+
+*Session Data* lists the regions under the dataset, in a *Regions* node (in
+the cube viewer below *3D Volume* and *2D Slice*). Each row shows the
+region's name, its shape and a swatch of its colour. The regions read from
+one file sit under a node named after the file, for example
+`hcg44.reg (4)`.
+
+| Action | Effect |
+|---|---|
+| Click a row | selects the region on the image; selecting a region on the image highlights its row |
+| Check box of a row | shows or hides that region |
+| Check box of a file or of *Regions* | shows or hides all of them |
+| Double-click a row | opens *Region Properties…* |
+| Right-click a row | *Properties…*, *Analyse*, *Rename…*, *Hide* or *Show*, *Delete*, *Export…* |
+| Right-click a file or *Regions* | *Show All*, *Hide All*, *Delete All*, *Export All…* |
+
+A hidden region stays in the list but is not drawn anywhere: not on the
+slice, the map panes, the 3-D cutting plane or the *Remote* 3-D view, and a
+click on the image does not pick it. Hiding, renaming and deleting are region
+changes like the others: *Undo Region Edit* takes them back. Spectra and
+statistics made from a region keep their own rows and carry the region's name
+at the time they were measured.
+
 ### Regions on moment maps
 
 The drawing tools also draw on a moment or map pane: arm a shape and draw in
@@ -103,10 +127,12 @@ Selected Box…* and *Rotation Measure Synthesis…*.
 ### Exporting regions
 
 *Tools ▸ Regions ▸ Export Region (CRTF/DS9)…* writes regions for CARTA, CASA
-or ds9, in sky (FK5) or pixel coordinates. In the image viewer it first asks
-whether to write all regions or the selected one, and offers a third frame:
-each region in the frame it was typed in. Colours, labels and other properties
-are written back.
+or ds9, in sky (FK5) or pixel coordinates. It first asks which regions to
+write: the visible ones, all of them with the hidden ones, or the selected
+one. Hidden regions are written only when you choose so. It also offers a
+third frame: each region in the frame it was typed in. Colours, labels and
+other properties are written back. *Export…* on a row of Session Data writes
+that region; *Export All…* on a file or on *Regions* writes those regions.
 
 ### Importing a region file
 

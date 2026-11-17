@@ -368,6 +368,8 @@ bool vtkWindowImage::restoreProductOrigin(const QVariantMap &origin)
     }
     if (id < 0)
         id = this->m_regions.add(*restored);
+    else if (!this->m_regions.find(id)->visible)
+        this->m_regions.setVisible(id, true);   // hidden in Session Data: the row puts it back
     this->m_regions.select(id);
     this->onRegionListChanged();
     return true;

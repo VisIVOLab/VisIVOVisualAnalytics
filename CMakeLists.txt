@@ -632,6 +632,9 @@ set(PROJECT_SOURCES
         src/gui/RegionListOverlay.h
         src/gui/RegionListExport.cpp
         src/gui/RegionListExport.h
+        src/gui/RegionSessionController.cpp
+        src/gui/RegionSessionController.h
+        src/gui/RegionTreeRows.h
         src/gui/RegionImport.cpp
         src/gui/RegionImport.h
         src/gui/RegionImportResult.h

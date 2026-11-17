@@ -40,4 +40,9 @@ private slots:
     void croppedAndForeignMaps();
     void editsOnOnePaneShowOnTheOthers();
     void remotePlaneDrawingIsTheLocalOne();
+    // Session Data (#388)
+    void hiddenRegionsAreNotPickedOrDrawn();
+    void visibilityRenameAndDeleteAreUndoable();
+    void importsGroupByFile();
+    void treeFollowsTheList();
 };

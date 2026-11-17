@@ -71,7 +71,7 @@ void vtkWindowCube::applyImportedRegions(const visivo::regions::ImportResult &re
     }
     // Every region of the file joins the list as one change (one Undo takes
     // the import back); the first is selected.
-    const std::vector<int> ids = this->m_regions.addAll(result.regions);
+    const std::vector<int> ids = this->m_regions.addAll(result.regions, result.fileName);
     if (ids.empty())
         return;
     this->onRegionListChanged();

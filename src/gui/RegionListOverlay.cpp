@@ -186,7 +186,12 @@ void RegionListOverlay::update(const visivo::regions::RegionList &list, double k
     vtkNew<vtkPoints> handlePoints;
     vtkNew<vtkCellArray> handleCells;
 
-    const int selectedId = list.selectedId();
+    // A hidden region (#388) is not drawn, selected or not: no outline, no
+    // handles, no fill.
+    const Region *sel = list.selected();
+    if (sel && !sel->visible)
+        sel = nullptr;
+    const int selectedId = sel ? sel->id : -1;
     // A label: a text region's string at its position, or the text a region
     // file gave another region, just above it (as ds9 places it).
     int labels = 0;
@@ -213,6 +218,8 @@ void RegionListOverlay::update(const visivo::regions::RegionList &list, double k
         t->GetTextProperty()->SetBold(selected);
     };
     for (const Region &r : list.regions()) {
+        if (!r.visible)
+            continue;
         const auto rgb = colour(r);
         const bool isSel = r.id == selectedId;
         if (r.shape == visivo::regions::Shape::Text) {
@@ -250,7 +257,6 @@ void RegionListOverlay::update(const visivo::regions::RegionList &list, double k
     m_pointData->SetVerts(markerCells);
     m_pointData->GetCellData()->SetScalars(markerColours);
 
-    const Region *sel = list.selected();
     if (sel && withHandles) {
         // The knob hangs on a short stem from the edge it turns.
         for (const auto &h : visivo::regions::handles(*sel, knobOffset)) {

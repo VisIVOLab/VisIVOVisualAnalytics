@@ -25,6 +25,7 @@
 // they are constructed and their methods are called.
 class CubeUiAssembler;
 class WorkspaceChrome;
+class RegionSessionController;
 class InspectorPanel;
 class MomentMapController;
 class NoiseController;
@@ -2210,6 +2211,10 @@ protected:
     /// (list pixels): the hit test reads the one it was drawn at.
     std::array<double, 2> m_regionKnobOffset{ 1.0, 1.0 };
     QPointer<RegionPropertiesDialog> m_regionPropertiesDialog;
+    /// The Regions node of Session Data (#388); made on the first change of
+    /// the list once the dock is there.
+    QPointer<RegionSessionController> m_regionSession;
+    void refreshRegionSession();
     QPointer<QAction> m_actRegionProperties;
     QPointer<QAction> m_actAnalyseRegion;
     QPointer<QAction> m_actDeleteRegion;

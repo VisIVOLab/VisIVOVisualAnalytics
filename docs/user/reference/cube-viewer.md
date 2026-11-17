@@ -39,6 +39,9 @@ for regions, [Regions](../use-cases/04-regions.md).
 - *Right-click ▸ Show in ▸* chooses the pane; each entry says what it replaces.
 - The pane-number badge on a row says which pane shows it; click it to make
   that pane active.
+- The *Regions* node lists the window's regions, grouped by the file they
+  were imported from, each with a check box that shows or hides it; see
+  [Regions in Session Data](region-pv-noise.md#regions-in-session-data).
 
 The *DISPLAY* section acts on the active pane, so check which pane is active
 before changing a colour map.
