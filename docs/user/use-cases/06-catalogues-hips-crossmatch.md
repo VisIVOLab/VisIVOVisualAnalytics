@@ -65,7 +65,12 @@ lie on an image.
    The *Sky projection* selector changes the projection; *AIT* or *MOL* show
    the whole sky when you zoom out.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/06-catalogues-hips-crossmatch-2.png -->
+   ```{figure} img/06-catalogues-hips-crossmatch-2.png
+   :alt: The HiPS Viewer tab with a survey open around a resolved target, the order and field of view shown in the toolbar.
+   :width: 100%
+
+   A HiPS survey around a target, at the order the zoom needs.
+   ```
 
 10. *Overlay:* takes the address of a second survey, drawn over the first
     with its own opacity.

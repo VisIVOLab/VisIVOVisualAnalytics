@@ -23,7 +23,12 @@ a simulation volume to the same headset.
    Headset…*. The *Open in VR Headset* dialog shows a large pairing code, the
    time it has left (five minutes) and a QR code.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/08-vr-from-the-desktop-1.png -->
+   ```{figure} img/08-vr-from-the-desktop-1.png
+   :alt: The Open in VR Headset dialog with a pairing code, its countdown and the QR code.
+   :width: 70%
+
+   The pairing code and its QR code.
+   ```
 
 2. On the Quest, open the Quest Browser at
    `https://vr.visivolab.oact.inaf.it/`, type the code and press *Connect*.

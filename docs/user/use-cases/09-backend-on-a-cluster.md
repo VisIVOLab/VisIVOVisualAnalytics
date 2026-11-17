@@ -36,7 +36,12 @@ changes while you work.
 
    Press *Save* to keep the profile.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/09-backend-on-a-cluster-1.png -->
+   ```{figure} img/09-backend-on-a-cluster-1.png
+   :alt: The Connect to a cluster dialog with a filled-in profile for a GPU partition.
+   :width: 70%
+
+   A cluster profile: login node, SLURM resources, image and folders.
+   ```
 
 3. Press *Connect*. A new VisIVO Visual Analytics window starts for the
    cluster; the window you were using stays on its own backend. The new
