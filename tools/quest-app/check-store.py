@@ -211,7 +211,8 @@ def check(manifest: Element, signing: dict[str, bool], zip_names: list[str], siz
         for acts, cats, data in _filters(launcher[0]))
     rule(bool(usb), "LauncherActivity matches the desktop's USB launch (VIEW http://localhost, not BROWSABLE)")
 
-    rule(signing.get("v2", False), "APK Signature Scheme v2 (VRC.Quest.Packaging.2)")
+    schemes = ", ".join(k for k, v in sorted(signing.items()) if v) or "none"
+    rule(signing.get("v2", False), f"APK Signature Scheme v2 (VRC.Quest.Packaging.2; verified: {schemes})")
     libs = {n.split("/")[1] for n in zip_names if n.startswith("lib/") and n.count("/") >= 2}
     rule(not libs or "arm64-v8a" in libs,
          f"64-bit: {'no native code' if not libs else 'ABIs ' + ', '.join(sorted(libs))} (VRC.Quest.Packaging.6)")

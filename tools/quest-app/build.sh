@@ -155,7 +155,10 @@ python3 -I "$HERE/patch-project.py" "$WORK/proj" "$ORIGIN"
 UNSIGNED="$WORK/proj/app/build/outputs/apk/release/app-release-unsigned.apk"
 [ -f "$UNSIGNED" ] || die "no APK from Gradle"
 "$BT/zipalign" -f -p 4 "$UNSIGNED" "$WORK/aligned.apk"
+# v2 explicitly: with minSdk 28 or more apksigner signs with v3 alone, and the
+# Meta Horizon Store requires APK Signature Scheme v2 (VRC.Quest.Packaging.2).
 "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$ALIAS" --ks-pass "file:$PASS" \
+  --v2-signing-enabled true --v3-signing-enabled true \
   --out "$OUT/$NAME.apk" "$WORK/aligned.apk"
 rm -f "$OUT/$NAME.apk.idsig"
 SIGNED_SHA256="$("$BT/apksigner" verify --print-certs "$OUT/$NAME.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: *//p' | head -1)"
