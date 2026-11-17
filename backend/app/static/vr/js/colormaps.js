@@ -12,6 +12,8 @@ const STOPS = {
   red: ['#000000', '#3d0603', '#7a0f08', '#b81c10', '#e8341f', '#ff6146', '#ff9580', '#ffc6b8', '#fff0ea'],
   green: ['#000000', '#022e0a', '#065c16', '#0b8a23', '#16b835', '#3ddc55', '#7bf08a', '#b8fbbf', '#ecfff0'],
   blue: ['#000000', '#03113d', '#08257a', '#103bb8', '#2257f0', '#4f80ff', '#86a8ff', '#bccdff', '#ecf1ff'],
+  // A fourth hue for the value ranges of an exploded view (issue #371).
+  orange: ['#000000', '#3d1c02', '#7a3905', '#b85a08', '#f07d10', '#ff9a3d', '#ffb874', '#ffd6ad', '#fff3e6'],
 };
 
 /** The cube's colour maps (the Display page's swatches). */

@@ -1875,6 +1875,23 @@ axis at the finer level.
    it first). A drop larger than the single variable's at the same settings
    is the overlay's cost. On the desktop, *Headset Activity* must read
    *Overlay (emission): …*.
+8. Exploded view (#371), with the same file and the overlay on: open
+   *Display ▸ Explode ▸*, choose *Fields*, *Row*, and press *Explode*. The
+   three fields must slide apart in about 0.6 s, each in its own colours and
+   at about 58 % of the cube's size, with three colour bars. Check:
+   - Grip inside the middle piece and move and turn the hand: only that
+     piece follows. Grip outside every piece: the whole model moves.
+   - The piece's chip on *Shown*: it goes; pressed again, it comes back.
+   - *Value ranges*, *4*, *Ring*: four nested shells of the density in blue,
+     green, orange and red; the chips read the ranges in data values.
+   - *Assemble*: the pieces slide back and the overlay (or the single
+     variable) is drawn as before; *Reset* after moving pieces puts them back
+     in the layout.
+   - No *The new cube is shown when you leave VR* notice, no black frame.
+
+   Note **FPS**, **missed %** and **samples/voxel** in the HUD with the
+   overlay assembled and exploded (Fields, then 4 value ranges), at the same
+   distance; the HUD's `exploded …` line says how many pieces were drawn.
 
 ### The headset's view on the desktop, with the headset (#281)
 

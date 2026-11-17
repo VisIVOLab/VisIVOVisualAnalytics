@@ -234,7 +234,7 @@ test('lasso a galaxy and Isolate it: two presses in all, the trigger on the gala
 });
 
 test('choosing a tab sets the mode; the menu opens on the tab of the mode', () => {
-  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', debug: null });
+  assert.deepEqual(HM.TAB_MODE, { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', explode: 'explore', debug: null });
   assert.equal(HM.pageOnOpen('display', 'select'), 'select', 'A changed the mode: its tab');
   assert.equal(HM.pageOnOpen('measure', 'explore'), 'measure', 'Measure keeps the explore mode');
   assert.equal(HM.pageOnOpen('more', 'clip'), 'more', 'More sets no mode');

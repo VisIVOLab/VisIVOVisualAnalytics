@@ -295,6 +295,30 @@
         for (const w of HM.menuLayout(page, ctx).filter((x) => page === 'overlay' || /overlay|render|thr/.test(x.id))) drawMenuCase(name, page, ctx, view, w.id);
       }
     }
+    // A simulation model taken apart (#371): the Explode page with four value
+    // ranges (the longest labels), three fields with long names, and nothing
+    // to take apart yet (the overlay off).
+    for (const [label, ex] of [
+      ['four ranges', { source: 'bands', bands: 4, layout: 'row', exploded: true, animating: false, fieldsWhy: '', why: '',
+        pieces: [{ label: '5.1e-11–2.7e-9', hidden: false }, { label: '2.7e-9–1.4e-7', hidden: true }, { label: '1.4e-7–7.5e-6', hidden: false }, { label: '≥ 7.5e-6', hidden: false }] }],
+      ['three fields', { source: 'fields', bands: 3, layout: 'ring', exploded: false, animating: true, fieldsWhy: '', why: '',
+        pieces: [{ label: ovNames[0], hidden: false }, { label: ovNames[1], hidden: false }, { label: 'vx1', hidden: false }] }],
+      ['no overlay', { source: 'fields', bands: 3, layout: 'column', exploded: false, animating: false, fieldsWhy: 'Switch the overlay on first (Display, Overlay ▸).',
+        why: 'Fields: switch the overlay on first (Display, Overlay ▸).', pieces: [] }]]) {
+      const ctx = { ...ctxFor('cube', false, false), simulation: true, spectralName: 'Z range', clipTool: 'box',
+        vars: { names: ['rho', 'T', 'vx'], current: 'rho', pending: null }, ov: null, ex };
+      const view = viewFor('cube', 'explode');
+      Object.assign(view.notes, { spread: '0.25 of a piece apart', bands: `${ovNames[0]} (the field edited on the Overlay page): threshold to colour max` });
+      Object.assign(view.values, { 'ex-spread': 0.17 });
+      view.status = [];
+      if (ex.why) view.status.push([ex.why, '#ffd27a']);
+      view.status.push(['4 pieces, each at 46 % of the cube: about 0.86× its pixels to draw.', '#b9c2d0'],
+        ['Grip inside a piece to move or turn it; grip elsewhere moves the whole model.', '#b9c2d0']);
+      const name = `simulation explode ${label}`;
+      drawMenuCase(name, 'explode', ctx, view, null);
+      for (const w of HM.menuLayout('explode', ctx)) drawMenuCase(name, 'explode', ctx, view, w.id);
+      drawMenuCase(`${name} display`, 'display', ctx, viewFor('cube', 'display'), 'explode-page');
+    }
     if (opts.live && window.__vrMenu) {
       const m = window.__vrMenu;
       const page0 = m.ui.page;
