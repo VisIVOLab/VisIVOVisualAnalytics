@@ -88,16 +88,18 @@ lie on an image.
     the catalogue, the radius and the number of sources.
 
     ```{figure} img/06-catalogues-hips-crossmatch-3.png
-    :alt: The Hi-GAL 250 micron cutout in the image viewer with SIMBAD sources overlaid as labelled markers.
+    :alt: The Hi-GAL 250 micron cutout in the image viewer with SIMBAD sources overlaid as markers, the cross-match in Session Data and the catalogue table with names and positions below.
     :width: 100%
 
-    SIMBAD sources on a Hi-GAL cutout.
+    SIMBAD sources on a Hi-GAL cutout, with their names in the table.
     ```
 
 14. To overlay your own table, choose *Tools ▸ Catalogue ▸ Load Catalogue
     Overlay…* and pick a CSV with `RA` and `DEC` columns in degrees. *Show
     Catalogue Overlay* and *Show Catalogue Labels* turn the markers and the
-    names on and off.
+    names on and off. Names are drawn on the image once you zoom in to 24
+    sources or fewer in view; the source under the pointer always shows its
+    name.
 
 ## What you get
 
