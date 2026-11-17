@@ -85,7 +85,7 @@ tests/
   test_quit_exit_main.cpp          # separate executable VisIVOQuitExitTest (see below)
 ```
 
-Total: **1131 tests** in 73 classes in the `VisIVOTests` binary at 1.1.0, as
+Total: **1277 tests** in 80 classes in the `VisIVOTests` binary at 1.2.0, as
 QTest counts them — each class contributes its own `initTestCase` /
 `cleanupTestCase` to that figure. The per-file numbers above come from the
 binary's own totals (`./VisIVOTests | grep Totals`), so they can be checked
@@ -127,8 +127,8 @@ out of a catalogue is a pile of column-name rules, and a misread column does not
 crash — it produces a fit that runs and is wrong. The rules therefore live in a
 header with no widgets in it, where they can be checked directly.
 
-The **backend** has its own pytest suite under `backend/tests/` (3560 tests at
-1.1.0; the numbers in brackets below are per file). A few of its
+The **backend** has its own pytest suite under `backend/tests/` (3861 tests at
+1.2.0; the numbers in brackets below are per file). A few of its
 files are worth knowing about when touching the science, the archive path or
 the way files get opened:
 

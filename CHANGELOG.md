@@ -8,6 +8,8 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+## 1.2.0 (2026-11-17)
+
 - **Desktop: SKAVA Discovery described as our prototype.** The Data Hub
   card, the command palette and the *Data ▸ SKAVA Discovery* tooltip no longer
   say that SKAVA searches across SKA Regional Centres: SKAVA is our discovery
