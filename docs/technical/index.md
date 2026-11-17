@@ -23,6 +23,7 @@ application, see the [use cases](../user/use-cases/index.md) and the
 - [Hosting headset pairing](deployment/vr-pairing.md)
 - [Headset with a cluster backend](deployment/vr-cluster.md)
 - [How the public loader works](deployment/vr-public-loader.md)
+- [Publishing VisIVO VR on the Meta Horizon Store](deployment/meta-store.md)
 - [Self-hosted copilot LLM](deployment/copilot-self-hosted.md)
 
 ## VR headset

@@ -326,6 +326,37 @@ def test_the_store_check_names_what_the_store_would_refuse() -> None:
     assert any("1 GB" in f for f in _store_failures(_xmltree(), size=1_200_000_000))
 
 
+def test_the_store_images_have_metas_sizes(tmp_path: Path) -> None:
+    """Issue #386: make-store-assets.py writes every image the dashboard asks
+    for in Meta's size and pixel format, and fits headset pictures to 16:9."""
+    pil = pytest.importorskip("PIL.Image")
+    pytest.importorskip("numpy")
+    mod = _load("quest_make_store_assets", "make-store-assets.py")
+    assert mod.main(["make-store-assets.py", str(tmp_path / "store")]) == 0
+    want = {"hero-3000x900.png": ((3000, 900), "RGB"), "cover-landscape-2560x1440.png": ((2560, 1440), "RGB"),
+            "cover-square-1440x1440.png": ((1440, 1440), "RGB"), "cover-portrait-1008x1440.png": ((1008, 1440), "RGB"),
+            "mini-landscape-1080x360.png": ((1080, 360), "RGB"), "icon-512x512.png": ((512, 512), "RGB")}
+    for name, (size, mode) in want.items():
+        with pil.open(tmp_path / "store" / name) as im:
+            assert (im.size, im.mode) == (size, mode), name
+    with pil.open(tmp_path / "store" / "logo-transparent.png") as im:
+        assert im.mode == "RGBA" and im.height <= 1440 and im.width <= 9000
+        assert im.getchannel("A").getextrema()[0] == 0          # transparent around the logo
+    with pil.open(tmp_path / "store" / "icon-512x512.png") as im:
+        assert im.getpixel((0, 0)) == (255, 255, 255)           # a solid square, square corners
+    # Headset pictures: centre-cropped to 16:9, 2560x1440; too small ones refused.
+    assert mod.screenshot(pil.new("RGB", (1920, 1080))).size == (2560, 1440)
+    assert mod.screenshot(pil.new("RGBA", (1440, 1440))).mode == "RGB"
+    with pytest.raises(ValueError, match="too small"):
+        mod.screenshot(pil.new("RGB", (1024, 1024)))
+    shots = tmp_path / "shots"
+    shots.mkdir()
+    pil.new("RGB", (2000, 2000), (10, 20, 30)).save(shots / "a.png")
+    assert mod.main(["make-store-assets.py", "--screenshots", str(shots), str(tmp_path / "out")]) == 0
+    with pil.open(tmp_path / "out" / "screenshot-1-2560x1440.png") as im:
+        assert im.size == (2560, 1440) and im.getpixel((5, 5)) == (10, 20, 30)
+
+
 def test_a_changed_template_fails_loudly(tmp_path: Path) -> None:
     proj = _project(tmp_path)
     manifest = proj / "app" / "src" / "main" / "AndroidManifest.xml"

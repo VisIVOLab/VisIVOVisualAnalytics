@@ -2,10 +2,16 @@
 """Makes the Meta Horizon Store's image assets for VisIVO VR (issue #386).
 
 Usage: make-store-assets.py [out_dir]   (default: tools/quest-app/out/store)
+       make-store-assets.py --screenshots <dir> [out_dir]
 
 Needs Pillow and numpy (the backend's virtual environment has both):
 
     backend/.venv/bin/python tools/quest-app/make-store-assets.py
+
+With --screenshots, the pictures taken on the headset (PNG or JPEG, in name
+order) become screenshot-<n>-2560x1440.png: cropped about their centre to
+16:9 and scaled to 2560x1440, 24-bit. Nothing is drawn on them (Meta: no
+added text or logos). A picture smaller than 1280 px wide is refused.
 
 Writes the sizes of Meta's asset guidelines
 (https://developers.meta.com/horizon/resources/asset-guidelines/), each a
@@ -110,7 +116,48 @@ def cover(width: int, height: int, share: float) -> Image.Image:
     return base.convert("RGB")
 
 
+SHOT = (2560, 1440)
+SHOT_MIN_WIDTH = 1280
+
+
+def screenshot(src: Image.Image) -> Image.Image:
+    """A headset picture cropped about its centre to 16:9 and scaled to 2560x1440, RGB."""
+    w, h = src.size
+    if w * SHOT[1] > h * SHOT[0]:            # wider than 16:9: trim the sides
+        cw, ch = round(h * SHOT[0] / SHOT[1]), h
+    else:                                     # taller: trim top and bottom
+        cw, ch = w, round(w * SHOT[1] / SHOT[0])
+    if cw < SHOT_MIN_WIDTH:
+        raise ValueError(f"{w}x{h}: under {SHOT_MIN_WIDTH} px wide once cropped to 16:9, too small to scale to 2560x1440")
+    left, top = (w - cw) // 2, (h - ch) // 2
+    return src.convert("RGB").crop((left, top, left + cw, top + ch)).resize(SHOT, Image.LANCZOS)
+
+
+def screenshots(src_dir: Path, out: Path) -> int:
+    files = sorted(p for p in src_dir.iterdir() if p.suffix.lower() in (".png", ".jpg", ".jpeg"))
+    if not files:
+        print(f"no PNG or JPEG pictures in {src_dir}", file=sys.stderr)
+        return 1
+    out.mkdir(parents=True, exist_ok=True)
+    for n, f in enumerate(files, 1):
+        with Image.open(f) as im:
+            try:
+                shot = screenshot(im)
+            except ValueError as err:
+                print(f"{f.name}: {err}", file=sys.stderr)
+                return 1
+        name = f"screenshot-{n}-{SHOT[0]}x{SHOT[1]}.png"
+        shot.save(out / name, optimize=True)
+        print(f"{f.name} → {name}")
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if len(argv) > 1 and argv[1] == "--screenshots":
+        if len(argv) not in (3, 4):
+            print(__doc__, file=sys.stderr)
+            return 2
+        return screenshots(Path(argv[2]), Path(argv[3]) if len(argv) == 4 else HERE / "out" / "store")
     out = Path(argv[1]) if len(argv) > 1 else HERE / "out" / "store"
     out.mkdir(parents=True, exist_ok=True)
     for name, (w, h, share) in COVERS.items():

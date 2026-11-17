@@ -92,9 +92,12 @@
       Visual Analytics uses. This is your own computer, or a server of your institution or your
       computing centre. They travel over the encrypted WebRTC connection between that backend and
       your headset, and never through INAF's loader or pairing service.</li>
-    <li>To show you views of your data, the headset sends your backend what it needs to draw them:
-      the position and orientation of the headset and of your controllers or hands, and the
-      actions you take in VR. These go only to your backend and are not kept by the VR page.</li>
+    <li>To work with your data, the headset sends your backend the actions you take in VR and,
+      for high-quality views rendered on your computer, the position and orientation of the
+      headset. While VisIVO Visual Analytics on your computer shows what you see in the headset,
+      the headset also sends it a small, low-rate copy of your view (the data, your controllers or
+      hands as drawn in VR; never the camera's image of your room). All of this goes only to your
+      backend and your computer, and the VR page keeps none of it.</li>
     <li>When the backend is run by someone else (your institution, a computing centre), that
       operator's own policies apply to it.</li>
   </ul>
