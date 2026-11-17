@@ -385,18 +385,7 @@ visivo::PowerSlopeOptions PowerSpectrumWindow::options() const
 
 QString PowerSpectrumWindow::slopeSummary(const visivo::PowerSlopeFit &fit, bool ellIsAngular)
 {
-    const QString axis = ellIsAngular ? u"ℓ"_s : u"k"_s;
-    if (!fit.valid)
-        return u"No slope: fewer than 3 bins left in the fit range."_s;
-    return u"Slope n = %1 ± %2 (P ∝ %3ⁿ) over %3 %4–%5, %6 bins, %7"_s
-            .arg(fit.slope, 0, 'f', 3)
-            .arg(fit.slopeError, 0, 'f', 3)
-            .arg(axis)
-            .arg(fit.ellLow, 0, 'g', 4)
-            .arg(fit.ellHigh, 0, 'g', 4)
-            .arg(fit.binsUsed)
-            .arg(fit.weighted ? u"weighted by the bin errors"_s
-                              : u"unweighted (the server sent no errors)"_s);
+    return visivo::powerSlopeSummary(fit, ellIsAngular);
 }
 
 void PowerSpectrumWindow::refit()
@@ -470,10 +459,9 @@ void PowerSpectrumWindow::redraw()
         auto *line = m_plot->addGraph();
         line->setName(u"P ∝ %1^%2"_s.arg(m_spectrum.ellIsAngular ? u"ℓ"_s : u"k"_s)
                               .arg(m_fit.slope, 0, 'f', 2));
-        const double a = std::pow(10.0, m_fit.intercept);
         line->setData({ m_fit.ellLow, m_fit.ellHigh },
-                      { a * std::pow(m_fit.ellLow, m_fit.slope),
-                        a * std::pow(m_fit.ellHigh, m_fit.slope) });
+                      { visivo::fittedPower(m_fit, m_fit.ellLow),
+                        visivo::fittedPower(m_fit, m_fit.ellHigh) });
         line->setPen(QPen(QColor(220, 38, 38), 2));
     }
     m_plot->rescaleAxes();
@@ -504,6 +492,12 @@ void PowerSpectrumWindow::exportCsv()
         out << "# slope: " << QString::number(m_fit.slope, 'g', 8) << " +- "
             << QString::number(m_fit.slopeError, 'g', 8) << " over " << m_fit.ellLow << " to "
             << m_fit.ellHigh << " (" << m_fit.binsUsed << " bins)\n";
+    if (m_fit.valid && std::isfinite(m_fit.chi2PerDof))
+        out << "# chi2_per_dof: " << QString::number(m_fit.chi2PerDof, 'g', 6)
+            << (m_fit.powerLawRejected ? " (one power law rejected; slope error scaled by "
+                                         "sqrt(chi2_per_dof))"
+                                       : "")
+            << '\n';
     out << "k_pix_inv,ell,power,power_err,n_modes\n";
     const int n = static_cast<int>(m_spectrum.power.size());
     for (int i = 0; i < n; ++i) {

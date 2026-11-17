@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <functional>
+#include <random>
 
 using namespace Qt::StringLiterals;
 namespace cosmo = visivo::cosmology;
@@ -374,6 +375,126 @@ void TestCosmologyTools::slopeIsWeightedByTheBinErrors()
     const auto ols = visivo::fitPowerSlope(ell, power, {});
     QVERIFY(!ols.weighted);
     QVERIFY(std::abs(ols.slope + 2.0) > 0.01);   // the outlier pulls it
+}
+
+namespace {
+
+// A binned spectrum as the backend returns it for a 512² map: 64 log-spaced
+// bins from k = 1/512 to Nyquist, n_modes ≈ the half-annulus area, the error
+// std/√N × the Hann window's 1.94 (std = mean for an exponential |FFT|²), and
+// each bin's power scattered by that error in log P. @p truth gives log10 P
+// from log10 k.
+struct SyntheticSpectrum
+{
+    QVector<double> k, power, err;
+    QVector<int> modes;
+};
+
+SyntheticSpectrum syntheticSpectrum(const std::function<double(double)> &truth, unsigned seed)
+{
+    SyntheticSpectrum s;
+    std::mt19937 rng(seed);
+    std::normal_distribution<double> gauss(0.0, 1.0);
+    const double kMin = 1.0 / 512.0, kMax = 0.5;
+    for (int i = 0; i < 64; ++i) {
+        const double lo = kMin * std::pow(kMax / kMin, i / 64.0);
+        const double hi = kMin * std::pow(kMax / kMin, (i + 1) / 64.0);
+        const int modes = static_cast<int>(M_PI * (hi * hi - lo * lo) * 512.0 * 512.0 / 2.0);
+        if (modes < 3)
+            continue;
+        const double k = 0.5 * (lo + hi);
+        const double relErr = 1.94 / std::sqrt(static_cast<double>(modes));
+        const double sigmaLog = relErr / std::log(10.0);
+        const double p = std::pow(10.0, truth(std::log10(k)) + sigmaLog * gauss(rng));
+        s.k.append(k);
+        s.power.append(p);
+        s.err.append(relErr * p);
+        s.modes.append(modes);
+    }
+    return s;
+}
+
+}   // namespace
+
+void TestCosmologyTools::drawnLineFollowsANoisyPowerLaw()
+{
+    // P = 3e-6 k^-1.7 with errors spanning two decades from low to high k,
+    // like the real ones (issue #403). The drawn line must reproduce the true
+    // amplitude, not only the slope, wherever it is drawn.
+    const double amplitude = 3e-6, index = -1.7;
+    int rejected = 0;
+    for (unsigned seed = 1; seed <= 20; ++seed) {
+        const auto s = syntheticSpectrum(
+                [&](double lk) { return std::log10(amplitude) + index * lk; }, seed);
+        const auto fit = visivo::fitPowerSlope(s.k, s.power, s.modes, {}, s.err);
+        QVERIFY(fit.valid);
+        QVERIFY(fit.weighted);
+        QVERIFY2(std::abs(fit.slope - index) < 4.0 * fit.slopeError,
+                 qPrintable(u"seed %1: %2 ± %3"_s.arg(seed).arg(fit.slope).arg(fit.slopeError)));
+        QVERIFY(fit.slopeError < 0.05);
+        // log10 P at k = 1 is log10 A; the bug looked like a whole dex.
+        QVERIFY2(std::abs(fit.intercept - std::log10(amplitude)) < 0.1,
+                 qPrintable(QString::number(fit.intercept)));
+        // The line the window draws, at both ends and in the middle, lies
+        // within 0.1 dex of the true spectrum: it follows the bins.
+        for (const double k : { fit.ellLow, std::sqrt(fit.ellLow * fit.ellHigh), fit.ellHigh }) {
+            const double drawn = visivo::fittedPower(fit, k);
+            const double truth = amplitude * std::pow(k, index);
+            QVERIFY2(std::abs(std::log10(drawn / truth)) < 0.1,
+                     qPrintable(u"seed %1, k %2: drawn %3, true %4"_s.arg(seed).arg(k).arg(drawn)
+                                        .arg(truth)));
+        }
+        QVERIFY2(std::abs(fit.chi2PerDof - 1.0) < 1.0, qPrintable(QString::number(fit.chi2PerDof)));
+        rejected += fit.powerLawRejected ? 1 : 0;
+    }
+    // A true power law with honest errors is rejected at p < 0.001 almost
+    // never, so its error stays the unscaled, validated one. One in 20 is let
+    // through: about 2 % odds with another standard library's Gaussian draws.
+    QVERIFY(rejected <= 1);
+    QVERIFY(std::isnan(visivo::fittedPower({}, 0.1)));
+}
+
+void TestCosmologyTools::curvedSpectrumIsFlaggedAndItsErrorScaled()
+{
+    // The shape behind issue #403: log P bends from slope -1.2 at k = 0.01 to
+    // about -3 at Nyquist. A straight line through all bins is dominated by
+    // the high-k ones, so χ² must reject it and the error grow by √(χ²/dof).
+    const auto s = syntheticSpectrum(
+            [](double lk) { return -5.0 - 1.2 * lk - 0.8 * (lk + 2.0) * (lk + 2.0); }, 7);
+    const auto fit = visivo::fitPowerSlope(s.k, s.power, s.modes, {}, s.err);
+    QVERIFY(fit.valid);
+    QVERIFY(fit.powerLawRejected);
+    QVERIFY2(fit.chi2PerDof > 10.0, qPrintable(QString::number(fit.chi2PerDof)));
+    QVector<double> xs, ws;
+    for (int i = 0; i < s.k.size(); ++i) {
+        if (s.modes[i] < 8)
+            continue;
+        const double sigmaLog = s.err[i] / (s.power[i] * std::log(10.0));
+        xs.append(std::log10(s.k[i]));
+        ws.append(1.0 / (sigmaLog * sigmaLog));
+    }
+    double sw = 0.0, mx = 0.0, sxx = 0.0;
+    for (int i = 0; i < xs.size(); ++i) {
+        sw += ws[i];
+        mx += ws[i] * xs[i];
+    }
+    mx /= sw;
+    for (int i = 0; i < xs.size(); ++i)
+        sxx += ws[i] * (xs[i] - mx) * (xs[i] - mx);
+    QCOMPARE(fit.binsUsed, xs.size());
+    QVERIFY(std::abs(fit.slopeError - std::sqrt(fit.chi2PerDof / sxx)) < 1e-9);
+    // The text says so rather than presenting a high-k slope for the whole range.
+    const QString text = visivo::powerSlopeSummary(fit, false);
+    QVERIFY2(text.contains(u"One power law does not fit"_s), qPrintable(text));
+    QVERIFY(text.contains(u"1/σ² of log P"_s));
+    // Over a short stretch of large scales the bend is mild: the same data pass.
+    visivo::PowerSlopeOptions middle;
+    middle.ellMin = 0.02;
+    middle.ellMax = 0.05;
+    const auto mid = visivo::fitPowerSlope(s.k, s.power, s.modes, middle, s.err);
+    QVERIFY(mid.valid);
+    QVERIFY2(!mid.powerLawRejected, qPrintable(QString::number(mid.chi2PerDof)));
+    QVERIFY(visivo::powerSlopeSummary(mid, false).contains(u"(χ²/dof = "_s));
 }
 
 // ── BackendClient bindings ───────────────────────────────────────────────────
