@@ -108,6 +108,17 @@ Use a real cluster profile (PLEIADI or another SLURM site). Replace the user nam
 | `09-backend-on-a-cluster-2.png` | The cluster window's *Open Dataset* browser listing the data root on the cluster with a cube selected, title naming *Backend: NAME*; the status bar and backend chip of the window behind it naming the cluster. 1600 × 1000. |
 | `09-backend-on-a-cluster-3.png` | Cube window on the cluster, 1600 × 1000, a large cube (several GB) rendered with *Remote* selected in the 3-D pane header, the backend chip naming the cluster. |
 
+## 10-hi-in-a-galaxy-group.md
+
+Before the shots, save the `hcg44_group.reg` file of the page in a folder of your own. All shots on `hgc44.fits` at full resolution, local backend.
+
+| File | What must be on screen |
+|---|---|
+| `10-hi-in-a-galaxy-group-1.png` | The *Moment Map Settings* dialog on `hgc44.fits`: *Moment order* on *Moment 0: Integrated intensity (M0)*, *Start → End* 21 → 101 with the hint *81 of 158 channels selected*, *Enable threshold mask* off. Capture the dialog only, default size. |
+| `10-hi-in-a-galaxy-group-2.png` | Cube window, 1600 × 1000, *Two panes*: left the *Moment 0* map (channels 21 to 101, Inferno), right the *2D Slice* or *3D View*. The five imported regions on the moment map with their labels: green circles on NGC 3190, NGC 3187 and NGC 3185, the cyan circle on NGC 3193, the yellow *Background* annulus around the central pair. Left dock with *Session Data* expanded to *Regions* ▸ `hcg44_group.reg (5)` and its five rows (name, shape, colour swatch), the *NGC 3190 · Circle* row selected and the circle drawn selected (thicker, white handles) on the map. |
+| `10-hi-in-a-galaxy-group-3.png` | Same window after right-click *NGC 3190* row ▸ *Analyse* with the *Moment 0* pane active: the moment map left with NGC 3190 selected, the *NGC 3190 spectrum* (mean per channel) in the right pane showing the double-horned profile, *Session Data* with the new *NGC 3190 spectrum* row, and the Inspector on *Parameters* reading *2D stats from: Moment 0 (pane 1)*, *Valid pixels 706 / 706* and *Mean* about 140.92. |
+| `10-hi-in-a-galaxy-group-4.png` | The *Estimate Noise* result for the box *X (columns)* 50 → 200, *Y (rows)* 50 → 200, channels 1 → 158: σ and MAD per channel as *Mean / Median / Min / Max*, the median σ about 2.24e-04. The amber noise box visible in the lower-left corner of the slice beside it. Capture the window with the result panel, or the panel and the slice if the window is too wide to read at page width. |
+
 ## 11-cosmology.md
 
 Local backend. `volumesnap63.bin` from `DemoData/`; the moment and its FITS export go to the Workspace Exports, nothing is written next to the demo file.
