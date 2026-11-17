@@ -27,7 +27,12 @@ cosmologies disagree.
    along Z, so the map that replaces the slice is the column density of the
    box.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/11-cosmology-1.png -->
+   ```{figure} img/11-cosmology-1.png
+   :alt: The 3-D view of the density box beside the moment-0 map, the column density of the box, with filaments and haloes, and the moment product in Session Data.
+   :width: 100%
+
+   The density box in 3-D, and its column density as a moment-0 map over all 512 planes with the mask off.
+   ```
 
 ### Measure the power spectrum
 
@@ -43,7 +48,12 @@ cosmologies disagree.
    fit; grey ones hold fewer than 8 Fourier modes or lie outside the fit
    range.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/11-cosmology-2.png -->
+   ```{figure} img/11-cosmology-2.png
+   :alt: The angular power spectrum window: log axes, bins in the fit in blue, the red fitted line, and the slope line n = -2.008 over k 0.008166 to 0.4793, 46 bins.
+   :width: 80%
+
+   The power spectrum of the projection with the default fit.
+   ```
 
 5. The default fit mixes the middle range with the steeper small scales. Type 0.02 in *Fit k from* and 0.2 in
    *to*, pressing Enter after each: the slope becomes *n = -1.200 ± 0.034*
@@ -51,7 +61,12 @@ cosmologies disagree.
    run under the first slope (*n = -2.01 · …*); its *Parameters* tab records
    the latest fit and range. *Export CSV…* writes the bins and the fit.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/11-cosmology-3.png -->
+   ```{figure} img/11-cosmology-3.png
+   :alt: The same window with the fit restricted to k from 0.02 to 0.2: the bins outside are open circles and the slope line reads n = -1.200 over 26 bins.
+   :width: 80%
+
+   The fit restricted to 0.02 to 0.2 cycles per pixel.
+   ```
 
 ### Convert redshifts to distances
 
@@ -61,7 +76,12 @@ cosmologies disagree.
 
 7. Switch *Model* to WMAP9 and press *Compute* again.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/11-cosmology-4.png -->
+   ```{figure} img/11-cosmology-4.png
+   :alt: The Cosmology Calculator under WMAP9 for z = 0.1, 0.5, 1, 2 and 3, with the comoving and luminosity distances and the proper scale filled, and the other columns empty.
+   :width: 100%
+
+   Distances and scale under WMAP9; the D_A, lookback and age columns are empty for this preset.
+   ```
 
 ## What you get
 
