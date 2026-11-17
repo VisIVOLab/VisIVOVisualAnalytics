@@ -108,6 +108,12 @@ inline RegionTreeRow regionTreeRow(const Region &r)
     row.text = name.startsWith(shape, Qt::CaseInsensitive) ? name
                                                            : QStringLiteral("%1 · %2").arg(name, shape);
     QString tip = QStringLiteral("%1, %2").arg(name, shape.toLower());
+    // A background region (issue #401) says so: Analyse takes the flux
+    // background from it.
+    if (isBackground(r)) {
+        row.text += QStringLiteral(" · background");
+        tip += QStringLiteral(", background region");
+    }
     if (!r.sourceFile.isEmpty())
         tip += r.sourceLine > 0 ? QStringLiteral(", %1 line %2").arg(r.sourceFile).arg(r.sourceLine)
                                 : QStringLiteral(", from %1").arg(r.sourceFile);

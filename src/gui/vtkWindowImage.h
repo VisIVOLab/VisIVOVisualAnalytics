@@ -702,6 +702,7 @@ private:
     QAction *m_actDeleteRegion{ nullptr };
     QAction *m_actUndoRegion{ nullptr };
     QAction *m_actRedoRegion{ nullptr };
+    QAction *m_actHiDistance{ nullptr };   ///< Tools ▸ Regions ▸ HI Mass Distance… (issue #401)
     QAction *m_actAnalyseRegion{ nullptr };
     void setupRegionList(vtkRenderer *renderer);
     void setupRegionListActions();

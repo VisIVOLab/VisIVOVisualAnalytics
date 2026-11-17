@@ -1180,6 +1180,7 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
         cubeWin->setDarkPlots(this->settings->getPlotTheme() == 0);
         cubeWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
                              opened.beamPaDeg);
+        cubeWin->setBeamPerChannel(opened.beamPerChannel);
         cubeWin->setBrightnessUnit(opened.bunit);
         cubeWin->setRestFrequency(opened.restFreqHz);
         cubeWin->setServerSideRenderingAvailable(opened.serverSideRenderingAvailable);

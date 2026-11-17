@@ -8027,6 +8027,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->m_actDeleteRegion);
     add(u"Regions"_s, self->m_actUndoRegion);
     add(u"Regions"_s, self->m_actRedoRegion);
+    add(u"Regions"_s, self->m_actHiDistance);
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
 

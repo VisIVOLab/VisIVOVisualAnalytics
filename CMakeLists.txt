@@ -626,6 +626,8 @@ set(PROJECT_SOURCES
         src/gui/NoiseRegionDialog.h
         src/gui/RegionPropertiesDialog.cpp
         src/gui/RegionPropertiesDialog.h
+        src/gui/RegionFlux.h
+        src/gui/RegionFluxUi.h
         src/gui/RegionModel.h
         src/gui/RegionFrameText.h
         src/gui/RegionListOverlay.cpp

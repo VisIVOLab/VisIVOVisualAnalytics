@@ -938,6 +938,7 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+    result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1179,6 +1180,7 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+    result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.

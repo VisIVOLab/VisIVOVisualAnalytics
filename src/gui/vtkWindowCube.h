@@ -334,6 +334,9 @@ public:
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
     void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
+    /// The cube has one beam per channel (a BEAMS table): a region flux says
+    /// it uses the header beam (issue #401).
+    void setBeamPerChannel(bool perChannel) { m_beamPerChannel = perChannel; }
 
     // ── Server-side rendering (SSR, Phase 2) ──────────────────────────────────
     // The 3D viewport can either run locally (the existing
@@ -1674,6 +1677,7 @@ protected:
     double m_beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamPaDeg{ 0.0 };
+    bool m_beamPerChannel{ false };
     vtkSmartPointer<vtkActor> m_beamActor;
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueOverlay;
@@ -2265,6 +2269,18 @@ protected:
     /// the mean spectrum over the cube of region @p id (the selected one by
     /// default).
     void analyzeRegion(int id = -1, vtkRenderWindow *win = nullptr);
+    /// The beam-aware flux of @p region on the map @p image (issue #401):
+    /// integrated flux in Jy (a channel) or Jy km/s (a moment 0), its error
+    /// from the nearest background region or the map noise, the beam area,
+    /// and the HI mass at the distance set. Nothing when the map is not per
+    /// beam or the beam is unknown.
+    void insertRegionFluxParams(QVariantMap &params, vtkImageData *image,
+                                const visivo::DisplayGrid &grid,
+                                const visivo::regions::Region &region, double sum,
+                                long validCount, const QString &paneProduct,
+                                bool onChannels) const;
+    /// Tools ▸ Regions ▸ "HI Mass Distance…" (issue #401).
+    QPointer<QAction> m_actHiDistance;
 public:
     /// {x0, x1, y0, y1} cube pixels of the selected region's bounds, clamped
     /// to the cube; empty with no region selected. Seeds the box tools (noise,
