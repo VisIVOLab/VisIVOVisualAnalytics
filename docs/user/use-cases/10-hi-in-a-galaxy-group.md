@@ -42,7 +42,12 @@ published ones.
    drops the faint pixels of each galaxy and biases the flux low. Press
    *Compute*. *Moment 0* opens in a pane.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/10-hi-in-a-galaxy-group-1.png -->
+   ```{figure} img/10-hi-in-a-galaxy-group-1.png
+   :alt: The Moment Map Settings dialog: moment 0, channels 21 to 101 (81 of 158 selected), threshold mask off.
+   :width: 50%
+
+   Moment 0 over channels 21 to 101, mask off.
+   ```
 
 ### Import the members and pick them in Session Data
 
@@ -55,7 +60,12 @@ published ones.
    Untick *NGC 3193* and *Background* to see the central pair alone (the node
    reads `hcg44_group.reg (5, 2 hidden)`), then tick them again.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/10-hi-in-a-galaxy-group-2.png -->
+   ```{figure} img/10-hi-in-a-galaxy-group-2.png
+   :alt: The moment-0 map of HCG 44 with the five imported regions and their labels, and the Session Data tree listing hcg44_group.reg and its five regions with NGC 3190 selected.
+   :width: 100%
+
+   The five members and the background annulus on the moment-0 map, and the region list in Session Data.
+   ```
 
 ### Measure each galaxy and the background
 
@@ -65,7 +75,12 @@ published ones.
    stats from: Moment 0 (pane N)*, *Valid pixels* and the *Mean* of the map
    inside the circle.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/10-hi-in-a-galaxy-group-3.png -->
+   ```{figure} img/10-hi-in-a-galaxy-group-3.png
+   :alt: The moment-0 map beside the NGC 3190 spectrum with its double-horned profile, and the Inspector reading the 2D stats from Moment 0 (pane 1): 706 valid pixels, mean 140.92.
+   :width: 100%
+
+   Analyse on NGC 3190: its mean spectrum and the map statistics inside the circle.
+   ```
 
 6. Repeat for the other galaxies and for *Background*. Each analysis stays in
    *Session Data* under its region's name. In the spectra, NGC 3187 sits at
@@ -77,7 +92,12 @@ published ones.
    (2013) quote 0.22 mJy/beam. Do not estimate on the annulus: the noise box
    would be its bounding box, galaxies included.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/10-hi-in-a-galaxy-group-4.png -->
+   ```{figure} img/10-hi-in-a-galaxy-group-4.png
+   :alt: The Noise Estimation result for the box 50 to 200 in X and Y, with sigma and MAD per channel, beside the slice with the amber noise box in its lower-left corner.
+   :width: 100%
+
+   Noise per channel from a line-free box.
+   ```
 
 ### From map values to Jy km/s
 
