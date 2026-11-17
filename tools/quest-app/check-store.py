@@ -18,6 +18,10 @@ The rules, as Meta documents them (2026-11; docs/technical/deployment/meta-store
   installLocation auto; com.oculus.supportedDevices; head tracking required
   (immersive); not debuggable; the launcher activity has MAIN and
   excludeFromRecents; immersive activities have com.oculus.intent.category.VR.
+- The dashboard's upload check of an immersive web app (Bubblewrap,
+  horizonOSAppMode immersive): the launcher activity's own MAIN/LAUNCHER
+  filter carries com.oculus.intent.category.VR (or OpenXR's IMMERSIVE_HMD).
+  The 1.2.0 APK, whose launcher was the 2-D scanner panel, was refused for it.
 - VRC.Quest.Packaging.4 (a network security configuration in the manifest),
   .../vrc-quest-packaging-4/ ; Packaging.2 (APK Signature Scheme v2), .../vrc-quest-packaging-2/ ;
   Packaging.5 (APK under 1 GB), .../vrc-quest-packaging-5/ ; Packaging.6
@@ -42,6 +46,7 @@ ANDROID = "http://schemas.android.com/apk/res/android:"
 HORIZON_SDK_ELEMENTS = ("http://schemas.horizonos/sdk:uses-horizonos-sdk",
                         "http://schemas.meta.com/metavr-sdk:uses-metavr-sdk")
 DEVICES = {"quest2", "questpro", "quest3", "quest3s", "vrglasses"}
+IMMERSIVE_CATEGORIES = {"com.oculus.intent.category.VR", "org.khronos.openxr.intent.category.IMMERSIVE_HMD"}
 # What web/vr-loader/privacy.html and the data-use answers describe: a new
 # permission means updating both before the upload.
 PERMISSIONS = {"android.permission.CAMERA", "horizonos.permission.HEADSET_CAMERA",
@@ -193,6 +198,14 @@ def check(manifest: Element, signing: dict[str, bool], zip_names: list[str], siz
                         for acts, cats, _ in _filters(a))]
     rule(len(launchers) == 1 and launchers[0].get("android:excludeFromRecents") == "true",
          f"one launcher activity, with excludeFromRecents ({[a.get('android:name') for a in launchers]})")
+    # The upload of an immersive web app is refused when "the main launcher
+    # activity" lacks the launch category com.oculus.intent.category.VR or
+    # org.khronos.openxr.intent.category.IMMERSIVE_HMD (dashboard, 2026-11-17).
+    immersive_launcher = len(launchers) == 1 and any(
+        "android.intent.action.MAIN" in acts and "android.intent.category.LAUNCHER" in cats
+        and cats & IMMERSIVE_CATEGORIES for acts, cats, _ in _filters(launchers[0]))
+    rule(immersive_launcher, "the launcher activity's MAIN/LAUNCHER filter has com.oculus.intent.category.VR "
+         f"(an immersive web app; launcher: {[a.get('android:name') for a in launchers]})")
     vr = [a for a in activities if any("com.oculus.intent.category.VR" in cats for _, cats, _ in _filters(a))]
     rule(bool(vr) and all(a.get("android:screenOrientation") in ("0", "landscape") for a in vr),
          "an immersive activity (com.oculus.intent.category.VR), landscape")

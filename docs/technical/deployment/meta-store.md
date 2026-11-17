@@ -27,8 +27,8 @@ Checked on 2026-11-17 against Meta's documentation (sources at the end).
 | `com.oculus.supportedDevices` | `quest3\|quest3s` (`app.json`) | checked |
 | `android.hardware.vr.headtracking` required, version 1 (immersive apps) | yes | checked |
 | Not debuggable; a release build | yes | checked |
-| Launcher activity with `MAIN` and `excludeFromRecents="true"` | the scanner (`ScanActivity`) | checked |
-| `com.oculus.intent.category.VR` on the immersive activity | `LauncherActivity` | checked |
+| One launcher activity, with `MAIN` and `excludeFromRecents="true"` | `LauncherActivity` | checked |
+| An immersive web app's launcher activity has `com.oculus.intent.category.VR` (or `org.khronos.openxr.intent.category.IMMERSIVE_HMD`) in its `MAIN`/`LAUNCHER` filter: the dashboard refuses the upload otherwise | `LauncherActivity` (MAIN, LAUNCHER, VR) | checked |
 | A network security configuration in the manifest (VRC.Quest.Packaging.4) | clear text refused everywhere; the app itself has no network permission | checked |
 | APK Signature Scheme v2 (VRC.Quest.Packaging.2); the same certificate for every version | v2 and v3, the project's release key | checked |
 | 64-bit (VRC.Quest.Packaging.6) | no native code | checked |
@@ -48,6 +48,13 @@ Things Meta's documentation leaves open, to watch at the first upload (the
 - whether `headtracking` required is expected for a hybrid app (a 2-D panel
   plus an immersive activity). The app declares it required, as an immersive
   app;
+- the scanner panel carries `com.oculus.intent.category.VR_HOME_LAUNCHER`, so
+  that Home opens it directly rather than the immersive launcher activity.
+  Meta documents this category on an immersive activity, and its HybridSample
+  makes the 2-D panel the launcher, which the web-app upload check refuses.
+  If the dashboard refuses the category on a 2-D activity, set
+  `panelHomeLauncher` to `false` in `app.json`. The immersive launcher then
+  opens the scanner in Home by itself, after a short immersive transition;
 - what exactly VRC.Quest.Packaging.4 expects of the network security
   configuration;
 - whether anything beyond the permission justification is asked for the

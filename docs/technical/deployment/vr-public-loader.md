@@ -138,7 +138,8 @@ when the backend stopped: neither is resumed.
 ## The VisIVO VR app's flow
 
 ```
-App Library ▸ VisIVO VR
+App Library ▸ VisIVO VR         Home opens ScanActivity (VR_HOME_LAUNCHER); elsewhere LauncherActivity,
+                                 the launcher activity, hands over to it (no address given)
   ScanActivity (2-D panel)       passthrough camera (Camera2) → ZXing → https://<loader>/#pair=CODE
     │  or the code typed           (PairCode: the code, and the QR code's host must be the app's loader)
     ▼

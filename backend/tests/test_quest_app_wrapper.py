@@ -144,19 +144,26 @@ def _patch(proj: Path, origin: str) -> None:
     assert mod.main(["patch-project.py", str(proj), origin]) == 0
 
 
-def test_the_icon_opens_the_scanner_and_the_launcher_stays_immersive(tmp_path: Path) -> None:
+def test_the_launcher_is_immersive_and_home_opens_the_scanner(tmp_path: Path) -> None:
     proj = _project(tmp_path)
     _patch(proj, "https://vr.example.org")
     m = (proj / "app" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
-    # One launcher icon: the scanner, a 2-D panel with its own task.
+    # One launcher activity: LauncherActivity, immersive (the Store refuses an
+    # immersive web app whose launcher lacks the VR category, #386).
     assert m.count("android.intent.category.LAUNCHER") == 1
-    scan = m[m.index('<activity android:name="ScanActivity"'):m.index("FocusActivity")]
-    assert "android.intent.category.LAUNCHER" in scan and "com.oculus.intent.category.2D" in scan
-    assert 'android:taskAffinity="${applicationId}.scan"' in scan
-    # The launcher keeps its immersive category, now without the icon.
     launcher = m[m.index('<activity android:name="LauncherActivity"'):m.index('<activity android:name="ScanActivity"')]
-    assert "com.oculus.intent.category.VR" in launcher and "android.intent.category.LAUNCHER" not in launcher
-    assert "android.intent.category.DEFAULT" in launcher.split("<intent-filter>")[1]
+    first = launcher.split("<intent-filter>")[1].split("</intent-filter>")[0]
+    assert "android.intent.action.MAIN" in first and "android.intent.category.LAUNCHER" in first
+    assert "com.oculus.intent.category.VR" in first
+    assert 'android:excludeFromRecents="true"' in launcher.split(">")[0]
+    # The scanner: a 2-D panel with its own task, what Home opens (the last
+    # category of its filter chooses), with no LAUNCHER.
+    scan = m[m.index('<activity android:name="ScanActivity"'):m.index("FocusActivity")]
+    assert "com.oculus.intent.category.2D" in scan and "android.intent.category.LAUNCHER" not in scan
+    cats = [line.strip() for line in scan.split("<intent-filter>")[1].split("</intent-filter>")[0].splitlines()
+            if "<category" in line]
+    assert cats[-1] == '<category android:name="com.oculus.intent.category.VR_HOME_LAUNCHER" />'
+    assert 'android:taskAffinity="${applicationId}.scan"' in scan
     # The camera, and the hybrid app's SDK level.
     for line in ('android.permission.CAMERA', 'horizonos.permission.HEADSET_CAMERA',
                  'xmlns:horizonos="http://schemas.horizonos/sdk"', 'horizonos:minSdkVersion="69"'):
@@ -222,6 +229,22 @@ def test_the_meta_horizon_store_manifest_rules(tmp_path: Path) -> None:
     assert "BROWSABLE" not in usb
 
 
+def test_without_the_home_launcher_the_panel_has_no_launcher_category(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load("quest_patch_project_home", "patch-project.py")
+    app = json.loads((QUEST / "app.json").read_text(encoding="utf-8"))
+    cfg = tmp_path / "app.json"
+    cfg.write_text(json.dumps({**app, "panelHomeLauncher": False}), encoding="utf-8")
+    monkeypatch.setattr(mod, "APP", cfg)
+    proj = _project(tmp_path)
+    assert mod.main(["patch-project.py", str(proj), "https://vr.example.org"]) == 0
+    m = (proj / "app" / "src" / "main" / "AndroidManifest.xml").read_text(encoding="utf-8")
+    assert 'category.VR_HOME_LAUNCHER" />' not in m and m.count("android.intent.category.LAUNCHER") == 1
+    cfg.write_text(json.dumps({**app, "panelHomeLauncher": "yes"}), encoding="utf-8")
+    with pytest.raises(SystemExit, match="panelHomeLauncher"):
+        mod.panel_home_launcher()
+
+
 def test_supported_devices_must_be_metas_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     mod = _load("quest_patch_project_devices", "patch-project.py")
     app = json.loads((QUEST / "app.json").read_text(encoding="utf-8"))
@@ -234,9 +257,12 @@ def test_supported_devices_must_be_metas_names(tmp_path: Path, monkeypatch: pyte
 
 def _xmltree(min_sdk: int = 32, target: int = 34, install: str | None = "0", devices: str | None = "quest3|quest3s",
              head_required: str = "true", nsc: bool = True, usb: bool = True, extra_perm: str | None = None,
-             version_code: int | None = None) -> str:
-    """A manifest as `aapt2 dump xmltree` prints it (the shape of the real APK's)."""
+             version_code: int | None = None, launcher_on_panel: bool = False) -> str:
+    """A manifest as `aapt2 dump xmltree` prints it (the shape of the real APK's).
+    launcher_on_panel: the 1.1.0/1.2.0 shape, LAUNCHER on the 2-D scanner."""
     a = "http://schemas.android.com/apk/res/android:"
+    panel_category = ("android.intent.category.LAUNCHER" if launcher_on_panel
+                      else "com.oculus.intent.category.VR_HOME_LAUNCHER")
     vc = version_code if version_code is not None else json.loads((QUEST / "app.json").read_text())["versionCode"]
     lines = ["N: android=http://schemas.android.com/apk/res/android (line=2)",
              "  N: horizonos=http://schemas.horizonos/sdk (line=2)",
@@ -267,11 +293,16 @@ def _xmltree(min_sdk: int = 32, target: int = 34, install: str | None = "0", dev
                   f'              A: {a}value(0x01010024)="{devices}" (Raw: "{devices}")']
     lines += ["            E: activity (line=92)",
               f'              A: {a}name(0x01010003)="it.inaf.oact.visivo.vr.LauncherActivity" (Raw: "x")',
-              f"              A: {a}screenOrientation(0x0101001e)=0",
-              "                E: intent-filter (line=144)",
+              f"              A: {a}screenOrientation(0x0101001e)=0"]
+    if not launcher_on_panel:
+        lines.append(f"              A: {a}excludeFromRecents(0x01010017)=true")
+    lines += ["                E: intent-filter (line=144)",
               "                    E: action (line=145)",
-              f'                      A: {a}name(0x01010003)="android.intent.action.MAIN" (Raw: "x")',
-              "                    E: category (line=148)",
+              f'                      A: {a}name(0x01010003)="android.intent.action.MAIN" (Raw: "x")']
+    if not launcher_on_panel:
+        lines += ["                    E: category (line=147)",
+                  f'                      A: {a}name(0x01010003)="android.intent.category.LAUNCHER" (Raw: "x")']
+    lines += ["                    E: category (line=148)",
               f'                      A: {a}name(0x01010003)="com.oculus.intent.category.VR" (Raw: "x")']
     if usb:
         lines += ["                E: intent-filter (line=150)",
@@ -289,10 +320,10 @@ def _xmltree(min_sdk: int = 32, target: int = 34, install: str | None = "0", dev
               "                E: intent-filter (line=179)",
               "                    E: action (line=180)",
               f'                      A: {a}name(0x01010003)="android.intent.action.MAIN" (Raw: "x")',
-              "                    E: category (line=183)",
-              f'                      A: {a}name(0x01010003)="android.intent.category.LAUNCHER" (Raw: "x")',
               "                    E: category (line=184)",
-              f'                      A: {a}name(0x01010003)="com.oculus.intent.category.2D" (Raw: "x")']
+              f'                      A: {a}name(0x01010003)="com.oculus.intent.category.2D" (Raw: "x")',
+              "                    E: category (line=185)",
+              f'                      A: {a}name(0x01010003)="{panel_category}" (Raw: "x")']
     return "\n".join(lines) + "\n"
 
 
@@ -312,11 +343,18 @@ def test_the_store_check_passes_a_conforming_apk() -> None:
 def test_the_store_check_names_what_the_store_would_refuse() -> None:
     # The 1.1.0 APK (versionCode 3): Bubblewrap's defaults for Quest.
     fails = _store_failures(_xmltree(min_sdk=23, target=32, install=None, devices=None, head_required="false",
-                                     nsc=False, usb=False, version_code=3))
+                                     nsc=False, usb=False, version_code=3, launcher_on_panel=True))
     for what in ("versionCode 3", "minSdkVersion 23", "targetSdkVersion 32", "installLocation",
-                 "network security", "supportedDevices", "headtracking", "USB launch"):
+                 "network security", "supportedDevices", "headtracking", "USB launch",
+                 "launcher activity's MAIN/LAUNCHER filter has com.oculus.intent.category.VR"):
         assert any(what in f for f in fails), (what, fails)
-    assert len(fails) == 8
+    assert len(fails) == 9
+    # The 1.2.0 APK (versionCode 4), refused at upload: its launcher was the 2-D panel.
+    fails = _store_failures(_xmltree(launcher_on_panel=True))
+    assert len(fails) == 1 and "launcher activity's MAIN/LAUNCHER filter" in fails[0], fails
+    # Two launcher activities fail too.
+    two = _xmltree().replace("com.oculus.intent.category.VR_HOME_LAUNCHER", "android.intent.category.LAUNCHER")
+    assert any("one launcher activity" in f for f in _store_failures(two))
     assert any("extra: android.permission.INTERNET" in f for f in _store_failures(_xmltree(extra_perm="android.permission.INTERNET")))
     assert any("supportedDevices" in f for f in _store_failures(_xmltree(devices="quest3|pico4")))
     assert any("Signature Scheme v2" in f for f in _store_failures(
@@ -370,8 +408,9 @@ def test_the_app_opens_the_hosted_loader_and_has_a_new_version() -> None:
     assert app["loaderOrigin"].startswith("https://")
     assert "launch=immersive" in app["startPath"]
     # 1.2.0 shipped versionCode 2, the QR scanner is 3; the Store's manifest
-    # rules (#386) are 4: the desktop offers Update to those headsets.
-    assert int(app["versionCode"]) >= 4
+    # rules (#386) are 4, the immersive launcher activity 5: the desktop
+    # offers Update to those headsets.
+    assert int(app["versionCode"]) >= 5
     cfg = json.loads((ROOT / "backend" / "app" / "vr_app.json").read_text(encoding="utf-8"))
     assert app["packages"] == cfg["packages"]
 

@@ -25,21 +25,28 @@ page on localhost in the intent.
      headset's own QR scanner and handed to the app as a verified link
      (the VIEW filter keeps autoVerify); either opens as the app's start
      URL with that code;
-   and nothing else: launched without one of those (the activity is
-   exported) it opens the scanner instead.
+   and nothing else: launched without one of those (from the app's icon
+   when Horizon OS uses the LAUNCHER entry, or by another app: the activity
+   is exported) it opens the scanner in Home instead and goes.
    When it comes back on top (the browser's activity above it ended with
    its VR session) it goes: after a USB launch the app quits, as before;
    after the scanner's launch it opens the scanner again (in Home), so
    leaving VR returns to the scanner. It is translucent, so the library's
    own finish() in onRestart() never runs.
-5. The manifest: the app's icon opens ScanActivity, a 2-D panel (category
-   com.oculus.intent.category.2D) that reads the desktop's QR code with the
+5. The manifest: ScanActivity, a 2-D panel (category
+   com.oculus.intent.category.2D), reads the desktop's QR code with the
    headset's passthrough camera (android.permission.CAMERA and
    horizonos.permission.HEADSET_CAMERA, asked for at its first start) or
-   takes the code typed. LauncherActivity keeps its immersive category
-   (com.oculus.intent.category.VR) without the launcher icon. The app
-   declares Horizon OS SDK 69 (hybrid apps: a panel and an immersive
-   activity in one APK).
+   takes the code typed. LauncherActivity stays the launcher activity (MAIN,
+   LAUNCHER and com.oculus.intent.category.VR): the Meta Horizon Store
+   refuses an immersive web app whose launcher activity lacks the VR
+   category (issue #386), and it gets excludeFromRecents (a launch activity
+   must have it). ScanActivity is what Home opens when the user selects the
+   app there (com.oculus.intent.category.VR_HOME_LAUNCHER, the last category
+   of its filter, app.json panelHomeLauncher), so no immersive activity
+   starts just to hand over to the panel; where Horizon OS uses the LAUNCHER
+   entry instead, LauncherActivity hands over (4.). The app declares Horizon
+   OS SDK 69 (hybrid apps: a panel and an immersive activity in one APK).
 6. ScanActivity.java and PairCode.java (android/, next to this script) go
    into the app's package; ZXing's core (the QR decoder, Apache-2.0) is a
    dependency.
@@ -150,8 +157,10 @@ LAUNCHER_METHODS = '''    /** What this launch opens (shouldLaunchImmediately de
     }
 '''
 
-SCAN_ACTIVITY = '''        <!-- The app's icon (issue #383): reads the desktop's QR code with the
-             headset's passthrough camera, then opens LauncherActivity. -->
+SCAN_ACTIVITY = '''        <!-- The scanner (issues #383, #386): reads the desktop's QR code with the
+             headset's passthrough camera, then opens LauncherActivity. What Home
+             opens when the app is selected there (VR_HOME_LAUNCHER, the filter's last
+             category); LauncherActivity is the launcher activity the Store asks for. -->
         <activity android:name="ScanActivity"
             android:label="@string/launcherName"
             android:exported="true"
@@ -164,12 +173,12 @@ SCAN_ACTIVITY = '''        <!-- The app's icon (issue #383): reads the desktop's
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.LAUNCHER" />
                 <category android:name="com.oculus.intent.category.2D" />
-            </intent-filter>
+__HOME_LAUNCHER__            </intent-filter>
         </activity>
 
 '''
+HOME_LAUNCHER = '                <category android:name="com.oculus.intent.category.VR_HOME_LAUNCHER" />\n'
 
 MANIFEST_HEAD = '''    <!-- The scanner (issue #383): the passthrough camera reads the desktop's QR code. -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -266,7 +275,15 @@ def patch_launcher(proj: Path) -> Path:
     return launcher
 
 
-def patch_manifest(manifest: Path, scheme: str, host: str, port: int | None) -> None:
+def panel_home_launcher() -> bool:
+    """app.json panelHomeLauncher: Home opens the scanner panel directly."""
+    value = json.loads(APP.read_text(encoding="utf-8")).get("panelHomeLauncher", True)
+    if not isinstance(value, bool):
+        raise SystemExit(f"app.json panelHomeLauncher: {value!r} is not true or false")
+    return value
+
+
+def patch_manifest(manifest: Path, scheme: str, host: str, port: int | None, home_launcher: bool = True) -> None:
     # 3.
     port_attr = f'\n                    android:port="{port}"' if port else ""
     sub(manifest, '<data android:scheme="https"\n                    android:host="@string/hostName"',
@@ -282,17 +299,22 @@ def patch_manifest(manifest: Path, scheme: str, host: str, port: int | None) -> 
         r'<action android:name="android\.intent\.action\.MAIN" />\s*)'
         r'<category android:name="android\.intent\.category\.LAUNCHER" />'
         r'(\s*<category android:name="com\.oculus\.intent\.category\.VR" />)', re.S)
+    # LauncherActivity's filter (MAIN, LAUNCHER, VR) stays as it is: the Store
+    # wants the VR category on the launcher activity of an immersive web app.
     if not launcher_filter.search(text):
         raise SystemExit("LauncherActivity's launcher intent filter (MAIN, LAUNCHER, VR) not found: "
                          "the Bubblewrap template changed")
-    text = launcher_filter.sub(lambda m: m.group(1) + '<category android:name="android.intent.category.DEFAULT" />'
-                               + m.group(2), text, count=1)
+    start = '        <activity android:name="LauncherActivity"\n'
+    if text.count(start) != 1:
+        raise SystemExit("LauncherActivity's element not found: the Bubblewrap template changed")
+    text = text.replace(start, start + '            android:excludeFromRecents="true"\n', 1)
     anchor = '        <activity android:name="com.meta.androidbrowserhelper.trusted.FocusActivity" />'
     if anchor not in text:
         raise SystemExit("FocusActivity not found in the manifest: the Bubblewrap template changed")
-    text = text.replace(anchor, SCAN_ACTIVITY + anchor, 1)
+    scan = SCAN_ACTIVITY.replace("__HOME_LAUNCHER__", HOME_LAUNCHER if home_launcher else "", 1)
+    text = text.replace(anchor, scan + anchor, 1)
     if text.count("android.intent.category.LAUNCHER") != 1:
-        raise SystemExit("the manifest must have exactly one launcher activity (ScanActivity)")
+        raise SystemExit("the manifest must have exactly one launcher activity (LauncherActivity)")
     manifest.write_text(text, encoding="utf-8")
 
 
@@ -334,7 +356,7 @@ def main(argv: list[str]) -> int:
 
     # 3. and 5.
     manifest = proj / "app" / "src" / "main" / "AndroidManifest.xml"
-    patch_manifest(manifest, scheme, host, port)
+    patch_manifest(manifest, scheme, host, port, panel_home_launcher())
 
     # 7. (after 5.: the supportedDevices entry goes before ScanActivity)
     patch_store(proj, manifest, *store_settings())

@@ -163,7 +163,10 @@ Where the APK ends up in each package, as `visivo-vr.apk` with
 ## The scanner (issue #383)
 
 The app's icon opens `ScanActivity`, a 2-D panel (category
-`com.oculus.intent.category.2D`, its own task). It reads the desktop's QR
+`com.oculus.intent.category.2D`, its own task): Home opens it directly
+(`VR_HOME_LAUNCHER`), and `LauncherActivity`, the launcher activity the Store
+requires to be immersive, hands over to it when started with no address
+(#386). It reads the desktop's QR
 code with the headset's passthrough camera: Horizon OS's Passthrough Camera
 API, which is Android's Camera2 on a Quest 3 / 3S with Horizon OS v74 or
 later. The forward RGB cameras carry the vendor tag
@@ -240,9 +243,15 @@ had launched; that remembered address is deleted.
    URL (and so the ticket) to logcat. `onResume()` finishes the activity
    when it comes back on top (no invisible activity stays over the room once
    the VR session ends) and, after a scanner launch, opens the scanner again.
-5. The manifest: the scanner is the launcher (2-D), `LauncherActivity` keeps
-   its immersive category without the icon, the camera permissions, Horizon
-   OS SDK 69.
+5. The manifest: `LauncherActivity` is the launcher activity (`MAIN`,
+   `LAUNCHER`, `com.oculus.intent.category.VR`, `excludeFromRecents`), as the
+   Meta Horizon Store requires of an immersive web app (#386: an APK whose
+   launcher was the 2-D scanner was refused at upload). The scanner is what
+   Home opens when the app is selected there
+   (`com.oculus.intent.category.VR_HOME_LAUNCHER`, the last category of its
+   filter, after `2D`; `app.json` `panelHomeLauncher`). Started through
+   `LAUNCHER` with no address, `LauncherActivity` opens the scanner in Home
+   (4.). Also the camera permissions and Horizon OS SDK 69.
 6. `ScanActivity.java` and `PairCode.java` go into the app's package; ZXing's
    core is a dependency.
 7. The Meta Horizon Store's rules (#386): compileSdk and targetSdk from
