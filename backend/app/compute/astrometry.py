@@ -383,11 +383,33 @@ def worker_crossmatch(
     if celestial is None:
         raise ValueError("No celestial WCS axes in this dataset.")
 
-    # Image-centre sky coords
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
+
+    # The catalogue services take and return ICRS, so the image's own frame
+    # has to be crossed both ways. A Galactic image (Hi-GAL cutouts are
+    # GLON-CAR/GLAT-CAR) gives (l, b) from its WCS; sending those as (RA, Dec)
+    # queried an unrelated part of the sky, and the answers were then
+    # projected as if they were (l, b) (issue #379). A WCS astropy cannot name
+    # a frame for is taken to be ICRS, as photometry does.
+    try:
+        image_frame = wcs_to_celestial_frame(celestial)
+    except ValueError:
+        image_frame = None
+
     ny = int(dataset.header.get("NAXIS2", dataset.header.get("NAXIS1", 1)))
     nx = int(dataset.header.get("NAXIS1", 1))
-    centre_pix = celestial.all_pix2world([[nx / 2.0, ny / 2.0]], 0)[0]
-    ra_cen, dec_cen = float(centre_pix[0]), float(centre_pix[1])
+    # wcs.lng / wcs.lat: a header may put latitude on the first axis.
+    lng_axis, lat_axis = celestial.wcs.lng, celestial.wcs.lat
+    centre_world = celestial.all_pix2world([[(nx - 1) / 2.0, (ny - 1) / 2.0]], 0)[0]
+    centre_lon, centre_lat = centre_world[lng_axis], centre_world[lat_axis]
+    if image_frame is None:
+        ra_cen, dec_cen = float(centre_lon), float(centre_lat)
+    else:
+        centre_icrs = SkyCoord(centre_lon, centre_lat, unit="deg", frame=image_frame).icrs
+        ra_cen, dec_cen = float(centre_icrs.ra.deg), float(centre_icrs.dec.deg)
+    if not (np.isfinite(ra_cen) and np.isfinite(dec_cen)):
+        raise ValueError("The image centre is off the WCS projection; cannot query a catalogue.")
 
     # Search radius = half-diagonal of image (degrees) + extra margin
     pixel_scale_deg = dataset.spatial_pixel_scale_arcsec() / 3600.0
@@ -416,7 +438,6 @@ def worker_crossmatch(
                 "astroquery is required for SIMBAD cross-matching. "
                 "Install with: pip install astroquery"
             ) from exc
-        from astropy.coordinates import SkyCoord  # noqa: PLC0415
         import astropy.units as _u                # noqa: PLC0415
 
         simbad = Simbad()
@@ -456,7 +477,6 @@ def worker_crossmatch(
                 "astroquery is required for Vizier cross-matching. "
                 "Install with: pip install astroquery"
             ) from exc
-        from astropy.coordinates import SkyCoord  # noqa: PLC0415
         import astropy.units as _u                # noqa: PLC0415
 
         v = Vizier(columns=["*"], row_limit=upstream_row_cap)
@@ -488,11 +508,25 @@ def worker_crossmatch(
     if sources:
         hdul = None
         try:
-            radec = np.array([[s["ra_deg"], s["dec_deg"]] for s in sources], dtype=float)
-            pix = np.asarray(celestial.all_world2pix(radec, 0), dtype=float)
-            xi = np.round(pix[:, 0]).astype(int)
-            yi = np.round(pix[:, 1]).astype(int)
-            in_box = (xi >= 0) & (xi <= nx - 1) & (yi >= 0) & (yi <= ny - 1)
+            # The sources are ICRS: into the image's own frame (Galactic,
+            # FK5, ...) first, then through its projection.
+            lon = np.array([s["ra_deg"] for s in sources], dtype=float)
+            lat = np.array([s["dec_deg"] for s in sources], dtype=float)
+            if image_frame is not None:
+                native = SkyCoord(lon, lat, unit="deg", frame="icrs").transform_to(image_frame)
+                native = native.represent_as("unitspherical")
+                lon = np.asarray(native.lon.deg, dtype=float)
+                lat = np.asarray(native.lat.deg, dtype=float)
+            world = np.empty((len(sources), 2), dtype=float)
+            world[:, lng_axis] = lon
+            world[:, lat_axis] = lat
+            pix = np.asarray(celestial.all_world2pix(world, 0), dtype=float)
+            px, py = pix[:, 0], pix[:, 1]
+            finite = np.isfinite(px) & np.isfinite(py)
+            # Off-projection sources come back NaN: park them at -1 (outside).
+            xi = np.round(np.where(finite, px, -1.0)).astype(int)
+            yi = np.round(np.where(finite, py, -1.0)).astype(int)
+            in_box = finite & (xi >= 0) & (xi <= nx - 1) & (yi >= 0) & (yi <= ny - 1)
             keep = in_box.copy()
             # Refine the bbox crop to the *valid* (finite) pixels. If reading the
             # image data fails, fall back to the bbox crop rather than dropping the
