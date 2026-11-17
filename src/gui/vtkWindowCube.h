@@ -2102,6 +2102,8 @@ protected:
     void resetCubeCamera();
     void setCameraAzimuth(double az);
     void setCameraElevation(double el);
+    // The preset to the backend's camera when the view on screen is Remote.
+    void sendCameraPresetToRemote(double azimuth, double elevation);
     void mouseCallback();
     bool updateProbeFromDisplayPosition(int displayX, int displayY);
     bool updateRegionFromDisplayPosition(int displayX, int displayY);

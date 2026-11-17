@@ -132,6 +132,9 @@ Rendering*:
 - *Auto*: on a remote backend that can render, a cube above the local limit
   goes to Remote; otherwise the view is local.
 
+The *Camera* presets (Front, Back, Left, Right, Top, Bottom) turn the Remote
+view too.
+
 Remote rendering pays off when the backend is on another machine, since only
 frames travel. Details: [Server-side rendering](../../technical/backend-api/render.md).
 

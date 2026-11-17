@@ -17,6 +17,7 @@
 #include "LinewidthDialog.h"
 #include "MomentMapController.h"
 #include "NoiseController.h"
+#include "RemoteCameraPreset.h"
 #include "StackDialog.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
@@ -1913,6 +1914,7 @@ void vtkWindowCube::setCameraAzimuth(double az)
     this->resetCubeCamera();
     ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()->GetActiveCamera()->Azimuth(az);
     ui->vtkCube->renderWindow()->Render();
+    this->sendCameraPresetToRemote(az, 0.);
 }
 
 void vtkWindowCube::setCameraElevation(double el)
@@ -1921,6 +1923,15 @@ void vtkWindowCube::setCameraElevation(double el)
     ui->vtkCube->renderWindow()->GetRenderers()->GetFirstRenderer()->GetActiveCamera()->Elevation(
             el);
     ui->vtkCube->renderWindow()->Render();
+    this->sendCameraPresetToRemote(0., el);
+}
+
+void vtkWindowCube::sendCameraPresetToRemote(double azimuth, double elevation)
+{
+    // In Remote the view on screen is the backend's, whose camera this
+    // window's does not drive (issue #390): the preset is named, and the
+    // backend turns its own camera to it. Dropped when the view is local.
+    this->sendRemoteRenderStateCommand(visivo::remote::cameraPresetCommand(azimuth, elevation));
 }
 
 void vtkWindowCube::resetCameraFront()

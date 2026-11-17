@@ -160,6 +160,8 @@ add_executable(VisIVOTests
     test_viewer_mode_state.cpp
     TestRemoteLevels.h
     test_remote_levels.cpp
+    TestRemoteCameraPreset.h
+    test_remote_camera_preset.cpp
     TestRemoteRenderQueue.h
     test_remote_render_queue.cpp
     TestRenderSessionCalls.h

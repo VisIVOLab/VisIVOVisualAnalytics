@@ -147,6 +147,40 @@ def set_camera(cam, command: dict[str, Any]) -> None:
         cam.SetParallelScale(scale)
 
 
+def camera_preset(renderer, command: dict[str, Any]) -> None:
+    """Turns ``renderer``'s camera to one of the desktop's Camera presets
+    (``camera_preset``: ``azimuth``, ``elevation`` in degrees, default 0):
+    the cube seen from the front (looking down -z, y up) and fitted, then
+    turned by the azimuth about y and the elevation about the screen's
+    horizontal, as ``vtkWindowCube::setCameraAzimuth`` and
+    ``setCameraElevation`` do locally. The view up turns with the elevation,
+    so the top view (90) has one: vtkCamera.Elevation keeps the old view up,
+    which at 90 lies along the line of sight. A value that is not a finite
+    number is a ValueError, the camera unchanged."""
+    try:
+        az = float(command.get("azimuth", 0.0))
+        el = float(command.get("elevation", 0.0))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("camera_preset needs numbers for azimuth and elevation.") from exc
+    if not (math.isfinite(az) and math.isfinite(el)):
+        raise ValueError("camera_preset needs finite azimuth and elevation.")
+    a, e = math.radians(az), math.radians(el)
+    # Front (+z towards the viewer) turned by the azimuth about y, then by the
+    # elevation towards the view up: the direction to the camera and the view
+    # up, both unit and perpendicular.
+    back = np.array([math.sin(a), 0.0, math.cos(a)])
+    up = np.array([0.0, 1.0, 0.0])
+    direction = math.cos(e) * back + math.sin(e) * up
+    view_up = math.cos(e) * up - math.sin(e) * back
+    cam = renderer.GetActiveCamera()
+    focal = np.asarray(cam.GetFocalPoint(), dtype=float)
+    cam.SetFocalPoint(*focal)
+    cam.SetPosition(*(focal + direction))
+    cam.SetViewUp(*view_up)
+    # Fits the scene along that direction (centre, distance, clipping range).
+    renderer.ResetCamera()
+
+
 def _build_color_tf(name: str, vmin: float, vmax: float):
     """Build a vtkColorTransferFunction named ``name`` over ``[vmin, vmax]``.
 

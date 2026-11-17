@@ -19,6 +19,7 @@ from ._common import (
     _explicit_opacity_floor,
     _opacity_floor,
     _parse_tf_points,
+    camera_preset,
     logger,
     set_camera,
 )
@@ -107,6 +108,8 @@ class PipelineMixin:
         ``{"type": "reset"}``
         ``{"type": "set_camera", "position": [3], "focal_point": [3],
           "view_up": [3], "view_angle"?, "parallel"?, "parallel_scale"?}``
+        ``{"type": "camera_preset", "azimuth": float, "elevation": float}``
+          — the desktop's Camera ▸ Front/Back/Left/Right/Top/Bottom
 
         Volume rendering commands — these mutate VTK state on the
         worker thread so the next ``render_frame`` reflects the new
@@ -173,6 +176,15 @@ class PipelineMixin:
             if self._renderer is not None:
                 set_camera(self._renderer.GetActiveCamera(), command)
                 self._renderer.ResetCameraClippingRange()
+        elif ctype == "camera_preset":
+            # The desktop's Camera menu (issue #390): its own camera is not
+            # the one on show, so it names the view rather than sending it.
+            if self._renderer is not None:
+                try:
+                    camera_preset(self._renderer, command)
+                except ValueError as exc:
+                    logger.warning("[render-session %s] camera_preset refused: %s",
+                                   self.session_id, exc)
         elif ctype == "zoom":
             if self._renderer is not None:
                 factor = max(0.05, min(20.0, float(command.get("factor", 1.0))))
@@ -622,6 +634,13 @@ class PipelineMixin:
         # vtkImageData points to; here we just call Modified() so VTK
         # re-uploads the relevant slabs to VRAM on the next draw.
         self._poll_cube_chunks()
+        # The near and far planes around the whole scene for this camera
+        # (issue #390). Every camera command moves the camera without them,
+        # and the ones the first ResetCamera set, before the default azimuth
+        # and elevation, cut the box's corners off; a desktop view gets them
+        # from its interactor style on every move. Before the out-of-core
+        # update, which chooses its blocks in this frustum.
+        self._renderer.ResetCameraClippingRange()
         # Out of core: choose the blocks of this view and read some of them
         # before drawing; while some are still missing, ask for another frame.
         self._ooc_more = False
