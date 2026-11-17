@@ -217,7 +217,14 @@ Open a catalogue file on the backend.
 ```json
 { "path": "/data/catalogue.csv", "format": "csv" }
 ```
-`format` is `csv` (default), `votable`, `fits`, `ipac`, `speck` or `vbt`.
+`format` is `csv` (default), `votable`, `fits`, `ipac`, `speck`, `vbt` or
+`gadget`. A Gadget snapshot (issue #31) is recognised by its content whatever
+format is asked for: a file of it, its `snapdir` folder, or a particle-type
+reference `<first file>::gadget-type=<N>` opens that particle type (the first
+with particles for a file or a folder) as a table of particles, read in place
+([Gadget snapshots](../design/gadget-snapshots.md)). A reference to a type
+with no particles answers `valid: false`, and a snapshot opens one type at a
+time (not with `paths`).
 `csv` is any delimited text table: the separator (comma, tab or semicolon) is
 detected as `/v1/files/classify` detects it, on the same first 8 KB — the
 first one that splits the first lines (up to ten, `#` comments and blank lines
@@ -246,7 +253,16 @@ Returns `dataset_id`, `session_id`, `num_rows`, the field list with types
 (`fields`), the detected coordinate columns (`coordinate_fields`: `ra`,
 `dec`, `glon`, `glat`, `x`, `y`, `z` and `system`, one of `sky`, `galactic`,
 `cartesian`) and `server_side_rendering_available` (a VBT point table on a
-backend that renders server-side).
+backend that renders server-side), `format` (the format read), `particles`
+(a simulation's particles read in place, a VBT of points or a snapshot's
+particle type: always cartesian, drawn ray-traced by default in VR), `path`
+(the path the dataset is known by: a snapshot's particle-type reference),
+and for a snapshot `components` (its particle types, `[{name, path,
+num_rows}]`), `snapshot` (format, files, time, `scale_factor`, `redshift`,
+`box_size`, `omega0`, `omega_lambda`, `hubble_param`, `mass_table`,
+`npart_total`, `units`, `blocks`, `skipped_blocks`) and `component` (type,
+name, columns, `units` per column as stored, `physical` factor and unit per
+column, `derived` columns and how they were computed, `mass_from_table`).
 A missing file or one that does not parse is answered with `valid: false`.
 With `format: "vbt"` the request may carry `byte_order` and the response
 carries `byte_order`, `byte_order_declared` and `byte_order_warning`

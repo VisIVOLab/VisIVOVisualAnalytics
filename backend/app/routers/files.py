@@ -189,6 +189,37 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
     from ..pluto_source import is_pluto_ref  # noqa: PLC0415
     from ..volume_source import (field_data_file, field_dataset_path,  # noqa: PLC0415
                                  is_field_ref, volume_shape)
+    from ..point_table import (particle_components, particle_dataset_path,  # noqa: PLC0415
+                               split_component)
+
+    # A particle type of a snapshot (issue #31; a Recent entry, a Session Data
+    # row) opens as the table of points it was.
+    base, suffix = split_component(request.path)
+    if suffix:
+        try:
+            local = _normalize_path(base)
+        except Exception:
+            # As for any path: refused and missing answer alike.
+            return FileClassifyResponse(valid=False, error="File not found.")
+        if not local.exists():
+            return FileClassifyResponse(valid=False, error="File not found.")
+        try:
+            found = particle_dataset_path(str(local) + suffix, _within_data_roots)
+            components = particle_components(found[0]) if found else []
+        except PermissionError:
+            # A file of the snapshot outside the roots: as a refused path.
+            return FileClassifyResponse(valid=False, error="File not found.")
+        except (OSError, ValueError) as exc:
+            return FileClassifyResponse(
+                valid=True, error="", path=request.path, kind="particles",
+                opener="unsupported", confident=True,
+                detail=f"Gadget snapshot that cannot be read: {exc}")
+        if found is None:
+            return FileClassifyResponse(valid=False, error="File not found.")
+        return FileClassifyResponse(
+            valid=True, error="", path=request.path, kind="particles", opener="catalogue",
+            confident=True, open_path=found[0], components=components,
+            detail="A particle type of a simulation snapshot.")
 
     # A field of a VBT volume (issue #83) or a PLUTO variable (#315) (a Recent
     # entry, a Session Data row) opens as the cube, or image, it was.

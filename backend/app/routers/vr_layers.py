@@ -75,8 +75,16 @@ def _point_table(entry: dict, spec: str, sky: dict | None = None):
     ``sky`` places a sky catalogue as the desktop window does (issue #260):
     its frame, distance mode and cosmology. The table kept is the last one
     asked for: another placement builds it again."""
-    from ..point_table import open_point_table, sky_arguments, table_from_frame   # noqa: PLC0415
+    from ..point_table import (PointTable, component_format, default_axes,  # noqa: PLC0415
+                               open_point_table, sky_arguments, table_from_frame)
     frame = entry.get("dataframe")
+    if frame is not None and component_format(spec):
+        # A snapshot's particle type (issue #31): the columns the open already
+        # built (a multi-file snapshot's joined once), not built again for
+        # every sample.
+        names = [str(c) for c in frame.columns]
+        return PointTable(names, {n: frame[n].to_numpy(copy=False) for n in names},
+                          len(frame), default_axes(names))
     if not spec.startswith("{") or frame is None:
         table = open_point_table(spec)
         if sky and table.sky is not None:
@@ -137,10 +145,15 @@ async def points_info(request: PointInfoRequest, _: None = _auth,
     frame = entry.get("dataframe")
     declared = ((getattr(frame, "attrs", None) or {}).get("units") or {}) if frame is not None else {}
     units = {k: str(v) for k, v in dict(declared).items() if k in table.columns and v not in (None, "")}
+    from ..point_table import component_format  # noqa: PLC0415
+    # point_table_spec: a particle table's path (a VBT's header, a snapshot's
+    # particle-type reference), a catalogue's JSON spec.
+    particles = not spec.lstrip().startswith("{")
     out = {"valid": True, "num_rows": int(table.num_rows), "fields": list(table.columns),
            "axes": list(table.axes), "sky": table.sky is not None, "units": units,
-           # point_table_spec: a VBT's header path, a catalogue's JSON spec.
-           "format": "catalogue" if spec.lstrip().startswith("{") else "vbt"}
+           "format": (component_format(spec) or "vbt") if particles else "catalogue",
+           # A simulation's particles: the page opens them ray-traced (#264).
+           "particles": particles}
     if table.sky is not None:
         # Its frame, distance mode and cosmology, and the sources placed, left
         # out for want of a distance, and placed from cz < 1000 km/s (#265).
@@ -161,6 +174,10 @@ async def points_series(request: PointInfoRequest, _: None = _auth,
     if not path:
         raise HTTPException(422, "The table has no file to step from.")
     from ..dependencies import _normalize_path   # noqa: PLC0415
+    from ..point_table import split_component   # noqa: PLC0415
+    # A snapshot's particle type (issue #31): the series of its file (or of
+    # its snapdir), each member the same particle type.
+    path, suffix = split_component(path)
 
     def allowed(member: str) -> bool:
         # A member is opened by path later: one the data roots refuse (a
@@ -170,7 +187,10 @@ async def points_series(request: PointInfoRequest, _: None = _auth,
         except (PermissionError, OSError, ValueError):
             return False
         return True
-    return {"valid": True, **await asyncio.to_thread(snapshot_series, str(path), allowed)}
+    series = await asyncio.to_thread(snapshot_series, str(path), allowed)
+    if suffix:
+        series["paths"] = [p + suffix for p in series["paths"]]
+    return {"valid": True, **series}
 
 
 class PointSampleRequest(BaseModel):

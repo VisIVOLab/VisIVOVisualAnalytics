@@ -38,3 +38,21 @@ void TestDatasetName::aFieldNamesItsExportsAfterVolumeAndField()
     // No separator or colon from the reference reaches a file name.
     QCOMPARE(stem.completeBaseName(), QStringLiteral("clumps_CDM_Density"));
 }
+
+void TestDatasetName::aParticleTypeIsShownAsSnapshotAndType()
+{
+    // A particle type of a Gadget snapshot (#31): the first file, then the type.
+    const QString file = QStringLiteral("/runs/zoom/snapdir_010/snap_010.0");
+    const QString gas = file + QStringLiteral("::gadget-type=0");
+    const QString stars = file + QStringLiteral("::gadget-type=4");
+    QVERIFY(visivo::isFieldReference(gas));
+    QCOMPARE(visivo::datasetFilePath(stars), file);
+    QCOMPARE(visivo::datasetDisplayName(stars), QStringLiteral("snap_010.0 · type 4"));
+    visivo::rememberFieldNames({ { QStringLiteral("gas"), gas },
+                                 { QStringLiteral("stars"), stars } });
+    QCOMPARE(visivo::datasetDisplayName(gas), QStringLiteral("snap_010.0 · gas"));
+    const QFileInfo stem(visivo::datasetExportStem(stars));
+    QCOMPARE(stem.absolutePath(), QStringLiteral("/runs/zoom/snapdir_010"));
+    // The file's dot does not cut the name short.
+    QCOMPARE(stem.completeBaseName(), QStringLiteral("snap_010_0_stars"));
+}

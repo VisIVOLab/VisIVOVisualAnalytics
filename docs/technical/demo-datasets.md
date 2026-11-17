@@ -31,6 +31,8 @@ Manifest:
   stokes_DEMO_U.fits           stokes_DEMO_V.fits
   pluto_blast/{dbl.out,grid.out,data.0000.dbl,data.0001.dbl}
   pluto_jet2d/{flt.out,grid.out,rho.0000.flt,vx1.0000.flt}
+  gadget/snapdir_00{0,1,2}/snap_00N.{0,1,2}   gadget/groups_002/sub_002.0
+  gadget_format1/snap_005    gadget_bigendian/snap_005.{0,1}
 ```
 
 ## Prerequisites
@@ -224,6 +226,38 @@ Two PLUTO runs in PLUTO's own binary format, read in place:
 | 2-D run | open `pluto_jet2d/flt.out` | the image viewer; axes count cells, the header says `PLUTOGRD = 'INDEX'` (non-uniform cells along x1) |
 
 Details: [PLUTO simulation output](../user/reference/pluto-output).
+
+## 11 · Gadget snapshots  ·  `gadget/`, `gadget_format1/`, `gadget_bigendian/`
+
+A synthetic cluster in a 1000 kpc/h box, written as Gadget writes snapshots
+(`make_gadget()` in the generator):
+
+- 2000 gas particles (POS VEL ID MASS U RHO NE NH HSML), a hot sphere with
+  T(r) = 5×10⁷ K / (1 + r/30 kpc/h) and ρ(r) = 10⁻³ / (1 + (r/30)²) in code
+  units, fully ionised (NE = 1.158);
+- 4000 dark-matter particles in an NFW-like halo (r_s = 50 kpc/h), their mass
+  6×10⁻³ (10¹⁰ M☉/h) from the header's mass table;
+- 500 stars and 2 black holes (BHMA 0.02 and 0.005).
+
+`gadget/snapdir_00N/` is a series of three format-2 snapshots in three files
+each (a = 0.25, 0.4, 0.5; the halo moves 20 kpc/h along x per step), with the
+black holes in the first file only and no stars in the last one.
+`gadget_format1/snap_005` is the same halo in a single format-1 file,
+`gadget_bigendian/snap_005.{0,1}` in two big-endian format-2 files.
+`gadget/groups_002/sub_002.0` is a SubFind-like group file (GPOS, MVIR, RVIR,
+SPOS) for the halo of the last snapshot (for #392).
+
+**Open:** *File ▸ Open…* → *Gadget snapshots* → `gadget/snapdir_002/snap_002.0`.
+
+| Feature | Do this | Expect |
+|---|---|---|
+| Particle types | open the file | a dialog offers gas, dark matter, stars, black holes |
+| Columns | open gas, colour by `temperature` | 5×10⁷ K at the centre, falling outward; `entropy` in keV cm² |
+| Mass table | open dark matter | `mass` = 0.006 for every particle |
+| Units | ask the copilot for the snapshot | z = 1, comoving kpc/h, × a/h to physical kpc |
+| Series | in the headset, *Previous* | `snapdir_002` → `snapdir_001`, same particle type |
+
+Details: [Gadget snapshots](../user/reference/gadget-snapshots).
 
 ---
 

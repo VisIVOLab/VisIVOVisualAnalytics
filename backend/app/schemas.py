@@ -39,6 +39,14 @@ class FileClassifyRequest(BaseModel):
     path: str
 
 
+class ParticleComponentInfo(BaseModel):
+    """One selectable component of a particle snapshot (issue #31): a
+    particle type, opened by its own path (a reference)."""
+    name: str
+    path: str
+    num_rows: int = 0
+
+
 class FileClassifyResponse(BaseModel):
     """What one file is, so a single *Open…* can decide where it goes."""
     valid: bool
@@ -56,6 +64,10 @@ class FileClassifyResponse(BaseModel):
     confident: bool = False
     #: One sentence for the user, in the words of what was actually found.
     detail: str = ""
+    #: A particle snapshot's components (its particle types with particles),
+    #: each opened by its own path; ``open_path`` is the first. Empty for a
+    #: file of one component.
+    components: list[ParticleComponentInfo] = []
 
 
 #: A VBT's byte order chosen against its header (issue #165): "little" or
@@ -520,6 +532,21 @@ class CatalogueOpenResponse(BaseModel):
     byte_order: str = ""
     byte_order_declared: str = ""
     byte_order_warning: VbtByteOrderWarning | None = None
+    # The format read ("vbt", "gadget", "csv", ...): a particle snapshot is
+    # recognised by its content, whatever format was asked for (issue #31).
+    format: str = ""
+    # A simulation's particles read in place (a VBT of points, a snapshot's
+    # particle type): cartesian, drawn ray-traced by default.
+    particles: bool = False
+    # The path the dataset is known by: for a snapshot, its particle type's
+    # reference ("<first file>::gadget-type=<N>").
+    path: str = ""
+    # A snapshot's particle types with particles, each opened by its own path.
+    components: list[ParticleComponentInfo] = []
+    # A snapshot's header (time, redshift, box, cosmology, unit system, blocks)
+    # and this particle type's columns, units and physical conversions.
+    snapshot: dict[str, Any] = {}
+    component: dict[str, Any] = {}
 
 
 class CatalogueSubsetRequest(BaseModel):

@@ -149,6 +149,9 @@ test('ray-traced style (#264): drawn as splats, refined by the backend ray trace
   assert.equal(PT.defaultStyle('vbt'), 'raytraced');
   assert.equal(PT.defaultStyle('catalogue'), 'points');
   assert.equal(PT.defaultStyle(undefined), 'points', 'an older backend without format');
+  // A Gadget snapshot's particle type (#31): the backend says it is particles.
+  assert.equal(PT.defaultStyle('gadget', true), 'raytraced');
+  assert.equal(PT.defaultStyle('catalogue', false), 'points');
   const look = (style) => PT.pointLook({ axes: ['x', 'y', 'z'], colourField: null, style, splatSize: 2,
     pointPx: 3, intensity: 40 }).find((c) => c.type === 'set_point_style');
   assert.deepEqual(look('raytraced'), { type: 'set_point_style', mode: 'gaussian', size: 2, intensity: 40,

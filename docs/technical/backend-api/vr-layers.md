@@ -18,7 +18,10 @@ sky or Cartesian positions (`/v1/catalogue/open`). Answers `valid`,
 `vbt` for a VBT point table (a simulation's particles, which the VR page opens
 in its ray-traced style, issue #264) or `catalogue`, and `units` (issue #259:
 `{column: unit}` as a catalogue's file declares them, VOTable, FITS or IPAC;
-`{}` for a VBT, whose header carries none). 422 for a dataset that is not a
+`{}` for a VBT, whose header carries none; a Gadget particle type's code
+units, issue #31). `format` is `gadget` for a snapshot's particle type, and
+`particles` is true for every table of a simulation's particles (VBT,
+Gadget): the page opens those ray-traced. 422 for a dataset that is not a
 table of points.
 
 ## `POST /v1/points/series`
@@ -34,6 +37,10 @@ nearest this one by number. A member the backend's data roots refuse (a
 symbolic link resolving outside them, a hidden name) is left out. Only names
 are read (`app/snapshot_series.py`); there is no time-series data model: each
 snapshot is opened as any table (`/v1/vbt/open`, `/v1/catalogue/open`).
+A multi-file snapshot in a numbered folder of its own
+(`snapdir_010/snap_010.0`, issue #31) steps through the sibling folders
+(`snapdir_011/snap_011.0`) when its own folder holds no other member; a
+particle-type reference keeps its type on every member's path.
 
 `sky` in the request (optional, issue #260) places a sky catalogue as the
 desktop window does: `{"frame": "fk5" | "galactic" | "supergalactic",

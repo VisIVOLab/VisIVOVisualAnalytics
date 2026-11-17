@@ -13,4 +13,5 @@ private slots:
     void aFileKeepsItsName();
     void aFieldIsShownAsVolumeAndField();
     void aFieldNamesItsExportsAfterVolumeAndField();
+    void aParticleTypeIsShownAsSnapshotAndType();
 };

@@ -14,6 +14,7 @@
 #include <QJsonValue>
 #include <QVector>
 #include <QList>
+#include <QPair>
 #include <QNetworkRequest>
 #include <QPoint>
 #include <QPointF>
@@ -31,7 +32,26 @@
 #include <map>
 #include <vector>
 
-namespace visivo { struct BackendTaskControl; }
+namespace visivo {
+struct BackendTaskControl;
+
+/// A snapshot's particle types as the classifier and the catalogue open list
+/// them (issue #31): `[{name, path, num_rows}]` -> (name, path) pairs, the
+/// shape DatasetName's rememberFieldNames takes. Entries without a path are
+/// left out; anything else than an array is none.
+inline QList<QPair<QString, QString>> parseParticleComponents(const QJsonValue &value)
+{
+    QList<QPair<QString, QString>> out;
+    const QJsonArray items = value.toArray();
+    for (const QJsonValue &item : items) {
+        const QJsonObject object = item.toObject();
+        const QString path = object.value(QStringLiteral("path")).toString();
+        if (!path.isEmpty())
+            out.append({ object.value(QStringLiteral("name")).toString(), path });
+    }
+    return out;
+}
+} // namespace visivo
 
 struct BackendFileEntry
 {
@@ -94,6 +114,9 @@ struct BackendClassifyResult
     bool confident{ false };
     /// One sentence naming what was found, for the prompt when we do ask.
     QString detail;
+    /// A particle snapshot's particle types, (name, path to open), when it
+    /// has several (issue #31); `openPath` is the first.
+    QList<QPair<QString, QString>> components;
 };
 
 struct BackendListFilesResult
@@ -528,6 +551,17 @@ struct BackendCatalogueInfo
     QString byteOrder;
     QString byteOrderDeclared;
     visivo::VbtByteOrderWarning byteOrderWarning;
+    /// The format read: a particle snapshot is told by its content, whatever
+    /// format was asked for (issue #31). Empty from an older backend.
+    QString format;
+    /// A simulation's particles read in place (a VBT of points, a snapshot's
+    /// particle type): drawn as a point table, not as a catalogue's sources.
+    bool particles{ false };
+    /// The path the dataset is known by (a snapshot's particle-type
+    /// reference); empty from an older backend: the path asked for.
+    QString path;
+    /// A snapshot's particle types, (name, path): each opens on its own.
+    QList<QPair<QString, QString>> components;
 };
 
 struct BackendCatalogueSubset

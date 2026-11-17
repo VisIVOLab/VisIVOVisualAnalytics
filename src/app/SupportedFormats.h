@@ -19,6 +19,10 @@
 //   - VisIVO Binary Tables: the `.bin.head` header, or either half of the pair
 //     (the classifier resolves a picked `.bin` to the header beside it).
 //   - HDF5: the names hdf5_dynspec.is_hdf5_path accepts.
+//   - Gadget snapshots (#31): no suffix of their own (`snap_010`, `snap_010.3`,
+//     `snap_010.0.hdf5`), so the group matches the names Gadget writes by
+//     default, by their beginning (`snap_`, `snapshot_`). A snapshot under
+//     another name opens all the same: the classifier reads its header.
 //
 // These are a VIEW filter. The backend classifies a file by its content, so a
 // FITS or a CSV under some other name still opens: it is listed under
@@ -42,6 +46,7 @@ enum class FileType {
     Hdf5,
     DelimitedText,    ///< comma, tab or semicolon text tables, for readers that take nothing else
     Pluto,            ///< PLUTO simulation output (binary data files; the .out/grid.out beside them)
+    Gadget,           ///< Gadget particle snapshots (binary or HDF5, one file or several)
     AllFiles,         ///< every file, dotfiles included; stays LAST (the tests walk up to it)
 };
 
@@ -56,6 +61,9 @@ struct FileTypeInfo
     /// `.bin.head`) are matched whole. Empty for AllSupported (computed) and
     /// AllFiles (no restriction).
     QStringList suffixes;
+    /// Lower case beginnings of the names a group matches whatever their
+    /// suffix (a Gadget snapshot has none of its own: `snap_010.3`).
+    QStringList prefixes{};
 };
 
 /// Every group, in the order a drop-down lists them.
@@ -81,6 +89,10 @@ inline const QList<FileTypeInfo> &fileTypes()
         // double; the dbl.out/flt.out and grid.out beside them describe it.
         { FileType::Pluto, "pluto"_L1, u"PLUTO simulation output"_s,
           { u".flt"_s, u".dbl"_s } },
+        // Gadget snapshots (#31), by the names Gadget writes: the classifier
+        // tells a snapshot by its header, whatever its name.
+        { FileType::Gadget, "gadget"_L1, u"Gadget snapshots"_s, {},
+          { u"snap_"_s, u"snapshot_"_s } },
         { FileType::AllFiles, "all-files"_L1, u"All files"_s, {} },
     };
     return table;
@@ -115,6 +127,14 @@ inline QStringList fileTypeSuffixes(FileType type)
     return all;
 }
 
+/// The name beginnings a group matches. Only the group's own: a name
+/// beginning says too little about a file (`snap_notes.txt`) to list it among
+/// "All supported files", which go by suffix.
+inline QStringList fileTypePrefixes(FileType type)
+{
+    return fileTypeInfo(type).prefixes;
+}
+
 /// A name the platforms hide: `.DS_Store`, `.git`, `._image.fits`.
 inline bool isHiddenFileName(QStringView name)
 {
@@ -132,6 +152,10 @@ inline bool fileTypeMatches(QStringView name, FileType type)
         return false;
     for (const QString &suffix : fileTypeSuffixes(type)) {
         if (name.endsWith(suffix, Qt::CaseInsensitive))
+            return true;
+    }
+    for (const QString &prefix : fileTypePrefixes(type)) {
+        if (name.startsWith(prefix, Qt::CaseInsensitive))
             return true;
     }
     return false;
@@ -153,12 +177,14 @@ inline std::optional<FileType> fileTypeFromKey(QStringView key)
 inline QString fileTypeDisplayLabel(FileType type)
 {
     const FileTypeInfo &info = fileTypeInfo(type);
-    if (info.suffixes.isEmpty())
+    if (info.suffixes.isEmpty() && info.prefixes.isEmpty())
         return info.label;
     QStringList patterns;
-    patterns.reserve(info.suffixes.size());
+    patterns.reserve(info.suffixes.size() + info.prefixes.size());
     for (const QString &suffix : info.suffixes)
         patterns.append(QLatin1Char('*') + suffix);
+    for (const QString &prefix : info.prefixes)
+        patterns.append(prefix + QLatin1Char('*'));
     return info.label + QLatin1String(" (") + patterns.join(QLatin1Char(' ')) + QLatin1Char(')');
 }
 
@@ -168,7 +194,7 @@ inline QString fileTypeDisplayLabel(FileType type)
 inline QList<FileType> openableFileTypes()
 {
     return { FileType::AllSupported, FileType::Fits, FileType::Catalogue, FileType::Vbt,
-             FileType::Hdf5, FileType::Pluto };
+             FileType::Hdf5, FileType::Pluto, FileType::Gadget };
 }
 
 /// What a caller offers, in table order, with AllFiles always there: whatever

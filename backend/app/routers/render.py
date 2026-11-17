@@ -110,7 +110,10 @@ def point_table_spec(entry: dict) -> str | None:
     if entry.get("kind") == "vbt" and entry.get("header", {}).get("kind") == "point":
         head = str(entry["head_path"])
         return with_order(head, entry["byte_order"]) if entry.get("byte_order") else head
-    if entry.get("kind") == "catalogue" and entry.get("format") == "vbt":
+    from ..point_table import is_particle_format  # noqa: PLC0415
+    if entry.get("kind") == "catalogue" and is_particle_format(entry.get("format")):
+        # A simulation's particles, read in place by their path: a VBT's
+        # header, a snapshot's particle-type reference (issue #31).
         path = str(entry["path"])
         return with_order(path, entry["byte_order"]) if entry.get("byte_order") else path
     if entry.get("kind") == "catalogue":

@@ -491,6 +491,232 @@ def make_pluto(out: Path) -> list[Path]:
     return made
 
 
+# ── Gadget snapshots (issue #31) ──────────────────────────────────────────────
+
+#: Block order a writer follows: Gadget-2's, then the extra blocks of a
+#: hydrodynamical run with black holes.
+GADGET_BLOCK_ORDER = ("POS", "VEL", "ID", "MASS", "U", "RHO", "NE", "NH", "HSML", "SFR",
+                      "AGE", "Z", "POT", "ACCE", "ENDT", "TSTP", "BHMA", "BHMD")
+#: The blocks format 1 has (no names: Gadget-2's order only).
+GADGET_FORMAT1_BLOCKS = GADGET_BLOCK_ORDER[:16]
+#: cgs constants and the hydrogen fraction the reader uses (app/gadget_snapshot.py).
+PROTON_MASS_G = 1.67262192e-24
+BOLTZMANN_ERG_K = 1.380649e-16
+HYDROGEN_MASS_FRACTION = 0.76
+GAMMA = 5.0 / 3.0
+
+
+def _gadget_header(npart, mass, time, redshift, npart_total, num_files, box,
+                   omega0, omega_l, hubble, endian, *, cooling=1, sfr=1, double=False,
+                   metals=0, age=0) -> bytes:
+    e = endian
+    low = [int(n) & 0xFFFFFFFF for n in npart_total]
+    high = [int(n) >> 32 for n in npart_total]
+    raw = (np.array(npart, dtype=e + "i4").tobytes() + np.array(mass, dtype=e + "f8").tobytes()
+           + np.array([time, redshift], dtype=e + "f8").tobytes()
+           + np.array([sfr, 1], dtype=e + "i4").tobytes()
+           + np.array(low, dtype=e + "u4").tobytes()
+           + np.array([cooling, num_files], dtype=e + "i4").tobytes()
+           + np.array([box, omega0, omega_l, hubble], dtype=e + "f8").tobytes()
+           + np.array([age, metals], dtype=e + "i4").tobytes()
+           + np.array(high, dtype=e + "u4").tobytes()
+           + np.array([0, int(double)], dtype=e + "i4").tobytes())
+    return raw + b"\0" * (256 - len(raw))
+
+
+def _gadget_record(data: bytes, e: str) -> bytes:
+    m = np.array([len(data)], dtype=e + "i4").tobytes()
+    return m + data + m
+
+
+def _gadget_block(name: str, data: bytes, e: str, fmt: int = 2) -> bytes:
+    """A block as Gadget writes it: in format 2 a name record first."""
+    label = name.ljust(4).encode("ascii")[:4] + np.array([len(data) + 8], dtype=e + "i4").tobytes()
+    return (_gadget_record(label, e) if fmt == 2 else b"") + _gadget_record(data, e)
+
+
+def write_gadget(path: Path, particles: dict, *, fmt: int = 2, endian: str = "<",
+                 num_files: int = 1, split: list | None = None, mass_table=None,
+                 time: float = 0.5, redshift: float | None = None, box: float = 1000.0,
+                 omega0: float = 0.3, omega_l: float = 0.7, hubble: float = 0.7,
+                 double: bool = False, long_ids: bool = False, cooling: int = 1,
+                 sfr: int = 1, header_npart_total=None) -> list[Path]:
+    """Write a Gadget snapshot as Gadget writes one. ``particles``: type ->
+    {block name -> array of (n,) or (n, k)}, every array of a type n rows.
+    ``num_files`` > 1 writes ``<path>.0`` ... with ``split[f][t]`` rows of
+    type t in file f (default: as even as possible). Format 1 writes only
+    Gadget-2's blocks, in its order. A block is not written into a file that
+    has none of its particles; MASS leaves out the types of the mass table.
+    Returns the files."""
+    e = endian
+    ftype = e + ("f8" if double else "f4")
+    itype = e + ("u8" if long_ids else "u4")
+    counts = [len(particles[t]["POS"]) if t in particles else 0 for t in range(6)]
+    mass_table = list(mass_table or [0.0] * 6)
+    if split is None:
+        split = [[(counts[t] * (f + 1)) // num_files - (counts[t] * f) // num_files
+                  for t in range(6)] for f in range(num_files)]
+    assert [sum(s[t] for s in split) for t in range(6)] == counts
+    if redshift is None:
+        redshift = 1.0 / time - 1.0
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    names = [n for n in GADGET_BLOCK_ORDER
+             if any(n in particles.get(t, {}) for t in range(6))
+             and (fmt == 2 or n in GADGET_FORMAT1_BLOCKS)]
+    if fmt == 2:
+        # Any other block, after Gadget-2's, in the order first given.
+        for t in range(6):
+            names += [n for n in particles.get(t, {}) if n not in names]
+    written = []
+    start = [0] * 6
+    for f in range(num_files):
+        out = path if num_files == 1 else path.with_name(f"{path.name}.{f}")
+        npart = split[f]
+        chunks = [_gadget_block("HEAD", _gadget_header(
+            npart, mass_table, time, redshift,
+            header_npart_total if header_npart_total is not None else counts,
+            num_files, box, omega0, omega_l, hubble, e, cooling=cooling, sfr=sfr,
+            double=double), e, fmt)]
+        for name in names:
+            parts = []
+            for t in range(6):
+                block = particles.get(t, {}).get(name)
+                if block is None or npart[t] == 0:
+                    continue
+                if name == "MASS" and mass_table[t] != 0:
+                    continue
+                rows = np.asarray(block)[start[t]:start[t] + npart[t]]
+                parts.append(np.ascontiguousarray(rows, dtype=itype if name == "ID" else ftype))
+            if parts:
+                chunks.append(_gadget_block(name, b"".join(p.tobytes() for p in parts), e, fmt))
+        out.write_bytes(b"".join(chunks))
+        written.append(out)
+        start = [start[t] + npart[t] for t in range(6)]
+    return written
+
+
+#: The synthetic halo's truths (docs/technical/demo-datasets.md): a hot gas
+#: sphere whose temperature and density follow these profiles exactly, with
+#: the electron abundance of a fully ionised gas (n_e / n_H = 1 + Y / 2X).
+GADGET_HALO = {"centre": 500.0, "rs": 50.0, "rmax": 250.0, "t0": 5.0e7, "rc": 30.0,
+               "rho0": 1.0e-3,
+               "ne": 1.0 + (1.0 - HYDROGEN_MASS_FRACTION) / (2.0 * HYDROGEN_MASS_FRACTION)}
+#: Dark matter's mass (1e10 Msun/h), from the header's mass table.
+GADGET_DM_MASS = 6.0e-3
+
+
+def gadget_temperature(r):
+    """The synthetic gas sphere's temperature in K at radius r (kpc/h)."""
+    h = GADGET_HALO
+    return h["t0"] / (1.0 + r / h["rc"])
+
+
+def gadget_density(r):
+    """Its density in code units (1e10 Msun/h / (kpc/h)^3, comoving)."""
+    h = GADGET_HALO
+    return h["rho0"] / (1.0 + (r / h["rc"]) ** 2)
+
+
+def gadget_halo_particles(rng, n_gas=2000, n_dm=4000, n_star=500, n_bh=2,
+                          shift=0.0) -> dict:
+    """An NFW-like dark-matter halo (mass from the table), a hot gas sphere
+    with the analytic T(r) and rho(r) above (U from T and NE), stars, and
+    black holes, centred in a 1000 kpc/h box; ``shift`` moves it along x."""
+    h = GADGET_HALO
+    c = np.array([h["centre"] + shift, h["centre"], h["centre"]])
+
+    def directions(n):
+        v = rng.normal(size=(n, 3))
+        return v / np.linalg.norm(v, axis=1)[:, None]
+
+    def nfw_radii(n):
+        # Inverse transform of the NFW enclosed mass out to rmax.
+        x = np.linspace(1e-4, h["rmax"] / h["rs"], 4096)
+        m = np.log1p(x) - x / (1 + x)
+        return h["rs"] * np.interp(rng.random(n) * m[-1], m, x)
+
+    out = {}
+    r_gas = h["rmax"] * rng.random(n_gas) ** (1 / 3)
+    x = HYDROGEN_MASS_FRACTION
+    mu = 4.0 / (1.0 + 3.0 * x + 4.0 * x * h["ne"])
+    # u = k T / ((gamma - 1) mu m_p), in (km/s)^2.
+    u = gadget_temperature(r_gas) * BOLTZMANN_ERG_K / ((GAMMA - 1.0) * mu * PROTON_MASS_G) / 1e10
+    out[0] = {"POS": c + directions(n_gas) * r_gas[:, None],
+              "VEL": rng.normal(0, 100, (n_gas, 3)),
+              "ID": np.arange(1, n_gas + 1),
+              "MASS": 1.0e-4 * (1 + 0.01 * np.arange(n_gas) / n_gas),
+              "U": u, "RHO": gadget_density(r_gas),
+              # Gadget-2 with cooling writes NE and NH (here fully ionised).
+              "HSML": 5.0 + r_gas / 50.0, "NE": np.full(n_gas, h["ne"]),
+              "NH": np.zeros(n_gas)}
+    r_dm = nfw_radii(n_dm)
+    out[1] = {"POS": c + directions(n_dm) * r_dm[:, None],
+              "VEL": rng.normal(0, 300, (n_dm, 3)),
+              "ID": np.arange(100001, 100001 + n_dm)}
+    r_st = rng.exponential(10.0, n_star)
+    out[4] = {"POS": c + directions(n_star) * r_st[:, None],
+              "VEL": rng.normal(0, 200, (n_star, 3)),
+              "ID": np.arange(200001, 200001 + n_star),
+              "MASS": np.full(n_star, 2.0e-5)}
+    out[5] = {"POS": c + np.array([[0.0, 0.0, 0.0], [3.0, -2.0, 1.0]])[:n_bh],
+              "VEL": np.zeros((n_bh, 3)), "ID": np.arange(300001, 300001 + n_bh),
+              "MASS": np.full(n_bh, 1.0e-2), "BHMA": np.array([0.02, 0.005])[:n_bh]}
+    return out
+
+
+def write_subfind(path: Path, centre, rvir: float, mvir: float, endian: str = "<") -> Path:
+    """A SubFind-like group file in format 2 (issue #392): the header counts
+    one group as "type" 0 and one subhalo as "type" 1; blocks GPOS, MVIR,
+    RVIR (groups) and SPOS (subhalos)."""
+    e, f4 = endian, endian + "f4"
+    npart = [1, 1, 0, 0, 0, 0]
+    head = _gadget_header(npart, [0.0] * 6, 0.5, 1.0, npart, 1, 1000.0, 0.3, 0.7, 0.7, e)
+    body = (_gadget_block("HEAD", head, e)
+            + _gadget_block("GPOS", np.array([centre], dtype=f4).tobytes(), e)
+            + _gadget_block("MVIR", np.array([mvir], dtype=f4).tobytes(), e)
+            + _gadget_block("RVIR", np.array([rvir], dtype=f4).tobytes(), e)
+            + _gadget_block("SPOS", np.array([centre], dtype=f4).tobytes(), e))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return path
+
+
+def gadget_split(parts: dict) -> list[list[int]]:
+    """How the demo series spreads its particles over three files: black
+    holes in the first only, no stars in the last, uneven gas and DM."""
+    n = [len(parts[t]["POS"]) if t in parts else 0 for t in range(6)]
+    return [[n[0] // 2, n[1] // 3, 0, 0, n[4] // 2, n[5]],
+            [n[0] // 3, n[1] // 3, 0, 0, n[4] - n[4] // 2, 0],
+            [n[0] - n[0] // 2 - n[0] // 3, n[1] - 2 * (n[1] // 3), 0, 0, 0, 0]]
+
+
+#: Scale factors of the demo series.
+GADGET_SERIES_A = (0.25, 0.4, 0.5)
+
+
+def make_gadget(out: Path) -> list[Path]:
+    """Gadget snapshots (issue #31): a series of three multi-file format-2
+    snapshots of the halo moving along x (``gadget/snapdir_00N/snap_00N.0..2``),
+    a format-1 single file, a big-endian format-2 two-file copy, and a
+    SubFind-like group file beside the last snapshot."""
+    mass_table = [0.0, GADGET_DM_MASS, 0.0, 0.0, 0.0, 0.0]
+    made = []
+    for k, a in enumerate(GADGET_SERIES_A):
+        parts = gadget_halo_particles(np.random.default_rng(310 + k), shift=20.0 * k)
+        made += write_gadget(out / "gadget" / f"snapdir_{k:03d}" / f"snap_{k:03d}", parts,
+                             num_files=3, split=gadget_split(parts), mass_table=mass_table,
+                             time=a)
+    made.append(write_subfind(out / "gadget" / "groups_002" / "sub_002.0",
+                              [540.0, 500.0, 500.0], 250.0, 120.0))
+    parts = gadget_halo_particles(np.random.default_rng(31))
+    made += write_gadget(out / "gadget_format1" / "snap_005", parts, fmt=1,
+                         mass_table=mass_table)
+    made += write_gadget(out / "gadget_bigendian" / "snap_005", parts, endian=">",
+                         num_files=2, mass_table=mass_table)
+    return made
+
+
 def main() -> int:
     out = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 \
         else Path.home() / "VisIVO_demo_data"
@@ -511,6 +737,7 @@ def main() -> int:
     made.append(str(make_image_2d(out)))
     made += [str(p) for p in make_stokes_cubes(out)]
     made += [str(p) for p in make_pluto(out)]
+    made += [str(p) for p in make_gadget(out)]
 
     print(f"Wrote {len(made)} demo files under {out}:")
     for m in made:

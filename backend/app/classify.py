@@ -92,13 +92,19 @@ def classify_path(path: str | Path) -> dict:
     """``{kind, opener, confident, detail, open_path}`` for one path.
 
     ``kind`` names the content ("image", "cube", "dynspec", "fits-table",
-    "catalogue", "vbt", "pluto" (an output that cannot be opened), "unknown"); ``opener`` names the route that opens it.
+    "catalogue", "vbt", "pluto" (an output that cannot be opened), "particles"
+    (a particle snapshot), "unknown"); ``opener`` names the route that opens it.
+    ``components``: a snapshot's particle types, each with its own path.
     ``open_path`` is the path the opener should be given when it differs from
     the one asked about — a VBT selected by its ``.bin`` opens by its ``.head``
     sidecar, which is the file that actually describes the table.
     """
     path = Path(path)
     if path.is_dir():
+        # A snapdir: the snapshot it holds (issue #31).
+        particles = _classify_particles(path)
+        if particles is not None:
+            return particles
         return _result("directory", "ask", False, "This is a directory.")
     try:
         size = path.stat().st_size
@@ -127,6 +133,12 @@ def classify_path(path: str | Path) -> dict:
     pluto = _classify_pluto(path)
     if pluto is not None:
         return pluto
+
+    # ── A particle snapshot (Gadget binary or HDF5), by its header record ────
+    # Read in place as a table of points, one particle type at a time (#31).
+    particles = _classify_particles(path)
+    if particles is not None:
+        return particles
 
     if suffix == ".speck":
         return _result("catalogue", "catalogue", True, "speck point catalogue.")
@@ -292,7 +304,43 @@ def _looks_like_delimited_text(text: str, truncated: bool = False) -> bool:
     return sniff_separator(text, truncated) is not None
 
 
+def _classify_particles(path: Path) -> dict | None:
+    """The verdict on a particle snapshot (a Gadget file, issue #31, or a
+    folder of one), by its header record, not its name; None for anything
+    else. It opens as a table of points, one particle type at a time:
+    ``open_path`` is the first type with particles, ``components`` all of
+    them."""
+    from . import gadget_snapshot as gs  # noqa: PLC0415
+    from .point_table import particle_components  # noqa: PLC0415
+
+    if path.is_dir():
+        first = gs.first_in_dir(path)
+        if first is None:
+            return None
+        path = first
+    elif gs.detect(path) is None:
+        return None
+    try:
+        snap = gs.open_snapshot(path)
+    except (OSError, ValueError) as exc:
+        return _result("particles", "unsupported", True,
+                       f"Gadget snapshot that cannot be read: {exc}")
+    ptype = gs.default_type(snap)
+    if ptype is None:
+        return _result("particles", "unsupported", True, "Gadget snapshot with no particles.")
+    ref = gs.gadget_ref(snap.path, ptype)
+    components = particle_components(ref)
+    counts = ", ".join(f"{c['num_rows']} {c['name']}" for c in components)
+    files = f"{len(snap.files)} files" if len(snap.files) > 1 else "one file"
+    detail = (f"{snap.fmt} snapshot ({files}) at z = {snap.header.redshift:.3g}: {counts}. "
+              "Each particle type opens as a table of points.")
+    if snap.skipped:
+        detail += f" Blocks left out (their size fits no particle types): {', '.join(snap.skipped)}."
+    return _result("particles", "catalogue", True, detail, open_path=ref,
+                   components=components)
+
+
 def _result(kind: str, opener: str, confident: bool, detail: str,
-            open_path: str = "") -> dict:
+            open_path: str = "", components: list | None = None) -> dict:
     return {"kind": kind, "opener": opener, "confident": confident, "detail": detail,
-            "open_path": open_path}
+            "open_path": open_path, "components": list(components or [])}

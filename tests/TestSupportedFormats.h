@@ -21,4 +21,5 @@ private slots:
     void displayLabelShowsPatterns();
     void allFilesIsAlwaysOffered();
     void initialTypePrefersTheRememberedOne();
+    void gadgetSnapshotsMatchByTheirNames();
 };

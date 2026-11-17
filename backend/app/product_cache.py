@@ -32,8 +32,24 @@ def file_identity(path: str | os.PathLike) -> str:
     """
     from .pluto_source import GRID_NAME  # noqa: PLC0415
     from .pluto_source import split_ref as split_pluto  # noqa: PLC0415
+    from .point_table import component_format, split_component  # noqa: PLC0415
     from .volume_source import (byte_order_override, field_data_file,  # noqa: PLC0415
                                 raw_field, vbt_head)
+
+    if component_format(path) == "gadget":
+        # A snapshot's particle type (issue #31): every file of the snapshot,
+        # and the run's parameter file and the environment's units, which
+        # change what its derived columns are.
+        from .gadget_snapshot import UNITS_ENV, parameter_file, snapshot_files  # noqa: PLC0415
+        try:
+            files = snapshot_files(split_component(path)[0])
+            params = parameter_file(files[0])
+            stats = [os.stat(f) for f in [*files, *([params] if params else [])]]
+        except (OSError, ValueError):
+            return ""
+        units = os.environ.get(UNITS_ENV, "")
+        return "|".join([f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
+                         for st in stats] + ([f"units={units}"] if units else []))
 
     base = field_data_file(path)
     sidecars = [vbt_head(base)]
