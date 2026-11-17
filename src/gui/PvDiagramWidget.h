@@ -4,6 +4,10 @@
 #include <QVector>
 #include <QWidget>
 
+#include "LutScale.h"
+
+#include <vector>
+
 class QCheckBox;
 class QLabel;
 class QSpinBox;
@@ -51,11 +55,21 @@ public:
     /// Reflect the path settings in the controls without emitting the signals.
     void setPathControls(int widthPixels, bool smooth);
 
+    /// The colour stretch, as on a map pane: Linear, Log or Sqrt (Square and
+    /// Power through the same curve). Kept across new data, so a re-taken cut
+    /// comes back on it. False, and nothing changes, for Log on a diagram with
+    /// no positive value.
+    bool setScale(LutScale::Mode mode);
+    LutScale::Mode scale() const { return m_scale; }
+
 signals:
     void widthChanged(int widthPixels);
     void smoothChanged(bool smooth);
     void newPathRequested();
     void saveFitsRequested();
+    /// Log was asked for, or held over a new cut, on a diagram with no positive
+    /// value; the stretch is (or stays) linear.
+    void logScaleUnavailable();
 
 private slots:
     void savePng();
@@ -63,6 +77,16 @@ private slots:
 private:
     void buildHeaderUi();
     void updateHeaderUi(const PvPathInfo &info);
+    /// Put m_scale on the colour map and its bar: data range, gradient, ticker.
+    void applyScale();
+
+    LutScale::Mode m_scale{ LutScale::Mode::Linear };
+    double m_dataMin{ 0.0 };
+    double m_dataMax{ 1.0 };
+    double m_logFloor{ 0.0 };   ///< 1st percentile of the positive values; 0 = none
+    std::vector<double> m_cells;   ///< the diagram's values, row-major, as received
+    int m_cellColumns{ 0 };
+    int m_cellRows{ 0 };
 
     // ── Header labels (Path group) ────────────────────────────────────────────
     QLabel *m_lblStart    { nullptr };

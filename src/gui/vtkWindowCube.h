@@ -847,8 +847,15 @@ private:
     QPointer<QComboBox> m_paneLutCombo;
     QPointer<QDoubleSpinBox> m_paneRangeMin;
     QPointer<QDoubleSpinBox> m_paneRangeMax;
-    QPointer<QWidget> m_paneScaleRow;      ///< 2D Slice only (linear/log/asinh)
+    QPointer<QWidget> m_paneScaleRow;      ///< slice + image products (linear/log/sqrt)
     QPointer<SegmentedToggle> m_paneScaleSeg;
+    /// Page 2's Scale row, shown only while the PV diagram is the active pane:
+    /// the diagram draws with its own colour scale, not a Pane2DView.
+    QPointer<QWidget> m_pvScaleRow;
+    QPointer<SegmentedToggle> m_pvScaleSeg;
+    /// The status-line summary of how the active pane's product was made
+    /// ("Moment 0 · channels 1–512 · mask off"); hidden for other panes.
+    void updateActiveProductSummary();
     QPointer<QWidget> m_sliceRangeLockRow; ///< 2D Slice only: one range for every channel
     QPointer<QCheckBox> m_sliceRangeLock;
     QPointer<QWidget> m_paneSymmetricRow;  ///< Moment only ("Symmetric about 0")

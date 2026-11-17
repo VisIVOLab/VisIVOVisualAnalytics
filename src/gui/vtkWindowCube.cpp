@@ -53,6 +53,7 @@
 #include "RemoteLevels.h"
 #include "ThresholdShare.h"
 #include "ColourBarTicks.h"
+#include "ProductPaneDisplay.h"
 #include "VolumeColorbar.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
@@ -1135,6 +1136,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     this->momentProvenanceLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
     this->momentProvenanceLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->momentProvenanceLabel);
+    // It says how the ACTIVE pane's product was made, so it follows the focus.
+    QObject::connect(this, &vtkWindowCube::activePaneChanged, this,
+                     [this](int) { updateActiveProductSummary(); });
     this->catalogueInfoLabel = new QLabel(this);
     this->catalogueInfoLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
     this->catalogueInfoLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -2181,6 +2185,16 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                      this, &vtkWindowCube::startNewPvPath);
                     QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::saveFitsRequested,
                                      this, &vtkWindowCube::exportPvAsFits);
+                    // A refused log stretch says so and puts the DISPLAY control
+                    // back on the stretch in force, as a map pane's does.
+                    QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::logScaleUnavailable,
+                                     this, [this]() {
+                                         this->statusBar()->showMessage(
+                                                 u"Log scale needs positive values, and this "
+                                                 u"diagram has none."_s,
+                                                 4000);
+                                         updateDisplaySectionForActivePane();
+                                     });
                     QObject::connect(
                             this->pvDiagramWidget, &PvDiagramWidget::destroyed, this,
                             [this]() {
@@ -7329,13 +7343,45 @@ void vtkWindowCube::updateSlice()
 
 void vtkWindowCube::updateMomentProvenancePanel()
 {
-    // §3.0b (d): the moment provenance now lives in Inspector › Parameters (fed via
-    // the registered product's params). The status-bar label is retired — it sat in
-    // the middle of the rail next to the duplicate "Full resolution" text. Keep the
-    // widget (momentProvenanceState is still read elsewhere) but never show it.
-    if (this->momentProvenanceLabel) {
-        this->momentProvenanceLabel->hide();
+    // §3.0b (d): the full moment provenance lives in Inspector › Parameters (fed
+    // via the registered product's params). The status line carries only the
+    // short summary of the product in the ACTIVE pane (issue #404).
+    updateActiveProductSummary();
+}
+
+void vtkWindowCube::updateActiveProductSummary()
+{
+    if (!this->momentProvenanceLabel)
+        return;
+    // A map or the PV diagram: a spectrum's header already says what it is.
+    QString productId;
+    if (m_activePane >= 0 && m_activePane < 4
+        && m_slots[m_activePane].view.kind == ViewId::Product) {
+        const QString pid = m_slots[m_activePane].view.productId;
+        if (m_products2d.contains(pid) || (!m_pvProductId.isEmpty() && pid == m_pvProductId))
+            productId = pid;
     }
+    const AnalysisProduct p = productId.isEmpty() ? AnalysisProduct()
+                                                  : ProductRegistry::instance().product(productId);
+    if (p.productId.isEmpty()) {
+        this->momentProvenanceLabel->clear();
+        this->momentProvenanceLabel->setToolTip(QString());
+        this->momentProvenanceLabel->hide();
+        return;
+    }
+    const QString label =
+            p.label.isEmpty() ? viewTitle(PaneView{ ViewId::Product, productId }) : p.label;
+    // A long recipe (an RM map over a region) must not push the readouts off the
+    // bar: elided, with the whole of it in the tooltip.
+    constexpr int kSummaryMaxWidth = 420;
+    this->momentProvenanceLabel->setText(this->momentProvenanceLabel->fontMetrics().elidedText(
+            visivo::productSummary(label, p.params), Qt::ElideRight, kSummaryMaxWidth));
+    // Everything the recipe holds, for the hover; Inspector › Parameters has it too.
+    QStringList lines;
+    for (auto it = p.params.constBegin(); it != p.params.constEnd(); ++it)
+        lines << u"%1: %2"_s.arg(it.key(), it.value().toString());
+    this->momentProvenanceLabel->setToolTip(lines.join(u'\n'));
+    this->momentProvenanceLabel->show();
 }
 
 void vtkWindowCube::updateSanityPanel()
@@ -7905,6 +7951,8 @@ QString vtkWindowCube::registerAnalysisProduct(const QString &kind, const QStrin
                 ++mine;
         this->m_workspaceChrome->setSessionRailCount(mine);
     }
+    // A recompute in the active pane changes what its summary says.
+    updateActiveProductSummary();
     return id;
 }
 
@@ -8547,6 +8595,31 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         auto *page = new QWidget();
         auto *v = new QVBoxLayout(page);
         v->setContentsMargins(12, 8, 12, 8);
+        // The PV diagram's stretch: the same three segments as a map's, driving
+        // the diagram's own colour scale (it is not a Pane2DView).
+        m_pvScaleRow = new QWidget(page);
+        auto *h = new QHBoxLayout(m_pvScaleRow);
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(8);
+        auto *l = new QLabel(u"Scale"_s, m_pvScaleRow);
+        l->setStyleSheet(labelCss);
+        h->addWidget(l, 0);
+        m_pvScaleSeg = new SegmentedToggle(m_pvScaleRow);
+        m_pvScaleSeg->addItem(u"Linear"_s);
+        m_pvScaleSeg->addItem(u"Log"_s);
+        m_pvScaleSeg->addItem(u"Sqrt"_s);
+        m_pvScaleSeg->setMinimumWidth(0);
+        h->addWidget(m_pvScaleSeg, 1);
+        m_pvScaleRow->setFixedHeight(28);
+        m_pvScaleRow->hide();
+        v->addWidget(m_pvScaleRow);
+        QObject::connect(m_pvScaleSeg, &SegmentedToggle::currentIndexChanged, this,
+                         [this](int i) {
+                             if (m_applyingPaneDisplay || !this->pvDiagramWidget)
+                                 return;
+                             // A refusal comes back through logScaleUnavailable.
+                             this->pvDiagramWidget->setScale(visivo::scaleForSegment(i));
+                         });
         m_displayNoControls = new QLabel(page);
         m_displayNoControls->setWordWrap(true);
         m_displayNoControls->setStyleSheet(
@@ -9781,7 +9854,9 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
                          [this]() { this->showActiveDisplayLUTEditor(); });
     }
 
-    // Scale (2D Slice only): linear / log / asinh.
+    // Scale: the slice and every 2-D product pane (a column-density map spans
+    // decades and needs Log as much as the slice does). Each Product pane keeps
+    // its own; the product remembers the last choice for its next mount.
     {
         m_paneScaleRow = new QWidget();
         auto *h = new QHBoxLayout(m_paneScaleRow);
@@ -9841,10 +9916,7 @@ QWidget *vtkWindowCube::buildPaneDisplayPage()
                          [this](int i) {
                              if (m_applyingPaneDisplay)
                                  return;
-                             const LutScale::Mode m = (i == 1) ? LutScale::Mode::Log
-                                                     : (i == 2) ? LutScale::Mode::Sqrt
-                                                                : LutScale::Mode::Linear;
-                             setActiveDisplayScale(m);
+                             setActiveDisplayScale(visivo::scaleForSegment(i));
                          });
     }
 
@@ -10063,12 +10135,21 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     m_displayStack->setCurrentIndex(is3d ? 0 : (isPane ? 1 : 2));
     if (auto *p1 = m_displayStack->widget(1))
         p1->setEnabled(isPane);
+    const bool activeIsPv = kind == ViewId::Product && m_activePane >= 0 && m_activePane < 4
+            && !m_pvProductId.isEmpty() && m_slots[m_activePane].view.productId == m_pvProductId
+            && this->pvDiagramWidget;
+    if (m_pvScaleRow) {
+        m_pvScaleRow->setVisible(activeIsPv);
+        if (activeIsPv && m_pvScaleSeg) {
+            const QSignalBlocker block(m_pvScaleSeg);
+            m_pvScaleSeg->setCurrentIndex(visivo::scaleSegment(this->pvDiagramWidget->scale()));
+        }
+    }
     if (m_displayNoControls && !is3d && !isPane) {
-        const bool pv = kind == ViewId::Product && m_activePane >= 0 && m_activePane < 4
-                && !m_pvProductId.isEmpty() && m_slots[m_activePane].view.productId == m_pvProductId;
         m_displayNoControls->setText(
-                pv ? u"The PV diagram's width, curve and exports are in the diagram itself; "
-                     u"its colour bar follows the data."_s
+                activeIsPv
+                ? u"The PV diagram's width, curve and exports are in the diagram itself; "
+                  u"its colour bar follows the scale above."_s
                 : kind == ViewId::Product
                         ? u"A spectrum has no colour map: its tools (compare, fit, line list, "
                           u"export) are in Inspector › Analysis."_s
@@ -10122,7 +10203,7 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     // true, which would permanently disable propagatePaneLut/RangeWithinWindow.
     QScopedValueRollback<bool> paneDisplayGuard(m_applyingPaneDisplay, true);
     if (m_paneScaleRow)
-        m_paneScaleRow->setVisible(kind == ViewId::Slice2D);   // Scale: 2D Slice only
+        m_paneScaleRow->setVisible(true);   // the slice and every image product
     // "Same range on every channel" means nothing while the slice shows a map.
     if (m_sliceRangeLockRow)
         m_sliceRangeLockRow->setVisible(kind == ViewId::Slice2D
@@ -10172,10 +10253,7 @@ void vtkWindowCube::updateDisplaySectionForActivePane()
     if (m_paneRangeMax)
         m_paneRangeMax->setValue(activeDisplayRangeHi());
     if (m_paneScaleSeg) {
-        const LutScale::Mode sc = activeDisplayScale();
-        m_paneScaleSeg->setCurrentIndex(sc == LutScale::Mode::Log    ? 1
-                                        : sc == LutScale::Mode::Sqrt ? 2
-                                                                     : 0);
+        m_paneScaleSeg->setCurrentIndex(visivo::scaleSegment(activeDisplayScale()));
     }
     // paneDisplayGuard restores m_applyingPaneDisplay on scope exit (RAII).
 }
@@ -11184,6 +11262,17 @@ Pane2DView *vtkWindowCube::ensureSlotProductView(int slot)
         });
         QObject::connect(pv, &Pane2DView::lutChanged, this, [this, slot]() {
             refreshPaneLutStrip(slot);            // §5.4: keep this pane's header strip current
+            // The product keeps the stretch last chosen on any pane showing it, so
+            // its next mount (another pane, a layout change, Session Data) and a
+            // recompute come back on it. Before the guard: a linked pane adopting
+            // a stretch has chosen it too.
+            if (m_paneViews[slot] && m_slots[slot].view.kind == ViewId::Product) {
+                auto it = m_products2d.find(m_slots[slot].view.productId);
+                if (it != m_products2d.end()) {
+                    it->scaleMode = m_paneViews[slot]->scale();
+                    it->gamma = m_paneViews[slot]->gamma();
+                }
+            }
             if (m_applyingPaneDisplay)
                 return;
             propagatePaneLutWithinWindow(slot);   // colormap/scale/invert → same-product panes
@@ -11347,6 +11436,12 @@ QString vtkWindowCube::addImageProduct(const QString &kind, const QString &stabl
     cached.lutName = lutName.isEmpty() ? u"Inferno"_s : lutName;
     cached.scaleMode = LutScale::Mode::Linear;
     cached.gamma = this->m_sliceScaleGamma;
+    if (recompute) {
+        // A re-run keeps the stretch chosen for the product (issue #404).
+        const Product2D &before = m_products2d[productId];
+        cached.scaleMode = before.scaleMode;
+        cached.gamma = before.gamma;
+    }
     cached.label = label;
     cached.unit = unit;
     m_products2d.insert(productId, cached);   // replaces on recompute (statsComputed resets)
@@ -12283,6 +12378,9 @@ void vtkWindowCube::mountView(int slot)
         delete it;
     }
     const PaneView v = m_slots[slot].view;
+    // The active pane may have just been given another product.
+    if (slot == m_activePane)
+        updateActiveProductSummary();
     // §3.2 B3: a Product pane renders into its OWN Pane2DView (display-only), configured
     // from the shared per-product cache — so two panes can show two different moments,
     // or the same moment, without a shared-pipeline collision.
@@ -14034,6 +14132,12 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
     cached.lutName = momentLut;
     cached.scaleMode = momentScale;
     cached.gamma = this->m_sliceScaleGamma;
+    if (auto before = this->m_products2d.constFind(productId);
+        before != this->m_products2d.constEnd()) {
+        // A recompute keeps the stretch chosen for this moment (issue #404).
+        cached.scaleMode = before->scaleMode;
+        cached.gamma = before->gamma;
+    }
     cached.label = productLabel;
     cached.clampOutliers = clampOutliers;
     cached.order = result.order;
@@ -16431,13 +16535,7 @@ double vtkWindowCube::volumeScalePosition(double value, double lo, double hi) co
 
 double vtkWindowCube::volumeScaleValue(double position, double lo, double hi) const
 {
-    const double u = std::clamp(position, 0.0, 1.0);
-    if (this->m_volumeScaleMode == LutScale::Mode::Log) {
-        const auto r = LutScale::rangeFor(LutScale::Mode::Log, lo, hi);
-        return r[1] > r[0] ? r[0] * std::pow(r[1] / r[0], u) : lo;
-    }
-    return lo + (hi - lo)
-            * std::pow(u, 1.0 / LutScale::exponent(this->m_volumeScaleMode, this->m_volumeScaleGamma));
+    return LutScale::valueAt(this->m_volumeScaleMode, position, lo, hi, this->m_volumeScaleGamma);
 }
 
 bool vtkWindowCube::remoteDrawsOwnLut() const

@@ -29,38 +29,7 @@ std::array<const char *, 5> modeToolTips()
     };
 }
 
-double exponent(Mode mode, double gamma)
-{
-    switch (mode) {
-    case Mode::Sqrt:
-        return 0.5;
-    case Mode::Square:
-        return 2.0;
-    case Mode::Power:
-        // Clamp to a sane, strictly-positive range so the curve stays monotone.
-        return std::clamp(gamma, 0.1, 10.0);
-    case Mode::Linear:
-    case Mode::Log:
-    default:
-        return 1.0;
-    }
-}
-
-bool isResampled(Mode mode)
-{
-    return mode == Mode::Sqrt || mode == Mode::Square || mode == Mode::Power;
-}
-
 namespace {
-
-// Smallest strictly-positive value usable as a log/zero floor for `maxValue`.
-double positiveFloor(double maxValue)
-{
-    if (!(maxValue > 0.0) || !std::isfinite(maxValue)) {
-        return 1e-6;
-    }
-    return maxValue * 1e-6;
-}
 
 // Re-index a freshly-built colour table in place so entry i shows the colour the
 // base table holds at f(i/(n-1)) = (i/(n-1))^exp.
@@ -169,23 +138,7 @@ double sampledPositiveFloor(vtkImageData *image, int targetSamples)
         // that does have signal in it.
         return std::max(1e-12, range[1] * 1e-6);
     }
-    std::sort(positives.begin(), positives.end());
-    // 1st percentile: low enough to keep the faint end, high enough that a
-    // single hot-adjacent pixel or a residual near zero does not set the floor.
-    const std::size_t idx = static_cast<std::size_t>(
-            std::clamp<double>(0.01 * static_cast<double>(positives.size() - 1), 0.0,
-                               static_cast<double>(positives.size() - 1)));
-    return std::max(1e-12, positives[idx]);
-}
-
-std::array<double, 2> rangeFor(Mode mode, double min, double max)
-{
-    if (mode != Mode::Log) {
-        return { min, max };
-    }
-    const double flooredMax = (max > 0.0 && std::isfinite(max)) ? max : positiveFloor(max);
-    const double flooredMin = (min > 0.0 && std::isfinite(min)) ? min : positiveFloor(flooredMax);
-    return { flooredMin, flooredMax };
+    return percentileFloor(std::move(positives));
 }
 
 void setRange(vtkLookupTable *lut, Mode mode, double min, double max)

@@ -183,6 +183,8 @@ add_executable(VisIVOTests
     test_threshold_share.cpp
     TestColourBarTicks.h
     test_colour_bar_ticks.cpp
+    TestProductPaneDisplay.h
+    test_product_pane_display.cpp
     TestLayerCardGeometry.h
     test_layer_card_geometry.cpp
     TestRegionReadout.h
