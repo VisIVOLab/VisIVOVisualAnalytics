@@ -39,12 +39,7 @@ in.
 4. The density spans many decades, so use a logarithmic colour scale: next to
    *Color map* in the *DISPLAY, 3D* section, press *Edit*, choose the *Log* scale and press *Apply*.
 
-   ```{figure} img/05-large-cubes-and-simulations-1.png
-   :alt: The 2048-cubed PLUTO density as a preview in the 3-D view, with the status line naming the preview and the banner offering Load full resolution and Switch to Remote.
-   :width: 100%
-
-   The preview of the 32 GB density, a log colour scale, and the banner.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/05-large-cubes-and-simulations-1.png -->
 
 ### Render it on the backend
 
@@ -60,12 +55,7 @@ in.
 7. The remote view draws the cube from the pyramid, a few blocks at a time:
    fine near where you look, coarse elsewhere.
 
-   ```{figure} img/05-large-cubes-and-simulations-2.png
-   :alt: The same density rendered remotely from its brick pyramid, with Remote selected in the pane header.
-   :width: 100%
-
-   The full-resolution view rendered by the backend.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/05-large-cubes-and-simulations-2.png -->
 
 ### Level of detail on your own GPU
 
@@ -80,12 +70,7 @@ in.
    level 0 in x 512..1023, y 512..1023, z 768..1023; elsewhere block means,
    pyramid level 3*. Zoom out and it goes back to the plain preview.
 
-   ```{figure} img/05-large-cubes-and-simulations-3.png
-   :alt: A zoomed 3-D view of the density with the refined part sharper than the preview around it, and the status line naming the level of detail.
-   :width: 100%
-
-   The part in view refined to level 0, inside the block-mean preview.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/05-large-cubes-and-simulations-3.png -->
 
 10. To fix the detail on one box, choose *Tools ▸ Views ▸ Refine Selected
     Box…*. The box starts from the selected region, or from the middle half of

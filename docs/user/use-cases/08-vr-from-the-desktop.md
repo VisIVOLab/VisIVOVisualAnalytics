@@ -23,12 +23,7 @@ a simulation volume to the same headset.
    Headset…*. The *Open in VR Headset* dialog shows a large pairing code, the
    time it has left (five minutes) and a QR code.
 
-   ```{figure} img/08-vr-from-the-desktop-1.png
-   :alt: The Open in VR Headset dialog with a pairing code, its countdown and the QR code.
-   :width: 70%
-
-   The pairing code and its QR code.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/08-vr-from-the-desktop-1.png -->
 
 2. On the Quest, open the Quest Browser at
    `https://vr.visivolab.oact.inaf.it/`, type the code and press *Connect*.
@@ -56,12 +51,7 @@ a simulation volume to the same headset.
    multiples of the noise) and the opacity. *More ▸ Guide* explains the
    controls.
 
-   ```{figure} img/08-vr-from-the-desktop-2.png
-   :alt: View from the headset with the HCG 44 cube and the hand menu open on the Display tab.
-   :width: 100%
-
-   The hand menu, open on the Display tab.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/08-vr-from-the-desktop-2.png -->
 
 7. Press A on the right controller to open the tool palette. Its icons are
    grouped by task: *Explore*; *Kinematic Lasso*, *Spectrum probe* and *Box
@@ -69,12 +59,7 @@ a simulation volume to the same headset.
    Point at an icon to read what it does, pull the trigger to pick it. Look
    at your wrists for help on the controls and for the selection's numbers.
 
-   ```{figure} img/08-vr-from-the-desktop-3.png
-   :alt: View from the headset with the tool palette open, the Kinematic Lasso icon highlighted and its description below.
-   :width: 100%
-
-   The tool palette.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/08-vr-from-the-desktop-3.png -->
 
 8. Pick *Kinematic Lasso* and pull the trigger on a galaxy. The selection
    is drawn in the cube, and its window gives the HI measurements: the
@@ -103,12 +88,7 @@ a simulation volume to the same headset.
     are X, Y and Z. The default threshold is the 99th percentile. Spectral
     tools (lasso, spectrum, moments, PV) are greyed, with the reason.
 
-    ```{figure} img/08-vr-from-the-desktop-4.png
-    :alt: View from the headset with the 2048-cubed PLUTO density on a log scale, the colour bar in values and a spatial crop shown in more detail.
-    :width: 100%
-
-    The 2048³ density in VR, with a crop shown in more detail.
-    ```
+    <!-- Screenshot pending (see SHOTLIST.md): img/08-vr-from-the-desktop-4.png -->
 
 13. For a file with several fields (a PLUTO output with several variables on
     disk, a VBT volume), the last row of the *Display* tab is *Variable*, one

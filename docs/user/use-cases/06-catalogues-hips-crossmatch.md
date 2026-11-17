@@ -65,12 +65,7 @@ lie on an image.
    The *Sky projection* selector changes the projection; *AIT* or *MOL* show
    the whole sky when you zoom out.
 
-   ```{figure} img/06-catalogues-hips-crossmatch-2.png
-   :alt: The HiPS Viewer tab with a survey open around a resolved target, the order and field of view shown in the toolbar.
-   :width: 100%
-
-   A HiPS survey around a target, at the order the zoom needs.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/06-catalogues-hips-crossmatch-2.png -->
 
 10. *Overlay:* takes the address of a second survey, drawn over the first
     with its own opacity.
@@ -87,12 +82,7 @@ lie on an image.
     The run is recorded in *Session Data* as *Cross-match with simbad*, with
     the catalogue, the radius and the number of sources.
 
-    ```{figure} img/06-catalogues-hips-crossmatch-3.png
-    :alt: The Hi-GAL 250 micron cutout in the image viewer with SIMBAD sources overlaid as labelled markers.
-    :width: 100%
-
-    SIMBAD sources on a Hi-GAL cutout.
-    ```
+    <!-- Screenshot pending (see SHOTLIST.md): img/06-catalogues-hips-crossmatch-3.png -->
 
 14. To overlay your own table, choose *Tools ▸ Catalogue ▸ Load Catalogue
     Overlay…* and pick a CSV with `RA` and `DEC` columns in degrees. *Show

@@ -36,12 +36,7 @@ changes while you work.
 
    Press *Save* to keep the profile.
 
-   ```{figure} img/09-backend-on-a-cluster-1.png
-   :alt: The Connect to a cluster dialog with a filled-in profile for a GPU partition.
-   :width: 70%
-
-   A cluster profile: login node, SLURM resources, image and folders.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/09-backend-on-a-cluster-1.png -->
 
 3. Press *Connect*. A new VisIVO Visual Analytics window starts for the
    cluster; the window you were using stays on its own backend. The new
@@ -56,12 +51,7 @@ changes while you work.
    cluster's files under the data root, and its title names the backend.
    Open a cube.
 
-   ```{figure} img/09-backend-on-a-cluster-2.png
-   :alt: The Open dialog listing files on the cluster, with the backend named in the title, and the status bar of the window naming the cluster.
-   :width: 100%
-
-   The file browser on the cluster's disk.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/09-backend-on-a-cluster-2.png -->
 
 5. In the cube window, the 3-D view's *Auto / Local / Remote* switch is set
    to *Auto*. A cube above the local limit is drawn by the cluster's GPU
@@ -70,12 +60,7 @@ changes while you work.
    in the workspace the first time (see
    [Large cubes and simulations](05-large-cubes-and-simulations.md)).
 
-   ```{figure} img/09-backend-on-a-cluster-3.png
-   :alt: A large cube rendered remotely on the cluster's GPU, with Remote selected in the 3-D pane header and the backend chip naming the cluster.
-   :width: 100%
-
-   A cube rendered by the cluster's GPU.
-   ```
+   <!-- Screenshot pending (see SHOTLIST.md): img/09-backend-on-a-cluster-3.png -->
 
 6. Work as on your own machine. Moment maps, PV diagrams, SoFiA-2, the lasso
    and the exports run on the node, next to the data.

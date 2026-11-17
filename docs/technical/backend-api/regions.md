@@ -69,7 +69,7 @@ at its end) and `text`, with the `ann` and `-` prefixes. A `centerbox` with
 an angle is a rotated box. CRTF pixel positions are 0-based, as in CASA; they
 become 1-based in the canonical model and go back to 0-based when written.
 
-#### CRTF angles
+### CRTF angles
 
 The CASA documentation ("Region File Format", Allowed Shapes) gives
 `ellipse[[x, y], [bmaj, bmin], pa]` and `rotbox[[x, y], [x_width, y_width],
