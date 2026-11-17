@@ -558,10 +558,10 @@ QFrame *DataHubWidget::buildQuickActionsList()
             Spec{u"hips"_s,      u"VLKB Inventory"_s,
                  u"Browse VLKB sources & add as image layers"_s, QString(),
                  "openVLKBRequested", QString()},
-            // SKAVA finds datasets across the Regional Centres; it opens as a
+            // SKAVA, our discovery prototype, finds datasets; it opens as a
             // tab on demand, like the two above, and can be reopened.
             Spec{u"skava"_s,     u"SKAVA Discovery"_s,
-                 u"Find datasets across SKA Regional Centres"_s, QString(),
+                 u"Find and open datasets with SKAVA (prototype)"_s, QString(),
                  "openSkavaRequested", QString()},
     };
 

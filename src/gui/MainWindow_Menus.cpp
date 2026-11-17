@@ -135,7 +135,7 @@ void MainWindow::rebuildCommandPalette()
                  [this]() { this->revealVLKBTab(); }});
         this->m_commandPalette->addAction(
                 {u"◇"_s, u"SKAVA Discovery"_s,
-                 u"File · find datasets across SKA Regional Centres"_s, QString(), u"File"_s,
+                 u"File · find datasets with SKAVA (prototype)"_s, QString(), u"File"_s,
                  [this]() { this->revealSkavaTab(); }});
 
         // ── Application ─────────────────────────────────────────────────────
@@ -399,8 +399,8 @@ void MainWindow::buildDataMenu()
     QObject::connect(actHiPS, &QAction::triggered, this, &MainWindow::openHiPS);
 
     auto *actSkava = dataMenu->addAction(u"SKAVA Discovery"_s);
-    actSkava->setToolTip(u"Find datasets across SKA Regional Centres and open them on "
-                         u"the node that holds them."_s);
+    actSkava->setToolTip(u"Find datasets with SKAVA, our discovery prototype, and open them "
+                         u"on the node that holds them."_s);
     QObject::connect(actSkava, &QAction::triggered, this, &MainWindow::revealSkavaTab);
 }
 
