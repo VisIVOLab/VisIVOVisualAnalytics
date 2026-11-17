@@ -1452,14 +1452,15 @@ vtkWindowCatalogue3D *MainWindow::doOpenCataloguePath(const QString &filepath,
     this->m_sampCurrentFitsPath.clear();
     this->m_sampCurrentFitsName.clear();
     this->m_sampCurrentCataloguePath = filepath;
-    this->m_sampCurrentCatalogueName = QFileInfo(filepath).fileName();
+    // A snapshot's particle type (#31) is shown as "snap_010.0 · gas".
+    this->m_sampCurrentCatalogueName = visivo::datasetDisplayName(filepath);
     this->m_sampCurrentCatalogueFormat = catalogueFormatForPath(filepath);
     this->updateSampActions();
     // The window reads the table on the backend and builds its scene before it
     // is shown: with nothing on screen for that while, a large CSV looked like
     // a click that did nothing (#159).
     visivo::BusyStatus busy(this, visivo::openingTexts(
-                                          displayName.isEmpty() ? QFileInfo(filepath).fileName()
+                                          displayName.isEmpty() ? visivo::datasetDisplayName(filepath)
                                                                 : displayName));
     auto *win = new vtkWindowCatalogue3D(filepath, settings->getBackendUrl(),
                                          settings->getBackendToken(), paths,
@@ -1486,7 +1487,8 @@ vtkWindowCatalogue3D *MainWindow::doOpenCataloguePath(const QString &filepath,
     // the name it was shown with.
     if (this->recentMgr && !temporaryCopy) {
         this->recentMgr->record(filepath,
-                                displayName.isEmpty() ? QFileInfo(filepath).fileName() : displayName,
+                                displayName.isEmpty() ? visivo::datasetDisplayName(filepath)
+                                                      : displayName,
                                 u"catalogue"_s);
     }
     return win;

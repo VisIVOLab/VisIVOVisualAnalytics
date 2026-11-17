@@ -184,18 +184,36 @@ def split_component(path: str | Path) -> tuple[str, str]:
     return (base, text[len(base):]) if ptype is not None else (text, "")
 
 
-def particle_dataset_path(path: str | Path) -> tuple[str, str] | None:
+def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | None:
     """``(reference, format)`` a particle snapshot opens by, given a file of
     it, its folder or a component reference; None when ``path`` is no
     snapshot (judged by content, not name). A snapshot that cannot be read
     (a file missing, counts that do not add up) or a type without particles
-    raises ValueError (or OSError) saying why."""
+    raises ValueError (or OSError) saying why.
+
+    ``allowed`` (path -> bool): every file the snapshot reads beyond the one
+    named (its other files, the one a folder holds, the run's parameter file)
+    must pass it too, as the named one passed the data roots; one that does
+    not (a symbolic link out of them) raises PermissionError."""
     from . import gadget_snapshot as gs   # noqa: PLC0415
     base, ptype = gs.split_ref(path)
     p = Path(base)
     if ptype is None and not (p.is_dir() and gs.first_in_dir(p) is not None) \
             and not (p.is_file() and gs.detect(p) is not None):
         return None
+    if allowed is not None:
+        # Before any of them is read beyond its first bytes.
+        if p.is_dir():
+            first = gs.first_in_dir(p)
+            if first is not None and not allowed(str(first)):
+                raise PermissionError(f"{first.name} lies outside the folders this "
+                                      "backend may read.")
+        files = gs.snapshot_files(p)
+        params = gs.parameter_file(files[0])
+        for f in [*files, *([params] if params is not None else [])]:
+            if not allowed(str(f)):
+                raise PermissionError(f"{f.name}, a file of this snapshot, lies outside the "
+                                      "folders this backend may read.")
     snapshot = gs.open_snapshot(p)
     if ptype is None:
         ptype = gs.default_type(snapshot)

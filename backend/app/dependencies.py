@@ -584,6 +584,7 @@ __all__ = [
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
     "_catalogue_load_dataframe", "_catalogue_metadata", "_vbt_points_metadata",
+    "_within_data_roots",
     "_get_dask_client", "_run", "_run_io", "_run_interactive", "_run_with_limit",
     "acquire_task_slot", "task_slot_busy_error",
     "_run_heavy", "_run_heavy_with_limit",
@@ -879,6 +880,17 @@ def _normalize_path(raw: str) -> Path:
             part.startswith(".") and part not in (".", "..") for part in path.parts):
         raise PermissionError("Hidden paths are not accessible.")
     return path
+
+
+def _within_data_roots(path: str) -> bool:
+    """Whether :func:`_normalize_path` accepts ``path`` (a symbolic link is
+    judged by where it resolves): for the files a dataset reads beyond the
+    one asked for, such as the other files of a multi-file snapshot."""
+    try:
+        _normalize_path(str(path))
+    except (PermissionError, OSError, ValueError):
+        return False
+    return True
 
 
 # The parser lives with the volume reader (app/volume_source.py), which the

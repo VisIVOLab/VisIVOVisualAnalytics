@@ -204,8 +204,11 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
         if not local.exists():
             return FileClassifyResponse(valid=False, error="File not found.")
         try:
-            found = particle_dataset_path(str(local) + suffix)
+            found = particle_dataset_path(str(local) + suffix, _within_data_roots)
             components = particle_components(found[0]) if found else []
+        except PermissionError:
+            # A file of the snapshot outside the roots: as a refused path.
+            return FileClassifyResponse(valid=False, error="File not found.")
         except (OSError, ValueError) as exc:
             return FileClassifyResponse(
                 valid=True, error="", path=request.path, kind="particles",

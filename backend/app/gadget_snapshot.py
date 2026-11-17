@@ -125,8 +125,10 @@ def parse_header(raw: bytes, endian: str) -> Header:
     high = struct.unpack_from(e + "6I", raw, 168)
     flag_entropy, flag_double = struct.unpack_from(e + "2i", raw, 192)
     total = tuple(int(lo) + (int(hi) << 32) for lo, hi in zip(low, high))
-    if any(n < 0 for n in npart) or num_files < 1:
-        raise ValueError("Not a Gadget header: negative particle counts or no files.")
+    if any(n < 0 for n in npart) or num_files < 0:
+        raise ValueError("Not a Gadget header: negative particle or file counts.")
+    # Initial conditions write 0 files: one file.
+    num_files = max(1, num_files)
     return Header(tuple(int(n) for n in npart), tuple(float(m) for m in mass), float(time),
                   float(redshift), int(flag_sfr), int(flag_feedback), total,
                   int(flag_cooling), int(num_files), float(box), float(omega0),
@@ -210,23 +212,56 @@ class _Records:
         self.fh.close()
 
     def marker(self, at: int) -> int:
+        """The 4-byte length marker at ``at``, unsigned: a block of 2 to 4
+        GiB has the high bit set."""
         self.fh.seek(at)
         raw = self.fh.read(4)
         if len(raw) != 4:
             raise ValueError(f"{self.path}: truncated at byte {at}")
-        return struct.unpack(self.e + "i", raw)[0]
+        return struct.unpack(self.e + "I", raw)[0]
+
+    def _frames(self, at: int) -> bool:
+        """Whether a record starts at ``at``: the end of the file, or a
+        marker whose closing marker agrees."""
+        if at == self.size:
+            return True
+        try:
+            length = self.marker(at)
+        except ValueError:
+            return False
+        return any(True for _ in self._lengths(at, length))
+
+    def _lengths(self, at: int, marker: int):
+        """The lengths a record at ``at`` with opening ``marker`` may have:
+        the marker, and beyond 4 GiB the marker plus whole multiples of 2^32
+        (a 32-bit marker wraps), each with a closing marker equal to it."""
+        length = marker
+        while at + 8 + length <= self.size:
+            if self.marker(at + 4 + length) == marker:
+                yield length
+            length += 1 << 32
 
     def record(self, at: int) -> tuple[int, int, int]:
-        """``(data offset, length, next record)`` of the record at ``at``."""
-        length = self.marker(at)
-        end = at + 4 + length
-        if length < 0 or end + 4 > self.size:
-            raise ValueError(f"{self.path}: record at byte {at} claims {length} bytes, "
-                             f"past the end of the file")
-        if self.marker(end) != length:
+        """``(data offset, length, next record)`` of the record at ``at``.
+
+        A block of 4 GiB or more has a wrapped marker: its true length is the
+        one whose closing marker agrees AND after which a record (or the end
+        of the file) follows; more than one such length is refused."""
+        marker = self.marker(at)
+        found = list(self._lengths(at, marker))
+        if len(found) > 1:
+            found = [n for n in found if self._frames(at + 8 + n)]
+        if not found:
+            if at + 8 + marker > self.size:
+                raise ValueError(f"{self.path}: record at byte {at} claims {marker} bytes, "
+                                 f"past the end of the file")
             raise ValueError(f"{self.path}: record at byte {at}: its closing length "
-                             f"marker does not match the opening one ({length})")
-        return at + 4, length, end + 4
+                             f"marker does not match the opening one ({marker})")
+        if len(found) > 1:
+            raise ValueError(f"{self.path}: record at byte {at}: its length is ambiguous "
+                             f"beyond 4 GiB ({', '.join(str(n) for n in found)} bytes)")
+        length = found[0]
+        return at + 4, length, at + 8 + length
 
 
 #: Gadget-2's block order in format 1, with the header flag a block needs.
@@ -267,10 +302,12 @@ def scan_file(path: str | Path) -> FileLayout:
                     raise ValueError(f"{path}: expected an 8-byte block name record at "
                                      f"byte {off - 4}, found {length} bytes")
                 rec.fh.seek(off)
-                name_raw, size = struct.unpack(e + "4si", rec.fh.read(8))
-                name = name_raw.decode("ascii", errors="replace").strip()
+                name_raw, size = struct.unpack(e + "4sI", rec.fh.read(8))
+                # Padded with spaces, or NULs by some writers.
+                name = name_raw.replace(b"\0", b" ").decode("ascii", errors="replace").strip()
                 off, length, at = rec.record(at)
-                if size != length + 8:
+                # The announced size is 32 bits too: it wraps as the markers do.
+                if size != (length + 8) % (1 << 32):
                     raise ValueError(f"{path}: block {name!r} announces {size - 8} bytes, "
                                      f"holds {length}")
                 if name == "HEAD":
@@ -319,15 +356,21 @@ def _format1_size_fits(name: str, length: int, n, mass, fsize: int) -> bool:
     per = length / count
     if name == "ID":
         return per in (4, 8)
-    return per == fsize * BLOCKS.get(name, (None, 1))[1]
+    dims = BLOCKS.get(name, (None, 1))[1]
+    if dims is None:                     # several values: any whole number of floats
+        return per > 0 and per == int(per) and int(per) % fsize == 0
+    return per == fsize * dims
 
 
 # ── What each block is ───────────────────────────────────────────────────────
 
-#: Known blocks: (their types, values per particle, column names). Types are
-#: "all", "mass" (the types the mass table leaves to the MASS block) or a
-#: tuple. A block not here is inferred from its size and named after itself.
-BLOCKS: dict[str, tuple[object, int, tuple[str, ...]]] = {
+#: Known blocks of Gadget-2 and Gadget-3 (and the SubFind group files): their
+#: types, values per particle (None: as many as the size says, e.g. one per
+#: tracked metal) and column names. Types are "all", "mass" (the types the
+#: mass table leaves to the MASS block) or a tuple. A known block is read with
+#: its own types; one whose size does not fit them is inferred like an
+#: unknown block (and flagged so).
+BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "POS": ("all", 3, ("x", "y", "z")),
     "VEL": ("all", 3, ("vx", "vy", "vz")),
     "ID": ("all", 1, ("id",)),
@@ -339,7 +382,8 @@ BLOCKS: dict[str, tuple[object, int, tuple[str, ...]]] = {
     "HSML": ((0,), 1, ("hsml",)),
     "SFR": ((0,), 1, ("sfr",)),
     "AGE": ((4,), 1, ("age",)),
-    "Z": ((0, 4), 1, ("metallicity",)),
+    "Z": ((0, 4), None, ("metallicity",)),
+    "Zs": ((0, 4), None, ("metals",)),
     "POT": ("all", 1, ("potential",)),
     "ACCE": ("all", 3, ("ax", "ay", "az")),
     "ENDT": ((0,), 1, ("dudt",)),
@@ -347,8 +391,11 @@ BLOCKS: dict[str, tuple[object, int, tuple[str, ...]]] = {
     "BHMA": ((5,), 1, ("bh_mass",)),
     "BHMD": ((5,), 1, ("bh_mdot",)),
     "BHPC": ((5,), 1, ("bh_progenitors",)),
+    "ACRB": ((5,), 1, ("bh_accretion_radius",)),
     "iM": ((4,), 1, ("initial_mass",)),
+    "HSMS": ((4,), 1, ("hsml_stars",)),
     "TEMP": ((0,), 1, ("temperature_block",)),
+    "CLDX": ((0,), 1, ("cold_fraction",)),
     # SubFind group catalogues (issue #392): groups are "type" 0, subhalos 1.
     "GPOS": ((0,), 3, ("x", "y", "z")),
     "MVIR": ((0,), 1, ("mvir",)),
@@ -357,11 +404,9 @@ BLOCKS: dict[str, tuple[object, int, tuple[str, ...]]] = {
 }
 #: Blocks of integers (read as unsigned of 4 or 8 bytes).
 INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB"}
-
-#: The sets of types an unknown block is tried for, in order (after a known
-#: block's own): "all" types present, then the common subsets.
-TYPE_SETS: tuple[object, ...] = ("all", (0,), (4,), (5,), (0, 4), "mass", (1,), (2,), (3,),
-                                 (0, 4, 5), (4, 5))
+#: An inferred block holds at most this many values per particle: beyond it a
+#: set of a few particles (two black holes) would "explain" almost any size.
+MAX_DIMS = 32
 
 
 def _known_types(name: str, n, mass) -> tuple[int, ...]:
@@ -395,55 +440,73 @@ class BlockSpec:
         return (base,) if self.dims == 1 else tuple(f"{base}_{k}" for k in range(self.dims))
 
 
+def _element(name: str, types: tuple[int, ...], lengths, fsize: int) -> tuple[str, int] | None:
+    """``(dtype, values per particle)`` when block ``name`` holds ``types``
+    in every file: in each file of the snapshot, its length is the same
+    element size times the particles of ``types`` there, and a file without
+    the block has none of them (Gadget writes no empty block). None else."""
+    per = None
+    for np_, length in lengths:
+        count = sum(np_[t] for t in types)
+        if count == 0:
+            if length:
+                return None
+            continue
+        if length == 0 or length % count:
+            return None
+        if per is None:
+            per = length // count
+        elif per != length // count:
+            return None
+    if not per:
+        return None
+    if name in INT_BLOCKS:
+        return (f"u{per}", 1) if per in (4, 8) else None
+    size = fsize if per % fsize == 0 else (4 if per % 4 == 0 else 0)
+    if not size or not 1 <= per // size <= MAX_DIMS:
+        return None
+    return f"f{size}", per // size
+
+
+def _type_label(types: tuple[int, ...]) -> str:
+    return "+".join(TYPE_NAMES[t] for t in types)
+
+
 def infer_block(name: str, lengths: list[tuple[tuple[int, ...], int]], mass,
-                fsize: int) -> BlockSpec | None:
-    """The spec of block ``name`` from ``(npart of the file, length)`` of
-    every file that has it; None when no set of types explains its size in
-    every file."""
-    present = [any(np_[t] for np_, _ in lengths) for t in range(NTYPES)]
-    candidates = []
-    if name in BLOCKS:
-        candidates.append((BLOCKS[name][0], False))
-    candidates += [(s, True) for s in TYPE_SETS]
-    seen = set()
-    for spec, inferred in candidates:
-        types = tuple(t for t in _resolve_types(spec, lengths[0][0] if lengths else (0,) * 6,
-                                                mass) if present[t])
-        if not types or types in seen:
-            continue
-        seen.add(types)
-        per = None
-        ok = True
-        for np_, length in lengths:
-            count = sum(np_[t] for t in types)
-            if count == 0:
-                if length:
-                    ok = False
-                    break
-                continue
-            if length % count:
-                ok = False
-                break
-            if per is None:
-                per = length // count
-            elif per != length // count:
-                ok = False
-                break
-        if not ok or not per:
-            continue
-        if name in INT_BLOCKS:
-            if per not in (4, 8):
-                continue
-            return BlockSpec(name, types, f"u{per}", 1, inferred)
-        size = fsize if per % fsize == 0 else (4 if per % 4 == 0 else 0)
-        if not size:
-            continue
-        dims = per // size
-        if name in BLOCKS and not inferred and BLOCKS[name][1] != dims and \
-                BLOCKS[name][1] != 1:
-            continue
-        return BlockSpec(name, types, f"f{size}", dims, inferred)
-    return None
+                fsize: int) -> tuple[BlockSpec | None, str]:
+    """``(spec, why not)`` of block ``name`` from ``(npart of the file, its
+    length there)`` for EVERY file of the snapshot (0 where the file has no
+    such block): all of them together decide.
+
+    A known block is read with its own types and width. Any other (or a
+    known one whose size does not fit) is tried for every set of the types
+    present: a set must explain the size in every file with a whole number of
+    values per particle, at most MAX_DIMS. Exactly one such reading is taken
+    (flagged ``inferred``); none, or several (equal gas and dark-matter counts
+    make a gas block of two values and a gas+dark-matter block of one look
+    the same), and the block is left out with the reason: a wrong column is
+    worse than a missing one."""
+    present = tuple(t for t in range(NTYPES) if any(np_[t] for np_, _ in lengths))
+    known = BLOCKS.get(name)
+    if known is not None:
+        types = tuple(t for t in _resolve_types(known[0], None, mass) if t in present)
+        element = _element(name, types, lengths, fsize) if types else None
+        if element is not None and known[1] in (None, element[1]):
+            return BlockSpec(name, types, element[0], element[1], False), ""
+    readings = []
+    for mask in range(1, 1 << len(present)):
+        types = tuple(t for i, t in enumerate(present) if mask >> i & 1)
+        element = _element(name, types, lengths, fsize)
+        if element is not None:
+            readings.append((types, element))
+    if len(readings) == 1:
+        types, (dtype, dims) = readings[0]
+        return BlockSpec(name, types, dtype, dims, True), ""
+    if not readings:
+        return None, "its size fits no set of particle types"
+    options = ", ".join(f"{_type_label(t)} ({d} value{'s' if d > 1 else ''})"
+                        for t, (_, d) in readings[:4])
+    return None, f"ambiguous: {options}{' ...' if len(readings) > 4 else ''}"
 
 
 # ── HDF5 ─────────────────────────────────────────────────────────────────────
@@ -524,8 +587,10 @@ class UnitSystem:
     length_cm: float = KPC_CM
     mass_g: float = 1.0e10 * MSUN_G
     velocity_cm_s: float = 1.0e5
-    #: Lengths and densities comoving, velocities with the internal √a.
-    comoving: bool = True
+    #: Lengths and densities comoving, velocities with the internal √a. None
+    #: until stated (a parameter file, an HDF5 file, the environment) or
+    #: judged from the header (:func:`looks_comoving`).
+    comoving: bool | None = None
     #: Lengths and masses in units of 1/h.
     hubble_units: bool = True
     source: str = "Gadget defaults"
@@ -548,26 +613,48 @@ def _unit_name(value: float, names: dict, base: str) -> str:
     return f"{value:.6g} {base}"
 
 
-def units_for(first_file: str | Path, hdf5_units: dict | None = None) -> UnitSystem:
-    """The snapshot's units: the defaults, then the run's parameter file
-    (beside the snapshot or one folder up), an HDF5 file's own units, then
-    the environment (:data:`UNITS_ENV`)."""
-    units = UnitSystem()
+def parameter_file(first_file: str | Path) -> Path | None:
+    """The run's parameter file Gadget writes (``parameters-usedvalues`` ...)
+    beside the snapshot or one folder up, or None."""
     folder = Path(first_file).parent
     for where in (folder, folder.parent):
         for name in _PARAM_FILES:
             p = where / name
             if p.is_file():
-                units = _from_params(p, units)
-                break
-        else:
-            continue
-        break
+                return p
+    return None
+
+
+def looks_comoving(header: Header) -> bool:
+    """Whether a header is a cosmological run's: a matter density, a
+    positive scale factor, and a redshift that is 1/a - 1. An isolated
+    galaxy's header has a time instead (0, 2.5 ...) and no such redshift."""
+    a, z = header.time, header.redshift
+    if header.omega0 <= 0 or not 0 < a <= 1.0 + 1e-6:
+        return False
+    return abs(z - (1.0 / a - 1.0)) <= 1e-3 * max(1.0, abs(z))
+
+
+def units_for(first_file: str | Path, hdf5_units: dict | None = None,
+              header: Header | None = None) -> UnitSystem:
+    """The snapshot's units: the defaults, then the run's parameter file
+    (:func:`parameter_file`), an HDF5 file's own units, then the environment
+    (:data:`UNITS_ENV`). Whether the run is comoving, when none of them
+    says, is judged from the header (:func:`looks_comoving`)."""
+    units = UnitSystem()
+    params = parameter_file(first_file)
+    if params is not None:
+        units = _from_params(params, units)
     if hdf5_units:
         units = replace(units, source="the HDF5 file's units", **hdf5_units)
     env = os.environ.get(UNITS_ENV, "").strip()
     if env:
         units = _from_env(env, units)
+    if units.comoving is None:
+        comoving = header is not None and looks_comoving(header)
+        units = replace(units, comoving=comoving,
+                        source=units.source + ("; comoving (cosmological header)" if comoving
+                                               else "; not comoving (no cosmological header)"))
     return units
 
 
@@ -639,8 +726,9 @@ class Snapshot:
     blocks: dict                    # name -> BlockSpec
     pieces: dict                    # (name, type) -> tuple[Piece, ...]
     units: UnitSystem
-    skipped: tuple[str, ...] = ()   # blocks no set of types explains
+    skipped: tuple[str, ...] = ()   # blocks left out: no single reading
     fmt: str = ""
+    skip_reasons: tuple = ()        # (name, why) of each block left out
 
     @property
     def path(self) -> str:
@@ -648,7 +736,16 @@ class Snapshot:
 
     @property
     def scale_factor(self) -> float:
-        return self.header.time if self.units.comoving else 1.0
+        """a: the header's time for a comoving run (1 when it is not a
+        positive number), 1 for any other run."""
+        t = self.header.time
+        return t if self.units.comoving and t > 0 else 1.0
+
+    @property
+    def hubble(self) -> float:
+        """h for the /h units: the header's, 1 when the run has none."""
+        h = self.header.hubble
+        return h if self.units.hubble_units and h > 0 else 1.0
 
     def counts(self) -> tuple[int, ...]:
         return self.header.npart_total
@@ -667,7 +764,8 @@ class Snapshot:
                 "blocks": {name: {"types": list(b.types), "dims": b.dims, "dtype": b.dtype,
                                   "inferred": b.inferred}
                            for name, b in self.blocks.items()},
-                "skipped_blocks": list(self.skipped)}
+                "skipped_blocks": list(self.skipped),
+                "skipped_reasons": dict(self.skip_reasons)}
 
 
 def snapshot_files(path: str | Path) -> list[Path]:
@@ -729,10 +827,13 @@ def first_in_dir(folder: Path) -> Path | None:
 
 def open_snapshot(path: str | Path) -> Snapshot:
     """The snapshot ``path`` belongs to, scanned (headers and block markers
-    only: no data is read). Cached while its files are unchanged."""
+    only: no data is read). Cached while its files, its parameter file and
+    the units in the environment are unchanged."""
     files = snapshot_files(path)
     key = tuple((str(f.resolve()), *_stat(f)) for f in files)
-    return _cached_snapshot(key)
+    params = parameter_file(files[0])
+    units_key = (str(params), *_stat(params)) if params is not None else ()
+    return _cached_snapshot(key, units_key, os.environ.get(UNITS_ENV, ""))
 
 
 def _stat(f: Path) -> tuple[int, int]:
@@ -741,7 +842,7 @@ def _stat(f: Path) -> tuple[int, int]:
 
 
 @lru_cache(maxsize=16)
-def _cached_snapshot(key) -> Snapshot:
+def _cached_snapshot(key, _units_key=(), _units_env="") -> Snapshot:
     layouts = tuple(scan_file(p) for p, _s, _m in key)
     return _assemble(layouts)
 
@@ -773,18 +874,15 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
                 names.append(b.name)
     specs, pieces, skipped = {}, {}, []
     for name in names:
+        # Every file decides, those without the block too (they must have
+        # none of its particles).
         lengths = []
         for f in layouts:
             blk = [b for b in f.blocks if b.name == name]
             lengths.append((f.header.npart, sum(b.nbytes for b in blk)))
-        spec = infer_block(name, [lv for lv in lengths if lv[1]] or lengths, first.mass, fsize)
-        # Files without the block must have none of its particles.
-        if spec is not None and any(
-                length == 0 and sum(np_[t] for t in spec.types)
-                for np_, length in lengths):
-            spec = None
+        spec, why = infer_block(name, lengths, first.mass, fsize)
         if spec is None:
-            skipped.append(name)
+            skipped.append((name, why))
             continue
         specs[name] = spec
         size = np.dtype(spec.dtype).itemsize * spec.dims
@@ -800,8 +898,8 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
                                    rows, spec.dims))
             pieces[(name, t)] = tuple(parts)
     fmt = f"Gadget format {layouts[0].fmt}, {'big' if layouts[0].endian == '>' else 'little'}-endian"
-    return Snapshot(layouts, header, specs, pieces, units_for(layouts[0].path),
-                    tuple(skipped), fmt)
+    return Snapshot(layouts, header, specs, pieces, units_for(layouts[0].path, None, header),
+                    tuple(n for n, _ in skipped), fmt, tuple(skipped))
 
 
 def _assemble_hdf5(layouts, header: Header) -> Snapshot:
@@ -817,7 +915,7 @@ def _assemble_hdf5(layouts, header: Header) -> Snapshot:
                 Piece(f.path, b.offset, b.dtype, b.shape[0], dims, b.dataset))
     pieces = {k: tuple(v) for k, v in pieces.items()}
     return Snapshot(layouts, header, specs, pieces,
-                    units_for(layouts[0].path, _hdf5_units(layouts[0].path)), (),
+                    units_for(layouts[0].path, _hdf5_units(layouts[0].path), header), (),
                     "Gadget HDF5")
 
 
@@ -858,6 +956,10 @@ class Component:
         self.snapshot = snapshot
         self.ptype = ptype
         self.num_rows = int(snapshot.header.npart_total[ptype])
+        # Each block's pieces as arrays, kept while the component lives: a
+        # memory map costs nothing, and a compressed HDF5 dataset is read
+        # once for x, y and z, not three times.
+        self._arrays: dict[str, list[np.ndarray]] = {}
         self._sources: dict[str, tuple[str, int]] = {}
         for name, spec in snapshot.blocks.items():
             if ptype not in spec.types or not snapshot.pieces.get((name, ptype)):
@@ -887,16 +989,22 @@ class Component:
     def column(self, name: str) -> np.ndarray:
         if name in self._sources:
             block, k = self._sources[name]
-            parts = [p.array()[:, k] for p in self.snapshot.pieces[(block, self.ptype)]]
+            arrays = self._arrays.get(block)
+            if arrays is None:
+                arrays = self._arrays[block] = [
+                    p.array() for p in self.snapshot.pieces[(block, self.ptype)]]
+            parts = [a[:, k] for a in arrays]
             return parts[0] if len(parts) == 1 else np.concatenate(parts)
         if name == "mass" and self._mass_from_table:
             spec = self.snapshot.blocks.get("POS")
             dtype = spec.dtype if spec is not None else "f4"
             return np.full(self.num_rows, self.snapshot.header.mass[self.ptype], dtype=dtype)
+        # Derived columns: computed in float64 when asked for, kept in
+        # float32 (seven significant digits, ample for a temperature).
         if name == "temperature" and name in self.derived:
-            return self.temperature()
+            return self.temperature().astype(np.float32)
         if name == "entropy" and name in self.derived:
-            return self.entropy()
+            return self.entropy().astype(np.float32)
         raise KeyError(name)
 
     def columns(self) -> "LazyColumns":
@@ -929,11 +1037,9 @@ class Component:
 
     def physical_density(self) -> np.ndarray:
         """Gas density in g/cm^3 (physical, h removed)."""
-        units, h = self.snapshot.units, self.snapshot.header.hubble
-        a = self.snapshot.scale_factor
-        factor = units.mass_g / units.length_cm ** 3
-        if units.hubble_units:
-            factor *= h ** 2
+        units, h = self.snapshot.units, self.snapshot.hubble
+        a = self.snapshot.scale_factor          # 1 for a run that is not comoving
+        factor = units.mass_g / units.length_cm ** 3 * h ** 2
         return np.asarray(self.column("rho"), dtype=np.float64) * factor / a ** 3
 
     def electron_density(self) -> np.ndarray:
@@ -968,9 +1074,8 @@ class Component:
         """Per column, the factor that makes it physical and the unit then:
         lengths in kpc (x a / h), masses in Msun (/ h), velocities in km/s
         peculiar (x sqrt(a)), density in g/cm^3."""
-        units, h = self.snapshot.units, self.snapshot.header.hubble
-        a = self.snapshot.scale_factor
-        hh = h if units.hubble_units else 1.0
+        units, hh = self.snapshot.units, self.snapshot.hubble
+        a = self.snapshot.scale_factor          # never 0: 1 when not comoving
         length = units.length_cm / KPC_CM * a / hh
         mass = units.mass_g / MSUN_G / hh
         vel = units.velocity_cm_s / 1e5 * (np.sqrt(a) if units.comoving else 1.0)

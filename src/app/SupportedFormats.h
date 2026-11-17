@@ -127,23 +127,12 @@ inline QStringList fileTypeSuffixes(FileType type)
     return all;
 }
 
-/// The name beginnings a group matches; for AllSupported, those of every
-/// group, without repeats.
+/// The name beginnings a group matches. Only the group's own: a name
+/// beginning says too little about a file (`snap_notes.txt`) to list it among
+/// "All supported files", which go by suffix.
 inline QStringList fileTypePrefixes(FileType type)
 {
-    if (type != FileType::AllSupported)
-        return fileTypeInfo(type).prefixes;
-    static const QStringList all = [] {
-        QStringList union_;
-        for (const FileTypeInfo &info : fileTypes()) {
-            for (const QString &prefix : info.prefixes) {
-                if (!union_.contains(prefix))
-                    union_.append(prefix);
-            }
-        }
-        return union_;
-    }();
-    return all;
+    return fileTypeInfo(type).prefixes;
 }
 
 /// A name the platforms hide: `.DS_Store`, `.git`, `._image.fits`.

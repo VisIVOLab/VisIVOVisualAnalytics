@@ -258,7 +258,8 @@ def test_without_ne_the_gas_is_fully_ionised_and_says_so(tmp_path):
 def test_units_from_the_run_and_the_environment(tmp_path, monkeypatch):
     files, _ = _snapshot(tmp_path)
     snap = gs.open_snapshot(files[0])
-    assert snap.units.describe()["length"] == "kpc" and snap.units.source == "Gadget defaults"
+    assert snap.units.describe()["length"] == "kpc" and snap.units.comoving
+    assert snap.units.source == "Gadget defaults; comoving (cosmological header)"
     phys = snap.component(1).physical()
     # Lengths to physical kpc (x a / h), velocities peculiar (x sqrt(a)).
     assert phys["x"]["factor"] == pytest.approx(0.5 / 0.7) and phys["x"]["unit"] == "kpc"
@@ -554,6 +555,176 @@ async def test_an_unreadable_snapshot_says_why(client, auth_headers, tmp_path):
                            json={"path": str(tmp_path / "nope" / f"snap_0.0{gs.REF_SEP}1")},
                            headers=auth_headers)).json()
     assert not v["valid"]
+
+
+def _counts(gas, dm, stars=0, bh=0, seed=7):
+    """Particles of each type with POS VEL ID only, so blocks are added by hand."""
+    rng = np.random.default_rng(seed)
+    out = {}
+    for t, n in ((0, gas), (1, dm), (4, stars), (5, bh)):
+        if n:
+            out[t] = {"POS": rng.random((n, 3)) * 10, "VEL": rng.random((n, 3)),
+                      "ID": np.arange(n) + 1000 * t}
+    return out
+
+
+def test_a_known_multi_value_block_reads_with_its_own_types(tmp_path):
+    # Gadget-3's Zs: gas and stars, 11 metals each; 2 black holes, which
+    # divide almost any size, must not be taken for its owners.
+    parts = _counts(600, 900, 150, 2)
+    rng = np.random.default_rng(1)
+    parts[0]["Zs"] = rng.random((600, 11))
+    parts[4]["Zs"] = rng.random((150, 11))
+    files, _ = _snapshot(tmp_path, parts=parts, num_files=1, folder="zs", name="snap_000")
+    snap = gs.open_snapshot(files[0])
+    spec = snap.blocks["Zs"]
+    assert spec.types == (0, 4) and spec.dims == 11 and not spec.inferred
+    assert np.array_equal(snap.component(4).column("metals_10"),
+                          parts[4]["Zs"][:, 10].astype("f4"))
+
+
+def test_an_unknown_block_is_left_out_when_its_size_is_ambiguous(tmp_path):
+    # Equal gas and dark matter in one file: a gas block of 2 values reads as
+    # well as a gas+dark-matter block of 1. Left out, with the reason.
+    parts = _counts(500, 500, 0, 2)
+    parts[0]["QQ"] = np.random.default_rng(2).random((500, 2))
+    files, _ = _snapshot(tmp_path, parts=parts, num_files=1, folder="amb", name="snap_000")
+    snap = gs.open_snapshot(files[0])
+    assert "QQ" not in snap.blocks and "QQ" in snap.skipped
+    assert "ambiguous" in dict(snap.skip_reasons)["QQ"]
+    assert "QQ" in snap.describe()["skipped_reasons"]
+
+
+def test_unknown_blocks_are_told_apart_by_the_files(tmp_path):
+    # The same kinds of block in three files with different mixtures of
+    # types: only one reading fits them all.
+    parts = _counts(600, 600, 150, 2)
+    rng = np.random.default_rng(3)
+    parts[0]["QQ"] = rng.random((600, 2))                 # gas, 2 values
+    parts[0]["GS3"] = rng.random((600, 3))                # gas+stars, 3 values
+    parts[4]["GS3"] = rng.random((150, 3))
+    parts[5]["BHX"] = rng.random(2)                       # black holes
+    split = [[300, 100, 0, 0, 150, 2], [200, 300, 0, 0, 0, 0], [100, 200, 0, 0, 0, 0]]
+    files = G.write_gadget(tmp_path / "multi" / "snap_000", parts, num_files=3, split=split,
+                           mass_table=MASS_TABLE)
+    snap = gs.open_snapshot(files[0])
+    assert (snap.blocks["QQ"].types, snap.blocks["QQ"].dims) == ((0,), 2)
+    assert (snap.blocks["GS3"].types, snap.blocks["GS3"].dims) == ((0, 4), 3)
+    assert snap.blocks["BHX"].types == (5,) and snap.blocks["BHX"].inferred
+    assert np.array_equal(snap.component(0).column("gs3_2"), parts[0]["GS3"][:, 2].astype("f4"))
+
+
+@pytest.mark.parametrize("time", [0.0, 2.0])
+def test_a_run_that_is_not_cosmological_is_not_comoving(tmp_path, time):
+    # An isolated galaxy: the header's time is a time (0 for the initial
+    # conditions), no matter density, no redshift.
+    files, parts = _snapshot(tmp_path, num_files=1, folder=f"iso{time}", name="snap_000",
+                             time=time, redshift=0.0, omega0=0.0, omega_l=0.0)
+    snap = gs.open_snapshot(files[0])
+    assert snap.units.comoving is False and snap.scale_factor == 1.0
+    gas = snap.component(0)
+    phys = gas.physical()
+    assert phys["x"]["factor"] == pytest.approx(1 / 0.7) and phys["vx"]["factor"] == 1.0
+    assert phys["rho"]["factor"] == pytest.approx(1e10 * gs.MSUN_G / gs.KPC_CM ** 3 * 0.49)
+    assert gas.units()["x"] == "kpc/h"
+    assert np.all(np.isfinite(gas.column("entropy")))
+    from app.point_table import particle_frame
+    assert len(particle_frame(f"{files[0]}{gs.REF_SEP}0")) == 2000
+
+
+def test_a_cosmological_header_without_parameters_is_comoving(tmp_path):
+    files, _ = _snapshot(tmp_path, num_files=1, folder="cosmo", name="snap_000", time=0.25)
+    snap = gs.open_snapshot(files[0])
+    assert snap.units.comoving and snap.scale_factor == 0.25
+    # The parameter file says otherwise: it wins.
+    (tmp_path / "cosmo" / "parameters-usedvalues").write_text("ComovingIntegrationOn 0\n")
+    assert gs.open_snapshot(files[0]).units.comoving is False
+
+
+def test_the_parameter_file_is_part_of_the_cache_keys(tmp_path):
+    import os
+
+    from app.product_cache import file_identity
+    files, _ = _snapshot(tmp_path, num_files=1, folder="p", name="snap_000")
+    ref = f"{files[0]}{gs.REF_SEP}0"
+    params = tmp_path / "p" / "parameters-usedvalues"
+    params.write_text("UnitLength_in_cm 3.085678e21\n")
+    before = file_identity(ref)
+    assert gs.open_snapshot(files[0]).units.describe()["length"] == "kpc"
+    params.write_text("UnitLength_in_cm 3.085678e24\n")
+    st = params.stat()
+    os.utime(params, ns=(st.st_atime_ns, st.st_mtime_ns + 10 ** 9))
+    # No cache_clear: the snapshot is scanned again for its new units.
+    assert gs.open_snapshot(files[0]).units.describe()["length"] == "Mpc"
+    assert file_identity(ref) != before
+
+
+def test_a_compressed_hdf5_dataset_is_read_once_for_its_three_columns(tmp_path, monkeypatch):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "snap_007.hdf5"
+    with h5py.File(path, "w") as h:
+        hd = h.create_group("Header")
+        hd.attrs["NumPart_ThisFile"] = np.array([0, 100, 0, 0, 0, 0], dtype=np.int32)
+        hd.attrs["NumPart_Total"] = np.array([0, 100, 0, 0, 0, 0], dtype=np.uint32)
+        hd.attrs["MassTable"] = np.array(MASS_TABLE)
+        hd.attrs["NumFilesPerSnapshot"] = 1
+        g = h.create_group("PartType1")
+        g.create_dataset("Coordinates", data=np.random.default_rng(0).random((100, 3)),
+                         compression="gzip")
+    reads = []
+    real = gs.Piece.array
+    monkeypatch.setattr(gs.Piece, "array", lambda self: reads.append(self) or real(self))
+    dm = gs.open_snapshot(path).component(1)
+    for axis in "xyz":
+        dm.column(axis)
+    assert len(reads) == 1
+
+
+def test_records_past_2_and_4_gib_are_read_by_their_true_length(tmp_path):
+    # Sparse files: a POS block of 3 GiB (its marker has the high bit set) and
+    # one past 4 GiB (its marker wraps). Only the markers are read.
+    for n in ((3 << 30) // 12, (1 << 32) // 12 + 1000):
+        nbytes = 12 * n
+        e = "<"
+        head = G._gadget_header([0, n, 0, 0, 0, 0], MASS_TABLE, 0.5, 1.0, [0, n, 0, 0, 0, 0],
+                                1, 1000.0, 0.3, 0.7, 0.7, e)
+        path = tmp_path / f"big_{n}"
+        marker = np.array([nbytes % (1 << 32)], dtype="<u4").tobytes()
+        label = b"POS " + np.array([(nbytes + 8) % (1 << 32)], dtype="<u4").tobytes()
+        with open(path, "wb") as fh:
+            fh.write(G._gadget_block("HEAD", head, e))
+            fh.write(G._gadget_record(label, e))
+            fh.write(marker)
+            fh.seek(nbytes, 1)
+            fh.write(marker)
+        layout = gs.scan_file(path)
+        assert [(b.name, b.nbytes) for b in layout.blocks] == [("POS", nbytes)]
+
+
+def test_initial_conditions_with_no_file_count_and_nul_padded_names(tmp_path):
+    parts = _counts(0, 50)
+    files, _ = _snapshot(tmp_path, parts=parts, num_files=1, folder="ic", name="ics")
+    raw = bytearray(files[0].read_bytes())
+    struct.pack_into("<i", raw, 8 + 8 + 4 + 124, 0)          # num_files = 0
+    raw[16 + 264 + 4 + 3] = 0                                # "POS " -> "POS\0"
+    files[0].write_bytes(bytes(raw))
+    snap = gs.open_snapshot(files[0])
+    assert snap.header.num_files == 1 and "POS" in snap.blocks
+
+
+def test_a_snapshot_file_outside_the_data_roots_is_refused(tmp_path, monkeypatch):
+    from app.dependencies import _within_data_roots
+    from app.point_table import particle_dataset_path
+    root = tmp_path / "root"
+    files, _ = _snapshot(root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    moved = outside / files[2].name
+    files[2].rename(moved)
+    files[2].symlink_to(moved)
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root))
+    with pytest.raises(PermissionError):
+        particle_dataset_path(str(files[0]), _within_data_roots)
 
 
 def test_a_type_without_mass_block_or_table_has_no_mass_column(tmp_path):

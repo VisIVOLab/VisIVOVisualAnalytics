@@ -184,15 +184,16 @@ void TestSupportedFormats::gadgetSnapshotsMatchByTheirNames()
     for (const auto name : { u"snap_010"_s, u"snap_010.3"_s, u"snap_010.0.hdf5"_s,
                              u"snapshot_004"_s, u"SNAP_010.0"_s }) {
         QVERIFY2(visivo::fileTypeMatches(name, FileType::Gadget), qPrintable(name));
-        QVERIFY2(visivo::fileTypeMatches(name, FileType::AllSupported), qPrintable(name));
     }
+    // "All supported files" go by suffix: a name beginning says too little.
+    QVERIFY(!visivo::fileTypeMatches(u"snap_010.3", FileType::AllSupported));
+    QVERIFY(visivo::fileTypeMatches(u"snap_010.0.hdf5", FileType::AllSupported));
     QVERIFY(!visivo::fileTypeMatches(u"m31.fits", FileType::Gadget));
     QVERIFY(!visivo::fileTypeMatches(u"mysnap_010", FileType::Gadget));
     QVERIFY(!visivo::fileTypeMatches(u"snapdir_010", FileType::Gadget));
     QVERIFY(visivo::openableFileTypes().contains(FileType::Gadget));
     QCOMPARE(visivo::fileTypeDisplayLabel(FileType::Gadget),
              u"Gadget snapshots (snap_* snapshot_*)"_s);
-    QCOMPARE(visivo::fileTypePrefixes(FileType::AllSupported),
-             (QStringList{ u"snap_"_s, u"snapshot_"_s }));
+    QVERIFY(visivo::fileTypePrefixes(FileType::AllSupported).isEmpty());
     QVERIFY(visivo::fileTypePrefixes(FileType::Fits).isEmpty());
 }

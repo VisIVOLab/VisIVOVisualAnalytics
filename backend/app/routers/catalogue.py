@@ -44,7 +44,7 @@ async def open_catalogue(
         base, suffix = split_component(raw)
         p = _normalize_path(base)
         try:
-            snapshot = (particle_dataset_path(str(p) + suffix)
+            snapshot = (particle_dataset_path(str(p) + suffix, _within_data_roots)
                         if fmt != "vbt" and p.exists() else None)
         except (OSError, ValueError) as exc:
             return CatalogueOpenResponse(valid=False, error=str(exc))

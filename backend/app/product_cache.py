@@ -37,15 +37,19 @@ def file_identity(path: str | os.PathLike) -> str:
                                 raw_field, vbt_head)
 
     if component_format(path) == "gadget":
-        # A snapshot's particle type (issue #31): every file of the snapshot.
-        from .gadget_snapshot import snapshot_files  # noqa: PLC0415
+        # A snapshot's particle type (issue #31): every file of the snapshot,
+        # and the run's parameter file and the environment's units, which
+        # change what its derived columns are.
+        from .gadget_snapshot import UNITS_ENV, parameter_file, snapshot_files  # noqa: PLC0415
         try:
             files = snapshot_files(split_component(path)[0])
-            stats = [os.stat(f) for f in files]
+            params = parameter_file(files[0])
+            stats = [os.stat(f) for f in [*files, *([params] if params else [])]]
         except (OSError, ValueError):
             return ""
-        return "|".join(f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
-                        for st in stats)
+        units = os.environ.get(UNITS_ENV, "")
+        return "|".join([f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
+                         for st in stats] + ([f"units={units}"] if units else []))
 
     base = field_data_file(path)
     sidecars = [vbt_head(base)]

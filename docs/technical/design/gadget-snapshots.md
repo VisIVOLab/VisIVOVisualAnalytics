@@ -62,20 +62,35 @@ as `BLK<n>`. A block for which a file has no particles is not written in that
 file, as Gadget does.
 
 **Which types a block holds.** A block stores its types one after the
-other, type 0 first. The set of types is inferred from the block sizes: in
-every file that has the block, its length must be one element size times the
-number of particles of that set in that file. The known block's own set is
-tried first (`BLOCKS`: POS/VEL/ID for all types, MASS for the types with
-mass 0 in the mass table, gas blocks for type 0, AGE for 4, Z for 0 and 4,
-BHMA/BHMD for 5, and the SubFind blocks GPOS/MVIR/RVIR for groups and SPOS
-for subhalos). Then come the common subsets (`TYPE_SETS`). Files with
-different mixes of types usually leave a single answer. Inferred blocks are
-flagged in the metadata (`blocks[name].inferred`). A block whose size fits no
-set is left out and listed in `skipped_blocks`, and the classifier's message
-names it. The element type comes from the positions (float or double) and
-from the block: IDs and the other integer blocks (`INT_BLOCKS`) are unsigned
-4- or 8-byte integers. A block with several values per particle becomes
-several columns.
+other, type 0 first. A known block (`BLOCKS`, the Gadget-2 and Gadget-3
+names: POS/VEL/ID/POT/ACCE/TSTP for all types, MASS for the types with mass 0
+in the mass table, the gas blocks for type 0, AGE/iM/HSMS for 4, Z and Zs for
+0 and 4 with as many values per particle as the size says, BHMA/BHMD/BHPC/ACRB
+for 5, and the SubFind blocks GPOS/MVIR/RVIR for groups and SPOS for
+subhalos) is read with its own types when its size fits them in every file.
+Any other block, or a known one whose size does not fit, is tried for every
+set of the types present. A set must explain the block's length in every file
+of the snapshot, files without the block included (Gadget writes no empty
+block, so such a file must have none of the set's particles), with one
+element size and at most `MAX_DIMS` (32) values per particle. If exactly one
+reading fits, it is taken and flagged (`blocks[name].inferred`). If none
+fits, or several do, the block is left out: `skipped_blocks` lists it and
+`skipped_reasons` says why (`ambiguous: gas (2 values), gas+dark matter (1
+value)`). The classifier's message names it too. Equal gas and dark-matter
+counts in one file, or two black holes whose count divides almost any size,
+make several readings fit; files with different mixtures of types usually
+leave one. A missing column is preferred to a wrong one. The element type
+comes from the positions (float or double) and from the block: IDs and the
+other integer blocks (`INT_BLOCKS`) are unsigned 4- or 8-byte integers. A
+block with several values per particle becomes several columns.
+
+**Large blocks.** Record markers are read as unsigned 32-bit integers, so a
+block of 2 to 4 GiB reads as written. Past 4 GiB the marker wraps. The true
+length is then the marker plus a whole number of 4 GiB whose closing marker
+agrees and after which a record, or the end of the file, follows. Only one
+such length may fit, else the file is refused. The size in a format-2 name
+record wraps the same way. Initial conditions with `num_files` 0 are read
+as one file, and NULs that pad a block name are stripped.
 
 **Several files.** `snap_NNN.0 … .{num_files-1}` beside one another are read
 as one snapshot. The per-type sum of each file's `npart` must equal the
@@ -84,7 +99,8 @@ each block and type, the snapshot keeps the list of pieces (file, offset,
 dtype, rows). A column is the concatenation of its pieces, in file order.
 
 **In place.** Each piece is an `np.memmap` at its offset, so nothing is read
-until it is used. For a single-file snapshot, a column is a view of the map,
+until it is used. A component keeps each block's arrays once built, so a
+compressed HDF5 `Coordinates` is read once for x, y and z. For a single-file snapshot, a column is a view of the map,
 with no copy, in the point table and in the catalogue's DataFrame. For a
 multi-file snapshot, a column is joined into memory the first time it is read
 (`LazyColumns`), so a renderer pays only for the three or four columns it
@@ -107,7 +123,7 @@ Columns stay in code units. `UnitSystem` states them, in this order of
 precedence:
 
 1. Gadget's defaults: lengths 1 kpc, masses 10¹⁰ M☉, velocities 1 km/s,
-   comoving, in units of 1/h;
+   in units of 1/h;
 2. the run's `parameters-usedvalues` (or `param.txt-usedvalues` …) beside the
    snapshot or one folder up: `UnitLength_in_cm`, `UnitMass_in_g`,
    `UnitVelocity_in_cm_per_s`, `ComovingIntegrationOn`;
@@ -115,8 +131,19 @@ precedence:
    same names;
 4. `VISIVO_GADGET_UNITS` ([Configuration](../configuration.md)).
 
-The metadata names the source that was used. The scale factor a is the
-header's `time` for a comoving run, else 1. For each column, the conversion to
+The metadata names the source that was used. Whether the run is comoving
+comes from `ComovingIntegrationOn` when one of these sources gives it. When
+none does, the header decides: a cosmological run has Omega0 > 0, a time
+0 < a ≤ 1 and a redshift equal to 1/a − 1. An isolated galaxy's header has a
+time (0 for its initial conditions, 2.5 Gyr/h later) and none of the rest, so
+it is not comoving, and its lengths, densities and velocities are not scaled
+by a. The scale factor a is the header's `time` for a comoving run (1 if it
+is not positive), else 1. h is the header's, or 1 if it has none. The
+snapshot cache and the product cache are keyed on the parameter file and on
+`VISIVO_GADGET_UNITS` too, so a change to either takes effect.
+
+The derived `temperature` and `entropy` columns are computed in float64 when
+first read and kept in float32. For each column, the conversion to
 physical units is a factor and a unit (`component.physical` in the open
 response):
 
@@ -142,6 +169,14 @@ With γ = 5/3, X = 0.76 and the specific energy u in erg/g:
 
 When `flag_entropy_instead_u` is set, the `U` block holds the entropic
 function A, and u = A ρ_phys^(γ−1) / (γ − 1) with ρ_phys = ρ/a³ in code units.
+
+## Files read beyond the one named
+
+The other files of a multi-file snapshot, the file a `snapdir` folder holds
+and the run's parameter file are read too. `/v1/catalogue/open` and
+`/v1/files/classify` check each of them against the backend's data roots,
+resolving symbolic links, as they check the named file. A snapshot with one
+file outside the roots is refused.
 
 ## Series
 

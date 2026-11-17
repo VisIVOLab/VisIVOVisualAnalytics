@@ -59,6 +59,15 @@ values are used instead (a run in Mpc/h, for example). An administrator can
 set them on the backend with `VISIVO_GADGET_UNITS`
 (see [Configuration](../../technical/configuration.md)).
 
+Without a parameter file, the header decides whether the run is
+cosmological. A run with a matter density and a redshift that matches its
+scale factor is comoving. Any other run, an isolated galaxy for example, is
+not: its lengths and velocities are not scaled by a.
+
+A block whose particle types cannot be told from its size (for example,
+equal numbers of gas and dark-matter particles in a single file) is left out
+rather than guessed. The snapshot's information lists it and says why.
+
 The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
 to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
