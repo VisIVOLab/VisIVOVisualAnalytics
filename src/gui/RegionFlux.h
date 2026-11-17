@@ -165,7 +165,7 @@ struct Noise
 /// Does a region of a map look clipped, as a moment-0 map computed with a
 /// threshold mask is (its masked voxels summed to exact zeros, or none left:
 /// NaN)? More than a fifth of its pixels exactly zero or blank. Its σ is then
-/// too small and a flux on it biased high (issue #401).
+/// too small and a flux on it biased: faint emission below the threshold is lost (issue #401).
 inline bool looksClipped(long valid, long exactZeros, long blanked)
 {
     const long total = valid + blanked;

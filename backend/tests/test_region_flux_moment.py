@@ -145,7 +145,7 @@ def test_an_unmeasurable_sigma_gives_no_error_and_says_so():
 
 def test_a_clipped_map_is_flagged():
     """A moment computed with a threshold mask: most of the field is 0 or
-    blank, its σ too small and the flux biased high; the result says so."""
+    blank, its σ too small and the flux biased; the result says so."""
     rng = np.random.default_rng(1)
     m0 = rng.normal(0.0, 1.0, (40, 40))
     m0[:, :30] = 0.0           # masked voxels summed to zero

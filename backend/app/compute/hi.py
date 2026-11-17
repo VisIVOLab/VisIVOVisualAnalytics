@@ -100,7 +100,8 @@ def region_flux(m0_kms: np.ndarray, beam_area_px: float, region: dict[str, Any],
     A σ that cannot be measured (zero, or fewer than two background pixels:
     a map clipped by a threshold mask) gives no error (``None``), and a noise
     area more than a fifth zeros or blanks gives a warning in ``warnings``:
-    the flux of such a map is biased high (issue #401).
+    the flux of such a map is biased: faint emission below the threshold is
+    lost and only positive noise survives (issue #401).
     """
     finite = np.isfinite(m0_kms)
     inside = _region_pixels(m0_kms.shape, region) & finite
@@ -138,7 +139,8 @@ def region_flux(m0_kms: np.ndarray, beam_area_px: float, region: dict[str, Any],
     if _looks_clipped(int(noise_values.size), int((noise_values == 0.0).sum()), n_blank):
         warnings.append(
             "more than a fifth of the noise pixels are 0 or blank: the moment-0 map looks "
-            "masked or thresholded, so the flux is biased high and the error too small; "
+            "masked or thresholded, so the flux is biased (faint emission below the threshold "
+            "is lost) and the error too small; "
             "compute it with mask_enabled off.")
     out["flux_jy_kms"] = (total - n * bg_mean) / float(beam_area_px)
     if sigma is None or not np.isfinite(sigma) or sigma <= 0.0:
@@ -318,7 +320,8 @@ def worker_hi_products(
         if mask_enabled:
             region_result["warnings"].insert(0, (
                 "the moment-0 map was computed with a threshold mask: the region flux is "
-                "biased high and its error too small; use mask_enabled false."))
+                "biased (faint emission below the threshold is lost) and its error too small; "
+                "use mask_enabled false."))
         if distance_mpc and distance_mpc > 0:
             per_jy_kms = _MHI_CONST * float(distance_mpc) ** 2 / (1.0 + mass_redshift)
             region_result["hi_mass_msun"] = per_jy_kms * region_result["flux_jy_kms"]

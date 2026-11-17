@@ -1360,12 +1360,13 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
     if (!notes.isEmpty())
         params.insert(u"Flux note"_s, notes.join(u"; "_s));
     // A moment computed with a threshold mask clips the faint emission and
-    // the noise: the flux is biased high and σ too small.
+    // the noise: the flux is biased (faint emission lost) and σ too small.
     const bool maskedMoment = isMoment && product.maskEnabled;
     if (maskedMoment || clipped)
         params.insert(u"Flux warning"_s,
-                      u"the map looks masked or thresholded (%1): the flux is biased high and the "
-                      u"error too small; compute the moment with the mask off"_s
+                      u"the map looks masked or thresholded (%1): the flux is biased (faint emission "
+                      u"below the threshold is lost) and the error too small; compute the moment "
+                      u"with the mask off"_s
                               .arg(maskedMoment
                                            ? u"computed with a threshold mask"_s
                                            : u"more than a fifth of the noise pixels are 0 or blank"_s));

@@ -209,7 +209,7 @@ or a one-pixel background), `error_from` (`background` or `map_noise`),
 `hi_mass_error_msun` (`null` without a distance). `warnings` says when the
 map was computed with `mask_enabled`, or when more than a fifth of the noise
 pixels are exactly 0 or blank (a masked or thresholded map): the flux is then
-biased high and the error too small.
+biased (faint emission below the threshold is lost) and the error too small.
 
 The mass is M_HI = 2.356×10⁵ D² S with `distance_mpc`. `redshift` without
 `distance_mpc` sets the distance to the Planck18 luminosity distance D_L, and

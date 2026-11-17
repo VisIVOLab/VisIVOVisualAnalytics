@@ -408,8 +408,8 @@ QList<QPair<QString, QString>> regionFluxRows(const RegionStatistics &stats, con
             if (clipped)
                 rows.append({ u"Flux warning"_s,
                               u"more than a fifth of the noise pixels are 0 or blank: the map "
-                              u"looks masked or thresholded, the flux is biased high and the error "
-                              u"too small"_s });
+                              u"looks masked or thresholded, the flux is biased (faint emission below the "
+                              u"threshold is lost) and the error too small"_s });
             if (unit.velocity) {
                 const visivo::flux::TypedDistance d = visivo::flux::storedHiDistance();
                 if (d.ok) {
