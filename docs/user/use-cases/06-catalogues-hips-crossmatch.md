@@ -87,7 +87,12 @@ lie on an image.
     The run is recorded in *Session Data* as *Cross-match with simbad*, with
     the catalogue, the radius and the number of sources.
 
-    <!-- Screenshot pending (see SHOTLIST.md): img/06-catalogues-hips-crossmatch-3.png -->
+    ```{figure} img/06-catalogues-hips-crossmatch-3.png
+    :alt: The Hi-GAL 250 micron cutout in the image viewer with SIMBAD sources overlaid as labelled markers.
+    :width: 100%
+
+    SIMBAD sources on a Hi-GAL cutout.
+    ```
 
 14. To overlay your own table, choose *Tools ▸ Catalogue ▸ Load Catalogue
     Overlay…* and pick a CSV with `RA` and `DEC` columns in degrees. *Show
