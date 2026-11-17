@@ -8,6 +8,10 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: SKAVA Discovery described as our prototype.** The Data Hub
+  card, the command palette and the *Data ▸ SKAVA Discovery* tooltip no longer
+  say that SKAVA searches across SKA Regional Centres: SKAVA is our discovery
+  prototype, not a service validated by SRCNet.
 - **Backend: cross-match on Galactic images (#379).** Cross-match with a
   catalogue (*Tools ▸ Catalogue ▸ Cross-match with Catalogue…*, and the VR
   cross-match layer) used an image's own coordinates as ICRS: on a Galactic
