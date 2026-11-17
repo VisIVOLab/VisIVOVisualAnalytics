@@ -22,6 +22,7 @@ private slots:
     void momentSummary();
     void maskedMomentSummary();
     void linewidthSummaryNamesTheMethodOnce();
+    void linewidthSummaryIsShort();
     void pvAndRmSummaries();
     void bareLabelWithoutRecipe();
 };

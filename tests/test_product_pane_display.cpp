@@ -118,6 +118,25 @@ void TestProductPaneDisplay::linewidthSummaryNamesTheMethodOnce()
              u"Line width · Equivalent width · channels 3–60 · mask off"_s);
 }
 
+void TestProductPaneDisplay::linewidthSummaryIsShort()
+{
+    // The labels and methods LinewidthDialog really registers: the unit and the
+    // repeated "FWHM, " go, the method keeps a word and its first note.
+    const QVariantMap fast{ { u"Method"_s, u"FWHM, moment-2 dispersion (fast)"_s },
+                            { u"Channels"_s, u"1–158"_s }, { u"Mask"_s, u"none"_s },
+                            { u"Unit"_s, u"m.s**-1"_s } };
+    QCOMPARE(visivo::productSummary(u"FWHM [m.s**-1]"_s, fast),
+             u"FWHM · moment-2 (fast) · channels 1–158 · mask off"_s);
+    QVariantMap fit = fast;
+    fit.insert(u"Method"_s, u"FWHM, Gaussian fit (slow, exact)"_s);
+    QCOMPARE(visivo::productSummary(u"FWHM [km/s]"_s, fit),
+             u"FWHM · Gaussian (slow) · channels 1–158 · mask off"_s);
+    QVariantMap ew = fast;
+    ew.insert(u"Method"_s, u"Equivalent width (fast, no fit)"_s);
+    QCOMPARE(visivo::productSummary(u"EW [m.s**-1]"_s, ew),
+             u"EW · Equivalent width · channels 1–158 · mask off"_s);
+}
+
 void TestProductPaneDisplay::pvAndRmSummaries()
 {
     QCOMPARE(visivo::productSummary(u"PV diagram"_s,

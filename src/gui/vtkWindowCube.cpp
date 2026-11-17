@@ -7373,9 +7373,13 @@ void vtkWindowCube::updateActiveProductSummary()
             p.label.isEmpty() ? viewTitle(PaneView{ ViewId::Product, productId }) : p.label;
     // A long recipe (an RM map over a region) must not push the readouts off the
     // bar: elided, with the whole of it in the tooltip.
-    constexpr int kSummaryMaxWidth = 420;
+    // The label is capped too, so the readouts to its left keep their place.
+    constexpr int kSummaryMaxWidth = 320;
+    constexpr int kSummaryPadding = 12;   // the stylesheet's padding-left, and a margin
+    this->momentProvenanceLabel->setMaximumWidth(kSummaryMaxWidth);
     this->momentProvenanceLabel->setText(this->momentProvenanceLabel->fontMetrics().elidedText(
-            visivo::productSummary(label, p.params), Qt::ElideRight, kSummaryMaxWidth));
+            visivo::productSummary(label, p.params), Qt::ElideRight,
+            kSummaryMaxWidth - kSummaryPadding));
     // Everything the recipe holds, for the hover; Inspector › Parameters has it too.
     QStringList lines;
     for (auto it = p.params.constBegin(); it != p.params.constEnd(); ++it)
@@ -12378,9 +12382,15 @@ void vtkWindowCube::mountView(int slot)
         delete it;
     }
     const PaneView v = m_slots[slot].view;
-    // The active pane may have just been given another product.
-    if (slot == m_activePane)
+    // The active pane may have just been given another view without the focus
+    // moving (activePaneChanged then never fires): its DISPLAY title and status
+    // summary follow it on every way out of here, early returns included.
+    const auto followActive = qScopeGuard([this, slot]() {
+        if (slot != m_activePane)
+            return;
         updateActiveProductSummary();
+        updateDisplaySectionForActivePane();
+    });
     // §3.2 B3: a Product pane renders into its OWN Pane2DView (display-only), configured
     // from the shared per-product cache — so two panes can show two different moments,
     // or the same moment, without a shared-pipeline collision.
@@ -12614,6 +12624,10 @@ void vtkWindowCube::refreshPaneChrome()
     // previous view had set: disabled with a stale reason, or enabled on a view
     // that cannot take them.
     applyMomentToolGate();
+    // Same reason for the DISPLAY title and the status summary: they name the
+    // view in the active pane, which may have changed under the same index.
+    updateDisplaySectionForActivePane();
+    updateActiveProductSummary();
 
     // Move the per-view controls into whichever slot currently shows that view.
     auto detach = [](QWidget *w) {

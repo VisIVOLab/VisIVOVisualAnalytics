@@ -43,16 +43,40 @@ inline QString productSummary(const QString &label, const QVariantMap &params)
 {
     using namespace Qt::StringLiterals;
     QStringList parts;
-    const QString name = label.trimmed();
+    QString name = label.trimmed();
+    // Units stay in the tooltip: "FWHM [m.s**-1]" reads "FWHM" here.
+    if (const qsizetype bracket = name.indexOf(u" ["_s); bracket > 0 && name.endsWith(u']'))
+        name.truncate(bracket);
     if (!name.isEmpty())
         parts << name;
     const auto text = [&params](const QString &key) {
         return params.value(key).toString().trimmed();
     };
-    // A line-width map's label already names the method ("FWHM …").
+    // The method in a word or two. A line-width method repeats the label
+    // ("FWHM, moment-2 dispersion (fast)" under "FWHM"): keep what follows it,
+    // its first word and the first word of the note in brackets, so
+    // "moment-2 (fast)". Any other method loses its bracketed note.
     if (const QString method = text(u"Method"_s);
-        !method.isEmpty() && !name.contains(method, Qt::CaseInsensitive))
-        parts << method;
+        !method.isEmpty() && !name.contains(method, Qt::CaseInsensitive)) {
+        const QString head = name + u", "_s;
+        const qsizetype open = method.indexOf(u'(');
+        if (!name.isEmpty() && method.startsWith(head, Qt::CaseInsensitive)) {
+            const QString rest = method.mid(head.size());
+            QString shortForm = rest.section(u' ', 0, 0);
+            const qsizetype restOpen = rest.indexOf(u'(');
+            if (restOpen >= 0) {
+                const QString note = rest.mid(restOpen + 1).section(u')', 0, 0);
+                const QString first = note.section(u',', 0, 0).trimmed();
+                if (!first.isEmpty() && !shortForm.startsWith(u'('))
+                    shortForm += u" ("_s + first + u')';
+            }
+            if (!shortForm.isEmpty())
+                parts << shortForm;
+        } else {
+            const QString bare = (open > 0 ? method.left(open) : method).trimmed();
+            parts << (bare.isEmpty() ? method : bare);
+        }
+    }
     if (QString channels = text(u"Channels"_s); !channels.isEmpty())
         parts << u"channels "_s + channels.replace(u".."_s, u"–"_s);
     if (params.contains(u"Mask"_s)) {
