@@ -17,7 +17,7 @@ page itself, and every update of it, still comes from the user's backend.
 | File | What it does |
 |---|---|
 | `build.sh` | The whole build: key, Bubblewrap, patches, Gradle, zipalign, apksigner. |
-| `app.json` | The app's identity: packages, names, `versionCode`, the loader it opens (`loaderOrigin` + `startPath`), icons. |
+| `app.json` | The app's identity: packages, names, `versionCode`, the SDK levels and headsets the Meta Horizon Store asks for, the loader it opens (`loaderOrigin` + `startPath`), icons. |
 | `make-twa.py` | Writes Bubblewrap's `twa-manifest.json` from `app.json`. |
 | `icon-512.png`, `icon-maskable-512.png` | The launcher icons, made from the VisIVO logo by `make-icons.py`. |
 | `make-icons.py` | Makes both icons from `icons/VisIVO_512.png` (below). |
@@ -26,6 +26,8 @@ page itself, and every update of it, still comes from the user's backend.
 | `android/PairCode.java` | What a QR code or a typed code means, which addresses the app opens (no Android API). |
 | `android/PairCodeTest.java` | `PairCode`'s checks on a plain JVM (run by `backend/tests/test_quest_app_wrapper.py`). |
 | `make-assetlinks.py` | Writes `web/vr-loader/.well-known/assetlinks.json`, the statement the loader's host publishes. |
+| `check-store.py` | Checks a built APK against the Meta Horizon Store's technical requirements (#386). |
+| `make-store-assets.py`, `store/logo-white.png` | The Store's images (hero, covers, logo, icon) and the screenshots' crop (#386). |
 | `package.json`, `package-lock.json` | Pin `@meta-quest/bubblewrap-cli` 1.24.1. |
 
 Nothing secret is in the repository. The development key is made on your
@@ -34,7 +36,7 @@ computer at the first build; the release key is a CI secret.
 ## Build
 
 Needs a JDK 17 (`JAVA_HOME`), an Android SDK (`ANDROID_HOME`; build-tools
-34.0.0 and platform 32 are installed with its `sdkmanager` when missing),
+34.0.0 and platform 34 are installed with its `sdkmanager` when missing),
 node with npm, and python3.
 
 ```bash
@@ -132,7 +134,14 @@ backend can also take it from `VISIVO_VR_APP_RELEASE_SHA256`.
   attaches `visivo-vr.apk` and `visivo-vr.json` to the release as assets of
   their own (once: `quest-app.yml` has no tag trigger of its own);
 - on demand (**Actions → quest-app → Run workflow**), to check the signing:
-  the APK, its `.json` and `assetlinks.json` are a workflow artifact.
+  the APK, its `.json` and `assetlinks.json` are a workflow artifact. With
+  **Meta Horizon Store build** ticked, the run fails unless `check-store.py`
+  passes, and the artifact `visivo-vr-store-<versionCode>` is the APK to
+  upload to the Store, with the checks' report
+  ([docs/technical/deployment/meta-store.md](../../docs/technical/deployment/meta-store.md)).
+
+Every run checks the APK against the Store's requirements (the run's summary
+shows them); outside a Store build a failure is a warning only.
 
 It fails when the certificate it built is not in `vr_app.json`, so no package
 ships an app its backend does not list. A tagged release requires the app:
@@ -154,7 +163,10 @@ Where the APK ends up in each package, as `visivo-vr.apk` with
 ## The scanner (issue #383)
 
 The app's icon opens `ScanActivity`, a 2-D panel (category
-`com.oculus.intent.category.2D`, its own task). It reads the desktop's QR
+`com.oculus.intent.category.2D`, its own task): Home opens it directly
+(`VR_HOME_LAUNCHER`), and `LauncherActivity`, the launcher activity the Store
+requires to be immersive, hands over to it when started with no address
+(#386). It reads the desktop's QR
 code with the headset's passthrough camera: Horizon OS's Passthrough Camera
 API, which is Android's Camera2 on a Quest 3 / 3S with Horizon OS v74 or
 later. The forward RGB cameras carry the vendor tag
@@ -165,9 +177,18 @@ luminance plane is read and decoded on the headset by ZXing's core
 viewfinder is that plane at half size, grey, ten times a second.
 
 **Permissions** (manifest, asked for at the first start):
-`android.permission.CAMERA` and `horizonos.permission.HEADSET_CAMERA` (Meta
-documents either as enough for the passthrough camera; both are asked for).
-Refused, the panel says how to allow them and the code can be typed.
+`horizonos.permission.HEADSET_CAMERA` and `android.permission.CAMERA`. Meta
+documents either as enough for the passthrough camera, but on a Quest 3
+(1.2.1, #386) the camera list showed no passthrough camera until *Headset
+cameras* was turned on in the settings. The camera therefore starts only
+with `HEADSET_CAMERA`. When it is refused, or no dialog appears, the panel
+names the setting (*Settings ▸ Privacy & safety ▸ App permissions ▸ Headset
+cameras*) and shows *Open app settings* (the app's page,
+`ACTION_APPLICATION_DETAILS_SETTINGS`); back on the panel it checks again.
+It says "no camera" only when no permission is missing, and the code can
+always be typed. The permissions, the camera ids and their vendor tags go
+to logcat under the tag `VisIVO-VR`
+(`adb logcat -s VisIVO-VR`).
 
 A QR code read (or a code typed) opens `LauncherActivity` with
 `<loader>/?launch=immersive#pair=<code>`; the panel closes (Horizon OS shows
@@ -231,11 +252,27 @@ had launched; that remembered address is deleted.
    URL (and so the ticket) to logcat. `onResume()` finishes the activity
    when it comes back on top (no invisible activity stays over the room once
    the VR session ends) and, after a scanner launch, opens the scanner again.
-5. The manifest: the scanner is the launcher (2-D), `LauncherActivity` keeps
-   its immersive category without the icon, the camera permissions, Horizon
-   OS SDK 69.
+5. The manifest: `LauncherActivity` is the launcher activity (`MAIN`,
+   `LAUNCHER`, `com.oculus.intent.category.VR`, `excludeFromRecents`), as the
+   Meta Horizon Store requires of an immersive web app (#386: an APK whose
+   launcher was the 2-D scanner was refused at upload). The scanner is what
+   Home opens when the app is selected there
+   (`com.oculus.intent.category.VR_HOME_LAUNCHER`, the last category of its
+   filter, after `2D`; `app.json` `panelHomeLauncher`). Started through
+   `LAUNCHER` with no address, `LauncherActivity` opens the scanner in Home
+   (4.). Also the camera permissions and Horizon OS SDK 69.
 6. `ScanActivity.java` and `PairCode.java` go into the app's package; ZXing's
    core is a dependency.
+7. The Meta Horizon Store's rules (#386): compileSdk and targetSdk from
+   `app.json` (34; the template's Quest branch has 32), `installLocation`
+   auto, `com.oculus.supportedDevices` (`app.json`), head tracking required,
+   a network security configuration refusing clear text (the app has no
+   network permission), and a filter on `LauncherActivity` matching the
+   desktop's USB launch (`VIEW` on `http(s)://localhost` or `127.0.0.1`, not
+   `BROWSABLE`): an app targeting Android 13 or later may refuse an explicit
+   intent from adb's shell that matches none of its filters. `build.sh` signs
+   with APK Signature Scheme v2 explicitly (with minSdk 32 apksigner would
+   sign with v3 alone).
 
 Each patch fails the build loudly when the Bubblewrap template changes under
 it. When updating Bubblewrap, bump it in `package.json`, run

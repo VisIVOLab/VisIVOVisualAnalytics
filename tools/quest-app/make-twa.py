@@ -58,7 +58,8 @@ def manifest(mode: str, icon_url: str, maskable_url: str, keystore: str, alias: 
         "isMetaQuest": True,
         "horizonOSAppMode": "immersive",
         "fullScopeUrl": f"{origin}{app['scopePath']}",
-        "minSdkVersion": 23,
+        # The Meta Horizon Store accepts 29-34 and recommends 32 (app.json).
+        "minSdkVersion": int(app["minSdkVersion"]),
         "orientation": "landscape",
         "fingerprints": [],
         "additionalTrustedOrigins": [],

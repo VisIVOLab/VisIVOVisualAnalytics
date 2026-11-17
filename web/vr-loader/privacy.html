@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VisIVO VR privacy policy</title>
+<meta name="description" content="What the VisIVO VR headset app, the public loader and the pairing service do with data.">
+<meta name="theme-color" content="#101418">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="style.css">
+<style>
+  .doc { max-width: 44rem; margin: 0 auto; padding: 2rem 16px 3rem; }
+  .doc h2 { font-size: 1.2rem; margin: 2rem 0 0.5rem; }
+  .doc p, .doc li { margin: 0.5rem 0; }
+  .doc ul { padding-left: 1.25rem; }
+  .doc a { color: var(--accent); }
+  .doc .box { border: 1px solid var(--border); background: var(--field); border-radius: 8px; padding: 0.75rem 1rem; }
+  .doc code { font-size: 0.9em; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main class="doc">
+  <h1>VisIVO VR privacy policy</h1>
+  <p class="muted small">Last updated 17 November 2026</p>
+
+  <p>This policy covers the <em>VisIVO VR</em> app for Meta Quest headsets
+    (package <code>it.inaf.oact.visivo.vr</code>), the public loader page at
+    <code>https://vr.visivolab.oact.inaf.it/</code> and the pairing service behind it. They are
+    published by <a href="https://visivolab.oact.inaf.it">VisIVOLab</a>, INAF – Osservatorio
+    Astrofisico di Catania, Italy, as part of the open-source
+    <a href="https://github.com/VisIVOLab/VisIVOVisualAnalytics">VisIVO Visual Analytics</a>
+    software.</p>
+
+  <div class="box">
+    <p><strong>In short.</strong> The headset's camera is used only on the headset, to read the
+      pairing QR code shown by VisIVO Visual Analytics on your computer. No camera image is stored
+      or sent anywhere. The pairing service sees the pairing code and connection details for the
+      few seconds it takes to connect your headset to your computer. Your data (cubes, images,
+      catalogues) go from your own VisIVO backend to your headset over an encrypted connection and
+      never through our servers. There are no accounts, no analytics, no advertising and no
+      tracking.</p>
+  </div>
+
+  <h2>The camera</h2>
+  <ul>
+    <li>When you open the app, it asks for permission to use the headset's passthrough camera
+      (<code>android.permission.CAMERA</code> and <code>horizonos.permission.HEADSET_CAMERA</code>).
+      The only use of the camera is to read the QR code on your computer's screen.</li>
+    <li>Camera frames are decoded on the headset, in memory, while the scanner is open. Only the
+      text of the QR code is used. No image or video is saved, and none leaves the headset. The app
+      itself has no permission to use the network: the VR pages are opened by the headset's own
+      browser component, which never receives a camera frame.</li>
+    <li>The camera stops when a code is read, when you close the scanner, and when you leave it.</li>
+    <li>You can refuse the permission, or withdraw it at any time in the headset's settings
+      (<em>Settings → Privacy &amp; safety → App permissions</em>). The app still works: you can type
+      the code shown on your computer instead.</li>
+  </ul>
+
+  <h2>Pairing your headset with your computer</h2>
+  <ul>
+    <li>Pairing uses a short code that VisIVO Visual Analytics shows on your computer. The pairing
+      service, run by INAF on the loader's server, uses that code to introduce the headset to your
+      computer. It then relays the messages that set up a direct, encrypted WebRTC connection
+      between them, and steps aside.</li>
+    <li>The service therefore handles the code and connection metadata: the network addresses
+      (IP addresses and ports) of the two devices, contained in the WebRTC set-up messages, and the
+      time of the connection. A pairing code expires after 5 minutes unless it is used. A
+      reconnection code, which lets the headset reconnect after a short drop, expires after
+      12 hours. The service keeps them only in memory.</li>
+    <li>The service's log records when a computer or a headset connects, with its IP address and
+      the outcome (for example "code expired"). It never records a code, a set-up message or a
+      relay credential.</li>
+    <li>If a direct connection between your headset and your computer is impossible, the
+      connection may pass through a relay (TURN) server run with the service. The relay forwards
+      encrypted packets that it cannot read.</li>
+  </ul>
+
+  <h2>The loader web page</h2>
+  <ul>
+    <li>The app opens the loader page from <code>vr.visivolab.oact.inaf.it</code>. Like any web
+      server, ours records each request in its access log: IP address, time, the address
+      requested, and the browser's identification string.</li>
+    <li>On the headset, the page keeps a copy of its own files and of the VR page's files (a
+      browser cache), so that later visits load faster. It also keeps the reconnection code for
+      the current browser session. Uninstalling the app or clearing its data removes both.</li>
+    <li>The page sets no cookies and loads nothing from any other website.</li>
+  </ul>
+
+  <h2>Your data and your backend</h2>
+  <ul>
+    <li>The data you look at in VR come from the VisIVO backend that your copy of VisIVO
+      Visual Analytics uses. This is your own computer, or a server of your institution or your
+      computing centre. They travel over the encrypted WebRTC connection between that backend and
+      your headset, and never through INAF's loader or pairing service.</li>
+    <li>To work with your data, the headset sends your backend the actions you take in VR and,
+      for high-quality views rendered on your computer, the position and orientation of the
+      headset. While VisIVO Visual Analytics on your computer shows what you see in the headset,
+      the headset also sends it a small, low-rate copy of your view (the data, your controllers or
+      hands as drawn in VR; never the camera's image of your room). All of this goes only to your
+      backend and your computer, and the VR page keeps none of it.</li>
+    <li>When the backend is run by someone else (your institution, a computing centre), that
+      operator's own policies apply to it.</li>
+  </ul>
+
+  <h2>What we do not do</h2>
+  <ul>
+    <li>No user accounts, no names, email addresses or contacts are asked for.</li>
+    <li>No analytics, advertising, tracking or third-party software development kits.</li>
+    <li>No data is sold or shared with anyone, and none is used to identify you.</li>
+  </ul>
+  <p>Meta, as the provider of the headset and of the Meta Horizon Store, processes data under its
+    own privacy policy, independently of this app.</p>
+
+  <h2>Why, and for how long</h2>
+  <p>The connection metadata and logs above are processed only to connect your headset to your
+    computer and to keep the service secure and working (for example, to limit abuse). This is in
+    INAF's legitimate interest in running a public research service. Logs are kept only as long as
+    needed for that and are then deleted by the server's routine log rotation.</p>
+
+  <h2>Children</h2>
+  <p>VisIVO VR is a scientific tool for researchers and students. It is not directed at
+    children.</p>
+
+  <h2>Your rights and contact</h2>
+  <p>Under the EU General Data Protection Regulation you may ask for access to, correction or
+    deletion of personal data about you, or object to its processing. Because we hold no account
+    and keep no camera data, there is usually nothing linked to you. Server logs contain only IP
+    addresses for a limited time. To ask a question or make a request, contact VisIVOLab through
+    <a href="https://visivolab.oact.inaf.it">visivolab.oact.inaf.it</a> or open an issue at
+    <a href="https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues">github.com/VisIVOLab/VisIVOVisualAnalytics/issues</a>.
+    INAF's data protection officer can be reached through <a href="https://www.inaf.it">inaf.it</a>.
+    You may also lodge a complaint with the Italian data protection authority (Garante per la
+    protezione dei dati personali).</p>
+
+  <h2>Changes</h2>
+  <p>If what the app or the service does with data changes, this page is updated and its date
+    above changes with it. The source of this page, of the app and of the services is public in
+    the VisIVO Visual Analytics repository.</p>
+</main>
+</body>
+</html>

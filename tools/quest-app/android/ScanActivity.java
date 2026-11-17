@@ -2,6 +2,7 @@ package __PACKAGE__;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -22,8 +23,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.text.InputFilter;
 import android.text.InputType;
+import android.util.Log;
 import android.util.Size;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -56,8 +59,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * part (LauncherActivity → the loader, which pairs and enters VR by itself).
  *
  * The camera: Horizon OS's Passthrough Camera API, plain Camera2 on a
- * Quest 3 / 3S with Horizon OS v74 or later, behind android.permission.CAMERA
- * or horizonos.permission.HEADSET_CAMERA (both asked for). The forward RGB
+ * Quest 3 / 3S with Horizon OS v74 or later. Meta documents either
+ * android.permission.CAMERA or horizonos.permission.HEADSET_CAMERA as
+ * enough, but on a Quest 3 the camera list showed no passthrough camera
+ * until HEADSET_CAMERA was granted in the settings (issue #386). So the
+ * camera starts only with HEADSET_CAMERA; both are asked for; when the
+ * system grants neither (or shows no dialog), the panel names the setting
+ * and opens the app's settings page, and checks again when it is back on
+ * top. "No camera" is said only when nothing is missing. The forward RGB
  * cameras carry the vendor tag com.meta.extra_metadata.camera_source = 0;
  * the left one (position 0) is used. Only the luminance plane is read: the
  * QR decoder (ZXing) needs nothing else, and the viewfinder is grey.
@@ -65,12 +74,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class ScanActivity extends Activity {
     static final String HEADSET_CAMERA = "horizonos.permission.HEADSET_CAMERA";
+    static final String TAG = "VisIVO-VR";
     static final int ASK = 383;
+    /** Where the user turns the permission on (Horizon OS's settings). */
+    static final String SETTING = "Settings ▸ Privacy & safety ▸ App permissions ▸ Headset cameras";
     /** The viewfinder's refresh period (ms): enough to aim. */
     static final long PREVIEW_MS = 100;
 
     private ImageView viewfinder;
     private TextView status;
+    private Button settingsButton;
     private EditText codeField;
     private String loaderStart;
 
@@ -138,8 +151,19 @@ public class ScanActivity extends Activity {
         side.addView(how);
 
         status = text("Starting the camera…", 17, 0xFF8FD3FF);
-        status.setPadding(0, 0, 0, dp(18));
+        status.setPadding(0, 0, 0, dp(12));
         side.addView(status);
+
+        // Shown when the cameras' permission is missing: the app's own page
+        // of the headset's settings (Permissions), checked again on return.
+        settingsButton = new Button(this);
+        settingsButton.setText("Open app settings");
+        settingsButton.setOnClickListener(v -> openAppSettings());
+        settingsButton.setVisibility(android.view.View.GONE);
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        sp.bottomMargin = dp(18);
+        side.addView(settingsButton, sp);
 
         side.addView(text("Or type the code:", 16, muted));
         LinearLayout row = new LinearLayout(this);
@@ -203,19 +227,36 @@ public class ScanActivity extends Activity {
 
     // ── Permission ─────────────────────────────────────────────────────────
 
-    private boolean cameraAllowed() {
-        return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-                || checkSelfPermission(HEADSET_CAMERA) == PackageManager.PERMISSION_GRANTED;
+    private boolean granted(String permission) {
+        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** The cameras' permissions not granted yet, HEADSET_CAMERA first. */
+    private String[] missingPermissions() {
+        java.util.List<String> out = new java.util.ArrayList<>(2);
+        if (!granted(HEADSET_CAMERA)) out.add(HEADSET_CAMERA);
+        if (!granted(Manifest.permission.CAMERA)) out.add(Manifest.permission.CAMERA);
+        return out.toArray(new String[0]);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         launched = false;
-        if (cameraAllowed()) startCamera();
-        else if (!asking) {
+        Log.i(TAG, "permissions: HEADSET_CAMERA " + granted(HEADSET_CAMERA)
+                + ", CAMERA " + granted(Manifest.permission.CAMERA));
+        if (granted(HEADSET_CAMERA)) {
+            settingsButton.setVisibility(android.view.View.GONE);
+            startCamera();
+        } else if (!asking) {
+            // Asked once per screen: a refusal is not asked again at every
+            // resume (the settings button stays); back from the settings
+            // page, this resume checks again.
             asking = true;
-            requestPermissions(new String[] { Manifest.permission.CAMERA, HEADSET_CAMERA }, ASK);
+            say("Asking to use the headset's cameras…", false);
+            requestPermissions(missingPermissions(), ASK);
+        } else {
+            permissionMissing();
         }
     }
 
@@ -223,12 +264,33 @@ public class ScanActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != ASK) return;
-        // onResume follows and starts the camera when one was granted; asked
-        // once per screen, so a refusal is not asked again at every resume.
-        if (!cameraAllowed()) {
-            say("VisIVO VR may not use the headset's cameras: type the code instead, or allow the "
-                    + "cameras for VisIVO VR in the headset's settings (Privacy, App permissions), then open it again.",
-                    true);
+        for (int i = 0; i < permissions.length && i < grantResults.length; i++) {
+            Log.i(TAG, "permission " + permissions[i] + ": "
+                    + (grantResults[i] == PackageManager.PERMISSION_GRANTED ? "granted" : "refused"));
+        }
+        // Refused, or no dialog shown (the result then arrives refused at
+        // once): name the setting. Granted: onResume follows and starts.
+        if (!granted(HEADSET_CAMERA)) permissionMissing();
+    }
+
+    /** The permission is missing: say where to turn it on, offer the app's settings page. */
+    private void permissionMissing() {
+        say("To read the QR code, VisIVO VR needs permission to use the headset's cameras. In "
+                + SETTING + " (and Camera, if listed) turn on VisIVO VR, or press Open app settings and "
+                + "allow the cameras under Permissions. Or type the code below.", true);
+        settingsButton.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void openAppSettings() {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.fromParts("package", getPackageName(), null));
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(i);
+        } catch (ActivityNotFoundException e) {
+            Log.i(TAG, "no application details settings page: " + e);
+            say("The headset's settings could not be opened from here: open " + SETTING
+                    + " and turn on VisIVO VR. Or type the code below.", true);
         }
     }
 
@@ -249,9 +311,13 @@ public class ScanActivity extends Activity {
             source = new CameraCharacteristics.Key<>("com.meta.extra_metadata.camera_source", Integer.class);
             position = new CameraCharacteristics.Key<>("com.meta.extra_metadata.position", Integer.class);
         }
-        for (String id : cm.getCameraIdList()) {
+        String[] ids = cm.getCameraIdList();
+        Log.i(TAG, "cameras: " + ids.length);
+        for (String id : ids) {
             CameraCharacteristics c = cm.getCameraCharacteristics(id);
             Integer src = vendor(c, source), pos = vendor(c, position);
+            Log.i(TAG, "camera " + id + ": camera_source " + src + ", position " + pos
+                    + ", facing " + c.get(CameraCharacteristics.LENS_FACING));
             if (src != null && src == 0) {
                 if (pos != null && pos == 0) return id;
                 if (passthrough == null) passthrough = id;
@@ -293,10 +359,18 @@ public class ScanActivity extends Activity {
         CameraManager cm = (CameraManager) getSystemService(CAMERA_SERVICE);
         try {
             String id = cm == null ? null : pickCamera(cm);
+            Log.i(TAG, "camera picked: " + id);
             if (id == null) {
-                say("This headset has no camera VisIVO VR can use (the passthrough camera needs a Quest 3 or 3S "
-                        + "with Horizon OS v74 or later): type the code instead.", true);
                 stopCamera();
+                if (missingPermissions().length > 0) {
+                    // A permission is still missing (Meta documents either as
+                    // enough, a Quest 3 showed otherwise): not "no camera".
+                    permissionMissing();
+                } else {
+                    say("This headset has no camera VisIVO VR can use (the passthrough camera needs a Quest 3 "
+                            + "or 3S with Horizon OS v74 or later, and passthrough turned on): type the code instead.",
+                            true);
+                }
                 return;
             }
             Size size = pickSize(cm.getCameraCharacteristics(id));
