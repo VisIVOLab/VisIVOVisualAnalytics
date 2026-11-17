@@ -1,13 +1,15 @@
 # From the desktop to the VR headset
 
-You will send a cube from the desktop to a Meta Quest 3 by typing a short
-code, work on it in VR with the hand menu and the tool palette, and then send
-a simulation volume to the same headset.
+You will send a cube from the desktop to a Meta Quest 3 by showing the
+headset a QR code, work on it in VR with the hand menu and the tool palette,
+and then send a simulation volume to the same headset.
 
 ## You need
 
-- A Meta Quest 3 with its controllers, on a network with internet access. No cable, developer mode or extra
-  software is needed for pairing by code.
+- A Meta Quest 3 with its controllers, on a network with internet access,
+  with the *VisIVO VR* app installed (once, with the USB cable: see
+  [The VisIVO VR app](../reference/vr.md#the-visivo-vr-app)). Without the
+  app, the Quest Browser pairs by code too, with one *Enter VR* press.
 - The HCG 44 cube `hgc44.fits` from the demo data, and for the second part
   the PLUTO density `rho.0000.flt` from
   [Large cubes and simulations](05-large-cubes-and-simulations.md).
@@ -30,18 +32,23 @@ a simulation volume to the same headset.
    The pairing code and its QR code.
    ```
 
-2. On the Quest, open the Quest Browser at
-   `https://vr.visivolab.oact.inaf.it/`, type the code and press *Connect*.
-   You can scan the QR code with the headset instead; it opens the page with
-   the code filled in. The first time, install the page as an app from the
-   Quest Browser's menu.
+2. On the Quest, open *VisIVO VR* from the App Library. It shows a camera
+   view of your room. Look at the QR code on the computer's screen from
+   about 30 to 50 cm (the first time, allow the app to use the headset's
+   cameras). If the camera cannot be used, type the code in the app and
+   press *Connect*.
 
 3. The dialog follows the pairing: *The code was entered: the headset is
    connecting…*, then *Headset connected.* with a *Disconnect* button. If the
    code expires, *New Code* asks for another.
 
-4. The cube loads on the page. Press *Enter VR*. You enter VR once per
-   session: further cubes from the desktop go into the same page, in VR.
+4. You are in VR in front of the cube, with no other step. Further cubes
+   from the desktop go into the same session. *Exit VR* in the hand menu
+   takes you back to the app's scanner.
+
+   In the Quest Browser instead of the app: open
+   `https://vr.visivolab.oact.inaf.it/`, type the code, press *Connect*, and
+   press *Enter VR* when the cube has loaded.
 
 ### Work in VR
 

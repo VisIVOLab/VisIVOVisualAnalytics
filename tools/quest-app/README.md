@@ -1,22 +1,31 @@
 # VisIVO VR headset app
 
-The backend's VR page (`/vr/`) packaged as an immersive Horizon OS app for the
-Meta Quest (issue #255, after the spike in #254). The desktop installs it over
-adb and starts it with one `am start`: the user is in VR, with no browser
-window and no Enter VR press. The app is a thin wrapper made with Meta's
-Bubblewrap (a Trusted Web Activity in immersive mode): the page itself, and
-every update of it, still comes from the backend.
+The *VisIVO VR* app for the Meta Quest (issues #254, #255, #383). Opened
+from the App Library it shows a QR-code scanner: the user looks at the QR
+code of the desktop's *Open in VR Headset…* dialog (or types its code), and
+the app opens the public pairing loader with that code in Horizon OS's
+immersive mode, so the user is in VR in front of the cube with no browser,
+no Enter VR press and no cable. The desktop can also start it over adb
+with one `am start` on its own backend's VR page (the USB launch, #255).
+
+The app is a thin wrapper made with Meta's Bubblewrap (a Trusted Web
+Activity in immersive mode) plus one native panel, the scanner: the VR
+page itself, and every update of it, still comes from the user's backend.
 
 ## What is here
 
 | File | What it does |
 |---|---|
 | `build.sh` | The whole build: key, Bubblewrap, patches, Gradle, zipalign, apksigner. |
-| `app.json` | The app's identity: packages, names, `versionCode`, start path, icons. |
+| `app.json` | The app's identity: packages, names, `versionCode`, the loader it opens (`loaderOrigin` + `startPath`), icons. |
 | `make-twa.py` | Writes Bubblewrap's `twa-manifest.json` from `app.json`. |
 | `icon-512.png`, `icon-maskable-512.png` | The launcher icons, made from the VisIVO logo by `make-icons.py`. |
 | `make-icons.py` | Makes both icons from `icons/VisIVO_512.png` (below). |
 | `patch-project.py` | The changes to the generated Android project (below). |
+| `android/ScanActivity.java` | The scanner: a 2-D panel, the passthrough camera, ZXing's QR decoder, the code field. |
+| `android/PairCode.java` | What a QR code or a typed code means, which addresses the app opens (no Android API). |
+| `android/PairCodeTest.java` | `PairCode`'s checks on a plain JVM (run by `backend/tests/test_quest_app_wrapper.py`). |
+| `make-assetlinks.py` | Writes `web/vr-loader/.well-known/assetlinks.json`, the statement the loader's host publishes. |
 | `package.json`, `package-lock.json` | Pin `@meta-quest/bubblewrap-cli` 1.24.1. |
 
 Nothing secret is in the repository. The development key is made on your
@@ -31,14 +40,23 @@ node with npm, and python3.
 ```bash
 tools/quest-app/build.sh            # development app, your own key
 tools/quest-app/build.sh --release  # release app, the project's key (CI)
+tools/quest-app/build.sh --loader http://localhost:8790   # development app on a local loader
 ```
+
+`--loader` builds the development app for a loader of your own (an origin;
+the path is `app.json`'s `startPath`), for example `web/vr-loader/` served on
+the computer and reached through `adb reverse tcp:8790 tcp:8790`. That
+server must also answer `/.well-known/assetlinks.json` with the development
+app's statement (`out/assetlinks-dev.json`), or the headset's browser closes
+the app.
 
 Output in `tools/quest-app/out/` (ignored by git):
 
 - `visivo-vr-dev.apk` (or `visivo-vr.apk`): the signed APK;
 - `visivo-vr-dev.json`: `package`, `version_code`, `version_name`,
-  `cert_sha256`, `apk_sha256`, `start_path`, `default_origin`; the desktop
-  compares `version_code` with the installed app's;
+  `cert_sha256`, `apk_sha256`, `start_path`, `default_origin` (the loader's
+  origin), `loader_url`; the desktop compares `version_code` with the
+  installed app's;
 - `assetlinks-dev.json` (or `assetlinks.json`): the Digital Asset Links
   statement for that build.
 
@@ -133,11 +151,54 @@ Where the APK ends up in each package, as `visivo-vr.apk` with
 | Linux `.tar.gz` | `VisIVOVisualAnalytics-linux-x86_64/app/usr/bin/quest-app/` |
 | Windows `.zip` | `VisIVOVisualAnalytics-windows-x86_64/bin/quest-app/` |
 
+## The scanner (issue #383)
+
+The app's icon opens `ScanActivity`, a 2-D panel (category
+`com.oculus.intent.category.2D`, its own task). It reads the desktop's QR
+code with the headset's passthrough camera: Horizon OS's Passthrough Camera
+API, which is Android's Camera2 on a Quest 3 / 3S with Horizon OS v74 or
+later. The forward RGB cameras carry the vendor tag
+`com.meta.extra_metadata.camera_source` = 0; the left one
+(`com.meta.extra_metadata.position` = 0) is used, at 1280×960. Only the
+luminance plane is read and decoded on the headset by ZXing's core
+(`com.google.zxing:core:3.5.3`, Apache-2.0); nothing is kept or sent. The
+viewfinder is that plane at half size, grey, ten times a second.
+
+**Permissions** (manifest, asked for at the first start):
+`android.permission.CAMERA` and `horizonos.permission.HEADSET_CAMERA` (Meta
+documents either as enough for the passthrough camera; both are asked for).
+Refused, the panel says how to allow them and the code can be typed.
+
+A QR code read (or a code typed) opens `LauncherActivity` with
+`<loader>/?launch=immersive#pair=<code>`; the panel closes (Horizon OS shows
+one mode at a time). When the VR session ends, the browser closes its part
+and `LauncherActivity`, back on top, opens the scanner again in Home and
+goes. The app declares Horizon OS SDK 69 (`horizonos:uses-horizonos-sdk`),
+the level of hybrid apps (a panel and an immersive activity in one APK).
+
+**Why native.** In the immersive app mode the browser shows no 2-D page, so
+a web form or a camera view in the loader would never be seen; and the
+Quest Browser's camera for web pages (`getUserMedia` on the passthrough
+cameras) is still an experiment, not available to every headset.
+
+**A QR code of another loader** (an institute's) is refused with its host
+named: a code only means something to the pairing service of the loader
+that shows it, and this app opens only the loader it was built for.
+
 ## Origin and port
 
-The app opens `http://localhost:<port>/vr/?launch=immersive` through
-`adb reverse`: `localhost` is a secure context for WebXR without a
-certificate. The headset's browser verifies the origin at every launch by
+The scanner's launches open the loader of `app.json` (`loaderOrigin`, by
+default `https://vr.visivolab.oact.inaf.it`): its host must publish the
+app's statement at `/.well-known/assetlinks.json` (the file is
+`web/vr-loader/.well-known/assetlinks.json`, made by `make-assetlinks.py`).
+The headset's browser fetches it at every launch and closes the app when the
+app is not listed. The same statement verifies the app's link to that host,
+so `https://<loader>/#pair=<code>` (the desktop's QR code) opens the app
+when something hands it to Android (the headset's own QR scanner, if it does).
+
+The desktop's USB launch opens `http://localhost:<port>/vr/?launch=immersive`
+through `adb reverse`: `localhost` is a secure context for WebXR without a
+certificate. The headset's browser verifies that origin at every launch by
 fetching `http://localhost:<port>/.well-known/assetlinks.json` from the
 backend, and closes the app when verification fails.
 
@@ -152,24 +213,29 @@ serves the statement. A fixed port would not do: the desktop's local backend
 runs on 8000 or a port of its own (18900 on some setups), a cluster tunnel on
 another.
 
-`app.json`'s `defaultOrigin` (`http://localhost:8000`) is only what a launch
-from the app's icon opens the first time; afterwards the icon opens the last
-backend the desktop launched it with (the app remembers that page, never its
-fragment). The launcher accepts only a VR page of a backend on the headset's
-own `localhost` or `127.0.0.1`, at any port and under any path prefix; any
-other address is ignored.
+`LauncherActivity` opens only a VR page of a backend on the headset's own
+`localhost` or `127.0.0.1` (any port, any path prefix), or the app's loader
+with a code; started with anything else (it is exported) it opens the
+scanner. Up to version 1.0.1 the icon opened the last backend the desktop
+had launched; that remembered address is deleted.
 
 ## The patches (`patch-project.py`)
 
 1. `jcenter()` becomes `mavenCentral()`.
-2. The launch URL and the asset statement use `http://` (the template
-   hardcodes `https://`).
+2. The launch URL and the asset statement use the loader origin's scheme
+   (the template hardcodes `https://`; a development loader may be `http://localhost`).
 3. The VIEW intent filter names host and port separately.
-4. `LauncherActivity.getLaunchingUrl()` never calls the library's, which
-   writes the launch URL (and so the ticket) to logcat; it opens only
-   localhost VR pages and remembers the last one for icon launches.
-   `LauncherActivity.onResume()` finishes the activity when it comes back on
-   top, so no invisible activity stays over the room once the VR session ends.
+4. `LauncherActivity`: `shouldLaunchImmediately()` picks the address (a
+   localhost VR page, the loader with a code, else the scanner);
+   `getLaunchingUrl()` never calls the library's, which writes the launch
+   URL (and so the ticket) to logcat. `onResume()` finishes the activity
+   when it comes back on top (no invisible activity stays over the room once
+   the VR session ends) and, after a scanner launch, opens the scanner again.
+5. The manifest: the scanner is the launcher (2-D), `LauncherActivity` keeps
+   its immersive category without the icon, the camera permissions, Horizon
+   OS SDK 69.
+6. `ScanActivity.java` and `PairCode.java` go into the app's package; ZXing's
+   core is a dependency.
 
 Each patch fails the build loudly when the Bubblewrap template changes under
 it. When updating Bubblewrap, bump it in `package.json`, run

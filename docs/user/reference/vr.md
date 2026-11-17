@@ -15,6 +15,9 @@ For a walk-through, see [From the desktop to the VR headset](../use-cases/08-vr-
 - A Meta Quest 3 with its controllers (other WebXR headsets should work).
 - VisIVO Visual Analytics on the computer, with the data open in a cube,
   point table, 3-D catalogue or velocity field window.
+- The *VisIVO VR* app on the headset (see [The VisIVO VR app](#the-visivo-vr-app)).
+  Its QR scanner needs a Quest 3 or 3S with Horizon OS v74 or newer;
+  elsewhere you type the code.
 - For pairing by code: internet on both sides, and the headset and computer
   on a network that lets devices reach each other. On a Mac with Apple
   Silicon, macOS 14 or newer.
@@ -33,21 +36,35 @@ Headset* for a second headset.
 
 ### Pair by code
 
-1. In the dialog, note the code (such as `K7Q-4MX`, valid five minutes) or
-   its QR code.
-2. On the Quest, open `https://vr.visivolab.oact.inaf.it/` in the Quest
-   Browser (or your institute's address), type the code and press *Connect*,
-   or scan the QR code.
-3. When the cube has loaded on the page, press *Enter VR* (or *Enter
-   passthrough* to see the cube in your room).
+1. In the dialog, the code (such as `K7Q-4MX`, valid five minutes) and its
+   QR code are shown.
+2. On the Quest, open *VisIVO VR* from the App Library. It opens on its
+   scanner: a camera view of your room.
+3. Look at the QR code on the computer's screen from about 30 to 50 cm. The
+   app reads it, pairs with the computer, and you are in VR in front of the
+   cube, without the browser, *Enter VR* or a cable.
 
-Once, install the page as an app from the Quest Browser's menu (*Install
-app*): it gets an icon in the App Library and opens on the code form.
+The first time, the app asks to use the headset's cameras: allow it. The
+camera image is read on the headset to find the QR code and is never kept
+or sent.
+
+If the camera cannot be used (permission refused, an older headset), type
+the code in the app's *Or type the code* field and press *Connect*.
+
+*Exit VR* (in the hand menu) takes you back to the scanner, ready for the
+next code. A code that has expired or was already used is said in VR; press
+a trigger or pinch to go back to the scanner, then use *New Code* on the
+computer.
 
 The dialog follows the pairing up to *Headset connected*. *Disconnect* ends
 it; *New Code* replaces an expired or unused code. If the link drops, the
-page reconnects by itself for up to three minutes, then offers *Enter a new
+page reconnects by itself for up to three minutes, then offers *Scan a new
 code*.
+
+Without the app, the Quest Browser does the same: open
+`https://vr.visivolab.oact.inaf.it/` (or your institute's address), type
+the code and press *Connect*, then press *Enter VR* (or *Enter passthrough*)
+once the cube has loaded.
 
 Pairing settings are in *Settings ▸ Backends ▸ Headset Pairing*:
 
@@ -88,10 +105,16 @@ with your own computer and headset.
 
 ### The VisIVO VR app
 
-The headset page as a Quest app, carried by the release packages. Started
-from its icon it shows *No cube yet* until the desktop sends one. Leaving VR
-quits it (*Quit VisIVO VR*, or the Quest's system menu). Messages on the
-desktop:
+The headset's app, carried by the release packages. Install it once with
+the USB cable: *Advanced (USB cable)* ▸ *Install* (the headset in developer
+mode, as above). From then on the cable is not needed: open the app from
+the App Library and scan the QR code. When a release brings a newer app,
+the dialog shows *older* and offers *Update* the next time the headset is
+connected by cable.
+
+Started from its icon it opens its scanner. Started by *Open on Headset*
+over USB it goes straight into VR with the cube; leaving VR then quits it
+(*Quit VisIVO VR*, or the Quest's system menu). Messages on the desktop:
 
 - *Put the headset on, then press Open again.*: the headset was asleep.
 - *VisIVO VR started but could not connect to this computer.*: check the

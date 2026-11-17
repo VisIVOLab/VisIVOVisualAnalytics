@@ -45,6 +45,18 @@ Quest Browser, https://vr.example.org/visivo/
   address has `?offer`: the page always shows its own button, and an offer
   cannot be taken back once made
   ([#291](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/291)).
+- **In the VisIVO VR app.** The headset app (`tools/quest-app/`,
+  [#383](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/383))
+  opens the loader as `https://<loader>/?launch=immersive#pair=CODE` after
+  its scanner read the desktop's QR code (see
+  [The VisIVO VR app's flow](#the-visivo-vr-apps-flow) below). With
+  `launch=immersive` the loader passes `launch=immersive` to the page, which
+  then enters VR at load, before its cube, with no press, as after the
+  desktop's USB launch. The app's browser shows no 2-D page at all, so the
+  loader never shows its form there: a code that cannot be used (or none)
+  is said in VR by the loader itself (`loader-xr.js`, one card, a trigger or
+  a pinch or 20 s to leave), and leaving it, like leaving the page's VR,
+  closes the loader's window, which brings back the app's scanner.
 - **One page.** Two loader windows share the loader's origin, so their pages
   meet on one channel: the one with a cube stays in use, an empty one pauses
   and names the cube in the other (see
@@ -123,6 +135,99 @@ same notice says *The computer disconnected this headset* when the desktop
 disconnected it, and *VisIVO Visual Analytics on the computer was closed*
 when the backend stopped: neither is resumed.
 
+## The VisIVO VR app's flow
+
+```
+App Library ▸ VisIVO VR
+  ScanActivity (2-D panel)       passthrough camera (Camera2) → ZXing → https://<loader>/#pair=CODE
+    │  or the code typed           (PairCode: the code, and the QR code's host must be the app's loader)
+    ▼
+  LauncherActivity (immersive)   opens https://<loader>/?launch=immersive#pair=CODE in the browser's
+    │                            immersive app mode; the browser checks <loader>/.well-known/assetlinks.json
+    ▼
+  loader, ?launch=immersive      pairs; the page in its iframe (launch=immersive) enters VR at load
+    │
+  leaving VR, or a bad code      the session ends, the browser's part closes, LauncherActivity resumes
+    ▼                            and opens the scanner again (in Home)
+  ScanActivity
+```
+
+- **The scanner** is a native panel (`tools/quest-app/android/ScanActivity.java`):
+  the headset's passthrough camera through Android's Camera2 (Horizon OS's
+  Passthrough Camera API, Quest 3 / 3S, Horizon OS v74+), permissions
+  `android.permission.CAMERA` and `horizonos.permission.HEADSET_CAMERA`,
+  asked for at the first start. Only the luminance plane is read
+  (1280×960), decoded by ZXing on the headset, and dropped. The web page
+  cannot do this: in the app's browser part no 2-D page is shown, and the
+  Quest Browser's camera access from a page is still experimental.
+- **The launch** opens the app's own start URL with the code
+  (`PairCode.loaderLaunchFor`), whatever address the QR code had, so the
+  loader always gets `?launch=immersive`. The desktop's USB launch
+  (`http://localhost:<port>/vr/?launch=immersive#ticket=…`) is unchanged
+  and still quits the app when VR ends.
+- **The origin check.** The browser opens the loader in the immersive app
+  mode only when the loader's host publishes the app in
+  `/.well-known/assetlinks.json` ([Hosting headset pairing](vr-pairing.md#the-visivo-vr-apps-statement));
+  the backend publishes it for `localhost` (the USB launch).
+- **The headset's own QR scanner.** The app's VIEW filter for the loader's
+  host has `autoVerify`, so a verified link `https://<loader>/#pair=CODE`
+  opens the app (and the cube) instead of the browser. Horizon OS v2.9 (in
+  its test channel since 28 September 2026) adds a system QR scanner on
+  Quest 3 and 3S; what it does with a scanned link (the browser, or the app
+  through Android's verified links) is not documented: it is on the device
+  check list. Without the app, the same link opens the loader in the Quest
+  Browser, which pairs and asks for one *Enter VR* press.
+- **Installing the app** needs the headset in developer mode (the desktop
+  installs it over USB): Horizon OS installs apps from outside the Meta
+  Horizon Store only that way. A page cannot install it. Installing from a
+  link without developer mode needs a Store listing of the app.
+
+### Updating the INAF host (release 1.2.1)
+
+The pairing service does not change. On the server (Debian, Apache), with
+the release's `web/vr-loader/` copied to `/tmp/vr-loader/` (for example
+`git archive 1.2.1 web/vr-loader | tar -x -C /tmp --strip-components=1`
+on a checkout, then `scp -r`):
+
+```sh
+cd /var/www/html/vr_visivolab_oact_inaf_it
+# The loader's files and the app's statement; the server's own config.json is kept.
+sudo rsync -rlt --exclude config.json /tmp/vr-loader/ ./
+# Same owner and modes as the files already there:
+sudo chown -R --reference=index.html .well-known js
+sudo find .well-known -type d -exec chmod 755 {} + ; sudo chmod 644 .well-known/assetlinks.json
+```
+
+Apache serves `.well-known/assetlinks.json` from the document root as it is.
+If the site or the server blocks paths that start with a dot (look with
+`grep -RniE 'well-known|DirectoryMatch|FilesMatch|RedirectMatch' /etc/apache2/`),
+add to `/etc/apache2/sites-available/vr_visivolab_oact_inaf_it-ssl.conf`,
+inside the `<VirtualHost>`:
+
+```apache
+<Location "/.well-known/assetlinks.json">
+    Require all granted
+    ForceType application/json
+    Header always set Cache-Control "no-cache"
+</Location>
+```
+
+then `sudo apachectl configtest && sudo systemctl reload apache2`.
+
+**Check it** from any computer:
+
+```sh
+curl -sS -D - https://vr.visivolab.oact.inaf.it/.well-known/assetlinks.json
+curl -sS 'https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://vr.visivolab.oact.inaf.it&relation=delegate_permission/common.handle_all_urls'
+curl -sS https://vr.visivolab.oact.inaf.it/js/loader-xr.js | head -3
+```
+
+The first answers `HTTP/1.1 200`, `content-type: application/json`, and
+names `it.inaf.oact.visivo.vr` with the fingerprint
+`A1:54:C4:5B:54:20:5F:B9:6B:B9:80:28:6D:86:F3:A6:78:17:E1:32:2E:4F:68:AB:44:40:30:C0:43:04:D8:D4`;
+the second lists that statement (Google's view of it); the third shows the
+new loader's file.
+
 ## Checking it without a headset
 
 ```
@@ -135,6 +240,17 @@ minimal pairing service and bridge implementing the contract, with aiortc).
 It then runs the smoke and regression checks in the loader's iframe, a
 dropped link that resumes, a forgotten pairing that asks for a new code, and
 the transport's overhead against direct HTTP.
+
+```
+node validation/vr_lifecycle.mjs --app-paired --port 8830 --cdp-port 9430
+```
+
+runs the VisIVO VR app's flow on the same setup, with a WebXR stand-in: the
+loader opened with `?launch=immersive#pair=…` pairs and its page enters VR
+with no press; leaving VR closes the loader's window; an unknown code and a
+missing code are said in VR by the loader, and leaving that notice closes the
+window; in a browser tab the loader still shows its form. The scanner, the
+browser's immersive mode and the origin check are on the Quest check list.
 
 To try the real pieces on one computer, run the pairing service locally
 (`ws://127.0.0.1:8765`, see the

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Builds the VisIVO VR headset app (issue #255): the backend's VR page packaged
-# as an immersive Horizon OS app with Meta's Bubblewrap (pinned in
-# package.json), the patches of patch-project.py, Gradle, zipalign and
+# Builds the VisIVO VR headset app (issues #255, #383): a QR-code scanner and
+# the pairing loader (or, launched by the desktop over USB, the backend's VR
+# page) packaged as an immersive Horizon OS app with Meta's Bubblewrap (pinned
+# in package.json), the patches of patch-project.py, Gradle, zipalign and
 # apksigner. See README.md.
 #
-# Usage: tools/quest-app/build.sh [--release] [--out DIR]
+# Usage: tools/quest-app/build.sh [--release] [--out DIR] [--loader ORIGIN]
 #
 #   (default)  the development app (package it.inaf.oact.visivo.vr.dev),
 #              signed with this computer's own key, made at the first build
@@ -16,6 +17,10 @@
 #              QUEST_APP_KEYSTORE_PASS_FILE (a file holding its password),
 #              QUEST_APP_KEY_ALIAS (default visivo-vr). CI passes them from
 #              its secrets; they never enter the repository.
+#   --loader   the pairing loader the scanner opens, instead of app.json's
+#              loaderOrigin: a development loader, e.g. http://localhost:8790
+#              through adb reverse (it must serve /.well-known/assetlinks.json
+#              for this build's certificate). Not with --release.
 #
 # Needs: JAVA_HOME (JDK 17), ANDROID_HOME (an Android SDK; build-tools 34.0.0
 # and platform 32 are installed with its sdkmanager when missing), node and
@@ -29,17 +34,24 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 MODE=dev
 OUT="$HERE/out"
+LOADER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --release) MODE=release ;;
     --out) OUT="$2"; shift ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    --loader) LOADER="${2%/}"; shift ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
 die() { echo "quest-app: $*" >&2; exit 1; }
+if [ -n "$LOADER" ]; then
+  [ "$MODE" = dev ] || die "--loader is for development builds: a release opens app.json's loaderOrigin"
+  python3 -c 'import sys; from urllib.parse import urlsplit; u = urlsplit(sys.argv[1]); sys.exit(0 if u.scheme in ("http", "https") and u.hostname and u.path in ("", "/") and not u.query and not u.fragment else 1)' "$LOADER" \
+    || die "--loader takes an origin (scheme://host[:port]), not $LOADER"
+fi
 [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ] || die "set JAVA_HOME to a JDK 17"
 "$JAVA_HOME/bin/java" -version 2>&1 | grep -q 'version "17' || die "JAVA_HOME is not a JDK 17 (Bubblewrap's Gradle build needs 17)"
 [ -n "${ANDROID_HOME:-}" ] && [ -d "$ANDROID_HOME" ] || die "set ANDROID_HOME to an Android SDK"
@@ -130,9 +142,9 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.3
 done
 
-ORIGIN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["defaultOrigin"])' "$HERE/app.json")"
+ORIGIN="${LOADER:-$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["loaderOrigin"])' "$HERE/app.json")}"
 python3 -I "$HERE/make-twa.py" "$WORK/proj" "$MODE" "http://127.0.0.1:$ICON_PORT/$(basename "$ICON")" \
-  "http://127.0.0.1:$ICON_PORT/$(basename "$MASKABLE")" "$KS" "$ALIAS"
+  "http://127.0.0.1:$ICON_PORT/$(basename "$MASKABLE")" "$KS" "$ALIAS" "$ORIGIN"
 (cd "$WORK/proj" && HOME="$WORK/home" node "$BW" update --skipVersionUpgrade --manifest="$WORK/proj/twa-manifest.json" \
   < /dev/null > "$WORK/bubblewrap.log" 2>&1) || { tail -30 "$WORK/bubblewrap.log"; die "bubblewrap failed"; }
 python3 -I "$HERE/patch-project.py" "$WORK/proj" "$ORIGIN"
@@ -147,9 +159,9 @@ UNSIGNED="$WORK/proj/app/build/outputs/apk/release/app-release-unsigned.apk"
   --out "$OUT/$NAME.apk" "$WORK/aligned.apk"
 rm -f "$OUT/$NAME.apk.idsig"
 SIGNED_SHA256="$("$BT/apksigner" verify --print-certs "$OUT/$NAME.apk" | sed -n 's/^Signer #1 certificate SHA-256 digest: *//p' | head -1)"
-python3 -I - "$HERE/app.json" "$MODE" "$OUT/$NAME.apk" "$CERT_SHA256" "$SIGNED_SHA256" "$OUT/$NAME.json" "$OUT/$LINKS" <<'PY'
+python3 -I - "$HERE/app.json" "$MODE" "$OUT/$NAME.apk" "$CERT_SHA256" "$SIGNED_SHA256" "$OUT/$NAME.json" "$OUT/$LINKS" "$ORIGIN" <<'PY'
 import hashlib, json, sys
-app_json, mode, apk, cert, signed, info_out, links_out = sys.argv[1:8]
+app_json, mode, apk, cert, signed, info_out, links_out, origin = sys.argv[1:9]
 app = json.load(open(app_json, encoding="utf-8"))
 if cert.replace(":", "").lower() != signed.lower():
     sys.exit(f"the APK is signed by {signed}, not by the key {cert}")
@@ -157,7 +169,8 @@ package = app["packages"]["development" if mode == "dev" else "release"]
 info = {"package": package, "version_code": int(app["versionCode"]), "version_name": app["versionName"],
         "mode": mode, "cert_sha256": cert,
         "apk_sha256": hashlib.sha256(open(apk, "rb").read()).hexdigest(),
-        "start_path": app["startPath"], "default_origin": app["defaultOrigin"]}
+        "start_path": app["startPath"], "default_origin": origin.rstrip("/"),
+        "loader_url": origin.rstrip("/") + app["startPath"]}
 json.dump(info, open(info_out, "w", encoding="utf-8"), indent=2)
 statement = [{"relation": ["delegate_permission/common.handle_all_urls"],
               "target": {"namespace": "android_app", "package_name": package, "sha256_cert_fingerprints": [cert]}}]

@@ -60,20 +60,30 @@ export function pairFromHash(hash) {
 
 /** The loader's query passed on to the app (its own pair_service left out).
  *  `launch` 'app': the loader runs as the installed app (issue #237), so the
- *  page may try to enter VR by itself once its cube is on show. */
+ *  page may try to enter VR by itself once its cube is on show.
+ *  'immersive': the loader runs in the VisIVO VR headset app (issue #383),
+ *  where the browser grants a session with no press: the page enters VR at
+ *  load, before its cube, as after the desktop's USB launch (#255). */
 export function appQuery(search, launch = '') {
   const p = new URLSearchParams(String(search || ''));
   p.delete('pair_service');
   p.delete('transport');
   p.delete('launch');
-  if (launch === 'app') p.set('launch', 'app');
+  if (launch === 'app' || launch === IMMERSIVE) p.set('launch', launch);
   const rest = p.toString().replace(/=(?=&|$)/g, '');
   return `?transport=pair${rest ? `&${rest}` : ''}`;
 }
 
-/** 'app' when the loader is shown as an installed app (its manifest's
- *  display: standalone, or fullscreen), else ''. `matchMedia`: window.matchMedia. */
-export function launchMode(matchMedia) {
+/** The loader's own address asks for the headset app's launch. */
+export const IMMERSIVE = 'immersive';
+
+/** 'immersive' when the VisIVO VR headset app opened the loader (its start
+ *  URL says ?launch=immersive, issue #383: no 2-D page is shown there, only
+ *  VR); 'app' when the loader is shown as an installed app (its manifest's
+ *  display: standalone, or fullscreen); else ''. `matchMedia`:
+ *  window.matchMedia; `search`: the loader's query. */
+export function launchMode(matchMedia, search = '') {
+  try { if (new URLSearchParams(String(search || '')).get('launch') === IMMERSIVE) return IMMERSIVE; } catch { /* a malformed query */ }
   if (typeof matchMedia !== 'function') return '';
   try {
     return ['standalone', 'fullscreen'].some((m) => matchMedia(`(display-mode: ${m})`).matches) ? 'app' : '';
@@ -130,6 +140,74 @@ export function resumeDelayMs(n, reason = '') {
 /** How long a dropped link is resumed before the page asks for a new code. */
 export const RESUME_BUDGET_MS = 3 * 60 * 1000;
 
+// ── The headset app's own notice in VR (issue #383) ─────────────────────────
+// In the VisIVO VR app the loader is never shown as a 2-D page: the browser
+// shows only VR. When it cannot pair (an expired code, no computer), it says
+// so inside VR (loader-xr.js), and leaving that notice ends the session,
+// which closes the browser's part of the app: the app's scanner comes back.
+
+/** How long the notice stays before the app goes back to the scanner by itself. */
+export const VR_NOTICE_MS = 20000;
+
+/** The notice in VR for a pairing that could not be made: {title, lines}.
+ *  `reason`: the failure's reason (reasonText), or 'no-code'. `message`:
+ *  the words already made for it, when there are. */
+export function vrNotice(reason, message = '') {
+  const back = 'Press a trigger or pinch to go back to the scanner (it goes back by itself in 20 s).';
+  if (reason === 'no-code') {
+    return { title: 'No pairing code', lines: ['VisIVO VR opened this page without a code.', back] };
+  }
+  const why = String(message || reasonText(reason)).replace(/[.:]\s*$/, '');
+  const lost = failureKind(reason) === 'lost' || !reason;
+  return {
+    title: lost ? 'This code cannot be used' : 'The headset could not pair',
+    lines: [`${why}.`, lost ? 'On the computer: New Code, then scan the new QR code.'
+      : 'Check that VisIVO Visual Analytics runs on the computer, on a network the headset reaches.', back],
+  };
+}
+
+/**
+ * `text` broken into lines no wider than `maxWidth`, by words, with
+ * `measure(s)` giving a string's width (a canvas context's measureText).
+ * A word wider than the line is cut.
+ */
+export function wrapText(measure, text, maxWidth) {
+  const out = [];
+  let line = '';
+  for (const word of String(text || '').split(/\s+/).filter(Boolean)) {
+    const next = line ? `${line} ${word}` : word;
+    if (measure(next) <= maxWidth) { line = next; continue; }
+    if (line) out.push(line);
+    let w = word;
+    while (measure(w) > maxWidth && w.length > 1) {
+      let n = w.length - 1;
+      while (n > 1 && measure(w.slice(0, n)) > maxWidth) n--;
+      out.push(w.slice(0, n));
+      w = w.slice(n);
+    }
+    line = w;
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+/**
+ * Where the notice stands: `dist` metres in front of the viewer's head
+ * (its pose matrix, column-major), level, turned to face it, at eye height.
+ * Returns the panel's model matrix (column-major, unit quad scaled to
+ * `width` × `height` metres).
+ */
+export function panelModel(head, { dist = 1.4, width = 1.2, height = 0.6 } = {}) {
+  const fx = -head[8], fz = -head[10];
+  const len = Math.hypot(fx, fz) || 1;
+  const dx = fx / len, dz = fz / len;
+  const px = head[12] + dx * dist, py = head[13], pz = head[14] + dz * dist;
+  // The panel's +z points back at the viewer; x = y × z, the viewer's right.
+  const zx = -dx, zz = -dz;
+  const xx = zz, xz = -zx;
+  return [xx * width, 0, xz * width, 0, 0, height, 0, 0, zx, 0, zz, 0, px, py, pz, 1];
+}
+
 /** The user's words for a reason. */
 export function reasonText(reason) {
   return {
@@ -146,6 +224,7 @@ export function reasonText(reason) {
     bye: 'The computer ended the pairing',
     'no-resume': 'The computer gave this headset no resume code, so the link cannot be resumed: enter a new code',
     'resume-expired': 'The pairing could not be resumed in time',
+    'no-code': 'VisIVO VR opened this page without a pairing code',
   }[reason] || `The pairing failed (${reason || 'unknown reason'})`;
 }
 

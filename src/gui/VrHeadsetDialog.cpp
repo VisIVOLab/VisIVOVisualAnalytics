@@ -251,8 +251,9 @@ VrHeadsetDialog::VrHeadsetDialog(const VrLink::Inputs &inputs, QWidget *parent)
     m_codeLabel->setAccessibleName(u"Pairing code"_s);
     codeColumn->addWidget(m_codeLabel);
     m_pairHint = new QLabel(
-            u"On the Quest, open <i>VisIVO VR</i> and type this code. Or scan the QR code, "
-            u"which opens the page with the code already filled in."_s,
+            u"On the Quest, open the <i>VisIVO VR</i> app and look at this QR code: the cube "
+            u"opens in VR. The app also takes the code typed, and the headset's browser opens "
+            u"the pairing page with it."_s,
             m_pairPanel);
     m_pairHint->setWordWrap(true);
     codeColumn->addWidget(m_pairHint);
@@ -986,10 +987,11 @@ void VrHeadsetDialog::showQr(const QString &payload)
         return;
     }
     // Dark on white whatever the theme, with the four-module quiet zone a
-    // reader needs; whole pixels per module, so it stays sharp.
+    // reader needs; whole pixels per module, so it stays sharp. About 260
+    // pixels across: the headset's camera reads it from 30 to 50 cm (#383).
     constexpr int kQuiet = 4;
     const int modules = qr.size + 2 * kQuiet;
-    const int scale = std::max(3, 180 / modules);
+    const int scale = std::max(4, 260 / modules);
     QImage image(modules * scale, modules * scale, QImage::Format_RGB32);
     image.fill(Qt::white);
     QPainter painter(&image);

@@ -40,11 +40,26 @@ The card is redrawn only when its text changes (at most once per check, every
 | **This cube is too large for this device** | the reduced cube would not fit the [memory budget](reference.md#the-settings-on-the-page) | a larger *Spatial bin* or *Spectral bin*, or a smaller *Max side* |
 | Refine: *lost: retrying in N s, the headset's own rendering meanwhile* | the render session's connection dropped | nothing: the headset shows its own rendering, and the page reconnects (2, 4, 8 … 30 s) and refines again; if the backend no longer holds the cube, the page opens it again first |
 
-In the [VisIVO VR app](../../user/reference/vr.md) there is no 2-D page and no *Enter VR*:
-leaving VR quits the app, and its cards offer **Quit VisIVO VR** instead.
-Where a row above says *Enter VR*, press **Open on Headset** on the computer
-again. What the desktop says when it starts the app is in
+In the [VisIVO VR app](../../user/reference/vr.md) there is no 2-D page and no *Enter VR*.
+Started by **Open on Headset** over USB, leaving VR quits the app, and its
+cards offer **Quit VisIVO VR** instead: where a row above says *Enter VR*,
+press **Open on Headset** on the computer again. Opened from its icon and
+paired with its QR scanner, leaving VR (**Exit VR**) goes back to the
+scanner: scan the code again (or **New Code** on the computer). What the
+desktop says when it starts the app is in
 [The headset app](../methods/vr.md#from-the-desktop).
+
+The app's scanner:
+
+| What you see | Why | What to do |
+|---|---|---|
+| *VisIVO VR may not use the headset's cameras* | the camera permission was refused | type the code in the app, or allow the cameras for VisIVO VR in the headset's settings (Privacy, App permissions) and open the app again |
+| *This headset has no camera VisIVO VR can use* | not a Quest 3 / 3S, or Horizon OS older than v74 | type the code |
+| *This code is for the pairing page at …* | the computer's pairing is set to another loader than the app's (an institute's own) | set *Settings ▸ Backends ▸ Headset Pairing* to the app's service, or type the code in that loader in the Quest Browser |
+| The QR code is never read | too far, at an angle, or reflections on the screen | hold the headset 30 to 50 cm from the screen, facing it; or type the code |
+| In VR: *This code cannot be used* | the code expired (five minutes), was used, or mistyped | press a trigger or pinch (back to the scanner), then **New Code** on the computer |
+| In VR: *The headset could not pair* | the computer's backend is not running, or no network path between the headset and the computer | check that the desktop is running and on a network the headset reaches |
+| The app closes at once after a scan | the loader's host does not list the app (`/.well-known/assetlinks.json`) | the host's administrator: [Hosting headset pairing](../deployment/vr-pairing.md#the-visivo-vr-apps-statement) |
 
 Problems of the USB way (adb not found, the headset not authorised, no
 headset on USB) are named by the *Open in VR Headset…* dialog itself, with the

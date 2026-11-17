@@ -27,8 +27,9 @@ import { ApiClient } from './pair-transport.js';
 import { PacedSender, frameId } from './pair-wire.js';
 import {
   serviceUrl, serviceHost, normaliseCode, pairFromHash, appAddress, failureKind, resumeDelayMs,
-  RESUME_BUDGET_MS, reasonText, byeText, keptResume, linkFigures, AppIdMap, launchMode,
+  RESUME_BUDGET_MS, reasonText, byeText, keptResume, linkFigures, AppIdMap, launchMode, IMMERSIVE, vrNotice,
 } from './loader-core.js';
+import { showInVR } from './loader-xr.js';
 
 const $ = (id) => document.getElementById(id);
 const RESUME_KEY = 'visivo-vr-loader-resume';
@@ -51,7 +52,28 @@ const state = {
   resumes: 0,
   resuming: false,
   resumeGen: 0,           // bumped by a new pairing: a resume loop of before stops
+  // How the loader was opened: 'immersive' (the VisIVO VR headset app, #383:
+  // no 2-D page is ever shown, only VR), 'app' (installed from the browser) or ''.
+  launch: launchMode(typeof window.matchMedia === 'function' ? (q) => window.matchMedia(q) : null, window.location.search),
+  noticeShown: false,
 };
+
+/** In the headset app (#383) the 2-D form is never seen: a failure is said
+ *  in VR, and leaving that notice closes the browser's part of the app, so
+ *  the app's scanner comes back for a new code. Elsewhere, the form. */
+function failed(reason, message) {
+  if (state.launch !== IMMERSIVE) { showForm(message || reasonText(reason), 'error'); return; }
+  setStatus(message || reasonText(reason), 'error');
+  if (state.noticeShown) return;
+  state.noticeShown = true;
+  console.info(`[vr-loader] ${new Date().toISOString()} failed in the headset app: ${reason || message}`);
+  showInVR(vrNotice(reason, message)).then(() => closeApp());
+}
+
+/** Ends the browser's part of the headset app (#383): the app's scanner comes back. */
+function closeApp() {
+  try { window.close(); } catch { /* the browser's call */ }
+}
 
 function setStatus(text, level = '') {
   const s = $('status');
@@ -299,7 +321,7 @@ function setLinkState(s, reason = '') {
 
 /** Pairs with a code typed or from #pair=: a new app in the iframe. */
 async function pair(code) {
-  if (!state.service) { showForm(reasonText('not-configured'), 'error'); return; }
+  if (!state.service) { failed('not-configured'); return; }
   if (state.link) { state.link.onDrop = null; state.link.close('a new pairing'); state.link = null; }
   state.resuming = false;
   state.resumeGen++;
@@ -317,7 +339,7 @@ async function pair(code) {
     openApp(welcome);
   } catch (err) {
     setLinkState(state.appWindow ? 'lost' : 'none', err.reason || '');
-    showForm(err.message, 'error');
+    failed(err.reason || '', err.message);
   } finally {
     $('connect').disabled = false;
   }
@@ -379,7 +401,7 @@ async function resumeLoop() {
   setLinkState('lost', reasonText(reason));
   // Without a page on show (a reloaded loader), the loader asks itself; with
   // one, the page's 'pair-lost' notice does (its action opens the form).
-  if ($('app').hidden) showForm(reasonText(reason), 'error');
+  if ($('app').hidden) failed(reason);
 }
 
 // ── The app in the iframe ──────────────────────────────────────────────────
@@ -387,9 +409,10 @@ async function resumeLoop() {
 function openApp(welcome) {
   const frame = $('app');
   // Launched from the installed app's icon: the page is told (?launch=app), so
-  // it tries to enter VR by itself once its cube is on show (issue #237).
-  frame.src = appAddress(state.tag, window.location.search, welcome,
-    launchMode(typeof window.matchMedia === 'function' ? (q) => window.matchMedia(q) : null));
+  // it tries to enter VR by itself once its cube is on show (issue #237). In
+  // the VisIVO VR headset app (?launch=immersive, #383) it enters at load,
+  // before its cube, with no press.
+  frame.src = appAddress(state.tag, window.location.search, welcome, state.launch);
   frame.hidden = false;
   $('home').hidden = true;
   state.appWindow = frame.contentWindow;
@@ -426,7 +449,11 @@ async function onAppMessage(ev, doc) {
     const port = ev.ports && ev.ports[0] ? ev.ports[0] : m.port;
     if (!port) return;
     if (state.link) state.link.openWs(m.protocol, port, doc); else { port.postMessage({ k: 'close' }); port.close(); }
-  } else if (m.k === 'new-code') showForm('Enter the new code the computer shows.', '');
+  } else if (m.k === 'new-code') {
+    // In the headset app the page has left VR: the app's scanner takes the new code (#383).
+    if (state.launch === IMMERSIVE) closeApp();
+    else showForm('Enter the new code the computer shows.', '');
+  }
   else if (m.k === 'stats') {
     const fig = state.link ? await state.link.figures() : {};
     if (state.appPort) state.appPort.postMessage({ k: 'stats', n: m.n, stats: { ...fig, resumes: state.resumes, state: state.linkState } });
@@ -515,13 +542,13 @@ async function start() {
     pair(code);
   });
   $('close-form').addEventListener('click', () => { if (!$('app').hidden) $('home').hidden = true; });
-  try { await registerWorker(); } catch (err) { setStatus(err.message, 'error'); return; }
+  try { await registerWorker(); } catch (err) { failed('', err.message); return; }
   const { code, rest } = pairFromHash(window.location.hash);
   if (code || window.location.hash) {
     // The code leaves the address bar (and the history entry) at once.
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${rest ? `#${rest}` : ''}`);
   }
-  if (!state.service) { showForm(reasonText('not-configured'), 'error'); return; }
+  if (!state.service) { failed('not-configured'); return; }
   if (code) { $('pair-form').hidden = true; pair(code); return; }
   const kept = keptResume(store()?.getItem(RESUME_KEY));
   if (kept) {
@@ -534,6 +561,8 @@ async function start() {
     resumeLoop();
     return;
   }
+  // The headset app always opens the loader with a code (its scanner, #383).
+  if (state.launch === IMMERSIVE) { failed('no-code'); return; }
   showForm('', '');
 }
 

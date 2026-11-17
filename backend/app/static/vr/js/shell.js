@@ -13,6 +13,7 @@ import { guideNotice, guideStep, guideText } from './onboarding.js';
 import { DiagLog, LogSender, diagnosticsReport, fpsSummary } from './diagnostics.js';
 import { PanelPointer, rayPanel } from './vr-panel.js';
 import { isToastNotice } from './wrist.js';
+import { APP_PAIRED } from './app-launch.js';
 
 /**
  * `opts`: {page: {build, api}, renderer: () => Renderer, backend: () =>
@@ -54,8 +55,13 @@ export function createShell({ page, renderer, backend, token, ctx, doc = documen
   });
 
   function inVR() { return !!ctx.inVR(); }
-  /** The immersive headset app (#255): leaving VR quits it, the notices say so. */
-  function isApp() { return !!(ctx.immersiveApp && ctx.immersiveApp()); }
+  /** The immersive headset app (#255): leaving VR quits it, the notices say
+   *  so; opened by its scanner and paired by code (#383, APP_PAIRED), leaving
+   *  VR goes back to the scanner. false outside the app. */
+  function isApp() {
+    if (!(ctx.immersiveApp && ctx.immersiveApp())) return false;
+    return where.paired ? APP_PAIRED : true;
+  }
 
   function onLife(ev) {
     const { state, prev } = ev;
