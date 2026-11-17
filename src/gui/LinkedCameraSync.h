@@ -19,7 +19,8 @@
 // rules; their refits (a new channel, a resized pane, a letterbox redone for
 // a new colour bar) are adopted, so only the user's pan, zoom or reset is
 // sent. The image viewer has no peers, but its tile streaming follows its own
-// camera the same way (Watch below).
+// camera the same way (Watch below), and every 2-D view redraws its axis
+// labels when the camera moved (OverlayFollow below).
 //
 // Two rules keep linked windows from talking over each other:
 //   - a camera adopted from a peer is not news: the follower records it, so
@@ -187,6 +188,45 @@ private:
     Pose m_last;
     bool m_have{ false };
 };
+
+/// Whether a drawn frame needs drawing again because of the overlays computed
+/// from its camera (issue #362): the WCS axis labels and the catalogue labels of
+/// the 2-D views are recomputed by the window's EndEvent observers, after the
+/// frame is on screen, so a frame shows the labels of the camera before it.
+/// During a drag the next frame catches up; a single frame drawn by Shift+R, a
+/// fit, a zoom to a region, a restored product or a camera adopted from a
+/// linked view left the old labels up until the next interaction.
+///
+/// A frame whose camera differs from the previous frame's asks for one redraw.
+/// The redraw is drawn at the same camera, so it asks for nothing more: the
+/// label update never makes a render loop. The first frame asks too, since its
+/// labels were only computed after it. The window coalesces the requests into
+/// one redraw once the camera settles (kOverlayRedrawDelayMs).
+class OverlayFollow
+{
+public:
+    /// A frame was drawn with the camera at @p pose and its overlays were just
+    /// recomputed for it. True when the frame must be drawn again.
+    bool frame(const Pose &pose)
+    {
+        if (!pose.finite())
+            return false;   // a NaN pose would never equal itself: no redraw for ever
+        if (m_have && pose == m_last)
+            return false;
+        m_have = true;
+        m_last = pose;
+        return true;
+    }
+
+private:
+    Pose m_last;
+    bool m_have{ false };
+};
+
+/// Quiet time after the last camera move before the overlay redraw. A drag
+/// draws a frame per mouse move, and each catches up with the labels of the one
+/// before, so only the last frame needs the redraw.
+constexpr int kOverlayRedrawDelayMs = 30;
 
 }  // namespace LinkedCameraSync
 

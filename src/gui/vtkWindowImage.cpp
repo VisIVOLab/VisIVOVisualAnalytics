@@ -2583,7 +2583,12 @@ LinkedCameraSync::Pose vtkWindowImage::imageCameraPose() const
 
 void vtkWindowImage::onImageCameraFrame()
 {
-    if (this->m_lodCameraWatch.moved(this->imageCameraPose())) {
+    const LinkedCameraSync::Pose pose = this->imageCameraPose();
+    // Issue #362: this frame went out with the labels of the camera before it.
+    if (this->m_overlayFollow.frame(pose) && this->m_overlayRedrawTimer) {
+        this->m_overlayRedrawTimer->start();
+    }
+    if (this->m_lodCameraWatch.moved(pose)) {
         this->onImageInteractionSettled();
     }
 }
