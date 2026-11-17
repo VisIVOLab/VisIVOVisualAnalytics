@@ -68,9 +68,12 @@ window shows:
 - the spectrum on log axes with error bars; bins used in the fit in blue,
   others grey;
 - the slope n of P ∝ ℓⁿ with its 1σ error and fitted ℓ range;
-- *Fit ℓ from … to* and *min. modes*: refit the slope (weighted by the bin
-  errors). Bins with fewer than 8 Fourier modes or no error are left out by
-  default;
+- *Fit ℓ from … to* and *min. modes*: refit the slope. Each bin is weighted
+  by 1/σ² of log P, so the many-mode bins at high ℓ dominate. Bins with fewer
+  than 8 Fourier modes or no error are left out by default;
+- χ²/dof of the fit. When it rules out a single power law (p < 0.001) the
+  slope line says so, the 1σ error is widened by √(χ²/dof), and the line
+  follows the high-ℓ bins: narrow the range to the part that is straight;
 - CSV and PNG export.
 
 This is a relative texture spectrum, with no beam, pixel-window or mask

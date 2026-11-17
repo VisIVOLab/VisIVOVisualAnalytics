@@ -41,6 +41,8 @@ private slots:
     void slopeNeedsThreeBins();
     void slopeSkipsNonPositivePower();
     void slopeIsWeightedByTheBinErrors();
+    void drawnLineFollowsANoisyPowerLaw();
+    void curvedSpectrumIsFlaggedAndItsErrorScaled();
 
     // BackendClient bindings
     void distancesQueryUsesTheRoutesParameterNames();

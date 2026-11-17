@@ -43,13 +43,17 @@ cosmologies disagree.
 
 4. A window shows the spectrum on log axes. The map has no sky coordinates,
    so the axis is the wavenumber k in cycles per pixel. Of the 64 bins, 55 hold
-   modes. The slope line reads *Slope n = -2.008 ± 0.012 (P ∝ kⁿ) over k
-   0.008166–0.4793, 46 bins, weighted by the bin errors*. Blue bins are in the
-   fit; open grey circles (*Left out* in the legend) hold fewer than 8 Fourier
-   modes or lie outside the fit range.
+   modes. The slope line reads *Slope n = -2.008 ± 0.081 (P ∝ kⁿ) over k
+   0.008166–0.4793, 46 bins, each weighted by 1/σ² of log P. One power law does
+   not fit these bins (χ²/dof = 47.2)…*. Blue bins are in the fit; open grey
+   circles (*Left out* in the legend) hold fewer than 8 Fourier modes or lie
+   outside the fit range. The high-k bins hold thousands of modes and so carry
+   almost all the weight: the red line follows them and passes well above the
+   bins at low k, and the error is widened by √(χ²/dof) because a straight
+   line does not describe the whole range.
 
    ```{figure} img/11-cosmology-2.png
-   :alt: The angular power spectrum window: log axes, bins in the fit in blue, the red fitted line, and the slope line n = -2.008 over k 0.008166 to 0.4793, 46 bins.
+   :alt: The angular power spectrum window: log axes, bins in the fit in blue, the red fitted line following the high-k bins, and the slope line n = -2.008 ± 0.081 over k 0.008166 to 0.4793, 46 bins, with the warning that one power law does not fit.
    :width: 80%
 
    The power spectrum of the projection with the default fit.
@@ -57,7 +61,8 @@ cosmologies disagree.
 
 5. The default fit mixes the middle range with the steeper small scales. Type 0.02 in *Fit k from* and 0.2 in
    *to*, pressing Enter after each: the slope becomes *n = -1.200 ± 0.034*
-   over 26 bins, wavelengths from 50 down to 5 cells. *Session Data* keeps the
+   over 26 bins (χ²/dof = 1.36), wavelengths from 50 down to 5 cells, and the
+   line runs through the blue bins. *Session Data* keeps the
    run under the first slope (*n = -2.01 · …*); its *Parameters* tab records
    the latest fit and range. *Export CSV…* writes the bins and the fit.
 
@@ -91,15 +96,17 @@ cosmologies disagree.
 | Fit range (cycles/pixel) | Measured in the app (2-D, projection) | Check with numpy (3-D, full cube) |
 |---|---|---|
 | 0.02 to 0.2 | -1.200 ± 0.034 | -1.19 |
-| 0.1 to 0.48 | -2.402 ± 0.016 | -2.62 |
-| all bins (default) | -2.008 ± 0.012 | |
+| 0.1 to 0.48 | -2.402 ± 0.113 (χ²/dof 47.7) | -2.62 |
+| all bins (default) | -2.008 ± 0.081 (χ²/dof 47.2) | |
 
 A projection through the whole box keeps the 3-D modes with no component
 along the line of sight, so its 2-D spectrum has the shape of the 3-D P(k).
 The right-hand column is a separate Fourier transform of the full 512³ cube,
 done outside the app as a check. From 0.02 to 0.2 the two slopes agree to
 0.01. At the smallest scales the spectrum curves, so the slope depends on how
-the bins are weighted (the unweighted 3-D fit gives -2.03).
+the bins are weighted (the unweighted 3-D fit gives -2.03). Over the two wider
+ranges χ² rejects a single power law, so the app widens those errors by
+√(χ²/dof) and says so under the plot.
 
 The linear spectrum steepens towards k⁻³ on small scales; -1.2 is much
 shallower because these scales are nonlinear (the cell-to-cell rms density

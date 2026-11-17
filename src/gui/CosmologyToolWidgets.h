@@ -102,7 +102,7 @@ public:
     visivo::PowerSlopeOptions options() const;
     visivo::PowerSlopeFit fit() const { return m_fit; }
 
-    /// One line for a status bar: "slope −2.31 ± 0.05 over ℓ 120–4500 (23 bins)".
+    /// The slope line under the plot; see visivo::powerSlopeSummary.
     static QString slopeSummary(const visivo::PowerSlopeFit &fit, bool ellIsAngular);
 
 private:
