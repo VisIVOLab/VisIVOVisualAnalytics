@@ -45,8 +45,8 @@ cosmologies disagree.
    so the axis is the wavenumber k in cycles per pixel. Of the 64 bins, 55 hold
    modes. The slope line reads *Slope n = -2.008 ± 0.012 (P ∝ kⁿ) over k
    0.008166–0.4793, 46 bins, weighted by the bin errors*. Blue bins are in the
-   fit; grey ones hold fewer than 8 Fourier modes or lie outside the fit
-   range.
+   fit; open grey circles (*Left out* in the legend) hold fewer than 8 Fourier
+   modes or lie outside the fit range.
 
    ```{figure} img/11-cosmology-2.png
    :alt: The angular power spectrum window: log axes, bins in the fit in blue, the red fitted line, and the slope line n = -2.008 over k 0.008166 to 0.4793, 46 bins.
@@ -70,7 +70,8 @@ cosmologies disagree.
 
 ### Convert redshifts to distances
 
-6. In the main window choose *Tools ▸ Cosmology Calculator…*. With *Model* on
+6. In the main window (the Data Hub, not the cube window) choose *Tools ▸
+   Cosmology Calculator…*. With *Model* on
    Planck18, type `0.1, 0.5, 1, 2, 3` in the redshift box and press
    *Compute*. *Copy* puts the table on the clipboard.
 
