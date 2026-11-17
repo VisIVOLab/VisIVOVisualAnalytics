@@ -33,8 +33,15 @@ export function launchedImmersive(search) {
   try { return new URLSearchParams(String(search || '')).get('launch') === IMMERSIVE; } catch { return false; }
 }
 
-/** The way out of VR, as the user reads it: quitting the app, or leaving VR. */
-export function exitLabel(app) { return app ? QUIT_LABEL : 'Exit VR'; }
+/** The page runs in the headset app opened by its QR-code scanner (issue
+ *  #383: the public loader, paired by code): leaving VR goes back to the
+ *  app's scanner, it does not quit. The notices' `app` is then this value
+ *  instead of true. */
+export const APP_PAIRED = 'paired';
+
+/** The way out of VR, as the user reads it: quitting the app (the desktop's
+ *  USB launch), or leaving VR (a page, or the app back to its scanner). */
+export function exitLabel(app) { return app && app !== APP_PAIRED ? QUIT_LABEL : 'Exit VR'; }
 
 /** A ticket as the backend issues it (else ''). */
 export function cleanTicket(text) {

@@ -25,6 +25,22 @@ test('the app\'s launches: launch=immersive, an installed app too; the way out i
   assert.equal(XE.launchedAsApp('?launch=immersive', null), true);
   assert.equal(APP.exitLabel(true), 'Quit VisIVO VR');
   assert.equal(APP.exitLabel(false), 'Exit VR');
+  // Opened by the app's scanner and paired by code (#383): back to the scanner, not quitting.
+  assert.equal(APP.exitLabel(APP.APP_PAIRED), 'Exit VR');
+});
+
+test('the app paired by code (#383): Exit VR, and a lost pairing asks for a scan', () => {
+  const paired = { inVR: true, app: APP.APP_PAIRED };
+  assert.deepEqual(noticeFor('app-empty', paired).actions, [{ id: 'exit-vr', label: 'Exit VR' }]);
+  const lost = noticeFor('pair-lost', { ...paired, detail: 'The computer ended the pairing' });
+  assert.equal(lost.actions[0].id, 'new-code');
+  assert.equal(lost.actions[0].label, 'Scan a new code');
+  assert.match(lost.badge, /scan a new code/);
+  assert.deepEqual(lost.actions.at(-1), { id: 'exit-vr', label: 'Exit VR' });
+  // The loader in a browser tab: typed, as before.
+  const tab = noticeFor('pair-lost', { inVR: true, paired: true });
+  assert.equal(tab.actions[0].label, 'Enter a new code');
+  assert.match(tab.lines.join(' '), /enter it here/);
 });
 
 test('the ticket rides the fragment and leaves the address with the pairing keys', () => {
@@ -335,7 +351,9 @@ test('the hello names the app\'s launch, and says it again when a handed launch 
 
 test('main.js: the app quits with its session, the room is said again on entering VR', () => {
   const start = main.slice(main.indexOf('async function startSession('), main.indexOf('function placeInFront('));
-  assert.match(start, /if \(APP_IMMERSIVE\) session\.addEventListener\('end', \(\) => setTimeout\(\(\) => \{ try \{ window\.close\(\); \}/);
+  assert.match(start, /if \(APP_IMMERSIVE\) \{\n    session\.addEventListener\('end', \(\) => setTimeout\(\(\) => \{/);
+  // In the public loader's frame (#383) the loader's window (same origin) is closed: the app's scanner comes back.
+  assert.match(start, /window\.top\.location\.origin === window\.location\.origin\) w = window\.top;[^\n]*\n\s*try \{ w\.close\(\); \}/);
   // A page that stood down keeps its window: closing it ends the session of the page in VR.
   const fwd = main.slice(main.indexOf('function forwardGrant()'), main.indexOf('function onPageMessage('));
   assert.doesNotMatch(fwd, /window\.close/);

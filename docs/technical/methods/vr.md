@@ -343,6 +343,19 @@ What the desktop may say instead:
 | *This backend does not list the VisIVO VR app…* | The backend does not serve the app's statement at `/.well-known/assetlinks.json`: a development build needs the backend on the same computer (restart it after the first build); the release app needs a backend as recent as the desktop that bundles it (an older one does not list it yet; on a cluster, update the backend too, or start it with `VISIVO_VR_APP_RELEASE_SHA256` set to the certificate in `tools/quest-app/README.md`). Nothing was started. |
 | *Another VisIVO VR is installed* (a question) | The headset has a build of the app signed by another key (someone's own development build). **Yes** uninstalls it and installs this one; **No** leaves it alone. The desktop never uninstalls without asking. |
 
+### From the scanner
+
+Opened from its icon, the app shows its QR scanner, a 2-D panel with the
+headset's passthrough camera
+([#383](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/383)).
+Looking at the QR code of *Open in VR Headset…* (or typing its code) opens
+the public loader inside the app with the code; the loader pairs over WebRTC
+as in the Quest Browser, and its page enters VR at load with no press. The
+design, the permissions and the host's statement are in
+[The VisIVO VR app's flow](../deployment/vr-public-loader.md#the-visivo-vr-apps-flow);
+what the scanner says is in
+[Troubleshooting](../vr/troubleshooting.md).
+
 While the app runs, **Open on Headset** and **Show on Headset** send the
 cube to it: the app is never started a second time, so you stay in VR and
 the new cube replaces the old one. **Open in Browser** opens the page in the
@@ -435,9 +448,9 @@ Put the headset on first: an asleep headset ignores the launch.
    *Opening …* then the cube. The backend log has the times
    (`app-launch: ticket exchanged in … ms`, then `xr-start`).
 5. Open the hand menu, check the cube's controls work as in the browser.
-6. Start the app from its icon in the App Library: *No cube yet* with the
-   computer's address; then **Open on Headset** on the computer: the cube
-   arrives without leaving VR.
+6. Start the app from its icon in the App Library: its QR scanner opens (a
+   2-D panel with the camera view). Scanning the dialog's QR code pairs and
+   enters VR (see [From the scanner](#from-the-scanner)).
 7. With a cube on show, send another with **Show on Headset**: it replaces the
    first in VR.
 8. Quit from the system menu (or **Quit VisIVO VR** on a card when one is

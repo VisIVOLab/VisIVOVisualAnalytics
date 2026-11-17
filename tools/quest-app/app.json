@@ -1,5 +1,5 @@
 {
-  "about": "The VisIVO VR headset app (issue #255): the backend's VR page packaged as an immersive Horizon OS app. Read by build.sh / make-twa.py; the packages must match backend/app/vr_app.json. Bump versionCode whenever the wrapper changes (a new Bubblewrap, a new patch, a new icon; the icons are made by make-icons.py): the desktop reinstalls an app whose versionCode is lower than the one it ships.",
+  "about": "The VisIVO VR headset app (issues #255, #383): a QR-code scanner (a 2-D panel) and the pairing loader packaged as an immersive Horizon OS app; the desktop's USB launch opens its backend's VR page instead. Read by build.sh / make-twa.py; the packages must match backend/app/vr_app.json. loaderOrigin + startPath is the page the scanner opens with the code (#pair=); its host must publish /.well-known/assetlinks.json for the app (web/vr-loader/.well-known/). Bump versionCode whenever the wrapper changes (a new Bubblewrap, a new patch, a new icon, a new loader; the icons are made by make-icons.py): the desktop reinstalls an app whose versionCode is lower than the one it ships.",
   "packages": {
     "release": "it.inaf.oact.visivo.vr",
     "development": "it.inaf.oact.visivo.vr.dev"
@@ -8,11 +8,11 @@
     "release": "VisIVO VR",
     "development": "VisIVO VR (dev)"
   },
-  "versionCode": 2,
-  "versionName": "1.0.1",
-  "defaultOrigin": "http://localhost:8000",
-  "startPath": "/vr/?launch=immersive",
-  "scopePath": "/vr/",
+  "versionCode": 3,
+  "versionName": "1.1.0",
+  "loaderOrigin": "https://vr.visivolab.oact.inaf.it",
+  "startPath": "/?launch=immersive",
+  "scopePath": "/",
   "themeColor": "#101418",
   "icon": "tools/quest-app/icon-512.png",
   "maskableIcon": "tools/quest-app/icon-maskable-512.png"

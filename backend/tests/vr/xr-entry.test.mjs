@@ -26,7 +26,22 @@ test('the loader passes the launch on to its iframe, and only it decides', () =>
   assert.equal(appQuery('?launch=app&debug'), '?transport=pair&debug');
   assert.equal(appAddress('k3j4l5m6', '', { session: 's' }, 'app'), 'app/k3j4l5m6/vr/?transport=pair&launch=app#session=s');
   const loader = readFileSync(new URL('../../../web/vr-loader/js/loader.js', import.meta.url), 'utf8');
-  assert.match(loader, /appAddress\(state\.tag, window\.location\.search, welcome,\s*launchMode\(/);
+  assert.match(loader, /launch: launchMode\([^\n]*window\.location\.search\)/);
+  assert.match(loader, /appAddress\(state\.tag, window\.location\.search, welcome, state\.launch\)/);
+});
+
+test('the headset app opens the loader with ?launch=immersive: the page enters VR at load (#383)', () => {
+  // The app's own address wins over the display mode (a TWA may also report standalone).
+  assert.equal(launchMode(media(['standalone']), '?launch=immersive'), 'immersive');
+  assert.equal(launchMode(undefined, '?launch=immersive'), 'immersive');
+  assert.equal(launchMode(media(['browser']), '?launch=page'), '');
+  assert.equal(appQuery('?launch=immersive&debug', 'immersive'), '?transport=pair&debug&launch=immersive');
+  assert.equal(appAddress('k3j4l5m6', '?launch=immersive', { session: 's' }, 'immersive'),
+    'app/k3j4l5m6/vr/?transport=pair&launch=immersive#session=s');
+  // The page reads it as the immersive app: it enters VR before its cube, with no ticket to wait for.
+  assert.equal(XE.launchedAsApp('?transport=pair&launch=immersive', null), true);
+  assert.equal(XE.shouldAutoEnter({ launched: true, tried: false, vrSupported: true, active: true, inXR: false,
+    cubeReady: false, immersive: true, settled: true }), true);
 });
 
 test('auto-enter: once, launched as an app, with a cube on show, on the page in use, outside VR', () => {

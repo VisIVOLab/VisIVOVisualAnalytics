@@ -4671,8 +4671,16 @@ async function startSession(session, mode, bench, startGen, wantLayers) {
   session.addEventListener('visibilitychange', () => shell.log('info', 'xr-visibility', String(session.visibilityState)));
   // The headset app quits with its session (#255): the browser closes it,
   // except where a second launch left another window above this one; then
-  // this page closes its own, never staying behind outside VR.
-  if (APP_IMMERSIVE) session.addEventListener('end', () => setTimeout(() => { try { window.close(); } catch { /* the browser's call */ } }, 1000));
+  // this page closes its own, never staying behind outside VR. In the
+  // public loader's frame (#383) the window is the loader's (same origin):
+  // closing it brings back the app's scanner.
+  if (APP_IMMERSIVE) {
+    session.addEventListener('end', () => setTimeout(() => {
+      let w = window;
+      try { if (window.top && window.top.location.origin === window.location.origin) w = window.top; } catch { /* another origin: this window */ }
+      try { w.close(); } catch { /* the browser's call */ }
+    }, 1000));
+  }
   session.requestAnimationFrame(onXRFrame);
 }
 

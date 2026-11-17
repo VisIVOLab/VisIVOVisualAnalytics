@@ -143,6 +143,45 @@ by default; nginx needs the line below).
 with a JavaScript type; `.webmanifest` should come as
 `application/manifest+json` for the app install.
 
+### The VisIVO VR app's statement
+
+The *VisIVO VR* headset app
+([#383](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/383))
+reads the desktop's QR code and opens the loader inside the app, straight in
+VR. The headset's browser lets the app show a page full screen and in VR only
+when the page's **origin** publishes a Digital Asset Links statement naming
+the app; it fetches the statement at every launch and closes the app when it
+is missing or names another app. Android also reads it to let the app open
+the desktop's QR code address (`https://<loader>/#pair=<code>`) when the
+headset's own QR scanner hands it over.
+
+- The statement is `web/vr-loader/.well-known/assetlinks.json`, made from
+  `backend/app/vr_app.json` by `tools/quest-app/make-assetlinks.py` (a test
+  checks they agree). It names the release app (`it.inaf.oact.visivo.vr`)
+  and its certificate's SHA-256.
+- It must be served at the **root of the loader's host**,
+  `https://vr.example.org/.well-known/assetlinks.json`, whatever path the
+  loader has: as `application/json`, with status 200, no redirect and no
+  login. With the loader at the root of its host (as at INAF), copying
+  `web/vr-loader/` puts it there; with the loader under `/visivo/`, copy
+  `.well-known/` to the document root instead.
+- The release app opens the loader it was built for
+  (`tools/quest-app/app.json`, `loaderOrigin`: INAF's). An institute with its
+  own loader builds its own app (`tools/quest-app/build.sh`, with its
+  `loaderOrigin` and its own key) and lists that app in its statement; the
+  release app's scanner says so when it reads a QR code of another loader.
+
+**Check it:**
+
+```sh
+curl -sS -D - https://vr.example.org/.well-known/assetlinks.json
+```
+
+answers `200`, `Content-Type: application/json`, and the statement with
+`"package_name": "it.inaf.oact.visivo.vr"` and the fingerprint
+`A1:54:C4:5B:…:D8:D4`. Google's checker gives the same verdict:
+`https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://vr.example.org&relation=delegate_permission/common.handle_all_urls`.
+
 ## 3. The reverse proxy, with TLS
 
 The proxy terminates TLS, serves the loader and forwards the service's two
@@ -287,10 +326,12 @@ build, the field users type over it:
 |---|---|
 | Each backend | `VISIVO_VR_PAGE_URL` (for the desktop's own backend: the build default or the *Headset page* field), then restart it |
 | Pairing service | `VR_PAIR_ALLOWED_ORIGINS`: add the new origin (remove the old one once nobody uses it) |
-| Loader | nothing: copy the directory, `config.json` included, unchanged |
+| Loader | nothing: copy the directory, `config.json` and `.well-known/assetlinks.json` included, unchanged (the statement at the new host's root) |
+| VisIVO VR app | `loaderOrigin` in `tools/quest-app/app.json`, with a new `versionCode`: a new app in the next release |
 
 Headsets that installed the old loader as an app keep opening the old address:
-users open the new one and install it again. Moving either piece ends the
+users open the new one and install it again. The VisIVO VR app opens the
+loader it was built for until it is updated. Moving either piece ends the
 headsets connected at the time (their backends restart); users pair again with
 a new code.
 

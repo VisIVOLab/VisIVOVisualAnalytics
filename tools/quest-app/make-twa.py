@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Writes the twa-manifest.json that Meta's Bubblewrap turns into the VisIVO
-VR headset app's Android project (issue #255).
+VR headset app's Android project (issues #255, #383).
 
-Usage: make-twa.py <project_dir> <dev|release> <icon_url> <maskable_icon_url> <keystore> <alias>
+Usage: make-twa.py <project_dir> <dev|release> <icon_url> <maskable_icon_url> <keystore> <alias> [<loader_origin>]
 
 Everything else comes from app.json next to this script. The origin is
-app.json's defaultOrigin: what an icon launch opens. The desktop's launch
-names its own backend's address in the intent (any port on localhost), and
-the browser verifies that origin's assetlinks.json at every launch.
+app.json's loaderOrigin (or <loader_origin>, a development loader): the
+pairing loader the app's scanner opens with a code. The desktop's USB
+launch names its own backend's address in the intent (any port on
+localhost), and the browser verifies the launched origin's assetlinks.json
+at every launch.
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def manifest(mode: str, icon_url: str, maskable_url: str, keystore: str, alias: str, app: dict) -> dict:
-    origin = app["defaultOrigin"].rstrip("/")
+    origin = app["loaderOrigin"].rstrip("/")
     u = urlsplit(origin)
     color = app["themeColor"]
     return {
@@ -68,11 +70,13 @@ def manifest(mode: str, icon_url: str, maskable_url: str, keystore: str, alias: 
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 7 or argv[2] not in ("dev", "release"):
+    if len(argv) not in (7, 8) or argv[2] not in ("dev", "release"):
         print(__doc__, file=sys.stderr)
         return 2
     out_dir, mode, icon_url, maskable_url, keystore, alias = Path(argv[1]), *argv[2:7]
     app = json.loads((HERE / "app.json").read_text(encoding="utf-8"))
+    if len(argv) == 8 and argv[7]:
+        app["loaderOrigin"] = argv[7]
     key = "development" if mode == "dev" else "release"
     app = {**app, "packages": {mode: app["packages"][key]}, "names": {mode: app["names"][key]}}
     m = manifest(mode, icon_url, maskable_url, keystore, alias, app)

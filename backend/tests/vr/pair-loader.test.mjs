@@ -6,7 +6,48 @@ import assert from 'node:assert/strict';
 import {
   serviceUrl, serviceHost, normaliseCode, pairFromHash, appQuery, appFragment, appAddress, failureKind,
   resumeDelayMs, keptResume, linkFigures, isLoopbackHost, AppIdMap, byeText, reasonText,
+  vrNotice, wrapText, panelModel, VR_NOTICE_MS,
 } from '../../../web/vr-loader/js/loader-core.js';
+
+test('the headset app\'s notice in VR (#383): what failed, what to do, the way back to the scanner', () => {
+  const expired = vrNotice('expired');
+  assert.equal(expired.title, 'This code cannot be used');
+  assert.match(expired.lines[0], /expired/);
+  assert.match(expired.lines[1], /New Code/);
+  assert.match(expired.lines.at(-1), /scanner/);
+  const away = vrNotice('host-gone');
+  assert.equal(away.title, 'The headset could not pair');
+  assert.match(away.lines[1], /runs on the computer/);
+  assert.equal(vrNotice('timeout', 'The computer did not answer in time.').lines[0], 'The computer did not answer in time.');
+  assert.equal(vrNotice('no-code').title, 'No pairing code');
+  assert.equal(VR_NOTICE_MS, 20000);
+  assert.match(vrNotice('no-code').lines.at(-1), /20 s/);
+});
+
+test('the notice\'s text wraps by words, a word too long is cut', () => {
+  const m = (s) => s.length;
+  assert.deepEqual(wrapText(m, 'one two three four', 9), ['one two', 'three', 'four']);
+  assert.deepEqual(wrapText(m, 'abcdefghij', 4), ['abcd', 'efgh', 'ij']);
+  assert.deepEqual(wrapText(m, '', 10), []);
+  for (const line of wrapText(m, 'The computer did not answer in time, check the network', 12)) assert.ok(line.length <= 12, line);
+});
+
+test('the notice stands in front of the head, level, facing it, x to the right', () => {
+  // A head at (0, 1.6, 0) looking down -z (identity rotation).
+  const head = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1.6, 0, 1];
+  const m = panelModel(head, { dist: 2, width: 1, height: 0.5 });
+  assert.deepEqual([m[12], m[13], m[14]].map((v) => +v.toFixed(6)), [0, 1.6, -2]);
+  assert.deepEqual([m[0], m[1], m[2]].map((v) => +v.toFixed(6)), [1, 0, 0]);     // x: the viewer's right
+  assert.deepEqual([m[8], m[9], m[10]].map((v) => +v.toFixed(6)), [0, 0, 1]);    // +z: back at the viewer
+  assert.equal(m[5], 0.5);
+  // Turned 90° left (looking down -x), and tilted: the panel stays level.
+  const c = Math.cos(0.3), s = Math.sin(0.3);
+  const left = [0, 0, -1, 0, -s, c, 0, 0, c, s, 0, 0, 1, 1.5, 0, 1];  // forward = -z column = (-c, -s, 0)
+  const ml = panelModel(left, { dist: 1 });
+  assert.deepEqual([ml[12], ml[13], ml[14]].map((v) => +v.toFixed(6)), [0, 1.5, 0]);
+  assert.equal(ml[9], 0);
+  assert.deepEqual([ml[8], ml[10]].map((v) => +v.toFixed(6)), [1, 0]);
+});
 
 test('the bridge\'s bye reasons and a missing resume code in the user\'s words', () => {
   assert.equal(byeText('disconnected'), 'The computer disconnected this headset');

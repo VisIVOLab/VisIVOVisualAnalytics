@@ -11,7 +11,7 @@
 // Pure, with the network and the clock passed in: unit-tested in
 // backend/tests/vr/lifecycle.test.mjs.
 
-import { exitLabel } from './app-launch.js';
+import { exitLabel, APP_PAIRED } from './app-launch.js';
 
 /** The page API this page speaks (backend/app/routers/vr.py VR_API). */
 export const PAGE_VR_API = 1;
@@ -142,7 +142,7 @@ export function prepText(prep, name = '') {
  * runs as the immersive headset app (#255), where leaving VR quits it.
  */
 export function noticeFor(kind, ctx = {}) {
-  const exit = ctx.inVR ? [{ id: 'exit-vr', label: exitLabel(!!ctx.app) }] : [];
+  const exit = ctx.inVR ? [{ id: 'exit-vr', label: exitLabel(ctx.app) }] : [];
   const hide = { id: 'hide', label: 'Hide' };
   const desktopReopen = 'On the computer: Tools → Views → Open in VR Headset… → Open on Headset.';
   switch (kind) {
@@ -165,13 +165,17 @@ export function noticeFor(kind, ctx = {}) {
         actions: [{ id: 'retry', label: 'Retry now' }, hide, ...exit], sticky: true,
         badge: 'Backend not reachable: retrying' };
     }
-    case 'pair-lost':
+    case 'pair-lost': {
+      // In the headset app (#383) a new code is read by its scanner, after VR.
+      const scan = ctx.app === APP_PAIRED;
       return { id: 'pair-lost', level: 'error', title: 'The pairing with the computer ended',
         lines: [ctx.detail ? `${ctx.detail}.` : 'The page could not reconnect with this pairing.',
-          'On the computer: Tools → Views → Open in VR Headset… gives a new code; enter it here.',
+          scan ? 'On the computer: Tools → Views → Open in VR Headset… gives a new code; Scan a new code takes you to the scanner.'
+            : 'On the computer: Tools → Views → Open in VR Headset… gives a new code; enter it here.',
           'The cube stays on show and moves meanwhile.'],
-        actions: [{ id: 'new-code', label: 'Enter a new code' }, hide, ...exit], sticky: true,
-        badge: 'Pairing ended: enter a new code' };
+        actions: [{ id: 'new-code', label: scan ? 'Scan a new code' : 'Enter a new code' }, hide, ...exit], sticky: true,
+        badge: scan ? 'Pairing ended: scan a new code' : 'Pairing ended: enter a new code' };
+    }
     case 'http-error': {
       const proxy = ctx.status >= 502 && ctx.status <= 504;
       return { id: 'http-error', level: 'error', title: proxy ? 'The backend is not answering behind its proxy' : 'The backend answered with an error',

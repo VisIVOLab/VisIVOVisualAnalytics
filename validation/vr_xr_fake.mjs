@@ -210,6 +210,8 @@ export const XR_FAKE = `(() => {
         else fire();
       },
       addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      // The checks' own: an input event as the browser would send it (a trigger's 'select', #383).
+      _fire(type) { if (!this.ended) (listeners[type] || []).forEach((f) => f({ type, session: this })); },
     };
     const frame = {
       session,
@@ -250,6 +252,7 @@ export const XR_FAKE = `(() => {
     session.endDelayMs = S.endDelayMs;
     session.endNever = !!S.endNever;
     live.add(session);
+    S.lastSession = session;
     return session;
   };
   const xr = {

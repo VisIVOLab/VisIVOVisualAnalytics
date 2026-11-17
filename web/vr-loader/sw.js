@@ -12,10 +12,10 @@
 
 const SCOPE = self.registration.scope;          // ends with '/'
 const APP = `${SCOPE}app/`;
-const SHELL_CACHE = 'visivo-loader-shell-v1';
+const SHELL_CACHE = 'visivo-loader-shell-v2';
 const BUILD_CACHE = 'visivo-vr-';
 const SHELL = ['./', 'index.html', 'style.css', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
-  'js/loader.js', 'js/loader-core.js', 'js/pair-wire.js', 'js/pair-transport.js'];
+  'js/loader.js', 'js/loader-core.js', 'js/loader-xr.js', 'js/pair-wire.js', 'js/pair-transport.js'];
 const ASK_TIMEOUT_MS = 30000;
 
 self.addEventListener('install', (event) => {
@@ -23,7 +23,11 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
+  // An older version's copy of the loader's own files is not used any more.
+  event.waitUntil(caches.keys()
+    .then((keys) => Promise.all(keys.filter((k) => k.startsWith('visivo-loader-shell-') && k !== SHELL_CACHE).map((k) => caches.delete(k))))
+    .catch(() => {})
+    .then(() => self.clients.claim()));
 });
 
 self.addEventListener('message', (event) => {

@@ -42,6 +42,9 @@
 // 8.4 MB cube, one DevTools call each (--pair-stress-in-page: one loop in the
 // page; --pair-stress-detached: the same with DevTools detached while it
 // runs); VR_CHROME_ARGS passes more flags to Chrome (e.g. --vmodule logging).
+// --app-paired (issue #383) runs only the headset app's flow on that setup
+// (validation/vr_app_paired.mjs): the loader opened as the VisIVO VR app opens
+// it, the page in VR with no press, the ways back to the app's scanner.
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, openSync, existsSync, rmSync } from 'node:fs';
@@ -69,6 +72,7 @@ import { runOverlayChecks } from './vr_overlay.mjs';
 import { runExplodeChecks } from './vr_explode.mjs';
 import { runPyramidWaitChecks } from './vr_pyramid_wait.mjs';
 import { runIsosurfaceChecks } from './vr_isosurface.mjs';
+import { runAppPairedChecks, CLOSE_SPY } from './vr_app_paired.mjs';
 
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
   if (v.startsWith('--')) a.push([v.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
@@ -76,7 +80,11 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((a, v, i, all) => {
 }, []));
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
-const PAIRED = !!args.paired;
+// --app-paired (issue #383): the headset app's flow alone (vr_app_paired.mjs):
+// the loader opened with ?launch=immersive#pair=, the page in VR by itself,
+// leaving VR and a bad code closing the loader's window. With the paired setup.
+const APP_PAIRED = !!args['app-paired'];
+const PAIRED = !!args.paired || APP_PAIRED;
 const MEASURE = !!args.measure;
 // --alloc (issue #226): the repeated-selection allocation run alone (also part of --regressions).
 const ALLOC = !!args.alloc || !!args.regressions;
@@ -638,6 +646,14 @@ try {
   if (XRFAKE || SOURCES || MASKS || ENTRY || CROP_DETAIL || VARIABLES || OVERLAY || EXPLODE) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TEX3D_PROBE });
   // A Quest's browser, so the page words its messages for the headset over USB.
   if (!SMOKE) await c.send('Emulation.setUserAgentOverride', { userAgent: QUEST_UA });
+  run: {
+  if (APP_PAIRED) {
+    await c.send('Page.addScriptToEvaluateOnNewDocument', { source: XR_FAKE });
+    await c.send('Page.addScriptToEvaluateOnNewDocument', { source: CLOSE_SPY });
+    await runAppPairedChecks({ c, check, waitFor, results, code: PAIR_CODE,
+      loader: `http://localhost:${LOADER_PORT}`, service: `ws://localhost:${PAIR_PORT}` });
+    break run;
+  }
   if (PAIRED) {
     // The loader on its own origin (localhost:<loader port>), the service
     // from ?pair_service= (honoured on a loopback loader), the code from #pair=.
@@ -959,6 +975,7 @@ try {
     const errs2 = c.pageErrors.filter((e) => !/WEBGL_lose_context|context/i.test(e));
     check('no uncaught page exception during the run', !errs2.length, errs2.join(' / '));
   }
+  }   // run:
   exitCode = failed ? 1 : 0;
 } catch (err) {
   check('run', false, err.stack || err.message);
