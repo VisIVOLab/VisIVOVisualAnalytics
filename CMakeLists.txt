@@ -852,6 +852,7 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/pane_2_rows.svg
         resources/icons/pane_4.svg
         resources/icons/check.svg
+        resources/icons/check_partial.svg
         resources/icons/rail_provenance.svg
 )
 

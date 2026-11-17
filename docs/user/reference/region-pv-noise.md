@@ -70,7 +70,11 @@ one file sit under a node named after the file, for example
 
 A hidden region stays in the list but is not drawn anywhere: not on the
 slice, the map panes, the 3-D cutting plane or the *Remote* 3-D view, and a
-click on the image does not pick it. Hiding, renaming and deleting are region
+click on the image does not pick it. A hidden region selected from its row is
+edited, deleted or exported from that row: *Region Properties…* and *Delete
+Region* in *Tools ▸ Regions*, and Delete or Backspace on the image, do not
+act on it. A file's node counts its hidden regions, for example
+`hcg44.reg (4, 1 hidden)`. Hiding, renaming and deleting are region
 changes like the others: *Undo Region Edit* takes them back. Spectra and
 statistics made from a region keep their own rows and carry the region's name
 at the time they were measured.
@@ -132,7 +136,8 @@ write: the visible ones, all of them with the hidden ones, or the selected
 one. Hidden regions are written only when you choose so. It also offers a
 third frame: each region in the frame it was typed in. Colours, labels and
 other properties are written back. *Export…* on a row of Session Data writes
-that region; *Export All…* on a file or on *Regions* writes those regions.
+that region; *Export All…* on a file or on *Regions* writes those regions,
+all of them unless you choose the visible ones only.
 
 ### Importing a region file
 

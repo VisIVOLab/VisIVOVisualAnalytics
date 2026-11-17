@@ -188,10 +188,13 @@ void vtkWindowImage::onRegionListChanged()
     this->updateRegionReadout();
 
     const bool haveSelected = this->m_regions.selected() != nullptr;
+    // A hidden region (#388) is edited and deleted from its Session Data row
+    // only; it can still be measured.
+    const bool shownSelected = this->m_regions.selectedVisible() != nullptr;
     if (m_actRegionProperties) {
-        m_actRegionProperties->setEnabled(haveSelected);
+        m_actRegionProperties->setEnabled(shownSelected);
         m_actAnalyseRegion->setEnabled(haveSelected);
-        m_actDeleteRegion->setEnabled(haveSelected);
+        m_actDeleteRegion->setEnabled(shownSelected);
         m_actUndoRegion->setEnabled(this->m_regions.canUndo());
         m_actRedoRegion->setEnabled(this->m_regions.canRedo());
     }
@@ -460,7 +463,9 @@ void vtkWindowImage::deleteSelectedRegion()
 {
     if (m_regionDrag.active)
         return;
-    const Region *r = this->m_regions.selected();
+    // The image side never deletes what it does not show (#388): a hidden
+    // region goes from its Session Data row.
+    const Region *r = this->m_regions.selectedVisible();
     if (!r)
         return;
     const QString name = r->name;

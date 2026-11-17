@@ -838,6 +838,14 @@ public:
 
     int selectedId() const { return m_selected; }
     const Region *selected() const { return find(m_selected); }
+    /// The selected region when it is drawn; null when none is selected or it
+    /// is hidden in Session Data (#388). What the image side may delete or
+    /// edit: a hidden region is acted on from its Session Data row only.
+    const Region *selectedVisible() const
+    {
+        const Region *r = selected();
+        return r && r->visible ? r : nullptr;
+    }
 
     /// Select `id` (-1 for none). Selection alone is not an undoable change.
     bool select(int id)

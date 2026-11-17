@@ -14836,6 +14836,7 @@ void vtkWindowCube::applyMomentToolGate()
     // its selected region, and undo/redo walk its history.
     stateIn.haveRegion = !this->m_regions.isEmpty();
     stateIn.haveSelectedRegion = this->m_regions.selected() != nullptr;
+    stateIn.selectedRegionHidden = stateIn.haveSelectedRegion && !this->m_regions.selectedVisible();
     stateIn.regionUndo = this->m_regions.canUndo() && !this->m_regionDrag.active;
     stateIn.regionRedo = this->m_regions.canRedo() && !this->m_regionDrag.active;
     // "Send Slice to Image Viewer" emits contourDataReady, which MainWindow

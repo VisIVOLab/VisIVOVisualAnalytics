@@ -64,6 +64,13 @@ void exportRegionList(QMainWindow *window, const RegionList &list, const ExportC
         which << (hidden > 0 ? u"All %1 regions, the %2 hidden included"_s.arg(ids.size()).arg(hidden)
                              : u"All %1 regions"_s.arg(ids.size()));
         picks.push_back(ids);
+        // A group's "Export All…" means all of them: offered first. The
+        // Tools menu keeps the visible ones first, so a hidden region is
+        // written only when asked.
+        if (!only.empty() && which.size() == 2) {
+            which.swapItemsAt(0, 1);
+            std::swap(picks[0], picks[1]);
+        }
     }
     if (only.empty() && list.count() > 1 && list.selected()) {
         which << u"The selected region (%1)"_s.arg(list.selected()->name);

@@ -39,7 +39,7 @@ struct RegionTreeRow
 struct RegionTreeEntry
 {
     int batch{ 0 };          ///< 0: a single region (rows has one element)
-    QString title;           ///< a group's title: "hcg44.reg (12)"
+    QString title;           ///< a group's title: "hcg44.reg (12)", "hcg44.reg (12, 3 hidden)"
     std::vector<RegionTreeRow> rows;
     TreeCheck check{ TreeCheck::Checked };
 };
@@ -152,7 +152,10 @@ inline RegionTreeView buildRegionTree(const RegionList &list)
         const int shown = static_cast<int>(std::count_if(e.rows.begin(), e.rows.end(),
                                                          [](const RegionTreeRow &r) { return r.visible; }));
         e.check = checkOf(shown, static_cast<int>(e.rows.size()));
-        e.title = QStringLiteral("%1 (%2)").arg(e.title).arg(e.rows.size());
+        const int hiddenHere = static_cast<int>(e.rows.size()) - shown;
+        e.title = hiddenHere > 0
+                ? QStringLiteral("%1 (%2, %3 hidden)").arg(e.title).arg(e.rows.size()).arg(hiddenHere)
+                : QStringLiteral("%1 (%2)").arg(e.title).arg(e.rows.size());
     }
     view.check = checkOf(view.total - view.hidden, view.total);
     return view;

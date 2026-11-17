@@ -938,9 +938,16 @@ void TestRegionModel::visibilityRenameAndDeleteAreUndoable()
     QCOMPARE(list.selectedId(), c);
 
     // Hiding the selected region lets go of it; one undo step brings both back.
+    QVERIFY(list.selectedVisible() && list.selectedVisible()->id == c);
     QCOMPARE(list.setVisible({ b, c }, false), 2);
     QCOMPARE(list.hiddenCount(), 2);
     QCOMPARE(list.selectedId(), -1);
+    // Selected from its Session Data row while hidden: selected, but not
+    // something the image side may delete or edit.
+    QVERIFY(list.select(b));
+    QVERIFY(list.selected());
+    QVERIFY(!list.selectedVisible());
+    QVERIFY(list.select(-1));
     QCOMPARE(list.setVisible({ b, c }, false), 0);   // nothing changes: no undo step
     QVERIFY(list.undo());
     QCOMPARE(list.hiddenCount(), 0);
@@ -1038,6 +1045,7 @@ void TestRegionModel::treeFollowsTheList()
     QVERIFY(!view.entries[0].rows[1].visible);
     QVERIFY(view.entries[0].rows[1].tooltip.contains(u"hidden"_s));
     QCOMPARE(view.title(), u"Regions (3, 1 hidden)"_s);
+    QCOMPARE(view.entries[0].title, u"hcg44.reg (3, 1 hidden)"_s);
     QCOMPARE(view.signature(), signature);
     // All hidden: cleared.
     QCOMPARE(list.setVisible(ids, false), 2);

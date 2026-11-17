@@ -118,6 +118,11 @@ void TestCubeToolGate::regionList_selectionAndUndoGates()
     QVERIFY(!d.analyseRegion);   // no slice on screen
     in.slicePaneAvailable = true;   // a moment pane the slice can take over
     QVERIFY(evaluate(in).analyseRegion);
+    // Hidden in Session Data (#388): not deleted or edited from the image
+    // side; still measurable (the row's Analyse goes through the action).
+    in.selectedRegionHidden = true;
+    QVERIFY(!evaluate(in).editSelectedRegion);
+    QVERIFY(evaluate(in).analyseRegion);
     in = layout(true, false);
     QVERIFY(!evaluate(in).undoRegion);
     QVERIFY(!evaluate(in).redoRegion);

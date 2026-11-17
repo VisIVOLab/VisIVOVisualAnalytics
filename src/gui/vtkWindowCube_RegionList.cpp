@@ -924,7 +924,9 @@ void vtkWindowCube::deleteSelectedRegion()
 {
     if (this->regionDragRunning())
         return;
-    const Region *r = this->m_regions.selected();
+    // The image side never deletes what it does not show (#388): a hidden
+    // region goes from its Session Data row.
+    const Region *r = this->m_regions.selectedVisible();
     if (!r)
         return;
     const QString name = r->name;

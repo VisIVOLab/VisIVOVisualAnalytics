@@ -36,8 +36,8 @@ struct ExportContext
 /// visible regions, all of them hidden ones included, or the selected one;
 /// the visible ones come first, so a region hidden in Session Data is left
 /// out unless asked (#388). With @p only given (a row or a group of Session
-/// Data) those regions are written, asking only whether to keep the hidden
-/// ones of a group.
+/// Data) those regions are written; for a group with hidden regions it asks,
+/// offering all of them first.
 void exportRegionList(QMainWindow *window, const RegionList &list, const ExportContext &ctx,
                       const std::vector<int> &only = {});
 
