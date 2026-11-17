@@ -32,6 +32,7 @@
 #include <vector>
 
 class WorkspaceChrome;
+class RegionSessionController;
 class ImageLayerController;
 class ImageLayerImportService;
 class QMessageBox;
@@ -693,6 +694,10 @@ private:
     double m_regionKnobOffset{ 1.0 };   ///< rotation knob distance last drawn (image pixels)
     RegionListOverlay m_regionOverlay;   ///< draws the list (shared with the cube viewer)
     QPointer<RegionPropertiesDialog> m_regionPropertiesDialog;
+    /// The Regions node of Session Data (#388); made on the first change of
+    /// the list once the dock is there.
+    QPointer<RegionSessionController> m_regionSession;
+    void refreshRegionSession();
     QAction *m_actRegionProperties{ nullptr };
     QAction *m_actDeleteRegion{ nullptr };
     QAction *m_actUndoRegion{ nullptr };

@@ -632,6 +632,9 @@ set(PROJECT_SOURCES
         src/gui/RegionListOverlay.h
         src/gui/RegionListExport.cpp
         src/gui/RegionListExport.h
+        src/gui/RegionSessionController.cpp
+        src/gui/RegionSessionController.h
+        src/gui/RegionTreeRows.h
         src/gui/RegionImport.cpp
         src/gui/RegionImport.h
         src/gui/RegionImportResult.h
@@ -849,6 +852,7 @@ qt_add_resources(${PROJECT_NAME} rail_icons
         resources/icons/pane_2_rows.svg
         resources/icons/pane_4.svg
         resources/icons/check.svg
+        resources/icons/check_partial.svg
         resources/icons/rail_provenance.svg
 )
 

@@ -1135,6 +1135,12 @@ QString darkStyleSheet()
             "  background-color: #048ABF; border-color: #048ABF;"
             "  image: url(:/icons/check.svg);"
             "}"
+            // Partly ticked (a group some of whose rows are on): a dash, not
+            // the empty box it fell back to.
+            "QAbstractItemView::indicator:indeterminate {"
+            "  background-color: #048ABF; border-color: #048ABF;"
+            "  image: url(:/icons/check_partial.svg);"
+            "}"
             "QAbstractItemView::indicator:hover { border-color: #048ABF; }"
             "QRadioButton::indicator:hover, QCheckBox::indicator:hover {"
             "  border-color: #048ABF;"
@@ -1821,6 +1827,22 @@ QString lightStyleSheet()
             "  background-color: #005574; border-color: #005574;"
             "  image: url(:/icons/check.svg);"
             "}"
+            // See the dark sheet: an item view's check box is a QCheckBox too.
+            // Without these the platform box came out as a black square with a
+            // near-invisible tick on the light panel.
+            "QAbstractItemView::indicator {"
+            "  width: 16px; height: 16px; border-radius: 3px;"
+            "  border: 1px solid #B7C0CC; background-color: #FFFFFF;"
+            "}"
+            "QAbstractItemView::indicator:checked {"
+            "  background-color: #005574; border-color: #005574;"
+            "  image: url(:/icons/check.svg);"
+            "}"
+            "QAbstractItemView::indicator:indeterminate {"
+            "  background-color: #005574; border-color: #005574;"
+            "  image: url(:/icons/check_partial.svg);"
+            "}"
+            "QAbstractItemView::indicator:hover { border-color: #005574; }"
             "QRadioButton::indicator:hover, QCheckBox::indicator:hover {"
             "  border-color: #005574;"
             "}"

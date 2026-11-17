@@ -58,11 +58,14 @@ inline QJsonArray polylinesJson(const std::vector<std::vector<Vec2>> &lines)
 
 }   // namespace detail
 
-/// The `set_regions` command for @p list. An empty list clears the plane.
+/// The `set_regions` command for @p list, its visible regions. An empty list
+/// clears the plane.
 inline QJsonObject planeDrawingCommand(const RegionList &list, const RegionColour &colour)
 {
     QJsonArray regions;
     for (const Region &r : list.regions()) {
+        if (!r.visible)
+            continue;   // hidden in Session Data (#388): off the plane too
         QJsonObject o;
         const auto rgb = colour(r);
         o[QStringLiteral("rgb")] = QJsonArray{ int(rgb[0]), int(rgb[1]), int(rgb[2]) };

@@ -732,7 +732,7 @@ void vtkWindowImage::importRegionsFromFile(const QString &path, const QString &n
                 }
                 // One change for the whole file (one Undo takes it back); the
                 // first region is selected.
-                if (!self->m_regions.addAll(result.regions).empty())
+                if (!self->m_regions.addAll(result.regions, result.fileName).empty())
                     self->onRegionListChanged();
             },
             path, note);

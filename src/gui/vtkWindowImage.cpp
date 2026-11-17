@@ -29,6 +29,7 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "InspectorPanel.h"
+#include "RegionSessionController.h"
 #include "WorkspaceChrome.h"
 #include "ProductRegistry.h"
 #include "ToolResultDialog.h"
@@ -1817,6 +1818,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
 vtkWindowImage::~vtkWindowImage()
 {
+    // Its hooks reach into the region list, a member that goes before the
+    // children are deleted.
+    delete this->m_regionSession;
     delete ui;
 }
 

@@ -125,6 +125,10 @@ public:
     /// product) without re-triggering activation.
     void selectSessionRowForView(const QString &viewTag, const QString &productId);
 
+    /// The Session Data tree itself (#388: the windows write their regions
+    /// into it). Null until installSessionDock().
+    SessionDataTree *sessionTree() const;
+
     /// (#4) Push which pane(s) show each product → pane-number badges in the tree.
     void setSessionProductPaneAssignments(const QHash<QString, QList<int>> &assignments);
 

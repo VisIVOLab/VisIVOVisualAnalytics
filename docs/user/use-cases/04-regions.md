@@ -91,9 +91,18 @@ out for ds9, CARTA or CASA.
    Imported regions, and the report of the line that was not read.
    ```
 
+10. Look at *Session Data*: under *Regions*, the four regions of the file
+    are grouped under `hcg44.reg (4)`, next to any region you drew. Click
+    the row *NGC 3187 background · Annulus*: the annulus is selected on the
+    slice, and clicking a region on the slice highlights its row. Untick its
+    check box to hide it on every view, the 3-D cutting plane included; tick
+    it to show it again. Right-click a row to rename, delete or export that
+    region, or the `hcg44.reg` node to show, hide, delete or export the whole
+    file. *Undo Region Edit* takes each of these back.
+
 ### Regions on the 3-D cutting plane
 
-10. Look at the *3D View*: every region of the list is drawn on the cutting
+11. Look at the *3D View*: every visible region of the list is drawn on the cutting
     plane, in its colour, at the channel shown. Rotate the view or move the
     channel bar and the regions move with the plane. You edit regions on the
     slice; the plane shows them. Unticking *Cutting plane* in the *LAYERS*
@@ -112,8 +121,9 @@ out for ds9, CARTA or CASA.
 
 ### Export
 
-11. Choose *Tools ▸ Regions ▸ Export Region (CRTF/DS9)…*. Under *Regions to
-    write:* choose all the regions or the selected one. Under *Format and
+12. Choose *Tools ▸ Regions ▸ Export Region (CRTF/DS9)…*. Under *Regions to
+    write:* choose all the regions or the selected one; when some are hidden,
+    the first choice writes only the visible ones. Under *Format and
     coordinate frame:* choose, for example, *DS9, sky (FK5)* for ds9 or
     *CASA CRTF, sky (FK5)* for CASA and CARTA. Pick a file name and save.
 

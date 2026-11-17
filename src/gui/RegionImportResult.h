@@ -42,6 +42,9 @@ struct ImportResult
     bool truncated{ false };
     int skippedByBackend{ 0 };   ///< its n_skipped, which counts past the cap
     int rejectedHere{ 0 };       ///< read by the backend, refused by the list
+    /// The file's name ("hcg44.reg"): its regions are grouped under it in
+    /// Session Data (#388). Set by importRegionFile.
+    QString fileName;
 
     /// Every line not read: the backend's count (past its cap) and ours.
     int notRead() const { return skippedByBackend + rejectedHere; }

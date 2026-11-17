@@ -126,6 +126,13 @@ struct Region
     /// within one import, so two files with an annulus on the same line and
     /// centre stay apart. Not written to files.
     int batch{ 0 };
+    /// The file an import read it from ("hcg44.reg"), shown as its group in
+    /// Session Data (#388); empty when drawn or typed in. Not written to files.
+    QString sourceFile;
+    /// Drawn on the views (#388). A hidden region stays in the list, in its
+    /// Session Data row, and is not drawn, picked, or sent to the Remote 3-D
+    /// view. Not written to files.
+    bool visible{ true };
     /// Frame and size unit the region was last typed or read in ("icrs",
     /// "galactic", …); empty when it was drawn on the image.
     QString sourceFrame;
@@ -831,6 +838,14 @@ public:
 
     int selectedId() const { return m_selected; }
     const Region *selected() const { return find(m_selected); }
+    /// The selected region when it is drawn; null when none is selected or it
+    /// is hidden in Session Data (#388). What the image side may delete or
+    /// edit: a hidden region is acted on from its Session Data row only.
+    const Region *selectedVisible() const
+    {
+        const Region *r = selected();
+        return r && r->visible ? r : nullptr;
+    }
 
     /// Select `id` (-1 for none). Selection alone is not an undoable change.
     bool select(int id)
@@ -857,7 +872,9 @@ public:
     /// Add several regions as ONE change (a region file read whole): one undo
     /// step takes them all back, and a file of hundreds does not push hundreds
     /// of snapshots. The first one added is selected. Returns their ids.
-    std::vector<int> addAll(const std::vector<Region> &regions)
+    /// @p sourceFile names the file they came from: Session Data groups them
+    /// under it.
+    std::vector<int> addAll(const std::vector<Region> &regions, const QString &sourceFile = QString())
     {
         std::vector<int> ids;
         if (regions.empty())
@@ -867,6 +884,8 @@ public:
         for (Region r : regions) {
             r.id = m_nextId++;
             r.batch = batch;
+            if (!sourceFile.isEmpty())
+                r.sourceFile = sourceFile;
             if (r.name.isEmpty())
                 r.name = QStringLiteral("%1 %2").arg(shapeLabel(r.shape)).arg(++m_named[static_cast<std::size_t>(r.shape)]);
             m_regions.push_back(r);
@@ -903,6 +922,74 @@ public:
         if (m_selected == id)
             m_selected = -1;
         return true;
+    }
+
+    /// Remove the regions in @p ids as ONE change (a whole import deleted from
+    /// Session Data). Returns how many went; no undo step when none did.
+    int removeAll(const std::vector<int> &ids)
+    {
+        const auto listed = [&ids](const Region &r) {
+            return std::find(ids.begin(), ids.end(), r.id) != ids.end();
+        };
+        const auto n = std::count_if(m_regions.begin(), m_regions.end(), listed);
+        if (n == 0)
+            return 0;
+        pushUndo();
+        m_regions.erase(std::remove_if(m_regions.begin(), m_regions.end(), listed), m_regions.end());
+        if (!find(m_selected))
+            m_selected = -1;
+        return static_cast<int>(n);
+    }
+
+    /// Show or hide the regions in @p ids as ONE change (#388). A hidden
+    /// region that was selected is let go: nothing on the views would say
+    /// what the next Delete or drag acts on. Returns how many changed; no
+    /// undo step when none did.
+    int setVisible(const std::vector<int> &ids, bool visible)
+    {
+        const auto changes = [&ids, visible](const Region &r) {
+            return r.visible != visible && std::find(ids.begin(), ids.end(), r.id) != ids.end();
+        };
+        const auto n = std::count_if(m_regions.begin(), m_regions.end(), changes);
+        if (n == 0)
+            return 0;
+        pushUndo();
+        for (Region &r : m_regions) {
+            if (!changes(r))
+                continue;
+            r.visible = visible;
+            if (!visible && r.id == m_selected)
+                m_selected = -1;
+        }
+        return static_cast<int>(n);
+    }
+    bool setVisible(int id, bool visible) { return setVisible(std::vector<int>{ id }, visible) > 0; }
+
+    /// Give region @p id a new name (one undo step). A label the region file
+    /// drew next to it is the name too, so it follows. False on an empty name,
+    /// an unknown id, or the name it already has.
+    bool rename(int id, const QString &name)
+    {
+        const QString n = name.trimmed();
+        for (Region &r : m_regions) {
+            if (r.id != id)
+                continue;
+            if (n.isEmpty() || n == r.name)
+                return false;
+            pushUndo();
+            r.name = n;
+            if (r.props.contains(QStringLiteral("text")))
+                r.props[QStringLiteral("text")] = n;
+            return true;
+        }
+        return false;
+    }
+
+    /// How many regions are hidden.
+    int hiddenCount() const
+    {
+        return static_cast<int>(std::count_if(m_regions.begin(), m_regions.end(),
+                                              [](const Region &r) { return !r.visible; }));
     }
 
     void clear()
@@ -966,12 +1053,13 @@ public:
     /// first; then an outline within `tolerance`, topmost (last drawn) first;
     /// then the smallest region the press is inside. Smallest, not topmost: a
     /// small region drawn before a large one around it must stay reachable.
-    /// -1 when none.
+    /// -1 when none. Hidden regions are not there to be pressed on.
     int regionAt(const Vec2 &p, double tolerance, double knobOffset, Hit *hit) const
     {
         if (hit)
             *hit = {};
-        if (const Region *sel = selected()) {
+        const Region *sel = selected();
+        if (sel && sel->visible) {
             const Hit h = hitTest(*sel, p, tolerance, knobOffset, /*withHandles=*/true);
             if (h.kind == Hit::OnHandle) {
                 if (hit)
@@ -980,7 +1068,7 @@ public:
             }
         }
         for (auto it = m_regions.rbegin(); it != m_regions.rend(); ++it) {
-            if (distanceToOutline(*it, p) <= tolerance) {
+            if (it->visible && distanceToOutline(*it, p) <= tolerance) {
                 if (hit)
                     hit->kind = Hit::Body;
                 return it->id;
@@ -989,7 +1077,7 @@ public:
         int best = -1;
         double bestArea = std::numeric_limits<double>::infinity();
         for (auto it = m_regions.rbegin(); it != m_regions.rend(); ++it) {
-            if (!contains(*it, p[0], p[1]))
+            if (!it->visible || !contains(*it, p[0], p[1]))
                 continue;
             const auto b = bounds(*it);
             const double area = (b[1] - b[0]) * (b[3] - b[2]);

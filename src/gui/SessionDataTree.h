@@ -18,6 +18,9 @@ class QStandardItemModel;
 class QStandardItem;
 class QModelIndex;
 struct AnalysisProduct;
+namespace visivo::regions {
+struct RegionTreeView;
+}
 
 class SessionDataTree : public QWidget
 {
@@ -57,7 +60,27 @@ public:
     /// from the map get no badge. Repaints the tree.
     void setProductPaneAssignments(const QHash<QString, QList<int>> &assignments);
 
+    /// (#388) Show the window's region list as a "Regions" node under the
+    /// current dataset: one row per region with a visibility check box, the
+    /// regions of an import grouped under the file's name. Called after every
+    /// change of the list; the node goes when the list is empty. Never emits
+    /// the region signals below: the list is the source, the tree its view.
+    void setRegions(const visivo::regions::RegionTreeView &view);
+
 signals:
+    /// (#388) The user selected a region row: select that region on the image.
+    void regionSelected(int regionId);
+    /// (#388) The user ticked or cleared a check box: of a region, of an
+    /// import's group, or of the Regions node (every region).
+    void regionVisibilityRequested(const QList<int> &regionIds, bool visible);
+    /// (#388) Double-click on a region row: its properties.
+    void regionActivated(int regionId);
+    /// (#388) Right-click on a region row.
+    void regionContextMenuRequested(int regionId, const QPoint &globalPos);
+    /// (#388) Right-click on an import's group (@p batch > 0) or on the
+    /// Regions node (@p batch -1: every region).
+    void regionGroupContextMenuRequested(int batch, const QPoint &globalPos);
+
     /// Emitted when the selection lands on a product row (empty string when the
     /// selection is a dataset root or cleared).
     void productSelected(const QString &productId);
@@ -119,7 +142,21 @@ private:
     void updateHeightToContents();
     int visibleRowHeight(const QModelIndex &parent) const;
 
+    /// (#388) The Regions node under the current dataset; created when asked.
+    QStandardItem *regionsNode(bool createIfMissing);
+    QStandardItem *regionItem(int regionId) const;
+    /// The ids of the regions at or below @p item.
+    QList<int> regionIdsUnder(const QStandardItem *item) const;
+    /// A check box the user changed: sent to the window, after this event.
+    void onRegionCheckChanged(QStandardItem *item);
+
     QTreeView *m_tree = nullptr;
+    QString m_currentDatasetKey;       ///< the root the Regions node hangs under
+    /// True while setRegions() writes the region rows: their check boxes and
+    /// the selection it moves are the list's state, not a user's gesture.
+    bool m_updatingRegions = false;
+    QString m_regionSignature;         ///< rows shown now (RegionTreeView::signature)
+    int m_lastRegionSelected = -1;     ///< the list's selection setRegions() last showed
     QStandardItemModel *m_model = nullptr;
     QString m_ownerScope;              ///< this tree's window scope; empty = unscoped (show all)
 };

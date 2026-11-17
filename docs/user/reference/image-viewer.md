@@ -123,6 +123,10 @@ appear: *Radio (beam-aware)* (beam size, beam area Ω = π·BMAJ·BMIN/(4 ln 2) 
 pixels, integrated flux in Jy = sum / Ω, peak SNR in σ_MAD) and per-Stokes
 values (integrated Jy, mean PA in degrees, mean P/I in percent).
 
+The regions are also listed in *Session Data*, under a *Regions* node, where
+each can be selected, hidden, renamed, deleted or exported
+([Regions in Session Data](region-pv-noise.md#regions-in-session-data)).
+
 Selecting, moving and reshaping regions, typing positions in a sky frame, the
 file formats and linked 2-D views are described in
 [Regions, PV diagrams and noise](region-pv-noise.md).

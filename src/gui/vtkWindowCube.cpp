@@ -18,6 +18,7 @@
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
 #include "CubeUiAssembler.h"
+#include "RegionSessionController.h"
 #include "WorkspaceChrome.h"
 #include "app/DatasetName.h"
 #include "InspectorPanel.h"
@@ -3327,6 +3328,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
+    // Its hooks reach into the region list, a member that goes before the
+    // children are deleted.
+    delete this->m_regionSession;
     // The refined box's blocks leave the renderer while it still exists, and
     // the camera stops asking for new ones.
     this->teardownLevelOfDetail();
@@ -14438,6 +14442,8 @@ bool vtkWindowCube::restoreProductOrigin(const QVariantMap &origin)
     }
     if (id < 0)
         id = this->m_regions.add(*restored);
+    else if (!this->m_regions.find(id)->visible)
+        this->m_regions.setVisible(id, true);   // hidden in Session Data: the row puts it back
     this->m_regions.select(id);
     this->onRegionListChanged();
     return true;
@@ -14830,6 +14836,7 @@ void vtkWindowCube::applyMomentToolGate()
     // its selected region, and undo/redo walk its history.
     stateIn.haveRegion = !this->m_regions.isEmpty();
     stateIn.haveSelectedRegion = this->m_regions.selected() != nullptr;
+    stateIn.selectedRegionHidden = stateIn.haveSelectedRegion && !this->m_regions.selectedVisible();
     stateIn.regionUndo = this->m_regions.canUndo() && !this->m_regionDrag.active;
     stateIn.regionRedo = this->m_regions.canRedo() && !this->m_regionDrag.active;
     // "Send Slice to Image Viewer" emits contourDataReady, which MainWindow

@@ -11,6 +11,7 @@
 #include "RegionModel.h"
 #include "RegionPanePlacement.h"
 #include "RegionPlaneDrawing.h"
+#include "RegionTreeRows.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -900,3 +901,168 @@ void TestRegionModel::remotePlaneDrawingIsTheLocalOne()
     QVERIFY(planeDrawingCommand(RegionList(), colour).value(QStringLiteral("regions")).toArray().isEmpty());
 }
 
+
+// ── Session Data (#388) ──────────────────────────────────────────────────────
+
+using namespace Qt::StringLiterals;
+
+void TestRegionModel::hiddenRegionsAreNotPickedOrDrawn()
+{
+    RegionList list;
+    const int big = list.add(box(10.0, 10.0, 20.0, 20.0));
+    const int small = list.add(circle(10.0, 10.0, 2.0));
+    // Inside both: the smaller one is picked; hidden, the press reaches the box.
+    QCOMPARE(list.regionAt({ 10.0, 10.0 }, 0.5, 1.0, nullptr), small);
+    QVERIFY(list.setVisible(small, false));
+    QCOMPARE(list.regionAt({ 10.0, 10.0 }, 0.5, 1.0, nullptr), big);
+    // On its outline too, and selected: a hidden region has no handles either.
+    QVERIFY(list.select(small));
+    QCOMPARE(list.regionAt({ 12.0, 10.0 }, 0.5, 1.0, nullptr), big);
+    QVERIFY(list.setVisible(big, false));
+    QCOMPARE(list.regionAt({ 10.0, 10.0 }, 0.5, 1.0, nullptr), -1);
+    // The Remote 3-D view's plane gets the visible ones only.
+    const auto colour = [](const Region &) { return std::array<unsigned char, 3>{ 0, 0, 0 }; };
+    QVERIFY(planeDrawingCommand(list, colour).value(QStringLiteral("regions")).toArray().isEmpty());
+    QVERIFY(list.setVisible(small, true));
+    QCOMPARE(planeDrawingCommand(list, colour).value(QStringLiteral("regions")).toArray().size(), 1);
+    // Not written to region files.
+    QVERIFY(!toCanonical(*list.find(big), 1.0).contains(QStringLiteral("visible")));
+}
+
+void TestRegionModel::visibilityRenameAndDeleteAreUndoable()
+{
+    RegionList list;
+    const int a = list.add(box(0, 0, 4, 4));
+    const int b = list.add(circle(5, 5, 2));
+    const int c = list.add(circle(9, 9, 1));
+    QCOMPARE(list.selectedId(), c);
+
+    // Hiding the selected region lets go of it; one undo step brings both back.
+    QVERIFY(list.selectedVisible() && list.selectedVisible()->id == c);
+    QCOMPARE(list.setVisible({ b, c }, false), 2);
+    QCOMPARE(list.hiddenCount(), 2);
+    QCOMPARE(list.selectedId(), -1);
+    // Selected from its Session Data row while hidden: selected, but not
+    // something the image side may delete or edit.
+    QVERIFY(list.select(b));
+    QVERIFY(list.selected());
+    QVERIFY(!list.selectedVisible());
+    QVERIFY(list.select(-1));
+    QCOMPARE(list.setVisible({ b, c }, false), 0);   // nothing changes: no undo step
+    QVERIFY(list.undo());
+    QCOMPARE(list.hiddenCount(), 0);
+    QCOMPARE(list.selectedId(), c);
+    QVERIFY(list.redo());
+    QCOMPARE(list.hiddenCount(), 2);
+    QVERIFY(list.setVisible(b, true));
+    QVERIFY(!list.setVisible(b, true));
+
+    // Rename: trimmed, never empty, one step; a label the file drew follows.
+    QVERIFY(!list.rename(a, u"   "_s));
+    QVERIFY(!list.rename(999, u"x"_s));
+    QVERIFY(list.rename(a, u"  core  "_s));
+    QCOMPARE(list.find(a)->name, u"core"_s);
+    QVERIFY(!list.rename(a, u"core"_s));
+    QVERIFY(list.undo());
+    QCOMPARE(list.find(a)->name, u"Box 1"_s);
+    Region labelled = circle(1, 1, 1);
+    labelled.name = u"NGC 3190"_s;
+    labelled.props.insert(u"text"_s, u"NGC 3190"_s);
+    const int l = list.add(labelled);
+    QVERIFY(list.rename(l, u"NGC 3190 core"_s));
+    QCOMPARE(list.find(l)->props.value(u"text"_s).toString(), u"NGC 3190 core"_s);
+    QCOMPARE(toCanonical(*list.find(l), 1.0)
+                     .value(u"props"_s).toObject().value(u"text"_s).toString(),
+             u"NGC 3190 core"_s);
+    // A drawn region has no label: renaming does not give it one on the image.
+    QVERIFY(list.rename(b, u"disc"_s));
+    QVERIFY(!list.find(b)->props.contains(u"text"_s));
+
+    // Delete a group: one step, the selection goes with it.
+    QVERIFY(list.select(b));
+    const int before = list.count();
+    QCOMPARE(list.removeAll({ a, b, 999 }), 2);
+    QCOMPARE(list.count(), before - 2);
+    QCOMPARE(list.selectedId(), -1);
+    QCOMPARE(list.removeAll({ 999 }), 0);
+    QVERIFY(list.undo());
+    QCOMPARE(list.count(), before);
+    QCOMPARE(list.selectedId(), b);
+}
+
+void TestRegionModel::importsGroupByFile()
+{
+    RegionList list;
+    const int drawn = list.add(box(0, 0, 2, 2));
+    const auto first = list.addAll({ circle(1, 1, 1), circle(2, 2, 1) }, u"hcg44.reg"_s);
+    const auto second = list.addAll({ box(3, 3, 1, 1) }, u"hcg44.reg"_s);   // the same file again
+    QCOMPARE(list.find(first.front())->sourceFile, u"hcg44.reg"_s);
+    QVERIFY(list.find(drawn)->sourceFile.isEmpty());
+    const RegionTreeView view = buildRegionTree(list);
+    QCOMPARE(view.total, 4);
+    QCOMPARE(int(view.entries.size()), 3);   // the box, then one group per import
+    QCOMPARE(view.entries[0].batch, 0);
+    QCOMPARE(view.entries[0].rows.front().id, drawn);
+    QCOMPARE(view.entries[1].title, u"hcg44.reg (2)"_s);
+    QCOMPARE(int(view.entries[1].rows.size()), 2);
+    QCOMPARE(view.entries[2].title, u"hcg44.reg (1)"_s);
+    QVERIFY(view.entries[1].batch != view.entries[2].batch);
+    // The ids of a group, of every region; batch 0 is not a group.
+    QCOMPARE(view.idsOf(view.entries[1].batch), first);
+    QCOMPARE(int(view.idsOf(-1).size()), 4);
+    QVERIFY(view.idsOf(0).empty());
+    // Undo of the second import takes its group away.
+    QVERIFY(list.undo());
+    QCOMPARE(int(buildRegionTree(list).entries.size()), 2);
+    Q_UNUSED(second);
+}
+
+void TestRegionModel::treeFollowsTheList()
+{
+    RegionList list;
+    QVERIFY(buildRegionTree(list).isEmpty());   // no Regions node for an empty list
+    Region named = circle(1, 1, 1);
+    named.name = u"NGC 3190"_s;
+    named.color = u"#00ff00"_s;
+    const auto ids = list.addAll({ named, box(2, 2, 1, 1), box(3, 3, 1, 1) }, u"hcg44.reg"_s);
+    RegionTreeView view = buildRegionTree(list);
+    QCOMPARE(view.check, TreeCheck::Checked);
+    QCOMPARE(view.entries[0].check, TreeCheck::Checked);
+    // Name and shape; a generated name already says the shape.
+    QCOMPARE(view.entries[0].rows[0].text, u"NGC 3190 · Circle"_s);
+    QCOMPARE(view.entries[0].rows[0].color, u"#00ff00"_s);
+    QCOMPARE(view.entries[0].rows[1].text, u"Box 1"_s);
+    QCOMPARE(view.selectedId, ids.front());
+    QCOMPARE(view.title(), u"Regions (3)"_s);
+    const QString signature = view.signature();
+
+    // Hidden in part: the group and the node are partly ticked, the row is
+    // cleared, and the rows are the same (the tree is updated in place).
+    QVERIFY(list.setVisible(ids[1], false));
+    view = buildRegionTree(list);
+    QCOMPARE(view.entries[0].check, TreeCheck::Partial);
+    QCOMPARE(view.check, TreeCheck::Partial);
+    QVERIFY(!view.entries[0].rows[1].visible);
+    QVERIFY(view.entries[0].rows[1].tooltip.contains(u"hidden"_s));
+    QCOMPARE(view.title(), u"Regions (3, 1 hidden)"_s);
+    QCOMPARE(view.entries[0].title, u"hcg44.reg (3, 1 hidden)"_s);
+    QCOMPARE(view.signature(), signature);
+    // All hidden: cleared.
+    QCOMPARE(list.setVisible(ids, false), 2);
+    QCOMPARE(buildRegionTree(list).entries[0].check, TreeCheck::Unchecked);
+    QCOMPARE(buildRegionTree(list).check, TreeCheck::Unchecked);
+    // Renamed: same rows, new text. Deleted: other rows.
+    QVERIFY(list.rename(ids[2], u"bar"_s));
+    view = buildRegionTree(list);
+    QCOMPARE(view.signature(), signature);
+    QCOMPARE(view.entries[0].rows[2].text, u"bar · Box"_s);
+    QVERIFY(list.remove(ids[2]));
+    QVERIFY(buildRegionTree(list).signature() != signature);
+    // A region drawn alone is an entry of its own, ticked or not by itself.
+    const int drawn = list.add(circle(9, 9, 1));
+    QVERIFY(list.setVisible(drawn, false));
+    view = buildRegionTree(list);
+    QCOMPARE(view.entries.back().batch, 0);
+    QCOMPARE(view.entries.back().check, TreeCheck::Unchecked);
+    QCOMPARE(view.selectedId, -1);   // hidden while selected: let go
+}

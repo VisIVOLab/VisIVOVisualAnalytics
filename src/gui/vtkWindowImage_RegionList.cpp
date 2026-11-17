@@ -5,7 +5,10 @@
 #include "LayerListModel.h"
 #include "RegionFullRes.h"
 #include "RegionModel.h"
+#include "RegionListExport.h"
 #include "RegionPropertiesDialog.h"
+#include "RegionSessionController.h"
+#include "WorkspaceChrome.h"
 
 #include <vtkCallbackCommand.h>
 #include <vtkCamera.h>
@@ -28,6 +31,7 @@
 #include <QAction>
 #include <QColor>
 #include <QCursor>
+#include <QDockWidget>   // WorkspaceChrome.h holds a QPointer to one
 #include <QGuiApplication>
 #include <QKeySequence>
 #include <QMenu>
@@ -184,10 +188,13 @@ void vtkWindowImage::onRegionListChanged()
     this->updateRegionReadout();
 
     const bool haveSelected = this->m_regions.selected() != nullptr;
+    // A hidden region (#388) is edited and deleted from its Session Data row
+    // only; it can still be measured.
+    const bool shownSelected = this->m_regions.selectedVisible() != nullptr;
     if (m_actRegionProperties) {
-        m_actRegionProperties->setEnabled(haveSelected);
+        m_actRegionProperties->setEnabled(shownSelected);
         m_actAnalyseRegion->setEnabled(haveSelected);
-        m_actDeleteRegion->setEnabled(haveSelected);
+        m_actDeleteRegion->setEnabled(shownSelected);
         m_actUndoRegion->setEnabled(this->m_regions.canUndo());
         m_actRedoRegion->setEnabled(this->m_regions.canRedo());
     }
@@ -203,6 +210,29 @@ void vtkWindowImage::onRegionListChanged()
     }
     if (ui->vtk && ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
+    this->refreshRegionSession();
+}
+
+void vtkWindowImage::refreshRegionSession()
+{
+    if (!m_regionSession && m_workspaceChrome && m_workspaceChrome->sessionTree()) {
+        RegionSessionController::Hooks hooks;
+        hooks.editable = [this]() { return !m_regionDrag.active; };
+        hooks.changed = [this]() { this->onRegionListChanged(); };
+        hooks.properties = [this](int id) { this->openRegionProperties(id); };
+        hooks.analyse = [this](int id) { this->analyzeRegion(id); };
+        hooks.exportRegions = [this](const std::vector<int> &ids) {
+            visivo::regions::exportRegionList(
+                    this, this->m_regions,
+                    { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
+                      this->remoteDatasetId, this->filepath },
+                    ids);
+        };
+        m_regionSession = new RegionSessionController(this, m_workspaceChrome->sessionTree(),
+                                                      &this->m_regions, std::move(hooks));
+    }
+    if (m_regionSession)
+        m_regionSession->refresh();
 }
 
 void vtkWindowImage::refreshRegionListOverlay()
@@ -433,7 +463,9 @@ void vtkWindowImage::deleteSelectedRegion()
 {
     if (m_regionDrag.active)
         return;
-    const Region *r = this->m_regions.selected();
+    // The image side never deletes what it does not show (#388): a hidden
+    // region goes from its Session Data row.
+    const Region *r = this->m_regions.selectedVisible();
     if (!r)
         return;
     const QString name = r->name;

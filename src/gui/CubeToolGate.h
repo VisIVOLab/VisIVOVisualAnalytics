@@ -70,6 +70,9 @@ struct Inputs
     bool haveRegion{ false };
     /// One of them is selected.
     bool haveSelectedRegion{ false };
+    /// ... and it is hidden in Session Data (#388): nothing on the views shows
+    /// what Properties or Delete would act on.
+    bool selectedRegionHidden{ false };
     /// The region list has a change to undo / to redo.
     bool regionUndo{ false };
     bool regionRedo{ false };
@@ -96,7 +99,8 @@ struct Decision
     bool pinSpectrum{ false };
     bool exportRegion{ false };
     /// Region Properties and Delete Region: the selected region, wherever it
-    /// was drawn; they need no view on screen.
+    /// was drawn; they need no view on screen, but the region must be shown
+    /// (a hidden one is edited from its Session Data row).
     bool editSelectedRegion{ false };
     /// Analyse Region: the selected region, measured on the 2-D view.
     bool analyseRegion{ false };
@@ -127,7 +131,7 @@ inline Decision evaluate(const Inputs &in)
     // another window entirely; linking is about how many views exist.
     d.pinSpectrum = in.haveProbeSpectrum;
     d.exportRegion = in.haveRegion;
-    d.editSelectedRegion = in.haveSelectedRegion;
+    d.editSelectedRegion = in.haveSelectedRegion && !in.selectedRegionHidden;
     // The statistics are taken on the slice or on a sky map in a pane, so
     // the region tools' view rule applies on top of the selection.
     d.analyseRegion = in.haveSelectedRegion && d.regionTools;

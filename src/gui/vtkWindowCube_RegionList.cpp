@@ -27,6 +27,8 @@
 #include "RegionFullRes.h"
 #include "RegionListExport.h"
 #include "RegionPropertiesDialog.h"
+#include "RegionSessionController.h"
+#include "WorkspaceChrome.h"
 
 #include <QVTKOpenGLNativeWidget.h>
 #include <vtkCallbackCommand.h>
@@ -43,6 +45,7 @@
 
 #include <QAction>
 #include <QCursor>
+#include <QDockWidget>   // WorkspaceChrome.h holds a QPointer to one
 #include <QGuiApplication>
 #include <QJsonObject>
 #include <QKeySequence>
@@ -506,6 +509,37 @@ void vtkWindowCube::onRegionListChanged()
         && ui->vtkCube->renderWindow()
         && ui->vtkCube->isVisible())
         ui->vtkCube->renderWindow()->Render();
+    this->refreshRegionSession();
+}
+
+void vtkWindowCube::refreshRegionSession()
+{
+    if (!m_regionSession && m_workspaceChrome && m_workspaceChrome->sessionTree()) {
+        RegionSessionController::Hooks hooks;
+        hooks.editable = [this]() { return !this->regionDragRunning(); };
+        hooks.changed = [this]() { this->onRegionListChanged(); };
+        hooks.properties = [this](int id) { this->openRegionProperties(id); };
+        hooks.analyse = [this](int) {
+            // Through the action, as the region's own menu does: its gate and
+            // its "show the slice first" step. The region is selected already.
+            if (m_actAnalyseRegion && m_actAnalyseRegion->isEnabled())
+                m_actAnalyseRegion->trigger();
+            else
+                this->statusBar()->showMessage(
+                        u"Show the 2D Slice or a moment map in a pane to measure the region."_s, 5000);
+        };
+        hooks.exportRegions = [this](const std::vector<int> &ids) {
+            visivo::regions::exportRegionList(
+                    this, this->m_regions,
+                    { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
+                      this->remoteDatasetId, this->filepath },
+                    ids);
+        };
+        m_regionSession = new RegionSessionController(this, m_workspaceChrome->sessionTree(),
+                                                      &this->m_regions, std::move(hooks));
+    }
+    if (m_regionSession)
+        m_regionSession->refresh();
 }
 
 void vtkWindowCube::refreshRegionListOverlay()
@@ -890,7 +924,9 @@ void vtkWindowCube::deleteSelectedRegion()
 {
     if (this->regionDragRunning())
         return;
-    const Region *r = this->m_regions.selected();
+    // The image side never deletes what it does not show (#388): a hidden
+    // region goes from its Session Data row.
+    const Region *r = this->m_regions.selectedVisible();
     if (!r)
         return;
     const QString name = r->name;
