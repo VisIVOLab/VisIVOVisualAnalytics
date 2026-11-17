@@ -193,6 +193,27 @@ def test_the_launcher_opens_only_backend_pages_and_the_loader_with_a_code(tmp_pa
     assert "mavenCentral()" in (proj / "build.gradle").read_text(encoding="utf-8")
 
 
+def test_the_scanner_needs_the_headset_cameras_permission() -> None:
+    """Issue #386: on a Quest 3 the passthrough camera was not listed until
+    HEADSET_CAMERA was granted. The camera starts only with it; a missing
+    permission is named with its setting and the app's settings page, never
+    reported as "no camera"."""
+    src = (QUEST / "android" / "ScanActivity.java").read_text(encoding="utf-8")
+    resume = src[src.index("protected void onResume()"):src.index("public void onRequestPermissionsResult")]
+    assert "if (granted(HEADSET_CAMERA)) {" in resume and "startCamera();" in resume
+    assert "cameraAllowed" not in src                       # the old either-permission gate
+    assert "requestPermissions(missingPermissions(), ASK)" in resume
+    result = src[src.index("public void onRequestPermissionsResult"):src.index("private void permissionMissing()")]
+    assert "if (!granted(HEADSET_CAMERA)) permissionMissing();" in result
+    missing = src[src.index("private void permissionMissing()"):src.index("private void openAppSettings()")]
+    assert "SETTING" in missing and "settingsButton.setVisibility(android.view.View.VISIBLE)" in missing
+    assert "Settings.ACTION_APPLICATION_DETAILS_SETTINGS" in src
+    assert 'SETTING = "Settings ▸ Privacy & safety ▸ App permissions ▸ Headset cameras"' in src
+    none = src[src.index("if (id == null) {"):src.index("Size size = pickSize")]
+    assert none.index("missingPermissions().length > 0") < none.index("has no camera")
+    assert 'Log.i(TAG, "camera " + id + ": camera_source "' in src
+
+
 def test_a_development_loader_on_localhost(tmp_path: Path) -> None:
     proj = _project(tmp_path)
     _patch(proj, "http://localhost:8790")
@@ -408,9 +429,9 @@ def test_the_app_opens_the_hosted_loader_and_has_a_new_version() -> None:
     assert app["loaderOrigin"].startswith("https://")
     assert "launch=immersive" in app["startPath"]
     # 1.2.0 shipped versionCode 2, the QR scanner is 3; the Store's manifest
-    # rules (#386) are 4, the immersive launcher activity 5: the desktop
-    # offers Update to those headsets.
-    assert int(app["versionCode"]) >= 5
+    # rules (#386) are 4, the immersive launcher activity 5, the scanner's
+    # HEADSET_CAMERA gate 6: the desktop offers Update to those headsets.
+    assert int(app["versionCode"]) >= 6
     cfg = json.loads((ROOT / "backend" / "app" / "vr_app.json").read_text(encoding="utf-8"))
     assert app["packages"] == cfg["packages"]
 

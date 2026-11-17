@@ -177,9 +177,18 @@ luminance plane is read and decoded on the headset by ZXing's core
 viewfinder is that plane at half size, grey, ten times a second.
 
 **Permissions** (manifest, asked for at the first start):
-`android.permission.CAMERA` and `horizonos.permission.HEADSET_CAMERA` (Meta
-documents either as enough for the passthrough camera; both are asked for).
-Refused, the panel says how to allow them and the code can be typed.
+`horizonos.permission.HEADSET_CAMERA` and `android.permission.CAMERA`. Meta
+documents either as enough for the passthrough camera, but on a Quest 3
+(1.2.1, #386) the camera list showed no passthrough camera until *Headset
+cameras* was turned on in the settings. The camera therefore starts only
+with `HEADSET_CAMERA`. When it is refused, or no dialog appears, the panel
+names the setting (*Settings ▸ Privacy & safety ▸ App permissions ▸ Headset
+cameras*) and shows *Open app settings* (the app's page,
+`ACTION_APPLICATION_DETAILS_SETTINGS`); back on the panel it checks again.
+It says "no camera" only when no permission is missing, and the code can
+always be typed. The permissions, the camera ids and their vendor tags go
+to logcat under the tag `VisIVO-VR`
+(`adb logcat -s VisIVO-VR`).
 
 A QR code read (or a code typed) opens `LauncherActivity` with
 `<loader>/?launch=immersive#pair=<code>`; the panel closes (Horizon OS shows

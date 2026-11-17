@@ -44,9 +44,12 @@ Headset* for a second headset.
    app reads it, pairs with the computer, and you are in VR in front of the
    cube, without the browser, *Enter VR* or a cable.
 
-The first time, the app asks to use the headset's cameras: allow it. The
-camera image is read on the headset to find the QR code and is never kept
-or sent.
+The first time, the app asks to use the headset's cameras: allow it. If no
+question appears, or you refused, the app says so and offers *Open app
+settings*. Turn on the cameras for VisIVO VR there (or in *Settings ▸
+Privacy & safety ▸ App permissions ▸ Headset cameras*), then come back to
+the app. The camera image is read on the headset to find the QR code and is
+never kept or sent.
 
 If the camera cannot be used (permission refused, an older headset), type
 the code in the app's *Or type the code* field and press *Connect*.

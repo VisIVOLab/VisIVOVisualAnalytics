@@ -8,8 +8,8 @@
     "release": "VisIVO VR",
     "development": "VisIVO VR (dev)"
   },
-  "versionCode": 5,
-  "versionName": "1.2.1",
+  "versionCode": 6,
+  "versionName": "1.2.2",
   "minSdkVersion": 32,
   "targetSdkVersion": 34,
   "supportedDevices": "quest3|quest3s",
