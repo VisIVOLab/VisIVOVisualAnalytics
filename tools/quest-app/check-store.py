@@ -248,7 +248,11 @@ def main(argv: list[str]) -> int:
         return 2
     app = json.loads((HERE / "app.json").read_text(encoding="utf-8"))
     tree = parse_xmltree(_run([os.path.join(bt, "aapt2"), "dump", "xmltree", "--file", "AndroidManifest.xml", apk]))
-    signing = parse_signing(_run([os.path.join(bt, "apksigner"), "verify", "-v", apk]))
+    # --min-sdk-version 24: with the APK's own minSdk (28 or more) and a v3
+    # signature apksigner does not verify v2 at all; Android 7 (24) is the
+    # first to check v2, so v2 is verified (and v1 not required).
+    signing = parse_signing(_run([os.path.join(bt, "apksigner"), "verify", "-v",
+                                  "--min-sdk-version", "24", apk]))
     with zipfile.ZipFile(apk) as z:
         names = z.namelist()
     results = check(tree, signing, names, Path(apk).stat().st_size, app)
