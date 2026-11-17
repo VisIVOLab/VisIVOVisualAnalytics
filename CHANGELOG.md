@@ -8,6 +8,13 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Backend: cross-match on Galactic images (#379).** Cross-match with a
+  catalogue (*Tools ▸ Catalogue ▸ Cross-match with Catalogue…*, and the VR
+  cross-match layer) used an image's own coordinates as ICRS: on a Galactic
+  Hi-GAL cutout it queried the wrong part of the sky and drew no markers. The
+  image centre is now converted to ICRS for the query and each source is
+  converted back to the image's frame before it is placed (CAR, TAN, latitude
+  on either axis); the centre pixel is no longer half a pixel off.
   (#151).** A CRTF sky region without `coord=` is now in the image's own
   frame, as CASA reads it, instead of J2000: on a galactic image
   `circle[[150deg, 2deg], 10arcsec]` lands at l = 150°, b = 2°. Ellipse
