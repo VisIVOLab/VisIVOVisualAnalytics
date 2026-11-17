@@ -26,6 +26,9 @@
 // Its Overlay page (issue #357, one press from Display's Rendering row)
 // overlays two or three of its variables, each with its own colour map,
 // scale, threshold, colour max and opacity.
+// A cube's Surfaces page (issue #370, from the same row) adds up to four
+// isosurfaces, each with its level, colour and opacity, extracted by the
+// backend (isosurface-ui.js).
 //
 // The layout is a pure function of a context (what is shown and chosen), so
 // the hit tests, the greying and the "two presses from opening" rule are
@@ -77,11 +80,11 @@ export const TABS = [
 ];
 /** Every page: the tabs', the cube's Levels and a point table's Data (under
  *  Display) and the technical settings (?debug only, under More). */
-export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'data', 'overlay', 'explode', 'debug'];
+export const PAGES = [...TABS.map((t) => t[0]), 'levels', 'data', 'overlay', 'explode', 'iso', 'debug'];
 /** The sub-pages and the tab each belongs to. */
-export const SUB_PAGES = { levels: 'display', data: 'display', overlay: 'display', explode: 'display', debug: 'more' };
+export const SUB_PAGES = { levels: 'display', data: 'display', overlay: 'display', explode: 'display', iso: 'display', debug: 'more' };
 /** The mode a tab sets (null: the mode stays). */
-export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', explode: 'explore', debug: null };
+export const TAB_MODE = { display: 'explore', range: 'clip', select: 'select', measure: 'explore', more: null, levels: 'explore', data: 'explore', overlay: 'explore', explode: 'explore', iso: 'explore', debug: null };
 /** The tab of a mode, for the page shown when the menu opens. */
 export const MODE_TAB = { explore: 'display', clip: 'range', select: 'select' };
 export const KINDS = ['cube', 'points', 'flow', 'none'];
@@ -164,6 +167,9 @@ export function defaultContext() {
     ov: null,
     // An exploded view (#371, explode-ui.js menuContext), or null (not a simulation volume).
     ex: null,
+    // Isosurfaces (#370, isosurface-ui.js menuContext): {none, surfaces:
+    // [{colour, shown, made}], edit, volumeHidden, max, busy}, or null (no cube).
+    iso: null,
     cat: { loaded: false, show: true, labels: true, pins: true }, clipTool: 'slab',
     // The clipping plane of a simulation volume (#369): {available, on, slab}.
     plane: { available: false, on: false, slab: false },
@@ -220,7 +226,8 @@ function displayCube(ctx) {
   ];
   const ov = sim && ctx.vars && ctx.ov ? ctx.ov : null;
   const ex = sim && ctx.ex ? ctx.ex : null;
-  const nr = 2 + (ov ? 1 : 0) + (ex ? 1 : 0);
+  const iso = ctx.iso;
+  const nr = 2 + (ov ? 1 : 0) + (ex ? 1 : 0) + (iso ? 1 : 0);
   w.push(btn('render:0', span(4, nr, 0), 'Emission', { group: 'render', value: 0, on: ctx.render === 0, tip: 'Emission: the voxels add up along each ray' }),
     btn('render:1', span(4, nr, 1), 'MIP', { group: 'render', value: 1, on: ctx.render === 1, tip: 'MIP: the brightest value along each ray' }));
   if (ov) {
@@ -232,7 +239,9 @@ function displayCube(ctx) {
     }
   }
   // A simulation model taken apart (#371): its own page.
-  if (ex) w.push(btn('explode-page', span(4, nr, nr - 1), 'Explode ▸', { on: !!ex.exploded, tip: 'Explode: the fields or value ranges pulled apart' }));
+  if (ex) w.push(btn('explode-page', span(4, nr, nr - 1 - (iso ? 1 : 0)), 'Explode ▸', { on: !!ex.exploded, tip: 'Explode: the fields or value ranges pulled apart' }));
+  // Isosurfaces (#370): their own page, the row's last cell, whatever is drawn.
+  if (iso) w.push(btn('iso-page', span(4, nr, nr - 1), 'Surfaces ▸', { on: iso.surfaces.length > 0, tip: 'Surfaces: isosurfaces at chosen levels' }));
   const v = sim ? ctx.vars : null;
   if (v && v.names && v.names.length > 1) {
     // A simulation volume with several variables (#317): the last row picks
@@ -406,6 +415,50 @@ function overlayPage(ctx) {
   w.push(btn('ov-on', cell5(3), ov && ov.shown ? 'On' : 'Off', { on: !!ov && !!ov.shown, armed: !!ov && !!ov.loading,
     disabled: room || (fields.length >= 2 ? '' : WHY.ovFields), tip: 'The overlay on, or the single variable back' }));
   return { rows, widgets: w, status: 6, placeholder: { edit: 'The fields picked above, to set one by one.' } };
+}
+
+/** The isosurfaces' colours (isosurface.js PALETTE), in order. */
+export const ISO_COLOURS = ['Orange', 'Cyan', 'Magenta', 'Lime', 'Yellow', 'White'];
+const ISO_DOTS = { Orange: '#ff993d', Cyan: '#3dc7ff', Magenta: '#ff4fd9', Lime: '#9ce663', Yellow: '#ffe04d', White: '#e8e8e8' };
+
+/**
+ * Isosurfaces of the cube (#370): the Surfaces row picks the one the rows
+ * below set (its level on the cube's scale, its colour and opacity, shown
+ * or hidden) or adds one; then the volume with them or not, and the
+ * export of the one picked (saved in the workspace's exports).
+ */
+function isoPage(ctx) {
+  const iso = ctx.iso;
+  const rows = [['isolist', 'Surfaces'], ['isolevel', 'Level'], ['isocolour', 'Colour'], ['isoopacity', 'Opacity'],
+    ['isoshow', 'Show'], ['isoexport', 'Export']];
+  const none = ctx.kind !== 'cube' || !iso ? 'Isosurfaces are of a cube.' : iso.none || '';
+  const list = !none ? iso.surfaces : [];
+  const w = [];
+  const cells = weighted(0, [...list.map(() => 1.4), 2, 2]);
+  list.forEach((s, i) => w.push(btn(`iso-edit:${i}`, cells(i), `${i + 1}`, { group: 'iso-edit', value: i, on: iso.edit === i, free: true,
+    dot: s.colour, tip: `Surface ${i + 1} (${s.colour.toLowerCase()}): set it below` })));
+  const full = !none && list.length >= (iso.max || 4) ? 'Four surfaces at most: remove one first.' : '';
+  w.push(btn('iso-add', cells(list.length), '+ Add', { disabled: none || full, tip: 'A new surface, at the threshold first' }));
+  const cur = list[iso && iso.edit < list.length ? iso.edit : -1] || null;
+  const noSurface = none || (cur ? '' : 'Add a surface first.');
+  w.push(btn('iso-remove', cells(list.length + 1), 'Remove', { disabled: noSurface, tip: 'This surface removed' }));
+  const bw = 200, gap = 10, sl = RIGHT - X0 - bw - gap;
+  w.push({ id: 'iso-level', kind: 'slider', rect: [X0, rowY(1), sl, WH], disabled: noSurface });
+  w.push(btn('iso-thr', [X0 + sl + gap, rowY(1), bw, WH], 'Threshold', { disabled: noSurface, tip: 'The level at the volume\'s threshold' }));
+  const nc = ISO_COLOURS.length;
+  ISO_COLOURS.forEach((name, k) => w.push(btn(`iso-colour:${name}`, span(2, nc, k), name, { group: 'iso-colour', value: name, on: !!cur && cur.colour === name,
+    dot: name, free: true, disabled: noSurface })));
+  w.push({ id: 'iso-opacity', kind: 'slider', rect: [X0, rowY(3), sl, WH], disabled: noSurface });
+  w.push(btn('iso-shown', [X0 + sl + gap, rowY(3), bw, WH], cur && !cur.shown ? 'Hidden' : 'Shown', { on: !!cur && cur.shown, disabled: noSurface,
+    tip: 'This surface shown or hidden' }));
+  w.push(btn('iso-show:volume', span(4, 2, 0), 'With the volume', { group: 'iso-show', value: 'volume', on: !!iso && !iso.volumeHidden, disabled: none }));
+  w.push(btn('iso-show:surfaces', span(4, 2, 1), 'Surfaces only', { group: 'iso-show', value: 'surfaces', on: !!iso && !!iso.volumeHidden, disabled: none,
+    tip: 'The volume hidden while a surface is shown' }));
+  const noMesh = noSurface || (cur.made ? '' : 'The surface is not made yet.');
+  w.push(btn('iso-export:ply', span(5, 3, 0), 'PLY', { disabled: noMesh, tip: 'Saved as PLY in the workspace\'s exports' }));
+  w.push(btn('iso-export:glb', span(5, 3, 1), 'glTF', { disabled: noMesh, tip: 'Saved as binary glTF in the workspace\'s exports' }));
+  w.push(btn('iso-back', span(5, 3, 2), '◂ Display'));
+  return { rows, widgets: w, status: 6 };
 }
 
 /** A point table's Data page (#259): the snapshot beside it, the X/Y/Z
@@ -618,6 +671,7 @@ export function pageSpec(page, ctx = defaultContext()) {
   else if (page === 'data') s = dataPage(ctx);
   else if (page === 'overlay') s = overlayPage(ctx);
   else if (page === 'explode') s = explodePage(ctx, { btn, span, weighted, rowY, X0, RIGHT, WH }, WHY);
+  else if (page === 'iso') s = isoPage(ctx);
   else if (page === 'range') s = rangePage(ctx);
   else if (page === 'select') s = selectPage(ctx);
   else if (page === 'measure') s = measurePage(ctx);
@@ -858,8 +912,14 @@ function drawButton(c, w, hover) {
   c.fill();
   if (hover && !off) { c.strokeStyle = C.edge; c.lineWidth = 2; c.stroke(); }
   // A tool's button carries the palette's icon on its left (#257).
-  const is = w.icon ? hh - 16 : 0;
+  let is = w.icon ? hh - 16 : 0;
   if (is) drawIcon(c, w.icon, x + 8, y + 8, is, off ? C.off : w.on || w.armed ? C.onFg : C.fg);
+  // A surface's colour (#370): a dot where an icon would be.
+  if (w.dot && !is) {
+    is = 22;
+    c.fillStyle = ISO_DOTS[w.dot] || '#ccc';
+    c.beginPath(); c.arc(x + 8 + is / 2, y + hh / 2, is / 2, 0, 2 * Math.PI); c.fill();
+  }
   c.fillStyle = off ? C.off : w.on || w.armed ? C.onFg : C.fg;
   c.textAlign = 'center';
   c.textBaseline = 'middle';

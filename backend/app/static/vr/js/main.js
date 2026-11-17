@@ -14,6 +14,7 @@ import * as SC from './sim-controls.js';
 import { createOverlay } from './overlay-ui.js';
 // A simulation model taken apart: fields and value ranges as pieces (issue #371).
 import { createExplode } from './explode-ui.js';
+import { createIsosurfaces } from './isosurface-ui.js';
 import { createClipPlane } from './clip-plane-ui.js';
 import * as LV from './levels.js';
 import { CubePrep, Newest, prepareCube, CMAX_QUANTILE, CMAX_SAMPLE } from './cube-prep.js';
@@ -1548,6 +1549,18 @@ const explode = createExplode({
   changed: () => { menu.key = ''; labelsChanged(); },
   dropDetail: (why) => dropDetail(why), now: () => performance.now(),
 });
+// Isosurfaces of the cube (issue #370, isosurface-ui.js): extracted by the
+// backend, drawn after the volume; their buffers are allocated once, with
+// the first surface (buffers, not 3-D textures; nothing per frame).
+const isos = createIsosurfaces({
+  gl, state,
+  backend: () => (state.open ? ensureBackend() : null),
+  thrNorm: () => state.thrNorm, cmaxNorm: () => state.cmaxNorm,
+  changed: () => { menu.key = ''; },
+  log: (level, event, detail) => shell.log(level, event, detail),
+  toast: (text, key) => toast(text, key),
+  budget: Number(query.get('isotris')),
+});
 // The clipping plane of a simulation volume (issue #369, clip-plane-ui.js).
 const clipPlane = createClipPlane({
   R, state,
@@ -1846,6 +1859,8 @@ function showInstalled(info, cube, open, path, slot, up, load, clock) {
   // says what it allows), then the fields this cube starts with, within its channels.
   overlay.ensureStorage();
   overlay.onCube(info, path);
+  isos.onCube();                   // another cube's surfaces go (#370)
+  if (!R.xrActive) isos.prepare(); // their program and buffers made outside VR
   clipPlane.onCube();          // a plane of its own, unless the same grid (#369)
   applyExtent();
   $('thr-source').value = currentThresholdSource();
@@ -2048,6 +2063,8 @@ function stretchA() {
     cmaxData: dataValue(Math.max(state.cmaxNorm, state.thrNorm + 1e-3)) });
 }
 
+/** The surfaces' draw parameters (#370), one object filled again each draw. */
+const isoParams = { extent: null, boxMin: null, boxMax: null, clip: null };
 function drawScene(view, override, eye = 0) {
   // With a refined frame on show (fading in or out included) the selection is
   // left out of the headset's own volume and drawn once, over the refined
@@ -2056,7 +2073,8 @@ function drawScene(view, override, eye = 0) {
   const exOn = explode.active();
   const ovOn = !exOn && overlay.visible();
   const refined = !exOn && !ovOn && refineMode !== 'off' && refiner.showing && !(masks && masks.hidesRefined());
-  if (!CUT.novolume) {
+  // Surfaces only (#370): the volume left out (not the exploded pieces).
+  if (!CUT.novolume && (exOn || !isos.hidesVolume())) {
     // Overlaid fields (#357): their own program, no region or mask.
     if (exOn) explode.draw(view, state.model, override);
     else if (ovOn) R.drawOverlay(view, state.model, overlay.params(volParams({ ...override, showMask: false }), override || {}));
@@ -2069,6 +2087,9 @@ function drawScene(view, override, eye = 0) {
   }
   // Taken apart (#371): the assembled box's outline, ticks, labels and selection are not where anything is drawn.
   if (exOn) return;
+  // Isosurfaces (#370): over the volume, clipped by the crop and the clipping plane (#369).
+  isoParams.extent = state.extent; isoParams.boxMin = state.clip.min; isoParams.boxMax = state.clip.max; isoParams.clip = clipPlane.shader();
+  isos.draw(view, state.model, isoParams);
   R.drawLines(view, state.model);
   if (!CUT.noseloutline) { R.drawLines(view, state.model, R.selLines); cutCounts.selLineDraws++; }
   layers.drawOverCube(view, state.model);
@@ -2171,6 +2192,8 @@ function hudLines(targetHz) {
     }
     const exLine = explode.hudLine();
     if (exLine) lines.push(exLine);
+    const isoLine = isos.hudLine();
+    if (isoLine) lines.push(isoLine);
   }
   lines.push(...selection.hudLines());
   lines.push(...layers.hudLines());
@@ -2528,6 +2551,7 @@ function menuContext() {
     vars: variablesMenu(),
     ov: overlay.menuContext(),
     ex: explode.menuContext(),
+    iso: isos.menuContext(),
     cat: lc.cat, clipTool: ui.clipTool, plane: clipPlane.menuContext(),
     lv: { sigma: !!(state.cube && LV.sigmaOf(state.info)), hist: !!histDensity(state.cube), stretch: state.stretch },
     sel: { tool: s.tool, seedMode: s.seedMode || 'new', lasso, box: !!s.box, applied: !!a.lasso.state.applied },
@@ -2609,6 +2633,7 @@ function menuView(ctx = menuContext()) {
   if (page === 'debug') status.push(`Refinement: ${refineShort()}`);
   if (page === 'overlay' && ctx.ov) overlay.view(values, notes, status);
   if (page === 'explode' && ctx.ex) explode.view(values, notes, status);
+  if (page === 'iso' && ctx.iso) isos.view(values, notes, status);
   const hist = page === 'levels' && c ? {
     density: histDensity(c), thr: normToSlider(state.thrNorm) / 1000, cmax: normToSlider(state.cmaxNorm) / 1000,
     marks: LV.sigmaMarks(LV.sigmaOf(state.info), c.lo, c.hi, undefined, undefined, c.scale).map(({ at, label }) => ({ at, label })),
@@ -2649,6 +2674,7 @@ function menuLayout() {
   if (ui.page === 'data' && ctx.kind !== 'points') ui.page = 'display';
   if (ui.page === 'overlay' && !ctx.ov) ui.page = 'display';
   if (ui.page === 'explode' && !ctx.ex) ui.page = 'display';
+  if (ui.page === 'iso' && !ctx.iso) ui.page = 'display';
   menu.ctx = ctx;
   menu.spec = HM.pageSpec(ui.page, ctx);
   menu.pointer.layout = HM.menuLayout(ui.page, ctx);
@@ -3025,6 +3051,10 @@ function applyMenu(a, ray = null, eye = null) {
   // The model taken apart (#371): its page and its presses.
   if (id === 'explode-page') { ui.page = 'explode'; return; }
   if (explode.press(id, w)) return;
+  // Isosurfaces (#370): their page and its presses.
+  if (id === 'iso-page') { ui.page = 'iso'; return; }
+  if (id === 'iso-back') { ui.page = 'display'; return; }
+  if (isos.press(id, w)) return;
   // The clipping plane (#369): on/off, flip, snap, slab, reset (each one undo step).
   if (clipPlane.press(id)) return;
   if (id === 'levels-back') { ui.page = 'display'; return; }
@@ -3100,6 +3130,7 @@ function menuSlide(a) {
     else if (a.id === 'opacity') { state.opacity = Math.max(0.01, a.value * 2); $('opacity').value = Math.round(state.opacity * 100); }
     else if (overlay.slide(a.id, a.value)) { /* an overlaid field's (#357) */ }
     else if (explode.slide(a.id, a.value)) { /* the exploded view's spread (#371) */ }
+    else if (isos.slide(a.id, a.value)) { /* a surface's level or opacity (#370) */ }
     else layers.slide(a.id, a.value);
     labelsChanged();
     return;
@@ -5428,6 +5459,28 @@ if (query.has('debug')) {
   window.__vrDetail = detail;
   window.__vrOverlay = overlay;     // #357
   window.__vrExplode = explode;     // #371
+  window.__vrIso = isos;            // #370
+  // The surfaces alone drawn into the page's canvas (#370): the share of
+  // pixels they cover, what was drawn and the draw's time over `frames`.
+  window.__vrIsoPixels = ({ frames = 1 } = {}) => {
+    const w = canvas.width, h = canvas.height;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    const p = { extent: state.extent, boxMin: state.clip.min, boxMax: state.clip.max, clip: clipPlane.shader() };
+    const t0 = performance.now();
+    for (let f = 0; f < frames; f++) {
+      gl.clearColor(...DESKTOP_BG, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      isos.draw(desktopView(), state.model, p);
+    }
+    const px = new Uint8Array(w * h * 4);
+    gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const ms = (performance.now() - t0) / frames;
+    const bg = DESKTOP_BG.map((v) => Math.round(v * 255));
+    let n = 0;
+    for (let i = 0; i < px.length; i += 4) if (Math.abs(px[i] - bg[0]) + Math.abs(px[i + 1] - bg[1]) + Math.abs(px[i + 2] - bg[2]) > 12) n++;
+    return { fraction: n / (w * h), draws: isos.gl.draws, triangles: isos.gl.triangles, ms, w, h };
+  };
   window.__vrOverlaySetMaps = (maps) => R.setOverlayColormaps(maps);
   window.__vrReadoutAt = (p) => readoutAt(p);
   // The variables of a simulation volume (#317): the menu's row, a switch, the looks kept.
@@ -5871,6 +5924,7 @@ function rebuildGraphics() {
     for (const w of Object.values(wins)) w.barKey = '';
     colourBar.bar = null;            // its texture was on the lost context (#259)
     overlay.afterRestore();          // the overlay written again by R.restore (#357)
+    isos.afterRestore();             // the surfaces' buffers made and filled again (#370)
     for (const b of overlayBars) b.key = '';
     ui.psel.g = null;
     for (const k of [readout.live, readout.pin]) k.key = '';
