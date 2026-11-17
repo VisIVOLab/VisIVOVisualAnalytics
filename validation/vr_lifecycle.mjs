@@ -8,7 +8,7 @@
 // diagnostics text and the backend log scrubbed of the token.
 //
 //   node validation/vr_lifecycle.mjs [--smoke] [--regressions] [--menu] [--measure] [--python PATH] [--chrome PATH]
-//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--variables] [--overlay] [--pyramid-wait] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
+//        [--alloc] [--xrfake] [--sources] [--masks] [--entry] [--simulation] [--clip-plane] [--variables] [--overlay] [--pyramid-wait] [--crop-detail] [--gl metal|swiftshader] [--port 8791] [--cdp-port N] [--timeout-min 10] [--out DIR] [--cube FILE]
 //
 // --smoke is what CI runs (tests.yml): start, load, first frame drawn, no page
 // error, versions agree. Exit code 0 when every check passed. The tokens are
@@ -22,7 +22,8 @@
 // --simulation (issue #317) adds a simulation volume's checks to the smoke run
 // (validation/vr_simulation.mjs: a VBT density over seven decades on a log
 // scale, its box drawn to the grid spacing, no spectral wording or tools);
-// --regressions runs them too.
+// --regressions runs them too. --clip-plane (issue #369) adds the clipping
+// plane's checks to that run (validation/vr_clip_plane.mjs; --regressions too).
 // --measure (issue #224) adds the measurement record's checks to the smoke
 // run (validation/vr_measure.mjs): recording on vs off, a guided run through
 // every condition, the record read back and the report script run on it.
@@ -95,8 +96,10 @@ const OVERLAY_SHAPE = typeof args['overlay-shape'] === 'string' ? args['overlay-
 // --pyramid-wait (issue #329): a brick pyramid build that outlasts the page's request deadline, alone (also part of --xrfake and --regressions).
 const PYRAMID_WAIT = !!args['pyramid-wait'] && !XRFAKE && !args.paired;
 // --simulation (issue #317): a simulation volume (also part of --regressions).
-const SIMULATION = (!!args.simulation || !!args.regressions) && !args.paired;
-const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['crop-detail'] || !!args.variables || !!args.overlay || !!args['pyramid-wait'];
+const SIMULATION = (!!args.simulation || !!args.regressions || !!args['clip-plane']) && !args.paired;
+// --clip-plane (issue #369): a simulation volume's clipping plane, checked on the simulation run (also part of --regressions).
+const CLIP_PLANE = (!!args['clip-plane'] || !!args.regressions) && !args.paired;
+const SMOKE = PAIRED || MEASURE || !!args.smoke || !!args.regressions || !!args.menu || !!args.alloc || !!args.xrfake || !!args['text-fit'] || !!args.sources || !!args.masks || !!args.entry || !!args.simulation || !!args['clip-plane'] || !!args['crop-detail'] || !!args.variables || !!args.overlay || !!args['pyramid-wait'];
 const PY = args.python || process.env.VISIVO_PYTHON || 'python3';
 // `--chrome` given without a value (an empty shell variable) parses as true:
 // that is "not found", said at once rather than as a failed spawn later.
@@ -735,7 +738,7 @@ try {
   if (OVERLAY) results.overlay = await runOverlayChecks({ c, check, waitFor, api, base: BASE, token: tokenA, python: PY, shape: OVERLAY_SHAPE });
   if (PYRAMID_WAIT) results.pyramidWait = await runPyramidWaitChecks({ c, check, waitFor, api, base: BASE, token: tokenA, cube });
   // Issue #317: a simulation volume (log scale, box to the grid spacing, no spectral wording or tools).
-  if (SIMULATION) results.simulation = await runSimulationChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, cube });
+  if (SIMULATION) results.simulation = await runSimulationChecks({ c, check, waitFor, base: BASE, token: tokenA, python: PY, cube, clipPlane: CLIP_PLANE });
 
   if (!SMOKE) {
     // ── Loads: the path a load started with, the newest load wins ─────────

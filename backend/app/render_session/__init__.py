@@ -95,6 +95,10 @@ class RenderSession(SceneMixin, ModesMixin, PipelineMixin, StereoMixin, RegionsM
         self._volume = None
         self._volume_mapper = None
         self._volume_property = None      # vtkVolumeProperty — TF holder
+        # The VR page's clipping box in voxel coordinates (set_crop) and its
+        # clipping plane (set_clip_plane, issue #369, _clip_plane.ClipPlane).
+        self._crop_voxel = None
+        self._clip_plane = None
         self._color_tf = None
         self._opacity_tf = None
         self._image_data = None  # Holds the vtkImageData with the cube.

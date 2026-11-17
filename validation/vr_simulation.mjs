@@ -14,6 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runTextFitChecks } from './vr_text_fit.mjs';
+import { runClipPlaneChecks } from './vr_clip_plane.mjs';
 
 /** A VBT volume of two fields (rho, vx) on a 64 x 48 x 24 grid, spacing 1 x 1 x 2 (kpc). */
 export function makeSimulationVolume(python) {
@@ -38,7 +39,7 @@ print(data)
 
 const SPECTRAL_WORDS = /channel|velocity|km\/s|beam|rest |σ|kinematic|spectrum/i;
 
-export async function runSimulationChecks({ c, check, waitFor, base, token, python, cube = null, results = {} }) {
+export async function runSimulationChecks({ c, check, waitFor, base, token, python, cube = null, clipPlane = false, results = {} }) {
   const L = 'simulation';
   const data = makeSimulationVolume(python);
   const ref = `${data}::vbt-field=0`;
@@ -123,6 +124,8 @@ export async function runSimulationChecks({ c, check, waitFor, base, token, pyth
   const at90 = await c.evaluate('window.__vrDrawnFraction()');
   check(`${L}: the density is drawn, more of it at the 90th percentile than at the 99th`, at99.fraction > 0 && at90.fraction > 0.003
     && at90.fraction > at99.fraction, `${(100 * at99.fraction).toFixed(2)} % at the 99th, ${(100 * at90.fraction).toFixed(2)} % at the 90th`);
+  // The clipping plane (issue #369) on this density, drawn at the 90th percentile.
+  if (clipPlane) results.clipPlane = await runClipPlaneChecks({ c, check });
   // Every text of the menu fits with these values (the live menu of a simulation volume).
   results.textFit = await runTextFitChecks({ c, check, live: true });
   // The signed field beside it: a simulation too, on a linear scale.

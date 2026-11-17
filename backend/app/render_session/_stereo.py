@@ -56,6 +56,8 @@ from typing import Any
 
 import numpy as np
 
+from ._clip_plane import composite_section, section_layer
+
 logger = logging.getLogger("visivo.render")
 
 #: First bytes of every stereo frame message, then a little-endian uint32: the
@@ -826,6 +828,8 @@ class StereoMixin:
         t_encode = time.time()
 
         header = dict(base)
+        if getattr(self, "_clip_plane", None) is not None:
+            header["clip_plane"] = True       # drawn with the page's clipping plane (#369)
         header.update({
             "eyes": [{"eye": "left", "x": 0, "y": 0, "width": w, "height": h},
                      {"eye": "right", "x": w, "y": 0, "width": w, "height": h}],
@@ -885,6 +889,12 @@ class StereoMixin:
         placement = None if np.allclose(np.diag(stretch), 1.0) else _vtk_matrix(stretch)
         placed = [(p, p.GetUserMatrix()) for p in (self._volume, self._iso_actor,
                                                    self._iso_lod_actor) if p is not None]
+        # The VR page's clipping plane (issue #369): VTK takes it in world
+        # units, which the placement stretches; and its section, composited
+        # in front of the volume as the page draws it (composite blending).
+        clip = getattr(self, "_clip_plane", None)
+        clip_scaled = clip is not None and placement is not None
+        section = self._section_inputs(clip) if (clip is not None and not mip and use_volume) else None
         # The desktop's regions (#356) lie on the plane, hidden with it.
         hidden = [p for p in (self._outline_actor, self._cutting_plane_actor,
                               *getattr(self, "_region_actors", []),
@@ -907,6 +917,8 @@ class StereoMixin:
         try:
             for p, _ in placed:
                 p.SetUserMatrix(placement)
+            if clip_scaled:
+                self._apply_clip_plane_on_thread(tuple(np.diag(stretch)[:3]))
             for p in hidden:
                 p.SetVisibility(0)
             if self._axes_renderer is not None:
@@ -945,10 +957,15 @@ class StereoMixin:
                         status, depth = self._window_depth(win, w, h)
                         depth_problem = surface_depth_problem(depth, status)
                 t2 = time.perf_counter()
+                if section is not None:
+                    rgba, depth = composite_section(rgba, depth, section_layer(
+                        clip, geometry, (w, h), shape, *section), premultiplied=use_volume)
+                t3 = time.perf_counter()
                 out.append((np.array(rgba), None if depth is None else
                             np.array(depth, dtype=np.float32), geometry["depth_projection"]))
                 per_eye.append({"eye": eye.eye, "render": round(1000 * (t1 - t0), 3),
                                 "readback": round(1000 * (t2 - t1), 3),
+                                **({"section": round(1000 * (t3 - t2), 3)} if section is not None else {}),
                                 # The ray step the volume was drawn with, in the
                                 # cube's voxels, as the drawing mapper holds it.
                                 "sample_distance": _drawn_step(mapper)})
@@ -961,6 +978,8 @@ class StereoMixin:
             ren.SetBackground(*mono_bg)
             for p, previous in placed:
                 p.SetUserMatrix(previous)
+            if clip_scaled:
+                self._apply_clip_plane_on_thread()
             for p in hidden:
                 p.SetVisibility(1)
             if axes_drawn is not None:
@@ -979,6 +998,28 @@ class StereoMixin:
             depth_problem = DepthProblem("the volume mapper cannot render to an image on this "
                                          "GL (colour read from the window, no volume depth)")
         return out, source, per_eye, use_volume, depth_problem
+
+    def _section_inputs(self, clip):
+        """What :func:`_clip_plane.section_layer` needs besides the eye:
+        ``(sample, colour points, opacity points, crop)``; None without the
+        page's own transfer functions or a single volume drawn."""
+        tf = getattr(getattr(self, "view", None), "explicit_tf", None)
+        if clip is None or tf is None:
+            return None
+        mapper = self._volume_mapper
+        if hasattr(mapper, "drawn_sample"):
+            sample = mapper.drawn_sample()
+        else:
+            img = getattr(self, "_image_data", None)
+            if img is None or img.GetPointData().GetScalars() is None:
+                return None
+            from vtk.util.numpy_support import vtk_to_numpy  # noqa: PLC0415
+            nx, ny, nz = img.GetDimensions()
+            sample = (vtk_to_numpy(img.GetPointData().GetScalars()).reshape(nz, ny, nx),
+                      img.GetOrigin(), img.GetSpacing()[0])
+        if sample is None:
+            return None
+        return sample, tf[0], tf[1], getattr(self, "_crop_voxel", None)
 
     @staticmethod
     def _window_rgba(win, w: int, h: int) -> np.ndarray:
