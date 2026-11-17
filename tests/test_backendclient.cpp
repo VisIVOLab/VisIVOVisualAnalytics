@@ -747,3 +747,23 @@ void TestBackendClient::parseAssistantConfig_olderBackendHasNoProblem()
     QCOMPARE(r.provider, QStringLiteral("null"));
     QVERIFY(r.problem.isEmpty());
 }
+
+void TestBackendClient::parseParticleComponents_readsNameAndPath()
+{
+    using namespace Qt::StringLiterals;
+    // As /v1/files/classify and /v1/catalogue/open list a snapshot's particle types.
+    const QJsonArray items{
+        QJsonObject{ { u"name"_s, u"gas"_s }, { u"path"_s, u"/s/snap_010.0::gadget-type=0"_s },
+                     { u"num_rows"_s, 2000 } },
+        QJsonObject{ { u"name"_s, u"no path"_s } },
+        QJsonObject{ { u"name"_s, u"black holes"_s },
+                     { u"path"_s, u"/s/snap_010.0::gadget-type=5"_s } },
+    };
+    const auto parsed = visivo::parseParticleComponents(QJsonValue(items));
+    QCOMPARE(parsed.size(), 2);
+    QCOMPARE(parsed.at(0).first, u"gas"_s);
+    QCOMPARE(parsed.at(1).second, u"/s/snap_010.0::gadget-type=5"_s);
+    // An older backend sends none.
+    QVERIFY(visivo::parseParticleComponents(QJsonValue()).isEmpty());
+    QVERIFY(visivo::parseParticleComponents(QJsonValue(u"x"_s)).isEmpty());
+}

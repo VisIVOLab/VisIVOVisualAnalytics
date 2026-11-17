@@ -324,9 +324,12 @@ export const STYLES = ['points', 'splats', 'raytraced'];
 export function isSplats(style) { return style === 'splats' || style === 'raytraced'; }
 
 /** The style a table opens with: ray-traced for a simulation's particles (a
- *  VBT point table), points for a catalogue, whose rows are objects, not a
- *  medium. */
-export function defaultStyle(format) { return format === 'vbt' ? 'raytraced' : 'points'; }
+ *  VBT point table, a snapshot's particle type: /v1/points/info says
+ *  `particles`), points for a catalogue, whose rows are objects, not a
+ *  medium. An older backend says only the format. */
+export function defaultStyle(format, particles = format === 'vbt') {
+  return particles ? 'raytraced' : 'points';
+}
 
 /**
  * The column a table is coloured by when it opens (issue #263): a density

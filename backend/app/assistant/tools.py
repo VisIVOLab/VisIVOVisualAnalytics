@@ -231,7 +231,7 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
             entry["max"] = float(fin.max()) if fin.size else None
             entry["mean"] = float(fin.mean()) if fin.size else None
         columns.append(entry)
-    return {
+    out = {
         "kind": "catalogue",
         "format": meta["format"],
         "num_rows": meta["num_rows"],
@@ -240,6 +240,29 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
         "columns": columns,
         "columns_truncated": len(meta["fields"]) > max_cols,
     }
+    # A simulation's particles (a VBT of points, a snapshot's particle type,
+    # issue #31): cartesian as opened, whatever the column names suggest; a
+    # snapshot also states its time, cosmology, units and physical
+    # conversions, which the copilot needs to quote values in physical units.
+    from ..point_table import is_particle_format  # noqa: PLC0415
+    if context is not None and is_particle_format(context.get("format")):
+        out["particles"] = True
+        out["coordinate_fields"] = context.get("coordinate_fields", out["coordinate_fields"])
+        units = (getattr(frame, "attrs", None) or {}).get("units") or {}
+        if units:
+            out["units"] = dict(units)
+        if context.get("snapshot"):
+            snap = context["snapshot"]
+            out["snapshot"] = {k: snap.get(k) for k in (
+                "format", "files", "scale_factor", "redshift", "box_size", "omega0",
+                "omega_lambda", "hubble_param", "units", "skipped_blocks")}
+        comp = context.get("component") or {}
+        if comp:
+            out["component"] = {k: comp.get(k) for k in (
+                "type", "name", "physical", "derived", "mass_from_table")}
+        if context.get("components"):
+            out["other_components"] = list(context["components"])
+    return out
 
 
 def _vbt_summary(_path: str | None, params: dict[str, Any],
@@ -320,6 +343,11 @@ def _list_datasets(_path: str | None, _params: dict[str, Any],
             info["label"] = os.path.basename(split_order(path)[0])
             if entry.get("byte_order_declared"):
                 info["byte_order"] = entry.get("byte_order", "")
+        if entry.get("format"):
+            info["format"] = entry.get("format")
+        if (entry.get("component") or {}).get("name"):
+            # A snapshot's particle type (issue #31).
+            info["component"] = entry["component"]["name"]
         for k in ("width", "height", "depth", "num_rows"):
             v = entry.get(k)
             if v is not None:
@@ -1050,8 +1078,10 @@ TOOLS: dict[str, AssistantTool] = {
         AssistantTool(
             name="catalogue_summary",
             description=(
-                "Structure of the loaded point catalogue (cosmology / VBT point "
-                "cloud): number of rows, columns with their types, the detected "
+                "Structure of the loaded point catalogue (cosmology catalogue, VBT "
+                "point cloud, or one particle type of a Gadget snapshot, with its "
+                "redshift, cosmology, units and physical conversions): number of "
+                "rows, columns with their types, the detected "
                 "coordinate system (RA/DEC or Cartesian X/Y/Z), and per numeric "
                 "column min/max/mean/finite-count. Use this to know what a "
                 "redshift / position catalogue contains before reasoning about it. "

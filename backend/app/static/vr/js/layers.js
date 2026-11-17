@@ -417,7 +417,7 @@ export function createLayers(ctx) {
     L.points = { datasetId, path, own, axes: info.axes, defaultAxes: info.axes.slice(), fields: info.fields, rows: info.num_rows,
       units: info.units || {}, series, sky, skySettings: info.sky_settings || null };
     if (!L.s.styleChosen) {
-      L.s.style = PT.defaultStyle(info.format);
+      L.s.style = PT.defaultStyle(info.format, info.particles ?? info.format === 'vbt');
       styleSel.value = L.s.style;
       sizeIn.value = PT.isSplats(L.s.style) ? L.s.splatSize : L.s.pointPx;
     }

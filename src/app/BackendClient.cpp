@@ -588,6 +588,7 @@ BackendClassifyResult BackendClient::classifyFile(const QString &path) const
     result.opener = object.value(QStringLiteral("opener")).toString();
     result.confident = object.value(QStringLiteral("confident")).toBool(false);
     result.detail = object.value(QStringLiteral("detail")).toString();
+    result.components = visivo::parseParticleComponents(object.value(QStringLiteral("components")));
     return result;
 }
 
@@ -1250,6 +1251,13 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
     result.byteOrderDeclared = object.value(QStringLiteral("byte_order_declared")).toString();
     result.byteOrderWarning =
             visivo::parseVbtByteOrderWarning(object.value(QStringLiteral("byte_order_warning")));
+    result.format = object.value(QStringLiteral("format")).toString();
+    // An older backend: a VBT of points is the only table of particles.
+    result.particles = object.contains(QStringLiteral("particles"))
+            ? object.value(QStringLiteral("particles")).toBool(false)
+            : format == QLatin1String("vbt");
+    result.path = object.value(QStringLiteral("path")).toString();
+    result.components = visivo::parseParticleComponents(object.value(QStringLiteral("components")));
     if (result.valid)
         visivo::noteVbtReadOrder(result.sessionId, paths.value(0), result.byteOrder,
                                  result.byteOrderDeclared);

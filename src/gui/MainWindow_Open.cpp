@@ -1363,6 +1363,9 @@ vtkWindowImage *MainWindow::openVlkbImageViewer(const QString &backendPath,
 static QStringList catalogueSiblingGroup(const BackendClient &client, const QString &filepath,
                                          QWidget *parent)
 {
+    // A snapshot's particle type (#31): the backend joins its files itself.
+    if (visivo::isFieldReference(filepath))
+        return {};
     const QFileInfo info(filepath);
     const QString suffix = info.suffix().toLower();
     // Pieces of one catalogue share a name and differ only in a trailing
@@ -1579,7 +1582,38 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     // A VBT picked by its `.bin` opens through the `.head` beside it: the VBT
     // route parses the header, and handing it the binary would fail on a file
     // the user chose correctly.
-    const QString target = verdict.valid && !verdict.openPath.isEmpty() ? verdict.openPath : path;
+    QString target = verdict.valid && !verdict.openPath.isEmpty() ? verdict.openPath : path;
+    // A particle snapshot (#31) holds several components, its particle types:
+    // the user picks one, unless the path already names one (Recent, Session
+    // Data). Each opens as a table of points of its own.
+    visivo::rememberFieldNames(verdict.components);
+    if (verdict.valid && verdict.components.size() > 1 && !visivo::isFieldReference(path)) {
+        QStringList labels;
+        int current = 0;
+        for (const auto &component : verdict.components) {
+            if (component.second == target)
+                current = static_cast<int>(labels.size());
+            labels << component.first;
+        }
+        bool chosen = false;
+        QElapsedTimer choosing;
+        choosing.start();
+        QString picked;
+        {
+            const visivo::BusyPause asking;   // the question is what to read now
+            picked = QInputDialog::getItem(
+                    this, u"Open simulation snapshot"_s,
+                    u"%1\n\nComponent to open:"_s.arg(verdict.detail), labels, current,
+                    /*editable=*/false, &chosen);
+        }
+        this->m_openRequestClock.start();
+        record->excludedMs += choosing.elapsed();
+        if (!chosen) {
+            record->record = false;   // dismissed: nothing was asked
+            return;
+        }
+        target = verdict.components.at(static_cast<int>(labels.indexOf(picked))).second;
+    }
     this->m_openRequestPath = target;
     record->path = target;
 

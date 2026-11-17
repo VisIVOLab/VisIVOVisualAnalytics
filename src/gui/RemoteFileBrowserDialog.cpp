@@ -514,10 +514,12 @@ void RemoteFileBrowserDialog::setFileTypes(const QList<visivo::FileType> &offere
         for (const visivo::FileType type : types) {
             this->typeCombo->addItem(visivo::fileTypeDisplayLabel(type), static_cast<int>(type));
             // The catch-all's patterns are too many for the drop-down itself.
-            const QStringList suffixes = visivo::fileTypeSuffixes(type);
-            if (!suffixes.isEmpty()) {
+            QStringList patterns = visivo::fileTypeSuffixes(type);
+            for (const QString &prefix : visivo::fileTypePrefixes(type))
+                patterns.append(prefix + u'*');   // a Gadget snapshot's names (#31)
+            if (!patterns.isEmpty()) {
                 this->typeCombo->setItemData(this->typeCombo->count() - 1,
-                                             suffixes.join(u' '), Qt::ToolTipRole);
+                                             patterns.join(u' '), Qt::ToolTipRole);
             }
         }
         this->typeCombo->setCurrentIndex(this->typeCombo->findData(static_cast<int>(initial)));

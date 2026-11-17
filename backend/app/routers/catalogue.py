@@ -30,17 +30,42 @@ async def open_catalogue(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CatalogueOpenResponse:
+    from ..point_table import (is_particle_format, particle_components,  # noqa: PLC0415
+                               particle_dataset_path, split_component)
     raw_paths = request.paths if request.paths else [request.path]
-    paths = [_normalize_path(p) for p in raw_paths]
-    for p in paths:
-        if not p.exists() or not p.is_file():
+    fmt = request.format.strip().lower()
+    paths: list[Path] = []
+    read_as: list[str] = []
+    for raw in raw_paths:
+        # A particle snapshot (issue #31) opens by a reference to one of its
+        # particle types, or by a file (or folder) of it, whatever format the
+        # client guessed from the name: the file says what it is. The data
+        # roots check the file; the reference names what is read in it.
+        base, suffix = split_component(raw)
+        p = _normalize_path(base)
+        try:
+            snapshot = (particle_dataset_path(str(p) + suffix)
+                        if fmt != "vbt" and p.exists() else None)
+        except (OSError, ValueError) as exc:
+            return CatalogueOpenResponse(valid=False, error=str(exc))
+        if snapshot is not None:
+            read_as.append(snapshot[0])
+            fmt = snapshot[1]
+        elif suffix:
+            return CatalogueOpenResponse(valid=False, error=f"Snapshot file not found: {p}")
+        elif not p.exists() or not p.is_file():
             return CatalogueOpenResponse(valid=False, error=f"Catalogue file not found: {p}")
-    is_vbt = request.format.strip().lower() == "vbt"
+        else:
+            read_as.append(str(p))
+        paths.append(p)
+    if fmt == "gadget" and len(read_as) > 1:
+        return CatalogueOpenResponse(
+            valid=False, error="A particle snapshot opens one particle type at a time.")
+    is_vbt = fmt == "vbt"
     if request.byte_order is not None and not is_vbt:
         return CatalogueOpenResponse(
             valid=False, error="byte_order applies to a VisIVO Binary Table only.")
     orders: dict[str, Any] = {}
-    read_as = [str(p) for p in paths]
 
     def load() -> tuple[pd.DataFrame, dict[str, Any]]:
         if is_vbt:
@@ -59,11 +84,11 @@ async def open_catalogue(
                     orders.update(found)
                 orders["changed"] = changed
         if len(paths) == 1:
-            return _catalogue_metadata(Path(read_as[0]), request.format)
+            return _catalogue_metadata(Path(read_as[0]), fmt)
         # Multi-file: load each (same format) and concatenate into one
         # catalogue. Require identical columns so a silent NaN-fill can't
         # corrupt "same catalogue split into files".
-        frames = [_catalogue_load_dataframe(Path(p), request.format) for p in read_as]
+        frames = [_catalogue_load_dataframe(Path(p), fmt) for p in read_as]
         base_cols = list(frames[0].columns)
         for src, frame in zip(paths[1:], frames[1:]):
             if list(frame.columns) != base_cols:
@@ -74,7 +99,9 @@ async def open_catalogue(
         frame = pd.concat(frames, ignore_index=True)
         if frame.empty and len(frame.columns) == 0:
             raise ValueError("Catalogue is empty.")
-        return frame, _catalogue_metadata_from_dataframe(frame, request.format.strip().lower())
+        if is_particle_format(fmt):
+            return frame, _vbt_points_metadata(frame, fmt)
+        return frame, _catalogue_metadata_from_dataframe(frame, fmt)
 
     try:
         # Off the event loop: a multi-million-row table takes seconds to parse,
@@ -89,8 +116,13 @@ async def open_catalogue(
 
     path = paths[0]
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
-    session.datasets[dataset_id] = {"path": str(path), "paths": [str(p) for p in paths],
-                                    "dataframe": dataframe, **metadata}
+    # A snapshot's particle type is known by its reference: every reader of
+    # the dataset (render sessions, the VR page, its series) opens that.
+    entry_path = read_as[0] if fmt == "gadget" else str(path)
+    components = particle_components(entry_path)
+    session.datasets[dataset_id] = {"path": entry_path, "paths": [str(p) for p in paths],
+                                    "dataframe": dataframe, **metadata,
+                                    **({"components": components} if components else {})}
     if is_vbt:
         # Provenance: the order the values were read in, and the header's.
         session.datasets[dataset_id]["byte_order"] = orders.get("byte_order", "")
@@ -118,6 +150,12 @@ async def open_catalogue(
         byte_order=orders.get("byte_order", ""),
         byte_order_declared=orders.get("byte_order_declared", ""),
         byte_order_warning=orders.get("byte_order_warning"),
+        format=fmt,
+        particles=is_particle_format(fmt),
+        path=entry_path,
+        components=[ParticleComponentInfo(**c) for c in components],
+        snapshot=metadata.get("snapshot") or {},
+        component=metadata.get("component") or {},
     )
 
 

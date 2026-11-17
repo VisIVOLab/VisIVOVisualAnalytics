@@ -10,6 +10,10 @@ namespace visivo {
 
 inline QString catalogueFormatForPath(const QString &path)
 {
+    // A particle type of a Gadget snapshot (#31), by its reference. (The
+    // backend tells a snapshot by its content whatever format it is asked for.)
+    if (path.contains(QStringLiteral("::gadget-type=")))
+        return QStringLiteral("gadget");
     const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
     // A VisIVO Binary Table of points (issue #83), by its header or its binary.
     if (suffix == QStringLiteral("head") || suffix == QStringLiteral("bin"))

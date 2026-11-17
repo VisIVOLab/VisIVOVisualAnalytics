@@ -583,7 +583,7 @@ __all__ = [
     "_is_supported_dataset",
     "_normalize_catalogue_field", "_catalogue_field_type",
     "_catalogue_metadata_from_dataframe", "_catalogue_csv_metadata",
-    "_catalogue_load_dataframe", "_catalogue_metadata",
+    "_catalogue_load_dataframe", "_catalogue_metadata", "_vbt_points_metadata",
     "_get_dask_client", "_run", "_run_io", "_run_interactive", "_run_with_limit",
     "acquire_task_slot", "task_slot_busy_error",
     "_run_heavy", "_run_heavy_with_limit",
@@ -1175,6 +1175,10 @@ def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
         return frame
     if fmt_lower == "vbt":
         return _read_vbt_points(path)
+    if fmt_lower == "gadget":
+        # One particle type of a Gadget snapshot (issue #31), read in place.
+        from .point_table import particle_frame  # noqa: PLC0415
+        return particle_frame(path)
     raise ValueError(f"Unsupported catalogue format: {fmt}")
 
 
@@ -1205,16 +1209,18 @@ def _catalogue_metadata(path: Path, fmt: str) -> tuple[pd.DataFrame, dict[str, A
     frame = _catalogue_load_dataframe(path, fmt)
     if frame.empty and len(frame.columns) == 0:
         raise ValueError("Catalogue is empty.")
-    if fmt.strip().lower() == "vbt":
-        return frame, _vbt_points_metadata(frame)
+    from .point_table import is_particle_format, particle_metadata  # noqa: PLC0415
+    if is_particle_format(fmt):
+        return frame, {**_vbt_points_metadata(frame, fmt.strip().lower()),
+                       **particle_metadata(path)}
     return frame, _catalogue_metadata_from_dataframe(frame, fmt.strip().lower())
 
 
-def _vbt_points_metadata(frame: pd.DataFrame) -> dict[str, Any]:
-    """A VBT table of points is cartesian, always: positions from its X/Y/Z
-    columns, else its first three (as the former VBT viewer did). Never read
-    as sky or galactic: a particle table's L and B are a luminosity and a
-    field, not l and b."""
+def _vbt_points_metadata(frame: pd.DataFrame, fmt: str = "vbt") -> dict[str, Any]:
+    """A table of particles (a VBT of points, a snapshot's component) is
+    cartesian, always: positions from its X/Y/Z columns, else its first three
+    (as the former VBT viewer did). Never read as sky or galactic: a particle
+    table's L and B are a luminosity and a field, not l and b."""
     names = [str(c) for c in frame.columns]
     by_alias = {_normalize_catalogue_field(n): n for n in names}
     picks = [next((by_alias[a] for a in aliases if a in by_alias), "")
@@ -1223,7 +1229,7 @@ def _vbt_points_metadata(frame: pd.DataFrame) -> dict[str, Any]:
         picks = (names * 3)[:3]
     return {
         "kind": "catalogue",
-        "format": "vbt",
+        "format": fmt,
         "num_rows": int(len(frame.index)),
         "fields": [{"name": n, "type": _catalogue_field_type(frame[n].dtype)} for n in names],
         "coordinate_fields": {"ra": "", "dec": "", "glon": "", "glat": "",

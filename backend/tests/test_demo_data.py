@@ -48,6 +48,8 @@ def test_manifest(demo_dir: Path):
         "combo/velocity.fits", "combo/galaxies.csv",
         "tbl_snapshot/snap_demo_1_1_1.tbl",
         "pluto_blast/dbl.out", "pluto_blast/data.0001.dbl", "pluto_jet2d/rho.0000.flt",
+        "gadget/snapdir_000/snap_000.2", "gadget/snapdir_002/snap_002.0",
+        "gadget/groups_002/sub_002.0", "gadget_format1/snap_005", "gadget_bigendian/snap_005.1",
     ]
     for rel in expected:
         assert (demo_dir / rel).exists(), f"missing demo file: {rel}"
@@ -150,3 +152,16 @@ def test_image_2d_wcs(demo_dir: Path):
     assert hdr["CTYPE1"].startswith("RA")
     assert hdr["BUNIT"] == "Jy/beam"
     assert float(np.nanmax(data)) > 0.4  # the injected sources
+
+
+def test_gadget_demo_snapshots_open_as_particles(demo_dir: Path):
+    """The Gadget demo (issue #31): a series of three multi-file snapshots,
+    the format-1 and big-endian copies of one, all opened by content."""
+    from app.classify import classify_path
+    from app.snapshot_series import snapshot_series
+    for rel in ("gadget/snapdir_002", "gadget_format1/snap_005", "gadget_bigendian/snap_005.0"):
+        verdict = classify_path(demo_dir / rel)
+        assert verdict["kind"] == "particles" and verdict["opener"] == "catalogue", rel
+        assert len(verdict["components"]) == 4
+    series = snapshot_series(str(demo_dir / "gadget/snapdir_001/snap_001.0"))
+    assert series["count"] == 3 and series["index"] == 1

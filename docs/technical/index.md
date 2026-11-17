@@ -50,6 +50,7 @@ methods/*
 
 design/large-cube-loading
 design/brick-pyramid
+design/gadget-snapshots
 design/distributed-backend-design
 design/copilot-backend
 design/async-patterns

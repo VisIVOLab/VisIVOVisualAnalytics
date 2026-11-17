@@ -517,8 +517,12 @@ async def samp_send_catalogue(
     VOTable is written in the BINARY2 serialization, several times smaller and
     faster to parse than TABLEDATA XML for every SAMP table tool.
     """
+    from ..point_table import split_component  # noqa: PLC0415
     src = Path(request.path)
-    if not src.exists() or not src.is_file():
+    # A snapshot's particle type (issue #31) is read by its reference; its
+    # file is what must exist. Its rows go as a VOTable, as a VBT's do.
+    data_file = Path(split_component(request.path)[0])
+    if not data_file.exists() or not data_file.is_file():
         return SAMPSendResponse(valid=False, error=f"File not found: {request.path}")
 
     fmt = request.format.strip().lower()

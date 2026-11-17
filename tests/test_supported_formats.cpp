@@ -26,10 +26,15 @@ void TestSupportedFormats::everyTypeHasARowAndAStableKey()
         keys.insert(QString(info.key));
         // The key read back is the type it was written for.
         QCOMPARE(visivo::fileTypeFromKey(QString(info.key)), std::optional<FileType>(type));
-        // Suffixes are stored lower case, with their dot.
+        // Suffixes are stored lower case, with their dot; name beginnings
+        // lower case.
         for (const QString &suffix : info.suffixes) {
             QVERIFY(suffix.startsWith(u'.'));
             QCOMPARE(suffix, suffix.toLower());
+        }
+        for (const QString &prefix : info.prefixes) {
+            QVERIFY(!prefix.isEmpty());
+            QCOMPARE(prefix, prefix.toLower());
         }
     }
     QCOMPARE(keys.size(), all.size());
@@ -41,7 +46,8 @@ void TestSupportedFormats::allSupportedIsTheUnionWithoutRepeats()
 {
     const QStringList all = visivo::fileTypeSuffixes(FileType::AllSupported);
     for (const FileType type : { FileType::Fits, FileType::Catalogue, FileType::Vbt,
-                                 FileType::Hdf5, FileType::DelimitedText, FileType::Pluto }) {
+                                 FileType::Hdf5, FileType::DelimitedText, FileType::Pluto,
+                                 FileType::Gadget }) {
         for (const QString &suffix : visivo::fileTypeSuffixes(type))
             QVERIFY2(all.contains(suffix), qPrintable(suffix));
     }
@@ -91,8 +97,10 @@ void TestSupportedFormats::dotfilesAreListedOnlyUnderAllFiles()
     QVERIFY(!visivo::isHiddenFileName(u"m31.fits"));
     // macOS resource forks keep the name they shadow.
     for (const FileType type : { FileType::AllSupported, FileType::Fits, FileType::Catalogue,
-                                 FileType::Vbt, FileType::Hdf5, FileType::DelimitedText, FileType::Pluto }) {
+                                 FileType::Vbt, FileType::Hdf5, FileType::DelimitedText, FileType::Pluto,
+                                 FileType::Gadget }) {
         QVERIFY(!visivo::fileTypeMatches(u"._m31.fits", type));
+        QVERIFY(!visivo::fileTypeMatches(u".snap_010", type));
         QVERIFY(!visivo::fileTypeMatches(u".DS_Store", type));
         QVERIFY(!visivo::fileTypeMatches(u".fits", type));
     }
@@ -167,4 +175,24 @@ void TestSupportedFormats::initialTypePrefersTheRememberedOne()
     // A preference that is not offered falls back to the first offered.
     QCOMPARE(visivo::initialFileType(offered, FileType::Vbt, u""), FileType::Fits);
     QCOMPARE(visivo::initialFileType({}, FileType::Vbt, u""), FileType::AllFiles);
+}
+
+void TestSupportedFormats::gadgetSnapshotsMatchByTheirNames()
+{
+    // Gadget writes `snap_NNN`, `snap_NNN.K` (one file of several) and
+    // `snap_NNN.K.hdf5` (#31): no suffix of their own, the name's beginning.
+    for (const auto name : { u"snap_010"_s, u"snap_010.3"_s, u"snap_010.0.hdf5"_s,
+                             u"snapshot_004"_s, u"SNAP_010.0"_s }) {
+        QVERIFY2(visivo::fileTypeMatches(name, FileType::Gadget), qPrintable(name));
+        QVERIFY2(visivo::fileTypeMatches(name, FileType::AllSupported), qPrintable(name));
+    }
+    QVERIFY(!visivo::fileTypeMatches(u"m31.fits", FileType::Gadget));
+    QVERIFY(!visivo::fileTypeMatches(u"mysnap_010", FileType::Gadget));
+    QVERIFY(!visivo::fileTypeMatches(u"snapdir_010", FileType::Gadget));
+    QVERIFY(visivo::openableFileTypes().contains(FileType::Gadget));
+    QCOMPARE(visivo::fileTypeDisplayLabel(FileType::Gadget),
+             u"Gadget snapshots (snap_* snapshot_*)"_s);
+    QCOMPARE(visivo::fileTypePrefixes(FileType::AllSupported),
+             (QStringList{ u"snap_"_s, u"snapshot_"_s }));
+    QVERIFY(visivo::fileTypePrefixes(FileType::Fits).isEmpty());
 }

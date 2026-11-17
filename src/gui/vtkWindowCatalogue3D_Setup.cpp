@@ -1,4 +1,5 @@
 #include "vtkWindowCatalogue3D.h"
+#include "app/DatasetName.h"
 #include "ColormapIcon.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -855,7 +856,7 @@ void vtkWindowCatalogue3D::setupViewerChrome()
     spec.filePath = this->filepath;
     spec.displayName = this->m_label.displayName;
     spec.primaryTag = this->m_pointTable
-            ? QStringLiteral("VBT · %L1 rows").arg(this->m_tableRows)
+            ? QStringLiteral("%1 · %L2 rows").arg(this->particleTag()).arg(this->m_tableRows)
             : QStringLiteral("CAT · %1 sources").arg(this->entries.size());
     // A concatenated catalogue is several files behaving as one, which is worth
     // saying here: the path pill can only show the first of them.
@@ -1011,8 +1012,16 @@ void vtkWindowCatalogue3D::updateWindowTitle()
 
 QString vtkWindowCatalogue3D::shownName() const
 {
-    return this->m_label.displayName.isEmpty() ? QFileInfo(this->filepath).fileName()
+    // A snapshot's particle type (#31): "snap_010.0 · gas"; a file: its name.
+    return this->m_label.displayName.isEmpty() ? visivo::datasetDisplayName(this->filepath)
                                                : this->m_label.displayName;
+}
+
+QString vtkWindowCatalogue3D::particleTag() const
+{
+    // The format of a simulation's particles, for the command bar: VBT, GADGET.
+    return this->m_tableFormat.isEmpty() || this->m_tableFormat == u"csv"_s
+            ? u"VBT"_s : this->m_tableFormat.toUpper();
 }
 
 void vtkWindowCatalogue3D::updateLoadMoreButtons()
@@ -1035,7 +1044,8 @@ void vtkWindowCatalogue3D::refreshViewerChrome()
     const int count = static_cast<int>(this->entries.size());
     if (this->m_kindTag)
         this->m_kindTag->setText(this->m_pointTable
-                                         ? u"VBT · %L1 rows"_s.arg(this->m_tableRows)
+                                         ? u"%1 · %L2 rows"_s.arg(this->particleTag())
+                                                   .arg(this->m_tableRows)
                                          : u"CAT · %1 sources"_s.arg(count));
     // The Inspector counts the same sources as the command bar, and names the
     // session the window is actually talking to — which changes when an expired

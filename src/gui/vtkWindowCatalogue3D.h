@@ -267,6 +267,8 @@ private:
     Catalogue3DLabel m_label;
     /// The catalogue's name as shown: the label's, else the file's.
     QString shownName() const;
+    /// The command bar's tag of a table of particles: VBT, GADGET (#31).
+    QString particleTag() const;
     /// Show Load more / Load all when the backend holds more rows than loaded.
     void updateLoadMoreButtons();
     QPointer<QToolButton> m_kindTag;
@@ -696,7 +698,8 @@ private:
     // The same window as a catalogue, without what only a sky catalogue has:
     // no name/type/RA/Dec/distance columns, no frame, no cosmology, no shells;
     // it opens drawn as points coloured by its first quantity.
-    bool m_pointTable{ false };   ///< a VBT of points
+    bool m_pointTable{ false };   ///< a simulation's particles: a VBT of points, a snapshot's particle type
+    QString m_tableFormat;        ///< the format the backend read ("vbt", "gadget", "csv", ...)
     bool m_defaultScaleChosen{ false };   ///< the opening Log/Linear choice, made once
     bool m_cartesian{ false };    ///< positions are X/Y/Z columns
     /// A table of points without classes: colour means a column, or one

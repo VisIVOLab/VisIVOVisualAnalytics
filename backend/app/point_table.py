@@ -1,11 +1,18 @@
 """A table of points as the backend draws it (issues #83, #101): a VBT point
-table, read in place, or a catalogue file (several of one format
-concatenated). Shared by the point render session and the ray-traced
-particle render, so both read a dataset the same way.
+table or a component of a particle snapshot, read in place, or a catalogue
+file (several of one format concatenated). Shared by the point render session
+and the ray-traced particle render, so both read a dataset the same way.
 
 ``dataset_path`` is what the render route hands a point session: a VBT
-header's path, or a JSON catalogue spec ``{"paths", "format",
-"coordinates"}``.
+header's path, a particle component's reference (one particle type of a
+Gadget snapshot, issue #31: ``<first file>::gadget-type=<N>``), or a JSON
+catalogue spec ``{"paths", "format", "coordinates"}``.
+
+A *particle table* is a simulation's particles read where they lie: a VBT
+point table, a snapshot's component. The functions under "Particle tables"
+below are what every route asks about one (is it one, the reference it opens
+by, its sibling components, its metadata), so a further snapshot format is
+one more resolver there, not one more branch in each route.
 """
 from __future__ import annotations
 
@@ -86,6 +93,12 @@ def default_axes(names: list[str]) -> tuple[str, str, str]:
 def open_point_table(dataset_path: str) -> PointTable:
     if str(dataset_path).startswith("{"):
         return _open_catalogue(json.loads(dataset_path))
+    if component_format(dataset_path) == "gadget":
+        from . import gadget_snapshot   # noqa: PLC0415
+        component = gadget_snapshot.resolve(dataset_path)
+        # Columns built when first read: a renderer reads three or four.
+        return PointTable(list(component.names), component.columns(), component.num_rows,
+                          default_axes(component.names))
     from .volume_source import parse_vbt_header, split_order   # noqa: PLC0415
     # The header's path (the VBT route registers it); its binary beside it.
     # It may carry the byte order the dataset was opened in (issue #165).
@@ -141,3 +154,86 @@ def filter_mask(columns, filters: list[dict], rows: np.ndarray) -> np.ndarray:
     """Rows (of ``rows``) passing every numeric filter ``{"field", "op", "value"}``."""
     from .render_session.points import _filter_mask   # noqa: PLC0415
     return _filter_mask(columns, filters, rows)
+
+
+# ── Particle tables: a VBT of points, a component of a snapshot ──────────────
+
+#: Catalogue formats that are a simulation's particles read in place: always
+#: cartesian, drawn ray-traced by default, opened by a header or a reference.
+PARTICLE_FORMATS = ("vbt", "gadget")
+
+
+def is_particle_format(fmt: str | None) -> bool:
+    return str(fmt or "").strip().lower() in PARTICLE_FORMATS
+
+
+def component_format(path: str | Path) -> str | None:
+    """The format a component reference names (``"gadget"``), from the
+    string alone; None for any other path."""
+    from .gadget_snapshot import split_ref   # noqa: PLC0415
+    return "gadget" if split_ref(path)[1] is not None else None
+
+
+def split_component(path: str | Path) -> tuple[str, str]:
+    """``(file, reference suffix)`` of a component reference; ``(path, "")``
+    for any other path. The file is what the data roots check; the suffix
+    goes back on after."""
+    from .gadget_snapshot import split_ref   # noqa: PLC0415
+    text = str(path)
+    base, ptype = split_ref(text)
+    return (base, text[len(base):]) if ptype is not None else (text, "")
+
+
+def particle_dataset_path(path: str | Path) -> tuple[str, str] | None:
+    """``(reference, format)`` a particle snapshot opens by, given a file of
+    it, its folder or a component reference; None when ``path`` is no
+    snapshot (judged by content, not name). A snapshot that cannot be read
+    (a file missing, counts that do not add up) or a type without particles
+    raises ValueError (or OSError) saying why."""
+    from . import gadget_snapshot as gs   # noqa: PLC0415
+    base, ptype = gs.split_ref(path)
+    p = Path(base)
+    if ptype is None and not (p.is_dir() and gs.first_in_dir(p) is not None) \
+            and not (p.is_file() and gs.detect(p) is not None):
+        return None
+    snapshot = gs.open_snapshot(p)
+    if ptype is None:
+        ptype = gs.default_type(snapshot)
+        if ptype is None:
+            raise ValueError(f"{p.name}: a Gadget snapshot with no particles.")
+    if not 0 <= ptype < gs.NTYPES or not snapshot.counts()[ptype]:
+        raise ValueError(f"{p.name} has no particles of type {ptype}.")
+    return gs.gadget_ref(snapshot.path, ptype), "gadget"
+
+
+def particle_components(path: str | Path) -> list[dict]:
+    """The selectable components of the snapshot ``path`` names, ``{name,
+    path, num_rows}``: its particle types with particles; [] for a table
+    that is one component (a VBT)."""
+    if component_format(path) == "gadget":
+        from . import gadget_snapshot   # noqa: PLC0415
+        return gadget_snapshot.gadget_components(path)
+    return []
+
+
+def particle_metadata(path: str | Path) -> dict:
+    """What a particle table states about itself beyond its columns: for a
+    snapshot component its time, redshift, box, cosmology, unit system and
+    each column's unit and physical conversion; {} for a VBT."""
+    if component_format(path) != "gadget":
+        return {}
+    from . import gadget_snapshot   # noqa: PLC0415
+    component = gadget_snapshot.resolve(path)
+    return {"snapshot": component.snapshot.describe(), "component": component.describe()}
+
+
+def particle_frame(path: str | Path) -> pd.DataFrame:
+    """A snapshot component as a catalogue's table: one column per block
+    column (views of the memory map for a single-file snapshot), and their
+    units in ``attrs["units"]``, as a catalogue file declares them."""
+    from . import gadget_snapshot   # noqa: PLC0415
+    component = gadget_snapshot.resolve(path)
+    columns = component.columns()
+    frame = pd.DataFrame({name: columns[name] for name in component.names}, copy=False)
+    frame.attrs["units"] = component.units()
+    return frame

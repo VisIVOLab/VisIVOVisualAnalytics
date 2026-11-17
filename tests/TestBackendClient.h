@@ -65,4 +65,7 @@ private slots:
     void parseAssistantStatus_rejectsABodyWithoutProvider();
     void parseAssistantConfig_readsProblem();
     void parseAssistantConfig_olderBackendHasNoProblem();
+
+    // ── A particle snapshot's components (issue #31) ──────────────────────────
+    void parseParticleComponents_readsNameAndPath();
 };

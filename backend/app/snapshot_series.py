@@ -10,6 +10,12 @@ opens the next file as any table is opened; nothing is kept between them.
 The number is the last run of digits in the name's stem (the name up to its
 first dot), so an extension's digits (``.hdf5``) never count; a name whose
 stem has no digits is a series of one.
+
+A snapshot written as several files lives in a folder of its own, numbered
+too (Gadget's ``snapdir_010/snap_010.0``, issue #31): when the folder holds
+no other member and its name carries the same number, the series runs over
+the sibling folders, each member the same file name with that folder's
+number (``snapdir_011/snap_011.0``).
 """
 from __future__ import annotations
 
@@ -78,6 +84,66 @@ def snapshot_series(path: str, allowed=None) -> dict:
     if allowed is not None:
         names = [n for n in names if n == name or allowed(os.path.join(folder, n))]
     found = members(name, names)
+    if len(found) == 1 and pat is not None:
+        folders = _folder_series(path, allowed)
+        if folders is not None:
+            return folders
+    return _window(folder, name, found)
+
+
+def _number(name: str) -> tuple[str, str, str] | None:
+    """``(before, digits, after)`` of a name's stem's last digit run."""
+    stem, dot, rest = name.partition(".")
+    m = None
+    for m in re.finditer(r"\d+", stem):
+        pass
+    if m is None:
+        return None
+    return stem[:m.start()], m.group(0), stem[m.end():] + dot + rest
+
+
+def _folder_series(path: str, allowed=None) -> dict | None:
+    """The series of a snapshot in a numbered folder of its own
+    (``snapdir_010/snap_010.0``): the sibling folders whose names differ
+    only in that number, each with the same file renumbered; None when the
+    folder's number is not the file's or no sibling has the file."""
+    folder, name = os.path.split(path)
+    parent, dirname = os.path.split(folder)
+    file_parts, dir_parts = _number(name), _number(dirname)
+    if file_parts is None or dir_parts is None or int(file_parts[1]) != int(dir_parts[1]):
+        return None
+    dir_pat = pattern(dirname)
+    dirs = []
+    try:
+        with os.scandir(parent) as it:
+            for k, e in enumerate(it):
+                if k >= MAX_LISTED:
+                    break
+                if dir_pat.match(e.name) and e.is_dir():
+                    dirs.append(e.name)
+    except OSError:
+        return None
+    found = []
+    for d, num in ((d, int(dir_pat.match(d).group(1))) for d in dirs):
+        digits = str(num).zfill(len(file_parts[1]))
+        member = os.path.join(parent, d, file_parts[0] + digits + file_parts[2])
+        if d == dirname:
+            found.append((num, path))
+        elif os.path.isfile(member) and (allowed is None or allowed(member)):
+            found.append((num, member))
+    if len(found) < 2:
+        return None
+    found.sort()
+    index = next(i for i, (_, m) in enumerate(found) if m == path)
+    if len(found) > MAX_MEMBERS:
+        lo = max(0, min(index - MAX_MEMBERS // 2, len(found) - MAX_MEMBERS))
+        found = found[lo:lo + MAX_MEMBERS]
+        index -= lo
+    return {"paths": [m for _, m in found], "numbers": [k for k, _ in found],
+            "index": index, "count": len(found)}
+
+
+def _window(folder: str, name: str, found: list) -> dict:
     index = next(i for i, (_, n) in enumerate(found) if n == name)
     if len(found) > MAX_MEMBERS:
         lo = max(0, min(index - MAX_MEMBERS // 2, len(found) - MAX_MEMBERS))

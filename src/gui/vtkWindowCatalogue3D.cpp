@@ -2,6 +2,7 @@
 #include "WindowCloseShortcut.h"
 #include "BusyStatus.h"
 #include "VbtByteOrderPrompt.h"
+#include "app/DatasetName.h"
 #include "app/DatasetUsers.h"
 #include <QDateTime>
 #include "CosmologyCalculatorDialog.h"
@@ -491,7 +492,17 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_cartesian = opened.coordSystem == u"cartesian"_s;
         this->m_skyCoordinates = opened.coordSystem == u"sky"_s && !opened.raField.isEmpty()
                                  && !opened.decField.isEmpty();
-        this->m_pointTable = catalogueFormatForPath(filepath) == u"vbt"_s;
+        // A simulation's particles (a VBT of points, a snapshot's particle
+        // type, issue #31), as the backend read them; an older backend says
+        // nothing and the name decides.
+        this->m_pointTable = opened.particles || catalogueFormatForPath(filepath) == u"vbt"_s;
+        this->m_tableFormat = opened.format.isEmpty() ? catFormat : opened.format;
+        // A snapshot opened by a file of it is known by its particle type's
+        // reference: Session Data, Recent and the headset reopen that.
+        if (opened.particles && visivo::isFieldReference(opened.path)
+            && opened.path != filepath && this->m_cataloguePaths.size() <= 1)
+            this->filepath = opened.path;
+        visivo::rememberFieldNames(opened.components);
         // Any catalogue the backend can draw (sky or cartesian), issue #83.
         this->m_serverSideRendering = opened.serverSideRenderingAvailable;
         this->m_tableRows = opened.numRows;

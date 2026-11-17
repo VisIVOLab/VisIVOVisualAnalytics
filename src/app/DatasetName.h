@@ -2,8 +2,11 @@
 
 // How a dataset's path is shown and named (issue #83). A field of a VisIVO
 // Binary Table volume opens as a cube whose path is a reference to the field,
-// "<data>.bin::vbt-field=<index>" (backend/app/volume_source.py): the viewers
-// use it as any path for the backend, and show it as "<volume> · <field>".
+// "<data>.bin::vbt-field=<index>" (backend/app/volume_source.py), and a
+// particle type of a Gadget snapshot as a table of points whose path is
+// "<first file>::gadget-type=<type>" (issue #31, backend/app/gadget_snapshot.py):
+// the viewers use either as any path for the backend, and show it as
+// "<volume> · <field>", "<snapshot> · <particle type>".
 
 #include <QDir>
 #include <QFileInfo>
@@ -20,16 +23,42 @@ inline const QString &vbtFieldSeparator()
     return sep;
 }
 
-/// The data file of a field reference; the path itself for any other dataset.
+inline const QString &gadgetTypeSeparator()
+{
+    static const QString sep = QStringLiteral("::gadget-type=");
+    return sep;
+}
+
+namespace detail {
+/// Where a reference's separator starts in @p path and which one it is; -1
+/// for a path that is no reference.
+inline int referenceAt(const QString &path, const QString **separator = nullptr)
+{
+    for (const QString *sep : { &vbtFieldSeparator(), &gadgetTypeSeparator() }) {
+        const int at = path.lastIndexOf(*sep);
+        if (at >= 0) {
+            if (separator)
+                *separator = sep;
+            return at;
+        }
+    }
+    return -1;
+}
+} // namespace detail
+
+/// The data file of a reference (a VBT field, a snapshot's particle type);
+/// the path itself for any other dataset.
 inline QString datasetFilePath(const QString &path)
 {
-    const int at = path.lastIndexOf(vbtFieldSeparator());
+    const int at = detail::referenceAt(path);
     return at < 0 ? path : path.left(at);
 }
 
+/// A reference to part of a file (a VBT field, a snapshot's particle type):
+/// no file another tool could load as it is.
 inline bool isFieldReference(const QString &path)
 {
-    return path.lastIndexOf(vbtFieldSeparator()) >= 0;
+    return detail::referenceAt(path) >= 0;
 }
 
 inline QHash<QString, QString> &fieldNames()
@@ -38,7 +67,8 @@ inline QHash<QString, QString> &fieldNames()
     return names;
 }
 
-/// The field names of a VBT volume as the backend listed them at open.
+/// The field names of a VBT volume, or the particle types of a snapshot, as
+/// the backend listed them at open: (name, reference) pairs.
 inline void rememberFieldNames(const QList<QPair<QString, QString>> &fields)
 {
     for (const auto &f : fields)
@@ -77,25 +107,30 @@ inline QString datasetPathLabel(const QString &path)
 }
 
 /// The name a dataset is shown with: the sender's for a received copy, its
-/// file name, or "volume · field".
+/// file name, "volume · field" or "snapshot · particle type".
 inline QString datasetDisplayName(const QString &path)
 {
     if (const auto it = receivedNames().constFind(path);
         it != receivedNames().constEnd() && !it.value().isEmpty())
         return it.value();
-    if (!isFieldReference(path))
+    const QString *separator = nullptr;
+    const int at = detail::referenceAt(path, &separator);
+    if (at < 0)
         return QFileInfo(path).fileName();
-    QString volume = QFileInfo(datasetFilePath(path)).fileName();
+    QString volume = QFileInfo(path.left(at)).fileName();
     if (volume.endsWith(QLatin1String(".bin")))
         volume.chop(4);
-    const QString field = fieldNames().value(
-            path, QStringLiteral("field %1").arg(path.mid(path.lastIndexOf(vbtFieldSeparator())
-                                                         + vbtFieldSeparator().size())));
+    // Before the backend listed the names, the index.
+    const QString what = separator == &gadgetTypeSeparator() ? QStringLiteral("type %1")
+                                                             : QStringLiteral("field %1");
+    const QString field = fieldNames().value(path, what.arg(path.mid(at + separator->size())));
     return QStringLiteral("%1 · %2").arg(volume, field);
 }
 
 /// A path whose completeBaseName() names what is derived from the dataset
-/// (exports): the file's own, or "volume_field" for a field, in its folder.
+/// (exports): the file's own, or "volume_field" for a field ("snap_010_0_gas"
+/// for a snapshot's particle type), in its folder. No dot: completeBaseName()
+/// would cut the name at it.
 inline QString datasetExportStem(const QString &path)
 {
     if (!isFieldReference(path))
@@ -104,7 +139,7 @@ inline QString datasetExportStem(const QString &path)
     QString stem = datasetDisplayName(path);
     stem.replace(QStringLiteral(" · "), QStringLiteral("_"));
     for (QChar &c : stem)
-        if (!(c.isLetterOrNumber() || c == u'_' || c == u'-' || c == u'.'))
+        if (!(c.isLetterOrNumber() || c == u'_' || c == u'-'))
             c = u'_';
     return data.dir().filePath(stem);
 }
