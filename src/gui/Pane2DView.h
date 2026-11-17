@@ -25,6 +25,7 @@
 #include "LinkedCameraSync.h"
 #include "LutScale.h"
 
+class QTimer;
 class QWidget;
 class QVTKOpenGLNativeWidget;
 class vtkActor;
@@ -186,6 +187,10 @@ private:
     unsigned long m_camTagFrame{ 0 };                       // observer tag (removed in dtor)
     LinkedCameraSync::Tracker m_cameraTracker;
     bool m_applyingCamera{ false };                          // Linked-2D echo guard
+    // Issue #362: the axis labels are recomputed after a frame is drawn, so a frame that moved the
+    // camera is drawn once more when the camera settles (onCameraFrame), whatever moved it.
+    LinkedCameraSync::OverlayFollow m_overlayFollow;
+    QTimer *m_overlayRedraw{ nullptr };                      // child of this (Qt-owned)
 
     WcsContext m_wcs;
     bool m_showWcsAxes{ true };

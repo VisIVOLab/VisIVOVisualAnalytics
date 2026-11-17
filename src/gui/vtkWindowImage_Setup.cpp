@@ -237,6 +237,17 @@ void vtkWindowImage::setupRenderer()
     // a reset, a zoom to a source), re-arm a short debounce; if the view settled
     // on a different region/zoom we stream the visible tiles at the appropriate
     // pyramid level.
+    // The same frames redraw the WCS labels once the camera settles (issue #362).
+    this->m_overlayRedrawTimer = new QTimer(this);
+    this->m_overlayRedrawTimer->setSingleShot(true);
+    this->m_overlayRedrawTimer->setInterval(LinkedCameraSync::kOverlayRedrawDelayMs);
+    QObject::connect(this->m_overlayRedrawTimer, &QTimer::timeout, this, [this]() {
+        if (ui && ui->vtk && ui->vtk->renderWindow()) {
+            // Render() alone: the widget presents the frame it draws, as for the
+            // Product panes; an update() on top would draw it a second time.
+            ui->vtk->renderWindow()->Render();
+        }
+    });
     win->AddObserver(vtkCommand::EndEvent, this, &vtkWindowImage::onImageCameraFrame);
     this->m_lodSettleTimer = new QTimer(this);
     this->m_lodSettleTimer->setSingleShot(true);
