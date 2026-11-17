@@ -21,6 +21,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 
 using namespace Qt::StringLiterals;
@@ -378,24 +379,40 @@ void PvDiagramWidget::setPvData(const QVector<double> &positions,
 
     double minValue = std::numeric_limits<double>::infinity();
     double maxValue = -std::numeric_limits<double>::infinity();
-    for (int y = 0; y < plotRows; ++y) {
-        for (int x = 0; x < nx; ++x) {
-            const double value = rows[std::size_t(y) * nx + x];
-            this->colorMap->data()->setCell(x, y, value);
-            if (std::isfinite(value)) {
-                minValue = std::min(minValue, value);
-                maxValue = std::max(maxValue, value);
-            }
+    for (const double value : rows) {
+        if (std::isfinite(value)) {
+            minValue = std::min(minValue, value);
+            maxValue = std::max(maxValue, value);
         }
     }
+    // applyScale() writes the cells: under Log it lifts what lies below the
+    // floor, so the values are kept as they came.
+    m_cells = rows;
+    m_cellColumns = nx;
+    m_cellRows = plotRows;
 
     if (!std::isfinite(minValue) || !std::isfinite(maxValue) || minValue == maxValue) {
         minValue = 0.0;
         maxValue = minValue + 1.0;
     }
 
-    this->colorMap->setDataRange(QCPRange(minValue, maxValue));
-    this->colorMap->setGradient(QCPColorGradient::gpJet);
+    m_dataMin = minValue;
+    m_dataMax = maxValue;
+    // The log floor by the maps' rule (LutScale::sampledPositiveFloor): the 1st
+    // percentile of the positive values, so the bar starts near the faint end
+    // instead of six decades below the peak.
+    std::vector<double> positives;
+    positives.reserve(rows.size());
+    for (const double v : rows)
+        if (std::isfinite(v) && v > 0.0)
+            positives.push_back(v);
+    m_logFloor = LutScale::percentileFloor(std::move(positives));
+    // A new cut with nothing positive cannot stay logarithmic.
+    if (m_scale == LutScale::Mode::Log && !(m_logFloor > 0.0 && m_logFloor < m_dataMax)) {
+        m_scale = LutScale::Mode::Linear;
+        emit logScaleUnavailable();
+    }
+    applyScale();
     if (this->colorScale)
         this->colorScale->axis()->setLabel(info.bunit);
     this->plot->rescaleAxes();
@@ -411,4 +428,64 @@ void PvDiagramWidget::setPathControls(int widthPixels, bool smooth)
     const QSignalBlocker b2(m_smoothCheck);
     m_widthSpin->setValue(widthPixels);
     m_smoothCheck->setChecked(smooth);
+}
+
+bool PvDiagramWidget::setScale(LutScale::Mode mode)
+{
+    if (mode == m_scale)
+        return true;
+    if (mode == LutScale::Mode::Log && !(m_logFloor > 0.0 && m_logFloor < m_dataMax)) {
+        emit logScaleUnavailable();
+        return false;
+    }
+    m_scale = mode;
+    applyScale();
+    if (this->plot)
+        this->plot->replot();
+    return true;
+}
+
+void PvDiagramWidget::applyScale()
+{
+    if (!this->colorMap)
+        return;
+    const bool log = (m_scale == LutScale::Mode::Log);
+    // Under Log, what lies below the floor (noise, negatives, zero) is drawn at
+    // the floor: the bottom colour, as on a map pane. QCustomPlot takes the log
+    // of every cell, and the log of a non-positive value has no colour.
+    for (int y = 0; y < m_cellRows; ++y) {
+        for (int x = 0; x < m_cellColumns; ++x) {
+            const double v = m_cells[std::size_t(y) * m_cellColumns + x];
+            this->colorMap->data()->setCell(
+                    x, y, (log && std::isfinite(v)) ? std::max(v, m_logFloor) : v);
+        }
+    }
+    QCPColorGradient jet(QCPColorGradient::gpJet);   // color() is not const
+    QCPColorGradient gradient = jet;
+    if (LutScale::isResampled(m_scale)) {
+        // The maps' stretch (LutScale::build): a value at normalised t takes the
+        // colour the map holds at t^exponent. The bar keeps its linear axis, as
+        // the maps' does, and shows the stretched colours along it.
+        const double exp = LutScale::exponent(m_scale, 2.0);
+        constexpr int kStops = 64;
+        gradient.clearColorStops();
+        for (int i = 0; i <= kStops; ++i) {
+            const double t = static_cast<double>(i) / kStops;
+            gradient.setColorStopAt(t, QColor::fromRgb(jet.color(std::pow(t, exp),
+                                                                 QCPRange(0.0, 1.0))));
+        }
+    }
+    if (this->colorScale) {
+        // The bar owns the map's scale type once they are linked.
+        this->colorScale->setDataScaleType(log ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
+        if (log)
+            this->colorScale->axis()->setTicker(QSharedPointer<QCPAxisTickerLog>::create());
+        else
+            this->colorScale->axis()->setTicker(QSharedPointer<QCPAxisTicker>::create());
+    } else {
+        this->colorMap->setDataScaleType(log ? QCPAxis::stLogarithmic : QCPAxis::stLinear);
+    }
+    this->colorMap->setGradient(gradient);
+    this->colorMap->setDataRange(log ? QCPRange(m_logFloor, m_dataMax)
+                                     : QCPRange(m_dataMin, m_dataMax));
 }

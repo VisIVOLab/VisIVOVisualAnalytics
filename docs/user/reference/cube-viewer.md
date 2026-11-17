@@ -25,7 +25,10 @@ for regions, [Regions](../use-cases/04-regions.md).
   writes a corrected copy) and the backend chip.
 - *Status bar*: the data state (*Preview*, *Loading full resolution…*, *Full
   resolution*), the WCS status (OK, repaired, degraded) and the *Sanity* badge
-  (NaN fraction and metadata consistency).
+  (NaN fraction and metadata consistency). While a map or the PV diagram is
+  the active pane it also says how that product was made, for example
+  *Moment 0 · channels 1–512 · mask off*; hover it for the full recipe
+  (*Inspector ▸ Parameters* has the same).
 
 ⌘W (Ctrl+W on Linux and Windows) closes the window.
 
@@ -171,6 +174,11 @@ and validation: [Cube viewer: methods](../../technical/methods/cube-viewer.md).
   *Log*.
 - *Edit* (2-D pane active): the 2-D LUT editor. Both editors stay open while
   you change channel.
+- *Scale* (*Linear*, *Log*, *Sqrt*) in *DISPLAY* of the 2-D Slice and of
+  every product pane: moment, line-width and Faraday maps, and the PV
+  diagram. The colour bar follows it. Each pane keeps its own; the product
+  remembers the last choice when it is shown again or recomputed. *Log* is
+  refused, with a message, on an image with no positive values.
 - *Same range on every channel* (*DISPLAY* of the 2-D Slice): keeps one colour
   range across channels instead of stretching each channel to its own range.
   *Cube range* sets the range to the whole loaded cube. Choosing any range

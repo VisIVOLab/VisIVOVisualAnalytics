@@ -1,8 +1,13 @@
 #ifndef LutScale_h
 #define LutScale_h
 
+#include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstddef>
 #include <string>
+#include <utility>
+#include <vector>
 
 class vtkLookupTable;
 class vtkColorTransferFunction;
@@ -37,13 +42,59 @@ std::array<const char *, 5> modeLabels();
 // Short tool-tip for each mode (index matches the Mode enum value).
 std::array<const char *, 5> modeToolTips();
 
+// The pure arithmetic of the stretches is inline, with no VTK in it, so the
+// viewers that do not draw through a vtkLookupTable (the PV diagram) and the
+// unit tests use the same numbers as the tables built below.
+
 // The exponent applied to the normalised position. Sqrt -> 0.5, Square -> 2.0,
 // Power -> the caller-supplied gamma, Linear/Log -> 1.0 (unused).
-double exponent(Mode mode, double gamma);
+inline double exponent(Mode mode, double gamma)
+{
+    switch (mode) {
+    case Mode::Sqrt:
+        return 0.5;
+    case Mode::Square:
+        return 2.0;
+    case Mode::Power:
+        // Clamp to a sane, strictly-positive range so the curve stays monotone.
+        return std::clamp(gamma, 0.1, 10.0);
+    case Mode::Linear:
+    case Mode::Log:
+    default:
+        return 1.0;
+    }
+}
 
 // True for the stretches implemented by colour-entry resampling (everything
 // except Linear and the native Log).
-bool isResampled(Mode mode);
+inline bool isResampled(Mode mode)
+{
+    return mode == Mode::Sqrt || mode == Mode::Square || mode == Mode::Power;
+}
+
+// Smallest strictly-positive value usable as a log floor for `maxValue` when
+// nothing better is known: six decades below it.
+inline double positiveFloor(double maxValue)
+{
+    if (!(maxValue > 0.0) || !std::isfinite(maxValue))
+        return 1e-6;
+    return maxValue * 1e-6;
+}
+
+// The log floor sampledPositiveFloor() picks from the positive samples it
+// collected: their 1st percentile, low enough to keep the faint end, high
+// enough that a single hot-adjacent pixel or a residual near zero does not set
+// the floor. 0.0 for an empty sample.
+inline double percentileFloor(std::vector<double> positives)
+{
+    if (positives.empty())
+        return 0.0;
+    std::sort(positives.begin(), positives.end());
+    const std::size_t idx = static_cast<std::size_t>(
+            std::clamp<double>(0.01 * static_cast<double>(positives.size() - 1), 0.0,
+                               static_cast<double>(positives.size() - 1)));
+    return std::max(1e-12, positives[idx]);
+}
 
 // Apply a scale mode to a vtkLookupTable ALREADY freshly filled with a linear
 // colormap.  NOTE: this resamples the current entries, so it is NOT idempotent —
@@ -82,7 +133,28 @@ void setRange(vtkLookupTable *lut, Mode mode, double min, double max);
 // onward (linked panes, colorbars), need the installed values rather than the
 // requested ones: on a log stretch of signed data those differ, and treating
 // them as equal makes a "did it change?" guard never fire.
-std::array<double, 2> rangeFor(Mode mode, double min, double max);
+inline std::array<double, 2> rangeFor(Mode mode, double min, double max)
+{
+    if (mode != Mode::Log)
+        return { min, max };
+    const double flooredMax = (max > 0.0 && std::isfinite(max)) ? max : positiveFloor(max);
+    const double flooredMin = (min > 0.0 && std::isfinite(min)) ? min : positiveFloor(flooredMax);
+    return { flooredMin, flooredMax };
+}
+
+// The data value a colour bar shows at `position` (0 = bottom, 1 = top) when
+// its colours run evenly: log-spaced under Log (over the range rangeFor()
+// installs), and under Sqrt/Square/Power the inverse of the stretch, since a
+// value at normalised t takes the colour the map holds at t^exponent.
+inline double valueAt(Mode mode, double position, double min, double max, double gamma = 2.0)
+{
+    const double u = std::clamp(position, 0.0, 1.0);
+    if (mode == Mode::Log) {
+        const auto r = rangeFor(Mode::Log, min, max);
+        return r[1] > r[0] ? r[0] * std::pow(r[1] / r[0], u) : min;
+    }
+    return min + (max - min) * std::pow(u, 1.0 / exponent(mode, gamma));
+}
 
 // A log-stretch floor taken FROM THE DATA: the 1st percentile of the positive
 // finite samples, or 0.0 when the image has no positive values at all.
