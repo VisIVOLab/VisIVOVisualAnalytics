@@ -9,6 +9,9 @@ in.
 - The density of a PLUTO run: `rho.0000.flt`, a 2048³ grid of single-precision
   values (32 GB), with the run's `flt.out` and `grid.out` in the same folder.
   The values span about seven decades, from 1.8 × 10⁻¹² to 2.1 × 10⁻⁵.
+  The screenshots on this page use the density of a supernova remnant model
+  by S. Orlando (INAF, Osservatorio Astronomico di Palermo), described in
+  [Orlando et al. 2025, A&A 696, A188](https://scixplorer.org/abs/2025A%26A...696A.188O/abstract).
 - About 40 GB of free disk on the backend's side, once, for the cube's brick
   pyramid (a set of coarser copies the backend builds the first time it needs
   them).
@@ -160,3 +163,10 @@ density, which you can also load at full resolution).
   [Ray-traced volumes](../reference/raytraced-volumes.md).
 - [From the desktop to the VR headset](08-vr-from-the-desktop.md): the same
   density in a Meta Quest.
+
+## Data credits
+
+The PLUTO density shown on this page is from the model described in
+Orlando, S., et al. 2025, A&A, 696, A188
+([abstract](https://scixplorer.org/abs/2025A%26A...696A.188O/abstract)),
+used with the author's permission.
