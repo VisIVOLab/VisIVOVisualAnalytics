@@ -23,7 +23,7 @@
 #              for this build's certificate). Not with --release.
 #
 # Needs: JAVA_HOME (JDK 17), ANDROID_HOME (an Android SDK; build-tools 34.0.0
-# and platform 32 are installed with its sdkmanager when missing), node and
+# and platform 34 are installed with its sdkmanager when missing), node and
 # npm, python3. Writes DIR (default tools/quest-app/out): visivo-vr[-dev].apk,
 # visivo-vr[-dev].json (package, version, certificate and APK digests) and
 # assetlinks[-dev].json (the statement for the backend).
@@ -59,7 +59,7 @@ command -v node >/dev/null || die "node is needed (Bubblewrap)"
 command -v python3 >/dev/null || die "python3 is needed"
 
 BUILD_TOOLS=34.0.0
-PLATFORM=android-32
+PLATFORM=android-34
 need=()
 [ -x "$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner" ] || need+=("build-tools;$BUILD_TOOLS")
 [ -d "$ANDROID_HOME/platforms/$PLATFORM" ] || need+=("platforms;$PLATFORM")

@@ -19,7 +19,15 @@ name: quest-app
 #   - workflow_dispatch: a build on its own, to check the signing; the APK is
 #     a workflow artifact only, even run on a tag: a published release keeps
 #     the APK its packages bundle (a rebuild is not byte-identical, so its
-#     apk_sha256 would no longer match the bundled copy).
+#     apk_sha256 would no longer match the bundled copy). With the input
+#     `store` (issue #386) it is the Meta Horizon Store build: the Store
+#     checks (tools/quest-app/check-store.py) must pass, and the artifact
+#     visivo-vr-store-<versionCode> holds exactly the APK to upload, with
+#     the checks' report (docs/technical/deployment/meta-store.md).
+#
+# Every run checks the APK against the Store's technical requirements; only
+# a `store` run fails on them (elsewhere a warning: the desktop packages
+# bundle the app whatever the Store says).
 #
 # The certificate built must be one backend/app/vr_app.json names: otherwise
 # the job fails, so no package bundles an app its backend does not list. A
@@ -28,6 +36,11 @@ name: quest-app
 
 on:
   workflow_dispatch:
+    inputs:
+      store:
+        description: "Meta Horizon Store build: fail unless the Store checks pass; keep it as visivo-vr-store-<versionCode>"
+        type: boolean
+        default: false
   workflow_call:
     outputs:
       built:
@@ -91,7 +104,7 @@ jobs:
           # Only what build.sh needs. The action's default list still names the
           # old `tools` package, which current command-line tools no longer
           # have: sdkmanager then fails and the job with it.
-          packages: 'platform-tools build-tools;34.0.0 platforms;android-32'
+          packages: 'platform-tools build-tools;34.0.0 platforms;android-34'
 
       - name: Build and sign
         if: steps.key.outputs.present == 'true'
@@ -116,6 +129,36 @@ jobs:
             cat "$RUNNER_TEMP/quest-app/visivo-vr.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # The Meta Horizon Store's technical requirements (issue #386). A
+      # failure fails a `store` run; anywhere else it is a warning.
+      - name: Meta Horizon Store checks
+        id: store
+        if: steps.key.outputs.present == 'true'
+        env:
+          STORE_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.store == true }}
+        run: |
+          set -uo pipefail
+          OUTDIR="$RUNNER_TEMP/quest-app"
+          python3 -I tools/quest-app/check-store.py "$OUTDIR/visivo-vr.apk" \
+            --build-tools "$ANDROID_HOME/build-tools/34.0.0" \
+            --report "$OUTDIR/store-checks.json" | tee "$OUTDIR/store-checks.txt"
+          status=${PIPESTATUS[0]}
+          {
+            echo "### Meta Horizon Store checks"
+            echo '```'
+            cat "$OUTDIR/store-checks.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          VC="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["version_code"])' "$OUTDIR/visivo-vr.json")"
+          echo "version_code=$VC" >> "$GITHUB_OUTPUT"
+          if [ "$status" -ne 0 ]; then
+            if [ "$STORE_RUN" = "true" ]; then
+              echo "::error::The APK does not meet the Meta Horizon Store's requirements (see the summary)."
+              exit 1
+            fi
+            echo "::warning::The APK does not meet the Meta Horizon Store's requirements (see the summary)."
+          fi
 
       # The desktop starts this APK only when the backend lists its
       # certificate (/.well-known/assetlinks.json, from vr_app.json): a key
@@ -152,6 +195,23 @@ jobs:
             ${{ runner.temp }}/quest-app/assetlinks.json
           if-no-files-found: error
           retention-days: 30
+
+      # The upload artifact of a `store` run: the very APK to upload to the
+      # Meta Horizon Store, its description and the checks it passed.
+      - name: Keep the Store build
+        if: >-
+          steps.key.outputs.present == 'true' && github.event_name == 'workflow_dispatch'
+          && inputs.store == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: visivo-vr-store-${{ steps.store.outputs.version_code }}
+          path: |
+            ${{ runner.temp }}/quest-app/visivo-vr.apk
+            ${{ runner.temp }}/quest-app/visivo-vr.json
+            ${{ runner.temp }}/quest-app/store-checks.json
+            ${{ runner.temp }}/quest-app/store-checks.txt
+          if-no-files-found: error
+          retention-days: 90
 
       # Set as soon as the artifact holds the APK: the packages can bundle it
       # even if attaching it to the release below fails.

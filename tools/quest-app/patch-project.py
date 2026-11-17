@@ -43,16 +43,29 @@ page on localhost in the intent.
 6. ScanActivity.java and PairCode.java (android/, next to this script) go
    into the app's package; ZXing's core (the QR decoder, Apache-2.0) is a
    dependency.
+7. The Meta Horizon Store's manifest rules (issue #386; app.json, checked on
+   the built APK by check-store.py): compileSdk and targetSdk 34 (the
+   template's Quest branch has 32; apps created since 2026-03-01 must target
+   34), installLocation auto, com.oculus.supportedDevices, head tracking
+   required (an immersive app), a network security configuration (no clear
+   text: the app itself has no network permission, the browser loads the
+   pages). An explicit filter matches the desktop's USB launch (VIEW on
+   http(s)://localhost or 127.0.0.1): an app targeting Android 13 or later
+   may refuse an explicit intent from another app, adb's shell included,
+   that matches none of the activity's filters. It has no BROWSABLE, so no
+   web page link opens the app.
 Each patch fails loudly when the template no longer has what it replaces.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
+APP = HERE / "app.json"
 ZXING = "com.google.zxing:core:3.5.3"
 
 
@@ -168,6 +181,72 @@ MANIFEST_HEAD = '''    <!-- The scanner (issue #383): the passthrough camera rea
 '''
 
 
+NETWORK_SECURITY_CONFIG = '''<?xml version="1.0" encoding="utf-8"?>
+<!-- VisIVO VR (issue #386): the app itself opens no connection (it has no
+     network permission; the headset's browser loads the pages), so clear
+     text is refused everywhere. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
+'''
+
+USB_LAUNCH_FILTER = '''            <!-- The desktop's USB launch (issue #255): am start -a VIEW -n <app>/.LauncherActivity
+                 -d http://localhost:<port>/.../vr/... An app targeting Android 13+ may
+                 refuse an explicit intent from another app (adb's shell) that matches none
+                 of the activity's filters (issue #386). No BROWSABLE: no web link opens it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:host="localhost" />
+                <data android:host="127.0.0.1" />
+            </intent-filter>
+
+'''
+
+SUPPORTED_DEVICES = re.compile(r"^(quest2|questpro|quest3|quest3s|vrglasses)(\|(quest2|questpro|quest3|quest3s|vrglasses))*$")
+
+
+def store_settings() -> tuple[int, str]:
+    """targetSdkVersion and com.oculus.supportedDevices from app.json."""
+    app = json.loads(APP.read_text(encoding="utf-8"))
+    target = int(app["targetSdkVersion"])
+    devices = str(app["supportedDevices"])
+    if not SUPPORTED_DEVICES.match(devices):
+        raise SystemExit(f"app.json supportedDevices: {devices!r} is not a |-list of Meta's device names")
+    return target, devices
+
+
+def patch_store(proj: Path, manifest: Path, target: int, devices: str) -> None:
+    gradle = proj / "app" / "build.gradle"
+    text = gradle.read_text(encoding="utf-8")
+    for key in ("compileSdkVersion", "targetSdkVersion"):
+        found = re.findall(rf"^\s*{key} \d+\s*$", text, re.M)
+        if len(found) != 1:
+            raise SystemExit(f"{gradle}: expected one '{key} <n>' line, found {len(found)}: the Bubblewrap template changed")
+        text = re.sub(rf"^(\s*){key} \d+(\s*)$", rf"\g<1>{key} {target}\g<2>", text, count=1, flags=re.M)
+    gradle.write_text(text, encoding="utf-8")
+
+    sub(manifest, '<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n',
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android"\n'
+        '    android:installLocation="auto"\n')
+    sub(manifest, 'android:name="android.hardware.vr.headtracking"\n        android:required="false"',
+        'android:name="android.hardware.vr.headtracking"\n        android:required="true"')
+    sub(manifest, '    <application\n        android:name="Application"\n',
+        '    <application\n        android:name="Application"\n'
+        '        android:networkSecurityConfig="@xml/network_security_config"\n')
+    sub(manifest, '        <activity android:name="ScanActivity"',
+        '        <!-- The headsets the Store offers the app to (app.json supportedDevices). -->\n'
+        f'        <meta-data android:name="com.oculus.supportedDevices" android:value="{devices}" />\n\n'
+        '        <activity android:name="ScanActivity"')
+    sub(manifest, '            <intent-filter android:autoVerify="true">',
+        USB_LAUNCH_FILTER + '            <intent-filter android:autoVerify="true">')
+    xml = proj / "app" / "src" / "main" / "res" / "xml"
+    xml.mkdir(parents=True, exist_ok=True)
+    (xml / "network_security_config.xml").write_text(NETWORK_SECURITY_CONFIG, encoding="utf-8")
+
+
 def patch_launcher(proj: Path) -> Path:
     launcher = next(proj.glob("app/src/main/java/**/LauncherActivity.java"), None)
     if launcher is None:
@@ -254,7 +333,11 @@ def main(argv: list[str]) -> int:
     strings.write_text(new, encoding="utf-8")
 
     # 3. and 5.
-    patch_manifest(proj / "app" / "src" / "main" / "AndroidManifest.xml", scheme, host, port)
+    manifest = proj / "app" / "src" / "main" / "AndroidManifest.xml"
+    patch_manifest(manifest, scheme, host, port)
+
+    # 7. (after 5.: the supportedDevices entry goes before ScanActivity)
+    patch_store(proj, manifest, *store_settings())
 
     # 4.
     launcher = patch_launcher(proj)
