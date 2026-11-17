@@ -205,6 +205,12 @@ Pane2DView::Pane2DView(QObject *parent)
     if (auto *iren = m_window->GetInteractor()) {
         iren->SetInteractorStyle(style);
     }
+    // Issue #362: the camera frames below also redraw the axis labels once the camera settles.
+    // Created before the observer, which the first fit() below already fires.
+    m_overlayRedraw = new QTimer(this);
+    m_overlayRedraw->setSingleShot(true);
+    m_overlayRedraw->setInterval(LinkedCameraSync::kOverlayRedrawDelayMs);
+    connect(m_overlayRedraw, &QTimer::timeout, this, &Pane2DView::render);
     // Linked 2D: a frame that shows the camera moved → cameraChanged, so the viewer can sync
     // same-WCS peers. The frames, not the interactor (issue #358): Shift+R resets the camera
     // without any interaction event.
@@ -694,7 +700,13 @@ LinkedCameraSync::Pose Pane2DView::cameraPose() const
 
 void Pane2DView::onCameraFrame()
 {
-    if (!m_cameraTracker.frame(this->cameraPose(), m_applyingCamera))
+    const LinkedCameraSync::Pose pose = this->cameraPose();
+    // Issue #362: this frame went out with the labels of the camera before it (they are
+    // recomputed after the frame). Draw it again once the camera settles; the redraw is at the
+    // same camera, so it asks for no other.
+    if (m_overlayFollow.frame(pose) && m_overlayRedraw)
+        m_overlayRedraw->start();
+    if (!m_cameraTracker.frame(pose, m_applyingCamera))
         return;
     // Sent on the next turn of the event loop: a drag's burst of frames joins one send.
     QTimer::singleShot(0, this, [this]() {

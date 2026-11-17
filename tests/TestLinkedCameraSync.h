@@ -2,7 +2,8 @@
 // TestLinkedCameraSync.h
 // QTest class for LinkedCameraSync: when a linked cube window sends its 3-D
 // camera to its peers (issue #338), the same for the 2-D views (issue #358),
-// and the image viewer's own camera watch. Header-only pure logic; no GUI/VTK
+// the image viewer's own camera watch, and the overlay redraw that keeps the
+// 2-D axis labels on the camera (issue #362). Header-only pure logic; no GUI/VTK
 // link.
 
 #include <QObject>
@@ -36,4 +37,10 @@ private slots:
     void watch_everyChange_isAMove();
     void watch_adoptedPose_isNotAMove();
     void watch_nonFinitePose_isIgnored();
+    // Issue #362: the 2-D views redraw once their axis labels follow a new camera.
+    void overlay_firstFrame_asksForARedraw();
+    void overlay_resetInCode_redrawsOnceWithoutALoop();
+    void overlay_everyFrameOfADrag_asks();
+    void overlay_cameraFromALinkedView_asks();
+    void overlay_nonFinitePose_neverAsks();
 };
