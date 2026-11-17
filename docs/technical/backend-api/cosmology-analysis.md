@@ -192,25 +192,36 @@ full-resolution pixels of the sky plane, the form
 with a missing size or a background without a region. With `region`, the
 response's `region` object holds the region's flux:
 
-S = (Σ − N · mean_bg) / Ω,  σ_S = σ · √(N / Ω)
+S = (Σ − N · mean_bg) / Ω,  σ_S² = σ² N / Ω + σ² N² / (N_bg Ω)
 
 over the region's N finite pixels of the moment-0 map in Jy/beam·km/s, Ω the
 beam area in pixels. With `background_region`, mean_bg and σ are the mean and
-standard deviation of its pixels (all of them, as a region's statistics count
-them, even where it overlaps the source); without it nothing is subtracted and
-σ is the MAD σ of the whole map. Fields: `n_pixels`, `sum_jy_beam_kms`,
-`beam_area_pix`, `flux_jy_kms`, `flux_error_jy_kms`, `error_from`
-(`background` or `map_noise`), `background_n_pixels`,
-`background_mean_jy_beam_kms`, `background_sigma_jy_beam_kms` (with a
-background) or `map_sigma_jy_beam_kms` (without), `hi_mass_msun` and
-`hi_mass_error_msun` (M_HI = 2.356×10⁵ D² S; `null` without a distance).
-`redshift` without `distance_mpc` sets the distance to the Planck18
-luminosity distance. The whole-field fields are returned beside it.
+standard deviation of its N_bg pixels (all of them, as a region's statistics
+count them, even where it overlaps the source); the second term is the error
+of that mean, subtracted N times. Without it nothing is subtracted, σ is the
+MAD σ of the whole map and the second term goes. A background with no valid
+pixel is 422. Fields: `n_pixels`, `sum_jy_beam_kms`, `beam_area_pix`,
+`flux_jy_kms`, `flux_error_jy_kms` (`null` when σ cannot be measured: zero,
+or a one-pixel background), `error_from` (`background` or `map_noise`),
+`background_n_pixels`, `background_mean_jy_beam_kms`,
+`background_sigma_jy_beam_kms` (with a background) or
+`map_sigma_jy_beam_kms` (without), `warnings`, `hi_mass_msun` and
+`hi_mass_error_msun` (`null` without a distance). `warnings` says when the
+map was computed with `mask_enabled`, or when more than a fifth of the noise
+pixels are exactly 0 or blank (a masked or thresholded map): the flux is then
+biased high and the error too small.
+
+The mass is M_HI = 2.356×10⁵ D² S with `distance_mpc`. `redshift` without
+`distance_mpc` sets the distance to the Planck18 luminosity distance D_L, and
+the mass, of the region and of the whole field, to
+M_HI = 2.356×10⁵ D_L² S / (1 + z) (Meyer et al. 2017, PASA 34, 52). Below
+cz ≈ 1000 km/s peculiar velocities dominate such a distance. The whole-field
+fields are returned beside the region.
 
 On HCG 44 (`hgc44.fits`, channels 20–100, the four galaxies and the background
 annulus of the HCG 44 use case) this gives
-NGC 3190 3.32 ± 0.23, NGC 3187 5.80 ± 0.29 and NGC 3185 1.36 ± 0.29 Jy km/s,
-with the annulus at σ = 48.17 Jy/beam·m/s and Ω = 30.66 pixels.
+NGC 3190 3.32 ± 0.27, NGC 3187 5.80 ± 0.35 and NGC 3185 1.36 ± 0.35 Jy km/s,
+with the annulus (2186 pixels) at σ = 48.17 Jy/beam·m/s and Ω = 30.66 pixels.
 
 ### `POST /v1/analysis/skeleton/{dataset_id}` · `POST /v1/analysis/skeleton/{dataset_id}/binary` · `POST /v1/cosmology/skeleton/{dataset_id}`
 Morphological skeleton (filaments) or void mask of one plane (only that plane

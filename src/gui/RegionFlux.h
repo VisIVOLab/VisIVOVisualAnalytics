@@ -37,9 +37,27 @@ struct FluxUnit
     bool velocity{ false };   ///< the map is integrated over a velocity: Jy km/s
     QString spectral;         ///< the spectral part as given ("m/s", "Hz"), empty for none
     QString label;            ///< "Jy", "Jy km/s", "Jy Hz"
+    double frequencyToHz{ 0.0 };   ///< the spectral part is a frequency: its unit in Hz
+    bool fromFrequency{ false };   ///< converted to km/s with the rest frequency
 };
 
 namespace detail {
+
+/// Factor from a frequency unit to Hz; 0 when @p u is not one.
+inline double frequencyToHz(QString u)
+{
+    u = u.remove(QLatin1Char(' '));
+    // Case matters: MHz is mega, mHz milli (never a spectral axis).
+    if (u.compare(QLatin1String("Hz"), Qt::CaseInsensitive) == 0)
+        return 1.0;
+    if (u == QLatin1String("kHz") || u == QLatin1String("KHZ") || u == QLatin1String("khz"))
+        return 1e3;
+    if (u == QLatin1String("MHz") || u == QLatin1String("MHZ"))
+        return 1e6;
+    if (u == QLatin1String("GHz") || u == QLatin1String("GHZ") || u == QLatin1String("ghz"))
+        return 1e9;
+    return 0.0;
+}
 
 /// Factor from a velocity unit (any FITS/astropy spelling) to km/s; 0 when
 /// @p u is not a velocity.
@@ -58,26 +76,38 @@ inline double velocityToKms(QString u)
 } // namespace detail
 
 /// Read a brightness unit: "Jy/beam", "JY/BEAM", "Jy beam-1", "mJy/beam",
-/// and a moment-0 unit, the brightness then the spectral unit: "Jy/beam
-/// km/s", "JY/BEAM m.s**-1", "Jy/beam.km/s" (CASA). Not per beam ("K",
-/// "Jy/pixel", "MJy/sr", empty) gives perBeam false: a sum ÷ beam area of
-/// such a map is not a flux.
+/// and a moment-0 unit, the brightness and the spectral unit in any order:
+/// "Jy/beam km/s", "JY/BEAM m.s**-1", "Jy/beam.km/s" (CASA), "Jy km s-1
+/// beam-1", "Jy km/s/beam". The prefix is case-sensitive as in the FITS
+/// standard: mJy is milli, MJy mega. Not per beam ("K", "Jy/pixel", "MJy/sr",
+/// empty) gives perBeam false: a sum ÷ beam area of such a map is not a flux.
 inline FluxUnit parseFluxUnit(const QString &bunit)
 {
     FluxUnit out;
-    static const QRegularExpression re(QStringLiteral(
-            "^\\s*(m|u|µ|μ)?jy\\s*(?:/\\s*beam(?:\\s*-\\s*1)?|[\\s.*]*beam\\s*(?:\\^|\\*\\*)?\\s*-\\s*1)(?![a-z])"),
-                                       QRegularExpression::CaseInsensitiveOption);
-    const auto m = re.match(bunit);
-    if (!m.hasMatch())
+    // The brightness: Jy with an optional, case-sensitive prefix, first.
+    static const QRegularExpression jy(QStringLiteral("^\\s*([muµμMk]?)[Jj][Yy](?![A-Za-z])"));
+    const auto mj = jy.match(bunit);
+    if (!mj.hasMatch())
         return out;
+    // "per beam", anywhere after it: "/beam", "beam-1", "beam^-1", "beam**-1".
+    static const QRegularExpression beam(
+            QStringLiteral("(?:/\\s*beam(?:\\s*-\\s*1)?|beam\\s*(?:\\^|\\*\\*)?\\s*-\\s*1)(?![A-Za-z])"),
+            QRegularExpression::CaseInsensitiveOption);
+    QString rest = bunit.mid(mj.capturedEnd(0));
+    const auto mb = beam.match(rest);
+    if (!mb.hasMatch())
+        return out;
+    rest.remove(mb.capturedStart(0), mb.capturedLength(0));
     out.perBeam = true;
-    const QString prefix = m.captured(1).toLower();
-    out.scale = prefix.isEmpty() ? 1.0 : prefix == QLatin1String("m") ? 1e-3 : 1e-6;
-    QString rest = bunit.mid(m.capturedEnd(0)).trimmed();
-    // "Jy/beam.km/s", "Jy/beam*km/s": the separator before the spectral unit.
-    while (!rest.isEmpty() && (rest.front() == QLatin1Char('.') || rest.front() == QLatin1Char('*')))
-        rest = rest.mid(1).trimmed();
+    const QString prefix = mj.captured(1);
+    out.scale = prefix.isEmpty()                 ? 1.0
+            : prefix == QLatin1String("m")      ? 1e-3
+            : prefix == QLatin1String("M")      ? 1e6
+            : prefix == QLatin1String("k")      ? 1e3
+                                                : 1e-6;   // u, µ
+    // The separators left around the spectral unit: "Jy/beam.km/s", "Jy km/s/beam".
+    static const QRegularExpression edges(QStringLiteral("^[\\s.*/]+|[\\s.*/]+$"));
+    rest.remove(edges);
     out.spectral = rest;
     if (rest.isEmpty()) {
         out.label = QStringLiteral("Jy");
@@ -90,9 +120,26 @@ inline FluxUnit parseFluxUnit(const QString &bunit)
         out.label = QStringLiteral("Jy km/s");
         return out;
     }
-    // A frequency (or anything else) stays in its own unit: Jy Hz.
+    // A frequency stays in its own unit (Jy Hz) unless withRestFrequency()
+    // converts it; anything else too.
+    out.frequencyToHz = detail::frequencyToHz(rest);
     out.label = QStringLiteral("Jy ") + rest;
     return out;
+}
+
+/// A frequency-integrated map (Jy/beam Hz) in Jy km/s through the rest
+/// frequency: Δv = c·Δν/ν₀, as the backend's HI products convert it
+/// (`frequency_width_to_kms`). Unchanged when the map is not integrated over
+/// a frequency or @p restHz is not positive.
+inline FluxUnit withRestFrequency(FluxUnit u, double restHz)
+{
+    if (!u.perBeam || !(u.frequencyToHz > 0.0) || !(restHz > 0.0) || !std::isfinite(restHz))
+        return u;
+    u.scale *= u.frequencyToHz * Catalogue3DParser::detail::kSpeedOfLightKms / restHz;
+    u.velocity = true;
+    u.fromFrequency = true;
+    u.label = QStringLiteral("Jy km/s");
+    return u;
 }
 
 /// Pixels in one Gaussian beam: π·BMAJ·BMIN / (4 ln 2) over the pixel's solid
@@ -112,7 +159,18 @@ struct Noise
     double mean{ 0.0 };     ///< subtracted from every pixel when `subtract`
     double sigma{ std::numeric_limits<double>::quiet_NaN() };   ///< per pixel, in the map's unit
     bool subtract{ false }; ///< a background region: its mean is subtracted
+    long count{ 0 };        ///< the background region's valid pixels (for its mean's error)
 };
+
+/// Does a region of a map look clipped, as a moment-0 map computed with a
+/// threshold mask is (its masked voxels summed to exact zeros, or none left:
+/// NaN)? More than a fifth of its pixels exactly zero or blank. Its σ is then
+/// too small and a flux on it biased high (issue #401).
+inline bool looksClipped(long valid, long exactZeros, long blanked)
+{
+    const long total = valid + blanked;
+    return total > 0 && 5 * (exactZeros + blanked) > total;
+}
 
 struct RegionFlux
 {
@@ -125,7 +183,10 @@ struct RegionFlux
 /// The flux of @p n valid pixels summing to @p sum on a map in @p unit, with
 /// @p beamAreaPx pixels per beam. @p pixelsPerSample is the full-resolution
 /// pixels each measured pixel stands for (1 at full resolution, the block area
-/// on a reduced map). S = (Σ − N·mean)·A / Ω, σ_S = σ·√(N·A / Ω).
+/// on a reduced map). S = (Σ − N·mean)·A / Ω. Its error is the noise of the
+/// region's N·A/Ω beams, σ·√(N·A/Ω), and with a background, in quadrature,
+/// that of its mean taken over N_bg·A/Ω beams and subtracted N times,
+/// σ·N·A/√(N_bg·A·Ω). A σ that is not positive (a clipped map) gives no error.
 inline RegionFlux regionFlux(double sum, long n, double beamAreaPx, const FluxUnit &unit,
                              const Noise &noise, double pixelsPerSample = 1.0)
 {
@@ -136,8 +197,15 @@ inline RegionFlux regionFlux(double sum, long n, double beamAreaPx, const FluxUn
     const double a = pixelsPerSample;
     const double mean = noise.subtract ? noise.mean : 0.0;
     out.flux = (sum - double(n) * mean) * a / beamAreaPx * unit.scale;
-    if (std::isfinite(noise.sigma) && noise.sigma >= 0.0)
-        out.error = noise.sigma * std::sqrt(double(n) * a / beamAreaPx) * unit.scale;
+    if (std::isfinite(noise.sigma) && noise.sigma > 0.0) {
+        const double nFull = double(n) * a;
+        double var = noise.sigma * noise.sigma * nFull / beamAreaPx;
+        if (noise.subtract && noise.count > 0) {
+            const double bgFull = double(noise.count) * a;
+            var += noise.sigma * noise.sigma * nFull * nFull / (bgFull * beamAreaPx);
+        }
+        out.error = std::sqrt(var) * unit.scale;
+    }
     out.unit = unit.label;
     out.valid = std::isfinite(out.flux);
     return out;
@@ -204,16 +272,19 @@ inline const regions::Region *nearestBackground(const std::vector<regions::Regio
 
 /// HI mass in solar masses of a flux @p sJyKms (Jy km/s) at @p dMpc:
 /// M_HI = 2.356·10⁵ D² S (optically thin; the constant of the backend's HI
-/// products).
-inline double hiMassSolar(double sJyKms, double dMpc)
+/// products). With the luminosity distance of a redshift @p z, the flux
+/// measured in the observed frame: M_HI = 2.356·10⁵ D_L² S / (1 + z)
+/// (Meyer et al. 2017, PASA 34, 52).
+inline double hiMassSolar(double sJyKms, double dMpc, double z = 0.0)
 {
-    return 2.356e5 * dMpc * dMpc * sJyKms;
+    return 2.356e5 * dMpc * dMpc * sJyKms / (1.0 + std::max(0.0, z));
 }
 
 /// Luminosity distance (Mpc) of redshift @p z in Planck18, flat:
 /// (1 + z)·D_C(z), with the local Planck18 integrator of the catalogue
-/// viewer; the backend's `luminosity_distance_mpc` gives the same through
-/// astropy.
+/// viewer. Its Ωm = 0.3111 is astropy's Om0 + Onu0 (0.30966 + 0.00144, the
+/// massive neutrino), and it agrees with astropy's Planck18, which the backend
+/// uses, to 10⁻⁴ up to z = 2 (tests/test_region_flux.cpp).
 inline double luminosityDistanceMpc(double z)
 {
     return z > 0.0 ? (1.0 + z) * Catalogue3DParser::detail::comovingDistanceMpc(z) : 0.0;
@@ -227,6 +298,19 @@ struct TypedDistance
     bool fromRedshift{ false };
     double value{ 0.0 };   ///< Mpc, or the redshift
     double mpc() const { return !ok ? 0.0 : fromRedshift ? luminosityDistanceMpc(value) : value; }
+    /// The redshift the distance came from, 0 for a typed distance.
+    double redshift() const { return ok && fromRedshift ? value : 0.0; }
+    /// The HI mass of a flux (Jy km/s) at this distance, with the 1/(1 + z)
+    /// of a redshift distance.
+    double hiMass(double sJyKms) const { return hiMassSolar(sJyKms, mpc(), redshift()); }
+    /// Below cz = 1000 km/s peculiar velocities (~300 km/s) dominate the
+    /// distance from a redshift (the catalogue viewer's kUncertainCzKms).
+    bool uncertain() const
+    {
+        return ok && fromRedshift
+                && Catalogue3DParser::detail::kSpeedOfLightKms * value
+                < Catalogue3DParser::detail::kUncertainCzKms;
+    }
     /// "25 Mpc", "z = 0.0046 (D_L 20.5 Mpc, Planck18)".
     QString describe() const
     {
@@ -234,7 +318,12 @@ struct TypedDistance
             return QString();
         if (!fromRedshift)
             return QStringLiteral("%1 Mpc").arg(value, 0, 'g', 6);
-        return QStringLiteral("z = %1 (D_L %2 Mpc, Planck18)").arg(value, 0, 'g', 6).arg(mpc(), 0, 'f', 1);
+        QString text = QStringLiteral("z = %1 (D_L %2 Mpc, Planck18; M_HI divided by 1 + z)")
+                               .arg(value, 0, 'g', 6)
+                               .arg(mpc(), 0, 'f', 1);
+        if (uncertain())
+            text += QStringLiteral("; cz below 1000 km/s: peculiar velocities dominate this distance");
+        return text;
     }
 };
 

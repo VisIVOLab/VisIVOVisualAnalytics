@@ -128,10 +128,13 @@ m/s or Jy/beam km/s (an exported moment map keeps the cube's beam). An image
 with no `BUNIT` is taken as Jy/beam, and the window says so; an image not per
 beam (K, MJy/sr) gets no flux. The error and the background follow the rules
 of the cube viewer ([Region flux](region-pv-noise.md#region-flux-and-hi-mass)):
-a background region's mean is subtracted, or the noise of the loaded pixels
-gives the error. On a moment-0 map, *HI mass* follows at the distance set in
-*Tools ▸ Regions ▸ HI Mass Distance…*. With Stokes layers loaded, per-Stokes
-values follow (integrated Jy, mean PA in degrees, mean P/I in percent).
+a background region's mean is subtracted and its error added, or the noise of
+the loaded pixels gives the error, and a map that looks masked gets a
+warning. A map integrated over frequency stays in Jy Hz here (an exported map
+carries no rest frequency). On a moment-0 map, *HI mass* follows at the
+distance set in *Tools ▸ Regions ▸ HI Mass Distance…*. With Stokes layers
+loaded, per-Stokes values follow (integrated Jy over the same beam area, mean PA in degrees, mean
+P/I in percent).
 
 The regions are also listed in *Session Data*, under a *Regions* node, where
 each can be selected, hidden, renamed, deleted or exported

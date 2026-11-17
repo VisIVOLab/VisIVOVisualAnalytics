@@ -2,6 +2,7 @@
 #include "app/DatasetName.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeViewportGeometry.h"
+#include "RegionFlux.h"
 
 #include "app/BackendClient.h"
 #include "app/DiagnosticsManager.h"
@@ -130,10 +131,10 @@ bool vtkWindowImage::hasBeamInfo() const
 double vtkWindowImage::beamAreaPixels() const
 {
     if (!hasBeamInfo()) return 0.0;
-    const double cdelt = std::abs(this->remoteDatasetCdelt[0]);
-    const double bmaj_px = m_beamMajorDeg / cdelt;
-    const double bmin_px = m_beamMinorDeg / cdelt;
-    return M_PI * bmaj_px * bmin_px / (4.0 * std::log(2.0));
+    // The pixel's solid angle |CDELT1·CDELT2|, as the region flux takes it
+    // (issue #401): CDELT1² was wrong for non-square pixels.
+    return visivo::flux::beamAreaPixels(m_beamMajorDeg, m_beamMinorDeg,
+                                        this->remoteDatasetCdelt[0], this->remoteDatasetCdelt[1]);
 }
 
 namespace {

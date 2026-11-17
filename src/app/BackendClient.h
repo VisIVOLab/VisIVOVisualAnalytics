@@ -196,6 +196,9 @@ struct BackendOpenDatasetResult
     double beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double beamPaDeg{ 0.0 };
+    /// The cube has one beam per channel (a BEAMS table); the beam above is
+    /// the header's (issue #401).
+    bool beamPerChannel{ false };
     /// Size-aware loading policy (added for Pattern B).
     /// ``recommendedLoadMode`` is "auto_full" when the cube fits the
     /// laptop's RAM/VTK budget comfortably, or "preview_only" when the

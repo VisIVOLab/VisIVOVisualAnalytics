@@ -129,6 +129,7 @@ struct RegionStatistics
     long long totalCount{ 0 };
     long long validCount{ 0 };
     long long blankedCount{ 0 };
+    long long zeroCount{ 0 };   ///< valid pixels exactly 0 (displayed only; a clipped moment map)
     double minValue{ 0. };
     double maxValue{ 0. };
     double mean{ 0. };
@@ -258,6 +259,8 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData,
             }
 
             ++stats.validCount;
+            if (value == 0.0)
+                ++stats.zeroCount;
             stats.minValue = std::min(stats.minValue, value);
             stats.maxValue = std::max(stats.maxValue, value);
             sum += value;
@@ -326,13 +329,14 @@ QList<QPair<QString, QString>> regionFluxRows(const RegionStatistics &stats, con
 
     // The unit of the flux follows the image's (issue #401): Jy for a Jy/beam
     // map, Jy km/s for a moment-0 map in Jy/beam m/s or km/s. A map with no
-    // BUNIT is taken as Jy/beam, as before, and says so.
+    // BUNIT is taken as Jy/beam, as before, and says so. A frequency-integrated
+    // map stays in Jy Hz: an exported map has no rest frequency.
     const QString bunit = c.bunit.trimmed();
     visivo::flux::FluxUnit unit = visivo::flux::parseFluxUnit(bunit);
-    QString unitNote;
+    QStringList notes;
     if (bunit.isEmpty()) {
         unit = visivo::flux::parseFluxUnit(u"Jy/beam"_s);
-        unitNote = u"no BUNIT in the header: Jy/beam assumed"_s;
+        notes << u"no BUNIT in the header: Jy/beam assumed"_s;
     }
     if (!unit.perBeam) {
         rows.append({ u"Integrated flux"_s,
@@ -342,25 +346,40 @@ QList<QPair<QString, QString>> regionFluxRows(const RegionStatistics &stats, con
         const QString shownUnit = bunit.isEmpty() ? QString() : u" "_s + bunit;
         visivo::flux::Noise noise;
         QString noiseFrom;
-        if (c.background && c.background->valid && c.background->validCount >= 2) {
-            noise.mean = c.background->mean;
-            noise.sigma = c.background->stddev;
+        bool clipped = false;
+        bool approximate = stats.pixelsPerSample > 1.0;
+        if (c.background && c.background->valid) {
+            const RegionStatistics &b = *c.background;
+            clipped = visivo::flux::looksClipped(long(b.validCount), long(b.zeroCount),
+                                                 long(b.blankedCount));
+            approximate = approximate || b.pixelsPerSample > 1.0;
+            noise.mean = b.mean;
+            noise.sigma = b.validCount >= 2 ? b.stddev : std::numeric_limits<double>::quiet_NaN();
+            noise.count = long(b.validCount);
             noise.subtract = true;
             noiseFrom = u"background %1 (%2 px, mean %3, σ %4%5), mean subtracted"_s
                                 .arg(c.backgroundName)
-                                .arg(c.background->validCount)
-                                .arg(fmt(c.background->mean), fmt(c.background->stddev), shownUnit);
+                                .arg(b.validCount)
+                                .arg(fmt(b.mean), fmt(b.stddev), shownUnit);
         } else if (!c.grid.reduced()) {
             // The image's own noise, from the full-resolution pixels loaded.
             std::vector<double> values;
+            long zeros = 0, blanks = 0;
             if (vtkImageData *img = c.image) {
                 int e[6];
                 img->GetExtent(e);
                 values.reserve(std::size_t(e[1] - e[0] + 1) * std::size_t(e[3] - e[2] + 1));
                 for (int y = e[2]; y <= e[3]; ++y)
-                    for (int x = e[0]; x <= e[1]; ++x)
-                        values.push_back(img->GetScalarComponentAsDouble(x, y, e[4], 0));
+                    for (int x = e[0]; x <= e[1]; ++x) {
+                        const double v = img->GetScalarComponentAsDouble(x, y, e[4], 0);
+                        if (!std::isfinite(v))
+                            ++blanks;
+                        else if (v == 0.0)
+                            ++zeros;
+                        values.push_back(v);
+                    }
             }
+            clipped = visivo::flux::looksClipped(long(values.size()) - blanks, zeros, blanks);
             noise.sigma = visivo::flux::madSigma(values);
             noiseFrom = u"map noise (σ_MAD %1%2 over the pixels loaded), no background subtracted"_s
                                 .arg(fmt(noise.sigma), shownUnit);
@@ -371,26 +390,35 @@ QList<QPair<QString, QString>> regionFluxRows(const RegionStatistics &stats, con
         if (!c.backgroundName.isEmpty() && !noise.subtract)
             noiseFrom = u"background %1 not measured; "_s.arg(c.backgroundName) + noiseFrom;
         // Statistics of displayed pixels below full resolution: each stands
-        // for a block of the file's.
-        const double perSample = stats.pixelsPerSample;
+        // for a block of the file's, and their σ is a block's, not a pixel's.
         const visivo::flux::RegionFlux f = visivo::flux::regionFlux(
-                stats.sum, long(stats.validCount), omega, unit, noise, perSample);
+                stats.sum, long(stats.validCount), omega, unit, noise, stats.pixelsPerSample);
         if (f.valid) {
+            if (!std::isfinite(f.error) && (noise.subtract || !c.grid.reduced()))
+                noiseFrom += u"; σ cannot be measured (zero, or fewer than two pixels): no error"_s;
             rows.append({ u"Integrated flux"_s, visivo::flux::formatFlux(f) });
             rows.append({ u"Flux error from"_s, noiseFrom });
-            if (!unitNote.isEmpty())
-                rows.append({ u"Flux unit"_s, unitNote });
+            if (approximate)
+                notes << u"from the displayed pixels below full resolution, each a block of the "
+                         u"file's: flux and error approximate"_s;
+            if (unit.frequencyToHz > 0.0)
+                notes << u"integrated over frequency: Jy Hz (the image has no rest frequency)"_s;
+            if (!notes.isEmpty())
+                rows.append({ u"Flux note"_s, notes.join(u"; "_s) });
+            if (clipped)
+                rows.append({ u"Flux warning"_s,
+                              u"more than a fifth of the noise pixels are 0 or blank: the map "
+                              u"looks masked or thresholded, the flux is biased high and the error "
+                              u"too small"_s });
             if (unit.velocity) {
                 const visivo::flux::TypedDistance d = visivo::flux::storedHiDistance();
                 if (d.ok) {
-                    const double dMpc = d.mpc();
                     const double massError = std::isfinite(f.error)
-                            ? visivo::flux::hiMassSolar(f.error, dMpc)
+                            ? d.hiMass(f.error)
                             : std::numeric_limits<double>::quiet_NaN();
                     rows.append({ u"HI mass"_s,
-                                  u"%1 at %2"_s.arg(visivo::flux::formatHiMass(
-                                                            visivo::flux::hiMassSolar(f.flux, dMpc),
-                                                            massError),
+                                  u"%1 at %2"_s.arg(visivo::flux::formatHiMass(d.hiMass(f.flux),
+                                                                               massError),
                                                     d.describe()) });
                 } else {
                     rows.append({ u"HI mass"_s,

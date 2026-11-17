@@ -121,6 +121,7 @@ class OpenDatasetResponse(BaseModel):
     beam_major: float | None = None
     beam_minor: float | None = None
     beam_pa: float | None = None
+    beam_per_channel: bool = False   # a BEAMS table: one beam per channel (issue #401)
     # Size-aware loading policy. Clients use ``recommended_load_mode``
     # to decide whether to auto-load full resolution or default to
     # preview-only. Threshold is configurable via

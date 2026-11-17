@@ -17,11 +17,15 @@ frequency axis a rest frequency converts the width to km/s (R-02).
 With a region (issue #401) the flux and mass are those of the pixels inside
 it, less the mean of a background region when one is given:
 
-    S = (Σ_region − N · mean_bg) / Ω_beam,   σ_S = σ · √(N / Ω_beam)
+    S = (Σ_region − N · mean_bg) / Ω_beam
+    σ_S² = σ² · N / Ω_beam  +  σ² · N² / (N_bg · Ω_beam)
 
 σ is the standard deviation of the background region's pixels or, without
-one, the MAD noise of the whole map. The pixels within a beam are correlated:
-N pixels hold N/Ω independent beams, hence √(N/Ω) rather than √N.
+one, the MAD noise of the whole map (and the second term goes). The pixels
+within a beam are correlated: N pixels hold N/Ω independent beams, hence
+√(N/Ω) rather than √N; the second term is the error of the background mean,
+subtracted N times. With a distance from a redshift the mass is
+M_HI = 2.356e5 · D_L² · S / (1 + z) (Meyer et al. 2017, PASA 34, 52).
 """
 from __future__ import annotations
 
@@ -86,11 +90,17 @@ def region_flux(m0_kms: np.ndarray, beam_area_px: float, region: dict[str, Any],
     """Integrated flux (Jy km/s) of a region of a Jy/beam·km/s moment-0 map.
 
     ``S = (Σ − N·mean_bg) / Ω`` over the region's N finite pixels, with Ω the
-    beam area in pixels, and ``σ_S = σ·√(N/Ω)``: N pixels hold N/Ω independent
-    beams, each summed noise σ·Ω, and the sum is divided by Ω. σ is the
-    standard deviation (population) of the background region's pixels when
-    one is given, else the MAD σ of the whole map (``error_from`` says which).
-    Blank pixels count in neither region.
+    beam area in pixels. Its error is the noise of the region's N/Ω
+    independent beams, ``σ·√(N/Ω)``, and with a background, in quadrature,
+    that of its mean (over N_bg/Ω beams, subtracted N times),
+    ``σ·N/√(N_bg·Ω)``. σ is the standard deviation (population) of the
+    background region's pixels when one is given, else the MAD σ of the whole
+    map (``error_from`` says which). Blank pixels count in neither region.
+
+    A σ that cannot be measured (zero, or fewer than two background pixels:
+    a map clipped by a threshold mask) gives no error (``None``), and a noise
+    area more than a fifth zeros or blanks gives a warning in ``warnings``:
+    the flux of such a map is biased high (issue #401).
     """
     finite = np.isfinite(m0_kms)
     inside = _region_pixels(m0_kms.shape, region) & finite
@@ -98,30 +108,57 @@ def region_flux(m0_kms: np.ndarray, beam_area_px: float, region: dict[str, Any],
     if n == 0:
         raise ValueError("The region holds no valid pixel of the moment-0 map.")
     total = float(m0_kms[inside].sum(dtype=np.float64))
+    warnings: list[str] = []
     out: dict[str, Any] = {"n_pixels": n, "sum_jy_beam_kms": total,
-                           "beam_area_pix": float(beam_area_px)}
+                           "beam_area_pix": float(beam_area_px), "warnings": warnings}
     bg_mean = 0.0
+    n_bg = 0
     if background is not None:
         # All of the background region's pixels, as the viewers' statistics
         # of that region count them: a background that overlaps the source is
         # the user's choice, and the numbers stay the ones the viewer shows.
-        bg = _region_pixels(m0_kms.shape, background) & finite
+        area = _region_pixels(m0_kms.shape, background)
+        bg = area & finite
         n_bg = int(bg.sum())
-        if n_bg < 2:
-            raise ValueError("The background region holds fewer than two valid pixels.")
         bg_values = m0_kms[bg].astype(np.float64)
+        noise_values = bg_values
+        n_blank = int((area & ~finite).sum())
+        if n_bg == 0:
+            raise ValueError("The background region holds no valid pixel of the moment-0 map.")
         bg_mean = float(bg_values.mean())
-        sigma = float(bg_values.std())
+        sigma = float(bg_values.std()) if n_bg >= 2 else None
         out.update({"background_n_pixels": n_bg, "background_mean_jy_beam_kms": bg_mean,
                     "background_sigma_jy_beam_kms": sigma, "error_from": "background"})
     else:
-        values = m0_kms[finite].astype(np.float64)
-        median = float(np.median(values))
-        sigma = _MAD_TO_SIGMA * float(np.median(np.abs(values - median)))
+        noise_values = m0_kms[finite].astype(np.float64)
+        n_blank = int((~finite).sum())
+        median = float(np.median(noise_values))
+        sigma = _MAD_TO_SIGMA * float(np.median(np.abs(noise_values - median)))
         out.update({"map_sigma_jy_beam_kms": sigma, "error_from": "map_noise"})
+    if _looks_clipped(int(noise_values.size), int((noise_values == 0.0).sum()), n_blank):
+        warnings.append(
+            "more than a fifth of the noise pixels are 0 or blank: the moment-0 map looks "
+            "masked or thresholded, so the flux is biased high and the error too small; "
+            "compute it with mask_enabled off.")
     out["flux_jy_kms"] = (total - n * bg_mean) / float(beam_area_px)
-    out["flux_error_jy_kms"] = sigma * float(np.sqrt(n / float(beam_area_px)))
+    if sigma is None or not np.isfinite(sigma) or sigma <= 0.0:
+        out["flux_error_jy_kms"] = None
+        warnings.append("the noise σ cannot be measured (zero, or fewer than two pixels): "
+                        "no error.")
+    else:
+        var = sigma ** 2 * n / float(beam_area_px)
+        if background is not None:
+            var += sigma ** 2 * n * n / (n_bg * float(beam_area_px))
+        out["flux_error_jy_kms"] = float(np.sqrt(var))
     return out
+
+
+def _looks_clipped(n_valid: int, n_zero: int, n_blank: int) -> bool:
+    """More than a fifth of the noise pixels exactly zero or blank: a moment
+    map whose masked voxels summed to 0 or left no value (as the desktop's
+    ``looksClipped``)."""
+    total = n_valid + n_blank
+    return total > 0 and 5 * (n_zero + n_blank) > total
 
 
 def _velocity_unit_to_kms(unit: str) -> float | None:
@@ -182,8 +219,13 @@ def worker_hi_products(
     """
     if background_region is not None and region is None:
         raise ValueError("A background region needs a source region.")
+    # A distance from a redshift is a luminosity distance, and the flux is
+    # measured in the observed frame: M_HI = 2.356e5 D_L² S / (1 + z)
+    # (Meyer et al. 2017, PASA 34, 52). A typed distance takes no (1 + z).
+    mass_redshift = 0.0
     if (distance_mpc is None or distance_mpc <= 0) and redshift is not None:
         distance_mpc = luminosity_distance_mpc(redshift)
+        mass_redshift = float(redshift)
     from .moment import worker_moment  # noqa: PLC0415
 
     ds = ScientificFitsDataset(path)
@@ -267,17 +309,21 @@ def worker_hi_products(
     n_pixels_summed = int(finite.sum())
     s_int_jy_kms = float(np.nansum(m0_kms[finite]) / beam_area_px)
     m_hi = (
-        _MHI_CONST * float(distance_mpc) ** 2 * s_int_jy_kms
+        _MHI_CONST * float(distance_mpc) ** 2 * s_int_jy_kms / (1.0 + mass_redshift)
         if distance_mpc and distance_mpc > 0 else None
     )
     region_result = None
     if region is not None:
         region_result = region_flux(m0_kms, beam_area_px, region, background_region)
+        if mask_enabled:
+            region_result["warnings"].insert(0, (
+                "the moment-0 map was computed with a threshold mask: the region flux is "
+                "biased high and its error too small; use mask_enabled false."))
         if distance_mpc and distance_mpc > 0:
-            region_result["hi_mass_msun"] = (
-                _MHI_CONST * float(distance_mpc) ** 2 * region_result["flux_jy_kms"])
-            region_result["hi_mass_error_msun"] = (
-                _MHI_CONST * float(distance_mpc) ** 2 * region_result["flux_error_jy_kms"])
+            per_jy_kms = _MHI_CONST * float(distance_mpc) ** 2 / (1.0 + mass_redshift)
+            region_result["hi_mass_msun"] = per_jy_kms * region_result["flux_jy_kms"]
+            err = region_result["flux_error_jy_kms"]
+            region_result["hi_mass_error_msun"] = per_jy_kms * err if err is not None else None
         else:
             region_result["hi_mass_msun"] = None
             region_result["hi_mass_error_msun"] = None

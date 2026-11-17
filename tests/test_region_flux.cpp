@@ -63,6 +63,12 @@ void TestRegionFlux::unitsOfBrightnessAndMoments()
         { "K km/s", false, 1.0, "", false },
         { "Jy/pixel", false, 1.0, "", false },
         { "MJy/sr", false, 1.0, "", false },
+        // The beam after the spectral unit, and a case-sensitive prefix.
+        { "Jy km s-1 beam-1", true, 1.0, "Jy km/s", true },
+        { "Jy km/s/beam", true, 1.0, "Jy km/s", true },
+        { "Jy m/s/beam", true, 1e-3, "Jy km/s", true },
+        { "MJy/beam", true, 1e6, "Jy", false },   // mega, as FITS reads it
+        { "K km/s/beam", false, 1.0, "", false },
         { "", false, 1.0, "", false },
         { "m/s", false, 1.0, "", false },
     };
@@ -75,6 +81,18 @@ void TestRegionFlux::unitsOfBrightnessAndMoments()
         QCOMPARE(u.label, QString::fromUtf8(c.label));
         QVERIFY2(u.velocity == c.velocity, c.bunit);
     }
+    // A frequency-integrated map: Jy Hz, or Jy km/s through the rest frequency
+    // (Δv = c Δν / ν₀), as the backend's HI products convert it.
+    const FluxUnit hz = parseFluxUnit(u"Jy/beam MHz"_s);
+    QCOMPARE(hz.label, u"Jy MHz"_s);
+    QCOMPARE(hz.frequencyToHz, 1e6);
+    QVERIFY(!hz.velocity);
+    const FluxUnit kms = withRestFrequency(hz, 1420405751.768);
+    QVERIFY(kms.velocity && kms.fromFrequency);
+    QCOMPARE(kms.label, u"Jy km/s"_s);
+    QVERIFY(std::abs(kms.scale - 1e6 * 2.99792458e5 / 1420405751.768) < 1e-9);
+    QCOMPARE(withRestFrequency(hz, 0.0).label, u"Jy MHz"_s);
+    QCOMPARE(withRestFrequency(parseFluxUnit(u"Jy/beam m/s"_s), 1.4e9).scale, 1e-3);
 }
 
 void TestRegionFlux::beamAreaIsTheGaussianSolidAngle()
@@ -130,10 +148,21 @@ void TestRegionFlux::backgroundIsSubtractedAndGivesTheError()
     bg.mean = 2.0;
     bg.sigma = 3.0;
     bg.subtract = true;
-    // 100 pixels summing to 1000, background 2 each, Ω = 25.
+    bg.count = 400;
+    // 100 pixels summing to 1000, background of 400 pixels at 2 each, Ω = 25:
+    // σ² N/Ω for the region's beams, σ² N²/(N_bg Ω) for the background mean.
     const RegionFlux f = regionFlux(1000.0, 100, 25.0, u, bg);
     QVERIFY(std::abs(f.flux - (1000.0 - 200.0) / 25.0) < 1e-12);
-    QVERIFY(std::abs(f.error - 3.0 * std::sqrt(100.0 / 25.0)) < 1e-12);
+    QVERIFY(std::abs(f.error - 3.0 * std::sqrt(100.0 / 25.0 + 100.0 * 100.0 / (400.0 * 25.0))) < 1e-12);
+    // A σ of zero (a clipped map) cannot be measured: no error.
+    Noise flat = bg;
+    flat.sigma = 0.0;
+    QVERIFY(std::isnan(regionFlux(1000.0, 100, 25.0, u, flat).error));
+    // A clipped (thresholded) moment map: more than a fifth zeros or blanks.
+    QVERIFY(looksClipped(100, 30, 0));
+    QVERIFY(looksClipped(70, 0, 30));
+    QVERIFY(!looksClipped(100, 10, 5));
+    QVERIFY(!looksClipped(0, 0, 0));
     // Map noise: the error, no subtraction.
     Noise map;
     map.mean = 2.0;   // ignored without subtract
@@ -154,6 +183,7 @@ void TestRegionFlux::hcg44NumbersOfTheUseCase()
     Noise bg;
     bg.mean = -3.259;
     bg.sigma = 48.171;
+    bg.count = 2186;
     bg.subtract = true;
     struct Galaxy
     {
@@ -162,9 +192,9 @@ void TestRegionFlux::hcg44NumbersOfTheUseCase()
         const char *text;
     };
     const Galaxy galaxies[] = {
-        { 706, 140.92, "3.32 ± 0.23 Jy km/s" },    // NGC 3190
-        { 1105, 157.66, "5.80 ± 0.29 Jy km/s" },   // NGC 3187
-        { 1088, 35.15, "1.36 ± 0.29 Jy km/s" },    // NGC 3185
+        { 706, 140.92, "3.32 ± 0.27 Jy km/s" },    // NGC 3190
+        { 1105, 157.66, "5.80 ± 0.35 Jy km/s" },   // NGC 3187
+        { 1088, 35.15, "1.36 ± 0.35 Jy km/s" },    // NGC 3185
     };
     for (const Galaxy &g : galaxies) {
         const RegionFlux f = regionFlux(g.mean * double(g.n), g.n, omega, u, bg);
@@ -272,13 +302,28 @@ void TestRegionFlux::distancesAndMasses()
     QVERIFY(parseDistance(u"25 mpc"_s).ok);
     const TypedDistance z = parseDistance(u"z=0.005"_s);
     QVERIFY(z.ok && z.fromRedshift);
-    // Planck18 luminosity distance at z = 0.005: astropy gives 22.24 Mpc.
+    // Planck18 luminosity distance at z = 0.005: astropy gives 22.239 Mpc.
     QVERIFY2(std::abs(z.mpc() - 22.24) < 0.03, qPrintable(QString::number(z.mpc())));
     QVERIFY(parseDistance(u"z 0.005"_s).ok);
     QVERIFY(parseDistance(u"Z: 0.005"_s).ok);
     for (const QString &bad : { u""_s, u"abc"_s, u"-3"_s, u"0"_s, u"z=-1"_s, u"25 kpc"_s })
         QVERIFY2(!parseDistance(bad).ok, qPrintable(bad));
     QVERIFY(std::abs(hiMassSolar(1.0, 1.0) - 2.356e5) < 1e-9);
+    // From a redshift: M_HI = 2.356e5 D_L² S / (1 + z) (Meyer et al. 2017).
+    QVERIFY(std::abs(z.hiMass(1.0) - 2.356e5 * z.mpc() * z.mpc() / 1.005) < 1e-3);
+    QVERIFY(std::abs(a.hiMass(1.0) - 2.356e5 * 625.0) < 1e-6);
+    // Below cz = 1000 km/s a redshift distance is flagged.
+    QVERIFY(z.uncertain() == false);   // cz = 1499 km/s
+    QVERIFY(parseDistance(u"z=0.002"_s).uncertain());
+    QVERIFY(parseDistance(u"z=0.002"_s).describe().contains(u"peculiar"_s));
+    QVERIFY(!a.uncertain());
+    // The local Planck18 integrator against astropy's Planck18 (the backend's).
+    const double astropy[][2] = { { 0.001, 4.434262480323607 }, { 0.005, 22.23909890586761 },
+                                  { 0.05, 229.88062846485786 }, { 0.5, 2919.6249521806776 },
+                                  { 1.0, 6791.2689423031325 } };
+    for (const auto &zd : astropy)
+        QVERIFY2(std::abs(luminosityDistanceMpc(zd[0]) / zd[1] - 1.0) < 1e-3,
+                 qPrintable(QString::number(luminosityDistanceMpc(zd[0]))));
     QVERIFY(std::abs(hiMassSolar(2.0, 10.0) - 2.356e5 * 200.0) < 1e-6);
 }
 

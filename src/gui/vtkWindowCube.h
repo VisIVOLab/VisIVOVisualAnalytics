@@ -334,6 +334,9 @@ public:
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
     void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
+    /// The cube has one beam per channel (a BEAMS table): a region flux says
+    /// it uses the header beam (issue #401).
+    void setBeamPerChannel(bool perChannel) { m_beamPerChannel = perChannel; }
 
     // ── Server-side rendering (SSR, Phase 2) ──────────────────────────────────
     // The 3D viewport can either run locally (the existing
@@ -1667,6 +1670,7 @@ protected:
     double m_beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamPaDeg{ 0.0 };
+    bool m_beamPerChannel{ false };
     vtkSmartPointer<vtkActor> m_beamActor;
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueOverlay;

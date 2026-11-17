@@ -36,8 +36,10 @@ inline bool askHiDistance(QWidget *parent)
     const QString text = QInputDialog::getText(
             parent, QStringLiteral("HI Mass Distance"),
             QStringLiteral("Distance for the HI mass of a region, M_HI = 2.356\u00d710\u2075 D\u00b2 S:\n"
-                           "in Mpc (25), or a redshift (z=0.0046, luminosity distance in "
-                           "Planck18).\nLeave empty to show no mass."),
+                           "in Mpc (25), or a redshift (z=0.0046: luminosity distance in "
+                           "Planck18,\nand M_HI divided by 1 + z). Below cz = 1000 km/s "
+                           "peculiar velocities\ndominate a redshift distance: prefer a typed "
+                           "one.\nLeave empty to show no mass."),
             QLineEdit::Normal, current, &ok);
     if (!ok)
         return false;

@@ -85,9 +85,13 @@ def test_background_region_is_subtracted_and_gives_the_error(tmp_path):
     # The pedestal (0.01 Jy/beam × 50 km/s per pixel) is gone, the source stays.
     assert reg["background_mean_jy_beam_kms"] == pytest.approx(0.5, abs=0.02)
     assert reg["flux_jy_kms"] == pytest.approx(25.0, abs=3 * reg["flux_error_jy_kms"] + 0.05)
-    # σ_S = σ_bg · √(N / Ω): the formula, with the numbers the response reports.
+    # σ_S² = σ_bg² N/Ω + σ_bg² N²/(N_bg Ω): the region's beams and the error of
+    # the background mean, with the numbers the response reports.
+    sig, n, n_bg, om = (reg["background_sigma_jy_beam_kms"], reg["n_pixels"],
+                        reg["background_n_pixels"], reg["beam_area_pix"])
     assert reg["flux_error_jy_kms"] == pytest.approx(
-        reg["background_sigma_jy_beam_kms"] * np.sqrt(reg["n_pixels"] / reg["beam_area_pix"]))
+        sig * np.sqrt(n / om + n * n / (n_bg * om)))
+    assert reg["warnings"] == []
     assert reg["hi_mass_msun"] == pytest.approx(2.356e5 * 20.0 ** 2 * reg["flux_jy_kms"])
     assert reg["hi_mass_error_msun"] == pytest.approx(
         2.356e5 * 20.0 ** 2 * reg["flux_error_jy_kms"])
@@ -103,12 +107,17 @@ def test_redshift_gives_the_luminosity_distance(tmp_path):
     out = worker_hi_products(path, 0, 9, redshift=0.005, region=_circle(c, 25))
     assert out["distance_mpc"] == pytest.approx(luminosity_distance_mpc(0.005))
     assert 20.0 < out["distance_mpc"] < 25.0
+    # From a redshift: M_HI = 2.356e5 D_L² S / (1 + z) (Meyer et al. 2017).
     assert out["region"]["hi_mass_msun"] == pytest.approx(
-        2.356e5 * out["distance_mpc"] ** 2 * out["region"]["flux_jy_kms"])
-    # A typed distance wins over the redshift.
+        2.356e5 * out["distance_mpc"] ** 2 * out["region"]["flux_jy_kms"] / 1.005)
+    assert out["hi_mass_msun"] == pytest.approx(
+        2.356e5 * out["distance_mpc"] ** 2 * out["integrated_flux_jy_kms"] / 1.005)
+    # A typed distance wins over the redshift, and takes no (1 + z).
     typed = worker_hi_products(path, 0, 9, distance_mpc=10.0, redshift=0.005,
                                region=_circle(c, 25))
     assert typed["distance_mpc"] == 10.0
+    assert typed["region"]["hi_mass_msun"] == pytest.approx(
+        2.356e5 * 100.0 * typed["region"]["flux_jy_kms"])
 
 
 def test_region_errors_are_value_errors():
@@ -119,8 +128,40 @@ def test_region_errors_are_value_errors():
         region_flux(m0, 5.0, {"frame": "image", "shape": "circle", "center": [1, 1]})
     with pytest.raises(ValueError, match="no valid pixel"):
         region_flux(m0, 5.0, _circle(50.0, 2.0))
-    with pytest.raises(ValueError, match="fewer than two"):
+    with pytest.raises(ValueError, match="no valid pixel"):
         region_flux(m0, 5.0, _circle(5.0, 2.0), background=_circle(50.0, 1.0))
+
+
+def test_an_unmeasurable_sigma_gives_no_error_and_says_so():
+    """A one-pixel background, or a constant map (a clipped moment): no σ."""
+    m0 = np.ones((20, 20))
+    one = region_flux(m0, 5.0, _circle(5.0, 2.0), background=_circle(15.0, 0.0))
+    assert one["background_n_pixels"] == 1
+    assert one["flux_error_jy_kms"] is None
+    assert any("cannot be measured" in w for w in one["warnings"])
+    flat = region_flux(m0, 5.0, _circle(5.0, 2.0))
+    assert flat["flux_error_jy_kms"] is None
+
+
+def test_a_clipped_map_is_flagged():
+    """A moment computed with a threshold mask: most of the field is 0 or
+    blank, its σ too small and the flux biased high; the result says so."""
+    rng = np.random.default_rng(1)
+    m0 = rng.normal(0.0, 1.0, (40, 40))
+    m0[:, :30] = 0.0           # masked voxels summed to zero
+    m0[:5, 30:] = np.nan       # or left no value
+    out = region_flux(m0, 5.0, _circle(35.0, 3.0), background=_circle(20.0, 8.0))
+    assert any("masked or thresholded" in w for w in out["warnings"])
+    clean = region_flux(rng.normal(0.0, 1.0, (40, 40)), 5.0, _circle(35.0, 3.0))
+    assert not any("masked" in w for w in clean["warnings"])
+
+
+def test_a_masked_moment_warns(tmp_path):
+    path = str(tmp_path / "src_mask.fits")
+    c = _write_source_cube(path, unit="km/s", dv=5.0, noise=0.01)
+    out = worker_hi_products(path, 0, 9, mask_enabled=True, threshold_auto=True,
+                             region=_circle(c, 18))
+    assert any("threshold mask" in w for w in out["region"]["warnings"])
 
 
 def test_moment_fits_carries_the_beam(tmp_path):
@@ -177,3 +218,23 @@ def test_moment_fits_without_a_beam_writes_none(tmp_path):
     worker_moment_save_fits(path, out, 0, 0, 9, False, 0.0)
     h = fits.getheader(out)
     assert "BMAJ" not in h and "BMIN" not in h
+
+
+def test_the_open_geometry_says_when_the_beam_varies(tmp_path):
+    """The viewers say a flux uses the header beam on such a cube."""
+    from app.fits_dataset import ScientificFitsDataset
+
+    path = str(tmp_path / "src_geom.fits")
+    _write_source_cube(path, unit="km/s", dv=5.0, nz=4)
+    assert ScientificFitsDataset(path).geometry_metadata()["beam_per_channel"] is False
+    with fits.open(path) as hdul:
+        primary = hdul[0].copy()
+    cols = fits.ColDefs([
+        fits.Column(name="BMAJ", format="E", unit="arcsec", array=np.full(4, 12.0, np.float32)),
+        fits.Column(name="BMIN", format="E", unit="arcsec", array=np.full(4, 8.0, np.float32)),
+        fits.Column(name="CHAN", format="J", array=np.arange(4, dtype=np.int32)),
+    ])
+    beams = fits.BinTableHDU.from_columns(cols)
+    beams.header["EXTNAME"] = "BEAMS"
+    fits.HDUList([primary, beams]).writeto(path, overwrite=True)
+    assert ScientificFitsDataset(path).geometry_metadata()["beam_per_channel"] is True

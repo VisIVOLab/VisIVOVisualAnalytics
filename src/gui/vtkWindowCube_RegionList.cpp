@@ -82,6 +82,7 @@ struct ListRegionStatistics
     double minValue{ 0. };
     double maxValue{ 0. };
     double sum{ 0. };
+    int zeroCount{ 0 };   ///< valid pixels exactly 0 (a clipped moment map, issue #401)
     double mean{ 0. };
     double median{ 0. };
     double stddev{ 0. };
@@ -114,6 +115,8 @@ ListRegionStatistics statisticsOnImage(vtkImageData *image, const visivo::Displa
                 continue;
             }
             ++stats.validCount;
+            if (v == 0.0)
+                ++stats.zeroCount;
             stats.minValue = std::min(stats.minValue, v);
             stats.maxValue = std::max(stats.maxValue, v);
             sum += v;
@@ -133,20 +136,38 @@ ListRegionStatistics statisticsOnImage(vtkImageData *image, const visivo::Displa
     return stats;
 }
 
-/// The MAD σ of every finite pixel of the plane @p image shows: the noise of a
-/// moment-0 map when no background region is marked (issue #401).
-double planeMadSigma(vtkImageData *image)
+/// The noise of a whole map: the MAD σ of its finite pixels, and whether the
+/// map looks clipped (a moment-0 map with a threshold mask, issue #401).
+struct PlaneNoise
 {
+    double sigma{ std::numeric_limits<double>::quiet_NaN() };
+    bool clipped{ false };
+};
+
+/// The noise of the plane @p image shows: the error of a region flux when no
+/// background region is marked (issue #401).
+PlaneNoise planeNoise(vtkImageData *image)
+{
+    PlaneNoise out;
     if (!image)
-        return std::numeric_limits<double>::quiet_NaN();
+        return out;
     int extent[6];
     image->GetExtent(extent);
     std::vector<double> values;
     values.reserve(std::size_t(extent[1] - extent[0] + 1) * std::size_t(extent[3] - extent[2] + 1));
+    long zeros = 0, blanks = 0;
     for (int y = extent[2]; y <= extent[3]; ++y)
-        for (int x = extent[0]; x <= extent[1]; ++x)
-            values.push_back(image->GetScalarComponentAsDouble(x, y, extent[4], 0));
-    return visivo::flux::madSigma(values);
+        for (int x = extent[0]; x <= extent[1]; ++x) {
+            const double v = image->GetScalarComponentAsDouble(x, y, extent[4], 0);
+            if (!std::isfinite(v))
+                ++blanks;
+            else if (v == 0.0)
+                ++zeros;
+            values.push_back(v);
+        }
+    out.clipped = visivo::flux::looksClipped(long(values.size()) - blanks, zeros, blanks);
+    out.sigma = visivo::flux::madSigma(values);
+    return out;
 }
 
 }   // namespace
@@ -1240,30 +1261,43 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
                                            double sum, long validCount,
                                            const QString &paneProduct, bool onChannels) const
 {
-    // The unit of the map measured: a channel is in the cube's BUNIT, a
-    // moment or map product in its own (Jy/beam m/s for a moment 0).
+    // The map measured: a channel (in the cube's BUNIT) or a product (a
+    // moment in its own unit, Jy/beam m/s for a moment 0). Without a pane the
+    // 2-D view shows the slice or the moment computed last.
     const bool onSlice = paneProduct.isEmpty() && this->viewingSlice();
-    QString mapUnit;
-    if (onChannels || onSlice)
-        mapUnit = this->m_brightnessUnit;
-    else if (paneProduct.isEmpty())
-        mapUnit = this->m_momentProvenanceParams.value(u"Unit"_s).toString();
-    else
-        mapUnit = this->m_products2d.value(paneProduct).unit;
+    const bool onChannel = onChannels || onSlice;
+    const QString productId =
+            onChannel ? QString() : paneProduct.isEmpty() ? m_lastComputedMomentProductId : paneProduct;
+    const Product2D product = this->m_products2d.value(productId);
+    const bool isMoment = productId.startsWith(u"moment"_s);
+    QString mapUnit = onChannel ? this->m_brightnessUnit : product.unit;
     if (mapUnit == u"-"_s)
         mapUnit.clear();
-    const visivo::flux::FluxUnit unit = visivo::flux::parseFluxUnit(mapUnit);
-    // A Jy/beam map that is neither a channel nor integrated over the
-    // spectral axis (a peak or mean map) has no flux: its sum over the beam
-    // is nothing physical.
-    if (!unit.perBeam || (!onChannels && !onSlice && unit.spectral.isEmpty()))
+    // A cube with no BUNIT is taken as Jy/beam, as the image viewer does, and
+    // says so; its moment 0 is then in the spectral unit alone.
+    QString unitNote;
+    QString parsedUnit = mapUnit;
+    if (this->m_brightnessUnit.trimmed().isEmpty()) {
+        if (onChannel)
+            parsedUnit = u"Jy/beam"_s;
+        else if (isMoment && product.order == 0)
+            parsedUnit = u"Jy/beam "_s + mapUnit;
+        unitNote = u"no BUNIT in the header: Jy/beam assumed"_s;
+    }
+    visivo::flux::FluxUnit unit = visivo::flux::parseFluxUnit(parsedUnit);
+    // A frequency-integrated map in km/s through the rest frequency, as the
+    // backend's HI products do; without one it stays Jy Hz.
+    unit = visivo::flux::withRestFrequency(unit, this->m_restFreqHz);
+    // A Jy/beam map that is neither a channel nor a moment 0 (a peak or mean
+    // map) has no flux: its sum over the beam is nothing physical.
+    const bool integrated = isMoment ? product.order == 0 : !unit.spectral.isEmpty();
+    if (!unit.perBeam || (!onChannel && !integrated))
         return;
     const double omega = visivo::flux::beamAreaPixels(
             this->m_beamMajorDeg, this->m_beamMinorDeg, this->remoteDatasetCdelt[0],
             this->remoteDatasetCdelt[1]);
     if (!(omega > 0.0)) {
-        params.insert(u"Integrated flux"_s,
-                      u"unknown: the cube has no beam (BMAJ/BMIN) or no pixel scale"_s);
+        params.insert(u"Flux"_s, u"unknown: the cube has no beam (BMAJ/BMIN) or no pixel scale"_s);
         return;
     }
 
@@ -1273,11 +1307,14 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
     const QString shownUnit = mapUnit.isEmpty() ? QString() : u" "_s + mapUnit;
     visivo::flux::Noise noise;
     QString noiseFrom;
+    bool clipped = false;
     if (const Region *bg = visivo::flux::nearestBackground(this->m_regions.regions(), region)) {
         const ListRegionStatistics b = statisticsOnImage(image, grid, *bg);
-        if (b.valid && b.validCount >= 2) {
+        clipped = visivo::flux::looksClipped(b.validCount, b.zeroCount, b.blankedCount);
+        if (b.valid) {
             noise.mean = b.mean;
-            noise.sigma = b.stddev;
+            noise.sigma = b.validCount >= 2 ? b.stddev : std::numeric_limits<double>::quiet_NaN();
+            noise.count = b.validCount;
             noise.subtract = true;
             noiseFrom = u"background %1 (%2 px, mean %3, σ %4%5), mean subtracted"_s
                                 .arg(bg->name)
@@ -1288,7 +1325,9 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
         }
     }
     if (!noise.subtract) {
-        noise.sigma = planeMadSigma(image);
+        const PlaneNoise pn = planeNoise(image);
+        clipped = clipped || pn.clipped;
+        noise.sigma = pn.sigma;
         noiseFrom += u"map noise (σ_MAD %1%2 over the whole map), no background subtracted"_s
                              .arg(fmt(noise.sigma), shownUnit);
     }
@@ -1297,16 +1336,39 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
             visivo::flux::regionFlux(sum, validCount, omega, unit, noise, perSample);
     if (!f.valid)
         return;
+    if (!std::isfinite(f.error))
+        noiseFrom += u"; σ cannot be measured (zero, or fewer than two pixels): no error"_s;
     params.insert(u"Integrated flux"_s, visivo::flux::formatFlux(f));
     params.insert(u"Flux error from"_s, noiseFrom);
     params.insert(u"Beam area"_s,
                   u"%1 pixels (%2″ × %3″)"_s.arg(omega, 0, 'f', 2)
                           .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 1)
                           .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 1));
+    QStringList notes;
+    if (!unitNote.isEmpty())
+        notes << unitNote;
+    if (unit.fromFrequency)
+        notes << u"integrated over frequency, converted with the rest frequency %1 Hz"_s.arg(
+                this->m_restFreqHz, 0, 'g', 10);
+    if (this->m_beamPerChannel)
+        notes << (onChannel ? u"the cube has one beam per channel: the header beam is used"_s
+                            : u"the cube has one beam per channel: the flux uses the header beam, "
+                              u"not the beam of each channel"_s);
     if (grid.reduced())
-        params.insert(u"Flux note"_s,
-                      u"From the displayed map, each pixel %1 of the cube's: approximate."_s
-                              .arg(perSample, 0, 'g', 3));
+        notes << u"from the displayed map, each pixel %1 of the cube's: approximate"_s.arg(
+                perSample, 0, 'g', 3);
+    if (!notes.isEmpty())
+        params.insert(u"Flux note"_s, notes.join(u"; "_s));
+    // A moment computed with a threshold mask clips the faint emission and
+    // the noise: the flux is biased high and σ too small.
+    const bool maskedMoment = isMoment && product.maskEnabled;
+    if (maskedMoment || clipped)
+        params.insert(u"Flux warning"_s,
+                      u"the map looks masked or thresholded (%1): the flux is biased high and the "
+                      u"error too small; compute the moment with the mask off"_s
+                              .arg(maskedMoment
+                                           ? u"computed with a threshold mask"_s
+                                           : u"more than a fifth of the noise pixels are 0 or blank"_s));
     // The HI mass, for a velocity-integrated map at the distance set.
     if (!unit.velocity)
         return;
@@ -1315,11 +1377,9 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
         params.insert(u"HI mass"_s, u"set a distance in Tools ▸ Regions ▸ HI Mass Distance…"_s);
         return;
     }
-    const double dMpc = d.mpc();
-    const double massError = std::isfinite(f.error) ? visivo::flux::hiMassSolar(f.error, dMpc)
+    const double massError = std::isfinite(f.error) ? d.hiMass(f.error)
                                                     : std::numeric_limits<double>::quiet_NaN();
     params.insert(u"HI mass"_s,
-                  u"%1 at %2"_s.arg(visivo::flux::formatHiMass(
-                                            visivo::flux::hiMassSolar(f.flux, dMpc), massError),
+                  u"%1 at %2"_s.arg(visivo::flux::formatHiMass(d.hiMass(f.flux), massError),
                                     d.describe()));
 }
