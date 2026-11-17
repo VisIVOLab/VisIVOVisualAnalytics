@@ -26,7 +26,7 @@ using visivo::SofiaSuggestedParam;
 
 namespace {
 
-/// The HCG 44 answer of docs/backend-api/tasks-finders.md, abridged.
+/// The HCG 44 answer of docs/technical/backend-api/tasks-finders.md, abridged.
 QJsonObject hcg44Answer()
 {
     return QJsonDocument::fromJson(R"({

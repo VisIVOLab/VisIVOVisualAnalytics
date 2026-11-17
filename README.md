@@ -11,8 +11,8 @@
 on your desktop, with the heavy computation wherever the data lives.**
 
 [**Documentation**](https://visivo.readthedocs.io/) ·
-[User guide](https://visivo.readthedocs.io/en/latest/user-guide/getting-started.html) ·
-[Backend API](https://visivo.readthedocs.io/en/latest/backend-api.html) ·
+[User guide](https://visivo.readthedocs.io/en/latest/user/reference/getting-started.html) ·
+[Backend API](https://visivo.readthedocs.io/en/latest/technical/backend-api.html) ·
 [Building from source](BUILDING.md)
 
 [![DOI](https://zenodo.org/badge/1428760358.svg)](https://doi.org/10.5281/zenodo.23669666)
@@ -31,7 +31,7 @@ travels.
 
 It is developed by [**VisIVOLab**](https://visivolab.oact.inaf.it) at INAF –
 Osservatorio Astrofisico di Catania and is part of the wider VisIVO family,
-alongside the [VisIVO Server](https://visivo.readthedocs.io/en/latest/server/visivo_server.html)
+alongside the [VisIVO Server](https://visivo.readthedocs.io/en/latest/technical/server/visivo_server.html)
 command-line toolkit, with which it shares data formats.
 
 ## What it does
@@ -136,7 +136,7 @@ bash scripts/launch_backend_slurm.sh --sif visivo-backend.sif \
      --bind /data --partition gpu --time 04:00:00
 ```
 
-The [multi-user backend guide](https://visivo.readthedocs.io/en/latest/multi-user-backend.html)
+The [multi-user backend guide](https://visivo.readthedocs.io/en/latest/technical/multi-user-backend.html)
 describes what a shared backend does and does not isolate — read it before
 exposing one to colleagues.
 
@@ -163,7 +163,7 @@ are rendered server-side and streamed as video.
 Every request carries a **token** and a **session id**: sessions keep each
 client's datasets, tasks and results separate, and expire when idle.
 
-The [architecture note](https://visivo.readthedocs.io/en/latest/architecture-note.html)
+The [architecture note](https://visivo.readthedocs.io/en/latest/technical/architecture-note.html)
 is the long version.
 
 ## Development

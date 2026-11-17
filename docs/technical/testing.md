@@ -1,0 +1,473 @@
+# Testing
+ 
+## Suite overview
+
+QTest-based headless unit suite under `tests/`. No VTK, no Qt::Widgets, no live backend required.
+
+```
+tests/
+  CMakeLists.txt                   # visivo_test_support + VisIVOTests
+  main.cpp                         # QCoreApplication + QTest::qExec for each class
+  Test<Name>.h                     # Q_OBJECT test class declaration (one per area)
+  test_backendclient.cpp           # 44 — result parsing, open response, image tiles
+  test_catalogue_parser.cpp        # 51 — redshift/distance field detection, distances
+  test_backend_routing.cpp         # 40 — Settings backend registry + SKAVA routing
+  test_image_lod.cpp               # 25 — viewport LOD math (level select + visible tiles)
+  test_analysis_param_store.cpp    #  8 — per-dataset dialog parameter persistence
+  test_backend_contract.cpp        #  4 — shared header manifest ↔ client constants
+  test_remote_slice_cache.cpp      # 11 — slice cache keying + eviction
+  test_linked_window_registry.cpp  #  8 — linked-views registry lifetime
+  test_spectral_unit_convert.cpp   # 25 — unit parsing + rest-frame → axis placement
+  test_cube_region_geom.cpp        # 20 — ROI hit-testers (box/circle/polygon/annulus)
+  test_cube_tool_gate.cpp          # 14 — CubeToolGate: which tools may act, and why not
+  test_tool_result_record.cpp      #  8 — reopening a tool result exactly as it was
+  test_product_origin.cpp          # 15 — where a measurement was taken (region / voxel)
+  test_catalogue_csv.cpp           # 31 — quoting, multi-line records, truncated files
+  test_fits_header_string.cpp      #  6 — header cards → 80-column FITS header string
+  test_stokes_companion.cpp        # 11 — Stokes Q/U/V companion filename matching
+  test_spectral_axis_infer.cpp     # 16 — spectral-axis descriptor inference
+  test_kinematic_level_field.cpp   # 19 — kinematic-lasso level field
+  test_ray_voxel_pick.cpp          # 18 — 3-D ray → voxel picking
+  test_sed_builder.cpp             # 20 — SED from catalogue rows: band-merged groups, branches, flux columns, units
+  test_vlkb_pos_string.cpp         # 11 — VLKB POS strings: longitude wrapping, the box across l = 0
+  test_sky_overlap.cpp             # 12 — whether a FITS overlaps the image on screen (RA wrap)
+  test_catalogue_cosmology.cpp     #  8 — local Planck18 distances against astropy, to z = 20
+  test_fits_header_card.cpp        # 11 — one header card: types, quoting, refused keywords
+  test_viewer_mode_state.cpp       #  6 — which image-viewer mode the strip shows
+  test_remote_levels.cpp           #  9 — remote view's starting threshold and range
+  test_remote_render_queue.cpp     # 24 — waiting in the backend's render queue
+  test_render_session_calls.cpp    #  7 — what goes on the wire when a queued view closes
+  test_region_full_res.cpp         #  6 — a region drawn on a reduced display, in full-resolution pixels
+  test_dataset_name.cpp            #  5 — how a dataset (or a VBT field) is named
+  test_threshold_share.cpp         #  5 — share of voxels above the 3-D threshold
+  test_colour_bar_ticks.cpp        #  5 — colour-bar tick labels
+  test_probe_spectrum_fetch.cpp    #  9 — live spectrum on a preview: one request in flight, no stale reply
+  test_wcs_axis_ticks.cpp          #  5 — WCS axis ticks read along each edge, not the diagonal
+  test_open_job_merge.cpp          # 13 — "Last 5 jobs" with the client's own opens merged in
+  test_task_quit_drain.cpp         # 25 — quitting cancels every followed task and waits for it
+  test_system_quit_redirect.cpp    #  4 — only the platform's own Quit goes the Quit menu's way
+  test_layer_card_geometry.cpp     #  8 — layer-card hit rectangles in the image viewer
+  test_region_readout.cpp          #  8 — what a region reports, and in which units
+  test_backend_url_locality.cpp    # 13 — whether a backend URL is served by this machine
+  test_skava_client.cpp            # 30 — SKAVA client parsers against real SKAVA responses
+  test_pv_path_geometry.cpp        # 10 — PV path hit-testing and editing
+  test_orbit_path.cpp              #  7 — camera orbit paths for movies
+  test_product_recipe.cpp          #  6 — the exported record of an analysis product
+  test_lasso_replay.cpp            #  7 — the lasso grow as the record a cube carries
+  test_sofia_suggest.cpp           # 24 — SoFiA-2 parameter suggestion as the dialog reads it
+  test_update_check.cpp            #  9 — GitHub latest-release reply, version comparison
+  test_source_table.cpp            # 11 — VLKB cutouts for a source table
+  test_backend_task_follow.cpp     # 23 — following a backend task to its end, with back-off
+  test_samp.cpp                    # 39 — SAMP: XML-RPC codec, callback server, row identity and linking
+  test_cosmology_tools.cpp         # 38 — cosmology tools: custom models, distance table, P(ℓ) slope, bindings
+  test_copilot_status.cpp          #  8 — why the copilot cannot answer, as the panels show it
+  test_copilot_choice.cpp          # 10 — the copilot provider choice and the config it sends
+  test_backend_process_tree.cpp    # 10 — the local backend's child processes end with it
+  test_backend_webrtc_env.cpp      #  8 — WebRTC packages added to a user-data venv made without them
+  test_busy_feedback.cpp           # 13 — a window's busy indicator, the 3-D catalogue's selection marker size
+  test_cube_stat_rows.cpp          #  7 — the Inspector's "3D cube" statistic rows
+  test_file_preview.cpp            # 12 — the file browser's preview of any file
+  test_missing_route.cpp           #  6 — a backend older than the client, told apart from a real 404
+  test_particle_frame.cpp          #  7 — a point table's frame from its headers
+  test_recent_reopen.cpp           #  9 — reopening a Recent Datasets entry whose file has gone
+  test_shared_selection.cpp        # 21 — a selection shared between the headset and the cube viewer
+  test_shared_selection_link.cpp   #  5 — the selection hub against a live backend (skipped without one)
+  test_solid_splats.cpp            #  4 — splats in a solid colour, NaN scalars included
+  test_supported_formats.cpp       # 13 — the file types the file browser offers
+  test_vbt_byte_order.cpp          # 10 — a VBT whose header declares the wrong byte order
+  test_velocity_lod_geometry.cpp   # 13 — reduced velocity-field grids drawn where the backend put them
+  test_vr_headset_app.cpp          # 32 — the VisIVO VR headset app: APK, adb, assetlinks
+  test_vr_headset_hub.cpp          # 35 — the desktop's side of the headset hub
+  test_vr_link.cpp                 # 56 — Open in VR Headset: the WebXR page link and the adb commands
+  test_vr_pair.cpp                 # 40 — pairing a headset by code
+  test_vr_spectator.cpp            # 14 — the headset's view on the desktop
+  test_workspace_exports_view.cpp  #  6 — the Workspace Exports list: unchanged listings, the row cap
+  test_quit_exit_main.cpp          # separate executable VisIVOQuitExitTest (see below)
+```
+
+Total: **1131 tests** in 73 classes in the `VisIVOTests` binary at 1.1.0, as
+QTest counts them — each class contributes its own `initTestCase` /
+`cleanupTestCase` to that figure. The per-file numbers above come from the
+binary's own totals (`./VisIVOTests | grep Totals`), so they can be checked
+rather than trusted. `ctest -V` prints the per-class totals.
+
+`ctest` runs three tests: `VisIVOUnitTests` (the binary above) and two runs of
+a second executable, `VisIVOQuitExitTest` (`test_quit_exit_main.cpp`), as
+`VisIVOQuitExit` and `VisIVOQuitExitGuiFollower` (`--gui-follower`). It is a
+process of its own because it calls `QCoreApplication::exit()`, which would end
+the event loops of every later class in `VisIVOTests`. It checks that a backend
+task created, or followed, on the application thread while the application
+quits is still cancelled on the backend: exactly one `DELETE` must reach a
+loopback stand-in backend (exit code 77, skipped, when there is no loopback).
+
+What belongs here: pure logic lifted out of the GUI classes so it can be
+checked without a display — parsers, geometry, unit conversions, and decision
+tables such as `CubeToolGate` (which tools may act on what is on screen) or
+`SpectralUnitConvert` (where a rest-frame line lands on a given spectral axis).
+Both of those were extracted precisely because the only previous way to check
+them was to open the app and look at thirty buttons.
+
+`ViewerModeState` (`test_viewer_mode_state.cpp`) is a smaller case of the same
+idea. The image viewer's five modes are mutually exclusive, and the flags that
+say so are cleared by four different code paths; the question the test pins is
+what the mode strip must show if two of them ever disagree — the answer being
+the mode that will consume the next click, which is `toggleProbeFreeze()`'s own
+dispatch order. Getting that backwards (the first version did) shows the user a
+tool they are not in, which is worse than showing nothing.
+
+`SkyOverlap` (`test_sky_overlap.cpp`) is there for the same reason: whether a
+FITS can be added as a layer to the image on screen is one interval comparison,
+and the case that breaks it — a field straddling RA = 0, which `wcsrange()`
+reports as `ra_min > ra_max` — cannot be reached from a GUI test. The rule is a
+header with no FITS and no VTK in it, so the wrap, the touching edges and the
+missing WCS solution are all checked directly.
+
+The same reasoning drives `SedBuilder` (`test_sed_builder.cpp`): reading a SED
+out of a catalogue is a pile of column-name rules, and a misread column does not
+crash — it produces a fit that runs and is wrong. The rules therefore live in a
+header with no widgets in it, where they can be checked directly.
+
+The **backend** has its own pytest suite under `backend/tests/` (3560 tests at
+1.1.0; the numbers in brackets below are per file). A few of its
+files are worth knowing about when touching the science, the archive path or
+the way files get opened:
+
+- `test_sed_fit.py` (61) round-trips greybody fits against synthetic SEDs and
+  checks the Δχ² = 1 uncertainty against its closed-form value;
+- `test_arepo.py` (34) builds a synthetic AREPO snapshot and exercises the HDF5
+  walk, the grid arithmetic and the FITS header — including the link cycles and
+  the attribute types that used to break the reply;
+- `test_soda_cutout.py` (20) covers what a VLKB cutout response has to be before
+  it is called a FITS file;
+- `test_vlkb_mcutout.py` (41) covers the batch job either side of the wire — the
+  POS parsing, the job id, the report — and the parts that can do damage: path
+  traversal out of the results directory, redirects that would carry the access
+  token elsewhere, and an archive that unpacks to more than it downloaded;
+- `test_vlkb_service.py` (8) holds the TAP query and the batch to one VLKB
+  service URL — the request's, `VISIVO_VLKB_URL`, or the public default — so a
+  backend with nothing configured can cut from what it has just found;
+- `test_classify.py` (33) pins what the single **Open…** does with each kind of
+  file. Most of it is telling image, cube and table apart from the bytes — a
+  length-1 Stokes axis must not make a map into a cube, and a gzipped or
+  tile-compressed FITS is classified as its uncompressed self — and the rest is
+  about refusing to guess: prose with commas is not a catalogue, a FITS table is
+  ambiguous on purpose, and a gzipped file that is not a FITS is still refused;
+- the node and remote-rendering files: `test_render_push.py` (18) checks the
+  push stream (frames capped by the window of unacknowledged ones, every change
+  reaching every stream, the next frame rendered while one is sent) and the
+  adaptive drag level (it follows the render time and settles instead of
+  oscillating); `test_render_process.py` (16) the session process (a failure or
+  a crash in the child fails that view only, close ends the child, each
+  session takes one of the job's GPUs in turn); `test_node_status.py` (22)
+  the memory a node reports under cgroup v2, cgroup v1 and a SLURM grant;
+  `test_soda_service.py` (54) SODA sync and UWS async; `test_finders.py` (21)
+  the finder registry; `test_telemetry_push.py` (10) the reports a node pushes
+  to a catalogue; `test_abort.py` (14) stopping a moment or PV job between
+  slabs;
+- `test_operation_history.py` (35) covers "Last 5 jobs": that work is recorded
+  and that browsing, scrubbing and polling are not, and that a route answering
+  HTTP 200 with `{"valid": false}` is filed as failed;
+- `test_filter_fits.py` (64) is mostly about the three things the legacy's
+  *Filter FITS* got wrong and that only surface later, in the photometry: a
+  blank pixel eating its neighbourhood, a beam that no longer describes the map,
+  and flux lost by block-averaging a per-pixel unit. It also pins the WCS
+  arithmetic — the half-pixel terms in `CRPIX`, and the keywords of a squeezed
+  Stokes axis going with it;
+- `test_fits_header_edit.py` (38), `test_hips2fits.py` (33),
+  `test_cone_search.py` (31) and `test_vlkb_tap.py` (27) cover the four archive
+  and repair routes. The recurring theme is refusing *first*: a structural
+  keyword, a 64-Mpx cutout, a radius of zero, a box of zero width — each with
+  the reason, rather than a round trip and somebody else's error page. The other
+  half is reading what services actually send: a VO error carried inside a valid
+  VOTable, a TAP error returned as XML when CSV was asked for, an HTML gateway
+  page where a FITS was expected;
+- `test_hips_tile_query.py` (10) covers the two routes that decide whether the
+  HiPS viewer shows anything — `query_tiles` and `catalogue_overlay`. Both had
+  no test and both shipped dead: a router refactor left them calling a name the
+  star-import does not re-export, and the surrounding `except Exception` dressed
+  the `NameError` up as a plausible "HEALPix query failed", so the viewer drew
+  an empty sky and nothing in CI noticed. The tests register a survey directly
+  in the session registry, so no network is involved;
+- `test_hips_registry.py` (19) covers the CDS survey registry behind the
+  viewer's survey picker: that a record without a service URL is dropped, that
+  one latin-1 byte in a title does not throw away the other 1500 records, and
+  that the on-disk cache behaves as a cache — stale, damaged, unreadable and
+  unwritable all fall back to the network rather than failing the request. It
+  is a separate module from `test_hips_tile_query.py` on purpose: none of this
+  needs healpy, and that one skips without it;
+- `test_safe_fetch.py` (4) stands on its own because the bug it guards against
+  has been fixed three times in this codebase and forgotten twice: a validated
+  URL that redirects into the private network. It runs a real local server that
+  answers 302, so the test fails if the redirect handler is ever dropped;
+- `test_contract.py` pins the REST route list the desktop client depends on —
+  **add an endpoint and it fails until you regenerate the snapshot**:
+
+```
+backend/.venv/bin/python backend/scripts/gen_contract.py
+```
+
+---
+
+## Driving the real application (`tools/gui_smoke`)
+
+The unit suites answer *is this function right*, and the backend suite answers
+*is this route right*. Neither answers the question that keeps breaking: **does
+the thing the user clicks reach the thing that was tested?** A menu entry wired
+to nothing, a dialog opened on a window with no dataset, a result written to a
+file nobody opens — all of those pass every test above.
+
+`tools/gui_smoke/gui_smoke.py` launches the built application on a real FITS
+file and clicks through thirty-eight scenarios across the image, cube, catalogue
+and VBT viewers — moments, line-width, baseline subtraction, PV extraction, the
+kinematic lasso, source finding, the exports, the regions, the products, the
+cosmology selector, the shared docks — asserting on the backend's own job
+history, on the files that appear in the workspace (including their NAXIS), and
+on the labels the windows show. Never on a screenshot.
+
+```bash
+python3 tools/gui_smoke/gui_smoke.py --image 2d.fits --cube 3d.fits
+```
+
+The catalogue and VBT passes need no data of their own: the suite writes a
+300-source RA/Dec/redshift CSV, a 2000-point VisIVO Binary Table and a 24³ VBT
+volume into its artefacts directory unless `--catalogue` / `--vbt` name real
+ones.
+
+It is a **developer tool, not a test target**: it needs macOS, a display and
+Accessibility permission, and CI has none of the three. `tools/gui_smoke/README.md`
+documents the scenarios, the oracles, and the platform behaviour each helper
+exists to work around.
+
+It has already earned its keep several times over. Driving Compute Moment showed that no
+`/v1/tasks/*` job ever appeared in the activity panel — the task API's terminal
+status is `completed` and the registry snapshot recognised only `done`, so a
+moment showed up neither as running nor as finished. The unit test that covered
+the snapshot had used `done`, so nothing caught it. And arming a region from
+Tools ▸ Regions turned out to do nothing at all while the ruler was armed: the
+menu entry checked, the strip still saying Ruler, the drag drawing a distance.
+And a file that is not a FITS — an IPAC table, a `.speck`, a CSV, a VisIVO
+Binary Table — could not be opened from outside the application at all: the
+desktop entry point never reached the classifier, so a double-click was answered
+with "Unsupported file type. Expected FITS or HDF5" while the same file opened
+fine from Open….
+
+The same class of bug turned up once more in the Open dialog itself, reported by
+a user rather than by the suite: its Open button was enabled only for a row the
+listing had marked as FITS, so a VBT could be seen in the browser and not
+opened — the button just stayed grey.
+
+They are all the same shape — everything is wired, and the wire goes somewhere
+else. None of them is reachable by a unit test, and all of them are one click
+deep.
+
+---
+
+## Build
+
+```bash
+# Standalone — what CI runs. Needs only a base Qt6 (Core/Network/Test):
+# no VTK, no Qt::Widgets, no WebRTC, so it configures in seconds.
+cmake -S tests -B build-tests
+cmake --build build-tests
+ctest --test-dir build-tests -V
+
+# Or as part of the main project:
+cmake -B build -DBUILD_TESTING=ON   # off by default
+cmake --build build --target VisIVOTests
+ctest --test-dir build -V
+```
+
+---
+
+## CI (`.github/workflows/tests.yml`)
+
+Two jobs: **backend (pytest)** over `backend/tests/`, and **C++ unit tests
+(ctest)** which configures the standalone `tests/` project against
+`jurplel/install-qt-action`.
+
+```{note}
+Both Linux jobs first delete the runner image's unused third-party apt sources
+(Google Chrome, Microsoft). GitHub's Ubuntu images ship them, nothing here
+installs from them, and when one serves a stale index **every** `apt-get update`
+on the runner fails with *"Hash Sum mismatch"* — including the one inside
+`install-qt-action` — which fails the job for a reason that has nothing to do
+with the repository. `release.yml` carries the same guard.
+```
+
+Running the backend suite locally needs `pip install -r
+backend/requirements-dev.txt` (numpy / astropy / pytest); the C++ suite needs
+nothing but Qt.
+
+---
+
+## `visivo_test_support` static library
+
+Compiled once, linked by all test targets.
+
+Contents (the full list is `add_library(visivo_test_support …)` in
+`tests/CMakeLists.txt`), among them:
+- `BackendClient.cpp`, `BackendClient_Tasks.cpp`, `BackendUrl.cpp`, `LaunchOptions.cpp`
+- `DiagnosticsManager.cpp`
+- `Settings.cpp` — for the multi-backend registry tests
+- `skava/BackendRouting.cpp` — the SKAVA → backend routing decision
+- `skava/SkavaClient.cpp`, `skava/VoTable.cpp`, `skava/NodeSoda.cpp`, `skava/BrokerClient.cpp`
+- `ProductRecipe.cpp`, `LassoReplay.cpp`, `SofiaSuggest.cpp`, `UpdateCheck.cpp`, `vlkb/SourceTable.cpp`
+- `vtk/ImageLod.cpp`, `gui/PvPathGeometry.cpp`, `gui/OrbitPath.cpp` — geometry with no VTK or widget dependency
+
+Dependencies: `Qt::Core`, `Qt::Network` only.
+Does **not** pull in Qt::Widgets, VTK, or libwcs.
+
+`DiagnosticsManager.cpp` uses `#include <QCoreApplication>` (not `<QApplication>`) so it compiles without Qt::Widgets.
+
+---
+
+The sections below describe a few classes in more detail. Their tables show a
+selection of each class's tests; the counts are the binary's totals.
+
+## `TestBackendClient` (44 tests)
+
+All tests use `QJsonObject` literals — no network calls. Covers the static
+`parse*Object` methods (moment, PV, noise, save/exports, **image tile**).
+
+### `parseMomentResultObject`
+| Test | What it checks |
+|------|---------------|
+| `parseMoment_happyPath` | all fields round-trip correctly |
+| `parseMoment_errorResponse` | `valid=false`, `error` string preserved |
+| `parseMoment_missingFields_defaults` | absent fields default to zero/empty |
+| `parseMoment_wcsStatusDefaultsToOk` | absent `wcs_status` → `"ok"` |
+| `parseMoment_wcsSanitized` | `wcs_status="sanitized"` + warning message |
+
+### `parsePvResultObject`
+| Test | What it checks |
+|------|---------------|
+| `parsePv_happyPath` | all fields round-trip |
+| `parsePv_errorResponse` | `valid=false`; `error` cleared by design (mid-function clear) |
+| `parsePv_widthPixelsDefault` | absent `width_pixels` → 1 (not 0) |
+| `parsePv_beamFields` | `beam_major`, `beam_minor`, `beam_pa` |
+
+### `parseNoiseResultObject`
+| Test | What it checks |
+|------|---------------|
+| `parseNoise_happyPath` | region coords, channel range |
+| `parseNoise_madSigmaArrays` | array values with float tolerance |
+| `parseNoise_emptyArrays` | `mad.isEmpty()`, `sigma.isEmpty()` |
+| `parseNoise_errorResponse` | `valid=false`, `error` preserved |
+| `parseNoise_missingRegion_defaultsToZero` | absent region → all coords 0 |
+
+**Note on `parsePv_errorResponse`**: `parsePvResultObject` calls `result.error.clear()` after the `positions_arcsec_base64` decode step (missing arcsec positions is non-fatal, and `error` is reused as a scratch buffer). The test therefore only asserts `!r.valid` and documents this behaviour.
+
+### `parseImageTileObject`
+| Test | What it checks |
+|------|---------------|
+| `parseImageTile_happyPath` | all tile fields (dims, level, num_levels, tile_x/y, range) round-trip |
+| `parseImageTile_errorResponse` | `valid=false`, `error` preserved (e.g. out-of-range level) |
+| `parseImageTile_missingFields_defaults` | `full_*` default to width/height, `num_levels`→1, `level`→0 |
+
+---
+
+## `TestCatalogueParser` (35 tests)
+
+### `detectedRedshiftField`
+| Test | Input schema | Expected result |
+|------|-------------|----------------|
+| `redshift_lowercase_z` | `z` | `"z"` |
+| `redshift_uppercase_REDSHIFT` | `REDSHIFT` | `"REDSHIFT"` |
+| `redshift_ZSPEC` | `Zspec` | `"Zspec"` |
+| `redshift_ZMEAN` | `zmean` | `"zmean"` |
+| `redshift_ZPHOT` | `Zphoto_z` | `"Zphoto_z"` |
+| `redshift_absent` | `flux` only | `""` |
+| `redshift_caseInsensitive_mixed` | `Redshift` | `"Redshift"` |
+| `redshift_multipleAliases_firstInAliasListWins` | `redshift` + `z` | `"z"` (Z alias has priority) |
+| `redshift_unrelated_fields_notMatched` | `flux_z`, `size_z` | `""` (normalise to FLUXZ/SIZEZ) |
+
+### `detectedDistanceField`
+| Test | Input | Expected |
+|------|-------|---------|
+| `distance_DISTANCE` | `distance` | `"distance"` |
+| `distance_DIST` | `Dist` | `"Dist"` |
+| `distance_DMPC` | `dMpc` | `"dMpc"` |
+| `distance_absent` | no distance field | `""` |
+
+### `comovingDistanceMpc`
+| Test | Input z | Expected range |
+|------|---------|---------------|
+| `comoving_zeroReturnsZero` | 0.0 | 0.0 exactly |
+| `comoving_negativeReturnsZero` | -1.0 | 0.0 exactly |
+| `comoving_z01_reasonable` | 0.1 | 400–460 Mpc |
+| `comoving_z1_reasonable` | 1.0 | 3000–3600 Mpc |
+| `comoving_z01_gt_z005` | 0.05, 0.10 | D(0.10) > D(0.05) (monotonicity) |
+
+### `entryDistanceMpc`
+| Test | Setup | Expected |
+|------|-------|---------|
+| `entryDist_fromDistanceField` | `distance=500` | 500.0 |
+| `entryDist_fromRedshiftField` | `z=0.1` | 400–460 Mpc |
+| `entryDist_noDistance_isUnplaced` | a z column with no value, no distance | NaN, reason "no redshift" (#265) |
+| `entryDist_positionsOnly_onTheSkySphere` | no z and no distance column | 300, `SkySphere` (not a distance) |
+| `entryDist_measuredDistance_beatsModelOverride` | `distance=500`, `z=0.1`, `entry.distanceMpc=750` | 500.0 (a measured distance wins, #265) |
+| `entryDist_modelOverride_placesRedshiftOnlySources` | `z=0.1`, `entry.distanceMpc=750` | 750.0 |
+| `entryDist_negativeDistanceField_fallsBackToRedshift` | `distance=-100`, `z=0.05` | 150–280 Mpc |
+| `entryDist_zeroRedshift_isUnplaced` | `z=0.0` | NaN, "z = 0 (not measured)", both modes |
+| `entryDist_negativeRedshift_isUnplaced` | `z<0` (M31) | NaN, "z ≤ 0", both modes |
+| `entryDist_negativeRedshift_withDistanceColumn_isPlaced` | `z<0`, `DIST=0.78` | 0.78 |
+| `entryDist_lowCz_isFlaggedUncertain` | cz = 500 / 1500 km/s | flagged / not; a measured distance is not |
+| `parse_unplacedRowsAreKeptApart` and the `placement_*` tests | | unplaced rows out of `entries`; status line, pick lines, table rows (#265) |
+| `redshiftSpaceMode_usesTheModelsH0` | `H0 = 69.32` | cz/69.32 (#260) |
+
+---
+
+## `TestBackendRouting` (39 tests)
+
+Covers the desktop side of the [distributed backend](design/distributed-backend-design)
+model: the `Settings` multi-backend registry and the SKAVA → backend routing
+decision (`pickBackendForSkavaDataset`, extracted into `src/skava/BackendRouting.cpp`
+so it is testable without the GUI/VTK stack). Each test runs against a fresh
+`Settings` on a `QTemporaryDir`.
+
+### Settings backend registry
+| Test | Assertion |
+|------|-----------|
+| `registryAlwaysHasLocal` | the auto-managed `local` node is always present (even on a fresh store) |
+| `upsertInsertsAndUpdates` | `upsertBackendNode` inserts a new node, then updates in place (no duplicate) |
+| `removeDropsNode` | `removeBackendNode` deletes a non-local node |
+| `localCannotBeRemoved` | `removeBackendNode("local")` is a no-op — `local` is protected |
+| `defaultBackendIdFallsBackToLocal` | default id is `local`; empty is coerced back to `local`; a real id sticks |
+
+### `pickBackendForSkavaDataset`
+| Test | Setup | Expected |
+|------|-------|---------|
+| `routeByExactUrl` | descriptor endpoint == registry URL | that node |
+| `routeByUrlIgnoresTrailingSlash` | endpoint has a trailing `/` | still matches (normalised) |
+| `routeByNodeCode` | endpoint differs, `node_code == srcCode` | that node |
+| `routeNoMatchReturnsEmpty` | unknown URL + code | empty node (→ local-download fallback) |
+| `routeEmptyDatalinkReturnsEmpty` | no `visivoBackends` | empty node |
+| `routeNullSettingsReturnsEmpty` | `settings == nullptr` | empty node |
+
+---
+
+## Benchmarks and validation
+
+Measurements reported in papers come from scripts in the repository, each with
+its own README:
+
+- `benchmark/`: the operation timings of the backend on one host
+  (`run_local_bench.sh`, `benchmark_visivo.py`, results in `benchmark/results_*`);
+- `benchmark/remote/`: the same operations against a memory-capped container
+  behind a shaped link (`run_remote_bench.sh`);
+- `benchmark/remote_render/`: the frame rate of the server-rendered 3-D view, as
+  a client receives it through a network (`push_stream_fps.py`) and on the node
+  with several views at once, spread over its GPUs or on one
+  (`multi_gpu_sessions.py`), with the PLEIADI-GPU results;
+- `validation/`: the scientific validation of the kinematic lasso against
+  SoFiA-2 and the scripts behind the paper's figures (`validation/README.md`,
+  `validation/INDEX.md`).
+
+## Adding new tests
+
+1. Create `TestFoo.h` with `class TestFoo : public QObject { Q_OBJECT private slots: … };`
+2. Create `test_foo.cpp` with implementations
+3. Add both files to `add_executable(VisIVOTests …)` in `tests/CMakeLists.txt`
+4. Add `{ TestFoo t; status |= QTest::qExec(&t, argc, argv); }` to `tests/main.cpp`
+
+If the new test needs additional source files from `src/`, add them to `visivo_test_support` (if they have no Qt::Widgets/VTK dependency) or create a second test support library.

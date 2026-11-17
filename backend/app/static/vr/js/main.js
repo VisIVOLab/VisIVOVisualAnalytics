@@ -1,7 +1,7 @@
 // VisIVO VR page (issue #167): a reduced cube rendered on the headset's GPU.
 // Desktop mode (no XR) for development; WebXR immersive-vr / immersive-ar on
 // the Quest. Controls: fixed hand roles, one hand menu, explicit modes
-// (issue #201). See docs/user-guide/vr/.
+// (issue #201). See docs/user/reference/vr.md.
 
 import * as M from './mat4.js';
 import { Renderer } from './renderer.js';
@@ -5032,7 +5032,7 @@ function onXRFrame(time, frame) {
   // has no alpha (it is composited over black), so over the room it would
   // either darken it where the headset draws emission the full cube has not,
   // or glow where only the full cube has emission. The headset's own
-  // rendering is shown there (docs/user-guide/vr/reference.md).
+  // rendering is shown there (docs/technical/vr/reference.md).
   // Suspended, the page's render session is closed (no render slot held) and
   // made again on resume.
   refiner.setSuspended(xr.bench ? 'during the benchmark' : xr.mode === 'immersive-ar' ? 'in passthrough' : '');

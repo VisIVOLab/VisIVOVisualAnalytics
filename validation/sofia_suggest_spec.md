@@ -27,7 +27,7 @@ WARNING: Unknown parameter: 'merge.enable'
 ERROR: Unknown parameter settings encountered. ... Terminating with error code 7.
 ```
 
-Expected: the dialog sends SoFiA-2 names, kernel LISTS (`"0, 5, 10"`), and no `merge.*`. Also: SoFiA-2's spatial kernel is a circular Gaussian (help text: "The Gaussian filter is assumed to be circular"), so separate X and Y kernel spins have no SoFiA equivalent; a single kernel value is not the same as SoFiA's default list `0, 3, 6`. The user guide (`docs/user-guide/source-finding.md`, "Running it" table: Kernel X/Y, Kernel Z, Merge sources) documents these non-existent controls. #64's UI replaces this dialog, so it should be fixed as part of #64 or before it.
+Expected: the dialog sends SoFiA-2 names, kernel LISTS (`"0, 5, 10"`), and no `merge.*`. Also: SoFiA-2's spatial kernel is a circular Gaussian (help text: "The Gaussian filter is assumed to be circular"), so separate X and Y kernel spins have no SoFiA equivalent; a single kernel value is not the same as SoFiA's default list `0, 3, 6`. The user guide (`docs/user/reference/source-finding.md`, "Running it" table: Kernel X/Y, Kernel Z, Merge sources) documents these non-existent controls. #64's UI replaces this dialog, so it should be fixed as part of #64 or before it.
 (Docker trap: the image's ENTRYPOINT is broken shell form; use `--entrypoint sofia` and `--platform linux/amd64` on Apple silicon.)
 
 ### B2. The parameter allow-list rejects parameters the suggester needs
@@ -206,7 +206,7 @@ Must not claim:
 - Any SDC2 score unless the scoring code of the challenge was used.
 - That the hand-tuned `.par` files are per-cube expert tuning: they are one generic setting applied to both cubes.
 
-Docs: rewrite the "Running it" table in `docs/user-guide/source-finding.md` (current controls do not exist in SoFiA-2, B1); add "Suggested parameters" with each rule and its reason; add the post-run reliability line (negatives count). The paper series plan keeps the A&C paper SKA-scoped: this feature fits as a short subsection or the generic paper; decision for Fabio.
+Docs: rewrite the "Running it" table in `docs/user/reference/source-finding.md` (current controls do not exist in SoFiA-2, B1); add "Suggested parameters" with each rule and its reason; add the post-run reliability line (negatives count). The paper series plan keeps the A&C paper SKA-scoped: this feature fits as a short subsection or the generic paper; decision for Fabio.
 
 ---
 

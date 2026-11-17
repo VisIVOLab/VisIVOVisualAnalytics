@@ -660,7 +660,7 @@ async def _window_room(push: _PushState, sess=None) -> None:
 
 #: The close reason when the session itself has ended (its render process
 #: exited or was killed, or it was closed): reconnecting to it is refused, the
-#: client has to create a new session (docs/backend-api/render.md).
+#: client has to create a new session (docs/technical/backend-api/render.md).
 SESSION_ENDED_REASON = "session ended"
 
 

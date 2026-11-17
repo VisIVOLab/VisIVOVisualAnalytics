@@ -9,7 +9,7 @@ Run this after an *intentional* API change (new/renamed/removed route, or a new
 It writes:
   * backend/tests/contract/openapi_routes.json  — every (METHOD PATH) route
   * backend/tests/contract/visivo_headers.json  — every declared X-* header name
-  * docs/contract/visivo_headers.json           — a discoverable mirror
+  * docs/technical/contract/visivo_headers.json           — a discoverable mirror
   * src/app/BackendHeaders.h                     — the C++ mirror of the names
 
 ``backend/tests/test_contract.py`` fails whenever the live app drifts from these,
@@ -108,7 +108,7 @@ def main() -> None:
     (BACKEND / "tests/contract/visivo_headers.json").write_text(
         json.dumps(manifest, indent=2) + "\n"
     )
-    (REPO / "docs/contract/visivo_headers.json").write_text(
+    (REPO / "docs/technical/contract/visivo_headers.json").write_text(
         json.dumps(manifest, indent=2) + "\n"
     )
     write_cpp_header(headers)

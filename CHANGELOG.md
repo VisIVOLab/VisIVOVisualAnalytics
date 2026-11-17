@@ -8,6 +8,96 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Desktop: SKAVA Discovery described as our prototype.** The Data Hub
+  card, the command palette and the *Data ▸ SKAVA Discovery* tooltip no longer
+  say that SKAVA searches across SKA Regional Centres: SKAVA is our discovery
+  prototype, not a service validated by SRCNet.
+- **Backend: cross-match on Galactic images (#379).** Cross-match with a
+  catalogue (*Tools ▸ Catalogue ▸ Cross-match with Catalogue…*, and the VR
+  cross-match layer) used an image's own coordinates as ICRS: on a Galactic
+  Hi-GAL cutout it queried the wrong part of the sky and drew no markers. The
+  image centre is now converted to ICRS for the query and each source is
+  converted back to the image's frame before it is placed (CAR, TAN, latitude
+  on either axis); the centre pixel is no longer half a pixel off.
+  (#151).** A CRTF sky region without `coord=` is now in the image's own
+  frame, as CASA reads it, instead of J2000: on a galactic image
+  `circle[[150deg, 2deg], 10arcsec]` lands at l = 150°, b = 2°. Ellipse
+  and rotated-box angles were checked against CASA's code and against
+  casatools 6.7 masks: the ellipse's first semi-axis is at position angle
+  `pa` from north through east, a rotbox turns by `pa` from north through
+  east, and VisIVO already read and wrote both that way; on north-up,
+  east-left grids the masks agree. Where they differ (a sky ellipse or a
+  pixel rotbox on a mirrored or rotated grid) is documented in
+  `docs/technical/backend-api/regions.md`, with round-trip tests.
+
+- **Desktop: WCS axis labels follow every camera change (#362).** The axis
+  labels of the 2-D views (the cube's slice and moment map, its Product panes
+  and the image viewer) were computed after each frame was drawn, so a single
+  frame (Shift+R, a fit, a zoom to a region, a restored product, a camera
+  taken from a linked view) left the old labels on screen until the next
+  interaction. A frame that moved the camera is now drawn once more when the
+  camera settles; the catalogue labels follow the same way.
+- **Docs: user and technical documentation (#359).** The documentation has
+  two parts. The user documentation (`docs/user/`) has nine use cases, step
+  by step with screenshots of the application, and a short reference page per
+  viewer and tool (`docs/user/reference/`), trimmed from the old user guide:
+  the eleven VR pages are one reference page. The technical documentation
+  (`docs/technical/`) has the architecture, backend API, contract,
+  configuration, testing, deployment (clusters, SRC nodes, headset pairing),
+  design notes, the VisIVO Server tools, and new methods pages
+  (`docs/technical/methods/`) with the implementation detail taken out of the
+  user pages. Every old page address forwards to the new one
+  (`sphinx-reredirects`, listed in `docs/conf.py`). Paths in code comments,
+  tests and scripts (`docs/technical/contract/visivo_headers.json`,
+  `docs/technical/demo-datasets.md`) follow the move.
+- **VR: take a simulation model apart (#371).** The hand menu's new
+  *Explode* page (from *Display ▸ Rendering*) pulls a simulation volume
+  apart into pieces: the overlaid fields, each in its own colours, or 2–4
+  value ranges of one field (shells and layers between its threshold and
+  colour max, equal in decades on a log scale), each in a colour of its own
+  with its own colour bar. Pieces sit in a row, a column or a ring, animate
+  between assembled and exploded, can be hidden, and a grip inside one moves
+  and turns it; *Reset* puts them back. Every piece is the same resident 3-D
+  texture (the overlay storage or the cube's) drawn again with its own
+  matrix and uniforms, so nothing is allocated in VR. The pieces are scaled
+  so that together they cover no more than the cube alone, and the animation
+  shrinks the model before parting it, so no frame of it costs more. The plane
+  split (opening the model like a book, after #369) and isosurface pieces
+  (#370) are follow-ups.
+- **VR: isosurfaces of a cube's field (#370).** The hand menu's new
+  *Surfaces* page (from *Display ▸ Rendering*) shows up to four
+  isosurfaces, each a level of the field with its own colour and opacity,
+  with the volume or on their own, cut by the crop and the clipping plane. The level is set on the
+  cube's own scale (in decades on a log-scaled density) and written in the
+  field's unit. The surfaces are extracted on the backend from the original
+  data by the new `POST /v1/isosurface/extract` task: the cube itself, or
+  the finest level of its brick pyramid within 512³ voxels, read slab by
+  slab and contoured with flying edges (in log space on a log scale), then
+  decimated to 150 000 triangles and cached per field, level, scale and
+  level of detail. The headset gets a compact mesh (16-bit positions, 8-bit
+  normals, `GET /v1/isosurface/mesh/{id}`) into buffers sized once (no
+  allocation per frame, no 3-D texture); the clipping plane (#369) cuts
+  them as it cuts the volume. Each surface exports as PLY or binary glTF, in a simulation's
+  world coordinates (`.../export`). On the 2048³ PLUTO density, three
+  surfaces from the pyramid's 512³ level take 3.0 s (2.6 MB each on the
+  wire) and come back from the cache in 10 ms.
+- **VR: a free clipping plane for simulation volumes (#369).** On a
+  simulation volume (a VBT volume or a PLUTO output) the hand menu's *Range*
+  page has a clipping plane where a cube has its velocity range, and the tool
+  palette a *Clipping plane* tool in place of *Velocity range*. Hold the
+  trigger and the plane moves with the controller and tilts with the wrist;
+  the primary stick moves it along its normal. It hides one half-space and
+  draws the section on the plane with the current colour map and threshold;
+  *Flip* keeps the other side, *Snap* turns it to the nearest box axis,
+  *Slab* keeps a slab between two parallel planes (the stick ↔ sets its
+  thickness), *Reset* puts it back through the centre. On the 2-D page a drag
+  on the plane moves it, Shift and a drag tilts it. The plane is sent to the
+  render session (`set_clip_plane`, in the cube's voxel coordinates as
+  `set_crop` and the desktop's cutting plane), which clips the volume with it
+  and draws the same section in the refined stereo frames; a frame drawn
+  without it (an older backend) is not shown. Nothing new is allocated in VR:
+  the plane is a few shader uniforms. The plane's state and GLSL are exposed
+  (`clip-plane.js`, `clip-plane-ui.js`) for other draws to be clipped by it.
 - **VR: overlay two or three variables of a simulation volume (#357).** The
   hand menu's new *Overlay* page (from *Display ▸ Rendering*) shows two or
   three variables of a VBT volume or a PLUTO output in one view, each with
@@ -501,7 +591,7 @@ are preserved here unedited; the branch names they refer to are historical.
   Backend: `POST /v1/vr/headset/spectator`, `GET|POST
   /v1/vr/headset/spectator/frame`, `POST /v1/vr/headset/spectator/snapshot`,
   and a `watch` command in the hub's queue
-  (docs/backend-api/headset-hub.md). Desktop: `src/app/VrSpectator.h`
+  (docs/technical/backend-api/headset-hub.md). Desktop: `src/app/VrSpectator.h`
   (widget-free), `VrSpectatorFeed`, `src/gui/VrSpectatorWindow`.
 - **3-D sky catalogues: the selected source follows a model change, and the
   cz < 1000 km/s flag reads the cz the file shows (#298).** Changing the
@@ -865,7 +955,7 @@ are preserved here unedited; the branch names they refer to are historical.
   and can be unticked; the choice is remembered in the app's settings. Only
   what the headset shows now is applied, once: a look from before the page
   switched to another cube is not, and the desktop sends no look back, so
-  nothing loops (src/app/VrHeadsetFollow.h, docs/user-guide/vr/desktop.md).
+  nothing loops (src/app/VrHeadsetFollow.h, docs/user/reference/vr.md).
 
 - **VR: result window title bars above their content, named after the
   window, long lines wrapped (#267, part of #253).** On the Quest 3 the
@@ -1045,7 +1135,7 @@ are preserved here unedited; the branch names they refer to are historical.
   spectrum is saved in the Workspace Exports by
   `POST /v1/products/spectrum_table` (the desktop's spectrum CSV, or a FITS
   table), next to `moment_fits` and `pv_fits`, so what the headset makes can
-  be opened on the desktop (docs/backend-api/headset-hub.md).
+  be opened on the desktop (docs/technical/backend-api/headset-hub.md).
 
 - **Desktop: Show on Headset, and the headset's activity on the desktop
   (#238, part of #234; needs the backend's headset hub, #236).** *Open in VR
@@ -1063,7 +1153,7 @@ are preserved here unedited; the branch names they refer to are historical.
   **Follow the headset's look** (off by default) applies its colour map,
   threshold and clip box to the 3-D view. One link per backend session
   follows the hub (presence every 5 s, a long poll of the activity); an older
-  backend is detected and left alone (docs/user-guide/vr/desktop.md).
+  backend is detected and left alone (docs/user/reference/vr.md).
 
 - **Desktop: Headset Activity follow-ups (#245, part of #234).** A spectrum
   the headset saved as a FITS table (`POST /v1/products/spectrum_table` with
@@ -1091,7 +1181,7 @@ are preserved here unedited; the branch names they refer to are historical.
   a context restored before the session ended is rebuilt after it. A guard on
   the WebGL context refuses any `texImage3D`/`texStorage3D` during a session
   before it reaches the GPU and logs `tex3d-in-xr`
-  (docs/user-guide/vr/troubleshooting.md, *GPU context loss at the first
+  (docs/technical/vr/troubleshooting.md, *GPU context loss at the first
   lasso on a Quest 3*; validation/vr_tex3d.mjs).
 
 - **VR: the controller models shaded correctly on the Quest 3 (part of #166
@@ -1124,7 +1214,7 @@ are preserved here unedited; the branch names they refer to are historical.
   address switches `nohover`, `nohud`, `noreadout`, `noselpanel`,
   `noseloutline` and `novolume` each leave one per-frame path out, without
   touching the selection; the diagnostics and the wrist numbers name the
-  active ones (docs/user-guide/vr/troubleshooting.md, *Diagnosing a GPU
+  active ones (docs/technical/vr/troubleshooting.md, *Diagnosing a GPU
   context loss*). The results panel kept one "changed" flag that only the
   headset's texture cleared: while the Selection window took no texture, the
   page repainted both 768×560 canvases at every hover update, about 36 times a
@@ -1404,7 +1494,7 @@ are preserved here unedited; the branch names they refer to are historical.
   tracking (palm up included), the menu, the windows and the readout;
   `validation/vr_menu.mjs` drives the menu with real mouse events in CI
   (`vr_lifecycle.mjs --regressions`, or `--menu`). The VR guide is now a
-  section, `docs/user-guide/vr/` (overview, quickstart, controls and the hand
+  section, `docs/user/reference/vr.md/` (overview, quickstart, controls and the hand
   menu, analysis, data types, cluster backends, troubleshooting, technical
   reference with every Quest 3 check list); `vr-headset.md` stays as a short
   page whose anchors lead there.
@@ -1510,7 +1600,7 @@ are preserved here unedited; the branch names they refer to are historical.
   draws a velocity field's streamlines and arrows traced by the backend with
   the desktop viewer's own filters on its display grid. New routes
   `/v1/points/info`, `/v1/points/sample_bin`, `/v1/cube/catalogue_pixels`,
-  `/v1/velocity/lines_bin` (docs/backend-api/vr-layers.md); the pairing link
+  `/v1/velocity/lines_bin` (docs/technical/backend-api/vr-layers.md); the pairing link
   gains `kind=` and `box=`, and the point and velocity windows an *Open in VR
   Headset…* entry. A catalogue opened from a VOTable, FITS or IPAC table keeps
   its columns' units (and a FITS table its `SPECSYS`); the stereo `xr_error`
@@ -1783,7 +1873,7 @@ are preserved here unedited; the branch names they refer to are historical.
   one on resume; a stale failed connection attempt no longer overwrites the
   refinement's error. Pairing, panel layout, hit-testing, pointer and settings
   are unit-tested (`backend/tests/vr/pairing.test.mjs`, `vr-panel.test.mjs`).
-  The user guide (`docs/user-guide/vr-headset.md`) starts from the desktop,
+  The user guide (`docs/user/reference/vr.md`) starts from the desktop,
   covers the panel and the settings, cluster backends through a tunnel, a
   Quest 3 checklist and the known limits.
 - **Refinement in the VR headset: full-cube frames from the Mac blended in
@@ -1823,7 +1913,7 @@ are preserved here unedited; the branch names they refer to are historical.
   M5 Max, 1024 x 1024 per eye: HCG 44 at 45 frames/s, pose to frame 29 ms
   median (59 frames/s without depth); a 2 GB Apertif cube at 24 frames/s,
   49 ms. Point tables and cubes drawn out of core are refused for now. See
-  *Stereo frames for a headset* in `docs/backend-api/render.md`.
+  *Stereo frames for a headset* in `docs/technical/backend-api/render.md`.
 - **Selections in the VR headset, analysis on the backend (#171, step 5 of
   #166).** On the `/vr/` page the right trigger (or a mouse click in a desktop
   browser) picks on the reduced cube the headset draws, with the renderer's
@@ -1954,7 +2044,7 @@ are preserved here unedited; the branch names they refer to are historical.
     delivery is at least once. Without `lease` the queue drains as before,
     for older clients.
   - New user-guide page, [Working with TOPCAT, Aladin and
-    DS9](docs/user-guide/interoperability.md). Spectra
+    DS9](docs/user/reference/interoperability.md). Spectra
     (`spectrum.load.*`) are not exchanged yet.
 - **Quitting cancels a ray-traced render (#149).** A still or movie being
   rendered by the backend (`POST /v1/tasks/volume_render`,

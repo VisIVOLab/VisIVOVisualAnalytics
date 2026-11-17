@@ -15,7 +15,7 @@ class QSettings;
 /// One entry in the desktop's known-backends registry.
 ///
 /// In the distributed-backend architecture (see
-/// docs/distributed-backend-design.md), each SKA Regional Centre or
+/// docs/technical/design/distributed-backend-design.md), each SKA Regional Centre or
 /// data centre runs a VisIVO backend co-located with its dataset
 /// filesystem. The desktop holds a list of all such backends; SKAVA's
 /// DataLink response tells it which backend serves a given dataset.
@@ -330,7 +330,7 @@ public:
 
     // ── Multi-backend registry (distributed VisIVO backend) ──────────────────
     //
-    // See docs/distributed-backend-design.md. The desktop holds a list of
+    // See docs/technical/design/distributed-backend-design.md. The desktop holds a list of
     // known VisIVO backends keyed by ``id``. The ``"local"`` entry is
     // auto-managed and always present — it backs the legacy single-backend
     // getBackendUrl() / getBackendToken() accessors. Additional entries are

@@ -536,7 +536,7 @@ void MainWindow::doOpenSkavaDataset(const QString &obsId,
                                       const SkavaDatalinkResponse &datalink,
                                       const QString &preferredNode)
 {
-    // Backend-aware routing per docs/distributed-backend-design.md §4.2: the
+    // Backend-aware routing per docs/technical/design/distributed-backend-design.md §4.2: the
     // registered backends matching SKAVA's visivo-backend descriptors, in
     // SKAVA's ranking order (the node the user asked for first), each with
     // the address of the dataset's copy on THAT node. A backend that refuses

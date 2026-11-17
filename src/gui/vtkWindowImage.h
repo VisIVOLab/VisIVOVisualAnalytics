@@ -221,7 +221,7 @@ public:
 
     // Apply the scientific copilot's visualisation directives to this image
     // viewer (colour map, camera). Display-only and reversible via Undo; cube-only
-    // directive types are ignored. See docs/copilot-backend.md.
+    // directive types are ignored. See docs/technical/design/copilot-backend.md.
     void applyCopilotActions(const QList<QJsonObject> &actions);
     void undoCopilotActions();
 

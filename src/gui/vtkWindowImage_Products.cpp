@@ -4,7 +4,7 @@
 //
 // The cube viewer has had this since Design 1d (see vtkWindowCube's
 // registerAnalysisProduct and the "What a tool must leave behind" section of
-// docs/architecture-note.md). This window had the same dock and the same owner
+// docs/technical/architecture-note.md). This window had the same dock and the same owner
 // scope, and registered nothing at all, so its tools behaved like the cube's
 // tools did before that work: the result lived in a floating window, and closing
 // it was the end of it.

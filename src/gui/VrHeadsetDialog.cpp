@@ -62,7 +62,7 @@ constexpr int kBackendCheckTimeoutMs = 8000;
 // the dialog opened (paired by code, or opened over USB) shows up within this.
 constexpr int kHubPollIntervalMs = 3000;
 
-const QString kGuideBase = u"https://visivo.readthedocs.io/en/latest/user-guide/vr-headset.html"_s;
+const QString kGuideBase = u"https://visivo.readthedocs.io/en/latest/user/reference/vr.html"_s;
 const QString kGuideUrl = kGuideBase + u"#open-a-cube-from-the-desktop"_s;
 // The headset used last time, selected first when it is there again.
 const QString kLastSerialKey = u"vrHeadset/lastSerial"_s;

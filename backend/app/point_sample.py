@@ -475,7 +475,7 @@ def size_codes(values: np.ndarray) -> tuple[np.ndarray, tuple[float, float]]:
 
 
 def headers(s: PointSample) -> dict[str, str]:
-    """The sample's ``X-Visivo-*`` headers (docs/backend-api/vr-layers.md)."""
+    """The sample's ``X-Visivo-*`` headers (docs/technical/backend-api/vr-layers.md)."""
     h = {
         "X-Visivo-Count": str(len(s.positions)),
         "X-Visivo-Total-Rows": str(s.total_rows),

@@ -7,7 +7,7 @@ reviewer can exercise the app end-to-end without hunting for real data. Run:
     backend/.venv/bin/python backend/scripts/generate_demo_data.py [OUTPUT_DIR]
 
 Default OUTPUT_DIR is ~/VisIVO_demo_data (the desktop file browser starts at the
-home directory, so it's immediately reachable). See docs/demo-datasets.md for the
+home directory, so it's immediately reachable). See docs/technical/demo-datasets.md for the
 feature → dataset → test-steps matrix.
 
 The output is fully reproducible from this script (fixed RNG seed), so the script
@@ -343,7 +343,7 @@ def make_stokes_cubes(out: Path) -> list[Path]:
 
     The rotation measure varies across the field (a left-to-right gradient plus
     two blobs) so the recovered Faraday-depth map has structure to check rather
-    than one flat value. See docs/user-guide/polarimetry.md.
+    than one flat value. See docs/user/reference/polarimetry.md.
     """
     nx = ny = 256
     n_term, n_spec = 2, 14

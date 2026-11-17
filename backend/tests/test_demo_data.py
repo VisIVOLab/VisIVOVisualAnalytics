@@ -1,7 +1,7 @@
 """Regression tests for the demo-data generator (backend/scripts/generate_demo_data.py).
 
 Locks in the "one dataset per viewer feature" harness documented in
-docs/demo-datasets.md: every file must be produced and load through the same
+docs/technical/demo-datasets.md: every file must be produced and load through the same
 backend paths the desktop uses, and the HI cube must match the kinematic model
 at the parameters the doc tells reviewers to enter.
 """
@@ -107,7 +107,7 @@ def test_hi_cube_wcs_and_shape(demo_dir: Path):
 
 def test_hi_cube_matches_kinematic_model(demo_dir: Path):
     """The demo cube's velocity field must match tilted_ring_model at the params
-    docs/demo-datasets.md tells the reviewer to enter, so the overlay lines up."""
+    docs/technical/demo-datasets.md tells the reviewer to enter, so the overlay lines up."""
     from app.kinematic_model import tilted_ring_model
 
     with fits.open(demo_dir / "hi_cube.fits") as hdul:

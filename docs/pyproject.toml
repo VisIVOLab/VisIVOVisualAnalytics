@@ -10,4 +10,5 @@ dependencies = [
     "linkify-it-py>=2.0",
     "sphinx-copybutton>=0.5.2",
     "sphinx-design>=0.6.1",
+    "sphinx-reredirects>=0.1.5",
 ]

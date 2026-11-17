@@ -1,6 +1,6 @@
 // test_remote_render_queue.cpp
 // See TestRemoteRenderQueue.h. The answers are those of
-// docs/backend-api/render.md ("The queue").
+// docs/technical/backend-api/render.md ("The queue").
 
 #include "TestRemoteRenderQueue.h"
 

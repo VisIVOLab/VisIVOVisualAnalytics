@@ -110,7 +110,7 @@ decorative, and both are already true of the code:
   product survives the session — put it inside the service box, not between the
   two.
 
-`docs/architecture-note.md` and `apptainer/backend.def` have the deployment
+`docs/technical/architecture-note.md` and `apptainer/backend.def` have the deployment
 details if you want the box labels to match reality.
 
 ## Fig. 1 — the storyboard (`fig:workflow`) — **a GUI session**

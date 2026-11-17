@@ -1,5 +1,5 @@
 """Isosurfaces of a cube's field for the headset and for export (issue #370;
-the extraction is app/isosurface.py, the API docs/backend-api/isosurface.md).
+the extraction is app/isosurface.py, the API docs/technical/backend-api/isosurface.md).
 
 ``POST /v1/isosurface/extract`` starts a task (``/v1/tasks/{id}`` gives its
 progress and, once completed, the surfaces' descriptions, each with a

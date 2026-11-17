@@ -43,7 +43,7 @@ FLOAT16_BLANK = -1.0
 
 #: Reduced voxels per side the automatic factor aims at. 256 voxels per side in
 #: 8 bits is 16 MiB of 3-D texture, which the Quest 3 ray-marches at its refresh
-#: rate with a few hundred samples per ray (see docs/user-guide/vr-headset.md).
+#: rate with a few hundred samples per ray (see docs/user/reference/vr.md).
 DEFAULT_MAX_DIM = 256
 
 

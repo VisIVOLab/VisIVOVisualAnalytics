@@ -3,7 +3,7 @@
 // node runs the tests (backend/tests/vr/refine.test.mjs).
 //
 // - parseVXR1 / inflate / decodeDepth: the stereo frame of the render session
-//   (docs/backend-api/render.md, "Stereo frames for a headset").
+//   (docs/technical/backend-api/render.md, "Stereo frames for a headset").
 // - poseDelta / MotionDetector: how fast the eye moves relative to the cube,
 //   and when the view counts as moving, slow or still.
 // - PoseBook: the poses sent, until a frame answers them (or a newer one does:

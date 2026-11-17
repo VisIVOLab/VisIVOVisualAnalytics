@@ -1,0 +1,1005 @@
+# Cube
+
+Slices, previews, sub-volumes, PV diagrams and noise of spectral cubes, and the
+binary routes behind the Kinematic Lasso and kinematic modelling. All routes
+need the token and the session that opened the dataset.
+
+## `POST /v1/cube/preview`
+Downsampled cube for fast initial display.
+```json
+{ "dataset_id": "...", "downsample": 4, "source": "auto" }
+```
+The preview has `ceil(n / downsample)` voxels along each axis. With `source`
+`auto` (the default) and `downsample` above 1, a cube whose
+[brick pyramid](../design/brick-pyramid.md#the-desktop-preview-from-the-pyramid) is
+already complete and current is previewed from it: each voxel is the mean of
+its `downsample`-sized cell over the finite voxels, read from one pyramid level
+without reading the cube's file. Otherwise, or with `source: "strided"`, each
+voxel is every `downsample`-th voxel of the cube (`data[::s, ::s, ::s]`), as
+before. Opening or previewing a cube never starts a pyramid build.
+Returns `valid`, `error`, `scalar_type`, `width`, `height`, `depth`, `range_min`, `range_max`, `compression` (`qt-zlib`) + `data_base64` (float32, zlib-compressed in Qt's `qCompress` framing, then base64), and `default_threshold`: the cube's default 3-D threshold, from its noise ([The default threshold](../../user/reference/cube-viewer.md#the-default-threshold)), computed on the preview (a stride sample, so its noise is the cube's) for the number of voxels of the whole cube, or from a sample of level-0 bricks for a preview from the pyramid (block means have less noise than the cube); `null` when the preview has no finite value. The desktop starts its local view from it, and a remote view of the same cube starts from the same rule.
+
+Which preview it is: `source` (`strided` or `pyramid`), `factors` (`[s, s, s]`, x y z), and for `pyramid` the `level` read, the pyramid's `levels` and `level_factors` (cube voxels per level voxel, x y z; the level is the coarsest whose factor is at most `downsample`, and a stride that is not a power of two weights each level voxel by the cube voxels it shares with the cell). `voxel_offset` places the grid: preview voxel `i` stands for cube voxel `i * s + voxel_offset`, `0` for `strided` and `(s - 1) / 2`, the centre of a whole cell, for `pyramid`.
+
+## `POST /v1/cube/slice`
+Single 2-D slice.
+```json
+{ "dataset_id": "...", "axis": "z", "index": 42 }
+```
+Only `axis: "z"` is supported (422 otherwise); an `index` outside the cube is
+`valid: false`. Returns `valid`, `error`, `width`, `height`, `scalar_type`,
+`range_min`, `range_max`, `compression` (`qt-zlib`) and `data_base64`, as for
+the preview. The slice takes no per-session compute slot.
+
+## `POST /v1/cube/subvolume`
+Spatial + spectral sub-region.
+```json
+{ "dataset_id": "...", "x0": 0, "x1": 255, "y0": 0, "y1": 255, "z0": 10, "z1": 50 }
+```
+All six bounds are required (0-indexed, inclusive, clamped to the cube; a box
+empty after clamping is `valid: false`, `Invalid subvolume ROI.`). Returns
+`valid`, `error`, `width`, `height`, `depth`, `scalar_type`, `range_min`,
+`range_max`, `spectral_axis_type`, `spectral_axis_unit`, `bunit`,
+`compression` (empty: not compressed) and `data_base64` (raw float32). For
+large boxes use `/v1/cube/subvolume_bin`.
+
+## `POST /v1/cube/pv`
+Position-velocity diagram along a polyline.
+```json
+{
+  "dataset_id": "...",
+  "vertices": [[12.5, 40.0], [80.25, 41.0], [130.0, 90.0]],
+  "width_pixels": 3
+}
+```
+- `vertices` — 0-based cube pixels `(x, y)`; fractional values are honoured
+  (rounded to 1/1000 pixel, the same values key the product cache and feed the
+  computation). At least two distinct vertices.
+- `width_pixels` — samples across the path, one pixel apart, averaged.
+
+Sampling: one sample per step along the path's arc length, in **angular** space
+(the full pixel→sky matrix, so non-square and skewed pixels are handled; one
+step = the finer pixel); NaN-aware bilinear interpolation. The cube must have
+its spectral axis last (else 422 / `valid: false`).
+
+Response: `valid`, `error`, `num_samples`, `depth`, `scalar_type`, `compression`,
+`positions_base64` (offsets in steps), `positions_arcsec_base64`,
+`pixel_scale_arcsec_per_pixel` (= arcsec per step), `spatial_unit`,
+`data_base64` (`depth × num_samples` float32, channel-major), `width_pixels`,
+`vertex_count`, `total_length` (pixels), `valid_samples`, `step_pixels`,
+`spectral_axis_type`, `spectral_axis_unit`,
+`spectral_coordinates_base64` (float64 little-endian, **channel 0 first**, may
+decrease), `spectral_crval`, `spectral_cdelt`, `sky_matrix_arcsec`
+(row-major 2×2, pixel offset → projection-plane arcsec), `bunit`,
+`beam_major`, `beam_minor`, `beam_pa`, `computed_on`. A non-cube dataset is
+422; a compute failure is `valid: false`.
+
+## `POST /v1/cube/noise`
+Noise statistics (MAD and sigma) over a spatial region and channel range.
+```json
+{ "dataset_id": "...", "x0": 0, "x1": 127, "y0": 0, "y1": 127, "channel_start": 0, "channel_end": 63 }
+```
+`x0`, `x1`, `y0`, `y1` are required; the channels default to 0, 0. Returns
+`valid`, `error`, `channel_start`, `channel_end`, `num_channels`, `mad[]`,
+`sigma[]`, `region`, and `blank_fraction` (fraction of the finite pixels in the
+region that are exactly 0; a high value means the region overlaps blanked
+area and the estimate may be unreliable). An empty region is `valid: false`.
+
+## Binary and mask routes
+
+The `*_bin` routes below return binary bodies in one of two layouts.
+
+**Header-described volumes** (`/v1/cube/subvolume_bin`, `kinematic_model_bin`,
+`kinematic_levels_bin`, `kinematic_select_bin`). The response has
+`Content-Type: application/octet-stream` and the body is the bare array with no
+in-band header: little-endian samples in C order over `(depth, height, width)`,
+so x varies fastest (the point order of a `vtkImageData`). Shape and metadata
+travel in `X-Visivo-*` response headers: `X-Visivo-Width`, `X-Visivo-Height`,
+`X-Visivo-Depth`, `X-Visivo-Scalar-Type` (`float32` or `uint8`) and, for the
+float32 routes, `X-Visivo-Byte-Order: little`. Floating-point header values are
+written with Python `repr`, so they round-trip exactly. Errors raised inside the
+computation come back as `text/plain` bodies carrying the message (not the JSON
+`detail` envelope); errors raised before it (unknown dataset, wrong dataset
+kind, request validation) use the usual FastAPI JSON `detail`.
+
+**12-byte frames** (`/v1/moment/result/binary`, `/v1/pv/result/binary`). The
+body is a 12-byte big-endian header of three `uint32` values, `rows`, `cols`
+and `flags` (always 0), followed by `rows × cols` little-endian `float32`
+values in row-major order, with NaN for masked or invalid pixels. This is the
+layout `BackendClient::parseBinaryFrame()` reads.
+
+Request bodies that carry a mask (`mask_apply_bin`, `kinematic_fit_bin`,
+`kinematic_residual_bin`) use the same wire as the `kinematic_select_bin`
+response: a raw little-endian `float32` array of `width × height × depth`
+values (x fastest, a voxel is selected when its value is above 0.5), with its
+origin and dimensions in query parameters. The server reads the raw body and
+checks only its length (`width × height × depth × 4` bytes, else 422); it does
+not inspect the `Content-Type`.
+
+Common errors: 404 when `dataset_id` is not open in the session, 422 when the
+dataset is not a spectral cube. Routes that take a per-session compute slot
+answer 429 when all slots stay busy (`VISIVO_MAX_CONCURRENT_TASKS`, default 3,
+waited for up to `VISIVO_TASK_SLOT_WAIT_S`, default 15 s); routes on the heavy
+pool answer 504 when the computation exceeds `VISIVO_HEAVY_TIMEOUT_S` (default
+900 s). For a moment or PV on a large cube, use the task routes
+(`/v1/tasks/moment`, `/v1/tasks/pv`), which have no such limit. Each entry says
+which of these apply.
+
+### `POST /v1/cube/subvolume_bin`
+
+Binary variant of `/v1/cube/subvolume`: reads the voxel box
+`[z0..z1, y0..y1, x0..x1]` (0-indexed, inclusive) and streams it as raw
+`float32` with no base64 and no compression. The bounds are clamped to the
+cube.
+
+Request (`CubeSubvolumeRequest`):
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "x0": 0, "x1": 255, "y0": 0, "y1": 255, "z0": 100, "z1": 163 }
+```
+
+Response: the box as little-endian `float32`. Headers: `X-Visivo-Width`,
+`X-Visivo-Height`, `X-Visivo-Depth` (of the clamped box),
+`X-Visivo-Scalar-Type: float32`, `X-Visivo-Range-Min` and `X-Visivo-Range-Max`
+(finite range of the box), `X-Visivo-Spectral-Axis-Type`,
+`X-Visivo-Spectral-Axis-Unit` (empty when the spectral WCS cannot be read),
+`X-Visivo-Bunit`, `X-Visivo-Byte-Order: little`.
+
+This route does not take a per-session compute slot, so a client can issue
+several slab requests in parallel without hitting 429.
+
+Errors: 404, 422 (not a cube, or a box that is empty after clamping:
+`Invalid subvolume ROI.` as `text/plain`), 500 (`text/plain`) for other
+failures.
+
+### `POST /v1/cube/region_level_bin`
+
+One box of one level of detail of the cube, for the desktop's progressive
+view of a large cube (issue #321): the coarse preview everywhere, finer blocks
+where the camera looks. Level 0 is the cube itself, and level `l` is the cube
+halved `l` times along every axis (rounded up), like the levels of its
+[brick pyramid](../design/brick-pyramid.md#levels-of-detail-for-the-desktop).
+
+Request (`CubeRegionLevelRequest`):
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "level": 2, "x0": 128, "x1": 255, "y0": 0, "y1": 127,
+  "z0": 64, "z1": 191, "ghost": 1, "source": "auto" }
+```
+
+- `level` is at least 0. The box is inclusive and given in voxels **of the
+  level**. It must lie inside the level, since it is not clamped.
+- `ghost` (0 or 1) adds that many samples of the neighbours on every side.
+  Where the ghost falls outside the cube, the edge sample is repeated.
+- `source` says where a level of 1 or more comes from:
+  - `auto` (the default): the cube's brick pyramid when one is complete and
+    current, otherwise a strided read. It never starts a build.
+  - `pyramid`: the pyramid only.
+  - `strided`: every `2^l`-th voxel of the cube, even when a pyramid exists.
+
+  Level 0 is always read from the cube's file, as `subvolume_bin` reads it. It
+  needs no pyramid and works for FITS cubes, VBT volume fields and PLUTO
+  variables alike.
+
+Response: the box with its ghosts as little-endian `float32` (z, y, x), with
+blank voxels as NaN. Headers:
+
+- `X-Visivo-Width`, `X-Visivo-Height` and `X-Visivo-Depth`: the box plus
+  `2 * ghost`.
+- `X-Visivo-Scalar-Type: float32` and `X-Visivo-Byte-Order: little`.
+- `X-Visivo-Range-Min` and `X-Visivo-Range-Max`: the finite range of the
+  samples sent.
+- `X-Visivo-Level`: the level of the box.
+- `X-Visivo-Source`: `cube` (level 0), `pyramid` or `strided`.
+- `X-Visivo-Level-Origin`: `x,y,z`, the level index of sample 0 with the ghost
+  included. It is `-1` at the cube's low border, where that sample repeats the
+  edge.
+- `X-Visivo-Voxel-Offset`: the distance, in cube voxels, from the first cube
+  voxel of a level voxel to the point the voxel stands for. Level voxel `i`
+  stands for cube voxel `i * 2^l + offset`.
+  - `pyramid`: `(2^l - 1) / 2`, the centre of the block it averages. The last
+    block of an odd-length axis is partial, so its centre is nearer.
+  - `cube` and `strided`: `0`.
+
+A strided level is a sample, not a block mean, so thin or noisy structure
+aliases. That is why the pyramid is preferred whenever it exists. The levels
+offered are those of the ready pyramid, or else those a default build would
+have (see `pyramid_status`).
+
+Like `subvolume_bin`, this route takes no per-session compute slot, so a client
+can request several blocks at once.
+
+Errors:
+
+- 409 (`text/plain`): `source: "pyramid"` was asked and the cube has no
+  complete and current pyramid.
+- 413 (`text/plain`): the box with its ghosts is larger than
+  `VISIVO_REGION_LEVEL_MAX_BYTES` (512 MiB by default).
+- 422 (`text/plain`): the level is not one of the cube's, the box is not
+  inside the level, or the cube dataset does not reduce to three axes.
+- 422 (JSON, the usual validation answer): the dataset is not a cube dataset,
+  or `level` or `ghost` is out of range.
+- 500 (`text/plain`): any other failure.
+
+### `POST /v1/cube/pyramid_status`
+
+The state of the cube's brick pyramid and the shapes of its levels, so the
+desktop can choose which levels to ask `region_level_bin` for. Request:
+`{"dataset_id": "...", "build": false}`. A build starts only with
+`build: true`, and only if the pyramid is missing, stale, or failed more than
+a minute ago.
+
+Response (`PyramidStatusResponse`):
+
+- `state`, one of:
+  - `ready`;
+  - `building`, with `progress` from 0 to 1 (the build may be on this backend
+    or on another one sharing the pyramid directory);
+  - `missing`;
+  - `failed`, with `error`;
+  - `unsupported`: no pyramid can hold this cube, because its last three axes
+    are not the cube the desktop reads (for example, an axis of one plane
+    among them).
+- `levels`, `brick` and `shapes`: the pyramid's own when it is ready,
+  otherwise those a default build would have. These are also the levels a
+  strided read offers. `shapes` lists `[z, y, x]` per level, level 0 first.
+- `bytes_estimate`: the pyramid file's size when it is ready, otherwise about
+  what a build writes (float32 levels plus brick statistics).
+- `preparing`: `true` while `building`.
+
+While a build is running, the answer is HTTP 202 with the same body, following
+the convention of the other routes that wait for a pyramid. Every other state
+returns 200.
+
+### `POST /v1/cube/reduced_info` and `POST /v1/cube/reduced_bin`
+
+The reduced cube the [VR page](../../user/reference/vr.md) renders on the
+headset ([#167](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/167)):
+the cube binned by an integer factor on each axis and sent as an 8- or 16-bit
+3-D texture. The rules are in `backend/app/cube_reduce.py`; the analysis routes
+keep working on the full cube.
+
+Request (`CubeReducedRequest`, shared by both routes):
+
+| Field | Default | Limits | Meaning |
+|---|---|---|---|
+| `dataset_id` | | | an open cube |
+| `factor_xy` | 0 | 0 or more | binning of both spatial axes (one factor, so a reduced pixel stays square); 0 picks the smallest factor that brings both to at most `max_dim` |
+| `factor_z` | 0 | 0 or more | binning of the spectral axis; 0 picks it the same way |
+| `max_dim` | 256 | 16 to 2048 | reduced voxels per side the automatic factors aim at |
+| `mode` | `mean` | `mean`, `max` | `mean`: the mean of each block over its finite voxels (the brick pyramid's rule); `max`: the largest finite value. A block with no finite voxel is blank. A partial block at the end of an axis is reduced over the voxels it holds |
+| `encoding` | `uint8` | `uint8`, `float16` | see below (`reduced_bin` only) |
+| `scale` | `auto` | `auto`, `log`, `linear` | the value scale the voxels are quantised on (`reduced_bin` only, [#317](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/317)): `linear`, the values; `log`, their base-10 logarithm (a value at or below zero is blank); `auto`, `log` only for a simulation volume (see below) whose finite reduced values are all positive and span more than three decades (a density), else `linear`: every other cube (radio, masked or moment-derived ones included, even all positive) stays linear under `auto`, exactly as before. `log` asked for applies to any cube. The reduction (block means or maxima) is on the values either way |
+| `source` | `auto` | `auto`, `pyramid`, `cube` | where the reduced cube is read from: `cube`, a pass over the whole cube; `pyramid`, a level of the cube's brick pyramid ([Brick pyramid](../design/brick-pyramid.md)), built first when missing, `mean` only; `auto`, the pyramid for a cube larger than `VISIVO_VR_PYRAMID_BYTES` (default: the render sessions' in-core limit, `VISIVO_RENDER_OUT_OF_CORE_BYTES`, 6 GiB as 32-bit floats) binned by the mean, else the cube |
+
+**From the brick pyramid.** Level K of the pyramid is the cube halved K times
+on every axis (rounded up), so its voxel i covers the pixels
+[i·2^K, (i+1)·2^K) of an axis, clipped to the cube: the block of a factor 2^K.
+The level is binned further by integer factors (a, a, b), giving the factors
+(2^K·a, 2^K·a, 2^K·b), and each reduced voxel covers exactly the block of
+those factors, the geometry of the whole-cube reduction (what the VR page's
+selections are mapped with). Its value is the full cube's block mean: the
+level's voxels are weighted by the pixels under them, and every finite level
+voxel with a blank one among its 26 neighbours is recomputed from level 0
+(exact sum and count). The repair is all or none: the level-0 voxels it
+reads are counted from the border voxels' coordinates (one box per brick)
+before any read, and when they exceed `VISIVO_VR_PYRAMID_REPAIR_BYTES`
+(1 GiB), or there are more than 2 Mi border voxels, none is repaired. Left
+as the level has them: blank pixels with no blank level voxel
+beside them, and the equal weights of a partial last level voxel's
+sub-blocks. `reduced_bin`'s header `X-Visivo-Border-Voxels` gives `border,repaired`
+(level voxels next to blanks, and how many were recomputed: all or 0).
+
+The level:
+
+- the coarsest one whose 2^K divides both factors (automatic or given), when
+  it holds at most `VISIVO_VR_PYRAMID_READ_BYTES` (1 GiB of 32-bit floats);
+- else, for given factors, the coarsest level within that size that divides
+  them; when none does, **422** naming the nearest factors that would fit.
+  An automatic factor beside a given one keeps the 2-times cap below, from a
+  finer level that still divides the given one (up to the 16 GiB bound);
+- else, for automatic factors, the coarser of the finest level within that
+  size and the coarsest one not coarser than the smaller factor, the factors
+  rounded up to multiples of 2^K, but by at most 2 times on any axis: past
+  that, the finest level that keeps them within it, if it holds at most
+  `VISIVO_VR_PYRAMID_MAX_READ_BYTES` (16 GiB). Only beyond that is an axis
+  inflated more (up to 2^K times: `pyramid.asked_factors` against `factors`
+  shows it).
+
+On a 2400 × 2400 × 520 cube (11.2 GiB) the automatic factors for 256 per side
+are 12 × 12 × 4, read from level 2 (600 × 600 × 130) binned 3 × 3 × 1. Max
+binning, and a cube whose pyramid would not hold its spectral cube (axes
+beyond the third not one plane), need `cube`. With `auto`, a pyramid that
+cannot be built (a directory that cannot be written, a build that failed)
+falls back to the whole cube and `reduced_info` says why in `source_note`;
+with `pyramid` it is an error (500) saying to use `cube`.
+
+Every read is bounded, whatever the factors: the cube (or the level) is read
+in pieces of at most 256 MiB (128 MiB from the pyramid), a block larger than a
+piece being read in parts and accumulated.
+
+While the pyramid is built, both routes answer **202** with
+`{"valid": false, "preparing": true, "progress": 0..1, "error": "..."}`; ask
+again (the VR page asks every second and shows the progress). Every request
+for the same cube shares one build, the one a render session would use
+(`backend/app/pyramid_builds.py`).
+
+A reduced cube larger than 2048 voxels on a side, 64 Mi voxels in all, or
+64 MiB of texture in the requested encoding (so 32 Mi voxels in `float16`) is
+refused with 422 before the cube is read.
+
+**Simulation volumes** ([#317](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/317)).
+A cube whose three axes are neither spectral (no FREQ, VRAD, VELO, ... CTYPE)
+nor on the sky (no RA, DEC, GLON, ... CTYPE, no celestial WCS) is a
+simulation volume: a VBT volume's field (CTYPE X, Y, Z), a PLUTO variable, a
+FITS cube with linear or no CTYPEs. `reduced_info` says `simulation: true`,
+gives its three `axes` from the header's linear axis (`method: "linear"`,
+each with `spacing`, the CDELT), no velocities, and `noise_sigma`, `beam`,
+`rest_frequency_hz` and `pixel_scale_arcsec` `null`: a simulation has no
+noise, beam or rest line. Its default threshold (`default_threshold`, and
+`reduced_bin`'s `X-Visivo-Threshold`) is the 99th percentile of the values
+(of the stride sample, of the level-0 brick sample, or of the reduced cube for
+`mean`), the desktop's own default for data that is not noise about a median,
+instead of the noise rule, which a field symmetric about zero (a velocity
+component) would pass. `default_threshold_method` says which rule was used.
+
+**`reduced_info`** answers JSON, without reducing the cube: `full_shape` and
+`reduced_shape` (`[width, height, depth]`), `factors` (`[fx, fy, fz]`),
+`file_revision` (an opaque version of the file's stat identity, including the
+header and byte order for a VBT volume; not a content checksum),
+`default_threshold` (the full cube's default 3-D threshold, the rule of
+[the desktop's view](../../user/reference/cube-viewer.md#the-default-threshold), from a
+stride sample; from the pyramid, from a sample of full-resolution bricks, as
+the out-of-core render session takes it; `null` when the cube has no finite
+value), `noise_sigma` (the full cube's noise σ in `bunit`, the headset's
+threshold in multiples of σ, issue #258: the desktop's *Estimate Noise* rule
+over its default region, the whole field and every channel, that is the median
+over channels of 1.4826 × the median absolute deviation about each channel's
+median, exact zeros left out of a channel where they are more than half of it;
+measured on the same stride sample as the threshold, so equal to
+`/v1/cube/noise` over the whole cube when the cube is small enough to be read
+whole; from the pyramid, 1.4826 × MAD of the level-0 brick sample about one
+median over all channels together, which equals the desktop's per-channel rule
+only for a flat baseline and is larger where channel medians vary, continuum
+left in or a baseline ripple; `null` when it cannot be measured, for example on
+constant data),
+`noise_sigma_method` (how, in words; empty with no σ), `default_threshold_method`
+(the threshold's rule in words: the noise rule, or for a simulation volume
+the 99th percentile), `simulation` (see above), `spacing` (`[x, y, z]`, the
+header's step per full-resolution voxel along each axis in its unit, signed,
+the CD matrix included; `null` for an axis without one), `object` (the
+header's OBJECT: a VBT volume's field name), `rest_frequency_hz`
+(RESTFRQ or RESTFREQ, `null` without one), `rest_line` (`"HI"` within 1 MHz of
+the HI line, else empty), `beam` (`null`, or `major_arcsec`, `minor_arcsec`,
+`pa_deg` from BMAJ/BMIN/BPA; with a BEAMS table and no header beam, the central
+channel's, `per_channel: true`), `bunit`,
+`pixel_scale_arcsec`, `render_out_of_core` (`true` when a render session draws
+this cube out of core from its brick pyramid, above
+`VISIVO_RENDER_OUT_OF_CORE_BYTES` as 32-bit floats; its stereo frames then
+come from one pyramid level, see
+[Stereo frames for a headset](render.md#stereo-frames-for-a-headset)), `source`
+(`cube` or `pyramid`), `pyramid` (`null`, or `level`, `levels`, `level_shape`
+`[width, height, depth]`, `extra_factors`, `asked_factors`, `brick`, `reduction`), `modes`
+(`["mean"]` from the pyramid), `source_note` (why the whole cube was read
+instead of the pyramid with `auto`, else empty), `fields` and `field_name` (a
+field reference's source, a VBT volume or a PLUTO output: every field
+`[{name, path}]` with the reference opening it, as `/v1/datasets/open` lists
+them, and the name of the one this dataset is; `[]` and `""` for any other
+cube; the headset's variable picker, #317), and `axes`: for `x`, `y` and `z`, `name` (the CTYPE
+before its first `-`), `ctype`, `unit` and `world`, the world coordinate of
+each reduced voxel's centre (`null` where undefined). `x` and `y` are read with
+the file's full WCS along the central row (for `x`) and column (for `y`) of the
+field, `method: "wcs"`, or from the header's linear axis when the WCS cannot
+be evaluated, `method: "linear"`; the spatial labels of a projected field are
+therefore exact on those lines, not the linear approximation of the desktop's
+cursor readout. `z` adds `velocity_kms` (velocity per reduced channel, or
+`null` when the axis cannot be expressed so), `velocity_convention` (a velocity
+axis keeps its own convention; a frequency axis with `RESTFRQ` becomes optical
+velocity, cz = c (ν₀/ν − 1), as in the kinematic fit), `channel_width_kms` and
+`specsys`. Channel 0 comes first: a frequency-ordered cube has a decreasing
+velocity axis. For the full-resolution channels it adds `full_velocity_kms` (the velocity
+of every channel of the cube, `null` when there is none) and
+`full_channel_width_kms` (each channel's own width from its half-channel
+edges, the widths the kinematic fit and `mask_stats_bin` integrate with), so
+the page can label a picked channel, a spectrum or a selection's channel range
+without another call ([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171)).
+
+**`reduced_bin`** answers the reduced cube as raw voxels in the volume layout
+above (x fastest), with headers `X-Visivo-Width`, `X-Visivo-Height`,
+`X-Visivo-Depth`, `X-Visivo-Scalar-Type` (`uint8` or `float16`),
+`X-Visivo-Byte-Order: little`, `X-Visivo-Range-Min` and `X-Visivo-Range-Max`
+(the finite range of the reduced cube, which the encoding spans; on a log
+scale the range of its positive values), `X-Visivo-Scale` (`linear` or `log`,
+what `scale` resolved to), `X-Visivo-Log-Range` (`min,max`: on a log scale
+the base-10 logarithms the codes span, empty on a linear one),
+`X-Visivo-Nonpositive-Voxels` (on a log scale the finite reduced voxels at or
+below zero, sent as blank; 0 on a linear one),
+`X-Visivo-Full-Shape` (`width,height,depth` of the cube),
+`X-Visivo-Bin-Factors` (`fx,fy,fz`), `X-Visivo-Bin-Mode`,
+`X-Visivo-Threshold` (the default threshold for this binning: for `mean`, the
+default-threshold rule applied to the reduced cube itself, whose noise is
+lower; for `max`, the full cube's default threshold, since a block maximum is
+above it exactly when one of its voxels is; empty when there is no finite
+value), `X-Visivo-Bunit`, `X-Visivo-Source` (`cube` or `pyramid`) and
+`X-Visivo-Pyramid-Level` (empty from the cube) and `X-Visivo-File-Revision` (the revision of the file read, as `reduced_info`'s `file_revision`: the VR page refuses a cube of another revision). An identical request in flight is joined only for the same file revision.
+
+- `uint8`: code 0 is blank; codes 1 to 255 map the range linearly,
+  value = min + (code − 1) / 254 · (max − min). With a large dynamic range the
+  steps near the noise are coarse (one peak at 1000 σ: about 1.3 σ per code);
+  `float16` is the remedy.
+- `float16`: value = min + stored · (max − min); a blank voxel is stored as −1.
+- On a log scale (`X-Visivo-Scale: log`) min and max above are the two
+  numbers of `X-Visivo-Log-Range`, and the value is 10 to the power of what
+  the code gives: value = 10^(lmin + (code − 1) / 254 · (lmax − lmin)). Every
+  decade gets the same number of codes: a density from 1.8e-12 to 2.1e-5
+  (seven decades) has about 36 codes a decade in `uint8` (0.028 dex a code,
+  values within 3.2 %), where a linear scale puts everything below about
+  4e-8 in code 1.
+
+From the cube, the route reads the whole cube; from the pyramid, one level
+and the level-0 boxes of the border voxels; in bounded pieces either way. It
+runs as a heavy task (a reduction takes seconds) and takes a compute slot (429
+when all stay busy). The VR page gives it 30 minutes, shows the seconds
+elapsed meanwhile, and sends it once more after a network error (no answer at
+all) only when that error came within 2 s of sending, i.e. before the request
+went out (`reduced_info` is sent again after any network error). An identical
+request (same session, cube and fields) arriving while one is being computed
+waits for that one's result instead of computing it again. Errors: 404, 422 (not a cube,
+an invalid field, a reduced cube too large; computation errors as
+`text/plain`), 500 (`text/plain`).
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "factor_xy": 3, "factor_z": 1, "mode": "mean", "encoding": "uint8" }
+```
+
+On HCG 44 (700 × 700 × 158) the automatic factors are 3 × 3 × 1, giving
+234 × 234 × 158 voxels, 8.7 MB in 8 bits; the reduction takes 0.6 s on an
+M-series Mac.
+
+### `POST /v1/cube/reduced_fields_bin`
+
+Two or three fields of one simulation volume reduced on **one grid**, for the
+VR page's overlay ([#357](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/357)):
+a VBT volume's fields or a PLUTO output's variables, drawn together from one
+multi-channel 3-D texture. The dataset is any field of the source (as the
+variable picker opens them); the fields are named as `reduced_info`'s
+`fields[].name`.
+
+Request: every `reduced_info`/`reduced_bin` field above (`dataset_id`,
+`factor_xy`, `factor_z`, `max_dim`, `mode`, `encoding`, `source`, `scale`),
+plus:
+
+| Field | Default | Values | Meaning |
+|---|---|---|---|
+| `fields` | (required) | 2 or 3 names | the fields, in channel order; each must be listed beside the dataset, none twice |
+| `scales` | `[]` | `auto`, `log`, `linear` per field | each field's value scale; empty: `scale` for every field |
+| `channels` | `0` | 0 to 4 | channels per voxel in the answer; 0 is one per field, more pads every voxel with zero codes (two fields uploaded into a three-channel texture) |
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "max_dim": 256, "fields": ["rho", "prs", "vx1"], "scales": ["auto", "auto", "linear"] }
+```
+
+**The grid.** The first field is reduced with the request's factors (0:
+automatic, planned as `reduced_bin` plans them, so the overlay lies on the
+grid of the cube on show when the first field is that cube); every other field
+is reduced with the first field's factors given explicitly. Each field keeps
+its own source (its own brick pyramid, or the whole cube when it has none, as
+`reduced_bin` falls back), its own value scale (under `auto`: log for a
+positive field spanning more than three decades, such as a density or a
+temperature; linear for a signed velocity), its own range and threshold. Every
+channel is byte for byte what `reduced_bin` answers for that field with the
+same factors, mode, encoding and scale. Fields of different shapes are refused
+(422); fields that come out on different reduced grids are an error (500).
+
+**The answer** is raw voxels, x fastest, then y, then z, the channel
+innermost: voxel (x, y, z), channel c is element ((z · h + y) · w + x) · C + c,
+of `uint8` codes or little-endian `float16` (each channel coded as
+`reduced_bin` codes its cube, on that field's own range and scale). Headers:
+`X-Visivo-Width`, `X-Visivo-Height`, `X-Visivo-Depth`, `X-Visivo-Scalar-Type`,
+`X-Visivo-Byte-Order: little`, `X-Visivo-Full-Shape`, `X-Visivo-Bin-Factors`,
+`X-Visivo-Bin-Mode`, `X-Visivo-Channels` (C) and `X-Visivo-Fields`, compact
+ASCII JSON, one object per field in request order:
+
+```json
+[{"name": "rho", "path": "/data/rho.0000.flt::pluto-var=rho", "scale": "log",
+  "range_min": 1.8e-12, "range_max": 2.1e-05, "log_min": -11.74, "log_max": -4.68,
+  "threshold": 3.2e-07, "nonpositive_voxels": 0, "bunit": "", "source": "pyramid",
+  "pyramid_level": 3, "file_revision": "9f…", "source_note": ""}, …]
+```
+
+`range_min`/`range_max` are values (on a log scale the positive ones'),
+`log_min`/`log_max` the base-10 range the codes span (null on a linear scale),
+`threshold` the field's default threshold for this binning (as
+`X-Visivo-Threshold`), `pyramid_level` null from the cube, `source_note` why a
+field fell back to the whole cube (empty otherwise). Non-finite numbers are
+null.
+
+While any field's brick pyramid is being built the route answers **202**
+(`{valid: false, preparing: true, progress, error}`, progress over all the
+fields) after starting every field's build, so the page waits once for all of
+them. Each field is reduced as a heavy task (a compute slot each, one after
+the other). The answer (all channels) is at most 128 MiB, checked once the
+first field is reduced, before the others. Errors: 404,
+422 (not a field of a multi-field source, an unknown or repeated field, one or
+more than three fields, `scales` of another length, `channels` below the
+number of fields, a field's reduced cube or the whole answer too large,
+fields of different shapes;
+`text/plain` once the computation began), 500 (`text/plain`).
+
+### `POST /v1/cube/kinematic_model_bin`
+
+Builds a tilted-ring model PPV cube of a rotating disc with the same spatial
+and spectral grid as the dataset, for overlay on the data (see
+[Kinematic model](../design/kinematic-model.md)). Each sky pixel carries a
+unit-amplitude Gaussian line at its line-of-sight velocity; the cube is not
+renormalised.
+
+Request (`CubeKinematicModelRequest`, all floats must be finite):
+
+| Field | Type | Notes |
+|---|---|---|
+| `dataset_id` | string | |
+| `x0`, `y0` | float | disc centre, pixels |
+| `vsys` | float | systemic velocity |
+| `sigma` | float | line dispersion, `> 0` |
+| `pa_deg` | float or null | position angle, image-pixel convention (0 along +y, increasing toward +x) |
+| `incl_deg` | float or null | inclination, 0 to 90 |
+| `vrot` | float or null | flat rotation velocity |
+| `rmax_pix` | float or null | disc radius in pixels, `> 0` |
+| `rings` | list | optional per-ring profile, each `{r_pix > 0, pa_deg, incl_deg in [0, 90], vrot}` |
+
+Without `rings`, all four scalar parameters (`pa_deg`, `incl_deg`, `vrot`,
+`rmax_pix`) are required (422 otherwise). With `rings`, the scalar ones are
+ignored, the radii must be distinct, and the disc extends to the outermost
+ring.
+
+Velocities are in the unit the worker reports in `X-Visivo-Spectral-Axis-Unit`.
+A velocity axis is converted to km/s; a frequency axis with `RESTFRQ` (or
+`RESTFREQ`) becomes optical velocity (cz) in km/s, the same axis the kinematic
+fit uses; any other usable axis stays in its native unit; when the spectral WCS
+is unusable the axis is the channel index.
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "x0": 128.0, "y0": 120.5, "vsys": 1450.0,
+  "sigma": 10.0, "pa_deg": 35.0, "incl_deg": 60.0, "vrot": 180.0, "rmax_pix": 60.0 }
+```
+
+Response: the model cube as little-endian `float32` (full cube dimensions).
+Headers: `X-Visivo-Width`, `X-Visivo-Height`, `X-Visivo-Depth`,
+`X-Visivo-Scalar-Type: float32`, `X-Visivo-Peak` (maximum model value),
+`X-Visivo-Spectral-Axis-Unit` (`km/s`, the native unit, or `channel`),
+`X-Visivo-Spectral-Mode` (`velocity`, `native` or `channel`),
+`X-Visivo-Byte-Order: little`.
+
+Errors: 404, 422 (validation, not a cube), 413 (`text/plain`) when the cube
+exceeds the model voxel cap (`VISIVO_KINEMATIC_MAX_VOXELS`, default
+268,435,456 voxels), 429, 504, 500 (`text/plain`).
+
+### `POST /v1/cube/save_subregion`
+
+Crops the cube to `[z0..z1, y0..y1, x0..x1]` (0-indexed, inclusive, clamped to
+the cube), writes it as a FITS file in the Workspace Exports directory and
+registers it as a new cube dataset in the session. The header is copied from
+the source with `NAXISn` updated, `CRPIX1/2/3` shifted by the crop origin and a
+`HISTORY` card recording the crop.
+
+Request (`CubeSaveSubregionRequest`): `dataset_id`, `x0`, `x1`, `y0`, `y1`,
+`z0`, `z1` (int), `output_basename` (default `""`). An empty basename becomes
+`<source stem>_subcube_x<x0>-<x1>_y<y0>-<y1>_z<z0>-<z1>.fits`. The basename is
+reduced to its final path component, leading dots are stripped, `.fits` is
+appended when it has no extension, and an existing name gets a `_1`, `_2`, ...
+suffix instead of being overwritten.
+
+Response (`CubeSaveSubregionResponse`): `valid`, `error`, `new_dataset_id`,
+`output_path`, `workspace_filename`, `width`, `height`, `depth`, `range_min`,
+`range_max`.
+
+Errors: 404, 422 (not a cube), 429. A box that is empty after clamping, and
+other worker failures, return HTTP 200 with `valid: false` and the message in
+`error`.
+
+### `POST /v1/cube/mask`
+
+Blanks (sets to NaN) the voxels inside or outside a box and registers the
+result as a new cube dataset, persisted in Workspace Exports. The output keeps
+the full cube dimensions, header and WCS: the source file is copied and the
+copy is edited in place through a memory map, so masking does not load the
+cube into memory. A `HISTORY` card records the mode and the box. The masked
+HDU is the one the dataset reads its cube from: in a file with an empty
+primary and the cube in an extension (ESO/APEX `DATA_EXT`), that extension is
+masked and every other HDU is copied unchanged. The same holds for
+`mask_selection` and `mask_apply_bin`.
+
+Request (`CubeMaskRequest`): `dataset_id`, `x0`, `x1`, `y0`, `y1`, `z0`, `z1`
+(int, inclusive, clamped), `mode` (`"blank_outside"`, the default, isolates
+the box; `"blank_inside"` removes it; anything else is 422),
+`output_basename` (default `""`, giving
+`<stem>_mask-<inside|outside>_x..._y..._z....fits`; same sanitising as
+`save_subregion`).
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "x0": 40, "x1": 90, "y0": 35, "y1": 80,
+  "z0": 12, "z1": 48, "mode": "blank_outside" }
+```
+
+Response (`CubeMaskResponse`): `valid`, `error`, `new_dataset_id`,
+`output_path`, `workspace_filename`, `width`, `height`, `depth`, `range_min`,
+`range_max`. The range is that of the kept data, measured on the box for
+`blank_outside` and on a strided sample of the cube for `blank_inside`.
+
+Errors: 404, 422 (not a cube, invalid mode), 429, 504. An empty box and other
+worker failures return HTTP 200 with `valid: false`.
+
+### `POST /v1/cube/kinematic_levels_bin`
+
+Geodesic level fields for the interactive Reach slider of the
+[Kinematic Lasso](../design/kinematic-lasso.md). The backend grows the selection once,
+up to a budget, and returns two `uint8` fields over a shared bounding box; the
+client then derives the selection at any integer budget `r` locally as
+`add <= r` and not `sub <= r`, with no further request.
+
+Request (`CubeKinematicSelectRequest`, shared with `kinematic_select_bin` and
+extended by `mask_selection`):
+
+| Field | Default | Limits | Meaning |
+|---|---|---|---|
+| `dataset_id` | | | |
+| `seed_z`, `seed_y`, `seed_x` | required | inside the cube, on a finite voxel | the clicked seed voxel |
+| `add_seeds` | `[]` | each `[z, y, x]` | extra seeds whose selections are added (union) |
+| `sub_seeds` | `[]` | each `[z, y, x]` | seeds whose selections are carved out; a sub-seed on a blank voxel is skipped |
+| `reach` | 8.0 | `> 0`, finite | geodesic cost budget |
+| `lambda_v` | 1.0 | `> 0`, finite | weight of a step along the velocity axis (1 is isotropic) |
+| `sigma` | 0.0 | `>= 0` | intensity scale of the cost; 0 uses a robust (MAD) noise estimate of the cube |
+| `nsigma` | 2.5 | `> 0` | threshold, in `sigma` units, of the emission component the grow is confined to |
+| `roi_radius` | 0 | 0 to 256 | 0 grows over the whole connected object (inside a 256-voxel half-size safety window around the seed); `> 0` confines the grow to a half-box of this size |
+| `reach_max` | 0.0 | 0 to 254 | budget of the level field; 0 uses `reach` |
+| `smooth_v`, `smooth_xy` | 0.0 | 0 to 16 | Gaussian smoothing (sigma in voxels, velocity and both spatial axes) applied before the threshold; 0 is off |
+
+The budget is `reach_max` when it is positive, else `reach`; a budget above
+254 is rejected (the field is `uint8` with 255 as the unreachable sentinel).
+Smoothing affects only which voxels are selected, never the values written by
+the apply routes.
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "seed_z": 57, "seed_y": 131, "seed_x": 140,
+  "add_seeds": [[60, 98, 152]], "sub_seeds": [], "reach": 8.0, "reach_max": 40.0,
+  "lambda_v": 1.0, "nsigma": 2.5 }
+```
+
+Response: two `uint8` fields of `width × height × depth` bytes each,
+concatenated (the `add` field first, then `sub`), in the volume layout above.
+A voxel's level is the ceiling of its geodesic distance, so for an integer
+budget `r` the test `level <= r` is exact. Headers:
+
+| Header | Content |
+|---|---|
+| `X-Visivo-Width`, `X-Visivo-Height`, `X-Visivo-Depth` | dimensions of the shared bounding box |
+| `X-Visivo-Origin` | `x,y,z` of the box in cube voxels |
+| `X-Visivo-Full-Shape` | `width,height,depth` of the cube |
+| `X-Visivo-Scalar-Type` | `uint8` |
+| `X-Visivo-Components` | `2` |
+| `X-Visivo-Range-Max` | highest usable integer budget (floor of the budget) |
+| `X-Visivo-Peak` | the unreachable sentinel level (255) |
+| `X-Visivo-Trim-Box` | 0, or the half-width of the seed-centred box the domain was cut to when the object exceeded the 4,000,000-node graph cap (the field is then exact for that box only) |
+
+Errors: 404, 422 (validation, not a cube, and as `text/plain`: seed outside
+the cube or on a blank voxel, budget above 254), 429, 504, 500 (`text/plain`).
+
+### `POST /v1/cube/kinematic_select_bin`
+
+Grows the Kinematic Lasso selection at a single budget and returns it as a
+binary mask, for the isosurface preview.
+
+Request: `CubeKinematicSelectRequest` (see `kinematic_levels_bin`). The mask is
+thresholded at `reach`. When `reach_max > 0` it sizes the faint-margin shell
+around the object exactly as in `kinematic_levels_bin`, so the preview and the
+level field are built on the same graph; smoothing is honoured.
+
+Response: the selection's bounding box as little-endian `float32` (1 selected,
+0 not), not the full cube. Headers: `X-Visivo-Width`, `X-Visivo-Height`,
+`X-Visivo-Depth` (box), `X-Visivo-Origin` (`x,y,z`),
+`X-Visivo-Full-Shape` (`width,height,depth` of the cube),
+`X-Visivo-Scalar-Type: float32`, `X-Visivo-Selected-Count` (selected voxels),
+`X-Visivo-Bbox` (`x0,x1,y0,y1,z0,z1`, inclusive), `X-Visivo-Trim-Box` (as in
+`kinematic_levels_bin`), `X-Visivo-Byte-Order: little`. When nothing is
+selected the count is 0, the bounding box is all zeros and the body is a single
+zero voxel.
+
+The body together with its origin and dimensions is exactly the input that
+`mask_apply_bin`, `kinematic_fit_bin` and `kinematic_residual_bin` accept.
+
+Errors: 404, 422 (validation, not a cube, and as `text/plain`: seed outside the
+cube or on a blank voxel), 429, 504, 500 (`text/plain`).
+
+### `POST /v1/cube/mask_selection`
+
+Re-grows a Kinematic Lasso selection from its seeds and blanks the voxels
+inside or outside it, registering the masked cube as a new dataset in
+Workspace Exports. Like `/v1/cube/mask` it keeps full dimensions and WCS, edits
+a copy in place, and adds a `HISTORY` card (mode, seed counts, `reach`,
+`lambda_v`).
+
+Request (`CubeMaskSelectionRequest`): every field of
+`CubeKinematicSelectRequest` plus `mode` (`"blank_outside"`, the default,
+isolates the selection; `"blank_inside"` removes it) and `output_basename`
+(default `""`, giving `<stem>_lasso-<inside|outside>.fits`). `reach_max`, when
+positive, sizes the margin shell as in the preview. `smooth_v` and `smooth_xy`
+are accepted but not used by this route; to apply a smoothed or hand-edited
+selection exactly as previewed, use `mask_apply_bin`.
+
+Response: `CubeMaskResponse` (see `/v1/cube/mask`).
+
+Errors: 404, 422 (validation, not a cube), 429, 504. An empty selection, a seed
+outside the cube or on a blank voxel, and other worker failures return HTTP 200
+with `valid: false`.
+
+### `POST /v1/cube/mask_apply_bin`
+
+Applies an explicit selection mask, sent in the request body, without
+re-growing from seeds, so a hand-refined mask is written exactly as shown. The
+masked cube is registered as a new dataset in Workspace Exports.
+
+Query parameters:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `dataset_id` | required | |
+| `origin_x`, `origin_y`, `origin_z` | required | mask box origin in cube voxels |
+| `width`, `height`, `depth` | required | mask box dimensions, each `>= 1` |
+| `mode` | `blank_outside` | or `blank_inside` |
+| `output_basename` | `""` | empty gives `<stem>_lasso-<inside|outside>.fits` |
+| `recipe` | `""` | at most 4000 characters, `key=value; key=value`; each item is written to the output header as a `HISTORY` card prefixed `Lasso ` |
+
+Body: the mask as raw little-endian `float32`, `width × height × depth` values,
+x fastest (the `kinematic_select_bin` wire).
+
+```
+POST /v1/cube/mask_apply_bin?dataset_id=ds_1a2b3c4d5e6f&origin_x=118&origin_y=96&origin_z=40&width=48&height=52&depth=30&mode=blank_outside&recipe=seed=(57,131,140);%20reach=8
+Content-Type: application/octet-stream
+
+<299,520 bytes: 48 × 52 × 30 float32 values>
+```
+
+`blank_outside` keeps only the selected voxels; `blank_inside` blanks them.
+The output keeps the full cube dimensions and WCS, and a `HISTORY` card records
+the mode, the selected-voxel count and the origin.
+
+Response: `CubeMaskResponse` (see `/v1/cube/mask`).
+
+Errors: 422 for an invalid `mode` or a body whose length is not
+`width × height × depth × 4` bytes (both checked before the dataset lookup),
+404, 422 (not a cube), 429, 504. An all-zero mask, a box that does not fit
+inside the cube, and other worker failures return HTTP 200 with
+`valid: false`.
+
+### `POST /v1/cube/mask_stats_bin`
+
+Statistics of a selection on the full cube, for the VR page's Kinematic Lasso
+and box panels ([#171](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/171)).
+With `box=true` and an empty body it measures every voxel of the box given by
+the origin and dimensions.
+The request is the `mask_apply_bin` wire: query parameters `dataset_id`,
+`origin_x`, `origin_y`, `origin_z` (each `>= 0`), `width`, `height`, `depth`
+(each `>= 1`), and the mask in the body as raw little-endian `float32` values
+(`> 0.5` selected), x fastest, so the body of a `kinematic_select_bin`
+response is posted back unchanged with the origin and dimensions of its
+`X-Visivo-Origin`, `-Width`, `-Height`, `-Depth` headers. Only the mask's box
+is read from the file, one channel at a time (at most 64 Mi voxels; the box
+size and the declared `Content-Length` are checked before the body is read,
+and the body is never read past the expected size). It runs in the session's
+compute slots (429 when all stay busy). A cube whose spectral axis is not its
+third numpy axis is refused (422), as the kinematic fit refuses it.
+
+Response (JSON): `selected_voxels`, `valid_voxels`, `blank_voxels`, `bunit`,
+`sum`, `mean`, `rms` (population standard deviation, as region statistics give
+it), `min`, `max` of the finite selected values (`null` when none is finite), `peak_voxel`
+(`[x, y, z]`), `bbox` (`[x0, x1, y0, y1, z0, z1]`, inclusive), `channel_min`,
+`channel_max`, `velocity_min_kms` and `velocity_max_kms` (the velocities of
+the first and last selected channel, the convention in
+`velocity_convention`), `flux_jy_kms`, and the selection's integrated spectrum
+(`spectrum` per channel over `spectrum_channels`, with
+`spectrum_velocity_kms` and `spectrum_unit`).
+
+The flux follows the kinematic fit's measures: per channel, the selected sum
+over the beam area in pixels (each channel's own beam when the cube has a
+BEAMS table, as region statistics use), times the channel's own width in km/s,
+summed over channels. It is `null`, and `flux_note` says why, when `BUNIT` is
+not per beam, the header has no beam, or the spectral axis has no velocity; the
+spectrum is then the plain sum per channel. A channel with no finite selected
+voxel is `null` in the spectrum, and a selection with none at all has a `null`
+flux. On HCG 44 the selection grown at
+NGC 3187's peak (13 216 voxels) gives 6.061 Jy km/s, the paper's F_Lasso for
+that source, in 30 ms.
+
+Query parameter `sigma` (default 0.0, `>= 0`, finite): the noise per voxel in
+`BUNIT`, the session's noise estimate (the VR page sends the lasso's typed σ,
+the shared-selection publish the grow's `sigma`). With 0 the noise is measured
+around the selection.
+
+**HI measurements** ([#280](https://github.com/VisIVOLab/VisIVOVisualAnalytics/issues/280)),
+under `hi`, every number with its unit in its name and `null` when it cannot be
+measured (`notes` says why). The definitions are SoFiA-2's parameterisation
+(`app/compute/hi_measures.py`), so the same mask gives SoFiA-2's catalogue
+values (validated below). With S_k the selected sum of channel k (Jy/beam),
+n_k its valid selected voxels, Ω_k its beam area in pixels and Δv_k its width
+in km/s:
+
+| Field | Definition |
+|---|---|
+| `flux_jy_kms` | F = Σ_k (S_k / Ω_k) Δv_k (as `flux_jy_kms` above) |
+| `flux_err_indep_jy_kms` | σ_F,indep = σ √(Σ_k n_k Δv_k² / Ω_k): noise independent between beams and between channels (SoFiA-2's `err_f_sum`). A selection narrower than a beam (n_k < Ω_k) still underestimates it, by about √(Ω_k / n_k) |
+| `flux_err_jy_kms`, `flux_err_factor`, `channel_rho`, `channel_correlation` | σ_F = σ_F,indep √(1 + 2 Σ_j ρ_j (1 − j/N)), j = 1…3: the error of a sum of N correlated channels, N the selection's mean number of channels per footprint pixel. ρ_j = 1 − σ_d,j² / (2σ²), σ_d,j = 1.4826 × median \|d\| of the differences of unselected voxel pairs j channels apart in the noise frame (robust to faint emission). `channel_correlation` is the label (*channels correlated (ρ1 0.74): error corrected ×1.8*). With `sigma` given the frame is not read: σ_F = σ_F,indep, `channel_rho` null, label *channel correlation not measured* |
+| `snr_integrated` | F / σ_F |
+| `noise_sigma`, `noise_unit`, `noise_source`, `noise_voxels` | σ: the `sigma` given, else 1.4826 × median \|value\| (about zero) of the unselected voxels in the selection's bounding box widened by ⌈3 BMAJ / pixel⌉ pixels (10 without a beam) and 5 channels (SoFiA-2's local rms). The frame is read already thinned to at most 4 M voxels (every s-th row and column; for very many channels, runs of 4 consecutive channels so the lag pairs remain); `noise_voxels` is the sample's size |
+| `peak`, `peak_unit`, `peak_snr` | the largest selected value (as `max`) and the peak S/N, peak / σ. Not SoFiA-2's `snr_max` (a summed optimum) |
+| `w20_kms`, `w50_kms` | from the integrated spectrum S_k/Ω_k (blank channels as zero): from each end, moving inwards, the first channel at or above 20 % (50 %) of the peak; the crossing linearly interpolated with the channel outside it; the width is the velocity difference of the two crossings, velocities interpolated between channel centres. When a crossing is the first or last channel, `notes` says *width is a lower limit: the line reaches the selection's edge* |
+| `vsys_kms`, `vsys_definition` | the mean of the two W20 crossing velocities |
+| `velocity_convention`, `velocity_convention_name` | the convention named (`optical (cz), from frequency and RESTFRQ` from a frequency axis; for a velocity axis by its CTYPE: VRAD radio, VOPT/ZOPT/FELO optical, bare VELO relativistic, AIPS VELO-xxx optical unless VELREF > 256, a non-standard CTYPE such as VELOCITY *convention not stated: taken as optical*); the same label as `reduced_info` and the kinematic fit |
+| `velocity_frame`, `velocity_frame_source` | the frame, readable (barycentric, heliocentric, LSRK, topocentric, …): from `SPECSYS`, else the AIPS CTYPE suffix (-HEL barycentric (heliocentric), -LSR LSRK, -OBS topocentric); a topocentric cube gets a note (*not corrected for the Earth's motion*), a cube naming none another |
+| `centroid_x`, `centroid_y`, `centroid_z` | Σ v·(x, y, z) / Σ v over the selected voxels with value v > 0 (0-based full-cube pixels) |
+| `centroid_ra_deg`, `centroid_dec_deg`, `centroid_frame` | that position through the file's full WCS, in ICRS (as `/v1/datasets/pixel_to_sky`) |
+| `centroid_velocity_kms` | Σ v·v_k / Σ v over the same voxels: the flux-weighted mean velocity. On a frequency axis it differs from the velocity at z̄ by second-order terms, about 0.03 km/s for a 300 km/s line at 1.3 GHz |
+| `major_axis_px`, `minor_axis_px`, `major_axis_arcsec`, `minor_axis_arcsec`, `size_definition` | the moment-0 map M(x, y) = Σ_k v Δv_k over the selection; the second moments of its positive pixels, weighted by M, about the centroid; the axes are 2 √λ (λ the eigenvalues): the semi-axes of the uniform ellipse with those moments (SoFiA-2's `ell_maj`/`ell_min`), not deconvolved from the beam. `null` with a note when √λ_min < 1/√12 pixel (narrower than a pixel) |
+| `pa_deg`, `pa_grid_deg` | the major axis' position angle in [0, 180): `pa_deg` east of north (ICRS), its bearing on the sky taken through the WCS at the centroid (a grid's north can be tilted: up to 1.2° on HCG 44); `pa_grid_deg` from +y towards −x on the pixel grid (SoFiA-2's `ell_pa`, modulo 180). Both `null` with a note for a round footprint ((λ1 − λ2)/(λ1 + λ2) < 0.01) |
+| `beam_major_arcsec`, `beam_minor_arcsec` | the header's beam, to compare the size with |
+| `notes` | why a number is missing, or a caveat (edge-limited width, frame, degenerate footprint) |
+
+Validation (`backend/tests/test_hi_measurements.py`, skipped without the
+data): each SoFiA-2 2.7.0 source's own mask (18 on HCG 44, 12 on WALLABY
+NGC 3137's cubelet) through this route gives its catalogue row: voxel count,
+sum and peak to 1e-5, flux to 1e-4 after SoFiA-2's physical conversion, W20,
+W50 and systemic velocity to 0.01 km/s, the centroid to 1e-4 pixel and its
+velocity to 0.01 km/s, the ellipse to 1e-4 and its grid PA to 0.05°. The local
+noise is within 6.2 % (HCG 44) and 7.0 % (WALLABY) of SoFiA-2's `rms`: SoFiA-2
+leaves out every catalogued source's voxels from the frame, the route only the
+selection's; given SoFiA-2's `rms` as `sigma`, the independent flux uncertainty
+and peak S/N equal SoFiA-2's to 1e-4. Positions differ by at most 0.03 arcsec,
+the FK5 to ICRS rotation (SoFiA-2 reports the cube's own frame). The channel
+correlation measured around the sources: HCG 44 ρ1 0.75 (median), error factor
+1.52–1.80; WALLABY ρ1 0.06, factor 1.04–1.25. On Hanning-correlated synthetic
+noise (ρ1 2/3) the corrected error of 121 noise boxes is their flux scatter
+within 8 %, the independent one 1.6 times too small.
+
+Errors: 422 for a body whose length is not `width × height × depth × 4` bytes,
+an empty selection, a box outside the cube or too large, or a dataset that is
+not a cube; 404 for an unknown dataset; 401 without the token.
+
+### `POST /v1/cube/kinematic_fit_bin`
+
+Measures and fits a selection on the raw cube: integrated flux, line widths,
+geometry from the moment-0 map, a flat-disc tilted-ring fit and a per-ring
+fit, model velocity fields and their residuals against the observed velocity
+field. This is the input of the Kinematic Lasso comparator.
+
+Query parameters: `dataset_id`, `origin_x`, `origin_y`, `origin_z`, `width`,
+`height`, `depth` (as in `mask_apply_bin`), plus `sigma` (default 0.0, `>= 0`:
+the noise used to cut the velocity field; 0 uses 1.4826 × MAD over every
+finite voxel of the cube) and `min_ring_pix` (default 150, `>= 10`: minimum
+pixel count of an annulus in the per-ring fit). Body: the selection mask
+(`kinematic_select_bin` wire). A mask box that extends past the cube is
+clipped to it.
+
+The spectral axis must be the cube's third axis and expressible in km/s: a
+velocity axis is used as it is, a frequency axis needs `RESTFRQ` and is
+converted to optical velocity (cz).
+
+Response (JSON, NaN and infinite values replaced by `null`):
+
+| Field | Content |
+|---|---|
+| `width`, `height` | size of the 2-D maps (cube width and height) |
+| `velocity_unit`, `velocity_convention` | `km/s`, and the convention used |
+| `sigma`, `sigma_source` | noise used, and `"noise estimate"` or `"robust, whole cube"` |
+| `beam_area_px` | beam area in pixels, 0 when the unit is not per beam or there is no beam |
+| `measures` | `flux`, `flux_is_jy`, `w20`, `w50`, `vsys_w20`, `n_velocity_field` |
+| `geometry` | `x0`, `y0`, `pa_morph`, `axis_ratio`, `incl`, `rmax` (from moment 0) |
+| `flat` | `pa`, `vsys`, `vrot`, `vrot_sini`, `rms` |
+| `rings` | list of `{r, pa, incl, vrot, n_pix}` |
+| `line_sigma`, `channel_width` | line dispersion used for the model cubes, mean channel width (km/s) |
+| `residual_flat`, `residual_warp` | `{n_pix, median, p90, within_channel}`; `residual_warp` is `null` with fewer than 3 rings |
+| `spectrum`, `spectrum_velocity` | integrated spectrum of the selection and its velocity axis |
+| `velocity_field_base64` | observed velocity field (moment 1), `height × width` little-endian `float32`, base64 |
+| `model_flat_base64`, `model_warp_base64` | model velocity fields, same encoding; `model_warp_base64` is `""` with fewer than 3 rings |
+
+Errors (JSON `detail`): 422 for a body of the wrong length, 404, 422 (not a
+cube, an empty selection, a selection outside the cube, a spectral axis that is
+not the third axis or cannot be expressed in km/s), 413 when the cube exceeds
+`VISIVO_KINEMATIC_MAX_VOXELS` (default 268,435,456 voxels), 429, 504.
+
+### `POST /v1/cube/kinematic_residual_bin`
+
+Residual of a given model (fitted or edited in the comparator) against the
+selection's velocity field, with the same selection wire and noise rule as
+`kinematic_fit_bin`.
+
+Query parameters: `dataset_id`, `origin_x`, `origin_y`, `origin_z`, `width`,
+`height`, `depth`, `sigma` (default 0.0) as in `kinematic_fit_bin`, plus the
+model, all finite:
+
+| Parameter | Notes |
+|---|---|
+| `x0`, `y0`, `vsys` | required |
+| `line_sigma` | required, `> 0` |
+| `pa`, `incl`, `vrot`, `rmax` | single-disc model; `incl` in [0, 90], `rmax > 0`; all four required when `rings` is empty |
+| `rings` | `r:pa:incl:vrot,r:pa:incl:vrot,...` (at most 4000 characters); each `r > 0`, `incl` in [0, 90], radii distinct; when given, the scalar model is ignored |
+
+Body: the selection mask.
+
+Response (JSON, NaN replaced by `null`): `width`, `height`, `sigma`,
+`sigma_source`, `velocity_convention`, `residual` (`{n_pix, median, p90,
+within_channel}`), `model_base64` (model velocity field) and
+`velocity_field_base64` (observed), both `height × width` little-endian
+`float32` in base64.
+
+Errors (JSON `detail`): 422 for a body of the wrong length, a malformed
+`rings` string, duplicate radii, or a missing single-disc parameter; then as
+`kinematic_fit_bin` (404, 422, 413, 429, 504).
+
+### `POST /v1/cube/save_channel_2d`
+
+Extracts one channel of a cube as a standalone 2-D FITS image (`NAXIS=2`, not a
+degenerate 3-D cube) in Workspace Exports and registers it as a new `image`
+dataset. The header carries the celestial WCS of the source (written without
+WCS when it cannot be extracted), `BUNIT`, `OBJECT`, `TELESCOP`, `INSTRUME`
+when present, the channel's spectral coordinate as `SPECVAL` (with `SPECTYPE`
+and `SPECUNIT` from `CTYPE3` and `CUNIT3`) when `CRVAL3`, `CRPIX3` and `CDELT3`
+exist, and a `HISTORY` card.
+
+Request (`CubeSaveChannel2dRequest`): `dataset_id`, `channel` (0-indexed),
+`output_basename` (default `""`, giving `<stem>_ch<NNNN>.fits` with a
+four-digit channel number).
+
+Response (`CubeSaveChannel2dResponse`): `valid`, `error`, `new_dataset_id`,
+`output_path`, `workspace_filename`, `width`, `height`, `channel`,
+`range_min`, `range_max`.
+
+Errors: 404, 422 (not a cube), 429. A channel out of range and other worker
+failures return HTTP 200 with `valid: false`.
+
+### `POST /v1/moment/result/binary`
+
+Moment map as a 12-byte frame (`rows = height`, `cols = width`). It shares the
+computation and the product cache of `/v1/products/moment` and
+`/v1/tasks/moment`, so an identical request is served from the cache.
+
+Request (`MomentProductRequest`): `dataset_id`, `moment_order` (required),
+`channel_start` and `channel_end` (default 0 and 0; inclusive, clamped to the
+cube), `mask_enabled` (default false), `threshold_value` (default 0.0),
+`threshold_auto` (default false: when true with `mask_enabled`, the threshold
+is derived from the data as median + 3σ via MAD), `moment2_variance` (default
+false: order 2 returns the velocity dispersion; true returns the variance).
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "moment_order": 1, "channel_start": 20,
+  "channel_end": 80, "mask_enabled": true, "threshold_auto": true }
+```
+
+Response: one 12-byte frame of `float32`. Header `X-Visivo-From-Cache`:
+`true` or `false`. The unit and spectral metadata are not in the binary
+response; the JSON routes return them.
+
+Errors: 404, 422 (a `ValueError` from the computation, for example a channel
+range with `channel_start > channel_end` or a dataset that is not a cube), 504,
+500 for other failures (all as JSON `detail`). This route does not take a
+per-session compute slot.
+
+### `POST /v1/pv/result/binary`
+
+Position-velocity diagram as a 12-byte frame (`rows = depth`, the number of
+channels; `cols = num_samples` along the path). It shares the computation and
+cache of `/v1/cube/pv` and `/v1/tasks/pv`.
+
+Request (`CubePvRequest`): `dataset_id`, `vertices` (list of `[x, y]` cube
+pixel positions, 0-based, fractional values honoured; at least two distinct
+vertices), `width_pixels` (default 1; values below 1 are treated as 1).
+
+```json
+{ "dataset_id": "ds_1a2b3c4d5e6f", "vertices": [[30.5, 40.0], [200.0, 180.25]], "width_pixels": 3 }
+```
+
+Response: one 12-byte frame of `float32` and the `X-Visivo-From-Cache` header.
+Sample positions, the arcsec scale and the spectral axis are only in the JSON
+`/v1/cube/pv` response.
+
+Errors: 404, 422 (not a cube, fewer than two distinct vertices or another
+`ValueError`), 504, 500. No per-session compute slot.

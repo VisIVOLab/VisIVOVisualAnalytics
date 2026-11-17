@@ -3,7 +3,7 @@
 
 // RemoteRenderQueue.h
 // Asking the backend for a render session when its slots may all be busy
-// (issue #4, docs/backend-api/render.md, "The queue").
+// (issue #4, docs/technical/backend-api/render.md, "The queue").
 //
 // A viewer asks create_session with "queue": true. When every slot is busy the
 // backend answers 202 with a place in the queue instead of refusing; the viewer
