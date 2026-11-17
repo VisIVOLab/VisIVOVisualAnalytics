@@ -2258,6 +2258,18 @@ protected:
     /// the mean spectrum over the cube of region @p id (the selected one by
     /// default).
     void analyzeRegion(int id = -1, vtkRenderWindow *win = nullptr);
+    /// The beam-aware flux of @p region on the map @p image (issue #401):
+    /// integrated flux in Jy (a channel) or Jy km/s (a moment 0), its error
+    /// from the nearest background region or the map noise, the beam area,
+    /// and the HI mass at the distance set. Nothing when the map is not per
+    /// beam or the beam is unknown.
+    void insertRegionFluxParams(QVariantMap &params, vtkImageData *image,
+                                const visivo::DisplayGrid &grid,
+                                const visivo::regions::Region &region, double sum,
+                                long validCount, const QString &paneProduct,
+                                bool onChannels) const;
+    /// Tools ▸ Regions ▸ "HI Mass Distance…" (issue #401).
+    QPointer<QAction> m_actHiDistance;
 public:
     /// {x0, x1, y0, y1} cube pixels of the selected region's bounds, clamped
     /// to the cube; empty with no region selected. Seeds the box tools (noise,

@@ -170,7 +170,47 @@ used), `n_channels_in_cube`, `beam_arcsec`, `beam_area_pix`, `mask_enabled`,
 `threshold_auto`, `threshold_used`, `n_pixels_summed`, `warnings`,
 `nhi_unit` (`cm^-2`), `nhi_min`, `nhi_max`, `nhi_median`,
 `integrated_flux_jy_kms`, `distance_mpc`, `hi_mass_msun`,
-`hi_mass_log10_msun` (`null` without a distance), `optically_thin` (`true`).
+`hi_mass_log10_msun` (`null` without a distance), `optically_thin` (`true`),
+`redshift`, `region`.
+
+A velocity axis in any astropy spelling is accepted: a `VELO-HEL` axis without
+`CUNIT3` reads as `m.s**-1`, which used to be refused.
+
+**One region** (issue #401). Optional fields:
+
+```json
+{ "channel_start": 20, "channel_end": 100, "distance_mpc": 25.0,
+  "region": { "frame": "image", "shape": "circle", "center": [434.6, 278.8], "radius": 14.9 },
+  "background_region": { "frame": "image", "shape": "annulus",
+                         "center": [473.0, 305.5], "radii": [29.9, 39.9] },
+  "redshift": null }
+```
+
+`region` and `background_region` are canonical image-frame regions (0-based
+full-resolution pixels of the sky plane, the form
+[`/v1/regions/stats`](regions.md) takes); another frame is 422, as is a region
+with a missing size or a background without a region. With `region`, the
+response's `region` object holds the region's flux:
+
+S = (Σ − N · mean_bg) / Ω,  σ_S = σ · √(N / Ω)
+
+over the region's N finite pixels of the moment-0 map in Jy/beam·km/s, Ω the
+beam area in pixels. With `background_region`, mean_bg and σ are the mean and
+standard deviation of its pixels (all of them, as a region's statistics count
+them, even where it overlaps the source); without it nothing is subtracted and
+σ is the MAD σ of the whole map. Fields: `n_pixels`, `sum_jy_beam_kms`,
+`beam_area_pix`, `flux_jy_kms`, `flux_error_jy_kms`, `error_from`
+(`background` or `map_noise`), `background_n_pixels`,
+`background_mean_jy_beam_kms`, `background_sigma_jy_beam_kms` (with a
+background) or `map_sigma_jy_beam_kms` (without), `hi_mass_msun` and
+`hi_mass_error_msun` (M_HI = 2.356×10⁵ D² S; `null` without a distance).
+`redshift` without `distance_mpc` sets the distance to the Planck18
+luminosity distance. The whole-field fields are returned beside it.
+
+On HCG 44 (`hgc44.fits`, channels 20–100, the four galaxies and the background
+annulus of the HCG 44 use case) this gives
+NGC 3190 3.32 ± 0.23, NGC 3187 5.80 ± 0.29 and NGC 3185 1.36 ± 0.29 Jy km/s,
+with the annulus at σ = 48.17 Jy/beam·m/s and Ω = 30.66 pixels.
 
 ### `POST /v1/analysis/skeleton/{dataset_id}` · `POST /v1/analysis/skeleton/{dataset_id}/binary` · `POST /v1/cosmology/skeleton/{dataset_id}`
 Morphological skeleton (filaments) or void mask of one plane (only that plane

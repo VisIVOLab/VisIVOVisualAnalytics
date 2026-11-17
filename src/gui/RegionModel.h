@@ -139,6 +139,15 @@ struct Region
     QString sourceUnit;
 };
 
+/// A background region (ds9's `# background` property, kept in the props as
+/// `source: false` and written back on export): the region flux subtracts its
+/// mean and takes its scatter as the noise (issue #401).
+inline bool isBackground(const Region &r)
+{
+    const QJsonValue v = r.props.value(QStringLiteral("source"));
+    return v.isBool() && !v.toBool();
+}
+
 inline bool sameGeometry(const Region &a, const Region &b)
 {
     return a.shape == b.shape && a.center == b.center && a.radius == b.radius
@@ -980,6 +989,26 @@ public:
             r.name = n;
             if (r.props.contains(QStringLiteral("text")))
                 r.props[QStringLiteral("text")] = n;
+            return true;
+        }
+        return false;
+    }
+
+    /// Mark region @p id as a background region or as a source (one undo
+    /// step; issue #401). A region without an area cannot be a background.
+    /// False when nothing changes.
+    bool setBackground(int id, bool background)
+    {
+        for (Region &r : m_regions) {
+            if (r.id != id)
+                continue;
+            if (isBackground(r) == background || (background && !hasArea(r.shape)))
+                return false;
+            pushUndo();
+            if (background)
+                r.props[QStringLiteral("source")] = false;
+            else
+                r.props.remove(QStringLiteral("source"));
             return true;
         }
         return false;

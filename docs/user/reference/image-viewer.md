@@ -108,6 +108,8 @@ groups.
   click the vertices, double-click to close).
 - *Region Properties…*, *Analyse Region*, *Delete Region*, *Undo Region Edit*,
   *Redo Region Edit*: act on the selected region.
+- *HI Mass Distance…*: the distance for the HI mass of a region on a
+  moment-0 map.
 - *Import Region (CRTF/DS9)…*, *Export Region (CRTF/DS9)…*: read and write
   region files.
 
@@ -118,10 +120,18 @@ sum, mean, median, standard deviation and σ_MAD (1.4826 × the median absolute
 deviation). When the view is reduced, or the region reaches beyond the loaded
 part of the image, these are computed on the full-resolution file, and the
 subtitle says what they were computed on. Quote these figures, not the live
-readout. With a beam in the header and Stokes layers loaded, two more sections
-appear: *Radio (beam-aware)* (beam size, beam area Ω = π·BMAJ·BMIN/(4 ln 2) in
-pixels, integrated flux in Jy = sum / Ω, peak SNR in σ_MAD) and per-Stokes
-values (integrated Jy, mean PA in degrees, mean P/I in percent).
+readout. With a beam in the header, *Radio (beam-aware)* gives the beam size,
+the beam area Ω = π·BMAJ·BMIN/(4 ln 2) in pixels, the integrated flux sum / Ω
+with its error, and the peak SNR in σ_MAD. The flux is in the image's unit
+over the beam: Jy for a Jy/beam image, Jy km/s for a moment-0 map in Jy/beam
+m/s or Jy/beam km/s (an exported moment map keeps the cube's beam). An image
+with no `BUNIT` is taken as Jy/beam, and the window says so; an image not per
+beam (K, MJy/sr) gets no flux. The error and the background follow the rules
+of the cube viewer ([Region flux](region-pv-noise.md#region-flux-and-hi-mass)):
+a background region's mean is subtracted, or the noise of the loaded pixels
+gives the error. On a moment-0 map, *HI mass* follows at the distance set in
+*Tools ▸ Regions ▸ HI Mass Distance…*. With Stokes layers loaded, per-Stokes
+values follow (integrated Jy, mean PA in degrees, mean P/I in percent).
 
 The regions are also listed in *Session Data*, under a *Regions* node, where
 each can be selected, hidden, renamed, deleted or exported
