@@ -20,9 +20,9 @@ in.
 
 ### Open the density
 
-1. Choose *File ▸ Open…*. In the file browser set *File type* to *All files*:
-   PLUTO files are not in the default list. Select `rho.0000.flt` and press
-   *Open*.
+1. Choose *File ▸ Open…*. In the file browser, *All supported files* lists
+   PLUTO output; *File type* ▸ *PLUTO simulation output* shows only `.flt` and
+   `.dbl` files. Select `rho.0000.flt` and press *Open*.
 
 2. The cube window opens in well under a second. Nothing is copied: the
    backend reads the variable in place in the file. The grid is uniform and
@@ -40,10 +40,12 @@ in.
    *Color map* in the *DISPLAY, 3D* section, press *Edit*, choose the *Log* scale and press *Apply*.
 
    ```{figure} img/05-large-cubes-and-simulations-1.png
-   :alt: The 2048-cubed PLUTO density as a preview in the 3-D view, with the status line naming the preview and the banner offering Load full resolution and Switch to Remote.
+   :alt: The 2048-cubed PLUTO density as a preview in the 3-D view on a log colour scale, drawn on this machine (Local).
    :width: 100%
 
-   The preview of the 32 GB density, a log colour scale, and the banner.
+   The preview of the 32 GB density on a log colour scale. This window was
+   taken after the pyramid existed, so its status line reads *Preview: block
+   means* and no banner shows.
    ```
 
 ### Render it on the backend
