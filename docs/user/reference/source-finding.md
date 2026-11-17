@@ -127,7 +127,10 @@ and the backend needs `astroquery` and network access.
 
 The cone is centred on the image, with a radius equal to the larger of *Search
 radius* and half the image diagonal, so on most images the whole field is
-searched. Sources outside the image or on blank pixels are dropped. At most 500
+searched. Catalogue positions are ICRS; on an image in another frame (a
+Galactic Hi-GAL cutout, an FK5 map) the centre is converted for the query and
+the sources are placed in the image's own frame. Sources outside the image or
+on blank pixels are dropped. At most 500
 are kept, sampled evenly over the field in a dense one; the nearest to the
 centre is always kept.
 
