@@ -18,4 +18,5 @@ read more.
 08-vr-from-the-desktop
 09-backend-on-a-cluster
 10-hi-in-a-galaxy-group
+11-cosmology
 ```
