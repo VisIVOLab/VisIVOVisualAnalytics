@@ -10,6 +10,8 @@ cosmologies disagree.
 - `volumesnap63.bin` and its `.head` from the demo data: a VisIVO Binary Table
   volume with one field, `CDM-Density`, on a 512³ grid. Its values run from
   5 × 10⁻¹² to 3.6 × 10⁻⁴ around a mean of 6.9 × 10⁻⁸.
+  The volume comes from the DEMNUni simulations (Carbone, Petkova and Dolag
+  2016; see *Data credits* below).
 - A running backend; the local one is enough.
 - The cube window basics from [First steps](01-first-steps.md).
 
@@ -160,3 +162,11 @@ astropy 8.0.0, called directly, gives the same values to every digit shown.
   3-D catalogue viewer, *Model* in the *Cosmology* card places sources by
   redshift under the same presets.
 - [Cosmology: methods and implementation](../../technical/methods/cosmology.md).
+
+## Data credits
+
+`volumesnap63.bin` is a snapshot of the DEMNUni simulations:
+C. Carbone, M. Petkova and K. Dolag, "DEMNUni: ISW, Rees-Sciama, and
+weak-lensing in the presence of massive neutrinos", *Journal of Cosmology and
+Astroparticle Physics*, 2016(7), 034 (2016),
+[doi:10.1088/1475-7516/2016/07/034](https://doi.org/10.1088/1475-7516/2016/07/034).
