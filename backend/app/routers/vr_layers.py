@@ -143,7 +143,8 @@ async def points_info(request: PointInfoRequest, _: None = _auth,
     # A catalogue's column units, as its file declares them (issue #259: the
     # colour bar's unit); a VBT's header carries none.
     frame = entry.get("dataframe")
-    declared = ((getattr(frame, "attrs", None) or {}).get("units") or {}) if frame is not None else {}
+    declared = ((getattr(frame, "attrs", None) or {}).get("units") or {}) if frame is not None \
+        else ((entry.get("component") or {}).get("units") or {})
     units = {k: str(v) for k, v in dict(declared).items() if k in table.columns and v not in (None, "")}
     from ..point_table import component_format  # noqa: PLC0415
     # point_table_spec: a particle table's path (a VBT's header, a snapshot's

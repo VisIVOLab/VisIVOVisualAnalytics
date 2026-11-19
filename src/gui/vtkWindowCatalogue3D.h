@@ -271,6 +271,11 @@ private:
     QString particleTag() const;
     /// Show Load more / Load all when the backend holds more rows than loaded.
     void updateLoadMoreButtons();
+    /// A full local materialisation is useful for modest tables, but becomes
+    /// counterproductive once rows x columns would create tens of millions of
+    /// QVariant values in the desktop process.  The backend can still query the
+    /// complete table and Load more can refine its representative sample.
+    bool canLoadAllLocally() const;
     QPointer<QToolButton> m_kindTag;
     /// The two Inspector rows that do not stay put: the count changes with a
     /// filter or another page of sources, and the session changes when an

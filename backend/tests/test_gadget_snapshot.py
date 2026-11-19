@@ -166,6 +166,36 @@ def test_unknown_binary_blocks_are_not_guessed_as_float(tmp_path):
     assert "xtra" not in snap.component(0).names
 
 
+def test_info_block_safely_declares_custom_float_and_integer_blocks(tmp_path):
+    e = "<"
+    npart = [3, 0, 0, 0, 0, 0]
+    head = G._gadget_header(npart, [0.0] * 6, 1.0, 0.0, npart, 1,
+                            100.0, 0.0, 0.0, 0.7, e)
+
+    def info(name, kind, dims, types):
+        flags = [int(index in types) for index in range(6)]
+        return (name.ljust(4).encode("ascii") + kind.ljust(8).encode("ascii")
+                + struct.pack(e + "i6i", dims, *flags))
+
+    pos = np.arange(9, dtype=e + "f4").reshape(3, 3)
+    flag = np.array([1, 2**31 + 7, 9], dtype=e + "u4")
+    custom = np.arange(6, dtype=e + "f4").reshape(3, 2)
+    schema = (info("POS", "FLOATN", 3, (0,))
+              + info("FLAG", "LONG", 1, (0,))
+              + info("XTRA", "FLOATN", 2, (0,)))
+    path = tmp_path / "snap_info"
+    path.write_bytes(G._gadget_block("HEAD", head, e)
+                     + G._gadget_block("INFO", schema, e)
+                     + G._gadget_block("POS", pos.tobytes(), e)
+                     + G._gadget_block("FLAG", flag.tobytes(), e)
+                     + G._gadget_block("XTRA", custom.tobytes(), e))
+    snap = gs.open_snapshot(path)
+    gas = snap.component(0)
+    assert not snap.skipped and "INFO" not in snap.blocks
+    assert np.array_equal(gas.column("flag"), flag)
+    assert np.array_equal(gas.column("xtra_1"), custom[:, 1])
+
+
 def test_known_most_bound_ids_are_read_as_integers(tmp_path):
     e = "<"
     npart = [0, 3, 0, 0, 0, 0]
@@ -482,6 +512,40 @@ async def test_routes_open_and_draw_a_snapshot(client, auth_headers, tmp_path):
         "limit": 10}, headers=auth_headers)).json()
     assert q["valid"], q
     assert 0 < q["total_rows"] < 2000
+
+
+@pytest.mark.asyncio
+async def test_normal_particle_open_and_query_never_build_the_full_frame(
+        client, auth_headers, tmp_path, monkeypatch):
+    from app import point_table
+    from app.routers import catalogue as catalogue_router
+    files, _ = _snapshot(tmp_path)
+    monkeypatch.setattr(point_table, "particle_frame",
+                        lambda *_args, **_kw: (_ for _ in ()).throw(
+                            AssertionError("full particle frame materialised")))
+    opened = (await client.post(
+        "/v1/catalogue/open", json={"path": str(files[0]), "format": "gadget"},
+        headers=auth_headers)).json()
+    assert opened["valid"], opened
+    queried = (await client.post(
+        "/v1/catalogue/query",
+        json={"dataset_id": opened["dataset_id"], "limit": 100,
+              "random_sample": True,
+              "filters": [{"field": "x", "op": ">", "value": "0"}]},
+        headers=auth_headers)).json()
+    assert queried["valid"] and queried["returned_rows"] == 100
+
+    # Even a direct API sort must fail safely rather than materialising a huge
+    # snapshot.  Lower the production cell budget to exercise that path with
+    # this compact fixture.
+    monkeypatch.setattr(catalogue_router, "MAX_MATERIALISED_PARTICLE_CELLS", 1)
+    sorted_query = (await client.post(
+        "/v1/catalogue/query",
+        json={"dataset_id": opened["dataset_id"], "limit": 100,
+              "sort": {"field": "x", "direction": "asc"}},
+        headers=auth_headers)).json()
+    assert not sorted_query["valid"]
+    assert "Global sorting is disabled" in sorted_query["error"]
 
 
 def test_the_render_route_opens_a_remote_session_on_a_particle_type(monkeypatch):

@@ -245,13 +245,44 @@ def particle_metadata(path: str | Path) -> dict:
     return {"snapshot": component.snapshot.describe(), "component": component.describe()}
 
 
+def particle_catalogue_metadata(path: str | Path) -> dict:
+    """Catalogue-open metadata without constructing a full particle frame."""
+    from . import gadget_snapshot   # noqa: PLC0415
+    component = gadget_snapshot.resolve(path)
+    names = list(component.names)
+    axes = default_axes(names)
+
+    def field_type(name: str) -> str:
+        kind = component.column_dtype(name).kind
+        return "int" if kind in "iu" else "float" if kind == "f" else "string"
+
+    return {
+        "kind": "catalogue", "format": "gadget", "num_rows": component.num_rows,
+        "fields": [{"name": name, "type": field_type(name)} for name in names],
+        "coordinate_fields": {"ra": "", "dec": "", "glon": "", "glat": "",
+                              "x": axes[0], "y": axes[1], "z": axes[2],
+                              "system": "cartesian"},
+        **particle_metadata(path),
+    }
+
+
+def particle_rows(path: str | Path, rows) -> pd.DataFrame:
+    """Only selected rows of a snapshot component, directly from its shards."""
+    from . import gadget_snapshot   # noqa: PLC0415
+    component = gadget_snapshot.resolve(path)
+    rows = np.asarray(rows, dtype=np.int64)
+    return pd.DataFrame({name: component.take(name, rows) for name in component.names},
+                        index=pd.Index(rows), copy=False)
+
+
 def particle_frame(path: str | Path) -> pd.DataFrame:
     """A snapshot component as a catalogue's table: one column per block
     column (views of the memory map for a single-file snapshot), and their
     units in ``attrs["units"]``, as a catalogue file declares them."""
     from . import gadget_snapshot   # noqa: PLC0415
     component = gadget_snapshot.resolve(path)
-    columns = component.columns()
-    frame = pd.DataFrame({name: columns[name] for name in component.names}, copy=False)
+    # Compatibility path for operations that truly require a complete frame.
+    # Normal open, sampling and rendering use particle_rows/LazyColumns.
+    frame = pd.DataFrame({name: component.column(name) for name in component.names}, copy=False)
     frame.attrs["units"] = component.units()
     return frame

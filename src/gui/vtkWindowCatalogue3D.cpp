@@ -539,6 +539,15 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         BackendTabularQueryRequest qreq;
         qreq.datasetId = this->remoteDatasetId;
         qreq.randomSample = true;
+        if (opened.particles) {
+            // Bound first-paint cost by values, not only rows. Random sampling
+            // still spans the entire snapshot; later phases refine it.
+            constexpr int initialCellBudget = 850000;
+            const int fields = std::max(1, static_cast<int>(opened.fields.size()));
+            qreq.limit = std::clamp(initialCellBudget / fields, 10000, 100000);
+            qreq.limit = std::max(10000, qreq.limit / 5000 * 5000);
+            this->m_pageSize = qreq.limit;
+        }
         const auto subset = client.queryTabularCatalogue(qreq);
         this->m_sampleStep = subset.step;
         this->m_samplePhase = 1;

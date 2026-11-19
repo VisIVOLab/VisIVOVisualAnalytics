@@ -636,6 +636,14 @@ void vtkWindowCatalogue3D::loadAllEntries()
     const int total = this->m_totalCount;
     if (total <= 0 || this->m_currentOffset >= total)
         return;
+    if (!this->canLoadAllLocally()) {
+        QMessageBox::information(
+                this, u"Dataset too large for a full local copy"_s,
+                u"Loading every row into the desktop scene would require excessive memory.\n\n"
+                u"The complete dataset remains available to backend queries. Use Load more "
+                u"to progressively refine the representative sample."_s);
+        return;
+    }
     if (total > 500000) {
         const auto answer = QMessageBox::question(
                 this, u"Load all sources"_s,

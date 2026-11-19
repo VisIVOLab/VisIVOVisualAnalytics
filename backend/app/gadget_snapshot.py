@@ -24,16 +24,17 @@ the two orders, which tells the order. Every marker is checked.
   name in that order whose size it has; a record that matches none is kept as
   ``BLK<n>``.
 * Format 2 puts an 8-byte record before each block: its 4-character name and
-  the size of the block that follows. Known blocks are read. Unknown blocks
-  are reported but not decoded because the file carries no integer/float tag.
+  the size of the block that follows. Its optional INFO block declares dtype,
+  dimensions and particle types, so run-specific fields can be read safely.
+  Without INFO, unknown blocks are reported but not guessed as integer/float.
 
 A block holds its types one after the other, type 0 first, and only the types
 it is for. Known blocks' declared types are checked against their sizes in
 every file. When a known block's declared shape does not fit, the consistent
-type set can be recovered from all files together; an unknown block is left
-out and named in :attr:`Snapshot.skipped` because its numeric dtype cannot be
-recovered safely. A block of several values per particle becomes several
-columns.
+type set can be recovered from all files together; an unknown block without
+an INFO declaration is left out and named in :attr:`Snapshot.skipped` because
+its numeric dtype cannot be recovered safely. A block of several values per
+particle becomes several columns.
 
 Masses absent from the MASS block come from the header's mass table: a column
 of that constant.
@@ -895,6 +896,16 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
             break
     if fsize not in (4, 8):
         raise ValueError(f"POS holds {fsize} bytes per coordinate: not float or double")
+    info_schemas = [_format2_info(f, fsize) for f in layouts]
+    declared = {}
+    for schema in info_schemas:
+        for name, candidate in schema.items():
+            previous = declared.get(name)
+            if previous is not None and (candidate.dtype, candidate.dims) != (
+                    previous.dtype, previous.dims):
+                raise ValueError(f"The snapshot files declare different INFO schemas for {name}")
+            types = tuple(sorted(set((previous.types if previous else ()) + candidate.types)))
+            declared[name] = replace(candidate, types=types)
     names: list[str] = []
     for f in layouts:
         for b in f.blocks:
@@ -902,13 +913,26 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
                 names.append(b.name)
     specs, pieces, skipped = {}, {}, []
     for name in names:
+        if name == "INFO":
+            continue
         # Every file decides, those without the block too (they must have
         # none of its particles).
         lengths = []
         for f in layouts:
             blk = [b for b in f.blocks if b.name == name]
             lengths.append((f.header.npart, sum(b.nbytes for b in blk)))
-        spec, why = infer_block(name, lengths, first.mass, fsize)
+        spec = declared.get(name)
+        why = ""
+        if spec is not None:
+            itemsize = np.dtype(spec.dtype).itemsize * spec.dims
+            for npart, length in lengths:
+                expected = sum(npart[t] for t in spec.types) * itemsize
+                if length != expected:
+                    raise ValueError(
+                        f"{name}: INFO declares {spec.dtype} × {spec.dims} for types "
+                        f"{list(spec.types)}, requiring {expected} bytes; the block has {length}")
+        else:
+            spec, why = infer_block(name, lengths, first.mass, fsize)
         if spec is None:
             skipped.append((name, why))
             continue
@@ -928,6 +952,45 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
     fmt = f"Gadget format {layouts[0].fmt}, {'big' if layouts[0].endian == '>' else 'little'}-endian"
     return Snapshot(layouts, header, specs, pieces, units_for(layouts[0].path, None, header),
                     tuple(n for n, _ in skipped), fmt, tuple(skipped))
+
+
+def _format2_info(layout: FileLayout, float_size: int) -> dict[str, BlockSpec]:
+    """Read the optional format-2 INFO schema without touching block data."""
+    info = next((block for block in layout.blocks if block.name == "INFO"), None)
+    if info is None:
+        return {}
+    if info.nbytes % 40:
+        raise ValueError(f"{Path(layout.path).name}: INFO has {info.nbytes} bytes, not 40-byte entries")
+    with open(layout.path, "rb") as handle:
+        handle.seek(info.offset)
+        raw = handle.read(info.nbytes)
+    out = {}
+    for offset in range(0, len(raw), 40):
+        entry = raw[offset:offset + 40]
+        name = entry[:4].decode("ascii", "replace").rstrip(" \0")
+        value_type = entry[4:12].decode("ascii", "replace").rstrip(" \0").upper()
+        dims, *flags = struct.unpack(f"{layout.endian}i6i", entry[12:])
+        if not name or not 1 <= dims <= MAX_DIMS:
+            raise ValueError(f"{Path(layout.path).name}: invalid INFO entry {name!r}")
+        if value_type in ("FLOAT", "FLOATN"):
+            dtype = f"f{float_size}"
+        elif value_type in ("DOUBLE", "DOUBLEN"):
+            dtype = "f8"
+        elif value_type in ("LLONG", "ULONG64"):
+            dtype = "u8"
+        elif value_type in ("LONG", "ULONG", "INT", "UINT"):
+            dtype = "u4"
+        else:
+            raise ValueError(f"{Path(layout.path).name}: INFO type {value_type!r} is unsupported")
+        types = tuple(index for index, active in enumerate(flags) if active)
+        if name == "MASS":
+            types = tuple(index for index in types if layout.header.mass[index] == 0)
+            if not types:
+                continue
+        if not types:
+            raise ValueError(f"{Path(layout.path).name}: INFO block {name} has no particle types")
+        out[name] = BlockSpec(name, types, dtype, dims, False)
+    return out
 
 
 def _assemble_hdf5(layouts, header: Header) -> Snapshot:
@@ -1065,6 +1128,77 @@ class Component:
             return self.entropy().astype(np.float32)
         raise KeyError(name)
 
+    def column_dtype(self, name: str) -> np.dtype:
+        """The dtype of a column without reading any particle values."""
+        if name in self._sources:
+            block, _ = self._sources[name]
+            pieces = self.snapshot.pieces[(block, self.ptype)]
+            return np.dtype(pieces[0].dtype).newbyteorder("=")
+        if name == "mass" and self._mass_from_table:
+            spec = self.snapshot.blocks.get("POS")
+            return np.dtype(spec.dtype if spec is not None else "f4")
+        if name in self.derived:
+            return np.dtype("f4")
+        raise KeyError(name)
+
+    def take(self, name: str, rows) -> np.ndarray:
+        """Read only selected rows across all snapshot files."""
+        rows = np.asarray(rows, dtype=np.int64)
+        scalar = rows.ndim == 0
+        rows = rows.reshape(-1)
+        if rows.size and (rows.min() < 0 or rows.max() >= self.num_rows):
+            raise IndexError("particle row outside the component")
+        if name in self._sources:
+            block, column = self._sources[name]
+            pieces = self.snapshot.pieces[(block, self.ptype)]
+            ends = np.cumsum([piece.rows for piece in pieces], dtype=np.int64)
+            which = np.searchsorted(ends, rows, side="right")
+            out = np.empty(rows.size, dtype=self.column_dtype(name))
+            for index in np.unique(which):
+                selected = which == index
+                start = 0 if index == 0 else ends[index - 1]
+                out[selected] = pieces[index].array()[rows[selected] - start, column]
+        elif name == "mass" and self._mass_from_table:
+            out = np.full(rows.size, self.snapshot.header.mass[self.ptype],
+                          dtype=self.column_dtype(name))
+        elif name == "temperature" and name in self.derived:
+            out = self._temperature_rows(rows).astype(np.float32)
+        elif name == "entropy" and name in self.derived:
+            temperature = self._temperature_rows(rows)
+            density = self._physical_density_rows(rows)
+            x = HYDROGEN_MASS_FRACTION
+            if "ne" in self._sources:
+                electrons = (np.asarray(self.take("ne", rows), dtype=np.float64)
+                             * x * density / PROTON_MASS_G)
+            else:
+                electrons = 0.5 * (1.0 + x) * density / PROTON_MASS_G
+            out = (BOLTZMANN_ERG_K * temperature / KEV_ERG
+                   / electrons ** (2.0 / 3.0)).astype(np.float32)
+        else:
+            raise KeyError(name)
+        return out[0] if scalar else out
+
+    def _temperature_rows(self, rows: np.ndarray) -> np.ndarray:
+        u = np.asarray(self.take("u", rows), dtype=np.float64)
+        if self.snapshot.header.flag_entropy_instead_u:
+            rho = np.asarray(self.take("rho", rows), dtype=np.float64)
+            rho /= self.snapshot.scale_factor ** 3
+            u = u * rho ** (GAMMA - 1.0) / (GAMMA - 1.0)
+        u *= self.snapshot.units.velocity_cm_s ** 2
+        if "ne" in self._sources:
+            ne = np.asarray(self.take("ne", rows), dtype=np.float64)
+            x = HYDROGEN_MASS_FRACTION
+            mu = 4.0 / (1.0 + 3.0 * x + 4.0 * x * ne)
+        else:
+            mu = 4.0 / (3.0 + 5.0 * HYDROGEN_MASS_FRACTION)
+        return (GAMMA - 1.0) * mu * PROTON_MASS_G / BOLTZMANN_ERG_K * u
+
+    def _physical_density_rows(self, rows: np.ndarray) -> np.ndarray:
+        units, h = self.snapshot.units, self.snapshot.hubble
+        factor = units.mass_g / units.length_cm ** 3 * h ** 2
+        return (np.asarray(self.take("rho", rows), dtype=np.float64) * factor
+                / self.snapshot.scale_factor ** 3)
+
     def columns(self) -> "LazyColumns":
         return LazyColumns(self)
 
@@ -1173,13 +1307,13 @@ class LazyColumns(Mapping):
 
     def __init__(self, component: Component):
         self._component = component
-        self._kept: dict[str, np.ndarray] = {}
+        self._kept = {}
 
-    def __getitem__(self, name: str) -> np.ndarray:
+    def __getitem__(self, name: str):
         if name not in self._kept:
             if name not in self._component.names:
                 raise KeyError(name)
-            self._kept[name] = self._component.column(name)
+            self._kept[name] = SegmentedColumn(self._component, name)
         return self._kept[name]
 
     def __iter__(self):
@@ -1190,6 +1324,33 @@ class LazyColumns(Mapping):
 
     def __contains__(self, name) -> bool:
         return name in self._component.names
+
+
+class SegmentedColumn:
+    """Array-like view that reads indexed rows without joining file pieces."""
+
+    def __init__(self, component: Component, name: str):
+        self.component = component
+        self.name = name
+        self.dtype = component.column_dtype(name)
+        self.shape = (component.num_rows,)
+        self.ndim = 1
+
+    def __len__(self) -> int:
+        return self.shape[0]
+
+    def __getitem__(self, rows):
+        if isinstance(rows, slice):
+            rows = np.arange(*rows.indices(len(self)), dtype=np.int64)
+        return self.component.take(self.name, rows)
+
+    def __array__(self, dtype=None, copy=None) -> np.ndarray:
+        values = self.component.take(self.name, np.arange(len(self), dtype=np.int64))
+        if dtype is not None:
+            values = values.astype(dtype, copy=False)
+        elif copy:
+            values = values.copy()
+        return values
 
 
 # ── References ───────────────────────────────────────────────────────────────
