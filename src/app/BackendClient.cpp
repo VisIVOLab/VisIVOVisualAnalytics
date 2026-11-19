@@ -1260,6 +1260,8 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
             : format == QLatin1String("vbt");
     result.path = object.value(QStringLiteral("path")).toString();
     result.components = visivo::parseParticleComponents(object.value(QStringLiteral("components")));
+    result.snapshot = object.value(QStringLiteral("snapshot")).toObject();
+    result.component = object.value(QStringLiteral("component")).toObject();
     if (result.valid)
         visivo::noteVbtReadOrder(result.sessionId, paths.value(0), result.byteOrder,
                                  result.byteOrderDeclared);

@@ -88,7 +88,7 @@ def _classify_pluto(path: Path) -> dict | None:
                    open_path=ref)
 
 
-def classify_path(path: str | Path) -> dict:
+def classify_path(path: str | Path, allowed=None) -> dict:
     """``{kind, opener, confident, detail, open_path}`` for one path.
 
     ``kind`` names the content ("image", "cube", "dynspec", "fits-table",
@@ -102,7 +102,7 @@ def classify_path(path: str | Path) -> dict:
     path = Path(path)
     if path.is_dir():
         # A snapdir: the snapshot it holds (issue #31).
-        particles = _classify_particles(path)
+        particles = _classify_particles(path, allowed)
         if particles is not None:
             return particles
         return _result("directory", "ask", False, "This is a directory.")
@@ -304,23 +304,28 @@ def _looks_like_delimited_text(text: str, truncated: bool = False) -> bool:
     return sniff_separator(text, truncated) is not None
 
 
-def _classify_particles(path: Path) -> dict | None:
+def _classify_particles(path: Path, allowed=None) -> dict | None:
     """The verdict on a particle snapshot (a Gadget file, issue #31, or a
     folder of one), by its header record, not its name; None for anything
     else. It opens as a table of points, one particle type at a time:
     ``open_path`` is the first type with particles, ``components`` all of
     them."""
     from . import gadget_snapshot as gs  # noqa: PLC0415
-    from .point_table import particle_components  # noqa: PLC0415
+    from .point_table import particle_components, particle_dataset_path  # noqa: PLC0415
 
     if path.is_dir():
-        first = gs.first_in_dir(path)
+        first = gs.first_in_dir(path, allowed)
         if first is None:
             return None
         path = first
     elif gs.detect(path) is None:
         return None
     try:
+        if allowed is not None:
+            validated = particle_dataset_path(path, allowed)
+            if validated is None:
+                return None
+            path = Path(gs.split_ref(validated[0])[0])
         snap = gs.open_snapshot(path)
     except (OSError, ValueError) as exc:
         return _result("particles", "unsupported", True,

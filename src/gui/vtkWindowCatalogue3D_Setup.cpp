@@ -96,6 +96,29 @@
 
 using namespace Qt::StringLiterals;
 
+static QString particleUnitsSummary(const QJsonObject &units)
+{
+    QStringList values;
+    for (auto it = units.constBegin(); it != units.constEnd(); ++it)
+        values << u"%1: %2"_s.arg(it.key(), it.value().toString());
+    return values.join(u"; "_s);
+}
+
+static QString particlePhysicalSummary(const QJsonObject &physical)
+{
+    QStringList values;
+    for (auto it = physical.constBegin(); it != physical.constEnd(); ++it) {
+        const QJsonObject conversion = it.value().toObject();
+        if (conversion.isEmpty())
+            continue;
+        values << u"%1: ×%2 → %3"_s.arg(
+                it.key(),
+                QString::number(conversion.value(u"factor"_s).toDouble(), 'g', 6),
+                conversion.value(u"unit"_s).toString());
+    }
+    return values.join(u"; "_s);
+}
+
 // ── Setup ──
 // Extracted verbatim from vtkWindowCatalogue3D.cpp.
 
@@ -927,6 +950,18 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
     this->m_propSources = valueLabel(QString::number(this->entries.size()));
     panel->addPropertyRow(u"Sources"_s, this->m_propSources);
     panel->addPropertyRow(u"Columns"_s, QString::number(this->schema.fields.size()));
+    if (!this->m_componentMetadata.isEmpty()) {
+        panel->addPropertyRow(u"Particle type"_s,
+                              this->m_componentMetadata.value(u"name"_s).toString());
+        const QString stored = particleUnitsSummary(
+                this->m_componentMetadata.value(u"units"_s).toObject());
+        if (!stored.isEmpty())
+            panel->addPropertyRow(u"Stored units"_s, stored);
+        const QString physical = particlePhysicalSummary(
+                this->m_componentMetadata.value(u"physical"_s).toObject());
+        if (!physical.isEmpty())
+            panel->addPropertyRow(u"Physical conversion"_s, physical);
+    }
     if (this->m_label.temporaryCopy) {
         // The staged copy's hashed name says nothing, and the file goes away
         // with the backend's clean-up: say what it is, the path on hover.

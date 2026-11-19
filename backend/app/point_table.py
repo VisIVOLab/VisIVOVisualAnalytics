@@ -198,13 +198,13 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
     from . import gadget_snapshot as gs   # noqa: PLC0415
     base, ptype = gs.split_ref(path)
     p = Path(base)
-    if ptype is None and not (p.is_dir() and gs.first_in_dir(p) is not None) \
+    if ptype is None and not (p.is_dir() and gs.first_in_dir(p, allowed) is not None) \
             and not (p.is_file() and gs.detect(p) is not None):
         return None
     if allowed is not None:
         # Before any of them is read beyond its first bytes.
         if p.is_dir():
-            first = gs.first_in_dir(p)
+            first = gs.first_in_dir(p, allowed)
             if first is not None and not allowed(str(first)):
                 raise PermissionError(f"{first.name} lies outside the folders this "
                                       "backend may read.")

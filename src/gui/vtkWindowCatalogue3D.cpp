@@ -503,6 +503,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             && opened.path != filepath && this->m_cataloguePaths.size() <= 1)
             this->filepath = opened.path;
         visivo::rememberFieldNames(opened.components);
+        this->m_snapshotMetadata = opened.snapshot;
+        this->m_componentMetadata = opened.component;
         // Any catalogue the backend can draw (sky or cartesian), issue #83.
         this->m_serverSideRendering = opened.serverSideRenderingAvailable;
         this->m_tableRows = opened.numRows;
