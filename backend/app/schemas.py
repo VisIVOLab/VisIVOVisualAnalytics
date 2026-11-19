@@ -576,6 +576,10 @@ class TabularQueryRequest(BaseModel):
     dataset_id: str
     limit: int = 100000
     offset: int = 0
+    # Empty means every column.  Large particle tables can request only the
+    # coordinates needed for first paint, then hydrate all attributes in a
+    # background query over the same deterministic sample.
+    fields: list[str] = []
     filters: list[TabularFilter] = []
     sort: TabularSortSpec | None = None
     # When more rows match than ``limit``: an even sample of them (one in every

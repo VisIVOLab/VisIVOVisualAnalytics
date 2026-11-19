@@ -177,7 +177,8 @@ def _server_side_rendering() -> bool:
 
 
 def _particle_filtered_page(path: str, filters, limit: int, offset: int,
-                            random_sample: bool, even_sample: bool, phase: int):
+                            random_sample: bool, even_sample: bool, phase: int,
+                            fields=None):
     """Filter a component out of core, then read only the requested page."""
     from .. import gadget_snapshot as gs  # noqa: PLC0415
     from ..point_table import particle_rows  # noqa: PLC0415
@@ -215,7 +216,7 @@ def _particle_filtered_page(path: str, filters, limit: int, offset: int,
             stop = total if limit <= 0 else min(total, offset + limit)
             ranks = np.arange(offset, stop, dtype=np.int64)
     if not ranks.size:
-        return particle_rows(path, ranks), total, ranks
+        return particle_rows(path, ranks, fields), total, ranks
     selected, consumed = [], 0
     for chunk_index, count in enumerate(counts):
         local_ranks = ranks[(ranks >= consumed) & (ranks < consumed + count)] - consumed
@@ -227,7 +228,7 @@ def _particle_filtered_page(path: str, filters, limit: int, offset: int,
         if consumed > ranks[-1]:
             break
     rows = np.concatenate(selected) if selected else np.empty(0, dtype=np.int64)
-    return particle_rows(path, rows), total, rows
+    return particle_rows(path, rows, fields), total, rows
 
 @router.post("/v1/catalogue/subset", response_model=CatalogueSubsetResponse, tags=["catalogue"])
 async def catalogue_subset(
@@ -272,12 +273,18 @@ async def catalogue_query(
             raise HTTPException(422, "phase must not be negative.")
         from ..point_table import is_particle_format, particle_rows  # noqa: PLC0415
         particle = is_particle_format(entry.get("format"))
+        requested_fields = list(dict.fromkeys(request.fields))
+        known_fields = {str(field.get("name", "")) for field in entry.get("fields", ())}
+        unknown_fields = [field for field in requested_fields if field not in known_fields]
+        if unknown_fields:
+            raise ValueError(f"Unknown field: {unknown_fields[0]!r}")
+        projection = requested_fields or None
         if particle and request.sort is None:
             if request.filters:
                 df, total, indices = await asyncio.to_thread(
                     _particle_filtered_page, entry["path"], request.filters,
                     request.limit, request.offset, request.random_sample,
-                    request.even_sample, request.phase)
+                    request.even_sample, request.phase, projection)
             else:
                 total = int(entry.get("num_rows", 0))
                 if request.random_sample and sample_step(total, request.limit) > 1:
@@ -289,7 +296,8 @@ async def catalogue_query(
                     else:
                         stop = total if request.limit <= 0 else min(total, request.offset + request.limit)
                         indices = np.arange(request.offset, stop, dtype=np.int64)
-                df = await asyncio.to_thread(particle_rows, entry["path"], indices)
+                df = await asyncio.to_thread(
+                    particle_rows, entry["path"], indices, projection)
             row_index = [int(index) for index in indices]
         else:
             table = entry.get("dataframe")
@@ -309,6 +317,8 @@ async def catalogue_query(
                 even_sample=request.even_sample, phase=request.phase,
                 random_sample=request.random_sample)
             row_index = _original_row_positions(table, df)
+            if projection is not None:
+                df = df.loc[:, requested_fields]
         rows = df.replace({np.nan: None}).to_dict(orient="records")
         step = sample_step(total, request.limit) if (request.even_sample or request.random_sample) else 1
     except HTTPException:

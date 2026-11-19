@@ -266,12 +266,16 @@ def particle_catalogue_metadata(path: str | Path) -> dict:
     }
 
 
-def particle_rows(path: str | Path, rows) -> pd.DataFrame:
+def particle_rows(path: str | Path, rows, fields=None) -> pd.DataFrame:
     """Only selected rows of a snapshot component, directly from its shards."""
     from . import gadget_snapshot   # noqa: PLC0415
     component = gadget_snapshot.resolve(path)
     rows = np.asarray(rows, dtype=np.int64)
-    return pd.DataFrame({name: component.take(name, rows) for name in component.names},
+    names = list(component.names) if fields is None else list(dict.fromkeys(fields))
+    unknown = [name for name in names if name not in component.names]
+    if unknown:
+        raise ValueError(f"Unknown particle field: {unknown[0]!r}")
+    return pd.DataFrame({name: component.take(name, rows) for name in names},
                         index=pd.Index(rows), copy=False)
 
 

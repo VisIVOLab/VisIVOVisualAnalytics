@@ -2915,6 +2915,12 @@ static QJsonObject buildTabularQueryBody(const BackendTabularQueryRequest &req)
         { QStringLiteral("limit"), req.limit },
         { QStringLiteral("offset"), req.offset },
     };
+    if (!req.fields.isEmpty()) {
+        QJsonArray fields;
+        for (const QString &field : req.fields)
+            fields.append(field);
+        body.insert(QStringLiteral("fields"), fields);
+    }
     QJsonArray filters;
     for (const auto &f : req.filters) {
         filters.append(QJsonObject{

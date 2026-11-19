@@ -531,9 +531,11 @@ async def test_normal_particle_open_and_query_never_build_the_full_frame(
         "/v1/catalogue/query",
         json={"dataset_id": opened["dataset_id"], "limit": 100,
               "random_sample": True,
+              "fields": ["x", "y", "z", "temperature"],
               "filters": [{"field": "x", "op": ">", "value": "0"}]},
         headers=auth_headers)).json()
     assert queried["valid"] and queried["returned_rows"] == 100
+    assert set(queried["rows"][0]) == {"x", "y", "z", "temperature"}
 
     # Even a direct API sort must fail safely rather than materialising a huge
     # snapshot.  Lower the production cell budget to exercise that path with
