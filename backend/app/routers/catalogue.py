@@ -289,7 +289,7 @@ async def catalogue_subset(
             raise HTTPException(422, "This endpoint requires a catalogue dataset.")
         max_rows = max(1, int(request.max_rows))
         from ..point_table import is_particle_format, particle_rows  # noqa: PLC0415
-        if is_particle_format(entry.get("format")):
+        if is_particle_format(entry.get("format")) and entry.get("dataframe") is None:
             count = min(max_rows, int(entry.get("num_rows", 0)))
             frame = await asyncio.to_thread(
                 particle_rows, entry["path"], np.arange(count, dtype=np.int64))
@@ -335,7 +335,7 @@ async def catalogue_query(
                 _particle_sorted_page, entry["path"], request.filters, request.sort,
                 request.limit, request.offset, projection)
             row_index = [int(index) for index in indices]
-        elif particle and request.sort is None:
+        elif gadget_out_of_core and request.sort is None:
             if request.filters:
                 df, total, indices = await asyncio.to_thread(
                     _particle_filtered_page, entry["path"], request.filters,
