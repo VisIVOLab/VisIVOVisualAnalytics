@@ -278,6 +278,10 @@ private:
     /// setProperties() would delete the Source Info section mounted under them.
     QPointer<QLabel> m_propSources;
     QPointer<QLabel> m_propSession;
+    /// Metadata returned for a Gadget snapshot and its selected particle type.
+    /// Kept so the Inspector can state stored units and physical conversions.
+    QJsonObject m_snapshotMetadata;
+    QJsonObject m_componentMetadata;
     /// What the kind tag opens: the catalogue's columns and which of them the
     /// backend recognised as coordinates — this window's answer to the image
     /// viewer's FITS header.

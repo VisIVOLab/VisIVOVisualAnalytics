@@ -152,7 +152,7 @@ def test_a_broken_record_marker_is_refused(tmp_path):
         gs.scan_file(bad)
 
 
-def test_unknown_blocks_are_read_with_their_types_inferred(tmp_path):
+def test_unknown_binary_blocks_are_not_guessed_as_float(tmp_path):
     parts = _parts()
     rng = np.random.default_rng(9)
     parts[0]["XTRA"] = rng.random((2000, 2))          # gas, two values each
@@ -161,15 +161,23 @@ def test_unknown_blocks_are_read_with_their_types_inferred(tmp_path):
     parts[4]["ZZ"] = rng.random(500)                  # told apart by the files
     files, _ = _snapshot(tmp_path, parts=parts)
     snap = gs.open_snapshot(files[0])
-    assert snap.blocks["XTRA"].types == (0,) and snap.blocks["XTRA"].dims == 2
-    assert snap.blocks["FOO"].types == (4,)
-    assert snap.blocks["ZZ"].types == (0, 4) and snap.blocks["ZZ"].inferred
-    gas, stars = snap.component(0), snap.component(4)
-    assert np.array_equal(gas.column("xtra_1"), parts[0]["XTRA"][:, 1].astype("f4"))
-    assert np.array_equal(stars.column("foo"), parts[4]["FOO"].astype("f4"))
-    assert np.array_equal(gas.column("zz"), parts[0]["ZZ"].astype("f4"))
-    assert np.array_equal(stars.column("zz"), parts[4]["ZZ"].astype("f4"))
-    assert snap.describe()["blocks"]["ZZ"]["inferred"] is True
+    assert {"XTRA", "FOO", "ZZ"} <= set(snap.skipped)
+    assert "whether values are integers or floats" in dict(snap.skip_reasons)["XTRA"]
+    assert "xtra" not in snap.component(0).names
+
+
+def test_known_most_bound_ids_are_read_as_integers(tmp_path):
+    e = "<"
+    npart = [0, 3, 0, 0, 0, 0]
+    head = G._gadget_header(npart, [0.0] * 6, 0.5, 1.0, npart, 1,
+                            1000.0, 0.3, 0.7, 0.7, e)
+    ids = np.array([17, 2**31 + 5, 99], dtype=e + "u4")
+    path = tmp_path / "subhalo_ids"
+    path.write_bytes(G._gadget_block("HEAD", head, e)
+                     + G._gadget_block("MBID", ids.tobytes(), e))
+    values = gs.open_snapshot(path).component(1).column("most_bound_id")
+    assert values.dtype.kind == "u"
+    assert np.array_equal(values, ids)
 
 
 def test_double_precision_and_long_ids(tmp_path):
@@ -222,6 +230,74 @@ def test_hdf5_snapshot_reads_the_same(tmp_path):
     assert np.allclose(gas.column("temperature"), snap.component(0).temperature())
     assert np.all(snap.component(1).column("mass") == G.GADGET_DM_MASS)
     assert np.array_equal(snap.component(5).column("bh_mass"), parts[5]["BHMA"].astype("f4"))
+
+
+def _hdf5_header(handle, this_file, total, num_files=1):
+    hd = handle.create_group("Header")
+    hd.attrs["NumPart_ThisFile"] = np.array(this_file, dtype=np.int32)
+    hd.attrs["NumPart_Total"] = np.array(total, dtype=np.uint32)
+    hd.attrs["NumPart_Total_HighWord"] = np.zeros(6, dtype=np.uint32)
+    hd.attrs["MassTable"] = np.zeros(6)
+    hd.attrs["NumFilesPerSnapshot"] = num_files
+
+
+def test_hdf5_same_field_may_have_a_different_shape_per_particle_type(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "snap_heterogeneous.hdf5"
+    with h5py.File(path, "w") as h:
+        _hdf5_header(h, [2, 2, 0, 0, 0, 0], [2, 2, 0, 0, 0, 0])
+        gas = h.create_group("PartType0")
+        gas.create_dataset("Tracer", data=np.array([3.0, 4.0], dtype="f4"))
+        dark = h.create_group("PartType1")
+        dark.create_dataset("Tracer", data=np.arange(6, dtype="f8").reshape(2, 3))
+    snap = gs.open_snapshot(path)
+    assert snap.component(0).names == ["tracer"]
+    assert snap.component(1).names == ["tracer_0", "tracer_1", "tracer_2"]
+    assert np.array_equal(snap.component(0).column("tracer"), [3.0, 4.0])
+    assert np.array_equal(snap.component(1).column("tracer_2"), [2.0, 5.0])
+    assert snap.describe()["blocks"]["Tracer"]["by_type"]["1"] == {
+        "dims": 3, "dtype": "f8"}
+
+
+def test_hdf5_multifile_rejects_a_field_missing_from_one_shard(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    total = [4, 0, 0, 0, 0, 0]
+    for index in range(2):
+        with h5py.File(tmp_path / f"snap_missing.{index}.hdf5", "w") as h:
+            _hdf5_header(h, [2, 0, 0, 0, 0, 0], total, 2)
+            gas = h.create_group("PartType0")
+            gas.create_dataset("Coordinates", data=np.zeros((2, 3), dtype="f4"))
+            if index == 0:
+                gas.create_dataset("Density", data=np.ones(2, dtype="f4"))
+    with pytest.raises(ValueError, match=r"snap_missing\.1\.hdf5.*missing RHO"):
+        gs.open_snapshot(tmp_path / "snap_missing.0.hdf5")
+
+
+@pytest.mark.parametrize("second,problem", [
+    (np.ones((2, 2), dtype="f4"), "shape"),
+    (np.ones(2, dtype="f8"), "dtype"),
+])
+def test_hdf5_multifile_rejects_inconsistent_field_schema(tmp_path, second, problem):
+    h5py = pytest.importorskip("h5py")
+    total = [4, 0, 0, 0, 0, 0]
+    for index, density in enumerate((np.ones(2, dtype="f4"), second)):
+        with h5py.File(tmp_path / f"snap_schema.{index}.hdf5", "w") as h:
+            _hdf5_header(h, [2, 0, 0, 0, 0, 0], total, 2)
+            gas = h.create_group("PartType0")
+            gas.create_dataset("Density", data=density)
+    with pytest.raises(ValueError, match=problem):
+        gs.open_snapshot(tmp_path / "snap_schema.0.hdf5")
+
+
+def test_hdf5_rejects_a_dataset_row_count_different_from_its_header(tmp_path):
+    h5py = pytest.importorskip("h5py")
+    path = tmp_path / "snap_bad_rows.hdf5"
+    with h5py.File(path, "w") as h:
+        _hdf5_header(h, [2, 0, 0, 0, 0, 0], [2, 0, 0, 0, 0, 0])
+        gas = h.create_group("PartType0")
+        gas.create_dataset("Coordinates", data=np.zeros((1, 3), dtype="f4"))
+    with pytest.raises(ValueError, match=r"Coordinates has 1 rows.*announces 2"):
+        gs.open_snapshot(path)
 
 
 # ── Units and derived gas quantities ──────────────────────────────────────────
@@ -591,11 +667,11 @@ def test_an_unknown_block_is_left_out_when_its_size_is_ambiguous(tmp_path):
     files, _ = _snapshot(tmp_path, parts=parts, num_files=1, folder="amb", name="snap_000")
     snap = gs.open_snapshot(files[0])
     assert "QQ" not in snap.blocks and "QQ" in snap.skipped
-    assert "ambiguous" in dict(snap.skip_reasons)["QQ"]
+    assert "integers or floats" in dict(snap.skip_reasons)["QQ"]
     assert "QQ" in snap.describe()["skipped_reasons"]
 
 
-def test_unknown_blocks_are_told_apart_by_the_files(tmp_path):
+def test_unknown_blocks_are_not_guessed_even_when_types_fit(tmp_path):
     # The same kinds of block in three files with different mixtures of
     # types: only one reading fits them all.
     parts = _counts(600, 600, 150, 2)
@@ -608,10 +684,9 @@ def test_unknown_blocks_are_told_apart_by_the_files(tmp_path):
     files = G.write_gadget(tmp_path / "multi" / "snap_000", parts, num_files=3, split=split,
                            mass_table=MASS_TABLE)
     snap = gs.open_snapshot(files[0])
-    assert (snap.blocks["QQ"].types, snap.blocks["QQ"].dims) == ((0,), 2)
-    assert (snap.blocks["GS3"].types, snap.blocks["GS3"].dims) == ((0, 4), 3)
-    assert snap.blocks["BHX"].types == (5,) and snap.blocks["BHX"].inferred
-    assert np.array_equal(snap.component(0).column("gs3_2"), parts[0]["GS3"][:, 2].astype("f4"))
+    assert {"QQ", "GS3", "BHX"} <= set(snap.skipped)
+    assert all("integers or floats" in dict(snap.skip_reasons)[name]
+               for name in ("QQ", "GS3", "BHX"))
 
 
 @pytest.mark.parametrize("time", [0.0, 2.0])
@@ -725,6 +800,37 @@ def test_a_snapshot_file_outside_the_data_roots_is_refused(tmp_path, monkeypatch
     monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root))
     with pytest.raises(PermissionError):
         particle_dataset_path(str(files[0]), _within_data_roots)
+
+
+def test_classifying_a_directory_does_not_follow_an_external_snapshot_symlink(
+        tmp_path, monkeypatch):
+    from app.classify import classify_path
+    from app.dependencies import _within_data_roots
+    outside = tmp_path / "outside"
+    files, _ = _snapshot(outside, num_files=1, folder=".", name="snap_external")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "snap_external").symlink_to(files[0])
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root))
+    verdict = classify_path(root, _within_data_roots)
+    assert verdict["kind"] == "directory"
+    assert "external" not in str(verdict)
+
+
+@pytest.mark.asyncio
+async def test_classify_endpoint_does_not_leak_an_external_snapshot_symlink(
+        client, auth_headers, tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    files, _ = _snapshot(outside, num_files=1, folder=".", name="snap_secret")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "snap_secret").symlink_to(files[0])
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root))
+    reply = (await client.post("/v1/files/classify", json={"path": str(root)},
+                               headers=auth_headers)).json()
+    assert reply["valid"]
+    assert reply["kind"] == "directory"
+    assert "secret" not in str(reply)
 
 
 def test_a_type_without_mass_block_or_table_has_no_mass_column(tmp_path):

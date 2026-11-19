@@ -565,6 +565,10 @@ struct BackendCatalogueInfo
     QString path;
     /// A snapshot's particle types, (name, path): each opens on its own.
     QList<QPair<QString, QString>> components;
+    /// Gadget snapshot and selected particle-type metadata. In particular,
+    /// component contains the stored units and physical conversion factors.
+    QJsonObject snapshot;
+    QJsonObject component;
 };
 
 struct BackendCatalogueSubset

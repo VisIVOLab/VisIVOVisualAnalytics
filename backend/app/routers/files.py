@@ -249,7 +249,11 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
         return FileClassifyResponse(valid=False, error="File not found.")
 
     try:
-        verdict = classify_path(path)
+        verdict = classify_path(path, _within_data_roots)
+    except PermissionError:
+        # As for _normalize_path above: classification must not reveal which
+        # snapshot member a symlink placed outside the data roots reaches.
+        return FileClassifyResponse(valid=False, error="File not found.")
     except OSError as exc:
         return FileClassifyResponse(valid=False, error=str(exc))
 

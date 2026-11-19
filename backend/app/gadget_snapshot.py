@@ -24,16 +24,16 @@ the two orders, which tells the order. Every marker is checked.
   name in that order whose size it has; a record that matches none is kept as
   ``BLK<n>``.
 * Format 2 puts an 8-byte record before each block: its 4-character name and
-  the size of the block that follows. Any block is read, known or not.
+  the size of the block that follows. Known blocks are read. Unknown blocks
+  are reported but not decoded because the file carries no integer/float tag.
 
 A block holds its types one after the other, type 0 first, and only the types
-it is for. Which types those are is inferred from the sizes: the block's
-length in every file must be one element size times the particles of one set
-of types in that file (:data:`TYPE_SETS`, the known blocks' own set first).
-Files with different mixtures of types leave one answer; a block whose size
-fits no set is left out and named in :attr:`Snapshot.skipped`. The element
-type follows from the positions (float or double) and from the block (IDs are
-integers); a block of several values per particle becomes several columns.
+it is for. Known blocks' declared types are checked against their sizes in
+every file. When a known block's declared shape does not fit, the consistent
+type set can be recovered from all files together; an unknown block is left
+out and named in :attr:`Snapshot.skipped` because its numeric dtype cannot be
+recovered safely. A block of several values per particle becomes several
+columns.
 
 Masses absent from the MASS block come from the header's mass table: a column
 of that constant.
@@ -60,7 +60,7 @@ import os
 import re
 import struct
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -401,9 +401,20 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "MVIR": ((0,), 1, ("mvir",)),
     "RVIR": ((0,), 1, ("rvir",)),
     "SPOS": ((1,), 3, ("x", "y", "z")),
+    "GLEN": ((0,), 1, ("group_length",)),
+    "GOFF": ((0,), 1, ("group_offset",)),
+    "NSUB": ((0,), 1, ("num_subhalos",)),
+    "FSUB": ((0,), 1, ("first_subhalo",)),
+    "NCON": ((0,), 1, ("num_contaminated",)),
+    "SLEN": ((1,), 1, ("subhalo_length",)),
+    "SOFF": ((1,), 1, ("subhalo_offset",)),
+    "SSUB": ((1,), 1, ("subhalo_parent",)),
+    "MBID": ((1,), 1, ("most_bound_id",)),
+    "GRNR": ((1,), 1, ("group_number",)),
 }
 #: Blocks of integers (read as unsigned of 4 or 8 bytes).
-INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB"}
+INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB",
+              "NCON", "MBID", "GRNR"}
 #: An inferred block holds at most this many values per particle: beyond it a
 #: set of a few particles (two black holes) would "explain" almost any size.
 MAX_DIMS = 32
@@ -478,8 +489,8 @@ def infer_block(name: str, lengths: list[tuple[tuple[int, ...], int]], mass,
     length there)`` for EVERY file of the snapshot (0 where the file has no
     such block): all of them together decide.
 
-    A known block is read with its own types and width. Any other (or a
-    known one whose size does not fit) is tried for every set of the types
+    A known block is read with its own types and width. A known block whose
+    size does not fit is tried for every set of the types
     present: a set must explain the size in every file with a whole number of
     values per particle, at most MAX_DIMS. Exactly one such reading is taken
     (flagged ``inferred``); none, or several (equal gas and dark-matter counts
@@ -488,6 +499,9 @@ def infer_block(name: str, lengths: list[tuple[tuple[int, ...], int]], mass,
     worse than a missing one."""
     present = tuple(t for t in range(NTYPES) if any(np_[t] for np_, _ in lengths))
     known = BLOCKS.get(name)
+    if known is None:
+        return None, ("unknown binary block: its bytes do not declare whether values are "
+                      "integers or floats; add an explicit block schema before reading it")
     if known is not None:
         types = tuple(t for t in _resolve_types(known[0], None, mass) if t in present)
         element = _element(name, types, lengths, fsize) if types else None
@@ -729,6 +743,9 @@ class Snapshot:
     skipped: tuple[str, ...] = ()   # blocks left out: no single reading
     fmt: str = ""
     skip_reasons: tuple = ()        # (name, why) of each block left out
+    # HDF5 permits the same dataset name to have a different shape or dtype in
+    # different PartType groups. Binary files have one spec for every type.
+    component_specs: dict = field(default_factory=dict)  # (name, type) -> BlockSpec
 
     @property
     def path(self) -> str:
@@ -762,7 +779,12 @@ class Snapshot:
                 "mass_table": list(h.mass), "npart_total": list(h.npart_total),
                 "units": self.units.describe(),
                 "blocks": {name: {"types": list(b.types), "dims": b.dims, "dtype": b.dtype,
-                                  "inferred": b.inferred}
+                                  "inferred": b.inferred,
+                                  **({"by_type": {
+                                      str(t): {"dims": self.component_specs[(name, t)].dims,
+                                               "dtype": self.component_specs[(name, t)].dtype}
+                                      for t in b.types if (name, t) in self.component_specs}}
+                                     if self.component_specs else {})}
                            for name, b in self.blocks.items()},
                 "skipped_blocks": list(self.skipped),
                 "skipped_reasons": dict(self.skip_reasons)}
@@ -803,13 +825,16 @@ def snapshot_files(path: str | Path) -> list[Path]:
 MAX_PROBES = 64
 
 
-def first_in_dir(folder: Path) -> Path | None:
+def first_in_dir(folder: Path, allowed=None) -> Path | None:
     """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
     (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
     that is one. Only names are listed; at most MAX_PROBES files are read."""
     try:
         with os.scandir(folder) as it:
-            names = sorted(e.name for e in it if e.is_file())
+            # Do not follow a directory child's symlink before the caller's
+            # allow-list has had a chance to reject its resolved target.
+            names = sorted(e.name for e in it
+                           if e.is_file(follow_symlinks=False) or e.is_symlink())
     except OSError:
         return None
     probes = 0
@@ -820,8 +845,11 @@ def first_in_dir(folder: Path) -> Path | None:
             probes += 1
             if probes > MAX_PROBES:
                 return None
-            if is_gadget(folder / name):
-                return folder / name
+            candidate = folder / name
+            if allowed is not None and not allowed(str(candidate)):
+                continue
+            if is_gadget(candidate):
+                return candidate
     return None
 
 
@@ -903,20 +931,49 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
 
 
 def _assemble_hdf5(layouts, header: Header) -> Snapshot:
-    specs, pieces = {}, {}
+    specs, component_specs, pieces = {}, {}, {}
+    by_file = []
     for f in layouts:
+        current = {}
         for b in f.blocks:
+            rows = f.header.npart[b.ptype]
+            if b.shape[0] != rows:
+                raise ValueError(f"{Path(f.path).name}: {b.dataset} has {b.shape[0]} rows; "
+                                 f"the header announces {rows} PartType{b.ptype} particles")
             dims = b.shape[1] if len(b.shape) == 2 else 1
             kind = np.dtype(b.dtype)
+            key = (b.name, b.ptype)
+            if key in current:
+                raise ValueError(f"{Path(f.path).name}: more than one dataset maps to "
+                                 f"{b.name} for PartType{b.ptype}")
+            current[key] = b
+            previous = component_specs.get(key)
+            dtype = f"{kind.kind}{kind.itemsize}"
+            if previous is not None and (previous.dims != dims or previous.dtype != dtype):
+                raise ValueError(
+                    f"{Path(f.path).name}: {b.dataset} has shape (*, {dims}) and dtype "
+                    f"{dtype}; earlier files use (*, {previous.dims}) and {previous.dtype}")
+            component_specs[key] = BlockSpec(b.name, (b.ptype,), dtype, dims, False)
             spec = specs.get(b.name)
             types = tuple(sorted(set((spec.types if spec else ()) + (b.ptype,))))
-            specs[b.name] = BlockSpec(b.name, types, kind.str[1:], dims, False)
+            # The aggregate spec is descriptive only; Component uses the
+            # per-PartType spec above so heterogeneous groups cannot corrupt
+            # their column layout.
+            specs[b.name] = BlockSpec(b.name, types, spec.dtype if spec else dtype,
+                                      spec.dims if spec else dims, False)
             pieces.setdefault((b.name, b.ptype), []).append(
                 Piece(f.path, b.offset, b.dtype, b.shape[0], dims, b.dataset))
+        by_file.append(current)
+    all_keys = set().union(*(set(found) for found in by_file))
+    for name, ptype in sorted(all_keys):
+        for f, found in zip(layouts, by_file):
+            if f.header.npart[ptype] and (name, ptype) not in found:
+                raise ValueError(f"{Path(f.path).name}: PartType{ptype} is missing {name}, "
+                                 "which is present for that particle type in another file")
     pieces = {k: tuple(v) for k, v in pieces.items()}
     return Snapshot(layouts, header, specs, pieces,
                     units_for(layouts[0].path, _hdf5_units(layouts[0].path), header), (),
-                    "Gadget HDF5")
+                    "Gadget HDF5", component_specs=component_specs)
 
 
 def _hdf5_units(path: str) -> dict:
@@ -962,6 +1019,7 @@ class Component:
         self._arrays: dict[str, list[np.ndarray]] = {}
         self._sources: dict[str, tuple[str, int]] = {}
         for name, spec in snapshot.blocks.items():
+            spec = snapshot.component_specs.get((name, ptype), spec)
             if ptype not in spec.types or not snapshot.pieces.get((name, ptype)):
                 continue
             for k, col in enumerate(spec.columns):
@@ -1065,10 +1123,17 @@ class Component:
         vel = f"{u['velocity']} (internal, x sqrt(a))" if self.snapshot.units.comoving \
             else u["velocity"]
         table = {"x": length, "y": length, "z": length, "hsml": length,
+                 "hsml_stars": length, "bh_accretion_radius": length,
                  "vx": vel, "vy": vel, "vz": vel, "mass": mass, "bh_mass": mass,
+                 "initial_mass": mass,
                  "rho": f"{mass} / ({length})^3", "u": f"({u['velocity']})^2",
-                 "temperature": "K", "entropy": "keV cm^2"}
-        return {n: table[n] for n in self.names if n in table}
+                 "potential": f"({u['velocity']})^2",
+                 "temperature": "K", "entropy": "keV cm^2",
+                 "ne": "dimensionless", "nh": "dimensionless",
+                 "metallicity": "dimensionless", "cold_fraction": "dimensionless",
+                 "id": "dimensionless identifier", "most_bound_id": "dimensionless identifier"}
+        return {n: table.get(n, "code units (physical conversion not declared)")
+                for n in self.names}
 
     def physical(self) -> dict[str, dict]:
         """Per column, the factor that makes it physical and the unit then:
@@ -1081,9 +1146,15 @@ class Component:
         vel = units.velocity_cm_s / 1e5 * (np.sqrt(a) if units.comoving else 1.0)
         rho = units.mass_g / units.length_cm ** 3 * hh ** 2 / a ** 3
         table = {"x": (length, "kpc"), "y": (length, "kpc"), "z": (length, "kpc"),
-                 "hsml": (length, "kpc"), "vx": (vel, "km/s"), "vy": (vel, "km/s"),
+                 "hsml": (length, "kpc"), "hsml_stars": (length, "kpc"),
+                 "bh_accretion_radius": (length, "kpc"),
+                 "vx": (vel, "km/s"), "vy": (vel, "km/s"),
                  "vz": (vel, "km/s"), "mass": (mass, "Msun"), "bh_mass": (mass, "Msun"),
-                 "rho": (rho, "g/cm^3"), "u": (units.velocity_cm_s ** 2, "erg/g")}
+                 "initial_mass": (mass, "Msun"),
+                 "rho": (rho, "g/cm^3"), "u": (units.velocity_cm_s ** 2, "erg/g"),
+                 "ne": (1.0, "dimensionless"), "nh": (1.0, "dimensionless"),
+                 "metallicity": (1.0, "dimensionless"),
+                 "cold_fraction": (1.0, "dimensionless")}
         return {n: {"factor": float(table[n][0]), "unit": table[n][1]}
                 for n in self.names if n in table}
 
