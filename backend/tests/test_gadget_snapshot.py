@@ -518,7 +518,6 @@ async def test_routes_open_and_draw_a_snapshot(client, auth_headers, tmp_path):
 async def test_normal_particle_open_and_query_never_build_the_full_frame(
         client, auth_headers, tmp_path, monkeypatch):
     from app import point_table
-    from app.routers import catalogue as catalogue_router
     files, _ = _snapshot(tmp_path)
     monkeypatch.setattr(point_table, "particle_frame",
                         lambda *_args, **_kw: (_ for _ in ()).throw(
@@ -537,17 +536,19 @@ async def test_normal_particle_open_and_query_never_build_the_full_frame(
     assert queried["valid"] and queried["returned_rows"] == 100
     assert set(queried["rows"][0]) == {"x", "y", "z", "temperature"}
 
-    # Even a direct API sort must fail safely rather than materialising a huge
-    # snapshot.  Lower the production cell budget to exercise that path with
-    # this compact fixture.
-    monkeypatch.setattr(catalogue_router, "MAX_MATERIALISED_PARTICLE_CELLS", 1)
+    # Sorting is out-of-core too: particle_frame remains forbidden by the
+    # monkeypatch above, while the requested page is correctly ordered.
     sorted_query = (await client.post(
         "/v1/catalogue/query",
         json={"dataset_id": opened["dataset_id"], "limit": 100,
+              "fields": ["x", "rho"],
+              "filters": [{"field": "rho", "op": ">", "value": "0"}],
               "sort": {"field": "x", "direction": "asc"}},
         headers=auth_headers)).json()
-    assert not sorted_query["valid"]
-    assert "Global sorting is disabled" in sorted_query["error"]
+    assert sorted_query["valid"], sorted_query
+    values = [row["x"] for row in sorted_query["rows"]]
+    assert values == sorted(values)
+    assert set(sorted_query["rows"][0]) == {"x", "rho"}
 
 
 def test_the_render_route_opens_a_remote_session_on_a_particle_type(monkeypatch):
