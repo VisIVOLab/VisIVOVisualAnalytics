@@ -24,14 +24,19 @@ router = APIRouter(tags=['catalogue'])
 logger = logging.getLogger('visivo.backend')
 _auth = Depends(verify_token)
 
+# An out-of-core sort retains only the prefix needed to answer a page. Bound
+# that prefix so a huge offset cannot turn it into a full-table materialisation.
+MAX_PARTICLE_SORT_WINDOW = 1_000_000
+PARTICLE_CHUNK_ROWS = 1_000_000
+
 @router.post("/v1/catalogue/open", response_model=CatalogueOpenResponse, tags=["catalogue"])
 async def open_catalogue(
     request: CatalogueOpenRequest,
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CatalogueOpenResponse:
-    from ..point_table import (is_particle_format, particle_components,  # noqa: PLC0415
-                               particle_dataset_path, split_component)
+    from ..point_table import (is_particle_format, particle_catalogue_metadata,  # noqa: PLC0415
+                               particle_components, particle_dataset_path, split_component)
     raw_paths = request.paths if request.paths else [request.path]
     fmt = request.format.strip().lower()
     paths: list[Path] = []
@@ -67,7 +72,7 @@ async def open_catalogue(
             valid=False, error="byte_order applies to a VisIVO Binary Table only.")
     orders: dict[str, Any] = {}
 
-    def load() -> tuple[pd.DataFrame, dict[str, Any]]:
+    def load() -> tuple[pd.DataFrame | None, dict[str, Any]]:
         if is_vbt:
             # Before any value is read: the order asked for, else a check of
             # the order the header declares (issue #165).
@@ -83,6 +88,8 @@ async def open_catalogue(
                                   and not orders["byte_order_warning"]):
                     orders.update(found)
                 orders["changed"] = changed
+        if fmt == "gadget":
+            return None, particle_catalogue_metadata(read_as[0])
         if len(paths) == 1:
             return _catalogue_metadata(Path(read_as[0]), fmt)
         # Multi-file: load each (same format) and concatenate into one
@@ -131,8 +138,8 @@ async def open_catalogue(
         "[catalogue-open] session=%s dataset_id=%s rows=%d cols=%d path=%s",
         session.session_id[:8] + "…",
         dataset_id,
-        len(dataframe),
-        len(dataframe.columns),
+        int(metadata["num_rows"]),
+        len(metadata["fields"]),
         path,
     )
     return CatalogueOpenResponse(
@@ -167,6 +174,109 @@ def _server_side_rendering() -> bool:
     except Exception:   # noqa: BLE001 - no VTK: no server-side rendering
         return False
 
+
+def _particle_filtered_page(path: str, filters, limit: int, offset: int,
+                            random_sample: bool, even_sample: bool, phase: int,
+                            fields=None):
+    """Filter a component out of core, then read only the requested page."""
+    from .. import gadget_snapshot as gs  # noqa: PLC0415
+    from ..point_table import particle_rows  # noqa: PLC0415
+    component = gs.resolve(path)
+    matching = _particle_matcher(component, filters)
+    chunk = PARTICLE_CHUNK_ROWS
+    counts = [len(matching(start, min(component.num_rows, start + chunk)))
+              for start in range(0, component.num_rows, chunk)]
+    total = int(sum(counts))
+    if random_sample and sample_step(total, limit) > 1:
+        ranks = _random_sample_rows(total, limit, phase)
+    else:
+        stride = sample_step(total, limit) if even_sample else 1
+        if stride > 1:
+            ranks = np.arange(phase, total, stride, dtype=np.int64)[:limit]
+        else:
+            stop = total if limit <= 0 else min(total, offset + limit)
+            ranks = np.arange(offset, stop, dtype=np.int64)
+    if not ranks.size:
+        return particle_rows(path, ranks, fields), total, ranks
+    selected, consumed = [], 0
+    for chunk_index, count in enumerate(counts):
+        local_ranks = ranks[(ranks >= consumed) & (ranks < consumed + count)] - consumed
+        if local_ranks.size:
+            start = chunk_index * chunk
+            matches = matching(start, min(component.num_rows, start + chunk))
+            selected.append(matches[local_ranks])
+        consumed += count
+        if consumed > ranks[-1]:
+            break
+    rows = np.concatenate(selected) if selected else np.empty(0, dtype=np.int64)
+    return particle_rows(path, rows, fields), total, rows
+
+
+def _particle_matcher(component, filters):
+    """Return a bounded-memory numeric-filter evaluator for one component."""
+    numeric_ops = {"=", "!=", ">", ">=", "<", "<="}
+    prepared = []
+    for item in filters:
+        if item.field not in component.names:
+            raise ValueError(f"Unknown field: {item.field!r}")
+        if item.op not in numeric_ops:
+            raise ValueError(f"Particle filtering supports numeric operators only, not {item.op!r}")
+        prepared.append((item.field, item.op, float(item.value)))
+
+    def matching(start, stop):
+        source_rows = np.arange(start, stop, dtype=np.int64)
+        keep = np.ones(stop - start, dtype=bool)
+        for field, op, value in prepared:
+            column = component.take(field, source_rows)
+            keep &= {"=": column == value, "!=": column != value,
+                     ">": column > value, ">=": column >= value,
+                     "<": column < value, "<=": column <= value}[op]
+        return np.flatnonzero(keep).astype(np.int64) + start
+    return matching
+
+
+
+def _particle_sorted_page(path: str, filters, sort, limit: int, offset: int,
+                          fields=None):
+    """Sort a page while retaining at most ``offset + limit`` candidate rows."""
+    from .. import gadget_snapshot as gs  # noqa: PLC0415
+    from ..point_table import particle_rows  # noqa: PLC0415
+    component = gs.resolve(path)
+    if sort.field not in component.names:
+        raise ValueError(f"Unknown sort field: {sort.field!r}")
+    if limit <= 0:
+        raise ValueError("A positive limit is required for out-of-core particle sorting.")
+    if offset < 0:
+        raise ValueError("offset must not be negative.")
+    window = offset + limit
+    if window > MAX_PARTICLE_SORT_WINDOW:
+        raise ValueError(
+            f"The requested sorted window ({window} rows) exceeds the "
+            f"out-of-core limit of {MAX_PARTICLE_SORT_WINDOW} rows.")
+    descending = sort.direction.lower() == "desc"
+    matching = _particle_matcher(component, filters)
+    kept_rows = np.empty(0, dtype=np.int64)
+    kept_values = None
+    total = 0
+    for start in range(0, component.num_rows, PARTICLE_CHUNK_ROWS):
+        selected = matching(start, min(component.num_rows, start + PARTICLE_CHUNK_ROWS))
+        total += len(selected)
+        if not len(selected):
+            continue
+        values = np.asarray(component.take(sort.field, selected))
+        rows = np.concatenate((kept_rows, selected))
+        values = values if kept_values is None else np.concatenate((kept_values, values))
+        key = values
+        if values.dtype.kind == "f":
+            key = np.where(np.isnan(values), -np.inf if descending else np.inf, values)
+        order = np.argsort(key, kind="stable")
+        if descending:
+            order = order[::-1]
+        order = order[:window]
+        kept_rows, kept_values = rows[order], values[order]
+    page_rows = kept_rows[offset:window]
+    return particle_rows(path, page_rows, fields), int(total), page_rows
+
 @router.post("/v1/catalogue/subset", response_model=CatalogueSubsetResponse, tags=["catalogue"])
 async def catalogue_subset(
     request: CatalogueSubsetRequest,
@@ -177,9 +287,15 @@ async def catalogue_subset(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "catalogue":
             raise HTTPException(422, "This endpoint requires a catalogue dataset.")
-        df: pd.DataFrame = entry["dataframe"]
         max_rows = max(1, int(request.max_rows))
-        frame = df.iloc[:max_rows]
+        from ..point_table import is_particle_format, particle_rows  # noqa: PLC0415
+        if is_particle_format(entry.get("format")) and entry.get("dataframe") is None:
+            count = min(max_rows, int(entry.get("num_rows", 0)))
+            frame = await asyncio.to_thread(
+                particle_rows, entry["path"], np.arange(count, dtype=np.int64))
+        else:
+            df: pd.DataFrame = entry["dataframe"]
+            frame = df.iloc[:max_rows]
         rows = frame.replace({np.nan: None}).to_dict(orient="records")
     except HTTPException:
         raise
@@ -202,14 +318,54 @@ async def catalogue_query(
         # _apply_tabular_query operates on a copy so the original is never mutated.
         if request.phase < 0:
             raise HTTPException(422, "phase must not be negative.")
-        df, total = _apply_tabular_query(
-            entry["dataframe"], request.filters, request.sort, request.limit, request.offset,
-            even_sample=request.even_sample, phase=request.phase,
-            random_sample=request.random_sample,
-        )
+        from ..point_table import is_particle_format, particle_rows  # noqa: PLC0415
+        particle = is_particle_format(entry.get("format"))
+        requested_fields = list(dict.fromkeys(request.fields))
+        known_fields = {str(field.get("name", "")) for field in entry.get("fields", ())}
+        unknown_fields = [field for field in requested_fields if field not in known_fields]
+        if unknown_fields:
+            raise ValueError(f"Unknown field: {unknown_fields[0]!r}")
+        projection = requested_fields or None
+        gadget_out_of_core = particle and entry.get("dataframe") is None
+        if gadget_out_of_core and request.sort is not None:
+            if request.random_sample or request.even_sample:
+                raise ValueError(
+                    "Sampling and sorting cannot be combined for an out-of-core particle table.")
+            df, total, indices = await asyncio.to_thread(
+                _particle_sorted_page, entry["path"], request.filters, request.sort,
+                request.limit, request.offset, projection)
+            row_index = [int(index) for index in indices]
+        elif gadget_out_of_core and request.sort is None:
+            if request.filters:
+                df, total, indices = await asyncio.to_thread(
+                    _particle_filtered_page, entry["path"], request.filters,
+                    request.limit, request.offset, request.random_sample,
+                    request.even_sample, request.phase, projection)
+            else:
+                total = int(entry.get("num_rows", 0))
+                if request.random_sample and sample_step(total, request.limit) > 1:
+                    indices = _random_sample_rows(total, request.limit, request.phase)
+                else:
+                    stride = sample_step(total, request.limit) if request.even_sample else 1
+                    if stride > 1:
+                        indices = np.arange(request.phase, total, stride, dtype=np.int64)[:request.limit]
+                    else:
+                        stop = total if request.limit <= 0 else min(total, request.offset + request.limit)
+                        indices = np.arange(request.offset, stop, dtype=np.int64)
+                df = await asyncio.to_thread(
+                    particle_rows, entry["path"], indices, projection)
+            row_index = [int(index) for index in indices]
+        else:
+            table = entry.get("dataframe")
+            df, total = _apply_tabular_query(
+                table, request.filters, request.sort, request.limit, request.offset,
+                even_sample=request.even_sample, phase=request.phase,
+                random_sample=request.random_sample)
+            row_index = _original_row_positions(table, df)
+            if projection is not None:
+                df = df.loc[:, requested_fields]
         rows = df.replace({np.nan: None}).to_dict(orient="records")
         step = sample_step(total, request.limit) if (request.even_sample or request.random_sample) else 1
-        row_index = _original_row_positions(entry["dataframe"], df)
     except HTTPException:
         raise
     except Exception as exc:

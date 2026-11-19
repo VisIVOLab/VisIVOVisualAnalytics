@@ -631,6 +631,10 @@ struct BackendTabularQueryRequest
     QString datasetId;
     int limit{ 100000 };
     int offset{ 0 };
+    /// Empty requests every field.  A first-paint query can project only the
+    /// coordinates and initial visual quantity, then hydrate the same stable
+    /// sample in the background.
+    QStringList fields;
     std::vector<BackendTabularFilter> filters;
     QString sortField;
     QString sortDirection; // "asc" or "desc", empty = no sort

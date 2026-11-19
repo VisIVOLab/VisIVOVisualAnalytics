@@ -453,6 +453,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      });
 
     BackendClient client(backendUrl, backendToken);
+    bool hydrateParticleAttributes = false;
     const QString catFormat = catalogueFormatForPath(filepath);
     // A window the user opens: a VBT is read as the backend was last told,
     // and warned again when its header looks wrong (issue #165).
@@ -539,6 +540,40 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         BackendTabularQueryRequest qreq;
         qreq.datasetId = this->remoteDatasetId;
         qreq.randomSample = true;
+        if (opened.particles) {
+            // Bound first-paint cost by values, not only rows. Random sampling
+            // still spans the entire snapshot; later phases refine it.
+            constexpr int initialCellBudget = 850000;
+            const int fields = std::max(1, static_cast<int>(opened.fields.size()));
+            qreq.limit = std::clamp(initialCellBudget / fields, 10000, 100000);
+            qreq.limit = std::max(10000, qreq.limit / 5000 * 5000);
+            this->m_pageSize = qreq.limit;
+
+            // First paint needs positions and one meaningful scalar, not every
+            // run-specific field.  The deterministic random sample is queried
+            // again in the background below to hydrate its complete rows.
+            const auto appendField = [&qreq](const QString &name) {
+                if (!name.isEmpty() && !qreq.fields.contains(name))
+                    qreq.fields.append(name);
+            };
+            appendField(opened.xField);
+            appendField(opened.yField);
+            appendField(opened.zField);
+            const QStringList preferred{ u"rho"_s, u"density"_s, u"temperature"_s,
+                                         u"mass"_s, u"u"_s, u"sfr"_s, u"age"_s };
+            for (const QString &wanted : preferred) {
+                const auto it = std::find_if(
+                        opened.fields.cbegin(), opened.fields.cend(),
+                        [&wanted](const auto &field) {
+                            return field.name.compare(wanted, Qt::CaseInsensitive) == 0;
+                        });
+                if (it != opened.fields.cend()) {
+                    appendField(it->name);
+                    break;
+                }
+            }
+            hydrateParticleAttributes = qreq.fields.size() < opened.fields.size();
+        }
         const auto subset = client.queryTabularCatalogue(qreq);
         this->m_sampleStep = subset.step;
         this->m_samplePhase = 1;
@@ -609,6 +644,19 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     this->refreshCatalogueTable();
     this->applyPointTableLayout();
     this->choosePointTableDefaults();
+    if (hydrateParticleAttributes) {
+        // Let Qt present the lightweight scene first.  Attribute hydration is
+        // then ordinary asynchronous filtering with no filters: the fixed RNG
+        // returns the same row indices and the watcher atomically replaces the
+        // partial rows once all columns have arrived.
+        QTimer::singleShot(0, this, [this]() {
+            if (this->filterBusy || this->remoteDatasetId.isEmpty())
+                return;
+            if (this->filterStatusLabel)
+                this->filterStatusLabel->setText(u"Loading particle attributes in background…"_s);
+            this->applyFilter();
+        });
+    }
 
     // ── Filter signal/slot connections ───────────────────────────────────────
     // Widgets (filterList, btnFilter*, filterStatusLabel, btnLoadMore) were

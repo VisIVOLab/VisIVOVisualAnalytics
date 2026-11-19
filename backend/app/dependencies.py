@@ -578,7 +578,7 @@ __all__ = [
     "_HEALPY_AVAILABLE",
     "_RA_CANDIDATES", "_DEC_CANDIDATES",
     "_default_worker_count", "_pool_initializer", "_error",
-    "_apply_tabular_query", "sample_step",
+    "_apply_tabular_query", "sample_step", "_random_sample_rows",
     "data_roots", "hide_hidden_entries", "_normalize_path", "_parse_vbt_header", "_is_fits", "_has_fits_name",
     "_is_supported_dataset",
     "_normalize_catalogue_field", "_catalogue_field_type",

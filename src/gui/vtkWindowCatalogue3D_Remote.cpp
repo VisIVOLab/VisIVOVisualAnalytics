@@ -445,6 +445,10 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
         if (i >= 0)
             skip << this->rawHeaders.value(i);
     int fallback = -1;
+    int preferredIndex = -1;
+    int preferredRank = std::numeric_limits<int>::max();
+    const QStringList preferred{ u"rho"_s, u"density"_s, u"temperature"_s,
+                                 u"mass"_s, u"u"_s, u"sfr"_s, u"age"_s };
     for (int i = 0; i < this->comboMapColor->count(); ++i) {
         const QString key = this->comboMapColor->itemData(i).toString();
         if (!key.startsWith(u"raw:"_s))
@@ -454,10 +458,19 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
             continue;
         if (fallback < 0)
             fallback = i;
-        break;
+        for (int rank = 0; rank < preferred.size(); ++rank) {
+            if (column.compare(preferred.at(rank), Qt::CaseInsensitive) == 0) {
+                if (rank < preferredRank) {
+                    preferredIndex = i;
+                    preferredRank = rank;
+                }
+                break;
+            }
+        }
     }
-    if (fallback >= 0)
-        this->comboMapColor->setCurrentIndex(fallback);
+    const int selected = preferredIndex >= 0 ? preferredIndex : fallback;
+    if (selected >= 0)
+        this->comboMapColor->setCurrentIndex(selected);
 }
 
 void vtkWindowCatalogue3D::refreshColorbar()

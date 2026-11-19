@@ -1062,14 +1062,37 @@ QString vtkWindowCatalogue3D::particleTag() const
 void vtkWindowCatalogue3D::updateLoadMoreButtons()
 {
     const bool hasMore = this->hasMoreRows();
-    if (this->btnLoadAll)
+    if (this->btnLoadAll) {
+        const bool canLoadAll = this->canLoadAllLocally();
         this->btnLoadAll->setVisible(hasMore);
+        this->btnLoadAll->setEnabled(canLoadAll);
+        this->btnLoadAll->setText(canLoadAll ? u"Load all"_s : u"Load all (too large)"_s);
+        this->btnLoadAll->setToolTip(
+                canLoadAll
+                        ? u"Load every remaining source at once (no paging). May use "
+                          u"significant memory for large catalogues."_s
+                        : u"A complete local copy would use excessive memory. The full "
+                          u"dataset remains available to backend queries; use Load more "
+                          u"to refine the representative sample."_s);
+    }
     if (this->btnLoadMore) {
         this->btnLoadMore->setVisible(hasMore);
         this->btnLoadMore->setEnabled(true);
         this->btnLoadMore->setText(QStringLiteral("Load more (%1 remaining)")
                                            .arg(this->m_totalCount - this->m_currentOffset));
     }
+}
+
+bool vtkWindowCatalogue3D::canLoadAllLocally() const
+{
+    // QVariant-backed rows have substantially more overhead than their raw
+    // numeric payload.  Fifty million values already represent a sizeable
+    // desktop allocation, while still allowing the 2.3 M x 9 catalogue used by
+    // the progressive-loading workflow to be materialised on demand.
+    constexpr qint64 localCellBudget = 50000000;
+    const qint64 rows = std::max<qint64>(0, this->m_totalCount);
+    const qint64 columns = std::max<qint64>(1, this->schema.headers.size());
+    return rows == 0 || rows <= localCellBudget / columns;
 }
 
 void vtkWindowCatalogue3D::refreshViewerChrome()
