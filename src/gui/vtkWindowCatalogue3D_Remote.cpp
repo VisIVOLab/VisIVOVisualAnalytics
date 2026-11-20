@@ -814,6 +814,8 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
             return self ? self->m_rtPanel->tone(base) : QJsonObject();
         };
         this->m_rtView = new RaytraceViewport(source, this->m_renderStack);
+        QObject::connect(this->m_rtView, &RaytraceViewport::cameraChanged, this,
+                         &vtkWindowCatalogue3D::broadcastComparisonRaytraceCamera);
         this->m_renderStack->addWidget(this->m_rtView);
         const auto overlayShown = [self, boxCheck, barCheck]() {
             if (self && self->m_rtView)

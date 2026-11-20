@@ -658,6 +658,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCatalogue3D_Scene.cpp
         src/gui/vtkWindowCatalogue3D_Remote.cpp
         src/gui/vtkWindowCatalogue3D_Interaction.cpp
+        src/gui/vtkWindowCatalogue3D_Compare.cpp
         src/gui/vtkWindowCatalogue3D_Samp.cpp
         src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h

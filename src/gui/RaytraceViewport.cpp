@@ -451,6 +451,7 @@ bool RaytraceViewport::eventFilter(QObject *watched, QEvent *event)
             m_camera = visivo::turnCamera(m_camera, -d.x() * 0.4, d.y() * 0.4);
         else
             m_camera = visivo::panCamera(m_camera, d.x() / h, d.y() / h);
+        emit cameraChanged(m_camera);
         redraw(false);
         m_settle->start();
         return true;
@@ -465,6 +466,7 @@ bool RaytraceViewport::eventFilter(QObject *watched, QEvent *event)
         const double factor = std::clamp(
                 std::pow(1.0015, static_cast<QWheelEvent *>(event)->angleDelta().y()), 0.8, 1.25);
         m_camera = visivo::dollyCamera(m_camera, factor);
+        emit cameraChanged(m_camera);
         redraw(false);
         m_settle->start();
         return true;

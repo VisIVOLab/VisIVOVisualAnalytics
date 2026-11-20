@@ -181,7 +181,8 @@ static std::optional<BackendTabularFilter> showAddFilterDialog(
 
 vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
                                            const QString &backendToken, const QStringList &paths,
-                                           const Catalogue3DLabel &label, QWidget *parent)
+                                           const Catalogue3DLabel &label, QWidget *parent,
+                                           vtkWindowCatalogue3D *comparisonSource)
     : QMainWindow(parent)
     , ui(new Ui::vtkWindowCatalogue3D)
     , filepath(filepath)
@@ -458,15 +459,46 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     // A window the user opens: a VBT is read as the backend was last told,
     // and warned again when its header looks wrong (issue #165).
     client.setUseRememberedVbtByteOrder(false);
-    auto opened = this->m_cataloguePaths.size() > 1
-            ? client.openCatalogue(this->m_cataloguePaths, catFormat)
-            : client.openCatalogue(filepath, catFormat);
+    BackendCatalogueInfo opened;
+    if (comparisonSource) {
+        // A comparison is another rendering of the exact same loaded rows.
+        // Reopening a 45-million-particle snapshot here would repeat the
+        // expensive scan and create a second backend dataset for no benefit.
+        this->remoteDatasetId = comparisonSource->remoteDatasetId;
+        this->remoteSessionId = comparisonSource->remoteSessionId;
+        visivo::DatasetUsers::instance().acquire(this->backendUrl, this->remoteSessionId,
+                                                 this->remoteDatasetId);
+        this->m_cartesian = comparisonSource->m_cartesian;
+        this->m_skyCoordinates = comparisonSource->m_skyCoordinates;
+        this->m_pointTable = comparisonSource->m_pointTable;
+        this->m_tableFormat = comparisonSource->m_tableFormat;
+        this->m_snapshotMetadata = comparisonSource->m_snapshotMetadata;
+        this->m_componentMetadata = comparisonSource->m_componentMetadata;
+        this->m_serverSideRendering = comparisonSource->m_serverSideRendering;
+        this->m_tableRows = comparisonSource->m_tableRows;
+        this->schema = comparisonSource->schema;
+        this->rawHeaders = comparisonSource->rawHeaders;
+        this->entries = comparisonSource->entries;
+        this->unplacedEntries = comparisonSource->unplacedEntries;
+        this->m_currentOffset = comparisonSource->m_currentOffset;
+        this->m_sampleStep = comparisonSource->m_sampleStep;
+        this->m_samplePhase = comparisonSource->m_samplePhase;
+        this->m_sampleLimit = comparisonSource->m_sampleLimit;
+        this->m_pageSize = comparisonSource->m_pageSize;
+        this->m_totalCount = comparisonSource->m_totalCount;
+        this->activeFilters = comparisonSource->activeFilters;
+        this->detectVelocityColumns();
+    } else {
+        opened = this->m_cataloguePaths.size() > 1
+                ? client.openCatalogue(this->m_cataloguePaths, catFormat)
+                : client.openCatalogue(filepath, catFormat);
+    }
     // A VBT whose values look like the other byte order than its header says
     // (issue #165): ask, and open it again in the order chosen. A button's
     // answer is remembered, and the automatic reopen after a session expiry
     // (autoReopenThenLoadMore, a client left at its default) sends it; after
     // Escape nothing is sent, and the backend reads the file as it does now.
-    if (opened.valid
+    if (!comparisonSource && opened.valid
         && visivo::askVbtByteOrder(this, backendUrl, filepath, opened.byteOrderWarning,
                                    opened.byteOrder, &this->m_byteOrderPromptMs)) {
         // The first answer's dataset is closed by the backend as the order
@@ -476,7 +508,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 ? client.openCatalogue(this->m_cataloguePaths, catFormat)
                 : client.openCatalogue(filepath, catFormat);
     }
-    if (!opened.valid) {
+    if (comparisonSource) {
+        const int loadedRows = static_cast<int>(entries.size() + unplacedEntries.size());
+        ui->labelStatus->setText(
+                u"Comparison view · %1 of %2 rows · shared backend dataset."_s
+                        .arg(loadedRows).arg(this->m_totalCount));
+    } else if (!opened.valid) {
         // Before the box: its reading time is not the open's ("Last 5 jobs").
         this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
         // The opener's busy indicator is not up behind the box (#159).
@@ -783,6 +820,13 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  u"(WebXR page), refined by the backend when still."_s);
             QObject::connect(actionVr, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::openInVrHeadset);
+            auto *actionCompare = toolsMenu->addAction(u"Compare Quantity…"_s);
+            actionCompare->setToolTip(
+                    u"Open another physical quantity of these simulation rows with a linked "
+                    u"camera and selection, without reopening the backend dataset."_s);
+            actionCompare->setEnabled(this->m_pointTable && !this->remoteDatasetId.isEmpty());
+            QObject::connect(actionCompare, &QAction::triggered, this,
+                             &vtkWindowCatalogue3D::openQuantityComparison);
             // The sources with no distance, left out of the scene (issue #265).
             this->m_actionUnplaced = toolsMenu->addAction(u"Unplaced Sources…"_s);
             this->m_actionUnplaced->setToolTip(
@@ -936,10 +980,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleBoundingBox);
     QObject::connect(this->chkShowShells, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleShells);
+    this->setupComparisonLink(comparisonSource);
 }
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
 {
+    this->teardownComparisonLink();
     if (this->m_markerObserverTag)
         this->renderer->RemoveObserver(this->m_markerObserverTag);
     delete ui;

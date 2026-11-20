@@ -89,6 +89,9 @@ signals:
     /// The backend has no route for the view (it is older than this client):
     /// `text` says so. Nothing will be drawn; the window turns the view off.
     void unavailable(const QString &text);
+    /// The user turned, panned or zoomed this view. Programmatic setCamera()
+    /// deliberately does not emit it, which prevents linked views echoing.
+    void cameraChanged(const QJsonObject &camera);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

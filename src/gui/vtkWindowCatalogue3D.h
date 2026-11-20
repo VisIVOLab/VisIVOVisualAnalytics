@@ -3,6 +3,7 @@
 
 #include "Catalogue3DParser.h"
 #include "CataloguePlacement.h"
+#include "LinkedCameraSync.h"
 
 #include "app/BackendClient.h"
 #include "app/SampProtocol.h"
@@ -148,7 +149,8 @@ public:
                                   const QString &backendToken,
                                   const QStringList &paths = QStringList(),
                                   const Catalogue3DLabel &label = Catalogue3DLabel(),
-                                  QWidget *parent = nullptr);
+                                  QWidget *parent = nullptr,
+                                  vtkWindowCatalogue3D *comparisonSource = nullptr);
     ~vtkWindowCatalogue3D() override;
 
     // ── SAMP row linking (issue #130, vtkWindowCatalogue3D_Samp.cpp) ──────────
@@ -408,6 +410,16 @@ private:
     void dropCustomCosmologyForServerView(const QString &view);
     /// Tools ▸ Cosmology Calculator, opened on the model the sources use.
     void openCosmologyCalculator();
+    /// Open a second quantity of this simulation without reopening its backend dataset.
+    void openQuantityComparison();
+    void setupComparisonLink(vtkWindowCatalogue3D *source);
+    void teardownComparisonLink();
+    void broadcastComparisonSelection(int index);
+    void broadcastComparisonRaytraceCamera(const QJsonObject &camera);
+    void onComparisonCameraFrame();
+    void applyComparisonCamera(const LinkedCameraSync::Pose &pose);
+    void applyComparisonRaytraceCamera(const QJsonObject &camera);
+    LinkedCameraSync::Pose comparisonCameraPose() const;
     void openInVrHeadset();   // issue #190: vtkWindowCatalogue3D_VrHeadset.cpp
     QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     /// The applied frame, distance mode and cosmology the headset places a
@@ -441,6 +453,12 @@ private:
     qint64 m_openFailedAtMs{ -1 };
     qint64 m_byteOrderPromptMs{ 0 };
     QString remoteSessionId;
+    /// Windows made with Compare Quantity share this non-empty group.
+    QString m_comparisonGroup;
+    bool m_comparisonLinked{ false };
+    bool m_applyingComparisonUpdate{ false };
+    LinkedCameraSync::Tracker m_comparisonCameraTracker;
+    unsigned long m_comparisonCameraObserverTag{ 0 };
     std::vector<Catalogue3DEntry> entries;
     /// Rows with no distance (issue #265), never in entries: not drawn.
     std::vector<Catalogue3DEntry> unplacedEntries;
