@@ -3,14 +3,22 @@
 #include "CatalogueSelectionKey.h"
 #include "LinkedWindowRegistry.h"
 #include "RaytraceViewport.h"
+#include "app/DatasetName.h"
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QJsonArray>
 #include <QLabel>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QSet>
+#include <QSignalBlocker>
+#include <QSlider>
 #include <QStatusBar>
 #include <QTimer>
 #include <QUuid>
+#include <QtConcurrent>
 
 #include <vtkCallbackCommand.h>
 #include <vtkCamera.h>
@@ -19,6 +27,9 @@
 #include <vtkRenderer.h>
 #include <vtkRenderWindow.h>
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <utility>
 
 using namespace Qt::StringLiterals;
@@ -209,6 +220,278 @@ void vtkWindowCatalogue3D::updateComparisonUi()
                         .arg(quantity.toHtmlEscaped()));
     }
     this->updateWindowTitle();
+}
+
+void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
+{
+    if (!this->m_pointTable || this->remoteDatasetId.isEmpty())
+        return;
+    if (source) {
+        this->m_snapshotSeries = source->m_snapshotSeries;
+        this->updateSnapshotTimelineUi();
+        return;
+    }
+
+    QObject::connect(&this->m_snapshotSeriesWatcher,
+                     &QFutureWatcher<BackendPointSeriesResult>::finished, this, [this]() {
+        const BackendPointSeriesResult result = this->m_snapshotSeriesWatcher.result();
+        const auto windows = comparisonWindows().snapshot();
+        for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+            if (!window)
+                continue;
+            if (window == this
+                || (!this->m_comparisonGroup.isEmpty()
+                    && window->m_comparisonGroup == this->m_comparisonGroup)) {
+                window->m_snapshotSeries = result;
+                window->updateSnapshotTimelineUi();
+            }
+        }
+    });
+    const QString url = this->backendUrl;
+    const QString token = this->backendToken;
+    const QString session = this->remoteSessionId;
+    const QString dataset = this->remoteDatasetId;
+    this->m_snapshotSeriesWatcher.setFuture(QtConcurrent::run(
+            [url, token, session, dataset]() {
+                BackendClient client(url, token);
+                client.setSessionId(session);
+                return client.requestPointSeries(dataset);
+            }));
+}
+
+void vtkWindowCatalogue3D::updateSnapshotTimelineUi()
+{
+    const bool available = this->m_snapshotSeries.valid
+            && this->m_snapshotSeries.paths.size() > 1
+            && this->m_snapshotSeries.index >= 0;
+    if (this->m_timelineCard)
+        this->m_timelineCard->setVisible(available);
+    if (!available)
+        return;
+
+    const int index = this->m_snapshotSeries.index;
+    const int number = this->m_snapshotSeries.numbers.value(index);
+    QString details = u"Output %1 · %2 of %3"_s
+            .arg(number).arg(index + 1).arg(this->m_snapshotSeries.count);
+    const double time = this->m_snapshotMetadata.value(u"time"_s).toDouble(
+            std::numeric_limits<double>::quiet_NaN());
+    const double redshift = this->m_snapshotMetadata.value(u"redshift"_s).toDouble(
+            std::numeric_limits<double>::quiet_NaN());
+    if (std::isfinite(time))
+        details += u" · time %1"_s.arg(time, 0, 'g', 5);
+    if (std::isfinite(redshift) && redshift >= 0.0)
+        details += u" · z %1"_s.arg(redshift, 0, 'g', 5);
+    details += u"\nChanging output clears source selection; it does not track particles."_s;
+    if (this->m_timelineSummary)
+        this->m_timelineSummary->setText(details);
+    if (this->m_timelineSlider) {
+        const QSignalBlocker block(this->m_timelineSlider);
+        this->m_timelineSlider->setRange(0, this->m_snapshotSeries.paths.size() - 1);
+        this->m_timelineSlider->setValue(index);
+        this->m_timelineSlider->setEnabled(!this->m_snapshotSwitching);
+    }
+    if (this->m_timelinePrevious)
+        this->m_timelinePrevious->setEnabled(!this->m_snapshotSwitching && index > 0);
+    if (this->m_timelineNext)
+        this->m_timelineNext->setEnabled(
+                !this->m_snapshotSwitching && index + 1 < this->m_snapshotSeries.paths.size());
+    if (this->m_timelinePlay) {
+        this->m_timelinePlay->setText(this->m_snapshotPlaying ? u"Pause"_s : u"Play"_s);
+        this->m_timelinePlay->setEnabled(!this->m_snapshotSwitching);
+    }
+}
+
+void vtkWindowCatalogue3D::stepSnapshot(int delta)
+{
+    if (!this->m_snapshotSeries.valid || this->m_snapshotSwitching)
+        return;
+    const int target = this->m_snapshotSeries.index + delta;
+    if (target < 0 || target >= this->m_snapshotSeries.paths.size()) {
+        if (this->m_snapshotPlaying)
+            this->toggleSnapshotPlayback();
+        return;
+    }
+    this->switchSnapshotIndex(target);
+}
+
+void vtkWindowCatalogue3D::toggleSnapshotPlayback()
+{
+    const bool playing = !this->m_snapshotPlaying;
+    const auto windows = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+        if (!window)
+            continue;
+        if (window == this
+            || (!this->m_comparisonGroup.isEmpty()
+                && window->m_comparisonGroup == this->m_comparisonGroup)) {
+            window->m_snapshotPlaying = playing;
+            if (window->m_timelineTimer)
+                window->m_timelineTimer->stop();
+            window->updateSnapshotTimelineUi();
+        }
+    }
+    if (playing && this->m_timelineTimer)
+        this->m_timelineTimer->start();
+}
+
+void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
+{
+    if (!this->m_snapshotSeries.valid || this->m_snapshotSwitching
+        || index == this->m_snapshotSeries.index || index < 0
+        || index >= this->m_snapshotSeries.paths.size())
+        return;
+
+    struct ViewState {
+        QPointer<vtkWindowCatalogue3D> old;
+        QString colourBy;
+        QString colormap;
+        int colourScale{ 0 };
+        double gamma{ 2.0 };
+        int geometry{ 0 };
+        int renderBudget{ 1000000 };
+        bool raytraced{ false };
+        QRect windowGeometry;
+    };
+    QList<ViewState> states;
+    const auto registered = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : registered) {
+        if (!window)
+            continue;
+        const bool same = window == this
+                || (!this->m_comparisonGroup.isEmpty()
+                    && window->m_comparisonGroup == this->m_comparisonGroup);
+        if (!same)
+            continue;
+        if (window->m_snapshotSwitching)
+            return;
+        states.append({ window,
+                        window->comboMapColor ? window->comboMapColor->currentData().toString()
+                                              : QString(),
+                        window->comboColormap ? window->comboColormap->currentData().toString()
+                                              : QString(),
+                        window->comboColorScale ? window->comboColorScale->currentIndex() : 0,
+                        window->spinColorGamma ? window->spinColorGamma->value() : 2.0,
+                        window->comboGeometry ? window->comboGeometry->currentIndex() : 0,
+                        window->comboRenderBudget
+                                ? window->comboRenderBudget->currentData().toInt() : 1000000,
+                        window->m_rtLightCheck && window->m_rtLightCheck->isChecked(),
+                        window->geometry() });
+    }
+    if (states.isEmpty())
+        return;
+
+    const bool resumePlayback = std::any_of(
+            states.cbegin(), states.cend(), [](const ViewState &state) {
+                return state.old && state.old->m_snapshotPlaying;
+            });
+    for (ViewState &state : states) {
+        state.old->m_snapshotSwitching = true;
+        state.old->m_snapshotPlaying = false;
+        if (state.old->m_timelineTimer)
+            state.old->m_timelineTimer->stop();
+        state.old->updateSnapshotTimelineUi();
+    }
+
+    const QString targetPath = this->m_snapshotSeries.paths.at(index);
+    const LinkedCameraSync::Pose camera = this->comparisonCameraPose();
+    const QJsonObject rayCamera = this->m_rtView ? this->m_rtView->camera() : QJsonObject{};
+    BackendPointSeriesResult targetSeries = this->m_snapshotSeries;
+    targetSeries.index = index;
+    const QString particle = this->m_componentMetadata.value(u"name"_s).toString();
+    if (!particle.isEmpty())
+        visivo::rememberFieldNames({ { particle, targetPath } });
+    const Catalogue3DLabel label{ visivo::datasetDisplayName(targetPath), false };
+
+    auto *primary = new vtkWindowCatalogue3D(
+            targetPath, this->backendUrl, this->backendToken, {}, label,
+            this->parentWidget(), nullptr);
+    primary->setAttribute(Qt::WA_DeleteOnClose);
+    if (!primary->catalogueOpened()) {
+        primary->deleteLater();
+        for (ViewState &state : states) {
+            if (!state.old)
+                continue;
+            state.old->m_snapshotSwitching = false;
+            state.old->m_snapshotPlaying = resumePlayback;
+            state.old->updateSnapshotTimelineUi();
+        }
+        if (resumePlayback && this->m_timelineTimer)
+            this->m_timelineTimer->start();
+        return;
+    }
+
+    const auto restore = [](vtkWindowCatalogue3D *window, const ViewState &state) {
+        if (window->comboMapColor) {
+            const int item = window->comboMapColor->findData(state.colourBy);
+            if (item >= 0)
+                window->comboMapColor->setCurrentIndex(item);
+        }
+        if (window->comboColormap) {
+            const int item = window->comboColormap->findData(state.colormap);
+            if (item >= 0)
+                window->comboColormap->setCurrentIndex(item);
+        }
+        if (window->comboColorScale)
+            window->comboColorScale->setCurrentIndex(state.colourScale);
+        if (window->spinColorGamma)
+            window->spinColorGamma->setValue(state.gamma);
+        if (window->comboGeometry)
+            window->comboGeometry->setCurrentIndex(state.geometry);
+        if (window->comboRenderBudget) {
+            const int item = window->comboRenderBudget->findData(state.renderBudget);
+            if (item >= 0)
+                window->comboRenderBudget->setCurrentIndex(item);
+        }
+        if (window->m_rtLightCheck && state.raytraced)
+            window->m_rtLightCheck->setChecked(true);
+        window->setGeometry(state.windowGeometry);
+    };
+
+    primary->m_snapshotSeries = targetSeries;
+    primary->updateSnapshotTimelineUi();
+    restore(primary, states.first());
+    QList<QPointer<vtkWindowCatalogue3D>> replacements{ primary };
+    if (states.size() > 1) {
+        primary->m_comparisonGroup = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        primary->m_comparisonLinked = true;
+        for (int i = 1; i < states.size(); ++i) {
+            auto *peer = new vtkWindowCatalogue3D(
+                    targetPath, this->backendUrl, this->backendToken, {}, label,
+                    states.at(i).old ? states.at(i).old->parentWidget() : this->parentWidget(),
+                    primary);
+            peer->setAttribute(Qt::WA_DeleteOnClose);
+            peer->m_snapshotSeries = targetSeries;
+            restore(peer, states.at(i));
+            replacements.append(peer);
+        }
+    }
+    for (const QPointer<vtkWindowCatalogue3D> &window : replacements) {
+        if (!window)
+            continue;
+        window->m_snapshotSwitching = false;
+        window->applyComparisonCamera(camera);
+        if (!rayCamera.isEmpty())
+            window->applyComparisonRaytraceCamera(rayCamera);
+        window->updateComparisonUi();
+        window->updateSnapshotTimelineUi();
+        window->show();
+        window->raise();
+    }
+    primary->statusBar()->showMessage(
+            u"Snapshot changed for every linked view. Source selection was cleared; "
+             "no cross-snapshot particle identity was assumed."_s,
+            10000);
+
+    for (ViewState &state : states) {
+        if (state.old)
+            state.old->close();
+    }
+    if (resumePlayback && index + 1 < targetSeries.paths.size()) {
+        primary->m_snapshotPlaying = true;
+        primary->updateSnapshotTimelineUi();
+        if (primary->m_timelineTimer)
+            primary->m_timelineTimer->start();
+    }
 }
 
 LinkedCameraSync::Pose vtkWindowCatalogue3D::comparisonCameraPose() const

@@ -571,6 +571,17 @@ struct BackendCatalogueInfo
     QJsonObject component;
 };
 
+/// Numbered snapshot files surrounding an open particle table.
+struct BackendPointSeriesResult
+{
+    bool valid{ false };
+    QString error;
+    QStringList paths;
+    QVector<int> numbers;
+    int index{ -1 };
+    int count{ 0 };
+};
+
 struct BackendCatalogueSubset
 {
     bool valid{ false };
@@ -2399,6 +2410,10 @@ public:
     /// catalogue (e.g. the spatial subtables of a cosmological snapshot).
     BackendCatalogueInfo openCatalogue(const QStringList &paths,
                                        const QString &format = QStringLiteral("csv"));
+    /// POST /v1/points/series — discover adjacent numbered simulation snapshots.
+    BackendPointSeriesResult requestPointSeries(const QString &datasetId) const;
+    /// Parse the route response; public so the client contract is unit-tested.
+    static BackendPointSeriesResult parsePointSeries(const QJsonObject &object);
     /// @p returnMessage: stage the file and hand the SAMP message back
     /// (mtype, params) for the client to send, rather than queueing it.
     BackendSampSendResult sendFitsToSamp(const QString &path,

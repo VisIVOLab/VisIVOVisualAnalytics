@@ -68,4 +68,6 @@ private slots:
 
     // ── A particle snapshot's components (issue #31) ──────────────────────────
     void parseParticleComponents_readsNameAndPath();
+    void parsePointSeries_readsNumberedSnapshots();
+    void parsePointSeries_rejectsMalformedPositions();
 };
