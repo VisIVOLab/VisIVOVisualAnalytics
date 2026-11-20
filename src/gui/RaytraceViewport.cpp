@@ -202,8 +202,17 @@ void RaytraceViewport::refresh()
         return;
     }
     const QJsonObject request = m_source.request();
-    const QString key = m_source.key ? m_source.key(request)
-                                     : RaytraceSettingsPanel::particlesKey(request);
+    QString key = m_source.key ? m_source.key(request)
+                               : RaytraceSettingsPanel::particlesKey(request);
+    if (!m_source.grid && !m_scalarColourRows
+        && request.value(u"mode"_s).toString() != u"projected"_s) {
+        // A backend from before scalar colour rows returns baked RGB. Preserve
+        // its former behaviour: range/palette changes must fetch new rows.
+        key += u"|colour="_s
+                + QString::fromUtf8(QJsonDocument(
+                                            request.value(u"colour"_s).toObject())
+                                            .toJson(QJsonDocument::Compact));
+    }
     if (key == m_key && m_gl->hasParticles()) {
         // Back to the settings on the GPU: a fetch for others is not wanted.
         if (m_reply) {
@@ -266,11 +275,13 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
     // predates it ignores the field and sends the table's coordinates.
     if (!m_source.grid)
         body.insert(u"local_frame"_s, true);
+    if (!m_source.grid)
+        body.insert(u"colour_values"_s, true);
     QNetworkReply *reply = m_nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
     m_reply = reply;
     emit message(m_source.grid ? u"Ray-traced view: preparing the cube…"_s
                                : u"Ray-traced view: preparing the particles…"_s);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, key]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, key, request]() {
         reply->deleteLater();
         if (m_reply == reply)
             m_reply.clear();
@@ -299,16 +310,27 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
         }
         const QByteArray rows = reply->readAll();
         const int count = reply->rawHeader(VisivoHeaders::PARTICLE_COUNT).toInt();
-        const bool map = reply->rawHeader(VisivoHeaders::PARTICLE_FIELDS).endsWith(",v");
+        const QByteArray fields = reply->rawHeader(VisivoHeaders::PARTICLE_FIELDS);
+        const bool map = fields == "x,y,z,r,w,v";
+        const bool scalarLight = fields == "x,y,z,r,e,v";
+        const int rowFields = (map || scalarLight) ? 6 : 8;
         const int step = std::max(1, reply->rawHeader(VisivoHeaders::PARTICLE_STEP).toInt());
-        if (count <= 0 || rows.size() != qsizetype(count) * (map ? 6 : 8) * 4)
+        if (count <= 0 || rows.size() != qsizetype(count) * rowFields * 4)
             return;
         m_gl->setParticles(rows, count,
-                           map ? ParticleGLView::Mode::Projected : ParticleGLView::Mode::Light,
+                           map ? ParticleGLView::Mode::Projected
+                               : scalarLight ? ParticleGLView::Mode::LightScalar
+                                             : ParticleGLView::Mode::Light,
                            visivo::ParticleFrame::fromHeaders(
                                    reply->rawHeader(VisivoHeaders::PARTICLE_ORIGIN),
                                    reply->rawHeader(VisivoHeaders::PARTICLE_SCALE)));
-        m_key = key;
+        m_scalarColourRows = scalarLight;
+        // Once scalar rows are known, range/palette are no longer data keys:
+        // the same GPU buffer is recoloured immediately.
+        m_key = scalarLight
+                ? (m_source.key ? m_source.key(request)
+                                : RaytraceSettingsPanel::particlesKey(request))
+                : key;
         if (!m_showingStill)
             m_pages->setCurrentWidget(m_gl);
         redraw(true);

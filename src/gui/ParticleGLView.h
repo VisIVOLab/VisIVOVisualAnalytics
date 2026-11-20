@@ -42,7 +42,7 @@ class ParticleGLView : public QOpenGLWidget, protected QOpenGLExtraFunctions
     Q_OBJECT
 
 public:
-    enum class Mode { Light, Projected };
+    enum class Mode { Light, LightScalar, Projected };
     /// A map's hue: the density, a named map over the mean quantity's spread,
     /// the view's colours over their range, or (a grid) the mean colour index
     /// itself, the table spanning [hueMin, hueMax] of the colour's quantity.
@@ -77,9 +77,10 @@ public:
     explicit ParticleGLView(QWidget *parent = nullptr);
     ~ParticleGLView() override;
 
-    /// Rows of little-endian float32: x y z r e red green blue (Light) or
-    /// x y z r w v (Projected), as the backend sends them: positions and
-    /// sizes in ``frame`` (the table's coordinates are origin + scale × row),
+    /// Rows of little-endian float32: x y z r e red green blue (Light),
+    /// x y z r e value (LightScalar), or x y z r w v (Projected), as the
+    /// backend sends them: positions and sizes in ``frame`` (the table's
+    /// coordinates are origin + scale × row),
     /// which the camera is moved into before it is drawn in float.
     void setParticles(const QByteArray &rows, int count, Mode mode,
                       const visivo::ParticleFrame &frame = {});

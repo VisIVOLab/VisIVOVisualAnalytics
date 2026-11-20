@@ -410,6 +410,18 @@ def test_the_particles_for_the_gpu_are_those_the_renderer_draws(tmp_path, monkey
         assert reply.headers["X-Visivo-Particle-Scale"] == "1.0"
         assert np.allclose(rows[:, 4], emission_weights(prepared["intensity"], prepared["radius"],
                                                         "per_particle"), rtol=1e-5)
+        # A current desktop asks for the scalar once and applies palette,
+        # range and log scale on the GPU without another table preparation.
+        scalar = router.ParticleDataRequest(dataset_id="cat_1", intensity_field="logM",
+                                            intensity_log10=True, radius_field="H",
+                                            colour={"field": "T", "lut": "Glow"},
+                                            colour_values=True)
+        reply = loop.run_until_complete(router.particle_render_particles(
+            scalar, token="tok", session=session))
+        assert reply.headers["X-Visivo-Particle-Fields"] == "x,y,z,r,e,v"
+        scalar_rows = np.frombuffer(reply.body, dtype="<f4").reshape(-1, 6)
+        scalar_prepared = router._prepare(session.datasets["cat_1"], scalar)
+        assert np.allclose(scalar_rows[:, 5], scalar_prepared["value"])
         # A projected map, sampled: the mass of the rows left adds up the same.
         flat = router.ParticleDataRequest(dataset_id="cat_1", mode="projected",
                                           max_particles=1000)
