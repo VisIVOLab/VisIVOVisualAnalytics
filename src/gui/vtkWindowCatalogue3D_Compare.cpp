@@ -6,6 +6,7 @@
 
 #include <QComboBox>
 #include <QJsonArray>
+#include <QLabel>
 #include <QSet>
 #include <QStatusBar>
 #include <QTimer>
@@ -102,6 +103,14 @@ void vtkWindowCatalogue3D::openQuantityComparison()
     if (quantity >= 0)
         peer->comboMapColor->setCurrentIndex(quantity);
 
+    // The count and quantity are persistent in every member of the group. This
+    // is deliberately stronger than the transient status-bar message below.
+    const auto updatedGroup = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : updatedGroup) {
+        if (window && window->m_comparisonGroup == this->m_comparisonGroup)
+            window->updateComparisonUi();
+    }
+
     // The constructor builds the scene before it can join the group. Give the
     // new view the already-framed camera now, so it opens on precisely the
     // same region rather than briefly asking the user to align it by hand.
@@ -123,8 +132,8 @@ void vtkWindowCatalogue3D::setupComparisonLink(vtkWindowCatalogue3D *source)
     if (source) {
         this->m_comparisonGroup = source->m_comparisonGroup;
         this->m_comparisonLinked = true;
-        this->updateWindowTitle();
     }
+    this->updateComparisonUi();
 
     vtkNew<vtkCallbackCommand> callback;
     callback->SetClientData(this);
@@ -141,11 +150,65 @@ void vtkWindowCatalogue3D::setupComparisonLink(vtkWindowCatalogue3D *source)
 
 void vtkWindowCatalogue3D::teardownComparisonLink()
 {
+    const QString group = this->m_comparisonGroup;
     if (this->m_comparisonCameraObserverTag && this->renderWindow) {
         this->renderWindow->RemoveObserver(this->m_comparisonCameraObserverTag);
         this->m_comparisonCameraObserverTag = 0;
     }
     comparisonWindows().remove(this);
+    if (!group.isEmpty()) {
+        const auto remaining = comparisonWindows().snapshot();
+        int groupSize = 0;
+        vtkWindowCatalogue3D *last = nullptr;
+        for (const QPointer<vtkWindowCatalogue3D> &window : remaining) {
+            if (window && window->m_comparisonGroup == group) {
+                ++groupSize;
+                last = window;
+            }
+        }
+        // A comparison needs at least two views. Do not leave the last window
+        // claiming to be linked to a peer that no longer exists.
+        if (groupSize == 1 && last) {
+            last->m_comparisonGroup.clear();
+            last->m_comparisonLinked = false;
+        }
+        for (const QPointer<vtkWindowCatalogue3D> &window : remaining) {
+            if (window && (window->m_comparisonGroup == group || window == last))
+                window->updateComparisonUi();
+        }
+    }
+}
+
+void vtkWindowCatalogue3D::updateComparisonUi()
+{
+    const bool linked = this->m_comparisonLinked && !this->m_comparisonGroup.isEmpty();
+    if (this->m_comparisonCard)
+        this->m_comparisonCard->setVisible(linked);
+    if (!linked) {
+        this->updateWindowTitle();
+        return;
+    }
+
+    int views = 0;
+    const auto windows = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+        if (window && window->m_comparisonLinked
+            && window->m_comparisonGroup == this->m_comparisonGroup)
+            ++views;
+    }
+    const QString quantity = this->comboMapColor
+            ? this->comboMapColor->currentText()
+            : u"Not selected"_s;
+    if (this->m_comparisonSummary) {
+        this->m_comparisonSummary->setText(
+                u"<b>LINKED COMPARISON · %1 VIEWS</b><br>"
+                 "Quantity in this view: <b>%2</b><br>"
+                 "<small>Linked: camera and source selection<br>"
+                 "Independent: quantity, colormap, range and scale</small>"_s
+                        .arg(views)
+                        .arg(quantity.toHtmlEscaped()));
+    }
+    this->updateWindowTitle();
 }
 
 LinkedCameraSync::Pose vtkWindowCatalogue3D::comparisonCameraPose() const
