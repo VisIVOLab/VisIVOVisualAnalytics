@@ -78,6 +78,7 @@
 #include <QSlider>
 #include <QTableView>
 #include <QTextEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
@@ -174,6 +175,46 @@ void vtkWindowCatalogue3D::buildControlPages()
                          &vtkWindowCatalogue3D::openQuantityComparison);
         this->m_comparisonCard->hide();
         pageLayout->addWidget(this->m_comparisonCard);
+
+        this->m_timelineCard = new QFrame(pageViz);
+        this->m_timelineCard->setStyleSheet(cardStyle);
+        auto *timelineLayout = new QVBoxLayout(this->m_timelineCard);
+        timelineLayout->setContentsMargins(8, 8, 8, 8);
+        timelineLayout->setSpacing(6);
+        auto *timelineHeader = new QLabel(u"SNAPSHOT TIMELINE"_s, this->m_timelineCard);
+        timelineHeader->setStyleSheet(subHdrStyle);
+        timelineLayout->addWidget(timelineHeader);
+        this->m_timelineSummary = new QLabel(this->m_timelineCard);
+        this->m_timelineSummary->setWordWrap(true);
+        timelineLayout->addWidget(this->m_timelineSummary);
+        this->m_timelineSlider = new QSlider(Qt::Horizontal, this->m_timelineCard);
+        this->m_timelineSlider->setTracking(false);
+        this->m_timelineSlider->setToolTip(
+                u"Open another output of this simulation. Linked quantity views move together; "
+                 "source selections are cleared because identity across outputs is not assumed."_s);
+        timelineLayout->addWidget(this->m_timelineSlider);
+        auto *timelineButtons = new QHBoxLayout;
+        this->m_timelinePrevious = new QPushButton(u"Previous"_s, this->m_timelineCard);
+        this->m_timelinePlay = new QPushButton(u"Play"_s, this->m_timelineCard);
+        this->m_timelineNext = new QPushButton(u"Next"_s, this->m_timelineCard);
+        timelineButtons->addWidget(this->m_timelinePrevious);
+        timelineButtons->addWidget(this->m_timelinePlay);
+        timelineButtons->addWidget(this->m_timelineNext);
+        timelineLayout->addLayout(timelineButtons);
+        this->m_timelineTimer = new QTimer(this->m_timelineCard);
+        this->m_timelineTimer->setInterval(1500);
+        QObject::connect(this->m_timelinePrevious, &QPushButton::clicked, this,
+                         [this]() { this->stepSnapshot(-1); });
+        QObject::connect(this->m_timelineNext, &QPushButton::clicked, this,
+                         [this]() { this->stepSnapshot(1); });
+        QObject::connect(this->m_timelinePlay, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::toggleSnapshotPlayback);
+        QObject::connect(this->m_timelineSlider, &QSlider::valueChanged, this,
+                         &vtkWindowCatalogue3D::switchSnapshotIndex);
+        QObject::connect(this->m_timelineTimer, &QTimer::timeout, this,
+                         [this]() { this->stepSnapshot(1); });
+        this->m_timelineCard->hide();
+        pageLayout->addWidget(this->m_timelineCard);
 
         // Query and scene preparation can take time before the source count changes.
         this->m_loadIndicator = new QWidget(pageViz);

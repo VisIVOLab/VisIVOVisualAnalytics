@@ -981,6 +981,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     QObject::connect(this->chkShowShells, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleShells);
     this->setupComparisonLink(comparisonSource);
+    this->setupSnapshotTimeline(comparisonSource);
 }
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()

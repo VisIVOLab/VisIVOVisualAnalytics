@@ -64,6 +64,8 @@ class Catalogue3DTableModel;
 class MainWindow;
 class QMenu;
 class QStackedWidget;
+class QSlider;
+class QTimer;
 class QFormLayout;
 class LUTCustomizerDialog;
 class VolumeColorbar;
@@ -416,6 +418,11 @@ private:
     void teardownComparisonLink();
     /// Keep the persistent comparison card and window title in step with the group.
     void updateComparisonUi();
+    void setupSnapshotTimeline(vtkWindowCatalogue3D *source);
+    void updateSnapshotTimelineUi();
+    void switchSnapshotIndex(int index);
+    void stepSnapshot(int delta);
+    void toggleSnapshotPlayback();
     void broadcastComparisonSelection(int index);
     void broadcastComparisonRaytraceCamera(const QJsonObject &camera);
     void onComparisonCameraFrame();
@@ -461,6 +468,10 @@ private:
     bool m_applyingComparisonUpdate{ false };
     LinkedCameraSync::Tracker m_comparisonCameraTracker;
     unsigned long m_comparisonCameraObserverTag{ 0 };
+    BackendPointSeriesResult m_snapshotSeries;
+    QFutureWatcher<BackendPointSeriesResult> m_snapshotSeriesWatcher;
+    bool m_snapshotSwitching{ false };
+    bool m_snapshotPlaying{ false };
     std::vector<Catalogue3DEntry> entries;
     /// Rows with no distance (issue #265), never in entries: not drawn.
     std::vector<Catalogue3DEntry> unplacedEntries;
@@ -575,6 +586,13 @@ private:
     QPointer<QComboBox> comboSizeMode;
     QPointer<QFrame> m_comparisonCard;
     QPointer<QLabel> m_comparisonSummary;
+    QPointer<QFrame> m_timelineCard;
+    QPointer<QLabel> m_timelineSummary;
+    QPointer<QSlider> m_timelineSlider;
+    QPointer<QPushButton> m_timelinePrevious;
+    QPointer<QPushButton> m_timelineNext;
+    QPointer<QPushButton> m_timelinePlay;
+    QPointer<QTimer> m_timelineTimer;
     QPointer<QComboBox> comboFrame;
     QPointer<QComboBox> comboCosmology;
     QPointer<QComboBox> comboDistanceMode;     // R-14: real-space vs redshift-space

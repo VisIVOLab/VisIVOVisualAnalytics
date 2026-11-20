@@ -187,6 +187,17 @@ series, the series runs over the sibling folders, with the file renumbered
 (`snapdir_011/snap_011.0`). `/v1/points/series` keeps the particle type, so
 each member's path is a reference to the same type.
 
+The desktop asks for this route after opening a particle table. More than one
+member adds the Snapshot Timeline card. A time step constructs the replacement
+dataset first, then builds every linked quantity view from that one shared
+backend dataset and closes the old group. This avoids reopening a large
+snapshot once per quantity and prevents a partially updated comparison group.
+Camera and per-view visual encoding are restored; selection and explicit
+numeric colour limits are not, because neither particle identity nor equal
+distributions across outputs may be assumed. Playback starts the next step only
+after the current replacement has completed, so there are no stale concurrent
+opens to apply out of order.
+
 ## SubFind (issue #392)
 
 The block parser is independent of the particle semantics. A SubFind group

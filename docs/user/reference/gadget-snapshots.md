@@ -81,6 +81,27 @@ the *Previous* and *Next* snapshot buttons in the headset, which step through
 `snapdir_000`, `snapdir_001` … (or `snap_000`, `snap_001` … in one folder)
 and keep the same particle type.
 
+### Move through simulation time
+
+When the backend finds other numbered outputs beside the open one, a **Snapshot
+Timeline** card appears in the Visualization panel. It shows the output number,
+its position in the discovered series, the header time and redshift when
+available. Use **Previous**, **Next**, the slider or **Play** to move through
+the series. Both flat series (`snap_000`, `snap_001`, …) and Gadget's numbered
+folders (`snapdir_000/snap_000.0`, …) are supported; the selected particle type
+is retained.
+
+If several physical-quantity windows are linked, the new output is opened for
+the complete group before the old windows close. Each view keeps its quantity,
+colormap, stretch, representation, render budget, camera and window placement.
+The numerical colour range is recalculated for the new output because its data
+distribution may differ.
+
+Source selection is deliberately cleared at every step. The timeline compares
+the same particle *type* and region, but it does not claim that a row in one
+snapshot identifies the same particle or structure in the next. Cross-snapshot
+identity requires a separate validated tracking workflow.
+
 ### Compare physical quantities
 
 Choose *Tools ▸ Compare Quantity…* in a Gadget particle window to open another

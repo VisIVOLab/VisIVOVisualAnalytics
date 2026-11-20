@@ -1275,6 +1275,64 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
     return result;
 }
 
+BackendPointSeriesResult BackendClient::parsePointSeries(const QJsonObject &object)
+{
+    BackendPointSeriesResult result;
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    const QJsonArray paths = object.value(QStringLiteral("paths")).toArray();
+    const QJsonArray numbers = object.value(QStringLiteral("numbers")).toArray();
+    if (!result.valid)
+        return result;
+    if (paths.isEmpty() || paths.size() != numbers.size()) {
+        result.valid = false;
+        result.error = QStringLiteral("The backend returned an invalid snapshot series.");
+        return result;
+    }
+    result.paths.reserve(paths.size());
+    result.numbers.reserve(numbers.size());
+    for (int i = 0; i < paths.size(); ++i) {
+        const QString path = paths.at(i).toString();
+        if (path.isEmpty() || !numbers.at(i).isDouble()) {
+            result.valid = false;
+            result.error = QStringLiteral("The backend returned an invalid snapshot series.");
+            result.paths.clear();
+            result.numbers.clear();
+            return result;
+        }
+        result.paths.append(path);
+        result.numbers.append(numbers.at(i).toInt());
+    }
+    result.index = object.value(QStringLiteral("index")).toInt(-1);
+    result.count = object.value(QStringLiteral("count")).toInt(result.paths.size());
+    if (result.index < 0 || result.index >= result.paths.size()
+        || result.count != result.paths.size()) {
+        result.valid = false;
+        result.error = QStringLiteral("The backend returned an invalid snapshot position.");
+    }
+    return result;
+}
+
+BackendPointSeriesResult BackendClient::requestPointSeries(const QString &datasetId) const
+{
+    BackendPointSeriesResult result;
+    if (datasetId.isEmpty()) {
+        result.error = QStringLiteral("No point dataset is open.");
+        return result;
+    }
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+    });
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/points/series")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parsePointSeries(QJsonDocument::fromJson(payload).object());
+}
+
 namespace {
 void readSampSendResult(const QJsonObject &object, BackendSampSendResult &result)
 {
