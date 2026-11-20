@@ -118,6 +118,9 @@ private:
     QJsonObject m_camera;
     QString m_key;          ///< the particles on the GPU
     QString m_loadingKey;   ///< the particles being fetched
+    /// A current particle backend sent the colour scalar. Until it does, keep
+    /// palette/range in the fetch key so an older backend's baked RGB updates.
+    bool m_scalarColourRows{ false };
     QPointer<QNetworkReply> m_reply;
     QPoint m_dragFrom;
     bool m_failed{ false };

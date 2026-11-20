@@ -417,7 +417,9 @@ QString RaytraceSettingsPanel::particlesKey(const QJsonObject &request)
         if (request.contains(k))
             key.insert(k, request.value(k));
     if (request.value(u"mode"_s).toString() != u"projected"_s)
-        key.insert(u"colour"_s, request.value(u"colour"_s));
+        // Current particle data carries the scalar, not pre-baked RGB. A new
+        // field needs a fetch; palette, range and scale are GPU-only changes.
+        key.insert(u"colour_field"_s, request.value(u"colour"_s).toObject().value(u"field"_s));
     else if (request.value(u"colour_by"_s).toString() == u"colour"_s)
         key.insert(u"colour_field"_s, request.value(u"colour"_s).toObject().value(u"field"_s));
     return QString::fromUtf8(QJsonDocument(key).toJson(QJsonDocument::Compact));

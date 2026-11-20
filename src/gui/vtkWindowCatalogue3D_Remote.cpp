@@ -319,18 +319,26 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
     const bool coloured =
             !ui->chkMorphColors || this->m_noMorphology || ui->chkMorphColors->isChecked();
     if (coloured && this->mapColorKey.startsWith(u"raw:"_s)) {
-        vtkNew<vtkColorTransferFunction> ctf;
-        ColorMaps::SetColorTransferFunction(this->valueLut, ctf);
         QVariantList points;
-        for (int i = 0; i < ctf->GetSize(); ++i) {
-            double node[6];
-            ctf->GetNodeValue(i, node);
-            points << QVariant(QVariantList{ node[0], node[1], node[2], node[3] });
-        }
         const double *range = this->valueLut->GetTableRange();
+        const bool log = this->valueLut->GetScale() == VTK_SCALE_LOG10
+                && range[0] > 0.0 && range[1] > range[0];
+        const vtkIdType n = this->valueLut->GetNumberOfTableValues();
+        // Do not pass through SetColorTransferFunction here. It deliberately
+        // drops tightly-spaced log nodes for VTK's linear transfer-function
+        // texture; JSON and the GPU LUT have no such limit. On a range such as
+        // 1e-13..1e-3 that pruning removed Glow's red/orange half entirely.
+        for (vtkIdType i = 0; i < n; ++i) {
+            const double t = n > 1 ? static_cast<double>(i) / (n - 1) : 0.0;
+            const double value = log ? range[0] * std::pow(range[1] / range[0], t)
+                                     : range[0] + t * (range[1] - range[0]);
+            double rgba[4];
+            this->valueLut->GetTableValue(i, rgba);
+            points << QVariant(QVariantList{ value, rgba[0], rgba[1], rgba[2] });
+        }
         color.insert(u"field"_s, column(this->mapColorKey, QString()));
         color.insert(u"points"_s, points);
-        color.insert(u"log"_s, this->valueLut->GetScale() == VTK_SCALE_LOG10);
+        color.insert(u"log"_s, log);
         color.insert(u"min"_s, range[0]);
         color.insert(u"max"_s, range[1]);
     } else {
