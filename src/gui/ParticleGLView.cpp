@@ -331,6 +331,7 @@ void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode,
         }
     m_upload = true;
     m_stats = false;
+    m_framePending = true;
     update();
 }
 
@@ -347,6 +348,7 @@ void ParticleGLView::setGrid(Grid grid, Mode mode)
     m_gridUpload = m_hasGrid;
     m_kappaStale = true;
     m_stats = false;
+    m_framePending = true;
     update();
 }
 
@@ -879,4 +881,8 @@ void ParticleGLView::paintGL()
                                  QRectF(rect.x() / dpr, rect.y() / dpr, rect.width() / dpr,
                                         rect.height() / dpr),
                                  m_camera, overlay());
+    if (m_framePending) {
+        m_framePending = false;
+        emit frameReady();
+    }
 }
