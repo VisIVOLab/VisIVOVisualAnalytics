@@ -165,12 +165,33 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->m_comparisonSummary->setWordWrap(true);
         this->m_comparisonSummary->setTextFormat(Qt::RichText);
         comparisonLayout->addWidget(this->m_comparisonSummary);
+        auto *comparisonButtons = new QHBoxLayout;
+        this->m_comparisonLinkToggle = new QPushButton(u"Linked"_s,
+                                                       this->m_comparisonCard);
+        this->m_comparisonLinkToggle->setCheckable(true);
+        this->m_comparisonLinkToggle->setChecked(true);
+        this->m_comparisonLinkToggle->setToolTip(
+                u"Link camera and source selection to the comparison group. "
+                 "Rendering follows only while Match rendering is enabled."_s);
+        comparisonButtons->addWidget(this->m_comparisonLinkToggle);
+        this->m_comparisonRepresentationToggle = new QCheckBox(
+                u"Match rendering"_s, this->m_comparisonCard);
+        this->m_comparisonRepresentationToggle->setChecked(true);
+        this->m_comparisonRepresentationToggle->setToolTip(
+                u"Keep shape, size, render budget and ray-traced-light mode equal while linked. "
+                 "Turn this off only to compare intentional rendering alternatives."_s);
+        comparisonLayout->addWidget(this->m_comparisonRepresentationToggle);
         auto *addQuantity = new QPushButton(u"Add another quantity…"_s,
                                             this->m_comparisonCard);
         addQuantity->setToolTip(
                 u"Open another view of these same particles. Camera and source selection "
                  "will stay linked; its physical quantity and colour settings stay independent."_s);
-        comparisonLayout->addWidget(addQuantity);
+        comparisonButtons->addWidget(addQuantity);
+        comparisonLayout->addLayout(comparisonButtons);
+        QObject::connect(this->m_comparisonLinkToggle, &QPushButton::toggled, this,
+                         &vtkWindowCatalogue3D::setComparisonLinked);
+        QObject::connect(this->m_comparisonRepresentationToggle, &QCheckBox::toggled, this,
+                         &vtkWindowCatalogue3D::setComparisonRepresentationLinked);
         QObject::connect(addQuantity, &QPushButton::clicked, this,
                          &vtkWindowCatalogue3D::openQuantityComparison);
         this->m_comparisonCard->hide();
@@ -1108,8 +1129,9 @@ void vtkWindowCatalogue3D::updateWindowTitle()
     const QString name = this->shownName();
     if (this->m_pointTable) {
         const QString quantity = !this->m_comparisonGroup.isEmpty() && this->comboMapColor
-                ? u" · %1 · LINKED"_s.arg(
-                          this->comboMapColor->currentText().remove(u"raw:"_s))
+                ? u" · %1 · %2"_s.arg(
+                          this->comboMapColor->currentText().remove(u"raw:"_s),
+                          this->m_comparisonLinked ? u"LINKED"_s : u"UNLINKED"_s)
                 : QString();
         this->setWindowTitle(
                 u"3D Points, %1%2  (%L3 rows)"_s.arg(name, quantity).arg(this->m_tableRows));

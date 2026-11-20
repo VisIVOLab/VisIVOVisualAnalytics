@@ -116,7 +116,7 @@ def splat_style(bounds, total_rows: int, sample_rows: int, size: float,
     ``splatStyle`` (static/vr/js/points.js) works them out: spacing ∛(volume /
     total rows) of the box the points fill (a flat axis counted as a
     thousandth of the longest), radius = spacing × size / 8, opacity =
-    min(0.9, 20 / D) × intensity / 100 in [0.05, 0.9] with D the longest side
+    1.5 / D at the standard intensity in [0.005, 0.25] with D the longest side
     over the spacing, as the splat ``rule`` draws it (:func:`rule_opacity`:
     over size² in a float target, issue #263), and the sample's radius larger
     by ∛(total / sample rows). It is
@@ -128,8 +128,8 @@ def splat_style(bounds, total_rows: int, sample_rows: int, size: float,
     spacing = math.cbrt(volume / max(1, int(total_rows)))
     radius = spacing * float(size) / 8.0
     depth = max(longest / spacing, 1.0)
-    opacity = rule_opacity(min(max(min(0.9, 20.0 / depth) * float(intensity) / 100.0, 0.05),
-                               0.9), size, rule)
+    opacity = rule_opacity(
+        min(max(1.5 / depth * float(intensity) / 35.0, 0.005), 0.25), size, rule)
     grow = math.cbrt(max(1.0, total_rows / max(1, int(sample_rows))))
     return radius, opacity, radius * grow
 

@@ -291,8 +291,9 @@ export function acceptFrame(header, style, rule) {
 /**
  * Splat radius (data units) and opacity, as the desktop and the point session
  * size them (render_session/points.py gaussian_splat): spacing ∛(volume / N)
- * of the box the points fill, radius = spacing × size / 8; opacity
- * min(0.9, 20 / D) × intensity / 100, D = longest side / spacing, as the
+ * of the box the points fill, radius = spacing × size / 8; opacity is
+ * 1.5 / D at the standard intensity, clamped to 0.005..0.25, with D the
+ * longest side / spacing, as the
  * splat `rule` draws it (ruleOpacity: over size² in a float target, issue
  * #263, so the size step changes the size, not the brightness; the
  * desktop's at size 1, the default). N is the table's rows: a sample of
@@ -306,7 +307,7 @@ export function splatStyle(bounds, totalRows, sampleRows, size, intensity, rule 
   const spacing = Math.cbrt(volume / Math.max(1, totalRows));
   const radius = (spacing * size) / 8;
   const depth = Math.max(longest / spacing, 1);
-  const opacity = ruleOpacity(Math.min(Math.max(Math.min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9),
+  const opacity = ruleOpacity(Math.min(Math.max((1.5 / depth) * intensity / 35, 0.005), 0.25),
     size, rule);
   const grow = Math.cbrt(Math.max(1, totalRows / Math.max(1, sampleRows)));
   return { radius, opacity, sampleRadius: radius * grow };

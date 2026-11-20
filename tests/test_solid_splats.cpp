@@ -1,6 +1,7 @@
 #include "TestSolidSplats.h"
 
 #include "gui/SolidSplats.h"
+#include "gui/ParticleSplatDefaults.h"
 
 #include <QtTest/QtTest>
 
@@ -63,4 +64,19 @@ void TestSolidSplats::theTableMapsEverythingNaNIncludedToTheSolidColour()
     QCOMPARE(lut.nan[1], SolidSplats::kGreen);
     QCOMPARE(lut.nan[2], SolidSplats::kBlue);
     QVERIFY(lut.range[0] <= -1.0e15 && lut.range[1] >= 1.0e15);
+}
+
+void TestSolidSplats::gaussianDefaultsAvoidImmediateSaturation()
+{
+    QCOMPARE(ParticleSplatDefaults::initialSliderValue(), 25);
+    QCOMPARE(3.0 * ParticleSplatDefaults::initialSliderValue() / 100.0, 0.75);
+}
+
+void TestSolidSplats::gaussianOpacityAdaptsToSightlineDepth()
+{
+    QCOMPARE(ParticleSplatDefaults::opacityForDepth(1.0), 0.25);
+    QCOMPARE(ParticleSplatDefaults::opacityForDepth(30.0), 0.05);
+    QCOMPARE(ParticleSplatDefaults::opacityForDepth(100.0), 0.015);
+    QCOMPARE(ParticleSplatDefaults::opacityForDepth(1000.0), 0.005);
+    QCOMPARE(ParticleSplatDefaults::opacityForDepth(0.0), 0.25);
 }

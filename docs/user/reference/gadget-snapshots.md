@@ -72,6 +72,12 @@ The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
 to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
 
+For a large particle table, the initial Gaussian-splat size is derived from
+the mean particle spacing and starts at 0.75 times that spacing. Opacity is
+reduced for deeper point clouds so the initial view retains structure instead
+of immediately saturating. **Splat size** remains available for deliberately
+emphasizing compact or diffuse features.
+
 ## Rendering and analysis
 
 You can use a particle type wherever you can use a VBT point table: filters and
@@ -118,9 +124,22 @@ another quantity…* for creating a third view. In Visual Encoding:
 - **Colormap** selects only the colour palette used to represent that quantity;
 - **Range and scale…** controls that view's numerical range and stretch.
 
-Camera movements and source selection are shared by every window in the linked
-comparison. Quantity, colormap, range and scale remain independent so that each
-field can be encoded appropriately. The window title ends in `LINKED` and names
-the current quantity as a second persistent indication.
+The **Linked** button is on by default. Linked views share camera, source
+selection and representation: shape, splat or point size, render budget and
+ray-traced-light mode. This keeps rendering choices from masquerading as
+physical differences. Quantity, colormap, colour range and stretch remain
+independent because different physical fields need different encodings.
+
+**Match rendering** is also on by default. Turn it off only when the rendering
+itself is the intended comparison: camera and source selection remain linked,
+but shape, size, render budget and ray-traced-light mode become autonomous for
+that view. Turning it on again immediately adopts the rendering of a linked
+peer.
+
+Turn **Linked** off to make one view autonomous. Its comparison card and title
+show `UNLINKED`, but it remains a member of the comparison. Turning **Linked**
+on again immediately adopts the camera, selection and representation of an
+already linked peer (unless **Match rendering** is off); it does not overwrite
+that view's quantity or colour mapping.
 
 Details: [technical notes](../../technical/design/gadget-snapshots.md).

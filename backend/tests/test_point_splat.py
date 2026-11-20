@@ -38,7 +38,7 @@ def page_style(bounds, total_rows, sample_rows, size, intensity, rule="v1"):
     spacing = (volume / max(1, total_rows)) ** (1 / 3)
     radius = spacing * size / 8
     depth = max(longest / spacing, 1)
-    opacity = min(max(min(0.9, 20 / depth) * intensity / 100, 0.05), 0.9)
+    opacity = min(max(1.5 / depth * intensity / 35, 0.005), 0.25)
     if rule == "v2-f32":
         opacity /= size * size
     elif rule == "v2-f16":

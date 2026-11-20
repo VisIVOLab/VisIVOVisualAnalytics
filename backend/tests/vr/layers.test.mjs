@@ -59,10 +59,10 @@ test('the colours sent to the point session are the page map on data values', ()
 test('splats are sized by the desktop rule and grow for a sample', () => {
   const s = PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35);
   close(s.radius, 1, 1e-9);                      // spacing 1, size 8 -> 1
-  close(s.opacity, Math.max(0.05, Math.min(0.9, 20 / 100) * 0.35), 1e-12);   // the desktop's
+  close(s.opacity, 1.5 / 100, 1e-12);   // the desktop's depth-normalized opacity
   // In a float32 target over size² (#263): the size changes the size, not the light.
-  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35, 'v2-f32').opacity, 0.07 / 64, 1e-12);
-  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 1, 35, 'v2-f32').opacity, 0.07, 1e-12);
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35, 'v2-f32').opacity, 0.015 / 64, 1e-12);
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 1, 35, 'v2-f32').opacity, 0.015, 1e-12);
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e3, 8, 35).sampleRadius, 10, 1e-9);
 });
 

@@ -178,6 +178,27 @@ and the run's parameter file are read too. `/v1/catalogue/open` and
 resolving symbolic links, as they check the named file. A snapshot with one
 file outside the roots is refused.
 
+## Desktop splats and linked quantities
+
+The local Gaussian renderer sizes a uniform splat from the mean 3-D spacing
+`cuberoot(volume / rendered rows)`. Its initial normalized size is 0.75, so the
+radius passed to VTK is `spacing × 0.75 / 8`; the UI can still move below or
+above it. The opacity is `clamp(1.5 / depth, 0.005, 0.25)`, where `depth` is
+the estimated number of mean spacings along the longest axis. Thus a typical
+line of sight starts near a total optical contribution of 1.5 instead of the
+former value 7. The same normalized size is sent to server-side rendering.
+
+Quantity-comparison windows share one backend dataset. Each window has its own
+link flag. A change of camera, selected source or representation is broadcast
+only when both sender and receiver are linked. Representation has a second,
+independent `Match rendering` facet that must also be enabled at both ends. It
+comprises shape, the shared size slider, render budget and ray-traced-light
+mode; the physical quantity, colormap, colour range and stretch are
+deliberately excluded. On relink, the joining view first adopts the enabled
+linked properties from a peer, so the group is coherent immediately and no
+echo loop is produced. Both flags and each autonomous camera survive snapshot
+replacement on the timeline.
+
 ## Series
 
 `snapshot_series.py` lists the snapshots that share a name and differ only in

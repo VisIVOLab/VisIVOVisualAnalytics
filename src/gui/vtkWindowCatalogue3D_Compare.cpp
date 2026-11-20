@@ -4,6 +4,7 @@
 #include "LinkedWindowRegistry.h"
 #include "RaytraceViewport.h"
 #include "app/DatasetName.h"
+#include "ui_vtkWindowCatalogue3D.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -12,6 +13,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -113,6 +115,8 @@ void vtkWindowCatalogue3D::openQuantityComparison()
             quantity = i;
     if (quantity >= 0)
         peer->comboMapColor->setCurrentIndex(quantity);
+    if (this->m_comparisonRepresentationLinked)
+        peer->applyComparisonRepresentation(this->comparisonRepresentation());
 
     // The count and quantity are persistent in every member of the group. This
     // is deliberately stronger than the transient status-bar message below.
@@ -143,6 +147,7 @@ void vtkWindowCatalogue3D::setupComparisonLink(vtkWindowCatalogue3D *source)
     if (source) {
         this->m_comparisonGroup = source->m_comparisonGroup;
         this->m_comparisonLinked = true;
+        this->m_comparisonRepresentationLinked = source->m_comparisonRepresentationLinked;
     }
     this->updateComparisonUi();
 
@@ -157,6 +162,18 @@ void vtkWindowCatalogue3D::setupComparisonLink(vtkWindowCatalogue3D *source)
 
     QObject::connect(this, &vtkWindowCatalogue3D::sourceSelectionChanged, this,
                      &vtkWindowCatalogue3D::broadcastComparisonSelection);
+    if (this->comboGeometry)
+        QObject::connect(this->comboGeometry, &QComboBox::currentIndexChanged, this,
+                         [this]() { this->broadcastComparisonRepresentation(); });
+    if (ui->sliderScale)
+        QObject::connect(ui->sliderScale, &QSlider::valueChanged, this,
+                         [this]() { this->broadcastComparisonRepresentation(); });
+    if (this->comboRenderBudget)
+        QObject::connect(this->comboRenderBudget, &QComboBox::currentIndexChanged, this,
+                         [this]() { this->broadcastComparisonRepresentation(); });
+    if (this->m_rtLightCheck)
+        QObject::connect(this->m_rtLightCheck, &QCheckBox::toggled, this,
+                         [this]() { this->broadcastComparisonRepresentation(); });
 }
 
 void vtkWindowCatalogue3D::teardownComparisonLink()
@@ -192,10 +209,22 @@ void vtkWindowCatalogue3D::teardownComparisonLink()
 
 void vtkWindowCatalogue3D::updateComparisonUi()
 {
-    const bool linked = this->m_comparisonLinked && !this->m_comparisonGroup.isEmpty();
+    const bool inGroup = !this->m_comparisonGroup.isEmpty();
+    const bool linked = this->m_comparisonLinked && inGroup;
     if (this->m_comparisonCard)
-        this->m_comparisonCard->setVisible(linked);
-    if (!linked) {
+        this->m_comparisonCard->setVisible(inGroup);
+    if (this->m_comparisonLinkToggle) {
+        const QSignalBlocker block(this->m_comparisonLinkToggle);
+        this->m_comparisonLinkToggle->setChecked(linked);
+        this->m_comparisonLinkToggle->setText(linked ? u"Linked"_s : u"Unlinked"_s);
+    }
+    if (this->m_comparisonRepresentationToggle) {
+        const QSignalBlocker block(this->m_comparisonRepresentationToggle);
+        this->m_comparisonRepresentationToggle->setChecked(
+                this->m_comparisonRepresentationLinked);
+        this->m_comparisonRepresentationToggle->setEnabled(linked);
+    }
+    if (!inGroup) {
         this->updateWindowTitle();
         return;
     }
@@ -203,8 +232,7 @@ void vtkWindowCatalogue3D::updateComparisonUi()
     int views = 0;
     const auto windows = comparisonWindows().snapshot();
     for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
-        if (window && window->m_comparisonLinked
-            && window->m_comparisonGroup == this->m_comparisonGroup)
+        if (window && window->m_comparisonGroup == this->m_comparisonGroup)
             ++views;
     }
     const QString quantity = this->comboMapColor
@@ -212,14 +240,149 @@ void vtkWindowCatalogue3D::updateComparisonUi()
             : u"Not selected"_s;
     if (this->m_comparisonSummary) {
         this->m_comparisonSummary->setText(
-                u"<b>LINKED COMPARISON · %1 VIEWS</b><br>"
-                 "Quantity in this view: <b>%2</b><br>"
-                 "<small>Linked: camera and source selection<br>"
-                 "Independent: quantity, colormap, range and scale</small>"_s
+                u"<b>%1 · %2 VIEWS</b><br>"
+                 "Quantity in this view: <b>%3</b><br>"
+                 "<small>Linked: camera and selection%4<br>"
+                 "Independent: quantity, colormap, colour range and stretch</small>"_s
+                        .arg(linked ? u"LINKED COMPARISON"_s : u"UNLINKED VIEW"_s)
                         .arg(views)
-                        .arg(quantity.toHtmlEscaped()));
+                        .arg(quantity.toHtmlEscaped())
+                        .arg(this->m_comparisonRepresentationLinked
+                                     ? u", representation"_s
+                                     : u"; rendering is autonomous"_s));
     }
     this->updateWindowTitle();
+}
+
+vtkWindowCatalogue3D::ComparisonRepresentation
+vtkWindowCatalogue3D::comparisonRepresentation() const
+{
+    ComparisonRepresentation state;
+    if (this->comboGeometry)
+        state.geometry = this->comboGeometry->currentText();
+    if (ui->sliderScale)
+        state.sizeSlider = ui->sliderScale->value();
+    if (this->comboRenderBudget)
+        state.renderBudget = this->comboRenderBudget->currentData().toInt();
+    state.raytraced = this->m_rtLightCheck && this->m_rtLightCheck->isChecked();
+    return state;
+}
+
+void vtkWindowCatalogue3D::applyComparisonRepresentation(
+        const ComparisonRepresentation &state)
+{
+    const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
+    if (this->comboGeometry && !state.geometry.isEmpty()) {
+        const int item = this->comboGeometry->findText(state.geometry);
+        if (item >= 0)
+            this->comboGeometry->setCurrentIndex(item);
+    }
+    if (ui->sliderScale)
+        ui->sliderScale->setValue(state.sizeSlider);
+    if (this->comboRenderBudget) {
+        const int item = this->comboRenderBudget->findData(state.renderBudget);
+        if (item >= 0)
+            this->comboRenderBudget->setCurrentIndex(item);
+    }
+    if (this->m_rtLightCheck)
+        this->m_rtLightCheck->setChecked(state.raytraced);
+}
+
+void vtkWindowCatalogue3D::broadcastComparisonRepresentation()
+{
+    if (!this->m_comparisonLinked || !this->m_comparisonRepresentationLinked
+        || this->m_comparisonGroup.isEmpty()
+        || this->m_applyingComparisonUpdate)
+        return;
+    const ComparisonRepresentation state = this->comparisonRepresentation();
+    const auto windows = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+        if (window && window != this && window->m_comparisonLinked
+            && window->m_comparisonRepresentationLinked
+            && window->m_comparisonGroup == this->m_comparisonGroup)
+            window->applyComparisonRepresentation(state);
+    }
+}
+
+void vtkWindowCatalogue3D::setComparisonLinked(bool linked)
+{
+    if (this->m_comparisonGroup.isEmpty())
+        return;
+    if (!linked) {
+        this->m_comparisonLinked = false;
+        this->m_comparisonCameraTracker.refit(this->comparisonCameraPose());
+        this->updateComparisonUi();
+        this->statusBar()->showMessage(
+                u"View unlinked: camera, selection and representation are now autonomous."_s,
+                6000);
+        return;
+    }
+
+    vtkWindowCatalogue3D *reference = nullptr;
+    const auto windows = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+        if (window && window != this && window->m_comparisonGroup == this->m_comparisonGroup
+            && window->m_comparisonLinked) {
+            reference = window;
+            break;
+        }
+    }
+    // If every member was unlinked, the first peer becomes the reference so a
+    // single click reconnects the comparison instead of waiting for two clicks.
+    if (!reference) {
+        for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+            if (window && window != this
+                && window->m_comparisonGroup == this->m_comparisonGroup) {
+                reference = window;
+                reference->m_comparisonLinked = true;
+                reference->updateComparisonUi();
+                break;
+            }
+        }
+    }
+    this->m_comparisonLinked = true;
+    if (reference) {
+        if (this->m_comparisonRepresentationLinked)
+            this->applyComparisonRepresentation(reference->comparisonRepresentation());
+        this->applyComparisonCamera(reference->comparisonCameraPose());
+        if (reference->m_rtView && !reference->m_rtView->camera().isEmpty())
+            this->applyComparisonRaytraceCamera(reference->m_rtView->camera());
+        const CatalogueSelection::Key selected = CatalogueSelection::keyOf(
+                reference->entries, reference->schema, reference->selectedIndex);
+        const int index = CatalogueSelection::indexOf(this->entries, this->schema, selected);
+        const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
+        this->setSelectedSource(index);
+    }
+    this->m_comparisonCameraTracker.adopt(this->comparisonCameraPose());
+    this->updateComparisonUi();
+    this->statusBar()->showMessage(
+            this->m_comparisonRepresentationLinked
+                    ? u"View linked: camera, selection and representation synchronized. "
+                       "Quantity and colour mapping remain independent."_s
+                    : u"View linked: camera and selection synchronized; rendering remains autonomous."_s,
+            8000);
+}
+
+void vtkWindowCatalogue3D::setComparisonRepresentationLinked(bool linked)
+{
+    this->m_comparisonRepresentationLinked = linked;
+    if (linked && this->m_comparisonLinked && !this->m_comparisonGroup.isEmpty()) {
+        const auto windows = comparisonWindows().snapshot();
+        for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+            if (window && window != this && window->m_comparisonLinked
+                && window->m_comparisonRepresentationLinked
+                && window->m_comparisonGroup == this->m_comparisonGroup) {
+                this->applyComparisonRepresentation(window->comparisonRepresentation());
+                break;
+            }
+        }
+    }
+    this->updateComparisonUi();
+    this->statusBar()->showMessage(
+            linked
+                    ? u"Rendering matched: shape, size, budget and ray-traced light follow the group."_s
+                    : u"Rendering autonomous: camera and selection remain linked."_s,
+            7000);
 }
 
 void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
@@ -350,6 +513,10 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
         int geometry{ 0 };
         int renderBudget{ 1000000 };
         bool raytraced{ false };
+        bool linked{ true };
+        bool representationLinked{ true };
+        LinkedCameraSync::Pose camera;
+        QJsonObject rayCamera;
         QRect windowGeometry;
     };
     QList<ViewState> states;
@@ -364,18 +531,25 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
             continue;
         if (window->m_snapshotSwitching)
             return;
-        states.append({ window,
-                        window->comboMapColor ? window->comboMapColor->currentData().toString()
-                                              : QString(),
-                        window->comboColormap ? window->comboColormap->currentData().toString()
-                                              : QString(),
-                        window->comboColorScale ? window->comboColorScale->currentIndex() : 0,
-                        window->spinColorGamma ? window->spinColorGamma->value() : 2.0,
-                        window->comboGeometry ? window->comboGeometry->currentIndex() : 0,
-                        window->comboRenderBudget
-                                ? window->comboRenderBudget->currentData().toInt() : 1000000,
-                        window->m_rtLightCheck && window->m_rtLightCheck->isChecked(),
-                        window->geometry() });
+        ViewState state;
+        state.old = window;
+        state.colourBy = window->comboMapColor
+                ? window->comboMapColor->currentData().toString() : QString();
+        state.colormap = window->comboColormap
+                ? window->comboColormap->currentData().toString() : QString();
+        state.colourScale = window->comboColorScale
+                ? window->comboColorScale->currentIndex() : 0;
+        state.gamma = window->spinColorGamma ? window->spinColorGamma->value() : 2.0;
+        state.geometry = window->comboGeometry ? window->comboGeometry->currentIndex() : 0;
+        state.renderBudget = window->comboRenderBudget
+                ? window->comboRenderBudget->currentData().toInt() : 1000000;
+        state.raytraced = window->m_rtLightCheck && window->m_rtLightCheck->isChecked();
+        state.linked = window->m_comparisonLinked;
+        state.representationLinked = window->m_comparisonRepresentationLinked;
+        state.camera = window->comparisonCameraPose();
+        state.rayCamera = window->m_rtView ? window->m_rtView->camera() : QJsonObject{};
+        state.windowGeometry = window->geometry();
+        states.append(state);
     }
     if (states.isEmpty())
         return;
@@ -393,8 +567,6 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
     }
 
     const QString targetPath = this->m_snapshotSeries.paths.at(index);
-    const LinkedCameraSync::Pose camera = this->comparisonCameraPose();
-    const QJsonObject rayCamera = this->m_rtView ? this->m_rtView->camera() : QJsonObject{};
     BackendPointSeriesResult targetSeries = this->m_snapshotSeries;
     targetSeries.index = index;
     const QString particle = this->m_componentMetadata.value(u"name"_s).toString();
@@ -450,10 +622,12 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
     primary->m_snapshotSeries = targetSeries;
     primary->updateSnapshotTimelineUi();
     restore(primary, states.first());
+    primary->m_comparisonLinked = states.first().linked;
+    primary->m_comparisonRepresentationLinked = states.first().representationLinked;
     QList<QPointer<vtkWindowCatalogue3D>> replacements{ primary };
     if (states.size() > 1) {
         primary->m_comparisonGroup = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        primary->m_comparisonLinked = true;
+        primary->m_comparisonLinked = states.first().linked;
         for (int i = 1; i < states.size(); ++i) {
             auto *peer = new vtkWindowCatalogue3D(
                     targetPath, this->backendUrl, this->backendToken, {}, label,
@@ -462,6 +636,8 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
             peer->setAttribute(Qt::WA_DeleteOnClose);
             peer->m_snapshotSeries = targetSeries;
             restore(peer, states.at(i));
+            peer->m_comparisonLinked = states.at(i).linked;
+            peer->m_comparisonRepresentationLinked = states.at(i).representationLinked;
             replacements.append(peer);
         }
     }
@@ -469,9 +645,13 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
         if (!window)
             continue;
         window->m_snapshotSwitching = false;
-        window->applyComparisonCamera(camera);
-        if (!rayCamera.isEmpty())
-            window->applyComparisonRaytraceCamera(rayCamera);
+        const int replacementIndex = replacements.indexOf(window);
+        if (replacementIndex >= 0) {
+            const ViewState &state = states.at(replacementIndex);
+            window->applyComparisonCamera(state.camera);
+            if (!state.rayCamera.isEmpty())
+                window->applyComparisonRaytraceCamera(state.rayCamera);
+        }
         window->updateComparisonUi();
         window->updateSnapshotTimelineUi();
         window->show();

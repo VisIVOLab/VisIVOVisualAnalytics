@@ -418,6 +418,18 @@ private:
     void teardownComparisonLink();
     /// Keep the persistent comparison card and window title in step with the group.
     void updateComparisonUi();
+    struct ComparisonRepresentation
+    {
+        QString geometry;
+        int sizeSlider{ 100 };
+        int renderBudget{ 1000000 };
+        bool raytraced{ false };
+    };
+    ComparisonRepresentation comparisonRepresentation() const;
+    void applyComparisonRepresentation(const ComparisonRepresentation &representation);
+    void broadcastComparisonRepresentation();
+    void setComparisonLinked(bool linked);
+    void setComparisonRepresentationLinked(bool linked);
     void setupSnapshotTimeline(vtkWindowCatalogue3D *source);
     void updateSnapshotTimelineUi();
     void switchSnapshotIndex(int index);
@@ -465,6 +477,7 @@ private:
     /// Windows made with Compare Quantity share this non-empty group.
     QString m_comparisonGroup;
     bool m_comparisonLinked{ false };
+    bool m_comparisonRepresentationLinked{ true };
     bool m_applyingComparisonUpdate{ false };
     LinkedCameraSync::Tracker m_comparisonCameraTracker;
     unsigned long m_comparisonCameraObserverTag{ 0 };
@@ -586,6 +599,8 @@ private:
     QPointer<QComboBox> comboSizeMode;
     QPointer<QFrame> m_comparisonCard;
     QPointer<QLabel> m_comparisonSummary;
+    QPointer<QPushButton> m_comparisonLinkToggle;
+    QPointer<QCheckBox> m_comparisonRepresentationToggle;
     QPointer<QFrame> m_timelineCard;
     QPointer<QLabel> m_timelineSummary;
     QPointer<QSlider> m_timelineSlider;
