@@ -65,12 +65,23 @@ RaytraceViewport::RaytraceViewport(Source source, QWidget *parent)
     loadingLayout->addStretch(1);
     m_loadingLabel = new QLabel(m_loadingOverlay);
     m_loadingLabel->setAlignment(Qt::AlignCenter);
-    m_loadingLabel->setWordWrap(true);
-    m_loadingLabel->setMaximumWidth(560);
-    m_loadingLabel->setStyleSheet(u"font-size: 16px;"_s);
+    m_loadingLabel->setMaximumWidth(640);
+    m_loadingLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_loadingLabel->setStyleSheet(u"font-size: 17px; font-weight: 600;"_s);
     m_loadingLabel->setAccessibleName(u"Ray-traced view status"_s);
     loadingLayout->addWidget(m_loadingLabel, 0, Qt::AlignHCenter);
-    loadingLayout->addSpacing(18);
+    loadingLayout->addSpacing(8);
+    m_loadingDetail = new QLabel(m_loadingOverlay);
+    m_loadingDetail->setAlignment(Qt::AlignCenter);
+    m_loadingDetail->setWordWrap(true);
+    m_loadingDetail->setMinimumWidth(320);
+    m_loadingDetail->setMaximumWidth(640);
+    m_loadingDetail->setMinimumHeight(54);
+    m_loadingDetail->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
+    m_loadingDetail->setStyleSheet(u"font-size: 14px; color: #cbd5e1;"_s);
+    m_loadingDetail->setAccessibleName(u"Ray-traced view status detail"_s);
+    loadingLayout->addWidget(m_loadingDetail, 0, Qt::AlignHCenter);
+    loadingLayout->addSpacing(16);
     m_loadingProgress = new QProgressBar(m_loadingOverlay);
     m_loadingProgress->setRange(0, 0);
     m_loadingProgress->setTextVisible(false);
@@ -119,8 +130,9 @@ void RaytraceViewport::beginLoading(const QString &what)
 {
     if (!m_loadingOverlay)
         return;
-    m_loadingLabel->setText(what + u"\n\nThe view will appear automatically when the first "
-                                     u"frame is ready."_s);
+    m_loadingLabel->setText(what);
+    m_loadingDetail->setText(
+            u"The view will appear automatically when the first frame is ready."_s);
     m_loadingProgress->show();
     m_loadingOverlay->setGeometry(rect());
     m_loadingOverlay->show();
@@ -137,7 +149,8 @@ void RaytraceViewport::loadingError(const QString &detail)
 {
     if (!m_loadingOverlay)
         return;
-    m_loadingLabel->setText(u"Ray-traced view could not be prepared.\n\n"_s + detail);
+    m_loadingLabel->setText(u"Ray-traced view could not be prepared."_s);
+    m_loadingDetail->setText(detail);
     m_loadingProgress->hide();
     m_loadingOverlay->setGeometry(rect());
     m_loadingOverlay->show();
