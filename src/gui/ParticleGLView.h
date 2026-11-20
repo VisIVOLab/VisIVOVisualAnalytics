@@ -114,6 +114,10 @@ public:
 signals:
     /// GL could not start or draw (an old driver): the caller falls back.
     void failed(const QString &reason);
+    /// The first complete frame after new particles or a new grid was drawn.
+    /// Callers use this to keep a preparation overlay visible until the GPU,
+    /// rather than just the network request, is actually ready.
+    void frameReady();
 
 protected:
     void initializeGL() override;
@@ -138,6 +142,7 @@ private:
     void toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo, double hueHi);
 
     bool m_ready{ false };
+    bool m_framePending{ false };
     Mode m_mode{ Mode::Light };
     int m_count{ 0 };
     QByteArray m_rows;

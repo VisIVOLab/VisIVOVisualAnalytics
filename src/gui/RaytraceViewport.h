@@ -23,6 +23,8 @@
 class QLabel;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QProgressBar;
+class QResizeEvent;
 class QStackedLayout;
 class QTimer;
 
@@ -95,9 +97,13 @@ signals:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void fetch(const QString &key, const QJsonObject &request);
+    void beginLoading(const QString &what);
+    void finishLoading();
+    void loadingError(const QString &detail);
     void redraw(bool settle);
     void showImage(const QImage &image);
     void showGl();
@@ -129,6 +135,9 @@ private:
     bool m_failed{ false };
     QStackedLayout *m_pages{ nullptr };
     QLabel *m_image{ nullptr };     ///< a still, or the backend's frame without a GPU view
+    QWidget *m_loadingOverlay{ nullptr };
+    QLabel *m_loadingLabel{ nullptr };
+    QProgressBar *m_loadingProgress{ nullptr };
     bool m_showingStill{ false };
     QImage m_shown;
     QPointer<QNetworkReply> m_fallbackReply;

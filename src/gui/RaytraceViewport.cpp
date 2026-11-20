@@ -16,6 +16,8 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QProgressBar>
+#include <QResizeEvent>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -43,6 +45,41 @@ RaytraceViewport::RaytraceViewport(Source source, QWidget *parent)
     m_pages->setContentsMargins(0, 0, 0, 0);
     m_pages->addWidget(m_gl);
     m_pages->addWidget(m_image);
+
+    // The data request can take seconds for a large particle set or volume.
+    // The GL page is black until its first real frame, which otherwise looks
+    // like a failed render. Keep an explicit, modal-in-the-viewport status on
+    // top until ParticleGLView confirms that it has painted that frame.
+    m_loadingOverlay = new QWidget(this);
+    m_loadingOverlay->setObjectName(u"raytraceLoadingOverlay"_s);
+    m_loadingOverlay->setAttribute(Qt::WA_StyledBackground, true);
+    m_loadingOverlay->setStyleSheet(
+            u"#raytraceLoadingOverlay { background: rgba(2, 6, 23, 232); }"
+            u"#raytraceLoadingOverlay QLabel { color: #e2e8f0; }"
+            u"#raytraceLoadingOverlay QProgressBar { background: #1e293b; border: none; "
+            u"border-radius: 3px; min-height: 6px; max-height: 6px; }"
+            u"#raytraceLoadingOverlay QProgressBar::chunk { background: #0891b2; "
+            u"border-radius: 3px; }"_s);
+    auto *loadingLayout = new QVBoxLayout(m_loadingOverlay);
+    loadingLayout->setContentsMargins(32, 32, 32, 32);
+    loadingLayout->addStretch(1);
+    m_loadingLabel = new QLabel(m_loadingOverlay);
+    m_loadingLabel->setAlignment(Qt::AlignCenter);
+    m_loadingLabel->setWordWrap(true);
+    m_loadingLabel->setMaximumWidth(560);
+    m_loadingLabel->setStyleSheet(u"font-size: 16px;"_s);
+    m_loadingLabel->setAccessibleName(u"Ray-traced view status"_s);
+    loadingLayout->addWidget(m_loadingLabel, 0, Qt::AlignHCenter);
+    loadingLayout->addSpacing(18);
+    m_loadingProgress = new QProgressBar(m_loadingOverlay);
+    m_loadingProgress->setRange(0, 0);
+    m_loadingProgress->setTextVisible(false);
+    m_loadingProgress->setFixedWidth(260);
+    m_loadingProgress->setAccessibleName(u"Preparing ray-traced view"_s);
+    loadingLayout->addWidget(m_loadingProgress, 0, Qt::AlignHCenter);
+    loadingLayout->addStretch(1);
+    m_loadingOverlay->hide();
+    connect(m_gl, &ParticleGLView::frameReady, this, &RaytraceViewport::finishLoading);
     connect(m_gl, &ParticleGLView::failed, this, [this](const QString &reason) {
         m_failed = true;
         m_pages->setCurrentWidget(m_image);
@@ -52,9 +89,13 @@ RaytraceViewport::RaytraceViewport(Source source, QWidget *parent)
             m_image->setWordWrap(true);
             m_image->setText(u"No GPU view on this machine (%1). Render Still and Movie… "
                              u"render on the backend."_s.arg(reason));
+            loadingError(u"The interactive GPU preview is unavailable. "
+                         u"Render Still and Movie… can still render on the backend."_s);
             emit message(u"No GPU for the ray-traced view: %1"_s.arg(reason));
             return;
         }
+        beginLoading(u"The local GPU preview is unavailable. Rendering a preview on the "
+                     u"backend…"_s);
         emit message(u"No GPU for the ray-traced view (%1): the backend draws it."_s.arg(reason));
         fallbackFrame();
     });
@@ -63,6 +104,44 @@ RaytraceViewport::RaytraceViewport(Source source, QWidget *parent)
     m_settle->setSingleShot(true);
     m_settle->setInterval(250);
     connect(m_settle, &QTimer::timeout, this, [this]() { redraw(true); });
+}
+
+void RaytraceViewport::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    if (m_loadingOverlay) {
+        m_loadingOverlay->setGeometry(rect());
+        m_loadingOverlay->raise();
+    }
+}
+
+void RaytraceViewport::beginLoading(const QString &what)
+{
+    if (!m_loadingOverlay)
+        return;
+    m_loadingLabel->setText(what + u"\n\nThe view will appear automatically when the first "
+                                     u"frame is ready."_s);
+    m_loadingProgress->show();
+    m_loadingOverlay->setGeometry(rect());
+    m_loadingOverlay->show();
+    m_loadingOverlay->raise();
+}
+
+void RaytraceViewport::finishLoading()
+{
+    if (m_loadingOverlay)
+        m_loadingOverlay->hide();
+}
+
+void RaytraceViewport::loadingError(const QString &detail)
+{
+    if (!m_loadingOverlay)
+        return;
+    m_loadingLabel->setText(u"Ray-traced view could not be prepared.\n\n"_s + detail);
+    m_loadingProgress->hide();
+    m_loadingOverlay->setGeometry(rect());
+    m_loadingOverlay->show();
+    m_loadingOverlay->raise();
 }
 
 double RaytraceViewport::autoExposure() const
@@ -114,6 +193,7 @@ void RaytraceViewport::showImage(const QImage &image)
     pix.setDevicePixelRatio(dpr);
     m_image->setPixmap(pix);
     m_pages->setCurrentWidget(m_image);
+    finishLoading();
 }
 
 void RaytraceViewport::showStill(const QImage &image)
@@ -220,6 +300,10 @@ void RaytraceViewport::refresh()
             m_loadingKey.clear();
         }
         redraw(true);
+        // The already drawn data remains a valid view; do not leave the
+        // preparation overlay behind when an in-flight replacement is
+        // superseded by settings that use it again.
+        finishLoading();
         return;
     }
     if (key != m_loadingKey)
@@ -256,6 +340,8 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
     if (m_reply)
         m_reply->abort();
     m_loadingKey = key;
+    beginLoading(m_source.grid ? u"Preparing the ray-traced cube…"_s
+                               : u"Preparing ray-traced particle light…"_s);
     QUrl url(m_source.backendUrl);
     url.setPath(m_source.dataPath);
     QNetworkRequest req(url);
@@ -294,14 +380,17 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
                     return;
                 const QString detail =
                         QJsonDocument::fromJson(body).object().value(u"detail"_s).toString();
-                emit message(u"Ray-traced view: "_s
-                             + (detail.isEmpty() ? reply->errorString() : detail));
+                const QString reason = detail.isEmpty() ? reply->errorString() : detail;
+                loadingError(reason);
+                emit message(u"Ray-traced view: "_s + reason);
             }
             return;
         }
         if (m_source.grid) {
-            if (!takeGrid(reply))
+            if (!takeGrid(reply)) {
+                loadingError(u"The backend returned an invalid volume grid."_s);
                 return;
+            }
             m_key = key;
             if (!m_showingStill)
                 m_pages->setCurrentWidget(m_gl);
@@ -315,8 +404,10 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
         const bool scalarLight = fields == "x,y,z,r,e,v";
         const int rowFields = (map || scalarLight) ? 6 : 8;
         const int step = std::max(1, reply->rawHeader(VisivoHeaders::PARTICLE_STEP).toInt());
-        if (count <= 0 || rows.size() != qsizetype(count) * rowFields * 4)
+        if (count <= 0 || rows.size() != qsizetype(count) * rowFields * 4) {
+            loadingError(u"The backend returned invalid particle data."_s);
             return;
+        }
         m_gl->setParticles(rows, count,
                            map ? ParticleGLView::Mode::Projected
                                : scalarLight ? ParticleGLView::Mode::LightScalar
