@@ -150,6 +150,31 @@ void vtkWindowCatalogue3D::buildControlPages()
         vizHdr->setStyleSheet(hdrStyle);
         pageLayout->addWidget(vizHdr);
 
+        // A comparison used to be visible only as a suffix in the window title.
+        // Keep its meaning beside the controls the user is actually changing.
+        this->m_comparisonCard = new QFrame(pageViz);
+        this->m_comparisonCard->setObjectName(u"comparisonCard"_s);
+        this->m_comparisonCard->setStyleSheet(
+                cardStyle
+                + u"QFrame#comparisonCard { border: 1px solid #0099cc; }"_s);
+        auto *comparisonLayout = new QVBoxLayout(this->m_comparisonCard);
+        comparisonLayout->setContentsMargins(8, 8, 8, 8);
+        comparisonLayout->setSpacing(6);
+        this->m_comparisonSummary = new QLabel(this->m_comparisonCard);
+        this->m_comparisonSummary->setWordWrap(true);
+        this->m_comparisonSummary->setTextFormat(Qt::RichText);
+        comparisonLayout->addWidget(this->m_comparisonSummary);
+        auto *addQuantity = new QPushButton(u"Add another quantity…"_s,
+                                            this->m_comparisonCard);
+        addQuantity->setToolTip(
+                u"Open another view of these same particles. Camera and source selection "
+                 "will stay linked; its physical quantity and colour settings stay independent."_s);
+        comparisonLayout->addWidget(addQuantity);
+        QObject::connect(addQuantity, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::openQuantityComparison);
+        this->m_comparisonCard->hide();
+        pageLayout->addWidget(this->m_comparisonCard);
+
         // Query and scene preparation can take time before the source count changes.
         this->m_loadIndicator = new QWidget(pageViz);
         auto *loadLayout = new QVBoxLayout(this->m_loadIndicator);
@@ -255,9 +280,14 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->comboSizeMode = new QComboBox(encCard);
         this->comboMapSize  = this->comboSizeMode;
         this->comboMapColor = new QComboBox(encCard);
+        this->comboMapColor->setToolTip(
+                u"Choose the data quantity encoded by colour. This changes the values being "
+                 "visualized; Colormap below changes only their palette."_s);
         // The generated ramp this viewer always had, or a named map (the ones
         // the image and cube viewers offer).
         this->comboColormap = new QComboBox(encCard);
+        this->comboColormap->setToolTip(
+                u"Choose the colour palette. This does not change the physical quantity."_s);
         // Named maps only, so that the LUT editor shows and keeps the one in
         // use; Rainbow, this viewer's ramp, first. MinMax is a range mode.
         // Each with its gradient, as the image viewer's list shows them.
@@ -284,7 +314,7 @@ void vtkWindowCatalogue3D::buildControlPages()
         auto *encForm = new QFormLayout;
         encForm->setContentsMargins(0, 0, 0, 0);
         encForm->addRow(u"Size"_s,  this->comboSizeMode);
-        encForm->addRow(u"Color"_s, this->comboMapColor);
+        encForm->addRow(u"Colour by"_s, this->comboMapColor);
         // The colour map, and Edit: its scale and Min..Max, in the LUT editor
         // the cube viewer uses (the scale is chosen there, not in this panel).
         // The map on a row of its own: its gradient and its name both show.
@@ -733,6 +763,7 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
         this->m_defaultScaleChosen = false;
         this->updateColorMapping();
         this->updateWindowTitle();
+        this->updateComparisonUi();
         this->renderWindow->Render();
         // An open editor shows the new column (its histogram and range), or
         // its next Apply would set the old range on it.
@@ -1036,7 +1067,8 @@ void vtkWindowCatalogue3D::updateWindowTitle()
     const QString name = this->shownName();
     if (this->m_pointTable) {
         const QString quantity = !this->m_comparisonGroup.isEmpty() && this->comboMapColor
-                ? u" · %1"_s.arg(this->comboMapColor->currentText().remove(u"raw:"_s))
+                ? u" · %1 · LINKED"_s.arg(
+                          this->comboMapColor->currentText().remove(u"raw:"_s))
                 : QString();
         this->setWindowTitle(
                 u"3D Points, %1%2  (%L3 rows)"_s.arg(name, quantity).arg(this->m_tableRows));

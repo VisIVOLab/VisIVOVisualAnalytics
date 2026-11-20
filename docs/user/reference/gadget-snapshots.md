@@ -81,4 +81,25 @@ the *Previous* and *Next* snapshot buttons in the headset, which step through
 `snapdir_000`, `snapdir_001` … (or `snap_000`, `snap_001` … in one folder)
 and keep the same particle type.
 
+### Compare physical quantities
+
+Choose *Tools ▸ Compare Quantity…* in a Gadget particle window to open another
+view of the **same loaded particles**. Each linked window visualizes a different
+physical quantity through colour. For example, a `rho` view and a `temperature`
+view have the same particle positions but obtain their colours from different
+columns and use different numerical ranges.
+
+The comparison card at the top of the Visualization inspector identifies linked
+windows and shows the quantity used by the current view. It also provides *Add
+another quantity…* for creating a third view. In Visual Encoding:
+
+- **Colour by** selects the data or physical quantity being visualized;
+- **Colormap** selects only the colour palette used to represent that quantity;
+- **Range and scale…** controls that view's numerical range and stretch.
+
+Camera movements and source selection are shared by every window in the linked
+comparison. Quantity, colormap, range and scale remain independent so that each
+field can be encoded appropriately. The window title ends in `LINKED` and names
+the current quantity as a second persistent indication.
+
 Details: [technical notes](../../technical/design/gadget-snapshots.md).

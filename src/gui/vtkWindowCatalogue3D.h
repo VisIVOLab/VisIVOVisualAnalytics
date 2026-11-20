@@ -414,6 +414,8 @@ private:
     void openQuantityComparison();
     void setupComparisonLink(vtkWindowCatalogue3D *source);
     void teardownComparisonLink();
+    /// Keep the persistent comparison card and window title in step with the group.
+    void updateComparisonUi();
     void broadcastComparisonSelection(int index);
     void broadcastComparisonRaytraceCamera(const QJsonObject &camera);
     void onComparisonCameraFrame();
@@ -571,6 +573,8 @@ private:
     QPointer<QComboBox> comboGeometry;
     QPointer<QComboBox> comboRenderBudget;     // GPU point budget (render LOD)
     QPointer<QComboBox> comboSizeMode;
+    QPointer<QFrame> m_comparisonCard;
+    QPointer<QLabel> m_comparisonSummary;
     QPointer<QComboBox> comboFrame;
     QPointer<QComboBox> comboCosmology;
     QPointer<QComboBox> comboDistanceMode;     // R-14: real-space vs redshift-space
