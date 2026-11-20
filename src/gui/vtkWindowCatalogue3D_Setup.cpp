@@ -732,6 +732,7 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
         }
         this->m_defaultScaleChosen = false;
         this->updateColorMapping();
+        this->updateWindowTitle();
         this->renderWindow->Render();
         // An open editor shows the new column (its histogram and range), or
         // its next Apply would set the old range on it.
@@ -1034,7 +1035,11 @@ void vtkWindowCatalogue3D::updateWindowTitle()
 {
     const QString name = this->shownName();
     if (this->m_pointTable) {
-        this->setWindowTitle(u"3D Points, %1  (%L2 rows)"_s.arg(name).arg(this->m_tableRows));
+        const QString quantity = !this->m_comparisonGroup.isEmpty() && this->comboMapColor
+                ? u" · %1"_s.arg(this->comboMapColor->currentText().remove(u"raw:"_s))
+                : QString();
+        this->setWindowTitle(
+                u"3D Points, %1%2  (%L3 rows)"_s.arg(name, quantity).arg(this->m_tableRows));
         return;
     }
     const int loaded = static_cast<int>(this->entries.size());
