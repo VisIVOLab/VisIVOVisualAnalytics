@@ -2981,11 +2981,33 @@ static QJsonObject buildTabularQueryBody(const BackendTabularQueryRequest &req)
     }
     QJsonArray filters;
     for (const auto &f : req.filters) {
-        filters.append(QJsonObject{
-            { QStringLiteral("field"), f.field },
-            { QStringLiteral("op"), f.op },
-            { QStringLiteral("value"), f.value },
-        });
+        QJsonObject item{ { QStringLiteral("op"), f.op } };
+        if (f.shape == QStringLiteral("box")) {
+            item.insert(QStringLiteral("name"), f.name);
+            item.insert(QStringLiteral("box"),
+                        QJsonObject{
+                                { QStringLiteral("fields"),
+                                  QJsonArray::fromStringList(f.fields) },
+                                { QStringLiteral("min"),
+                                  QJsonArray{ f.minimum[0], f.minimum[1], f.minimum[2] } },
+                                { QStringLiteral("max"),
+                                  QJsonArray{ f.maximum[0], f.maximum[1], f.maximum[2] } },
+                        });
+        } else if (f.shape == QStringLiteral("sphere")) {
+            item.insert(QStringLiteral("name"), f.name);
+            item.insert(QStringLiteral("sphere"),
+                        QJsonObject{
+                                { QStringLiteral("fields"),
+                                  QJsonArray::fromStringList(f.fields) },
+                                { QStringLiteral("center"),
+                                  QJsonArray{ f.centre[0], f.centre[1], f.centre[2] } },
+                                { QStringLiteral("radius"), f.radius },
+                        });
+        } else {
+            item.insert(QStringLiteral("field"), f.field);
+            item.insert(QStringLiteral("value"), f.value);
+        }
+        filters.append(item);
     }
     body.insert(QStringLiteral("filters"), filters);
     if (req.randomSample)

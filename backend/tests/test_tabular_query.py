@@ -55,6 +55,18 @@ def srt(field: str, direction: str = "asc"):
     return TabularSortSpec(field=field, direction=direction)
 
 
+def box(fields, minimum, maximum, op="inside", name="Region"):
+    from app.schemas import TabularBox, TabularFilter
+    return TabularFilter(name=name, op=op,
+                         box=TabularBox(fields=fields, min=minimum, max=maximum))
+
+
+def sphere(fields, center, radius, op="inside", name="Region"):
+    from app.schemas import TabularFilter, TabularSphere
+    return TabularFilter(name=name, op=op,
+                         sphere=TabularSphere(fields=fields, center=center, radius=radius))
+
+
 # ── Shared fixture ────────────────────────────────────────────────────────────
 
 
@@ -85,6 +97,38 @@ def test_no_filters_returns_all_rows(df):
 def test_no_filters_preserves_column_set(df):
     result, _ = apply(df.copy())
     assert set(result.columns) == set(df.columns)
+
+
+def test_named_box_selection_filters_three_dimensions():
+    frame = pd.DataFrame({"id": range(5), "x": [-2, -1, 0, 1, 2],
+                          "y": [0, 0, 0, 2, 0], "z": [0, 0, 0, 0, 0]})
+    selected, total = apply(frame, [box(["x", "y", "z"], [-1, -1, -1], [1, 1, 1])])
+    assert total == 2
+    assert list(selected["id"]) == [1, 2]
+    outside, total = apply(frame, [box(["x", "y", "z"], [-1, -1, -1], [1, 1, 1],
+                                           op="outside")])
+    assert total == 3
+    assert list(outside["id"]) == [0, 3, 4]
+
+
+def test_sphere_selection_composes_with_scalar_predicate():
+    frame = pd.DataFrame({"id": range(5), "x": [0, 1, 2, 0, 0],
+                          "y": [0, 0, 0, 2, 0], "z": [0, 0, 0, 0, 3],
+                          "temperature": [1, 5, 9, 9, 9]})
+    selected, total = apply(frame, [sphere(["x", "y", "z"], [0, 0, 0], 2.0),
+                                    flt("temperature", ">", "4")])
+    assert total == 3
+    assert list(selected["id"]) == [1, 2, 3]
+
+
+@pytest.mark.parametrize("selection", [
+    box(["x", "y", "z"], [0, 0, 0], [0, 1, 1]),
+    sphere(["x", "y", "z"], [0, 0, 0], 0),
+])
+def test_invalid_spatial_selection_is_rejected(selection):
+    frame = pd.DataFrame({"x": [0.0], "y": [0.0], "z": [0.0]})
+    with pytest.raises(ValueError):
+        apply(frame, [selection])
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

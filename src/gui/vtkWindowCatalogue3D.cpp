@@ -65,6 +65,7 @@
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -175,6 +176,155 @@ static std::optional<BackendTabularFilter> showAddFilterDialog(
     return BackendTabularFilter{ field, op, value };
 }
 
+static QString filterDisplayText(const BackendTabularFilter &filter)
+{
+    if (filter.shape == u"box"_s) {
+        const QString name = filter.name.trimmed().isEmpty() ? u"Box selection"_s : filter.name;
+        return u"%1 · %2 box (%3, %4, %5)"_s.arg(
+                name, filter.op, filter.fields.value(0), filter.fields.value(1),
+                filter.fields.value(2));
+    }
+    if (filter.shape == u"sphere"_s) {
+        const QString name = filter.name.trimmed().isEmpty() ? u"Sphere selection"_s : filter.name;
+        return u"%1 · %2 sphere, r=%3 (%4, %5, %6)"_s.arg(
+                name, filter.op, QString::number(filter.radius, 'g', 6),
+                filter.fields.value(0), filter.fields.value(1), filter.fields.value(2));
+    }
+    return u"%1 %2 %3"_s.arg(filter.field, filter.op, filter.value);
+}
+
+static std::optional<BackendTabularFilter> showSpatialFilterDialog(
+        QWidget *parent, const QStringList &fields, const std::array<double, 6> &bounds,
+        const BackendTabularFilter *existing = nullptr)
+{
+    auto *dlg = new QDialog(parent);
+    dlg->setWindowTitle(existing ? u"Edit 3-D Region"_s : u"Select 3-D Region"_s);
+    dlg->setModal(true);
+    dlg->setMinimumWidth(420);
+    auto *layout = new QFormLayout(dlg);
+    layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+    auto *name = new QLineEdit(dlg);
+    name->setPlaceholderText(u"e.g. Northern outflow"_s);
+    name->setText(existing ? existing->name : u"Region 1"_s);
+    auto *shape = new QComboBox(dlg);
+    shape->addItem(u"Box"_s, u"box"_s);
+    shape->addItem(u"Sphere"_s, u"sphere"_s);
+    if (existing)
+        shape->setCurrentIndex(existing->shape == u"sphere"_s ? 1 : 0);
+    auto *operation = new QComboBox(dlg);
+    operation->addItem(u"Inside"_s, u"inside"_s);
+    operation->addItem(u"Outside"_s, u"outside"_s);
+    if (existing)
+        operation->setCurrentIndex(existing->op == u"outside"_s ? 1 : 0);
+
+    std::array<QComboBox *, 3> axes{};
+    auto *axesWidget = new QWidget(dlg);
+    auto *axesLayout = new QHBoxLayout(axesWidget);
+    axesLayout->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        axes[i] = new QComboBox(axesWidget);
+        axes[i]->addItems(fields);
+        const QString wanted = existing ? existing->fields.value(i) : fields.value(i);
+        axes[i]->setCurrentText(wanted);
+        axesLayout->addWidget(axes[i]);
+    }
+
+    std::array<QDoubleSpinBox *, 6> values{};
+    const auto makeValue = [dlg](double initial) {
+        auto *spin = new QDoubleSpinBox(dlg);
+        spin->setDecimals(8);
+        spin->setRange(-std::numeric_limits<double>::max(),
+                       std::numeric_limits<double>::max());
+        spin->setValue(initial);
+        return spin;
+    };
+    auto *boxWidget = new QWidget(dlg);
+    auto *boxLayout = new QFormLayout(boxWidget);
+    boxLayout->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        const double lo = existing && existing->shape == u"box"_s
+                ? existing->minimum[i] : bounds[i * 2];
+        const double hi = existing && existing->shape == u"box"_s
+                ? existing->maximum[i] : bounds[i * 2 + 1];
+        values[i * 2] = makeValue(lo);
+        values[i * 2 + 1] = makeValue(hi);
+        auto *range = new QWidget(boxWidget);
+        auto *rangeLayout = new QHBoxLayout(range);
+        rangeLayout->setContentsMargins(0, 0, 0, 0);
+        rangeLayout->addWidget(values[i * 2]);
+        rangeLayout->addWidget(values[i * 2 + 1]);
+        boxLayout->addRow(QString(QChar(u'X' + i)) + u" min / max"_s, range);
+    }
+
+    std::array<QDoubleSpinBox *, 4> sphereValues{};
+    auto *sphereWidget = new QWidget(dlg);
+    auto *sphereLayout = new QFormLayout(sphereWidget);
+    sphereLayout->setContentsMargins(0, 0, 0, 0);
+    double diagonal2 = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        const double centre = existing && existing->shape == u"sphere"_s
+                ? existing->centre[i] : (bounds[i * 2] + bounds[i * 2 + 1]) * 0.5;
+        sphereValues[i] = makeValue(centre);
+        sphereLayout->addRow(QString(QChar(u'X' + i)) + u" centre"_s, sphereValues[i]);
+        const double extent = bounds[i * 2 + 1] - bounds[i * 2];
+        diagonal2 += extent * extent;
+    }
+    sphereValues[3] = makeValue(existing && existing->shape == u"sphere"_s
+                                        ? existing->radius : std::sqrt(diagonal2) * 0.25);
+    sphereValues[3]->setMinimum(std::numeric_limits<double>::min());
+    sphereLayout->addRow(u"Radius"_s, sphereValues[3]);
+
+    layout->addRow(u"Name"_s, name);
+    layout->addRow(u"Shape"_s, shape);
+    layout->addRow(u"Keep"_s, operation);
+    layout->addRow(u"Coordinates X / Y / Z"_s, axesWidget);
+    layout->addRow(u"Box"_s, boxWidget);
+    layout->addRow(u"Sphere"_s, sphereWidget);
+    const auto updateShape = [shape, boxWidget, sphereWidget]() {
+        const bool box = shape->currentData().toString() == u"box"_s;
+        boxWidget->setVisible(box);
+        sphereWidget->setVisible(!box);
+    };
+    QObject::connect(shape, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                     updateShape);
+    updateShape();
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
+    layout->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+    if (dlg->exec() != QDialog::Accepted) {
+        dlg->deleteLater();
+        return std::nullopt;
+    }
+
+    BackendTabularFilter result;
+    result.shape = shape->currentData().toString();
+    result.name = name->text().trimmed();
+    result.op = operation->currentData().toString();
+    for (auto *axis : axes)
+        result.fields.append(axis->currentText());
+    if (result.shape == u"box"_s) {
+        for (int i = 0; i < 3; ++i) {
+            result.minimum[i] = values[i * 2]->value();
+            result.maximum[i] = values[i * 2 + 1]->value();
+            if (result.minimum[i] >= result.maximum[i]) {
+                QMessageBox::warning(parent, u"Invalid Region"_s,
+                                     u"Every box minimum must be below its maximum."_s);
+                dlg->deleteLater();
+                return std::nullopt;
+            }
+        }
+    } else {
+        for (int i = 0; i < 3; ++i)
+            result.centre[i] = sphereValues[i]->value();
+        result.radius = sphereValues[3]->value();
+    }
+    dlg->deleteLater();
+    return result;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction / destruction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,6 +358,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          }
                          if (this->btnFilterAdd) {
                              this->btnFilterAdd->setEnabled(true);
+                         }
+                         if (this->btnFilterAddSpatial) {
+                             this->btnFilterAddSpatial->setEnabled(this->m_cartesian);
                          }
                          if (this->filterStatusLabel) {
                              this->filterStatusLabel->setText({});
@@ -711,6 +864,28 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             filterableFields = this->schema.headers; // fallback: all fields
         }
 
+        const auto coordinateFields = [this]() {
+            const auto fieldFor = [this](const QString &key, const QString &fallback) {
+                if (key.startsWith(u"raw:"_s))
+                    return this->rawHeaders.value(key.mid(4).toInt(), fallback);
+                return fallback;
+            };
+            return QStringList{
+                    fieldFor(this->mapXKey, this->schema.xFieldName),
+                    fieldFor(this->mapYKey, this->schema.yFieldName),
+                    fieldFor(this->mapZKey, this->schema.zFieldName),
+            };
+        };
+        if (this->btnFilterAddSpatial) {
+            this->btnFilterAddSpatial->setEnabled(this->m_cartesian);
+            if (!this->m_cartesian) {
+                this->btnFilterAddSpatial->setToolTip(
+                        u"3-D region selection currently requires Cartesian coordinates."_s);
+            }
+        }
+        for (const BackendTabularFilter &filter : this->activeFilters)
+            this->filterList->addItem(filterDisplayText(filter));
+
         // Filter: Add
         QObject::connect(this->btnFilterAdd, &QPushButton::clicked, this,
                          [this, filterableFields]() {
@@ -719,8 +894,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  return;
                              }
                              this->activeFilters.push_back(*filter);
-                             this->filterList->addItem(QStringLiteral("%1 %2 %3").arg(
-                                     filter->field, filter->op, filter->value));
+                             this->filterList->addItem(filterDisplayText(*filter));
                              DiagnosticsManager::instance()->publish(
                                      DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
                                      QStringLiteral("Catalogue3D"),
@@ -728,6 +902,39 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                              .arg(filter->field, filter->op, filter->value),
                                      this->remoteDatasetId, this->remoteSessionId,
                                      QStringLiteral("filter"));
+                         });
+        // Named spatial selection over the complete Cartesian dataset.
+        QObject::connect(this->btnFilterAddSpatial, &QPushButton::clicked, this,
+                         [this, filterableFields, coordinateFields]() {
+                             std::array<double, 6> bounds{ -1.0, 1.0, -1.0, 1.0, -1.0, 1.0 };
+                             if (this->sourcePoints && this->sourcePoints->GetNumberOfPoints() > 0) {
+                                 double current[6];
+                                 this->sourcePoints->GetBounds(current);
+                                 bool valid = true;
+                                 for (int i = 0; i < 3; ++i)
+                                     valid = valid && std::isfinite(current[i * 2])
+                                             && std::isfinite(current[i * 2 + 1])
+                                             && current[i * 2] < current[i * 2 + 1];
+                                 if (valid)
+                                     std::copy(std::begin(current), std::end(current), bounds.begin());
+                             }
+                             QStringList fields = filterableFields;
+                             const QStringList coordinates = coordinateFields();
+                             for (auto it = coordinates.crbegin(); it != coordinates.crend(); ++it) {
+                                 fields.removeAll(*it);
+                                 fields.prepend(*it);
+                             }
+                             const auto filter = showSpatialFilterDialog(
+                                     this, fields, bounds);
+                             if (!filter)
+                                 return;
+                             this->activeFilters.push_back(*filter);
+                             this->filterList->addItem(filterDisplayText(*filter));
+                             DiagnosticsManager::instance()->publish(
+                                     DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                     u"Catalogue3D"_s,
+                                     u"Spatial selection added: "_s + filterDisplayText(*filter),
+                                     this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
                          });
         // Filter: Edit on double-click
         QObject::connect(
@@ -740,20 +947,30 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                     if (row < 0 || row >= static_cast<int>(this->activeFilters.size())) {
                         return;
                     }
-                    const auto updated =
-                            showAddFilterDialog(this, filterableFields, &this->activeFilters[row]);
+                    const BackendTabularFilter &current = this->activeFilters[row];
+                    std::optional<BackendTabularFilter> updated;
+                    if (current.isSpatial()) {
+                        std::array<double, 6> bounds{ -1.0, 1.0, -1.0, 1.0, -1.0, 1.0 };
+                        if (this->sourcePoints && this->sourcePoints->GetNumberOfPoints() > 0) {
+                            double currentBounds[6];
+                            this->sourcePoints->GetBounds(currentBounds);
+                            std::copy(std::begin(currentBounds), std::end(currentBounds),
+                                      bounds.begin());
+                        }
+                        updated = showSpatialFilterDialog(this, filterableFields, bounds, &current);
+                    } else {
+                        updated = showAddFilterDialog(this, filterableFields, &current);
+                    }
                     if (!updated) {
                         return;
                     }
                     this->activeFilters[row] = *updated;
-                    item->setText(QStringLiteral("%1 %2 %3")
-                                          .arg(updated->field, updated->op, updated->value));
+                    item->setText(filterDisplayText(*updated));
                     DiagnosticsManager::instance()->publish(
                             DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
                             QStringLiteral("Catalogue3D"),
-                            QStringLiteral("Filter [%1] edited: %2 %3 %4")
-                                    .arg(row)
-                                    .arg(updated->field, updated->op, updated->value),
+                            QStringLiteral("Filter [%1] edited: %2")
+                                    .arg(row).arg(filterDisplayText(*updated)),
                             this->remoteDatasetId, this->remoteSessionId,
                             QStringLiteral("filter"));
                 });

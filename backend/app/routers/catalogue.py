@@ -213,24 +213,71 @@ def _particle_filtered_page(path: str, filters, limit: int, offset: int,
 
 
 def _particle_matcher(component, filters):
-    """Return a bounded-memory numeric-filter evaluator for one component."""
+    """Return a bounded-memory scalar/spatial evaluator for one component."""
     numeric_ops = {"=", "!=", ">", ">=", "<", "<="}
     prepared = []
     for item in filters:
+        if item.box is not None:
+            box = item.box
+            if len(box.fields) != 3 or len(box.min) != 3 or len(box.max) != 3:
+                raise ValueError("A box selection needs three fields, minima and maxima.")
+            if item.op not in ("inside", "outside"):
+                raise ValueError("A spatial selection operator is 'inside' or 'outside'.")
+            if any(field not in component.names for field in box.fields):
+                missing = next(field for field in box.fields if field not in component.names)
+                raise ValueError(f"Unknown field: {missing!r}")
+            if any(not np.isfinite(a) or not np.isfinite(b) or a >= b
+                   for a, b in zip(box.min, box.max)):
+                raise ValueError("Every box minimum must be finite and below its maximum.")
+            prepared.append(("box", tuple(box.fields), tuple(box.min), tuple(box.max), item.op))
+            continue
+        if item.sphere is not None:
+            sphere = item.sphere
+            if len(sphere.fields) != 3 or len(sphere.center) != 3:
+                raise ValueError("A sphere selection needs three fields and centre coordinates.")
+            if item.op not in ("inside", "outside"):
+                raise ValueError("A spatial selection operator is 'inside' or 'outside'.")
+            if any(field not in component.names for field in sphere.fields):
+                missing = next(field for field in sphere.fields if field not in component.names)
+                raise ValueError(f"Unknown field: {missing!r}")
+            if (any(not np.isfinite(v) for v in sphere.center)
+                    or not np.isfinite(sphere.radius) or sphere.radius <= 0):
+                raise ValueError("A sphere needs a finite centre and positive radius.")
+            prepared.append(("sphere", tuple(sphere.fields), tuple(sphere.center),
+                             float(sphere.radius), item.op))
+            continue
         if item.field not in component.names:
             raise ValueError(f"Unknown field: {item.field!r}")
         if item.op not in numeric_ops:
             raise ValueError(f"Particle filtering supports numeric operators only, not {item.op!r}")
-        prepared.append((item.field, item.op, float(item.value)))
+        prepared.append(("scalar", item.field, item.op, float(item.value)))
 
     def matching(start, stop):
         source_rows = np.arange(start, stop, dtype=np.int64)
         keep = np.ones(stop - start, dtype=bool)
-        for field, op, value in prepared:
-            column = component.take(field, source_rows)
-            keep &= {"=": column == value, "!=": column != value,
-                     ">": column > value, ">=": column >= value,
-                     "<": column < value, "<=": column <= value}[op]
+        for criterion in prepared:
+            if criterion[0] == "scalar":
+                _, field, op, value = criterion
+                column = component.take(field, source_rows)
+                keep &= {"=": column == value, "!=": column != value,
+                         ">": column > value, ">=": column >= value,
+                         "<": column < value, "<=": column <= value}[op]
+            elif criterion[0] == "box":
+                _, fields, lo, hi, op = criterion
+                inside = np.ones(stop - start, dtype=bool)
+                for field, a, b in zip(fields, lo, hi):
+                    column = component.take(field, source_rows)
+                    inside &= (column >= a) & (column <= b)
+                keep &= inside if op == "inside" else ~inside
+            else:
+                _, fields, center, radius, op = criterion
+                distance2 = np.zeros(stop - start, dtype=np.float64)
+                for field, origin in zip(fields, center):
+                    delta = np.asarray(component.take(field, source_rows), dtype=np.float64)
+                    delta -= origin
+                    distance2 += delta * delta
+                inside = distance2 <= radius * radius
+                keep &= inside if op == "inside" else ~inside
         return np.flatnonzero(keep).astype(np.int64) + start
     return matching
 

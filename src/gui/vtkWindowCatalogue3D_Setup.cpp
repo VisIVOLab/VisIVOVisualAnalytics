@@ -607,11 +607,15 @@ void vtkWindowCatalogue3D::buildControlPages()
         actionsCardLayout->setContentsMargins(8, 8, 8, 8);
         actionsCardLayout->setSpacing(4);
 
-        this->btnFilterAdd      = new QPushButton(u"Add…"_s,      actionsCard);
+        this->btnFilterAdd      = new QPushButton(u"Add field filter…"_s, actionsCard);
+        this->btnFilterAddSpatial = new QPushButton(u"Select 3-D region…"_s, actionsCard);
+        this->btnFilterAddSpatial->setToolTip(
+                u"Create a named box or spherical selection over the full dataset."_s);
         this->btnFilterRemove   = new QPushButton(u"Remove"_s,    actionsCard);
         this->btnFilterClearAll = new QPushButton(u"Clear All"_s, actionsCard);
         this->btnFilterApply    = new QPushButton(u"Apply"_s,     actionsCard);
         actionsCardLayout->addWidget(this->btnFilterAdd);
+        actionsCardLayout->addWidget(this->btnFilterAddSpatial);
         actionsCardLayout->addWidget(this->btnFilterRemove);
         actionsCardLayout->addWidget(this->btnFilterClearAll);
         actionsCardLayout->addWidget(this->btnFilterApply);

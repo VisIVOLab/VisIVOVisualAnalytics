@@ -550,6 +550,9 @@ void vtkWindowCatalogue3D::applyFilter()
     if (this->btnFilterAdd) {
         this->btnFilterAdd->setEnabled(false);
     }
+    if (this->btnFilterAddSpatial) {
+        this->btnFilterAddSpatial->setEnabled(false);
+    }
     if (this->btnLoadMore) {
         this->btnLoadMore->setVisible(false);
     }

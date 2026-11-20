@@ -127,6 +127,20 @@ def test_box_filters_keep_the_inside_or_the_outside(tmp_path):
         ps.sample_points(t, 10, filters=[{"box": {"fields": ["Q"], "min": [0], "max": [1]}}])
 
 
+def test_sphere_filters_keep_the_inside_or_the_outside(tmp_path):
+    head, data = _vbt(tmp_path, "spherical")
+    t = open_point_table(head)
+    sphere = {"fields": ["X", "Y", "Z"], "center": [0, 2.5, 101], "radius": 3.0}
+    x, y, z = data[0], data[1], data[2]
+    inside = (x * x + (y - 2.5) ** 2 + (z - 101) ** 2) <= 9.0
+    s_in = ps.sample_points(t, 10_000, filters=[{"sphere": sphere, "op": "inside"}])
+    s_out = ps.sample_points(t, 10_000, filters=[{"sphere": sphere, "op": "outside"}])
+    assert len(s_in.positions) == int(inside.sum())
+    assert len(s_out.positions) == int((~inside).sum())
+    with pytest.raises(ValueError):
+        ps.sample_points(t, 10, filters=[{"sphere": sphere, "op": "around"}])
+
+
 # ── Routes ──────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

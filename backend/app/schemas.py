@@ -561,10 +561,27 @@ class CatalogueSubsetResponse(BaseModel):
     rows: list[dict[str, Any]] = []
 
 
+class TabularBox(BaseModel):
+    fields: list[str]
+    min: list[float]
+    max: list[float]
+
+
+class TabularSphere(BaseModel):
+    fields: list[str]
+    center: list[float]
+    radius: float
+
+
 class TabularFilter(BaseModel):
-    field: str
-    op: str    # "=", "!=", ">", ">=", "<", "<=", "contains", "in"
-    value: str
+    # A scalar predicate has field/op/value. A reproducible spatial predicate
+    # has box or sphere plus op=inside|outside and an optional user-facing name.
+    field: str = ""
+    op: str = ""
+    value: str = ""
+    name: str = ""
+    box: TabularBox | None = None
+    sphere: TabularSphere | None = None
 
 
 class TabularSortSpec(BaseModel):

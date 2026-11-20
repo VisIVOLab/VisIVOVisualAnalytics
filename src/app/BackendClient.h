@@ -635,6 +635,17 @@ struct BackendTabularFilter
     QString field;
     QString op;    // "=", "!=", ">", ">=", "<", "<=", "contains", "in"
     QString value;
+    /// Empty for a field predicate; "box" or "sphere" for a spatial predicate.
+    QString shape;
+    QString name;
+    QStringList fields;
+    std::array<double, 3> minimum{ 0.0, 0.0, 0.0 };
+    std::array<double, 3> maximum{ 0.0, 0.0, 0.0 };
+    std::array<double, 3> centre{ 0.0, 0.0, 0.0 };
+    double radius{ 0.0 };
+
+    bool isSpatial() const { return shape == QStringLiteral("box")
+                                    || shape == QStringLiteral("sphere"); }
 };
 
 struct BackendTabularQueryRequest

@@ -617,6 +617,7 @@ private:
     // Multi-filter UI
     QPointer<QListWidget> filterList;
     QPointer<QPushButton> btnFilterAdd;
+    QPointer<QPushButton> btnFilterAddSpatial;
     QPointer<QPushButton> btnFilterRemove;
     QPointer<QPushButton> btnFilterClearAll;
     QPointer<QPushButton> btnFilterApply;
