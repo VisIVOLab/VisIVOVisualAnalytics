@@ -59,6 +59,8 @@ public:
     explicit RaytraceViewport(Source source, QWidget *parent = nullptr);
 
     void setCamera(const QJsonObject &camera);
+    /// Orient the current camera to a standard desktop Camera-menu view.
+    void setCameraPreset(double azimuth, double elevation);
     QJsonObject camera() const { return m_camera; }
     /// The view was turned off: its camera is of the past, and the next time
     /// it is turned on it starts from the view on screen then.

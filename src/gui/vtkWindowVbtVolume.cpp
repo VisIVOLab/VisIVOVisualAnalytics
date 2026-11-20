@@ -1,4 +1,5 @@
 #include "vtkWindowVbtVolume.h"
+#include "CameraPresetActions.h"
 #include "WindowCloseShortcut.h"
 #include "app/BackendClient.h"
 #include "app/ThemeManager.h"
@@ -175,6 +176,10 @@ void vtkWindowVbtVolume::setupUi()
 
     // ── View menu ─────────────────────────────────────────────────────────────
     auto *viewMenu = this->menuBar()->addMenu(u"View"_s);
+    visivo::installCameraPresetMenu(this, [this](double azimuth, double elevation) {
+        visivo::applyCameraPreset(this->renderer, azimuth, elevation);
+        this->renderWindow->Render();
+    });
     this->m_actionSessionPanel = new QAction(u"Session Data Panel"_s, this);
     this->m_actionSessionPanel->setCheckable(true);
     this->m_actionSessionPanel->setChecked(true);

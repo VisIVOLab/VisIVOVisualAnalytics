@@ -1,4 +1,5 @@
 #include "CatalogueFormat.h"
+#include "CameraPresetActions.h"
 #include "WindowCloseShortcut.h"
 #include "BusyStatus.h"
 #include "VbtByteOrderPrompt.h"
@@ -881,6 +882,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &QAction::setChecked);
     QObject::connect(ui->actionResetCamera, &QAction::triggered, this,
                      &vtkWindowCatalogue3D::resetCamera);
+    visivo::installCameraPresetMenu(this, [this](double azimuth, double elevation) {
+        this->applyCameraPreset(azimuth, elevation);
+    });
     // Deselecting: this, Esc, or a click on empty space (onMouseEvent). Also
     // on the window itself, not only in the menu: the macOS menu bar does not
     // take Esc as a key equivalent.
