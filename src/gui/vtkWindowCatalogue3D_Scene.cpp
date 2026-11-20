@@ -1,4 +1,5 @@
 #include "vtkWindowCatalogue3D.h"
+#include "ParticleSplatDefaults.h"
 #include "app/DatasetUsers.h"
 #include "app/TaskQuitDrain.h"
 #include "ui_vtkWindowCatalogue3D.h"
@@ -1105,7 +1106,8 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     // Sized to the mean spacing of the points drawn and faded by their number,
     // as the former VBT point viewer (and the backend's point session,
     // app/render_session/points.py gaussian_splat) do: radius = spacing ×
-    // size / 8, opacity = min(0.9, 20 / ∛N) × 35 %, within 0.05..0.9.
+    // size / 8. Opacity is normalized by the estimated sightline depth so a
+    // typical column does not start several times past full brightness.
     // The spacing is ∛(volume / N) of the box the points fill: a filter that
     // cuts a slab keeps it, as it keeps the density (a flat axis counts as a
     // thousandth of the longest).
@@ -1128,7 +1130,7 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     // Splats along the longest sightline: ∛N for a cube (the former viewer's
     // rule), and unchanged by a filter that cuts a slab.
     const double depth = std::max(longest / spacing, 1.0);
-    const double opacity = std::clamp(std::min(0.9, 20.0 / depth) * 0.35, 0.05, 0.9);
+    const double opacity = ParticleSplatDefaults::opacityForDepth(depth);
     this->gaussianOpacity->RemoveAllPoints();
     this->gaussianOpacity->AddPoint(-1.0e15, opacity);
     this->gaussianOpacity->AddPoint(1.0e15, opacity);

@@ -285,14 +285,14 @@ def uniform_scale(placed):
     return placed
 
 
-def gaussian_splat(bounds, npts: int, size: int, intensity: int) -> tuple[float, float]:
+def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[float, float]:
     """Splat radius and per-splat opacity, as the desktop viewer derives them
     (vtkWindowCatalogue3D::updateGaussianSplats): radius = mean spacing ×
     size / 8, the spacing ∛(volume / N) of the box the points fill (a filter
-    that cuts a slab keeps it, as it keeps the density); opacity =
-    min(0.9, 20 / D) × intensity, clamped to [0.05, 0.9], D the splats along
-    the longest sightline (longest side / spacing: ∛N for a cube, as the
-    former VBT viewer had, and unchanged by a filter)."""
+    that cuts a slab keeps it, as it keeps the density); opacity is normalized
+    to 1.5 / D at the standard intensity, clamped to [0.005, 0.25], D the
+    splats along the longest sightline (longest side / spacing: ∛N for a cube,
+    and unchanged by a filter)."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     # A flat axis (points in a plane) counts as a thousandth of the longest.
@@ -300,7 +300,7 @@ def gaussian_splat(bounds, npts: int, size: int, intensity: int) -> tuple[float,
     spacing = math.cbrt(volume / max(npts, 1))
     radius = spacing * size / 8.0
     depth = max(longest / spacing, 1.0)
-    opacity = min(max(min(0.9, 20.0 / depth) * intensity / 100.0, 0.05), 0.9)
+    opacity = min(max(1.5 / depth * intensity / 35.0, 0.005), 0.25)
     return radius, opacity
 
 

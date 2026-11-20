@@ -204,11 +204,11 @@ def test_gaussian_splats_follow_the_desktop_rules():
     # Half the points in half the box (a filter's slab): the same splats.
     assert gaussian_splat((0, 5, 0, 10, 0, 10), 500, 3, 35)[0] == pytest.approx(3 / 8)
     depth = 100 / (100 * 50 * 10 / 1000) ** (1 / 3)
-    assert opacity == pytest.approx(min(0.9, 20 / depth) * 0.35)
-    # A cube: 20 / ∛N, and a filter's slab of it keeps the opacity.
-    assert gaussian_splat((0, 64, 0, 64, 0, 64), 64 ** 3, 3, 35)[1] == pytest.approx(20 / 64 * 0.35)
-    assert gaussian_splat((0, 32, 0, 64, 0, 64), 64 ** 3 // 2, 3, 35)[1] == pytest.approx(20 / 64 * 0.35)
-    assert gaussian_splat((0, 1, 0, 1, 0, 1), 10 ** 9, 1, 1)[1] == 0.05
+    assert opacity == pytest.approx(max(0.005, min(0.25, 1.5 / depth)))
+    # A cube: 1.5 / ∛N, and a filter's slab of it keeps the opacity.
+    assert gaussian_splat((0, 64, 0, 64, 0, 64), 64 ** 3, 3, 35)[1] == pytest.approx(1.5 / 64)
+    assert gaussian_splat((0, 32, 0, 64, 0, 64), 64 ** 3 // 2, 3, 35)[1] == pytest.approx(1.5 / 64)
+    assert gaussian_splat((0, 1, 0, 1, 0, 1), 10 ** 9, 1, 1)[1] == 0.005
 
 
 def test_the_render_route_starts_a_point_session(tmp_path, monkeypatch):

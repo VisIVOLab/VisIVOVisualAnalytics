@@ -4,6 +4,7 @@
 // view's state sent to the backend's point session (app/render_session/points.py).
 
 #include "vtkWindowCatalogue3D.h"
+#include "ParticleSplatDefaults.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
 #include "BackendLocality.h"
@@ -440,8 +441,16 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
     if (this->comboGeometry) {
         const int shape = this->comboGeometry->findText(
                 this->m_tableRows > 1000000 ? u"Gaussian splats"_s : u"Point"_s);
-        if (shape >= 0)
+        if (shape >= 0) {
             this->comboGeometry->setCurrentIndex(shape);
+            // A size of 3 mean spacings was inherited from the old VBT viewer
+            // and saturates a dense simulation before its structure is visible.
+            // This applies only to the automatic Gaussian default; explicit
+            // user choices and every other representation keep their value.
+            if (this->comboGeometry->currentText() == u"Gaussian splats"_s
+                && ui->sliderScale->value() == 100)
+                ui->sliderScale->setValue(ParticleSplatDefaults::initialSliderValue());
+        }
         // Called before the combo's signal is connected: applied here, or the
         // combo would read splats while points are drawn.
         this->updateGeometryMode();
