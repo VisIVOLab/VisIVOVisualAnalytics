@@ -93,6 +93,7 @@
     "POST /v1/assistant/stream",
     "POST /v1/astrometry/reproject/{dataset_id}",
     "POST /v1/catalogue/classified_votable",
+    "POST /v1/catalogue/diagnostics",
     "POST /v1/catalogue/open",
     "POST /v1/catalogue/query",
     "POST /v1/catalogue/subset",
