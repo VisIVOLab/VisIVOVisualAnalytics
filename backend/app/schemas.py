@@ -626,6 +626,37 @@ class TabularQueryResponse(BaseModel):
     columns: dict[str, str] = {}
 
 
+class CatalogueDiagnosticsRequest(BaseModel):
+    dataset_id: str
+    field: str
+    weight_field: str = ""
+    bins: int = Field(default=64, ge=4, le=512)
+    filters: list[TabularFilter] = []
+    range_min: float | None = None
+    range_max: float | None = None
+
+
+class CatalogueDiagnosticsResponse(BaseModel):
+    valid: bool
+    error: str
+    field: str = ""
+    field_unit: str = ""
+    weight_field: str = ""
+    weight_unit: str = ""
+    selected_rows: int = 0
+    finite_rows: int = 0
+    minimum: float = 0.0
+    maximum: float = 0.0
+    mean: float = 0.0
+    stddev: float = 0.0
+    weighted_mean: float | None = None
+    weight_sum: float | None = None
+    bin_edges: list[float] = []
+    counts: list[float] = []
+    weighting: str = "unweighted"
+    selection: list[str] = []
+
+
 class VbtOpenRequest(BaseModel):
     path: str
     format: str = ""

@@ -282,6 +282,138 @@ def _particle_matcher(component, filters):
     return matching
 
 
+def _diagnostic_selection(filters) -> list[str]:
+    """Compact, reproducible descriptions echoed with a diagnostic result."""
+    descriptions = []
+    for item in filters:
+        if item.box is not None:
+            descriptions.append(
+                f"{item.name or 'box'}: {item.op} "
+                f"{dict(zip(item.box.fields, zip(item.box.min, item.box.max)))}")
+        elif item.sphere is not None:
+            descriptions.append(
+                f"{item.name or 'sphere'}: {item.op} centre={item.sphere.center}, "
+                f"radius={item.sphere.radius}, fields={item.sphere.fields}")
+        else:
+            descriptions.append(f"{item.field} {item.op} {item.value}")
+    return descriptions or ["complete dataset"]
+
+
+def _diagnostic_accumulate(chunks, field_range, bins: int, weighted: bool):
+    """Exact bounded-memory moments and histogram over iterable array pairs."""
+    selected = finite = 0
+    value_sum = value_sum2 = weight_sum = weighted_sum = 0.0
+    minimum, maximum = np.inf, -np.inf
+    for values, weights in chunks():
+        values = np.asarray(values, dtype=np.float64)
+        selected += values.size
+        keep = np.isfinite(values)
+        if weighted:
+            weights = np.asarray(weights, dtype=np.float64)
+            keep &= np.isfinite(weights) & (weights >= 0.0)
+        values = values[keep]
+        if weighted:
+            weights = weights[keep]
+        if not values.size:
+            continue
+        finite += values.size
+        minimum = min(minimum, float(values.min()))
+        maximum = max(maximum, float(values.max()))
+        value_sum += float(values.sum(dtype=np.float64))
+        value_sum2 += float(np.dot(values, values))
+        if weighted:
+            weight_sum += float(weights.sum(dtype=np.float64))
+            weighted_sum += float(np.dot(values, weights))
+    if not finite:
+        raise ValueError("The selected population has no finite values for this field.")
+    lo, hi = field_range if field_range is not None else (minimum, maximum)
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+        pad = max(abs(lo) * 0.5, 0.5)
+        lo, hi = lo - pad, hi + pad
+    edges = np.linspace(lo, hi, bins + 1, dtype=np.float64)
+    histogram = np.zeros(bins, dtype=np.float64)
+    # `chunks` is a factory, so an automatic range still stays bounded: the
+    # second pass rereads each Gadget slice instead of retaining all values.
+    for values, weights in chunks():
+        values = np.asarray(values, dtype=np.float64)
+        keep = np.isfinite(values)
+        if weighted:
+            weights = np.asarray(weights, dtype=np.float64)
+            keep &= np.isfinite(weights) & (weights >= 0.0)
+            weights = weights[keep]
+        histogram += np.histogram(values[keep], bins=edges,
+                                  weights=weights if weighted else None)[0]
+    mean = value_sum / finite
+    variance = max(0.0, value_sum2 / finite - mean * mean)
+    return {"selected_rows": selected, "finite_rows": finite,
+            "minimum": minimum, "maximum": maximum, "mean": mean,
+            "stddev": float(np.sqrt(variance)),
+            "weighted_mean": weighted_sum / weight_sum if weighted and weight_sum > 0 else None,
+            "weight_sum": weight_sum if weighted else None,
+            "bin_edges": edges.tolist(), "counts": histogram.tolist()}
+
+
+@router.post("/v1/catalogue/diagnostics", response_model=CatalogueDiagnosticsResponse,
+             tags=["catalogue"])
+async def catalogue_diagnostics(
+    request: CatalogueDiagnosticsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> CatalogueDiagnosticsResponse:
+    """Exact histogram and moments over the complete selected population."""
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        if entry["kind"] != "catalogue":
+            raise HTTPException(422, "This endpoint requires a catalogue dataset.")
+        fields = {str(field.get("name", "")) for field in entry.get("fields", ())}
+        if request.field not in fields:
+            raise ValueError(f"Unknown field: {request.field!r}")
+        if request.weight_field and request.weight_field not in fields:
+            raise ValueError(f"Unknown weight field: {request.weight_field!r}")
+        if ((request.range_min is None) != (request.range_max is None)
+                or (request.range_min is not None
+                    and (not np.isfinite(request.range_min)
+                         or not np.isfinite(request.range_max)
+                         or request.range_min >= request.range_max))):
+            raise ValueError("Histogram range needs two finite increasing values.")
+        weighted = bool(request.weight_field)
+        from ..point_table import is_particle_format  # noqa: PLC0415
+        if is_particle_format(entry.get("format")) and entry.get("dataframe") is None:
+            from .. import gadget_snapshot as gs  # noqa: PLC0415
+            component = gs.resolve(entry["path"])
+            matching = _particle_matcher(component, request.filters)
+
+            def chunks():
+                for start in range(0, component.num_rows, PARTICLE_CHUNK_ROWS):
+                    rows = matching(start, min(component.num_rows, start + PARTICLE_CHUNK_ROWS))
+                    if rows.size:
+                        yield (component.take(request.field, rows),
+                               component.take(request.weight_field, rows) if weighted else None)
+        else:
+            table, _ = _apply_tabular_query(entry["dataframe"], request.filters, None, 0, 0)
+
+            def chunks():
+                yield (table[request.field].to_numpy(),
+                       table[request.weight_field].to_numpy() if weighted else None)
+        result = await asyncio.to_thread(
+            _diagnostic_accumulate, chunks,
+            ((request.range_min, request.range_max) if request.range_min is not None else None),
+            request.bins, weighted)
+        component_meta = entry.get("component") or {}
+        units = component_meta.get("units") or {}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return CatalogueDiagnosticsResponse(valid=False, error=str(exc))
+    return CatalogueDiagnosticsResponse(
+        valid=True, error="", field=request.field,
+        field_unit=str(units.get(request.field, "unit not declared")),
+        weight_field=request.weight_field,
+        weight_unit=str(units.get(request.weight_field, "unit not declared")) if weighted else "",
+        weighting=(f"weighted by {request.weight_field}" if weighted else "unweighted"),
+        selection=_diagnostic_selection(request.filters), **result)
+
+
 
 def _particle_sorted_page(path: str, filters, sort, limit: int, offset: int,
                           fields=None):

@@ -30,6 +30,7 @@
 #include <atomic>
 #include <limits>
 #include <map>
+#include <optional>
 #include <vector>
 
 namespace visivo {
@@ -684,6 +685,37 @@ struct BackendTabularQueryResponse
     std::map<QString, std::vector<double>> columns;
     QStringList fieldNames;
     int numRows{ 0 };
+};
+
+struct BackendCatalogueDiagnosticsRequest
+{
+    QString datasetId;
+    QString field;
+    QString weightField;
+    int bins{ 64 };
+    std::vector<BackendTabularFilter> filters;
+};
+
+struct BackendCatalogueDiagnosticsResponse
+{
+    bool valid{ false };
+    QString error;
+    QString field;
+    QString fieldUnit;
+    QString weightField;
+    QString weightUnit;
+    QString weighting;
+    QStringList selection;
+    qint64 selectedRows{ 0 };
+    qint64 finiteRows{ 0 };
+    double minimum{ 0.0 };
+    double maximum{ 0.0 };
+    double mean{ 0.0 };
+    double stddev{ 0.0 };
+    std::optional<double> weightedMean;
+    std::optional<double> weightSum;
+    QVector<double> binEdges;
+    QVector<double> counts;
 };
 
 // ── VBT (VisIVO Binary Table) ─────────────────────────────────────────────────
@@ -2477,6 +2509,8 @@ public:
                                         int channelStart, int channelEnd) const;
     BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
     BackendTabularQueryResponse queryTabularCatalogue(const BackendTabularQueryRequest &req) const;
+    BackendCatalogueDiagnosticsResponse catalogueDiagnostics(
+            const BackendCatalogueDiagnosticsRequest &req) const;
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
