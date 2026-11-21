@@ -561,6 +561,8 @@ set(PROJECT_SOURCES
         src/app/VrAppLauncher.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
+        src/gui/SimulationDiagnosticsDialog.cpp
+        src/gui/SimulationDiagnosticsDialog.h
         src/gui/DecompressBeforeOpen.cpp
         src/gui/DecompressBeforeOpen.h
         src/gui/DiagnosticsWindow.cpp

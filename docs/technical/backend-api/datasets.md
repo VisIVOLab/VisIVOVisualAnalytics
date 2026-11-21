@@ -305,6 +305,35 @@ column, string comparison otherwise), `contains` (case-insensitive substring)
 and `in` (comma-separated values). An unknown field or operator is answered
 with `valid: false`.
 
+### `POST /v1/catalogue/diagnostics`
+
+Exact histogram and summary moments over the complete filtered population:
+
+```json
+{
+  "dataset_id": "...",
+  "field": "rho",
+  "weight_field": "mass",
+  "bins": 64,
+  "range": [1e-12, 1e-3],
+  "filters": [
+    { "field": "x", "op": ">=", "value": "-1000" }
+  ]
+}
+```
+
+`weight_field` and `range` are optional; `bins` is between 4 and 512. The
+response contains `selected_rows`, `finite_rows`, extrema, mean and standard
+deviation, optional `weighted_mean` and `weight_sum`, `bin_edges`, `counts`,
+the field and weight units, and textual weighting and selection provenance.
+Counts are floating point because weighted bins contain sums of weights.
+
+For out-of-core particle tables the calculation is a bounded-memory two-pass
+scan over the full component. It is independent of the point-render sample and
+render budget. Non-finite field values are excluded; weighted calculations also
+exclude non-finite and negative weights. An unknown field, invalid range or
+population with no finite values returns `valid: false`.
+
 ---
 
 ## VBT

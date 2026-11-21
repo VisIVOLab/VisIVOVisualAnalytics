@@ -199,6 +199,30 @@ linked properties from a peer, so the group is coherent immediately and no
 echo loop is produced. Both flags and each autonomous camera survive snapshot
 replacement on the timeline.
 
+## Selected-population diagnostics (issue #426)
+
+The first diagnostics slice is an exact one-dimensional histogram plus moments
+for the active catalogue filters. The desktop sends the dataset id, field,
+optional weight, bin count, numerical range and the same scalar/spatial filter
+objects used by the point viewer to `POST /v1/catalogue/diagnostics`. It does
+not send the displayed points, so changing the render budget cannot change the
+scientific result.
+
+For a Gadget component the route evaluates the matcher directly against the
+memory-mapped particle table in bounded chunks. A first pass determines exact
+finite-population counts, extrema and moments; a second pass fills the bins.
+The route therefore does not retain the selected population in memory and its
+memory use is independent of the snapshot size. Ordinary catalogue dataframes
+use the same accumulator after applying their complete query filters. Weighted
+results reject non-finite and negative weights, while unweighted results reject
+only non-finite field values.
+
+The response includes field and weight units from component metadata, the
+selection expression and explicit bin edges. The desktop carries these into
+the result summary and CSV export. No physical total is inferred when units are
+absent. Profiles, phase diagrams, linked brushing and multi-selection
+comparison remain separate extensions of #426.
+
 ## Series
 
 `snapshot_series.py` lists the snapshots that share a name and differ only in

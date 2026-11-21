@@ -20,6 +20,7 @@
 #include "CatalogueSelectionKey.h"
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
+#include "SimulationDiagnosticsDialog.h"
 #include "theme/VisivoTheme.h"
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
@@ -1045,6 +1046,23 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             actionCompare->setEnabled(this->m_pointTable && !this->remoteDatasetId.isEmpty());
             QObject::connect(actionCompare, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::openQuantityComparison);
+            auto *actionSelectionDiagnostics = toolsMenu->addAction(
+                    u"Selection Diagnostics…"_s);
+            actionSelectionDiagnostics->setToolTip(
+                    u"Exact histogram and statistics for the complete population matching "
+                    u"the active scalar and spatial selections."_s);
+            actionSelectionDiagnostics->setEnabled(
+                    this->m_cartesian && !this->remoteDatasetId.isEmpty());
+            QObject::connect(actionSelectionDiagnostics, &QAction::triggered, this, [this]() {
+                auto *dialog = new SimulationDiagnosticsDialog(
+                        this->backendUrl, this->backendToken, this->remoteSessionId,
+                        this->remoteDatasetId, this->numericColumns(),
+                        this->m_componentMetadata.value(u"units"_s).toObject(),
+                        this->activeFilters, this);
+                dialog->show();
+                dialog->raise();
+                dialog->activateWindow();
+            });
             // The sources with no distance, left out of the scene (issue #265).
             this->m_actionUnplaced = toolsMenu->addAction(u"Unplaced Sources…"_s);
             this->m_actionUnplaced->setToolTip(

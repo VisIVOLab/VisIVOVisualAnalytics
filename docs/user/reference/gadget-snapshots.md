@@ -157,4 +157,25 @@ on again immediately adopts the camera, selection and representation of an
 already linked peer (unless **Match rendering** is off); it does not overwrite
 that view's quantity or colour mapping.
 
+### Measure a selected population
+
+Choose *Tools ▸ Selection Diagnostics…* to calculate an exact histogram and
+summary statistics for a quantity. The calculation uses every row matched by
+the current scalar and spatial filters, including rows that are not present in
+the interactive rendering sample. Select an optional weight quantity for a
+weighted histogram and weighted mean, and choose the number of bins before
+running the calculation.
+
+The result records the quantity and weight units (when the snapshot declares
+them), the complete selection expression, the number of selected and finite
+rows, and the binning. Use **Save CSV…** to preserve the numerical result and
+its provenance, or **Save PNG…** for the plotted histogram. A missing unit is
+shown as *not declared* rather than guessed. Non-finite quantity values and
+non-finite or negative weights are excluded and reported through the selected
+and finite row counts.
+
+Profiles, phase diagrams, brushing between plots, physical integrated totals
+and side-by-side comparison of saved selections are planned as later parts of
+the quantitative-diagnostics workflow.
+
 Details: [technical notes](../../technical/design/gadget-snapshots.md).
