@@ -286,6 +286,34 @@ void RaytraceViewport::setCamera(const QJsonObject &camera)
     redraw(true);
 }
 
+void RaytraceViewport::setCameraPreset(double azimuth, double elevation)
+{
+    if (m_camera.isEmpty())
+        return;
+    const auto vector = [this](const QString &key) {
+        const QJsonArray a = m_camera.value(key).toArray();
+        if (a.size() != 3)
+            return QVector3D();
+        return QVector3D(float(a.at(0).toDouble()), float(a.at(1).toDouble()),
+                         float(a.at(2).toDouble()));
+    };
+    const QVector3D focal = vector(u"focal_point"_s);
+    const double oldDistance = double((vector(u"position"_s) - focal).length());
+    const double distance = std::isfinite(oldDistance) && oldDistance > 0.0 ? oldDistance : 1.0;
+    const double a = qDegreesToRadians(azimuth);
+    const double e = qDegreesToRadians(elevation);
+    const QVector3D back(float(std::sin(a)), 0.0f, float(std::cos(a)));
+    const QVector3D direction = float(std::cos(e)) * back + QVector3D(0.0f, float(std::sin(e)), 0.0f);
+    const QVector3D up = QVector3D(0.0f, float(std::cos(e)), 0.0f) - float(std::sin(e)) * back;
+    const QVector3D position = focal + float(distance) * direction;
+    const auto array = [](const QVector3D &v) {
+        return QJsonArray{ v.x(), v.y(), v.z() };
+    };
+    m_camera.insert(u"position"_s, array(position));
+    m_camera.insert(u"view_up"_s, array(up));
+    redraw(true);
+}
+
 void RaytraceViewport::refresh()
 {
     if (!m_source.request)

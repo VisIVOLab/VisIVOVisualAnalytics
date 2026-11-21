@@ -1,5 +1,9 @@
 #include "vtkWindowCatalogue3D.h"
+#include "CameraPresetActions.h"
+#include "RemoteCameraPreset.h"
 #include "RemotePointView.h"
+#include "RemoteRenderWidget.h"
+#include "RaytraceViewport.h"
 #include <vtkPointGaussianMapper.h>
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -514,6 +518,27 @@ void vtkWindowCatalogue3D::resetCamera()
     renderWindow->Render();
     if (this->m_remoteView)
         this->m_remoteView->send({ { u"type"_s, u"reset"_s } });
+}
+
+void vtkWindowCatalogue3D::applyCameraPreset(double azimuth, double elevation)
+{
+    visivo::applyCameraPreset(this->renderer, azimuth, elevation);
+    if (this->renderWindow)
+        this->renderWindow->Render();
+
+    const bool raytraced = this->m_rtView && this->m_renderStack
+            && this->m_renderStack->currentWidget() == this->m_rtView;
+    if (raytraced) {
+        this->m_rtView->setCameraPreset(azimuth, elevation);
+        this->broadcastComparisonRaytraceCamera(this->m_rtView->camera());
+        return;
+    }
+    const bool remote = this->m_remoteView && this->m_renderStack
+            && this->m_remoteWidget
+            && this->m_renderStack->currentWidget() == this->m_remoteWidget;
+    if (remote)
+        this->m_remoteView->send(visivo::remote::cameraPresetCommand(azimuth, elevation));
+    this->onComparisonCameraFrame();
 }
 
 // Match a copilot field name against a comboMapColor item. Its item texts are

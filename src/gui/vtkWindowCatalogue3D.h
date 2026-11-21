@@ -193,6 +193,7 @@ private slots:
     void toggleMorphColors(bool checked);
     void scaleChanged(int value);
     void resetCamera();
+    void applyCameraPreset(double azimuth, double elevation);
     void updateGeometryMode();
     void updateSizeMode();
     void toggleSceneAxes(bool checked);
