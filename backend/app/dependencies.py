@@ -656,6 +656,41 @@ def _apply_tabular_query(
     Raises ``ValueError`` for unknown fields or operators.
     """
     _NUMERIC_OPS = {"=", "!=", ">", ">=", "<", "<="}
+    scalar_filters = []
+    for f in filters:
+        spatial = f.box if f.box is not None else f.sphere
+        if spatial is None:
+            scalar_filters.append(f)
+            continue
+        fields = list(spatial.fields)
+        if len(fields) != 3:
+            raise ValueError("A spatial selection needs exactly three coordinate fields.")
+        missing = next((field for field in fields if field not in df.columns), None)
+        if missing is not None:
+            raise ValueError(f"Unknown field: {missing!r}")
+        if f.op not in ("inside", "outside"):
+            raise ValueError("A spatial selection operator is 'inside' or 'outside'.")
+        if f.box is not None:
+            if len(f.box.min) != 3 or len(f.box.max) != 3 \
+                    or any(not np.isfinite(a) or not np.isfinite(b) or a >= b
+                           for a, b in zip(f.box.min, f.box.max)):
+                raise ValueError("Every box minimum must be finite and below its maximum.")
+            inside = np.ones(len(df), dtype=bool)
+            for field, lo, hi in zip(fields, f.box.min, f.box.max):
+                values = df[field].to_numpy()
+                inside &= (values >= lo) & (values <= hi)
+        else:
+            if len(f.sphere.center) != 3 \
+                    or any(not np.isfinite(v) for v in f.sphere.center) \
+                    or not np.isfinite(f.sphere.radius) or f.sphere.radius <= 0:
+                raise ValueError("A sphere needs a finite centre and positive radius.")
+            distance2 = np.zeros(len(df), dtype=np.float64)
+            for field, origin in zip(fields, f.sphere.center):
+                delta = df[field].to_numpy(dtype=np.float64) - origin
+                distance2 += delta * delta
+            inside = distance2 <= f.sphere.radius * f.sphere.radius
+        df = df[inside if f.op == "inside" else ~inside]
+    filters = scalar_filters
     # Numeric filters and no sort (a VBT of points read in place, issue #83):
     # one boolean mask, then only the page's rows are taken. Filtering the
     # frame instead copied every matching row of every column per request —

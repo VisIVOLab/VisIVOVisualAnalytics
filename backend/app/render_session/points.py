@@ -244,14 +244,39 @@ def _box_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
     return inside if op == "inside" else ~inside
 
 
+def _sphere_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
+    """A spherical selection in the units of its three coordinate fields."""
+    sphere = f.get("sphere") or {}
+    fields = sphere.get("fields") or []
+    center = sphere.get("center") or []
+    radius = float(sphere.get("radius", 0.0))
+    op = str(f.get("op", "inside"))
+    if len(fields) != 3 or len(center) != 3 or not math.isfinite(radius) or radius <= 0 \
+            or op not in ("inside", "outside"):
+        raise ValueError(
+            "A sphere filter is {sphere: {fields: [x,y,z], center: [x,y,z], "
+            "radius: positive}, op: inside | outside}.")
+    distance2 = np.zeros(len(rows), dtype=np.float64)
+    for name, origin in zip(fields, center):
+        if name not in columns:
+            raise ValueError(f"Unknown field: {name!r}")
+        delta = np.asarray(columns[name][rows], dtype=np.float64) - float(origin)
+        distance2 += delta * delta
+    inside = distance2 <= radius * radius
+    return inside if op == "inside" else ~inside
+
+
 def _filter_mask(columns, filters: list[dict], rows: np.ndarray) -> np.ndarray:
     """The rows (of ``rows``) passing every filter. Numeric operators only: a
-    VBT holds numbers; or a box (:func:`_box_mask`). Unknown fields or
+    VBT holds numbers; or a box/sphere spatial predicate. Unknown fields or
     operators raise ValueError."""
     keep = np.ones(len(rows), dtype=bool)
     for f in filters:
         if "box" in f:
             keep &= _box_mask(columns, f, rows)
+            continue
+        if "sphere" in f:
+            keep &= _sphere_mask(columns, f, rows)
             continue
         name, op = str(f.get("field", "")), str(f.get("op", ""))
         if name not in columns:

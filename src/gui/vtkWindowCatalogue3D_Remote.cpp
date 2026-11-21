@@ -296,11 +296,34 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
           { u"y"_s, column(this->mapYKey, position(this->mapYKey, u'y')) },
           { u"z"_s, column(this->mapZKey, position(this->mapZKey, u'z')) } });
 
-    // Filters: the backend's view filters on numbers (a VBT holds nothing else).
+    // Filters: field predicates and reproducible 3-D regions share the same
+    // command in local, streamed and ray-traced views.
     static const QStringList numericOps{ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s };
     QVariantList filters;
     bool skipped = false;
     for (const BackendTabularFilter &f : this->activeFilters) {
+        if (f.shape == u"box"_s) {
+            filters << QVariantMap{
+                    { u"name"_s, f.name }, { u"op"_s, f.op },
+                    { u"box"_s, QVariantMap{
+                            { u"fields"_s, f.fields },
+                            { u"min"_s, QVariantList{ f.minimum[0], f.minimum[1], f.minimum[2] } },
+                            { u"max"_s, QVariantList{ f.maximum[0], f.maximum[1], f.maximum[2] } },
+                    } },
+            };
+            continue;
+        }
+        if (f.shape == u"sphere"_s) {
+            filters << QVariantMap{
+                    { u"name"_s, f.name }, { u"op"_s, f.op },
+                    { u"sphere"_s, QVariantMap{
+                            { u"fields"_s, f.fields },
+                            { u"center"_s, QVariantList{ f.centre[0], f.centre[1], f.centre[2] } },
+                            { u"radius"_s, f.radius },
+                    } },
+            };
+            continue;
+        }
         bool number = false;
         f.value.trimmed().toDouble(&number);
         if (!numericOps.contains(f.op) || !number) {
