@@ -136,7 +136,8 @@ private:
     QStackedLayout *m_pages{ nullptr };
     QLabel *m_image{ nullptr };     ///< a still, or the backend's frame without a GPU view
     QWidget *m_loadingOverlay{ nullptr };
-    QLabel *m_loadingLabel{ nullptr };
+    QLabel *m_loadingLabel{ nullptr };     ///< short preparation/error title
+    QLabel *m_loadingDetail{ nullptr };    ///< wrapping explanation below it
     QProgressBar *m_loadingProgress{ nullptr };
     bool m_showingStill{ false };
     QImage m_shown;
