@@ -15,6 +15,7 @@ header.
 | One file (`snap_010`) | the file |
 | Several files (`snapdir_010/snap_010.0` … `.N`) | any one of the files, or the `snapdir_010` folder; all the files are read together |
 | HDF5 (`snap_010.hdf5`, `snap_010.0.hdf5` …) | as above |
+| SubFind (`groups_010/sub_010.0` …) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
 
 Binary format 1 (no block names) and format 2 (named blocks) are both read,
 in either byte order. If a file of a multi-file snapshot is missing, or the
@@ -28,6 +29,20 @@ When you open a snapshot, a dialog asks which component to open: *gas*,
 listed when the run has them). Each opens in its own window, named
 *snapshot · type* (for example *snap_010.0 · gas*), and is listed in
 *Session Data* and *Recent* under that name.
+
+### FoF groups and SubFind subhalos
+
+A SubFind group catalogue opens as objects rather than particles. FoF groups
+start as spherical markers sized by `rvir` and coloured by `mvir`; subhalos use
+their half-mass radius and mass when those blocks are present. Use **Size by**
+and **Colour by** to select R500/R2500 or another mass definition instead.
+
+Select a marker or table row to inspect its physical properties. Double-click
+it to centre the camera and frame 1.25 times its available radius (`rvir`
+first, then R500/R2500; half-mass radius or Rmax for a subhalo). The Inspector
+states that the dataset is a SubFind catalogue and distinguishes FoF groups
+from subhalos. Stored code units and their kpc/M☉/km s⁻¹ conversions are shown
+alongside the other Gadget metadata.
 
 ## Columns
 

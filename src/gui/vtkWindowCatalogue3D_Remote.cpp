@@ -426,6 +426,50 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
     if (!this->m_cartesian
         || !Catalogue3DParser::detail::detectedMorphologyField(this->schema).isEmpty())
         return;   // a catalogue with classes keeps its morphology colours
+    const bool subfind = this->m_componentMetadata.value(u"catalogue_kind"_s).toString()
+            == u"subfind"_s;
+    if (subfind) {
+        // A Gadget-family SubFind file is a catalogue of structures, not a
+        // particle cloud: open it as mass-coloured, radius-sized markers.
+        // The raw values remain available in the mapping controls, so the user
+        // can switch Rvir/R500/R2500 or mass definitions explicitly.
+        if (this->comboGeometry) {
+            const int sphere = this->comboGeometry->findText(u"Sphere"_s);
+            if (sphere >= 0)
+                this->comboGeometry->setCurrentIndex(sphere);
+        }
+        const QString objectKind = this->m_componentMetadata.value(u"object_kind"_s).toString();
+        const QStringList radiusFields = objectKind == u"group"_s
+                ? QStringList{u"rvir"_s, u"r500"_s, u"r2500"_s}
+                : QStringList{u"half_mass_radius"_s, u"rmax"_s};
+        const QStringList massFields = objectKind == u"group"_s
+                ? QStringList{u"mvir"_s, u"group_mass"_s, u"m500"_s, u"m2500"_s}
+                : QStringList{u"subhalo_mass"_s, u"stellar_mass"_s};
+        const auto chooseRaw = [this](QComboBox *combo, const QStringList &names) {
+            if (!combo)
+                return -1;
+            for (const QString &name : names) {
+                const int field = this->schema.indexOf(name);
+                const int item = combo->findData(u"raw:%1"_s.arg(field));
+                if (field >= 0 && item >= 0)
+                    return item;
+            }
+            return -1;
+        };
+        const int radius = chooseRaw(this->comboMapSize, radiusFields);
+        if (radius >= 0) {
+            this->comboMapSize->setCurrentIndex(radius);
+            this->mapSizeKey = this->comboMapSize->currentData().toString();
+        }
+        const int mass = chooseRaw(this->comboMapColor, massFields);
+        if (mass >= 0) {
+            this->comboMapColor->setCurrentIndex(mass);
+            this->mapColorKey = this->comboMapColor->currentData().toString();
+        }
+        this->updateGeometryMode();
+        this->updateColorMapping();
+        return;
+    }
     // Points, or splats past a million rows (a simulation's particles), coloured
     // by the first quantity that is not a position or a velocity component.
     if (this->comboGeometry && this->m_pointTable) {

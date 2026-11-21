@@ -28,6 +28,7 @@
 #include <vtkIntArray.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
+#include <vtkMath.h>
 #include <vtkMatrix4x4.h>
 #include <vtkOrientationMarkerWidget.h>
 #include <vtkPointData.h>
@@ -403,6 +404,33 @@ void vtkWindowCatalogue3D::updateInfoPanel()
 
     const Catalogue3DEntry &e = entries[selectedIndex];
     const QString displayName = Catalogue3DParser::detail::entryDisplayName(e, this->schema);
+    if (this->m_componentMetadata.value(u"catalogue_kind"_s).toString() == u"subfind"_s) {
+        const QString kind = this->m_componentMetadata.value(u"object_kind"_s).toString();
+        QString html = u"<b>%1 %2</b>"_s.arg(
+                kind == u"group"_s ? u"FoF group"_s : u"Subhalo"_s,
+                QString::number(e.sourceRow >= 0 ? e.sourceRow : selectedIndex));
+        html += u"<br>Position: %1, %2, %3"_s
+                        .arg(e.sceneX, 0, 'g', 7).arg(e.sceneY, 0, 'g', 7)
+                        .arg(e.sceneZ, 0, 'g', 7);
+        const QStringList priority = kind == u"group"_s
+                ? QStringList{u"mvir"_s, u"rvir"_s, u"m500"_s, u"r500"_s,
+                              u"m2500"_s, u"r2500"_s, u"num_subhalos"_s,
+                              u"num_contaminated"_s}
+                : QStringList{u"subhalo_mass"_s, u"half_mass_radius"_s, u"vmax"_s,
+                              u"rmax"_s, u"group_number"_s};
+        for (const QString &field : priority) {
+            const int column = this->schema.indexOf(field);
+            if (column < 0 || column >= e.fields.size())
+                continue;
+            const QString value = e.fields.at(column).toString().trimmed();
+            if (!value.isEmpty())
+                html += u"<br>%1: %2"_s.arg(field.toHtmlEscaped(), value.toHtmlEscaped());
+        }
+        html += u"<br><br><span style='color:#b0b8c8'>Double-click this target to frame its physical radius.</span>"_s;
+        ui->labelInfo->setText(html);
+        qInfo() << "[catalogue3d] SubFind target details updated:" << selectedIndex;
+        return;
+    }
     const QString morphology = Catalogue3DParser::detail::entryMorphology(e, this->schema);
     const QStringList distanceLines = this->pickDistanceLines(e);
     const double redshift =
@@ -792,10 +820,38 @@ void vtkWindowCatalogue3D::centerOnSource(int idx, double zoomFactor)
     const double dx = cameraPosition[0] - focal[0];
     const double dy = cameraPosition[1] - focal[1];
     const double dz = cameraPosition[2] - focal[2];
+    double distance = std::sqrt(dx * dx + dy * dy + dz * dz) / zoomFactor;
+    QString radiusField;
+    double targetRadius = 0.0;
+    if (this->m_componentMetadata.value(u"catalogue_kind"_s).toString() == u"subfind"_s) {
+        const Catalogue3DEntry &entry = this->entries[static_cast<std::size_t>(idx)];
+        for (const QString &candidate : {u"rvir"_s, u"r500"_s, u"r2500"_s,
+                                         u"half_mass_radius"_s, u"rmax"_s}) {
+            bool ok = false;
+            const double radius = Catalogue3DParser::detail::fieldDouble(
+                    entry, this->schema, candidate, &ok);
+            if (ok && radius > 0.0) {
+                targetRadius = radius;
+                radiusField = candidate;
+                break;
+            }
+        }
+        if (targetRadius > 0.0) {
+            if (camera->GetParallelProjection())
+                camera->SetParallelScale(targetRadius * 1.25);
+            const double halfAngle = vtkMath::RadiansFromDegrees(camera->GetViewAngle() * 0.5);
+            distance = std::max(targetRadius * 1.25 / std::tan(halfAngle), targetRadius * 1.5);
+        }
+    }
+    const double oldDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
+    const double scale = oldDistance > 0.0 ? distance / oldDistance : 1.0;
     camera->SetFocalPoint(targetPosition[0], targetPosition[1], targetPosition[2]);
-    camera->SetPosition(targetPosition[0] + dx / zoomFactor,
-                        targetPosition[1] + dy / zoomFactor,
-                        targetPosition[2] + dz / zoomFactor);
+    camera->SetPosition(targetPosition[0] + dx * scale,
+                        targetPosition[1] + dy * scale,
+                        targetPosition[2] + dz * scale);
     this->renderer->ResetCameraClippingRange();
     this->renderWindow->Render();
+    if (targetRadius > 0.0)
+        this->showSelectionStatus(u"Framed target at 1.25 × %1 (%2)."_s
+                                          .arg(radiusField).arg(targetRadius, 0, 'g', 6));
 }
