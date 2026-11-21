@@ -353,6 +353,72 @@ def _diagnostic_accumulate(chunks, field_range, bins: int, weighted: bool):
             "bin_edges": edges.tolist(), "counts": histogram.tolist()}
 
 
+def _diagnostic_accumulate_2d(chunks, x_range, y_range, x_bins: int,
+                              y_bins: int, weighted: bool):
+    """Exact bounded-memory phase diagram over iterable x/y/weight arrays."""
+    selected = finite = 0
+    x_sum = x_sum2 = y_sum = y_sum2 = weight_sum = weighted_sum = 0.0
+    x_min, x_max, y_min, y_max = np.inf, -np.inf, np.inf, -np.inf
+    for x_values, y_values, weights in chunks():
+        x_values = np.asarray(x_values, dtype=np.float64)
+        y_values = np.asarray(y_values, dtype=np.float64)
+        selected += x_values.size
+        keep = np.isfinite(x_values) & np.isfinite(y_values)
+        if weighted:
+            weights = np.asarray(weights, dtype=np.float64)
+            keep &= np.isfinite(weights) & (weights >= 0.0)
+            weights = weights[keep]
+        x_values, y_values = x_values[keep], y_values[keep]
+        if not x_values.size:
+            continue
+        finite += x_values.size
+        x_min, x_max = min(x_min, float(x_values.min())), max(x_max, float(x_values.max()))
+        y_min, y_max = min(y_min, float(y_values.min())), max(y_max, float(y_values.max()))
+        x_sum += float(x_values.sum(dtype=np.float64))
+        x_sum2 += float(np.dot(x_values, x_values))
+        y_sum += float(y_values.sum(dtype=np.float64))
+        y_sum2 += float(np.dot(y_values, y_values))
+        if weighted:
+            weight_sum += float(weights.sum(dtype=np.float64))
+            weighted_sum += float(np.dot(x_values, weights))
+    if not finite:
+        raise ValueError("The selected population has no finite x/y pairs.")
+
+    def edges_for(field_range, minimum, maximum, bins):
+        lo, hi = field_range if field_range is not None else (minimum, maximum)
+        if not np.isfinite(lo) or not np.isfinite(hi) or lo >= hi:
+            pad = max(abs(lo) * 0.5, 0.5)
+            lo, hi = lo - pad, hi + pad
+        return np.linspace(lo, hi, bins + 1, dtype=np.float64)
+
+    x_edges = edges_for(x_range, x_min, x_max, x_bins)
+    y_edges = edges_for(y_range, y_min, y_max, y_bins)
+    histogram = np.zeros((x_bins, y_bins), dtype=np.float64)
+    for x_values, y_values, weights in chunks():
+        x_values = np.asarray(x_values, dtype=np.float64)
+        y_values = np.asarray(y_values, dtype=np.float64)
+        keep = np.isfinite(x_values) & np.isfinite(y_values)
+        if weighted:
+            weights = np.asarray(weights, dtype=np.float64)
+            keep &= np.isfinite(weights) & (weights >= 0.0)
+            weights = weights[keep]
+        histogram += np.histogram2d(
+                x_values[keep], y_values[keep], bins=(x_edges, y_edges),
+                weights=weights if weighted else None)[0]
+    x_mean, y_mean = x_sum / finite, y_sum / finite
+    return {
+        "selected_rows": selected, "finite_rows": finite,
+        "minimum": x_min, "maximum": x_max, "mean": x_mean,
+        "stddev": float(np.sqrt(max(0.0, x_sum2 / finite - x_mean * x_mean))),
+        "y_minimum": y_min, "y_maximum": y_max, "y_mean": y_mean,
+        "y_stddev": float(np.sqrt(max(0.0, y_sum2 / finite - y_mean * y_mean))),
+        "weighted_mean": weighted_sum / weight_sum if weighted and weight_sum > 0 else None,
+        "weight_sum": weight_sum if weighted else None,
+        "bin_edges": x_edges.tolist(), "y_bin_edges": y_edges.tolist(),
+        "counts": histogram.ravel().tolist(),
+    }
+
+
 @router.post("/v1/catalogue/diagnostics", response_model=CatalogueDiagnosticsResponse,
              tags=["catalogue"])
 async def catalogue_diagnostics(
@@ -368,6 +434,8 @@ async def catalogue_diagnostics(
         fields = {str(field.get("name", "")) for field in entry.get("fields", ())}
         if request.field not in fields:
             raise ValueError(f"Unknown field: {request.field!r}")
+        if request.y_field and request.y_field not in fields:
+            raise ValueError(f"Unknown y field: {request.y_field!r}")
         if request.weight_field and request.weight_field not in fields:
             raise ValueError(f"Unknown weight field: {request.weight_field!r}")
         if ((request.range_min is None) != (request.range_max is None)
@@ -376,7 +444,14 @@ async def catalogue_diagnostics(
                          or not np.isfinite(request.range_max)
                          or request.range_min >= request.range_max))):
             raise ValueError("Histogram range needs two finite increasing values.")
+        if ((request.y_range_min is None) != (request.y_range_max is None)
+                or (request.y_range_min is not None
+                    and (not np.isfinite(request.y_range_min)
+                         or not np.isfinite(request.y_range_max)
+                         or request.y_range_min >= request.y_range_max))):
+            raise ValueError("Y range needs two finite increasing values.")
         weighted = bool(request.weight_field)
+        phase_diagram = bool(request.y_field)
         from ..point_table import is_particle_format  # noqa: PLC0415
         if is_particle_format(entry.get("format")) and entry.get("dataframe") is None:
             from .. import gadget_snapshot as gs  # noqa: PLC0415
@@ -387,18 +462,33 @@ async def catalogue_diagnostics(
                 for start in range(0, component.num_rows, PARTICLE_CHUNK_ROWS):
                     rows = matching(start, min(component.num_rows, start + PARTICLE_CHUNK_ROWS))
                     if rows.size:
-                        yield (component.take(request.field, rows),
-                               component.take(request.weight_field, rows) if weighted else None)
+                        x_values = component.take(request.field, rows)
+                        weights = component.take(request.weight_field, rows) if weighted else None
+                        if phase_diagram:
+                            yield (x_values, component.take(request.y_field, rows), weights)
+                        else:
+                            yield (x_values, weights)
         else:
             table, _ = _apply_tabular_query(entry["dataframe"], request.filters, None, 0, 0)
 
             def chunks():
-                yield (table[request.field].to_numpy(),
-                       table[request.weight_field].to_numpy() if weighted else None)
-        result = await asyncio.to_thread(
-            _diagnostic_accumulate, chunks,
-            ((request.range_min, request.range_max) if request.range_min is not None else None),
-            request.bins, weighted)
+                x_values = table[request.field].to_numpy()
+                weights = table[request.weight_field].to_numpy() if weighted else None
+                if phase_diagram:
+                    yield (x_values, table[request.y_field].to_numpy(), weights)
+                else:
+                    yield (x_values, weights)
+        x_range = ((request.range_min, request.range_max)
+                   if request.range_min is not None else None)
+        if phase_diagram:
+            y_range = ((request.y_range_min, request.y_range_max)
+                       if request.y_range_min is not None else None)
+            result = await asyncio.to_thread(
+                _diagnostic_accumulate_2d, chunks, x_range, y_range,
+                request.bins, request.y_bins, weighted)
+        else:
+            result = await asyncio.to_thread(
+                _diagnostic_accumulate, chunks, x_range, request.bins, weighted)
         component_meta = entry.get("component") or {}
         units = component_meta.get("units") or {}
     except HTTPException:
@@ -408,6 +498,9 @@ async def catalogue_diagnostics(
     return CatalogueDiagnosticsResponse(
         valid=True, error="", field=request.field,
         field_unit=str(units.get(request.field, "unit not declared")),
+        y_field=request.y_field,
+        y_field_unit=(str(units.get(request.y_field, "unit not declared"))
+                      if phase_diagram else ""),
         weight_field=request.weight_field,
         weight_unit=str(units.get(request.weight_field, "unit not declared")) if weighted else "",
         weighting=(f"weighted by {request.weight_field}" if weighted else "unweighted"),

@@ -201,12 +201,12 @@ replacement on the timeline.
 
 ## Selected-population diagnostics (issue #426)
 
-The first diagnostics slice is an exact one-dimensional histogram plus moments
-for the active catalogue filters. The desktop sends the dataset id, field,
-optional weight, bin count, numerical range and the same scalar/spatial filter
-objects used by the point viewer to `POST /v1/catalogue/diagnostics`. It does
-not send the displayed points, so changing the render budget cannot change the
-scientific result.
+The diagnostics endpoint produces exact one-dimensional histograms or
+two-dimensional phase diagrams plus moments for the active catalogue filters.
+The desktop sends the dataset id, x field, optional y and weight fields, bin
+counts, numerical ranges and the same scalar/spatial filter objects used by the
+point viewer to `POST /v1/catalogue/diagnostics`. It does not send the displayed
+points, so changing the render budget cannot change the scientific result.
 
 For a Gadget component the route evaluates the matcher directly against the
 memory-mapped particle table in bounded chunks. A first pass determines exact
@@ -218,10 +218,11 @@ results reject non-finite and negative weights, while unweighted results reject
 only non-finite field values.
 
 The response includes field and weight units from component metadata, the
-selection expression and explicit bin edges. The desktop carries these into
-the result summary and CSV export. No physical total is inferred when units are
-absent. Profiles, phase diagrams, linked brushing and multi-selection
-comparison remain separate extensions of #426.
+selection expression and explicit bin edges for both axes. Two-dimensional
+counts are flattened x-major and reconstructed as a heatmap by the desktop.
+The desktop carries the same metadata into the result summary and CSV export.
+No physical total is inferred when units are absent. Profiles, linked brushing
+and multi-selection comparison remain separate extensions of #426.
 
 ## Series
 

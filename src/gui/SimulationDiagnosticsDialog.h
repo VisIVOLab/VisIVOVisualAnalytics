@@ -12,6 +12,7 @@ class QLabel;
 class QPushButton;
 class QSpinBox;
 class QCustomPlot;
+class QCPColorScale;
 
 class SimulationDiagnosticsDialog : public QDialog
 {
@@ -37,6 +38,7 @@ private:
     std::vector<BackendTabularFilter> m_filters;
     BackendCatalogueDiagnosticsResponse m_result;
     QPointer<QComboBox> m_field;
+    QPointer<QComboBox> m_yField;
     QPointer<QComboBox> m_weight;
     QPointer<QSpinBox> m_bins;
     QPointer<QLabel> m_summary;
@@ -44,6 +46,7 @@ private:
     QPointer<QPushButton> m_saveCsv;
     QPointer<QPushButton> m_savePng;
     QPointer<QCustomPlot> m_plot;
+    QCPColorScale *m_colorScale{ nullptr };
     QFutureWatcher<BackendCatalogueDiagnosticsResponse> m_watcher;
 };
 

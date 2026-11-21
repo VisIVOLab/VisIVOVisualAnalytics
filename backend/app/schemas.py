@@ -629,11 +629,15 @@ class TabularQueryResponse(BaseModel):
 class CatalogueDiagnosticsRequest(BaseModel):
     dataset_id: str
     field: str
+    y_field: str = ""
     weight_field: str = ""
     bins: int = Field(default=64, ge=4, le=512)
+    y_bins: int = Field(default=64, ge=4, le=512)
     filters: list[TabularFilter] = []
     range_min: float | None = None
     range_max: float | None = None
+    y_range_min: float | None = None
+    y_range_max: float | None = None
 
 
 class CatalogueDiagnosticsResponse(BaseModel):
@@ -641,6 +645,8 @@ class CatalogueDiagnosticsResponse(BaseModel):
     error: str
     field: str = ""
     field_unit: str = ""
+    y_field: str = ""
+    y_field_unit: str = ""
     weight_field: str = ""
     weight_unit: str = ""
     selected_rows: int = 0
@@ -649,9 +655,14 @@ class CatalogueDiagnosticsResponse(BaseModel):
     maximum: float = 0.0
     mean: float = 0.0
     stddev: float = 0.0
+    y_minimum: float | None = None
+    y_maximum: float | None = None
+    y_mean: float | None = None
+    y_stddev: float | None = None
     weighted_mean: float | None = None
     weight_sum: float | None = None
     bin_edges: list[float] = []
+    y_bin_edges: list[float] = []
     counts: list[float] = []
     weighting: str = "unweighted"
     selection: list[str] = []

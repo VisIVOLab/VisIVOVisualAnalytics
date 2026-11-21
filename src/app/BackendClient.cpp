@@ -3070,8 +3070,10 @@ BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
     body.remove(QStringLiteral("limit"));
     body.remove(QStringLiteral("offset"));
     body.insert(QStringLiteral("field"), req.field);
+    body.insert(QStringLiteral("y_field"), req.yField);
     body.insert(QStringLiteral("weight_field"), req.weightField);
     body.insert(QStringLiteral("bins"), std::clamp(req.bins, 4, 512));
+    body.insert(QStringLiteral("y_bins"), std::clamp(req.yBins, 4, 512));
     QString error;
     const QByteArray payload = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/diagnostics")),
@@ -3085,6 +3087,8 @@ BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
     result.error = object.value(QStringLiteral("error")).toString();
     result.field = object.value(QStringLiteral("field")).toString();
     result.fieldUnit = object.value(QStringLiteral("field_unit")).toString();
+    result.yField = object.value(QStringLiteral("y_field")).toString();
+    result.yFieldUnit = object.value(QStringLiteral("y_field_unit")).toString();
     result.weightField = object.value(QStringLiteral("weight_field")).toString();
     result.weightUnit = object.value(QStringLiteral("weight_unit")).toString();
     result.weighting = object.value(QStringLiteral("weighting")).toString();
@@ -3096,6 +3100,14 @@ BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
     result.maximum = object.value(QStringLiteral("maximum")).toDouble();
     result.mean = object.value(QStringLiteral("mean")).toDouble();
     result.stddev = object.value(QStringLiteral("stddev")).toDouble();
+    if (!object.value(QStringLiteral("y_minimum")).isNull())
+        result.yMinimum = object.value(QStringLiteral("y_minimum")).toDouble();
+    if (!object.value(QStringLiteral("y_maximum")).isNull())
+        result.yMaximum = object.value(QStringLiteral("y_maximum")).toDouble();
+    if (!object.value(QStringLiteral("y_mean")).isNull())
+        result.yMean = object.value(QStringLiteral("y_mean")).toDouble();
+    if (!object.value(QStringLiteral("y_stddev")).isNull())
+        result.yStddev = object.value(QStringLiteral("y_stddev")).toDouble();
     if (!object.value(QStringLiteral("weighted_mean")).isNull())
         result.weightedMean = object.value(QStringLiteral("weighted_mean")).toDouble();
     if (!object.value(QStringLiteral("weight_sum")).isNull())
@@ -3104,6 +3116,8 @@ BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
         result.selection.append(value.toString());
     for (const QJsonValue &value : object.value(QStringLiteral("bin_edges")).toArray())
         result.binEdges.append(value.toDouble());
+    for (const QJsonValue &value : object.value(QStringLiteral("y_bin_edges")).toArray())
+        result.yBinEdges.append(value.toDouble());
     for (const QJsonValue &value : object.value(QStringLiteral("counts")).toArray())
         result.counts.append(value.toDouble());
     return result;

@@ -691,8 +691,10 @@ struct BackendCatalogueDiagnosticsRequest
 {
     QString datasetId;
     QString field;
+    QString yField;
     QString weightField;
     int bins{ 64 };
+    int yBins{ 64 };
     std::vector<BackendTabularFilter> filters;
 };
 
@@ -702,6 +704,8 @@ struct BackendCatalogueDiagnosticsResponse
     QString error;
     QString field;
     QString fieldUnit;
+    QString yField;
+    QString yFieldUnit;
     QString weightField;
     QString weightUnit;
     QString weighting;
@@ -712,9 +716,14 @@ struct BackendCatalogueDiagnosticsResponse
     double maximum{ 0.0 };
     double mean{ 0.0 };
     double stddev{ 0.0 };
+    std::optional<double> yMinimum;
+    std::optional<double> yMaximum;
+    std::optional<double> yMean;
+    std::optional<double> yStddev;
     std::optional<double> weightedMean;
     std::optional<double> weightSum;
     QVector<double> binEdges;
+    QVector<double> yBinEdges;
     QVector<double> counts;
 };
 

@@ -313,16 +313,24 @@ Exact histogram and summary moments over the complete filtered population:
 {
   "dataset_id": "...",
   "field": "rho",
+  "y_field": "temperature",
   "weight_field": "mass",
   "bins": 64,
-  "range": [1e-12, 1e-3],
+  "y_bins": 64,
+  "range_min": 1e-12,
+  "range_max": 1e-3,
+  "y_range_min": 1e3,
+  "y_range_max": 1e8,
   "filters": [
     { "field": "x", "op": ">=", "value": "-1000" }
   ]
 }
 ```
 
-`weight_field` and `range` are optional; `bins` is between 4 and 512. The
+`y_field`, `weight_field` and either axis range are optional; `bins` and
+`y_bins` are between 4 and 512. Without `y_field` the response is a 1-D
+histogram. With it, `counts` is an x-major flattened 2-D histogram and
+`y_bin_edges` describes its second axis. The
 response contains `selected_rows`, `finite_rows`, extrema, mean and standard
 deviation, optional `weighted_mean` and `weight_sum`, `bin_edges`, `counts`,
 the field and weight units, and textual weighting and selection provenance.
