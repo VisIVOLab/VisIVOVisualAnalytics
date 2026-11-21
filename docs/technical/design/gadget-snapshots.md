@@ -224,9 +224,18 @@ opens to apply out of order.
 The block parser is independent of the particle semantics. A SubFind group
 file in format 2 (`groups_NNN/sub_NNN.0`) uses the same header, with the
 groups counted as type 0 and the subhalos as type 1, and named blocks.
-`open_snapshot` already reads it (see the synthetic one in the demo data),
-so the group catalogue reader of #392 can reuse `scan_file` and
-`infer_block`.
+`open_snapshot` identifies this semantic from `GPOS`/`SPOS`. Components are
+therefore exposed as **FoF groups** and **subhalos**, rather than the ordinary
+particle-type names. The declared schemas cover the group positions, masses,
+overdensity radii, gas/star properties and contamination counters, and the
+subhalo positions, velocities, masses, radii, spin and parent identifiers.
+
+The catalogue metadata carries `catalogue_kind: subfind`, the object kind and
+the radius definitions. Length, mass and velocity fields use the same stored
+and physical-unit conversion as their parent snapshot. In the desktop viewer
+these metadata select structure-oriented defaults: spherical markers sized by
+Rvir (or the subhalo half-mass radius) and coloured by mass. Double-clicking a
+row frames the target using that physical radius instead of an arbitrary zoom.
 
 ## What to check against a real snapshot
 

@@ -394,9 +394,19 @@ def test_the_subfind_like_group_file_parses_with_the_same_blocks(tmp_path):
     snap = gs.open_snapshot(path)
     assert snap.blocks["GPOS"].types == (0,) and snap.blocks["SPOS"].types == (1,)
     groups = snap.component(0)
+    assert snap.is_subfind and snap.describe()["catalogue_kind"] == "subfind"
+    assert groups.name == "FoF groups"
     assert groups.column("x")[0] == 540.0 and groups.column("rvir")[0] == 250.0
     assert groups.column("mvir")[0] == 120.0
-    assert snap.component(1).column("x")[0] == 540.0
+    assert groups.column("r500")[0] == 150.0
+    assert groups.units()["rvir"] == "kpc/h comoving"
+    assert groups.physical()["rvir"]["unit"] == "kpc"
+    subhalos = snap.component(1)
+    assert subhalos.name == "subhalos" and subhalos.column("x")[0] == 540.0
+    assert subhalos.column("vx")[0] == 120.0
+    assert subhalos.column("subhalo_mass")[0] == 30.0
+    assert gs.gadget_components(path)[0]["name"] == "FoF groups"
+    assert gs.gadget_components(path)[1]["name"] == "subhalos"
 
 
 # ── Classification and the series ────────────────────────────────────────────

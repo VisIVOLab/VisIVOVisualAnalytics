@@ -71,6 +71,7 @@ import numpy as np
 REF_SEP = "::gadget-type="
 NTYPES = 6
 TYPE_NAMES = ("gas", "dark matter", "disk", "bulge", "stars", "black holes")
+SUBFIND_TYPE_NAMES = ("FoF groups", "subhalos", "IDs", "large groups", "type 4", "type 5")
 HEADER_BYTES = 256
 
 # ── Physical constants (cgs) ─────────────────────────────────────────────────
@@ -399,9 +400,30 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "CLDX": ((0,), 1, ("cold_fraction",)),
     # SubFind group catalogues (issue #392): groups are "type" 0, subhalos 1.
     "GPOS": ((0,), 3, ("x", "y", "z")),
+    "MTOT": ((0,), 1, ("group_mass",)),
     "MVIR": ((0,), 1, ("mvir",)),
     "RVIR": ((0,), 1, ("rvir",)),
+    "M500": ((0,), 1, ("m500",)),
+    "R500": ((0,), 1, ("r500",)),
+    "M25K": ((0,), 1, ("m2500",)),
+    "R25K": ((0,), 1, ("r2500",)),
+    "MGAS": ((0,), 1, ("gas_mass",)),
+    "MSTR": ((0,), 1, ("stellar_mass",)),
+    "TGAS": ((0,), 1, ("gas_temperature",)),
+    "LGAS": ((0,), 1, ("gas_luminosity",)),
+    "MCON": ((0,), 1, ("contaminating_mass",)),
     "SPOS": ((1,), 3, ("x", "y", "z")),
+    "SVEL": ((1,), 3, ("vx", "vy", "vz")),
+    "SCM": ((1,), 3, ("centre_of_mass_x", "centre_of_mass_y", "centre_of_mass_z")),
+    "SPIN": ((1,), 3, ("spin_x", "spin_y", "spin_z")),
+    "MSUB": ((1,), 1, ("subhalo_mass",)),
+    "VMAX": ((1,), 1, ("vmax",)),
+    "RMAX": ((1,), 1, ("rmax",)),
+    "RHMS": ((1,), 1, ("half_mass_radius",)),
+    "SMST": ((1,), 1, ("stellar_mass",)),
+    "SSFR": ((1,), 1, ("star_formation_rate",)),
+    "SAGE": ((1,), 1, ("stellar_age",)),
+    "SZ": ((1,), None, ("metallicity",)),
     "GLEN": ((0,), 1, ("group_length",)),
     "GOFF": ((0,), 1, ("group_offset",)),
     "NSUB": ((0,), 1, ("num_subhalos",)),
@@ -774,6 +796,7 @@ class Snapshot:
     def describe(self) -> dict:
         h = self.header
         return {"format": self.fmt, "files": len(self.files),
+                "catalogue_kind": "subfind" if self.is_subfind else "particles",
                 "time": h.time, "scale_factor": self.scale_factor,
                 "redshift": h.redshift, "box_size": h.box_size, "omega0": h.omega0,
                 "omega_lambda": h.omega_lambda, "hubble_param": h.hubble,
@@ -789,6 +812,11 @@ class Snapshot:
                            for name, b in self.blocks.items()},
                 "skipped_blocks": list(self.skipped),
                 "skipped_reasons": dict(self.skip_reasons)}
+
+    @property
+    def is_subfind(self) -> bool:
+        """Whether this Gadget-family file is a FoF/SubFind group catalogue."""
+        return "GPOS" in self.blocks or "SPOS" in self.blocks
 
 
 def snapshot_files(path: str | Path) -> list[Path]:
@@ -1105,7 +1133,8 @@ class Component:
 
     @property
     def name(self) -> str:
-        return TYPE_NAMES[self.ptype]
+        names = SUBFIND_TYPE_NAMES if self.snapshot.is_subfind else TYPE_NAMES
+        return names[self.ptype]
 
     def column(self, name: str) -> np.ndarray:
         if name in self._sources:
@@ -1258,14 +1287,26 @@ class Component:
             else u["velocity"]
         table = {"x": length, "y": length, "z": length, "hsml": length,
                  "hsml_stars": length, "bh_accretion_radius": length,
+                 "rvir": length, "r500": length, "r2500": length,
+                 "rmax": length, "half_mass_radius": length,
+                 "centre_of_mass_x": length, "centre_of_mass_y": length,
+                 "centre_of_mass_z": length,
                  "vx": vel, "vy": vel, "vz": vel, "mass": mass, "bh_mass": mass,
                  "initial_mass": mass,
+                 "group_mass": mass, "mvir": mass, "m500": mass, "m2500": mass,
+                 "gas_mass": mass, "stellar_mass": mass, "subhalo_mass": mass,
+                 "contaminating_mass": mass,
                  "rho": f"{mass} / ({length})^3", "u": f"({u['velocity']})^2",
                  "potential": f"({u['velocity']})^2",
                  "temperature": "K", "entropy": "keV cm^2",
                  "ne": "dimensionless", "nh": "dimensionless",
                  "metallicity": "dimensionless", "cold_fraction": "dimensionless",
-                 "id": "dimensionless identifier", "most_bound_id": "dimensionless identifier"}
+                 "id": "dimensionless identifier", "most_bound_id": "dimensionless identifier",
+                 "group_length": "particle count", "group_offset": "particle index",
+                 "num_subhalos": "count", "first_subhalo": "subhalo index",
+                 "num_contaminated": "particle count", "subhalo_length": "particle count",
+                 "subhalo_offset": "particle index", "subhalo_parent": "subhalo index",
+                 "group_number": "group index", "metallicity": "dimensionless"}
         return {n: table.get(n, "code units (physical conversion not declared)")
                 for n in self.names}
 
@@ -1282,9 +1323,19 @@ class Component:
         table = {"x": (length, "kpc"), "y": (length, "kpc"), "z": (length, "kpc"),
                  "hsml": (length, "kpc"), "hsml_stars": (length, "kpc"),
                  "bh_accretion_radius": (length, "kpc"),
+                 "rvir": (length, "kpc"), "r500": (length, "kpc"),
+                 "r2500": (length, "kpc"), "rmax": (length, "kpc"),
+                 "half_mass_radius": (length, "kpc"),
+                 "centre_of_mass_x": (length, "kpc"),
+                 "centre_of_mass_y": (length, "kpc"),
+                 "centre_of_mass_z": (length, "kpc"),
                  "vx": (vel, "km/s"), "vy": (vel, "km/s"),
                  "vz": (vel, "km/s"), "mass": (mass, "Msun"), "bh_mass": (mass, "Msun"),
                  "initial_mass": (mass, "Msun"),
+                 "group_mass": (mass, "Msun"), "mvir": (mass, "Msun"),
+                 "m500": (mass, "Msun"), "m2500": (mass, "Msun"),
+                 "gas_mass": (mass, "Msun"), "stellar_mass": (mass, "Msun"),
+                 "subhalo_mass": (mass, "Msun"), "contaminating_mass": (mass, "Msun"),
                  "rho": (rho, "g/cm^3"), "u": (units.velocity_cm_s ** 2, "erg/g"),
                  "ne": (1.0, "dimensionless"), "nh": (1.0, "dimensionless"),
                  "metallicity": (1.0, "dimensionless"),
@@ -1294,6 +1345,13 @@ class Component:
 
     def describe(self) -> dict:
         return {"type": self.ptype, "name": self.name, "num_rows": self.num_rows,
+                "catalogue_kind": "subfind" if self.snapshot.is_subfind else "particles",
+                **({"object_kind": "group" if self.ptype == 0 else "subhalo",
+                    "radius_definitions": {
+                        "rvir": "mean background density",
+                        "r500": "500 times mean background density",
+                        "r2500": "2500 times mean background density"}}
+                   if self.snapshot.is_subfind and self.ptype in (0, 1) else {}),
                 "columns": list(self.names), "units": self.units(),
                 "physical": self.physical(), "derived": dict(self.derived),
                 "mass_from_table": self._mass_from_table,
@@ -1382,5 +1440,6 @@ def default_type(snapshot: Snapshot) -> int | None:
 def gadget_components(path: str | Path) -> list[dict]:
     """Every particle type with particles: ``{name, path, num_rows}``."""
     snap = open_snapshot(split_ref(path)[0])
-    return [{"name": TYPE_NAMES[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
+    names = SUBFIND_TYPE_NAMES if snap.is_subfind else TYPE_NAMES
+    return [{"name": names[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
             for t, n in enumerate(snap.counts()) if n]

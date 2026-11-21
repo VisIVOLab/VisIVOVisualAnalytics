@@ -1044,13 +1044,18 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
     };
     panel->clearProperties();
     panel->addPropertyRow(u"Dataset"_s, this->shownName());
-    panel->addPropertyRow(u"Type"_s, u"CATALOGUE"_s);
+    const bool subfind = this->m_componentMetadata.value(u"catalogue_kind"_s).toString()
+            == u"subfind"_s;
+    panel->addPropertyRow(u"Type"_s, subfind ? u"SUBFIND CATALOGUE"_s : u"CATALOGUE"_s);
     this->m_propSources = valueLabel(QString::number(this->entries.size()));
     panel->addPropertyRow(u"Sources"_s, this->m_propSources);
     panel->addPropertyRow(u"Columns"_s, QString::number(this->schema.fields.size()));
     if (!this->m_componentMetadata.isEmpty()) {
-        panel->addPropertyRow(u"Particle type"_s,
+        panel->addPropertyRow(subfind ? u"Objects"_s : u"Particle type"_s,
                               this->m_componentMetadata.value(u"name"_s).toString());
+        if (subfind)
+            panel->addPropertyRow(u"Target interaction"_s,
+                                  u"Select to inspect; double-click to frame its radius"_s);
         const QString stored = particleUnitsSummary(
                 this->m_componentMetadata.value(u"units"_s).toObject());
         if (!stored.isEmpty())
