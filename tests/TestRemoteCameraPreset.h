@@ -11,4 +11,5 @@ class TestRemoteCameraPreset : public QObject
 
 private slots:
     void thePresetIsNamedWithItsAngles();
+    void aLostSessionsCameraGoesToItsReplacement();
 };

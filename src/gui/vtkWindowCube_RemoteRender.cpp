@@ -28,6 +28,7 @@
 #include "ProfileWidget.h"
 #include "PvController.h"
 #include "PvDiagramWidget.h"
+#include "RemoteCameraPreset.h"
 #include "RemoteLevels.h"
 #include "RegionPlaneDrawing.h"
 #include "RemoteRenderWidget.h"
@@ -399,6 +400,7 @@ void vtkWindowCube::abortRemoteSwitch(const QString &reason)
     this->m_remotePreparing = false;
     this->m_remoteReconnectingKept = false;
     this->m_remoteReplacement.ended();
+    this->cancelRemoteReconnect();       // the view is Local now
     ++this->m_remoteSwitchGeneration;   // a reply landing later is stale
     this->cancelRemoteQueuePlace();      // a place nobody waits in any more
     // …and stop the transport itself. The generation check only guards the HTTP
@@ -485,14 +487,22 @@ void vtkWindowCube::failRemoteReplacement(const QString &why)
     }
     if (this->m_localRecommendLoadFullBtn)
         this->m_localRecommendLoadFullBtn->setEnabled(true);
-    // Shown as it is: the remote page, in Remote, waiting for Retry or ✕.
+    // Shown as it is: the remote page, in Remote, waiting for the next
+    // attempt, or for Reconnect or ✕.
     if (this->m_renderStack)
         this->m_renderStack->setCurrentIndex(1);
     this->m_effectiveRenderMode = RenderMode::Remote;
     if (this->m_renderMode == RenderMode::Local)
         this->showRenderModeChoice(RenderMode::Remote);
     this->updateRenderModeBadges();
-    this->offerRemoteRetry(why);
+    // A backend out of reach (a tunnel being reopened, a backend restarting)
+    // is asked again a few times before the view gives up.
+    this->m_remoteReconnectWhy = why;
+    const visivo::ReconnectStep step = this->m_remoteReconnect.onAttemptFailed();
+    if (step == visivo::ReconnectStep::Ignore)
+        this->offerRemoteRetry(why);
+    else
+        this->runRemoteReconnectStep(step);
 }
 
 void vtkWindowCube::connectRemoteRenderWidgetWithTransport(const QString &sessionId)
@@ -531,6 +541,7 @@ void vtkWindowCube::releaseRemoteRenderSession()
     this->m_remoteSwitchInProgress = false;
     this->m_remoteReconnectingKept = false;
     this->m_remoteReplacement.ended();
+    this->cancelRemoteReconnect();   // no attempt after the session is let go
     ++this->m_remoteSwitchGeneration;
     // A view still waiting in the backend's queue gives its place up.
     this->cancelRemoteQueuePlace();
@@ -621,6 +632,8 @@ void vtkWindowCube::checkKeptRenderSession(const QString &sid)
             qDebug().noquote() << "[remote-render] kept session" << sid
                                << "is gone on the backend; creating a new one";
             this->m_renderSessionId.clear();
+            // The new session is turned to the view the old one had.
+            this->m_remoteCameraRestore = !this->m_remoteCamera.isEmpty();
             // Nothing draws remotely until the new session is live: the
             // badges say Local (or "queued for remote") meanwhile.
             this->m_effectiveRenderMode = RenderMode::Local;
@@ -638,52 +651,175 @@ void vtkWindowCube::checkKeptRenderSession(const QString &sid)
     });
 }
 
-void vtkWindowCube::handleRemoteDrop(visivo::RemoteDrop drop, bool askBackend)
+void vtkWindowCube::handleRemoteDrop(const visivo::RemoteDrop &drop)
 {
-    const QString sid = this->m_renderSessionId;
-    if (askBackend && !sid.isEmpty()) {
-        // No close reason: GET .../levels answers 404 for a session that is
-        // gone, which is then treated as "session ended".
-        if (!this->m_renderNam)
-            this->m_renderNam = new QNetworkAccessManager(this);
-        QUrl url(this->remoteBackendUrl);
-        url.setPath(u"/v1/render/%1/levels"_s.arg(sid));
-        QNetworkRequest req(url);
-        req.setTransferTimeout(5000);
-        BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
-                                           this->remoteBackendToken, this->remoteSessionId);
-        QNetworkReply *reply = this->m_renderNam->get(req);
-        const quint64 generation = this->m_remoteSwitchGeneration;
-        QObject::connect(reply, &QNetworkReply::finished, this,
-                         [this, reply, drop, sid, generation]() mutable {
-            reply->deleteLater();
-            // The user went Local (✕ changes neither the generation nor the
-            // session), switched again, or a new session started, meanwhile.
-            if (generation != this->m_remoteSwitchGeneration
-                || !visivo::dropCheckStillWanted(
-                        this->m_effectiveRenderMode == RenderMode::Remote,
-                        sid == this->m_renderSessionId, this->m_remoteSwitchInProgress))
-                return;
-            if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 404)
-                drop.closeReason = visivo::sessionEndedCloseReason();
-            this->handleRemoteDrop(drop, false);
-        });
-        return;
+    qDebug().noquote() << "[remote-render] stream of session" << this->m_renderSessionId
+                       << "dropped after" << drop.liveMs << "ms live, reason:"
+                       << (drop.closeReason.isEmpty() ? u"(none)"_s : drop.closeReason);
+    this->m_remoteReconnectWhy = visivo::sessionEnded(drop)
+            ? u"the backend's view ended"_s
+            : u"the connection to the backend was lost"_s;
+    this->runRemoteReconnectStep(this->m_remoteReconnect.onDrop(drop));
+}
+
+void vtkWindowCube::runRemoteReconnectStep(visivo::ReconnectStep step)
+{
+    using Step = visivo::ReconnectStep;
+    if (this->m_remoteReconnectTimer)
+        this->m_remoteReconnectTimer->stop();
+    if (!this->m_remoteReconnectTimer) {
+        this->m_remoteReconnectTimer = new QTimer(this);
+        this->m_remoteReconnectTimer->setSingleShot(true);
+        QObject::connect(this->m_remoteReconnectTimer, &QTimer::timeout, this,
+                         &vtkWindowCube::onRemoteReconnectTimer);
     }
-    switch (this->m_remoteRecovery.onDrop(drop)) {
-    case visivo::RemoteDropAction::NewSession:
-        qDebug().noquote() << "[remote-render] session" << sid
-                           << "ended on the backend; asking for a new one";
+    switch (step) {
+    case Step::Ignore:
+        return;
+    case Step::CheckSession:
+        this->showRemoteReconnecting(0);
+        if (this->m_renderSessionId.isEmpty()) {
+            // A new session that could not be made: there is none to ask about.
+            this->runRemoteReconnectStep(this->m_remoteReconnect.onCheck(404));
+            return;
+        }
+        this->checkRemoteSessionForReconnect();
+        return;
+    case Step::SameSession:
+        qDebug().noquote() << "[remote-render] session" << this->m_renderSessionId
+                           << "is still there; connecting its stream again";
+        this->showRemoteReconnecting(0);
+        this->m_remoteReconnectingSame = true;
+        if (this->m_remoteRenderWidget)
+            this->connectRemoteRenderWidgetWithTransport(this->m_renderSessionId);
+        // A negotiation may hang without ever saying so.
+        this->m_remoteReconnectTimer->start(visivo::kReconnectAttemptTimeoutMs);
+        return;
+    case Step::NewSession:
+        qDebug().noquote() << "[remote-render] session" << this->m_renderSessionId
+                           << "is gone on the backend; asking for a new one";
+        // The new session is turned to the view the user had.
+        this->m_remoteCameraRestore = !this->m_remoteCamera.isEmpty();
         this->replaceRemoteRenderSession();
         return;
-    case visivo::RemoteDropAction::OfferRetry:
-        this->offerRemoteRetry(visivo::sessionEnded(drop)
-                                       ? u"the backend's view ended again"_s
-                                       : u"the connection to the backend was lost"_s);
+    case Step::Wait:
+        this->showRemoteReconnecting(this->m_remoteReconnect.delayMs());
+        this->m_remoteReconnectTimer->start(this->m_remoteReconnect.delayMs());
         return;
-    case visivo::RemoteDropAction::Ignore:
+    case Step::GiveUp:
+        qDebug().noquote() << "[remote-render] reconnection given up:" << this->m_remoteReconnectWhy;
+        this->m_remoteReconnectingSame = false;
+        this->offerRemoteRetry(this->m_remoteReconnectWhy);
         return;
     }
+}
+
+void vtkWindowCube::onRemoteReconnectTimer()
+{
+    if (this->m_remoteReconnectingSame) {
+        // The same session's stream did not come back in time.
+        this->m_remoteReconnectingSame = false;
+        if (this->m_remoteRenderWidget) {
+            const QScopedValueRollback<bool> quiet(this->m_ignoreSyntheticDisconnect, true);
+            this->m_remoteRenderWidget->disconnectFromSession();
+        }
+        this->m_remoteReconnectWhy = u"the stream did not come back"_s;
+        this->runRemoteReconnectStep(this->m_remoteReconnect.onAttemptFailed());
+        return;
+    }
+    this->runRemoteReconnectStep(this->m_remoteReconnect.onWaited());
+}
+
+void vtkWindowCube::checkRemoteSessionForReconnect()
+{
+    // GET .../levels answers 404 for a session that is gone (closed for
+    // idling, its process ended), 200 for one still there.
+    const QString sid = this->m_renderSessionId;
+    if (!this->m_renderNam)
+        this->m_renderNam = new QNetworkAccessManager(this);
+    QUrl url(this->remoteBackendUrl);
+    url.setPath(u"/v1/render/%1/levels"_s.arg(sid));
+    QNetworkRequest req(url);
+    // A backend out of reach (a dead tunnel) may not refuse, only stay silent.
+    req.setTransferTimeout(5000);
+    BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
+                                       this->remoteBackendToken, this->remoteSessionId);
+    QNetworkReply *reply = this->m_renderNam->get(req);
+    const quint64 serial = ++this->m_remoteReconnectSerial;
+    QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, sid, serial]() {
+        reply->deleteLater();
+        // The user went Local or switched again, the window let the session
+        // go, or another check is under way: not this check's to act on.
+        if (serial != this->m_remoteReconnectSerial || !this->m_remoteReconnect.active()
+            || !visivo::dropCheckStillWanted(this->m_effectiveRenderMode == RenderMode::Remote,
+                                             sid == this->m_renderSessionId,
+                                             this->m_remoteSwitchInProgress))
+            return;
+        const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (code == 0 || code >= 500)
+            this->m_remoteReconnectWhy = visivo::replacementFailure(code, QString());
+        this->runRemoteReconnectStep(this->m_remoteReconnect.onCheck(code));
+    });
+}
+
+void vtkWindowCube::showRemoteReconnecting(int waitMs)
+{
+    const QString text = visivo::reconnectStatus(this->m_remoteReconnect.attempt(),
+                                                 visivo::RemoteReconnect::maxAttempts(), waitMs);
+    if (this->m_remoteRenderBannerRetry)
+        this->m_remoteRenderBannerRetry->hide();
+    if (this->m_remoteRenderBannerLabel)
+        this->m_remoteRenderBannerLabel->setText(u"Remote rendering - "_s + text);
+    if (this->m_renderFpsBadge)
+        this->m_renderFpsBadge->setText(u"reconnecting"_s);
+    // In the view, rather than its last frame: that frame is not live.
+    if (this->m_remoteRenderWidget)
+        this->m_remoteRenderWidget->showStatus(text);
+}
+
+void vtkWindowCube::cancelRemoteReconnect()
+{
+    this->m_remoteReconnect.cancel();
+    this->m_remoteReconnectingSame = false;
+    this->m_remoteCameraRestore = false;   // for a replacement, not the next switch
+    ++this->m_remoteReconnectSerial;   // a check under way answers nobody
+    if (this->m_remoteReconnectTimer)
+        this->m_remoteReconnectTimer->stop();
+}
+
+void vtkWindowCube::scheduleRemoteCameraSnapshot()
+{
+    // A moment after the gesture: the last commands of a drag are applied by
+    // then, and a burst of turns asks once.
+    if (!this->m_remoteCameraTimer) {
+        this->m_remoteCameraTimer = new QTimer(this);
+        this->m_remoteCameraTimer->setSingleShot(true);
+        this->m_remoteCameraTimer->setInterval(700);
+        QObject::connect(this->m_remoteCameraTimer, &QTimer::timeout, this, [this]() {
+            const QString sid = this->m_renderSessionId;
+            if (sid.isEmpty() || !this->m_remoteRenderWidget
+                || !this->m_remoteRenderWidget->isLive())
+                return;
+            if (!this->m_renderNam)
+                this->m_renderNam = new QNetworkAccessManager(this);
+            QUrl url(this->remoteBackendUrl);
+            url.setPath(u"/v1/render/%1/camera"_s.arg(sid));
+            QNetworkRequest req(url);
+            req.setTransferTimeout(5000);
+            BackendClient::applySessionHeaders(req, this->remoteBackendUrl,
+                                               this->remoteBackendToken, this->remoteSessionId);
+            QNetworkReply *reply = this->m_renderNam->get(req);
+            QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, sid]() {
+                reply->deleteLater();
+                if (reply->error() != QNetworkReply::NoError || sid != this->m_renderSessionId)
+                    return;   // an older backend without the route, or another session by now
+                const QJsonObject camera = QJsonDocument::fromJson(reply->readAll()).object();
+                if (!visivo::remote::setCameraCommand(camera).isEmpty())
+                    this->m_remoteCamera = camera;
+            });
+        });
+    }
+    this->m_remoteCameraTimer->start();
 }
 
 void vtkWindowCube::replaceRemoteRenderSession()
@@ -692,8 +828,10 @@ void vtkWindowCube::replaceRemoteRenderSession()
     // after ✕), and not while a switch is under way: a second one would be
     // refused by applyRenderMode and leave the view with none.
     if (!visivo::RemoteReplacement::mayStart(this->m_renderMode == RenderMode::Local,
-                                             this->m_remoteSwitchInProgress))
+                                             this->m_remoteSwitchInProgress)) {
+        this->cancelRemoteReconnect();
         return;
+    }
     if (this->m_remoteRenderBannerRetry)
         this->m_remoteRenderBannerRetry->hide();
     if (this->m_remoteRenderWidget) {
@@ -716,11 +854,14 @@ void vtkWindowCube::replaceRemoteRenderSession()
         this->m_remoteRenderBannerLabel->setText(
                 u"Remote rendering - starting a new view on the backend…"_s);
     this->m_remoteReplacement.started();
-    // The camera starts from the default view: the old one ended with its process.
+    // The view's state goes to the new session when it is live, and its
+    // camera with it when one was kept (m_remoteCameraRestore).
     this->applyRenderMode(this->m_renderMode, false);
     // Auto may have chosen Local: then no create is under way to replace with.
-    if (!this->m_remoteSwitchInProgress)
+    if (!this->m_remoteSwitchInProgress) {
         this->m_remoteReplacement.ended();
+        this->cancelRemoteReconnect();
+    }
 }
 
 void vtkWindowCube::offerRemoteRetry(const QString &why)
@@ -730,7 +871,9 @@ void vtkWindowCube::offerRemoteRetry(const QString &why)
     if (this->m_remoteRenderBannerLabel)
         this->m_remoteRenderBannerLabel->setText(
                 u"Remote rendering stopped: "_s + why
-                + u". Retry, or click ✕ to switch to Local."_s);
+                + u". Reconnect, or click ✕ to switch to Local."_s);
+    if (this->m_remoteRenderWidget)
+        this->m_remoteRenderWidget->showStatus(u"Remote rendering stopped"_s);
     if (this->m_remoteRenderBannerRetry)
         this->m_remoteRenderBannerRetry->show();
 }
@@ -745,7 +888,9 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
         if (state == QLatin1String("Live")) {
             this->m_remoteRenderBannerLabel->setText(
                     u"Remote rendering (GPU on backend) - click ✕ to switch to Local"_s);
-        } else {
+        } else if (!this->m_remoteReconnect.active()) {
+            // While reconnecting the banner says which attempt this is; the
+            // transport's own states would hide it.
             this->m_remoteRenderBannerLabel->setText(
                     u"Remote rendering - " + state);
         }
@@ -767,8 +912,28 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
     if (state == QLatin1String("Live")) {
         this->m_remoteReconnectingKept = false;
         this->m_remoteReplacement.ended();
+        if (this->m_remoteReconnect.active())
+            qDebug().noquote() << "[remote-render] reconnected to session" << this->m_renderSessionId;
+        this->m_remoteReconnect.onLive();
+        this->m_remoteReconnectingSame = false;
+        if (this->m_remoteReconnectTimer)
+            this->m_remoteReconnectTimer->stop();
         if (this->m_remoteRenderBannerRetry)
             this->m_remoteRenderBannerRetry->hide();
+    }
+    // The same session's stream did not come back (the backend refused it, or
+    // it closed before its first frame): an attempt that failed.
+    if (this->m_remoteReconnectingSame
+        && visivo::StreamCloseRecorder::isTerminal(state)) {
+        this->m_remoteReconnectingSame = false;
+        if (this->m_remoteRenderWidget) {
+            // Its own Disconnected, after an error, is not a second failure.
+            const QScopedValueRollback<bool> quiet(this->m_ignoreSyntheticDisconnect, true);
+            this->m_remoteRenderWidget->disconnectFromSession();
+        }
+        this->m_remoteReconnectWhy = u"the stream could not be opened again ("_s + state + u")"_s;
+        this->runRemoteReconnectStep(this->m_remoteReconnect.onAttemptFailed());
+        return;
     }
     // A live stream dropped: the session ended under it (its render process
     // gone), or the backend or the network went away. Not left on a dead
@@ -781,7 +946,7 @@ void vtkWindowCube::onRemoteRenderConnectionStateChanged(const QString &state)
         drop.closeReason = this->m_remoteRenderWidget->lastCloseReason();
         drop.liveMs = this->m_remoteRenderWidget->liveMsAtClose();
         if (drop.showingRemote && drop.wasLive) {
-            this->handleRemoteDrop(drop, drop.closeReason.isEmpty());
+            this->handleRemoteDrop(drop);
             return;
         }
     }
@@ -1160,6 +1325,15 @@ void vtkWindowCube::pushRenderStateToRemote()
     // Last: on a non-linear volume scale the session draws with this window's
     // own functions, which the LUT and threshold above would otherwise replace.
     this->pushVolumeTransferFunctionsToRemote();
+    // A session that replaces a lost one (issue #411) starts where the user
+    // left the view, not from the default camera. The pan offset is the
+    // session's own, not part of its camera: it starts centred.
+    if (this->m_remoteCameraRestore) {
+        this->m_remoteCameraRestore = false;
+        const QVariantMap camera = visivo::remote::setCameraCommand(this->m_remoteCamera);
+        if (!camera.isEmpty())
+            this->sendRemoteRenderStateCommand(camera);
+    }
 }
 
 void vtkWindowCube::pushRegionsToRemote(bool force)

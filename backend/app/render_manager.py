@@ -82,6 +82,9 @@ logger = logging.getLogger("visivo.render")
 # runs (it also passes on the slots of sessions nobody is connected to).
 POLL_AFTER_SECONDS = 2.0
 _REAP_INTERVAL_S = 5.0
+# A reaper pass that comes this long after the one before did not run in
+# between: the machine slept, or the process was stopped (issue #411).
+_SUSPENDED_GAP_S = 30.0
 
 
 class RenderCapacityError(RuntimeError):
@@ -138,6 +141,22 @@ def _webrtc_attached(session_id: str) -> bool:
     return mod is not None and mod.get_active_webrtc_session(session_id) is not None
 
 
+async def _close_webrtc_peer(session_id: str) -> None:
+    """Close the WebRTC peer of a session that is closed. Nothing else does:
+    the peer stayed connected with no frames to send, and the desktop kept a
+    frozen "Live" view it had no reason to replace (issue #411). Closed, the
+    desktop sees the stream end and asks for a new session."""
+    mod = sys.modules.get(f"{__package__}.webrtc_session")
+    peer = mod.get_active_webrtc_session(session_id) if mod is not None else None
+    if peer is None:
+        return
+    try:
+        await peer.close()
+    except Exception:   # noqa: BLE001 - the peer may be closing already
+        logger.debug("[render-manager] closing the WebRTC peer of %s failed",
+                     session_id[:8] + "…", exc_info=True)
+
+
 class RenderManager:
     """Singleton session registry, queue, lifecycle hooks, reaper."""
 
@@ -182,10 +201,16 @@ class RenderManager:
         self._detached_at: dict[str, float] = {}
         self._background: set[asyncio.Task] = set()
         self._reaper_task: asyncio.Task | None = None
+        # Wall time of the last reaper pass, to tell a suspension from idling.
+        self._last_reap_wall: float | None = None
 
     async def start(self) -> None:
         """Kick off the reaper. Idempotent."""
         if self._reaper_task is None or self._reaper_task.done():
+            # The first pass is compared with this moment: a machine that
+            # sleeps before it would otherwise have no earlier pass to tell
+            # the sleep by.
+            self._last_reap_wall = time.time()
             self._reaper_task = asyncio.create_task(self._reap_loop())
 
     async def stop(self, budget_s: float | None = None) -> None:
@@ -211,6 +236,8 @@ class RenderManager:
         for result in results:
             if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                 logger.error("[render-manager] close on shutdown raised", exc_info=result)
+        for sess in sessions:
+            await _close_webrtc_peer(sess.session_id)
 
     async def create_session(self, dataset_path: str,
                              owner_token: str | None = None,
@@ -519,6 +546,7 @@ class RenderManager:
             except Exception:
                 logger.exception("[render-manager] close raised for %s",
                                  sess.session_id[:8] + "…")
+            await _close_webrtc_peer(sess.session_id)
 
     async def _evict(self, session_id: str) -> bool:
         async with self._lock:
@@ -529,6 +557,7 @@ class RenderManager:
             await sess.close()
         except Exception:
             logger.exception("[render-manager] close raised for %s", session_id[:8] + "…")
+        await _close_webrtc_peer(session_id)
         logger.info(
             "[render-manager] closed session %s - %d frames rendered, %.1f MB sent",
             session_id, sess.stats.frames_rendered,
@@ -548,6 +577,7 @@ class RenderManager:
         wall, now = time.time(), self._clock()
         to_evict: list[str] = []
         async with self._lock:
+            self._credit_suspension_locked(wall)
             ended = self._pop_ended_locked()
             self._expire_tickets_locked(now)
             for sid, sess in self._sessions.items():
@@ -579,6 +609,25 @@ class RenderManager:
             self._expire_tickets_locked(now)
             self._promote_locked(now)
         return to_evict
+
+    def _credit_suspension_locked(self, wall: float) -> None:
+        """Time this process did not run is not idle time. The idle TTL counts
+        on the wall clock, which goes on while a laptop sleeps: on waking, the
+        first pass found every session idle past the TTL and closed them all,
+        the views a user had left on screen with the lid closed or the screen
+        locked included (issue #411). A pass that comes long after the last one
+        moves each session's last command on by the time nothing ran."""
+        last, self._last_reap_wall = self._last_reap_wall, wall
+        if last is None:
+            return
+        gap = wall - last
+        if gap <= _SUSPENDED_GAP_S:
+            return
+        credit = gap - _REAP_INTERVAL_S
+        logger.info("[render-manager] no reaper pass for %.0f s (the machine slept or the "
+                    "process was stopped): not counted as idle time", gap)
+        for sess in self._sessions.values():
+            sess.stats.last_command_at = min(wall, sess.stats.last_command_at + credit)
 
     def _pop_unattended_locked(self, now: float) -> Any:
         """The session no client has been connected to for longest past the

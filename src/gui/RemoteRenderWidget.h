@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QImage>
 #include <QPointer>
 #include <QSize>
@@ -132,6 +133,11 @@ signals:
     /// error, closed). String is human-readable; mapped to a UI badge.
     void connectionStateChanged(const QString &state);
 
+    /// The user finished turning or zooming the view (a drag released, a
+    /// wheel gesture over): the viewer keeps the session's camera then, to
+    /// give it back to a new session if this one is lost (issue #411).
+    void viewTurnedByUser();
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -230,4 +236,19 @@ private:
     // a keepalive goes out on this timer while a transport is connected.
     QTimer *m_keepaliveTimer{ nullptr };
     void sendKeepalive();
+
+    // A stream whose peer vanished without closing it (a laptop that slept,
+    // a tunnel that died, a session closed under its WebRTC peer) never ends
+    // by itself (issue #411). The WebSocket is pinged and the WebRTC stream
+    // pushes frames continuously: silence for kStallMs ends the stream here,
+    // as a drop, so the viewer reconnects.
+    QTimer *m_watchdogTimer{ nullptr };
+    visivo::StreamWatchdog m_watchdog;
+    QElapsedTimer m_clock;
+    void startWatchdog();
+    void checkStream();
+    /// Closes the transports and forgets the stream's state, without saying
+    /// why: disconnectFromSession() (asked for) and checkStream() (a stall)
+    /// say it each in their own way.
+    void teardownTransports();
 };
