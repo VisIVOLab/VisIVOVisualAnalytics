@@ -81,7 +81,9 @@ not: its lengths and velocities are not scaled by a.
 
 A block whose particle types cannot be told from its size (for example,
 equal numbers of gas and dark-matter particles in a single file) is left out
-rather than guessed. The snapshot's information lists it and says why.
+rather than guessed. So is a block whose `INFO` entry does not match its size
+or names a type the reader does not know. The snapshot's information and the
+file browser list it and say why; the other blocks open as usual.
 
 The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
@@ -181,6 +183,11 @@ the current scalar and spatial filters, including rows that are not present in
 the interactive rendering sample. Select an optional weight quantity for a
 weighted histogram and weighted mean, and choose the number of bins before
 running the calculation.
+
+In a cosmological snapshot the box is periodic: a box or sphere selection
+near one face also takes the particles just across the opposite face, as the
+simulation sees them. This applies to the position columns and to the
+diagnostics, the table and the remote view alike.
 
 The result records the quantity and weight units (when the snapshot declares
 them), the complete selection expression, the number of selected and finite

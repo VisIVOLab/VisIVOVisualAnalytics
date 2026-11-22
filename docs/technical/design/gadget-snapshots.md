@@ -84,6 +84,15 @@ comes from the positions (float or double) and from the block: IDs and the
 other integer blocks (`INT_BLOCKS`) are unsigned 4- or 8-byte integers. A
 block with several values per particle becomes several columns.
 
+**INFO.** A format-2 `INFO` block declares, per block, its value type, its
+values per particle and its types; it is used instead of the inference above.
+`FLOAT`/`FLOATN` name the run's `MyFloat`, which may be single while the
+positions are `DOUBLEN` (P-Gadget3, OpenGadget3 zoom-ins), so its 4 or 8
+bytes come from the block's length, the same in every file. A declared type
+the length contradicts, a value type the reader does not know, a width beyond
+`MAX_DIMS` or no particle types leave that block out with the reason in
+`skipped_reasons`; the rest of the snapshot opens.
+
 **Large blocks.** Record markers are read as unsigned 32-bit integers, so a
 block of 2 to 4 GiB reads as written. Past 4 GiB the marker wraps. The true
 length is then the marker plus a whole number of 4 GiB whose closing marker
@@ -109,6 +118,25 @@ particle type, and that does copy. The VR page's samples reuse this DataFrame
 instead of joining the columns again. An HDF5 dataset that is contiguous and
 unfiltered is memory-mapped at its file offset (`dataset.id.get_offset()`);
 a chunked or compressed one is read.
+
+**Selected rows of a compressed dataset.** Filters, sorted pages, samples and
+the copilot read rows through `Component.take`, a slice of rows at a time.
+A chunked or compressed HDF5 piece (TNG, EAGLE, Gadget-4) up to
+`VISIVO_GADGET_CACHE_MB` (default 512) is decompressed once into a cache
+shared by every component, least recently used out first, keyed by the file's
+size and modification time. Readers missing the same piece at once wait for
+the first one's decompression instead of repeating it, and closing a
+snapshot's last dataset drops its pieces. A larger piece is read in windows of
+whole HDF5 chunks (at most 64 MB each), each from its first to its last row
+asked for, so a contiguous slice reads only its own chunks. Placing 4 M of 8 M rows from
+four gzip shards went from 48 shard decompressions (4.2 s) to 4 (0.9 s).
+
+**Out-of-core queries.** Without a DataFrame, `/v1/catalogue/query` filters
+the component a million rows at a time with the same operators as a loaded
+catalogue (`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `contains`, boxes and
+spheres). A sorted page keeps the first `offset + limit` rows (at most
+1,000,000) ordered by value, NaN last, ties by row number ascending in both
+directions, so consecutive pages are slices of one sequence.
 
 Measured on this Mac with synthetic data: 16 M dark-matter and 4 M gas
 particles (626 MiB). Scanning headers and markers takes 0.5 ms for one file
@@ -176,7 +204,14 @@ The other files of a multi-file snapshot, the file a `snapdir` folder holds
 and the run's parameter file are read too. `/v1/catalogue/open` and
 `/v1/files/classify` check each of them against the backend's data roots,
 resolving symbolic links, as they check the named file. A snapshot with one
-file outside the roots is refused.
+of its own files outside the roots is refused, and the classifier answers
+"File not found." without naming it. A parameter file outside the roots (one
+folder above a root, or a link out of it) is treated as absent: the snapshot
+opens with the default units, and `units.source` says the file was not used.
+
+The copilot's `catalogue_summary` of a component with more than 2 million
+rows reads an evenly spaced sample of 2 million rows per column, and says so
+in `sample` (`rows`, `of`, `every`).
 
 ## Desktop splats and linked quantities
 
@@ -235,6 +270,27 @@ memory use is independent of the snapshot size. Ordinary catalogue dataframes
 use the same accumulator after applying their complete query filters. Weighted
 results reject non-finite and negative weights, while unweighted results reject
 only non-finite field values.
+
+Both passes read one chunk at a time, through the matcher for a component or
+a million rows of the loaded table at a time (only the columns needed), and
+check between chunks whether their task was cancelled
+(`/v1/tasks/catalogue_diagnostics`, issue #448). The variance combines each
+chunk's count, mean and squared deviations (Chan's pairwise update) instead of
+`E[x^2] - E[x]^2`, which loses every digit for positions far from the origin.
+
+**Periodic selections (issue #448).** A cosmological box is periodic, so a
+sphere around a halo near a face must reach the particles across it.
+`Component.periods()` gives the snapshot's `BoxSize` (when positive) for its
+position columns when the run is periodic. What the run states decides: a
+Gadget-4 HDF5 file's `Config` group (`PERIODIC` among its attributes or not),
+or `periodic=0`/`1` in `VISIVO_GADGET_UNITS`. When nothing states it, a
+comoving run is taken as periodic and any other as not. That guess is wrong
+for a non-periodic cosmological zoom, or an isolated galaxy integrated in
+comoving coordinates: set `periodic=0` for such a run, or send `"period": 0`
+with the selection. The
+out-of-core matcher, the point sessions' masks (`LazyColumns.periods`) and the
+DataFrame path use the nearest image for spheres and wrap boxes round the
+faces (`app/periodic.py`). A selection may state its own `period` (0: none).
 
 The response includes field and weight units from component metadata, the
 selection expression and explicit bin edges. The desktop carries these into
