@@ -11,9 +11,12 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMessageBox>
+#include <QFutureWatcher>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTextStream>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QtConcurrent>
 
@@ -21,10 +24,10 @@ using namespace Qt::StringLiterals;
 
 SimulationDiagnosticsDialog::SimulationDiagnosticsDialog(
         const QString &backendUrl, const QString &backendToken, const QString &sessionId,
-        const QString &datasetId, const QStringList &numericFields, const QJsonObject &units,
+        const QString &datasetId, const QStringList &numericFields,
         const std::vector<BackendTabularFilter> &filters, QWidget *parent)
     : QDialog(parent), m_backendUrl(backendUrl), m_backendToken(backendToken),
-      m_sessionId(sessionId), m_datasetId(datasetId), m_units(units), m_filters(filters)
+      m_sessionId(sessionId), m_datasetId(datasetId), m_filters(filters)
 {
     this->setAttribute(Qt::WA_DeleteOnClose);
     this->setWindowTitle(u"Selection diagnostics"_s);
@@ -45,18 +48,35 @@ SimulationDiagnosticsDialog::SimulationDiagnosticsDialog(
     form->addRow(u"Bins"_s, m_bins);
     outer->addLayout(form);
 
-    const QString population = filters.empty()
-            ? u"Population: complete dataset"_s
-            : u"Population: %1 active selection predicate(s), evaluated on the full dataset"_s
-                      .arg(filters.size());
-    auto *populationLabel = new QLabel(population, this);
-    populationLabel->setWordWrap(true);
-    populationLabel->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
-    outer->addWidget(populationLabel);
+    m_population = new QLabel(this);
+    m_population->setWordWrap(true);
+    m_population->setStyleSheet(VisivoTheme::infoKeyStyleSheet());
+    outer->addWidget(m_population);
+    this->updatePopulation();
 
+    auto *runRow = new QHBoxLayout;
     m_run = new QPushButton(u"Compute exact diagnostics"_s, this);
     QObject::connect(m_run, &QPushButton::clicked, this, &SimulationDiagnosticsDialog::run);
-    outer->addWidget(m_run);
+    runRow->addWidget(m_run);
+    // Two passes over every particle of a large snapshot take minutes: the
+    // bar says it is still going, Cancel stops waiting for it.
+    m_progress = new QProgressBar(this);
+    m_progress->setRange(0, 0);
+    m_progress->setTextVisible(false);
+    m_progress->setVisible(false);
+    runRow->addWidget(m_progress, 1);
+    m_cancel = new QPushButton(u"Cancel"_s, this);
+    m_cancel->setVisible(false);
+    QObject::connect(m_cancel, &QPushButton::clicked, this, &SimulationDiagnosticsDialog::cancel);
+    runRow->addWidget(m_cancel);
+    outer->addLayout(runRow);
+    m_tick = new QTimer(this);
+    m_tick->setInterval(1000);
+    QObject::connect(m_tick, &QTimer::timeout, this, [this]() {
+        m_summary->setText(u"Computing over the complete selected population… %1 s"_s
+                                   .arg(m_elapsed.elapsed() / 1000));
+    });
+
     m_summary = new QLabel(u"Choose a quantity and compute."_s, this);
     m_summary->setWordWrap(true);
     outer->addWidget(m_summary);
@@ -81,10 +101,33 @@ SimulationDiagnosticsDialog::SimulationDiagnosticsDialog(
     });
     QObject::connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     outer->addWidget(buttons);
-    QObject::connect(&m_watcher, &QFutureWatcherBase::finished, this, [this]() {
-        m_run->setEnabled(true);
-        this->present(m_watcher.result());
-    });
+}
+
+void SimulationDiagnosticsDialog::updatePopulation()
+{
+    if (m_filters.empty()) {
+        m_population->setText(u"Population: complete dataset"_s);
+        return;
+    }
+    QStringList regions;
+    for (const BackendTabularFilter &filter : m_filters)
+        if (filter.isSpatial() && !filter.name.trimmed().isEmpty())
+            regions << filter.name.trimmed();
+    QString text = u"Population: %1 applied selection predicate(s), evaluated on the full "
+                   u"dataset"_s.arg(m_filters.size());
+    if (!regions.isEmpty())
+        text += u" (regions: %1)"_s.arg(regions.join(u", "_s));
+    m_population->setText(text);
+}
+
+void SimulationDiagnosticsDialog::setFilters(const std::vector<BackendTabularFilter> &filters)
+{
+    m_filters = filters;
+    this->updatePopulation();
+    // A histogram of the old population next to the new population line
+    // would be read as the new one's: computed again, or cleared.
+    if (m_running || m_hasResult)
+        this->run();
 }
 
 void SimulationDiagnosticsDialog::run()
@@ -97,9 +140,25 @@ void SimulationDiagnosticsDialog::run()
     request.weightField = m_weight->currentData().toString();
     request.bins = m_bins->value();
     request.filters = m_filters;
+    const quint64 runId = ++m_runId;
+    m_running = true;
     m_run->setEnabled(false);
+    m_progress->setVisible(true);
+    m_cancel->setVisible(true);
+    m_elapsed.start();
+    m_tick->start();
     m_summary->setText(u"Computing over the complete selected population…"_s);
-    m_watcher.setFuture(QtConcurrent::run(
+    // Its own watcher per run: one abandoned by Cancel may still be waiting
+    // for the backend while the next is out.
+    auto *watcher = new QFutureWatcher<BackendCatalogueDiagnosticsResponse>(this);
+    QObject::connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, runId]() {
+        watcher->deleteLater();
+        if (runId != m_runId)
+            return;   // cancelled, or run again with other settings meanwhile
+        this->finishRun();
+        this->present(watcher->result());
+    });
+    watcher->setFuture(QtConcurrent::run(
             [url = m_backendUrl, token = m_backendToken, session = m_sessionId, request]() {
                 BackendClient client(url, token);
                 client.setSessionId(session);
@@ -107,13 +166,39 @@ void SimulationDiagnosticsDialog::run()
             }));
 }
 
+void SimulationDiagnosticsDialog::finishRun()
+{
+    m_running = false;
+    m_tick->stop();
+    m_progress->setVisible(false);
+    m_cancel->setVisible(false);
+    m_run->setEnabled(true);
+}
+
+void SimulationDiagnosticsDialog::cancel()
+{
+    if (!m_running)
+        return;
+    ++m_runId;   // its answer, when it comes, is dropped
+    this->finishRun();
+    m_summary->setText(u"Cancelled. The backend may finish the pass it started; its "
+                       u"answer is ignored."_s);
+}
+
 void SimulationDiagnosticsDialog::present(const BackendCatalogueDiagnosticsResponse &result)
 {
     if (!result.valid) {
         m_summary->setText(u"Diagnostics failed: %1"_s.arg(result.error));
+        // What is plotted is not this population's.
+        m_hasResult = false;
+        m_plot->clearPlottables();
+        m_plot->replot();
+        m_saveCsv->setEnabled(false);
+        m_savePng->setEnabled(false);
         return;
     }
     m_result = result;
+    m_hasResult = true;
     QString text = u"%L1 selected rows; %L2 finite. %3 [%4]: min %5, max %6, mean %7, σ %8. %9."_s
             .arg(result.selectedRows).arg(result.finiteRows).arg(result.field)
             .arg(result.fieldUnit).arg(result.minimum, 0, 'g', 6)

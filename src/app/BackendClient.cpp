@@ -3490,6 +3490,9 @@ const QStringList &heavyComputePaths()
         // A second on a laptop, but it runs under _run_heavy_with_limit: on
         // slow storage the server's ceiling, not 120 s, is the one to honour.
         QStringLiteral("/sofia2/suggest"),
+        // Selection Diagnostics: two exact passes over every particle of the
+        // selection, minutes on a large snapshot read out of core (#448).
+        QStringLiteral("/catalogue/diagnostics"),
     };
     return paths;
 }

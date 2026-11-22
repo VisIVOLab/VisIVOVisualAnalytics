@@ -36,13 +36,24 @@ A SubFind group catalogue opens as objects rather than particles. FoF groups
 start as spherical markers sized by `rvir` and coloured by `mvir`; subhalos use
 their half-mass radius and mass when those blocks are present. Use **Size by**
 and **Colour by** to select R500/R2500 or another mass definition instead.
+SubFind defines these radii against the **mean background density** of the
+universe, not the critical density many other catalogues use: `rvir` is
+relative to the mean background density, `r500` and `r2500` enclose 500 and
+2500 times it. The Size list, Source Info and the status line say so next to
+each radius.
 
 Select a marker or table row to inspect its physical properties. Double-click
-it to centre the camera and frame 1.25 times its available radius (`rvir`
-first, then R500/R2500; half-mass radius or Rmax for a subhalo). The Inspector
-states that the dataset is a SubFind catalogue and distinguishes FoF groups
-from subhalos. Stored code units and their kpc/M☉/km s⁻¹ conversions are shown
-alongside the other Gadget metadata.
+the marker (in the Local, Remote or ray-traced view) or its table row to
+centre the camera on it and frame 1.25 times its radius. The radius the
+markers are sized by is used when it is one of them; otherwise `rvir`, then
+R500/R2500 (half-mass radius or Rmax for a subhalo). The camera keeps the
+direction it looks from. The status line reports the radius used only when the
+view actually moved. A row highlighted from another tool over SAMP is only
+recentred, at the same distance, and never reframed.
+
+The Inspector states that the dataset is a SubFind catalogue and distinguishes
+FoF groups from subhalos. Stored code units and their kpc/M☉/km s⁻¹ conversions
+are shown alongside the other Gadget metadata.
 
 ## Columns
 
@@ -161,10 +172,22 @@ that view's quantity or colour mapping.
 
 Choose *Tools ▸ Selection Diagnostics…* to calculate an exact histogram and
 summary statistics for a quantity. The calculation uses every row matched by
-the current scalar and spatial filters, including rows that are not present in
-the interactive rendering sample. Select an optional weight quantity for a
+the **applied** scalar and spatial filters (the ones the view was last
+filtered with by **Apply**, not edits to the list not yet applied), including
+rows that are not present in the interactive rendering sample. When other
+filters are applied while the dialog is open, its population line follows and
+a result on show is computed again. Select an optional weight quantity for a
 weighted histogram and weighted mean, and choose the number of bins before
 running the calculation.
+
+On a large snapshot the two exact passes can take minutes: a progress bar and
+the elapsed time are shown while the backend works. **Cancel** stops waiting
+for the answer; the backend may still finish the pass it started.
+
+3-D regions (**Select 3-D region…** under the filter list) are named. A new
+region is offered the first free name (*Region 1*, *Region 2*, …), and a name
+already used by another region of the same window is refused. Regions are kept while the window is
+open; they are not yet saved with a session.
 
 The result records the quantity and weight units (when the snapshot declares
 them), the complete selection expression, the number of selected and finite

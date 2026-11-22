@@ -261,6 +261,17 @@ these metadata select structure-oriented defaults: spherical markers sized by
 Rvir (or the subhalo half-mass radius) and coloured by mass. Double-clicking a
 row frames the target using that physical radius instead of an arbitrary zoom.
 
+Framing (issue #448) is computed once, in `SubfindTargetFraming.h`, from the
+camera of the view on screen (`viewCamera`: the local VTK camera, the
+ray-traced view's, or the backend's `GET /v1/render/{id}/camera` for a Remote
+view) and applied to that view: the local camera, `RaytraceViewport::setCamera`,
+or a `set_camera` command to the point session. The local camera always
+follows, so switching view keeps the target. A double-click on the Remote or
+ray-traced view is picked by the window (an event filter) with that view's
+camera, since those widgets have no picker. A SAMP highlight only recentres the
+local view (`recentreLocalView`). The radius definitions from the metadata are
+shown in the Size list, Source Info and the status line.
+
 ## What to check against a real snapshot
 
 - The block list: unknown names should be read as their own columns, and

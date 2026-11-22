@@ -11,6 +11,7 @@
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
 #include "CataloguePlacement.h"
+#include "SubfindTargetFraming.h"
 #include "theme/VisivoTheme.h"
 #include "WorkspaceChrome.h"
 #include "InspectorPanel.h"
@@ -908,14 +909,29 @@ void vtkWindowCatalogue3D::populateMappingControls()
     fillAxisCombo(this->comboMapY, this->mapYKey, QStringLiteral("computed:y"));
     fillAxisCombo(this->comboMapZ, this->mapZKey, QStringLiteral("computed:z"));
 
+    const QJsonObject radiusDefinitions =
+            this->m_componentMetadata.value(u"radius_definitions"_s).toObject();
     this->comboMapSize->clear();
     this->comboMapSize->addItem(u"Fixed"_s, QStringLiteral("builtin:fixed"));
     this->comboMapSize->addItem(u"Major axis"_s, QStringLiteral("builtin:major"));
     this->comboMapSize->addItem(u"LLS"_s, QStringLiteral("builtin:lls"));
     this->comboMapSize->addItem(u"Flux"_s, QStringLiteral("builtin:flux"));
     for (const int index : this->numericRawFieldIndices) {
-        this->comboMapSize->addItem(QStringLiteral("raw:%1").arg(this->rawHeaders.value(index)),
-                                    QStringLiteral("raw:%1").arg(index));
+        const QString header = this->rawHeaders.value(index);
+        // A SubFind radius (R_vir, R500, R2500) is defined against the mean
+        // background density, not the critical one most catalogues use: said
+        // next to the choice, in the backend's words.
+        const QString definition = radiusDefinitions.value(header.toLower()).toString();
+        this->comboMapSize->addItem(
+                QStringLiteral("raw:%1").arg(visivo::framing::radiusWithDefinition(header,
+                                                                                   definition)),
+                QStringLiteral("raw:%1").arg(index));
+        if (!definition.isEmpty())
+            this->comboMapSize->setItemData(
+                    this->comboMapSize->count() - 1,
+                    u"SubFind radius %1."_s.arg(
+                            visivo::framing::radiusWithDefinition(header, definition)),
+                    Qt::ToolTipRole);
     }
     int sizeIndex = this->comboMapSize->findData(this->mapSizeKey);
     this->comboMapSize->setCurrentIndex(sizeIndex >= 0 ? sizeIndex : 0);

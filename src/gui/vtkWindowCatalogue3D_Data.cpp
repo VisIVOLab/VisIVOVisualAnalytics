@@ -563,7 +563,10 @@ void vtkWindowCatalogue3D::applyFilter()
         this->filterStatusLabel->setText(u"Applying filters…"_s);
     }
 
-    const int nFilters = static_cast<int>(this->activeFilters.size());
+    // From here on the rows, the next pages and the Remote view follow the
+    // list as edited now; a failed query puts the previous one back.
+    this->m_appliedFilters.begin(this->activeFilters);
+    const int nFilters = static_cast<int>(this->m_appliedFilters.filters().size());
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
             u"Catalogue3D"_s,
@@ -576,7 +579,7 @@ void vtkWindowCatalogue3D::applyFilter()
     const QString backendToken = this->backendToken;
     const QString datasetId = this->remoteDatasetId;
     const QString sessionId = this->remoteSessionId;
-    const std::vector<BackendTabularFilter> filters = this->activeFilters;
+    const std::vector<BackendTabularFilter> filters = this->m_appliedFilters.filters();
     const Catalogue3DSchema schema = this->schema;
     const int numFilters = nFilters;
     this->pushRemoteState();   // the filters, on the whole table
@@ -702,7 +705,9 @@ void vtkWindowCatalogue3D::loadMoreEntries()
     const QString backendToken = this->backendToken;
     const QString datasetId = this->remoteDatasetId;
     const QString sessionId = this->remoteSessionId;
-    const std::vector<BackendTabularFilter> filters = this->activeFilters;
+    // The next page of the rows on screen: the applied filters, not edits
+    // made since.
+    const std::vector<BackendTabularFilter> filters = this->m_appliedFilters.filters();
     const Catalogue3DSchema schema = this->schema;
     const int offset = this->m_currentOffset;
     const int pageSize = sampled ? this->m_sampleLimit : this->m_pageSize;

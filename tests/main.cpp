@@ -36,6 +36,7 @@
 #include "TestViewerModeState.h"
 #include "TestRemoteLevels.h"
 #include "TestRemoteCameraPreset.h"
+#include "TestCatalogueSelection.h"
 #include "TestRemoteRenderQueue.h"
 #include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
@@ -128,6 +129,7 @@ int main(int argc, char *argv[])
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteLevels     t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteCameraPreset t; status |= QTest::qExec(&t, argc, argv); }
+    { TestCatalogueSelection t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteRenderQueue t; status |= QTest::qExec(&t, argc, argv); }
     { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
