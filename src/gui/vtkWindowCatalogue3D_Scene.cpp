@@ -465,6 +465,9 @@ void vtkWindowCatalogue3D::buildScene()
             this->m_cosmologyFinishDeferred = false;
             QTimer::singleShot(0, this, &vtkWindowCatalogue3D::onCosmologyFinished);
         }
+        // Particle attributes that waited for the build (see the constructor).
+        if (this->m_hydrationPending)
+            QTimer::singleShot(0, this, &vtkWindowCatalogue3D::hydrateParticleAttributesWhenIdle);
     }
 }
 

@@ -202,6 +202,11 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
     if context is not None:
         frame = context.get("dataframe")
         fmt = context.get("format")
+    from ..point_table import component_format, is_particle_format  # noqa: PLC0415
+    if frame is None and path and component_format(path) == "gadget":
+        # A snapshot's particle type is opened out of core (no frame): its
+        # statistics are streamed from the shards, a slice of rows at a time.
+        return _particle_catalogue_summary(path, params, context or {})
     if frame is None:
         if not path:
             raise ValueError("catalogue_summary requires a loaded catalogue dataset.")
@@ -240,29 +245,81 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
         "columns": columns,
         "columns_truncated": len(meta["fields"]) > max_cols,
     }
-    # A simulation's particles (a VBT of points, a snapshot's particle type,
-    # issue #31): cartesian as opened, whatever the column names suggest; a
-    # snapshot also states its time, cosmology, units and physical
-    # conversions, which the copilot needs to quote values in physical units.
-    from ..point_table import is_particle_format  # noqa: PLC0415
     if context is not None and is_particle_format(context.get("format")):
-        out["particles"] = True
-        out["coordinate_fields"] = context.get("coordinate_fields", out["coordinate_fields"])
-        units = (getattr(frame, "attrs", None) or {}).get("units") or {}
-        if units:
-            out["units"] = dict(units)
-        if context.get("snapshot"):
-            snap = context["snapshot"]
-            out["snapshot"] = {k: snap.get(k) for k in (
-                "format", "files", "scale_factor", "redshift", "box_size", "omega0",
-                "omega_lambda", "hubble_param", "units", "skipped_blocks")}
-        comp = context.get("component") or {}
-        if comp:
-            out["component"] = {k: comp.get(k) for k in (
-                "type", "name", "physical", "derived", "mass_from_table")}
-        if context.get("components"):
-            out["other_components"] = list(context["components"])
+        _describe_particles(out, context, (getattr(frame, "attrs", None) or {}).get("units"))
     return out
+
+
+#: Rows a particle summary reads at a time (8 MB of float64 per column).
+PARTICLE_SUMMARY_CHUNK = 1_000_000
+
+
+def _particle_catalogue_summary(path: str, params: dict[str, Any],
+                                context: dict[str, Any]) -> dict[str, Any]:
+    """catalogue_summary of an out-of-core snapshot component: the same
+    statistics, each column read through ``take`` a chunk of rows at a time
+    (bounded memory; a compressed HDF5 shard is decompressed once, see
+    gadget_snapshot.PIECE_CACHE)."""
+    from .. import gadget_snapshot as gs  # noqa: PLC0415
+    from ..point_table import particle_catalogue_metadata  # noqa: PLC0415
+    component = gs.resolve(path)
+    meta = context if context.get("fields") else {**particle_catalogue_metadata(path), **context}
+    fields = list(meta.get("fields") or [])
+    max_cols = max(1, int(params.get("max_columns", 40)))
+    columns: list[dict[str, Any]] = []
+    for info in fields[:max_cols]:
+        name = info["name"]
+        entry: dict[str, Any] = {"name": name, "type": info["type"]}
+        if info["type"] in ("int", "float"):
+            count, lo, hi, total = 0, np.inf, -np.inf, 0.0
+            for start in range(0, component.num_rows, PARTICLE_SUMMARY_CHUNK):
+                rows = np.arange(start, min(component.num_rows, start + PARTICLE_SUMMARY_CHUNK),
+                                 dtype=np.int64)
+                col = np.asarray(component.take(name, rows), dtype=np.float64)
+                fin = col[np.isfinite(col)]
+                if fin.size:
+                    count += int(fin.size)
+                    lo, hi = min(lo, float(fin.min())), max(hi, float(fin.max()))
+                    total += float(fin.sum())
+            # finite_count always, as for a loaded catalogue (see above).
+            entry["finite_count"] = count
+            entry["min"] = lo if count else None
+            entry["max"] = hi if count else None
+            entry["mean"] = total / count if count else None
+        columns.append(entry)
+    out = {
+        "kind": "catalogue",
+        "format": "gadget",
+        "num_rows": int(component.num_rows),
+        "num_columns": len(fields),
+        "coordinate_fields": meta.get("coordinate_fields") or {},
+        "columns": columns,
+        "columns_truncated": len(fields) > max_cols,
+    }
+    _describe_particles(out, meta, component.units())
+    return out
+
+
+def _describe_particles(out: dict[str, Any], context: dict[str, Any], units) -> None:
+    """A simulation's particles (a VBT of points, a snapshot's particle type,
+    issue #31): cartesian as opened, whatever the column names suggest; a
+    snapshot also states its time, cosmology, units and physical
+    conversions, which the copilot needs to quote values in physical units."""
+    out["particles"] = True
+    out["coordinate_fields"] = context.get("coordinate_fields", out["coordinate_fields"])
+    if units:
+        out["units"] = dict(units)
+    if context.get("snapshot"):
+        snap = context["snapshot"]
+        out["snapshot"] = {k: snap.get(k) for k in (
+            "format", "files", "scale_factor", "redshift", "box_size", "omega0",
+            "omega_lambda", "hubble_param", "units", "skipped_blocks", "skipped_reasons")}
+    comp = context.get("component") or {}
+    if comp:
+        out["component"] = {k: comp.get(k) for k in (
+            "type", "name", "physical", "derived", "mass_from_table")}
+    if context.get("components"):
+        out["other_components"] = list(context["components"])
 
 
 def _vbt_summary(_path: str | None, params: dict[str, Any],

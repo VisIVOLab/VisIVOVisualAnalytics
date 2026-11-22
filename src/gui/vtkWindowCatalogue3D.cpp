@@ -840,14 +840,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         // Let Qt present the lightweight scene first.  Attribute hydration is
         // then ordinary asynchronous filtering with no filters: the fixed RNG
         // returns the same row indices and the watcher atomically replaces the
-        // partial rows once all columns have arrived.
-        QTimer::singleShot(0, this, [this]() {
-            if (this->filterBusy || this->remoteDatasetId.isEmpty())
-                return;
-            if (this->filterStatusLabel)
-                this->filterStatusLabel->setText(u"Loading particle attributes in background…"_s);
-            this->applyFilter();
-        });
+        // partial rows once all columns have arrived.  While a large scene is
+        // still being built it waits for the build to end, not dropped.
+        this->m_hydrationPending = true;
+        QTimer::singleShot(0, this, &vtkWindowCatalogue3D::hydrateParticleAttributesWhenIdle);
     }
 
     // ── Filter signal/slot connections ───────────────────────────────────────

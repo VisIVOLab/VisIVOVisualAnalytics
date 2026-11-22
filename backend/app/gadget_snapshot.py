@@ -60,6 +60,8 @@ from __future__ import annotations
 import os
 import re
 import struct
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -755,6 +757,109 @@ class Piece:
         with h5py.File(self.path, "r") as f:
             return np.asarray(f[self.dataset][()]).reshape(self.rows, self.dims)
 
+    @property
+    def nbytes(self) -> int:
+        return self.rows * self.dims * np.dtype(self.dtype).itemsize
+
+
+# ── Selected rows of a chunked or compressed HDF5 dataset ────────────────────
+#
+# Such a dataset cannot be memory-mapped: any read decompresses whole HDF5
+# chunks. Component.take is called a slice of rows at a time (a filter walks
+# the table in chunks, a sample reads x, y and z in pieces), so reading the
+# whole dataset per call decompressed a shard dozens of times (issue #445).
+# A dataset up to the cache budget is decompressed once and kept, shared by
+# every component and bounded in bytes; a larger one is read in windows of
+# whole HDF5 chunks spanning only the rows asked for.
+
+#: Megabytes of decompressed HDF5 pieces kept for row reads (0: none).
+PIECE_CACHE_ENV = "VISIVO_GADGET_CACHE_MB"
+PIECE_CACHE_DEFAULT_MB = 512
+#: At most this many bytes are decompressed into one window of a dataset
+#: larger than the cache budget (rounded to whole HDF5 chunks).
+WINDOW_BYTES = 64 << 20
+
+
+def piece_cache_bytes() -> int:
+    """The cache budget, from the environment when it is a number."""
+    try:
+        mb = float(os.environ.get(PIECE_CACHE_ENV, PIECE_CACHE_DEFAULT_MB))
+    except ValueError:
+        mb = PIECE_CACHE_DEFAULT_MB
+    return max(0, int(mb * (1 << 20)))
+
+
+class _PieceCache:
+    """Least recently used decompressed pieces, at most the budget in bytes,
+    keyed by the file's identity (a rewritten file is not served stale)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._items: OrderedDict = OrderedDict()
+        self._bytes = 0
+
+    def get(self, piece: Piece) -> np.ndarray | None:
+        """The piece's (rows, dims) values, or None when it exceeds the budget."""
+        budget = piece_cache_bytes()
+        if piece.nbytes > budget:
+            return None
+        st = os.stat(piece.path)
+        key = (piece.path, piece.dataset, st.st_size, st.st_mtime_ns)
+        with self._lock:
+            hit = self._items.get(key)
+            if hit is not None:
+                self._items.move_to_end(key)
+                return hit
+        values = piece.array()              # outside the lock: may take seconds
+        with self._lock:
+            if key not in self._items:
+                self._items[key] = values
+                self._bytes += values.nbytes
+            while self._bytes > budget and len(self._items) > 1:
+                _, old = self._items.popitem(last=False)
+                self._bytes -= old.nbytes
+        return values
+
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+            self._bytes = 0
+
+
+PIECE_CACHE = _PieceCache()
+
+
+def _read_window(dataset, start: int, stop: int, column: int) -> np.ndarray:
+    """Rows ``start:stop`` of one column of an HDF5 dataset (1-D or 2-D)."""
+    if dataset.ndim == 1:
+        return dataset[start:stop]
+    return dataset[start:stop, column]
+
+
+def _read_rows_windowed(piece: Piece, local: np.ndarray, column: int) -> np.ndarray:
+    """``column`` at rows ``local`` of an HDF5 piece too large for the cache:
+    the rows asked for, sorted, are read window by window (whole HDF5 chunks,
+    at most WINDOW_BYTES), each window from its first to its last row asked
+    for, so a contiguous slice reads only its own chunks and memory stays at
+    one window."""
+    import h5py  # noqa: PLC0415
+    unique, inverse = np.unique(local, return_inverse=True)
+    out = np.empty(unique.size, dtype=np.dtype(piece.dtype))
+    with h5py.File(piece.path, "r") as f:
+        dataset = f[piece.dataset]
+        chunk = dataset.chunks[0] if dataset.chunks else 1
+        per_row = np.dtype(piece.dtype).itemsize * (piece.dims if dataset.ndim > 1 else 1)
+        window = max(chunk, (WINDOW_BYTES // max(1, per_row)) // chunk * chunk)
+        i = 0
+        while i < unique.size:
+            first = int(unique[i])
+            end = min(piece.rows, (first // window + 1) * window)
+            j = int(np.searchsorted(unique, end, side="left"))
+            last = int(unique[j - 1]) + 1
+            out[i:j] = _read_window(dataset, first, last, column)[unique[i:j] - first]
+            i = j
+    return out[inverse]
+
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -924,10 +1029,13 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
             break
     if fsize not in (4, 8):
         raise ValueError(f"POS holds {fsize} bytes per coordinate: not float or double")
-    info_schemas = [_format2_info(f, fsize) for f in layouts]
-    declared = {}
+    info_schemas = [_format2_info(f) for f in layouts]
+    declared, info_skips = {}, {}
     for schema in info_schemas:
         for name, candidate in schema.items():
+            if isinstance(candidate, str):
+                info_skips.setdefault(name, candidate)
+                continue
             previous = declared.get(name)
             if previous is not None and (candidate.dtype, candidate.dims) != (
                     previous.dtype, previous.dims):
@@ -950,16 +1058,10 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
             blk = [b for b in f.blocks if b.name == name]
             lengths.append((f.header.npart, sum(b.nbytes for b in blk)))
         spec = declared.get(name)
-        why = ""
+        why = info_skips.get(name, "")
         if spec is not None:
-            itemsize = np.dtype(spec.dtype).itemsize * spec.dims
-            for npart, length in lengths:
-                expected = sum(npart[t] for t in spec.types) * itemsize
-                if length != expected:
-                    raise ValueError(
-                        f"{name}: INFO declares {spec.dtype} × {spec.dims} for types "
-                        f"{list(spec.types)}, requiring {expected} bytes; the block has {length}")
-        else:
+            spec, why = _info_block(spec, lengths, fsize)
+        elif not why:
             spec, why = infer_block(name, lengths, first.mass, fsize)
         if spec is None:
             skipped.append((name, why))
@@ -982,8 +1084,23 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
                     tuple(n for n, _ in skipped), fmt, tuple(skipped))
 
 
-def _format2_info(layout: FileLayout, float_size: int) -> dict[str, BlockSpec]:
-    """Read the optional format-2 INFO schema without touching block data."""
+#: INFO value types -> numpy kind and, when the type fixes it, the bytes per
+#: value. FLOAT/FLOATN leave the size open: OpenGadget3 and P-Gadget3 write
+#: "FLOAT" for a block of the run's MyFloat, single even when the positions
+#: are double (DOUBLEN), so the block's own length decides.
+_INFO_TYPES = {"FLOAT": ("f", None), "FLOATN": ("f", None),
+               "DOUBLE": ("f", 8), "DOUBLEN": ("f", 8),
+               "LLONG": ("u", 8), "ULONG64": ("u", 8),
+               "LONG": ("u", 4), "ULONG": ("u", 4), "INT": ("u", 4), "UINT": ("u", 4)}
+
+
+def _format2_info(layout: FileLayout) -> dict[str, BlockSpec | str]:
+    """Read the optional format-2 INFO schema without touching block data.
+
+    Each entry is a BlockSpec, or the reason its block is left out (a value
+    type this reader does not know, no particle types, a width beyond
+    MAX_DIMS): one odd entry costs its block, not the snapshot. A FLOAT
+    entry's dtype is ``"f"``, its size settled by :func:`_info_block`."""
     info = next((block for block in layout.blocks if block.name == "INFO"), None)
     if info is None:
         return {}
@@ -992,33 +1109,60 @@ def _format2_info(layout: FileLayout, float_size: int) -> dict[str, BlockSpec]:
     with open(layout.path, "rb") as handle:
         handle.seek(info.offset)
         raw = handle.read(info.nbytes)
-    out = {}
+    out: dict[str, BlockSpec | str] = {}
     for offset in range(0, len(raw), 40):
         entry = raw[offset:offset + 40]
         name = entry[:4].decode("ascii", "replace").rstrip(" \0")
         value_type = entry[4:12].decode("ascii", "replace").rstrip(" \0").upper()
         dims, *flags = struct.unpack(f"{layout.endian}i6i", entry[12:])
-        if not name or not 1 <= dims <= MAX_DIMS:
-            raise ValueError(f"{Path(layout.path).name}: invalid INFO entry {name!r}")
-        if value_type in ("FLOAT", "FLOATN"):
-            dtype = f"f{float_size}"
-        elif value_type in ("DOUBLE", "DOUBLEN"):
-            dtype = "f8"
-        elif value_type in ("LLONG", "ULONG64"):
-            dtype = "u8"
-        elif value_type in ("LONG", "ULONG", "INT", "UINT"):
-            dtype = "u4"
-        else:
-            raise ValueError(f"{Path(layout.path).name}: INFO type {value_type!r} is unsupported")
+        if not name:
+            raise ValueError(f"{Path(layout.path).name}: INFO entry without a block name")
+        kind = _INFO_TYPES.get(value_type)
+        if kind is None:
+            out[name] = f"INFO declares value type {value_type!r}, which this reader does not know"
+            continue
+        if not 1 <= dims <= MAX_DIMS:
+            out[name] = f"INFO declares {dims} values per particle (1..{MAX_DIMS} supported)"
+            continue
         types = tuple(index for index, active in enumerate(flags) if active)
         if name == "MASS":
             types = tuple(index for index in types if layout.header.mass[index] == 0)
             if not types:
                 continue
         if not types:
-            raise ValueError(f"{Path(layout.path).name}: INFO block {name} has no particle types")
+            out[name] = "INFO declares no particle types for it"
+            continue
+        dtype = f"{kind[0]}{kind[1]}" if kind[1] else kind[0]
         out[name] = BlockSpec(name, types, dtype, dims, False)
     return out
+
+
+def _info_block(spec: BlockSpec, lengths, fsize: int) -> tuple[BlockSpec | None, str]:
+    """``(spec, why not)`` of a block INFO declares, checked against its
+    length in every file. A FLOAT block takes 4 or 8 bytes a value from the
+    length (the same in every file; the positions' size when no file holds
+    its particles); a declared size the length contradicts leaves the block
+    out with the reason, rather than read it with the wrong stride."""
+    counts = [(sum(npart[t] for t in spec.types) * spec.dims, length)
+              for npart, length in lengths]
+    dtype = spec.dtype
+    if dtype == "f":
+        sizes = {length // values for values, length in counts
+                 if values and length % values == 0}
+        if not any(values for values, _ in counts):
+            sizes = {fsize}
+        if len(sizes) != 1 or next(iter(sizes)) not in (4, 8):
+            found = ", ".join(f"{length} bytes for {values} values"
+                              for values, length in counts if values)
+            return None, (f"INFO declares FLOAT x {spec.dims} for types {list(spec.types)}; "
+                          f"the block has {found}: neither float nor double")
+        dtype = f"f{next(iter(sizes))}"
+    itemsize = np.dtype(dtype).itemsize
+    for values, length in counts:
+        if length != values * itemsize:
+            return None, (f"INFO declares {dtype} x {spec.dims} for types {list(spec.types)}, "
+                          f"requiring {values * itemsize} bytes; the block has {length}")
+    return replace(spec, dtype=dtype), ""
 
 
 def _assemble_hdf5(layouts, header: Header) -> Snapshot:
@@ -1186,7 +1330,8 @@ class Component:
             for index in np.unique(which):
                 selected = which == index
                 start = 0 if index == 0 else ends[index - 1]
-                out[selected] = pieces[index].array()[rows[selected] - start, column]
+                out[selected] = self._piece_rows(block, int(index), rows[selected] - start,
+                                                 column)
         elif name == "mass" and self._mass_from_table:
             out = np.full(rows.size, self.snapshot.header.mass[self.ptype],
                           dtype=self.column_dtype(name))
@@ -1206,6 +1351,22 @@ class Component:
         else:
             raise KeyError(name)
         return out[0] if scalar else out
+
+    def _piece_rows(self, block: str, index: int, local: np.ndarray, column: int) -> np.ndarray:
+        """``column`` of piece ``index`` of ``block`` at its rows ``local``:
+        from the memory map, from the arrays column() already read, from the
+        shared cache of decompressed HDF5 pieces, or window by window for an
+        HDF5 piece larger than that cache."""
+        piece = self.snapshot.pieces[(block, self.ptype)][index]
+        if piece.offset is not None or piece.rows == 0:
+            return piece.array()[local, column]
+        arrays = self._arrays.get(block)
+        if arrays is not None:
+            return arrays[index][local, column]
+        values = PIECE_CACHE.get(piece)
+        if values is not None:
+            return values[local, column]
+        return _read_rows_windowed(piece, local, column)
 
     def _temperature_rows(self, rows: np.ndarray) -> np.ndarray:
         u = np.asarray(self.take("u", rows), dtype=np.float64)
@@ -1398,9 +1559,32 @@ class SegmentedColumn:
         return self.shape[0]
 
     def __getitem__(self, rows):
+        """Rows by a slice, an integer (negative from the end), an integer
+        array, or a boolean mask of the column's length, as numpy indexes;
+        anything else (floats, a mask of another length) raises IndexError
+        rather than being read as row numbers."""
+        n = len(self)
         if isinstance(rows, slice):
-            rows = np.arange(*rows.indices(len(self)), dtype=np.int64)
-        return self.component.take(self.name, rows)
+            return self.component.take(self.name, np.arange(*rows.indices(n), dtype=np.int64))
+        if isinstance(rows, (int, np.integer)) and not isinstance(rows, (bool, np.bool_)):
+            row = int(rows)
+            if not -n <= row < n:
+                raise IndexError(f"row {row} outside a column of {n}")
+            return self.component.take(self.name, row % n)
+        index = np.asarray(rows)
+        if index.size == 0 and index.ndim == 1 and index.dtype != bool:
+            index = index.astype(np.int64)      # [] is float64 to numpy
+        if index.dtype == bool:
+            if index.shape != (n,):
+                raise IndexError(f"boolean index of shape {index.shape} for a column of {n}")
+            return self.component.take(self.name, np.flatnonzero(index))
+        if index.dtype.kind not in "iu" or index.ndim > 1:
+            raise IndexError("a particle column is indexed by a slice, integers or a "
+                             f"boolean mask, not {index.dtype} of {index.ndim} dimensions")
+        index = index.astype(np.int64, copy=False)
+        if index.size and (index.min() < -n or index.max() >= n):
+            raise IndexError(f"row outside a column of {n}")
+        return self.component.take(self.name, np.where(index < 0, index + n, index))
 
     def __array__(self, dtype=None, copy=None) -> np.ndarray:
         values = self.component.take(self.name, np.arange(len(self), dtype=np.int64))

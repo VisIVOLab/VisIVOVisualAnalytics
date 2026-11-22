@@ -286,7 +286,12 @@ Paginated, filtered query.
 }
 ```
 `limit` defaults to 100000 and `offset` to 0; `sort.direction` is `asc`
-(default) or `desc`.
+(default) or `desc`. Filter operators: `=`, `!=`, `<`, `<=`, `>`, `>=`,
+`in` (comma-separated values) and `contains` (case-insensitive), for a loaded
+catalogue and a snapshot's particle type alike. On a particle type read out of
+core, a sort orders NaN last and equal values by row number ascending in both
+directions, so successive pages neither repeat nor skip rows; `offset + limit`
+may not exceed 1,000,000.
 Response: `total_rows`, `returned_rows`, `rows[]` (key-value maps), and
 `row_index[]`: for each returned row, its 0-based position in the catalogue as
 opened, before any filter, sort or sample (empty if the table's index cannot

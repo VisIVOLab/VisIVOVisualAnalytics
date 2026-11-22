@@ -336,6 +336,10 @@ private:
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();
     void applyFilter();
+    /// The particle attributes left out of the first page, fetched by an
+    /// unfiltered applyFilter() once no filter runs and no scene is being
+    /// built; called again when the scene build ends.
+    void hydrateParticleAttributesWhenIdle();
     void buildScene();
     void buildLabels();
     void buildShells();
@@ -575,6 +579,7 @@ private:
     bool m_labelsSkippedDueToScale{ false };  // per-point labels not built (too many sources)
     bool m_sceneBuilding{ false };            // a large buildScene() is in progress
     bool m_cosmologyFinishDeferred{ false };  // a cosmology result arrived mid-build → apply after
+    bool m_hydrationPending{ false };         // first page lacks particle attributes still to fetch
     /// During a large buildScene(), pump the event loop + show progress every
     /// few hundred-k points so the UI stays responsive (no OS "not responding").
     void pumpSceneBuild(int processed);

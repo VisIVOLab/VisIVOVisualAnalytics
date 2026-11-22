@@ -916,3 +916,284 @@ def test_a_type_without_mass_block_or_table_has_no_mass_column(tmp_path):
     files, _ = _snapshot(tmp_path, parts=parts)
     stars = gs.open_snapshot(files[0]).component(4)
     assert "mass" not in stars.names
+
+
+# ── Review of the out-of-core reader (issue #445) ────────────────────────────
+
+def _info_entry(name, kind, dims, types, e="<"):
+    flags = [int(index in types) for index in range(6)]
+    return (name.ljust(4).encode("ascii") + kind.ljust(8).encode("ascii")
+            + struct.pack(e + "i6i", dims, *flags))
+
+
+def _info_snapshot(path, schema, blocks, npart=(3, 0, 0, 0, 0, 0), e="<"):
+    npart = list(npart)
+    head = G._gadget_header(npart, [0.0] * 6, 1.0, 0.0, npart, 1, 100.0, 0.0, 0.0, 0.7, e)
+    raw = G._gadget_block("HEAD", head, e) + G._gadget_block("INFO", schema, e)
+    for name, values in blocks:
+        raw += G._gadget_block(name, values.tobytes(), e)
+    path.write_bytes(raw)
+    return gs.open_snapshot(path)
+
+
+def test_info_float_takes_its_size_from_the_block_beside_double_positions(tmp_path):
+    # OpenGadget3 / P-Gadget3 with double positions: INFO says DOUBLEN for POS
+    # and FLOAT for RHO, which is single precision.
+    pos = np.arange(9, dtype="<f8").reshape(3, 3)
+    rho = np.array([1.5, 2.5, 3.5], dtype="<f4")
+    hsml = np.array([0.25, 0.5, 0.75], dtype="<f8")       # a FLOAT block in double
+    snap = _info_snapshot(
+        tmp_path / "mixed",
+        _info_entry("POS", "DOUBLEN", 3, (0,)) + _info_entry("RHO", "FLOAT", 1, (0,))
+        + _info_entry("HSML", "FLOAT", 1, (0,)),
+        [("POS", pos), ("RHO", rho), ("HSML", hsml)])
+    gas = snap.component(0)
+    assert not snap.skipped
+    assert snap.blocks["POS"].dtype == "f8" and snap.blocks["RHO"].dtype == "f4"
+    assert snap.blocks["HSML"].dtype == "f8"
+    assert np.array_equal(gas.column("rho"), rho)
+    assert np.array_equal(gas.take("rho", [2, 0]), rho[[2, 0]])
+    assert np.array_equal(gas.column("hsml"), hsml)
+    assert np.array_equal(gas.column("z"), pos[:, 2])
+
+
+def test_an_info_entry_that_does_not_fit_costs_its_block_not_the_snapshot(tmp_path):
+    pos = np.arange(9, dtype="<f4").reshape(3, 3)
+    odd = np.arange(3, dtype="<f4")
+    snap = _info_snapshot(
+        tmp_path / "odd",
+        _info_entry("POS", "FLOATN", 3, (0,)) + _info_entry("RHO", "DOUBLE", 1, (0,))
+        + _info_entry("QUUX", "COMPLEX", 1, (0,)) + _info_entry("HSML", "FLOAT", 1, (0,)),
+        [("POS", pos), ("RHO", odd), ("QUUX", odd), ("HSML", np.arange(6, dtype="<u1"))])
+    reasons = dict(snap.skip_reasons)
+    assert set(snap.skipped) == {"RHO", "QUUX", "HSML"}
+    assert "requiring 24 bytes; the block has 12" in reasons["RHO"]
+    assert "'COMPLEX'" in reasons["QUUX"]
+    assert "neither float nor double" in reasons["HSML"]
+    assert snap.component(0).names == ["x", "y", "z"]
+    # The file browser says which blocks were left out and why.
+    from app.classify import classify_path
+    detail = classify_path(tmp_path / "odd")["detail"]
+    assert "RHO (INFO declares f8" in detail and "QUUX (" in detail
+
+
+def _compressed_hdf5(folder, n_per_file, num_files, chunk):
+    h5py = pytest.importorskip("h5py")
+    folder.mkdir(parents=True, exist_ok=True)
+    for i in range(num_files):
+        with h5py.File(folder / f"snap.{i}.hdf5", "w") as h:
+            _hdf5_header(h, [n_per_file, 0, 0, 0, 0, 0],
+                         [n_per_file * num_files, 0, 0, 0, 0, 0], num_files)
+            g = h.create_group("PartType0")
+            rng = np.random.default_rng(i)
+            g.create_dataset("Coordinates", data=rng.random((n_per_file, 3), dtype="f4"),
+                             compression="gzip", chunks=(chunk, 3))
+            g.create_dataset("Density", data=rng.random(n_per_file, dtype="f4"),
+                             compression="gzip", chunks=(chunk,))
+    return gs.gadget_ref(folder / "snap.0.hdf5", 0)
+
+
+def test_compressed_hdf5_through_take_decompresses_each_shard_once(tmp_path, monkeypatch):
+    """A filter walking the table in chunks, a sample placing x, y and z in
+    slices and a sorted page all read each compressed shard once: before
+    #445 every take decompressed the whole shard again (48 reads for 4)."""
+    from app import point_sample
+    from app.point_table import open_point_table
+    from app.routers import catalogue as cat
+    ref = _compressed_hdf5(tmp_path / "h5", 6000, 2, 512)
+    gs.PIECE_CACHE.clear()
+    monkeypatch.delenv(gs.PIECE_CACHE_ENV, raising=False)
+    reads = []
+    real = gs.Piece.array
+    monkeypatch.setattr(gs.Piece, "array",
+                        lambda self: reads.append((self.path, self.dataset)) or real(self))
+    monkeypatch.setattr(cat, "PARTICLE_CHUNK_ROWS", 1000)
+    monkeypatch.setattr(point_sample, "_POS_CHUNK", 700)
+    component = gs.resolve(ref)
+    expected_x = gs.resolve(ref).column("x")
+    density = gs.resolve(ref).column("rho")
+    reads.clear()
+
+    rows = np.random.default_rng(3).permutation(component.num_rows)[:9000]
+    placed = point_sample.place_rows(open_point_table(ref).columns, ("x", "y", "z"), rows)
+    assert np.allclose(placed.xyz[:, 0] + placed.origin[0], expected_x[placed.rows], atol=1e-6)
+    filt = type("F", (), {"field": "rho", "op": ">", "value": "0.5", "box": None,
+                          "sphere": None})()
+    frame, total, idx = cat._particle_filtered_page(ref, [filt], 50, 0, True, False, 0,
+                                                    ["x", "rho"])
+    assert (frame["rho"] > 0.5).all() and len(frame) == 50
+    srt = type("S", (), {"field": "rho", "direction": "desc"})()
+    frame, _, _ = cat._particle_sorted_page(ref, [], srt, 20, 30, ["rho"])
+    assert np.array_equal(frame["rho"].to_numpy(), np.sort(density)[::-1][30:50])
+    # 2 files x (Coordinates, Density): each decompressed once in all.
+    assert len(reads) == len(set(reads)) == 4
+
+
+def test_hdf5_larger_than_the_cache_is_read_by_bounded_windows(tmp_path, monkeypatch):
+    ref = _compressed_hdf5(tmp_path / "big", 5000, 2, 256)
+    gs.PIECE_CACHE.clear()
+    monkeypatch.setenv(gs.PIECE_CACHE_ENV, "0")
+    monkeypatch.setattr(gs, "WINDOW_BYTES", 1024 * 4)         # 1024 rows of one column
+    windows = []
+    real = gs._read_window
+    monkeypatch.setattr(gs, "_read_window", lambda d, a, b, c: windows.append((a, b))
+                        or real(d, a, b, c))
+    component = gs.resolve(ref)
+    full = gs.resolve(ref).column("rho")
+    x_full = gs.resolve(ref).column("x")
+    windows.clear()
+    # A contiguous slice reads its own rows only, never the whole shard.
+    assert np.array_equal(component.take("rho", np.arange(4800, 5300)), full[4800:5300])
+    assert sum(b - a for a, b in windows) == 500
+    assert all(b - a <= 1024 for a, b in windows)
+    windows.clear()
+    rows = np.random.default_rng(1).integers(0, component.num_rows, 3000)
+    assert np.array_equal(component.take("x", rows), x_full[rows])
+    # Coordinates: 12 bytes a row, 4 KiB windows -> one 256-row HDF5 chunk
+    # each; every window read once per shard, none twice.
+    assert all(b - a <= 256 for a, b in windows)
+    assert len(windows) <= 2 * -(-5000 // 256)
+
+
+def test_take_equals_column_for_every_field_derived_ones_too(tmp_path):
+    for endian in "<>":
+        files, _ = _snapshot(tmp_path / f"e{endian == '<'}", endian=endian)
+        snap = gs.open_snapshot(files[0])
+        for ptype in (0, 1, 4, 5):
+            component = snap.component(ptype)
+            rows = np.random.default_rng(ptype).permutation(component.num_rows)
+            for name in component.names:
+                full = component.column(name)
+                got = component.take(name, rows)
+                assert got.dtype == full.dtype.newbyteorder("="), (ptype, name)
+                assert np.array_equal(got, full[rows], equal_nan=True), (ptype, name)
+        assert {"temperature", "entropy"} <= set(snap.component(0).names)
+
+
+def test_a_segmented_column_indexes_as_numpy_does(tmp_path):
+    files, _ = _snapshot(tmp_path)
+    component = gs.open_snapshot(files[0]).component(0)
+    seg, full = component.columns()["x"], component.column("x")
+    mask = np.zeros(component.num_rows, bool)
+    mask[[5, 10]] = True
+    assert np.array_equal(seg[mask], full[mask])
+    assert seg[-1] == full[-1] and seg[3] == full[3]
+    assert np.array_equal(seg[[-1, 0, -2]], full[[-1, 0, -2]])
+    assert np.array_equal(seg[-3:], full[-3:])
+    assert seg[[]].size == 0
+    for bad in (np.array([1.0, 2.0]), mask[:-1], component.num_rows, -component.num_rows - 1):
+        with pytest.raises(IndexError):
+            seg[bad]
+
+
+def _sorted_pages(ref, direction, page, chunk, monkeypatch, filters=()):
+    from app.routers import catalogue as cat
+    monkeypatch.setattr(cat, "PARTICLE_CHUNK_ROWS", chunk)
+    sort = type("S", (), {"field": "mass", "direction": direction})()
+    seen, total = [], None
+    offset = 0
+    while True:
+        _, total, rows = cat._particle_sorted_page(ref, list(filters), sort, page, offset,
+                                                   ["mass"])
+        if not len(rows):
+            return seen, total
+        seen.extend(int(r) for r in rows)
+        offset += page
+
+
+@pytest.mark.parametrize("direction", ["asc", "desc"])
+def test_sorted_pages_on_ties_are_slices_of_one_sequence(tmp_path, monkeypatch, direction):
+    files, _ = _snapshot(tmp_path)
+    ref = gs.gadget_ref(files[0], 1)                 # dark matter: one mass for all
+    seen, total = _sorted_pages(ref, direction, 500, 700, monkeypatch)
+    assert total == 4000 and len(seen) == 4000
+    assert seen == list(range(4000))                 # ties by row, ascending, both ways
+    # Distinct values and ties together (gas masses rounded), across pages.
+    gas = gs.gadget_ref(files[0], 0)
+    mass = gs.resolve(gas).column("mass")
+    seen, _ = _sorted_pages(gas, direction, 300, 450, monkeypatch)
+    key = np.round(mass, 7)
+    assert len(seen) == len(set(seen)) == len(mass)
+    values = mass[seen]
+    assert list(values) == sorted(values, reverse=direction == "desc")
+
+
+def test_sorted_order_puts_nan_last_and_breaks_ties_by_row():
+    from app.routers.catalogue import _sorted_order
+    values = np.array([1.0, np.nan, 2.0, 1.0, 2.0, np.nan])
+    rows = np.array([10, 11, 12, 13, 14, 15])
+    assert rows[_sorted_order(values, rows, False)].tolist() == [10, 13, 12, 14, 11, 15]
+    assert rows[_sorted_order(values, rows, True)].tolist() == [12, 14, 10, 13, 11, 15]
+    ids = np.array([3, 1, 3, 2], dtype=np.uint64)
+    assert _sorted_order(ids, np.arange(4), True).tolist() == [0, 2, 3, 1]
+
+
+@pytest.mark.asyncio
+async def test_in_and_contains_filters_match_the_loaded_catalogue(client, auth_headers, tmp_path):
+    from app.dependencies import _apply_tabular_query
+    from app.point_table import particle_frame
+    from app.schemas import TabularFilter
+    files, _ = _snapshot(tmp_path)
+    ref = gs.gadget_ref(files[0], 0)
+    opened = (await client.post("/v1/catalogue/open", json={"path": ref, "format": "gadget"},
+                                headers=auth_headers)).json()
+    assert opened["valid"], opened
+    frame = particle_frame(ref)
+    for flt in ({"field": "id", "op": "in", "value": "5, 17,1999"},
+                {"field": "id", "op": "in", "value": "5,abc"},
+                {"field": "id", "op": "contains", "value": "99"}):
+        reply = (await client.post("/v1/catalogue/query", json={
+            "dataset_id": opened["dataset_id"], "filters": [flt], "limit": 0,
+            "fields": ["id"]}, headers=auth_headers)).json()
+        assert reply["valid"], reply
+        expected, total = _apply_tabular_query(frame, [TabularFilter(**flt)], None, 0, 0)
+        assert reply["total_rows"] == total > 0 or flt["value"] == "5,abc"
+        assert [row["id"] for row in reply["rows"]] == expected["id"].tolist()
+    bad = (await client.post("/v1/catalogue/query", json={
+        "dataset_id": opened["dataset_id"], "limit": 10,
+        "filters": [{"field": "id", "op": "~", "value": "1"}]}, headers=auth_headers)).json()
+    assert not bad["valid"] and "Unknown filter operator" in bad["error"]
+
+
+def test_the_copilot_summarises_an_out_of_core_particle_type(tmp_path):
+    from app.assistant.tools import _catalogue_summary
+    from app.dependencies import _catalogue_metadata
+    from app.point_table import particle_catalogue_metadata
+    files, _ = _snapshot(tmp_path)
+    ref = gs.gadget_ref(files[0], 0)
+    entry = {"path": ref, "dataframe": None, **particle_catalogue_metadata(ref)}
+    streamed = _catalogue_summary(ref, {}, entry)
+    frame, meta = _catalogue_metadata(Path(ref), "gadget")
+    loaded = _catalogue_summary(ref, {}, {"path": ref, "dataframe": frame, **meta})
+    assert streamed["num_rows"] == loaded["num_rows"] == 2000
+    assert streamed["particles"] and streamed["snapshot"]["redshift"] == pytest.approx(1.0)
+    assert streamed["units"]["temperature"] == "K"
+    assert [c["name"] for c in streamed["columns"]] == [c["name"] for c in loaded["columns"]]
+    for got, want in zip(streamed["columns"], loaded["columns"]):
+        assert got["finite_count"] == want["finite_count"]
+        for key in ("min", "max", "mean"):
+            assert got[key] == pytest.approx(want[key], rel=1e-9), (got["name"], key)
+    # Without the session entry (a path alone), it still works.
+    assert _catalogue_summary(ref, {"max_columns": 2}, None)["columns_truncated"]
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_file_reaching_outside_the_roots_classifies_as_not_found(
+        client, auth_headers, tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    files, _ = _snapshot(root)
+    outside = tmp_path / "outside_secret"
+    outside.mkdir()
+    moved = outside / files[2].name
+    files[2].rename(moved)
+    files[2].symlink_to(moved)
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root))
+    reply = (await client.post("/v1/files/classify", json={"path": str(files[0])},
+                               headers=auth_headers)).json()
+    assert reply == {**reply, "valid": False, "error": "File not found."}
+    assert "outside_secret" not in str(reply)
+    # Its folder is listed as a plain folder, naming nothing beyond the roots.
+    reply = (await client.post("/v1/files/classify", json={"path": str(files[0].parent)},
+                               headers=auth_headers)).json()
+    assert reply["valid"] and reply["kind"] == "directory"
+    assert "outside_secret" not in str(reply)

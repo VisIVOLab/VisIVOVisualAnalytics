@@ -84,6 +84,15 @@ comes from the positions (float or double) and from the block: IDs and the
 other integer blocks (`INT_BLOCKS`) are unsigned 4- or 8-byte integers. A
 block with several values per particle becomes several columns.
 
+**INFO.** A format-2 `INFO` block declares, per block, its value type, its
+values per particle and its types; it is used instead of the inference above.
+`FLOAT`/`FLOATN` name the run's `MyFloat`, which may be single while the
+positions are `DOUBLEN` (P-Gadget3, OpenGadget3 zoom-ins), so its 4 or 8
+bytes come from the block's length, the same in every file. A declared type
+the length contradicts, a value type the reader does not know, a width beyond
+`MAX_DIMS` or no particle types leave that block out with the reason in
+`skipped_reasons`; the rest of the snapshot opens.
+
 **Large blocks.** Record markers are read as unsigned 32-bit integers, so a
 block of 2 to 4 GiB reads as written. Past 4 GiB the marker wraps. The true
 length is then the marker plus a whole number of 4 GiB whose closing marker
@@ -109,6 +118,23 @@ particle type, and that does copy. The VR page's samples reuse this DataFrame
 instead of joining the columns again. An HDF5 dataset that is contiguous and
 unfiltered is memory-mapped at its file offset (`dataset.id.get_offset()`);
 a chunked or compressed one is read.
+
+**Selected rows of a compressed dataset.** Filters, sorted pages, samples and
+the copilot read rows through `Component.take`, a slice of rows at a time.
+A chunked or compressed HDF5 piece (TNG, EAGLE, Gadget-4) up to
+`VISIVO_GADGET_CACHE_MB` (default 512) is decompressed once into a cache
+shared by every component, least recently used out first, keyed by the file's
+size and modification time. A larger piece is read in windows of whole HDF5
+chunks (at most 64 MB each), each from its first to its last row asked for, so
+a contiguous slice reads only its own chunks. Placing 4 M of 8 M rows from
+four gzip shards went from 48 shard decompressions (4.2 s) to 4 (0.9 s).
+
+**Out-of-core queries.** Without a DataFrame, `/v1/catalogue/query` filters
+the component a million rows at a time with the same operators as a loaded
+catalogue (`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `contains`, boxes and
+spheres). A sorted page keeps the first `offset + limit` rows (at most
+1,000,000) ordered by value, NaN last, ties by row number ascending in both
+directions, so consecutive pages are slices of one sequence.
 
 Measured on this Mac with synthetic data: 16 M dark-matter and 4 M gas
 particles (626 MiB). Scanning headers and markers takes 0.5 ms for one file
