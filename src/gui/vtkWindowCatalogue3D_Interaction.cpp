@@ -934,8 +934,13 @@ void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &
                                            .toString();
         const QString name = Catalogue3DParser::detail::entryDisplayName(
                 this->entries[static_cast<std::size_t>(idx)], this->schema);
-        this->showSelectionStatus(
-                visivo::framing::framingStatus(name, radiusField, definition, radius));
+        const visivo::framing::FramingOutputs outputs{
+            [this](const QString &text) { this->showSelectionStatus(text); },
+            [this](const QString &text, int timeoutMs) {
+                this->statusBar()->showMessage(text, timeoutMs);
+            }
+        };
+        visivo::framing::reportFraming(outputs, name, radiusField, definition, radius);
     };
     const bool raytraced = this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView;
