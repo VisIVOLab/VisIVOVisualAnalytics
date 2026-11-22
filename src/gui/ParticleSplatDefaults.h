@@ -33,6 +33,29 @@ inline int automaticSliderValue(bool toSplats, int value)
     return value;
 }
 
+/// The splats' size for the size slider's @p value: the former VBT viewer's
+/// size step, 3 at the slider's default (100 %), and continuous so the whole
+/// slider reaches below and above it. The local view, the backend's point
+/// session and the comparison peers all size splats from it.
+inline double splatSizeForSlider(int value)
+{
+    return std::clamp(3.0 * value / 100.0, 0.25, 12.0);
+}
+
+/// A local splat's radius for the mean particle @p spacing and the size
+/// slider's @p value: spacing × size / 8, as the backend's point session
+/// (app/render_session/points.py, gaussian_splat) sizes its own.
+inline double splatRadiusForSlider(double spacing, int value)
+{
+    return spacing * splatSizeForSlider(value) / 8.0;
+}
+
+/// The points' size in pixels for the size slider's @p value.
+inline int pointSizeForSlider(int value)
+{
+    return static_cast<int>(std::lround(std::clamp(4.0 * (value / 100.0), 3.0, 12.0)));
+}
+
 /// The per-splat opacity counts in steps of an 8-bit channel (issue #447).
 /// VTK keeps a splat's opacity as the 8-bit alpha of its colour and adds the
 /// splats into an 8-bit framebuffer: an opacity of 1/255 was stored 22 % low,

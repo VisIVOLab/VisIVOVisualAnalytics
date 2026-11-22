@@ -641,7 +641,6 @@ private:
     void updateGaussianSplats();
     /// Point size of the Point shape, and the splats' size step (1..12).
     int pointSizeFromScale() const;
-    double splatSizeFromScale() const;   ///< the splats' size step (former VBT viewer's)
     /// Bounds and count of the points with no filter: the splats are sized on
     /// them, so that a filter removes points without restyling the others.
     double m_splatBounds[6]{ 0, 0, 0, 0, 0, 0 };

@@ -84,6 +84,8 @@ tests/
   test_vr_spectator.cpp            # 14 — the headset's view on the desktop
   test_workspace_exports_view.cpp  #  6 — the Workspace Exports list: unchanged listings, the row cap
   test_quit_exit_main.cpp          # separate executable VisIVOQuitExitTest (see below)
+  test_size_slider_drag.cpp        # separate executable VisIVOSizeSliderDragTest (see below)
+  widget_stubs/                    # stand-ins for VTK widgets named in the real forms
 ```
 
 Total: **1277 tests** in 80 classes in the `VisIVOTests` binary at 1.2.0, as
@@ -100,6 +102,18 @@ the event loops of every later class in `VisIVOTests`. It checks that a backend
 task created, or followed, on the application thread while the application
 quits is still cancelled on the backend: exactly one `DELETE` must reach a
 loopback stand-in backend (exit code 77, skipped, when there is no loopback).
+
+`VisIVOSizeSliderDrag` runs `VisIVOSizeSliderDragTest`, the one executable that
+links Qt::Widgets. It builds a window's real form with uic
+(`ui/vtkWindowCatalogue3D.ui`, its `QVTKOpenGLNativeWidget` replaced by the
+plain widget in `tests/widget_stubs/`) and drags the Splat size slider's handle
+with QTest's mouse (issue #456): every step of the drag must emit
+`valueChanged`, the signal the window's `scaleChanged` follows, and each step
+must give a new size to the local splats and to the Remote view's
+`set_point_style` command (through the functions the window calls). The window
+itself needs VTK and is not built there. It needs only the base
+Qt and runs offscreen (`QT_QPA_PLATFORM=offscreen` is set by CTest). It is
+built only when Qt6::Widgets is found.
 
 What belongs here: pure logic lifted out of the GUI classes so it can be
 checked without a display — parsers, geometry, unit conversions, and decision

@@ -4,6 +4,7 @@
 #include "TestRemoteCameraPreset.h"
 
 #include "RemoteCameraPreset.h"
+#include "RemotePointStyle.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -65,4 +66,31 @@ void TestRemoteCameraPreset::aLostSessionsCameraGoesToItsReplacement()
     QVERIFY(!bareCmd.isEmpty());
     QVERIFY(!bareCmd.contains(QStringLiteral("view_angle")));
     QVERIFY(!bareCmd.contains(QStringLiteral("parallel")));
+}
+
+void TestRemoteCameraPreset::thePointStyleFollowsTheSizeSlider()
+{
+    using visivo::remote::pointStyleCommand;
+    // The splat default (25 on the slider) is 0.75 of the mean spacing, the
+    // slider's own default 3, and every slider step in between is a size of
+    // its own: a drag must not reach the backend as the same command.
+    const QVariantMap splats = pointStyleCommand(true, 25, 2.0);
+    QCOMPARE(splats.value(QStringLiteral("type")).toString(), QStringLiteral("set_point_style"));
+    QCOMPARE(splats.value(QStringLiteral("mode")).toString(), QStringLiteral("gaussian"));
+    QCOMPARE(splats.value(QStringLiteral("size")).toDouble(), 0.75);
+    QCOMPARE(splats.value(QStringLiteral("intensity")).toInt(), 35);
+    QCOMPARE(pointStyleCommand(true, 100, 2.0).value(QStringLiteral("size")).toDouble(), 3.0);
+    for (int value = 9; value < 400; ++value)
+        QVERIFY(pointStyleCommand(true, value, 1.0) != pointStyleCommand(true, value + 1, 1.0));
+    // Splats are sized in the data, not on screen: the pixel ratio is not
+    // applied to them.
+    QCOMPARE(pointStyleCommand(true, 60, 1.0), pointStyleCommand(true, 60, 2.0));
+    // The local splat is sized from the same step.
+    QCOMPARE(ParticleSplatDefaults::splatRadiusForSlider(8.0, 100), 3.0);
+
+    // Points go in the backend's physical pixels.
+    const QVariantMap points = pointStyleCommand(false, 200, 2.0);
+    QCOMPARE(points.value(QStringLiteral("mode")).toString(), QStringLiteral("points"));
+    QCOMPARE(points.value(QStringLiteral("size")).toInt(), 16);
+    QCOMPARE(pointStyleCommand(false, 200, 1.0).value(QStringLiteral("size")).toInt(), 8);
 }
