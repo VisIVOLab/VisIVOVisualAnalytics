@@ -104,10 +104,14 @@ For a large particle table, the initial Gaussian-splat size is derived from
 the mean particle spacing and starts at 0.75 times that spacing. Opacity is
 reduced for deeper point clouds so the initial view retains structure instead
 of immediately saturating, down to a floor that keeps the faint end of the
-colour map visible. Very large tables (more than about 100,000 particles in a
-cube) therefore start brighter: about twice the nominal brightness at a
-million particles, three times at 3.7 million and four and a half times at 10
-million. Lower **Splat size** if dense regions saturate. **Splat size** remains available for deliberately emphasizing compact
+colour map visible. In the local 3-D view, very large tables (more than about
+100,000 particles in a cube) therefore start brighter: about twice the nominal
+brightness at a million particles, three times at 3.7 million and four and a
+half times at 10 million, so the local view's splat brightness is not
+comparable between tables of different size; use projected maps for that.
+The server-rendered (*Remote*) view, and a headset that has a float target at
+the default splat size, have no floor: there the same field looks the same from 100,000 or 30 million
+particles at one intensity. Lower **Splat size** if dense regions saturate. **Splat size** remains available for deliberately emphasizing compact
 or diffuse features. Switching the shape to *Point* gives the slider its
 default value back, as long as you have not moved it.
 
