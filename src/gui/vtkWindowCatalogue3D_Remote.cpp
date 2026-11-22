@@ -221,6 +221,17 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
                          [this](const QString &status) {
                              this->statusBar()->showMessage(status);
                          });
+        // The stream dropped (issue #411): the status bar says which attempt
+        // until it is live again, or failed() falls back to the loaded rows.
+        QObject::connect(this->m_remoteView, &RemotePointView::reconnecting, this,
+                         [this](const QString &status) {
+                             this->statusBar()->showMessage(status);
+                         });
+        QObject::connect(this->m_remoteView, &RemotePointView::liveChanged, this,
+                         [this](bool live) {
+                             if (live)
+                                 this->statusBar()->clearMessage();
+                         });
         QObject::connect(this->m_remoteView, &RemotePointView::started, this, [this]() {
             this->statusBar()->clearMessage();
             if (this->m_renderStack)

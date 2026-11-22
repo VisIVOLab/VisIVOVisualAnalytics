@@ -138,6 +138,12 @@ Rendering*:
 The *Camera* presets (Front, Back, Left, Right, Top, Bottom) turn the Remote
 view too.
 
+If the Remote view loses its stream (the computer slept, the network or the
+SSH tunnel dropped, the backend closed the view), it reconnects by itself: the
+banner shows the attempt and the wait before the next one, and the view comes
+back with its colours, threshold, plane, regions and camera. After about two
+minutes without success it stops and offers *Reconnect*; ✕ goes back to Local.
+
 Remote rendering pays off when the backend is on another machine, since only
 frames travel. Details: [Server-side rendering](../../technical/backend-api/render.md).
 

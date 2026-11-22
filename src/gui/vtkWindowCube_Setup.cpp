@@ -906,9 +906,10 @@ void vtkWindowCube::setupWorkspaceDocks()
     bannerLayout->addWidget(this->m_remoteRenderBannerLabel, 1);
     // Shown only after a stream dropped for good (offerRemoteRetry).
     this->m_remoteRenderBannerRetry = new QToolButton(banner);
-    this->m_remoteRenderBannerRetry->setText(u"Retry"_s);
+    this->m_remoteRenderBannerRetry->setText(u"Reconnect"_s);
     this->m_remoteRenderBannerRetry->setToolTip(
-            u"Ask the backend for a new remote view of this cube"_s);
+            u"Connect to the backend's view of this cube again, or ask for a new one "
+            u"if it is gone"_s);
     this->m_remoteRenderBannerRetry->hide();
     bannerLayout->addWidget(this->m_remoteRenderBannerRetry);
     this->m_remoteRenderBannerClose = new QToolButton(banner);
@@ -1145,8 +1146,7 @@ void vtkWindowCube::setupRenderModeUi()
 
     if (this->m_remoteRenderBannerRetry) {
         QObject::connect(this->m_remoteRenderBannerRetry, &QToolButton::clicked, this, [this]() {
-            this->m_remoteRecovery.userRetried();
-            this->replaceRemoteRenderSession();
+            this->runRemoteReconnectStep(this->m_remoteReconnect.userReconnect());
         });
     }
 
@@ -1166,6 +1166,9 @@ void vtkWindowCube::setupRenderModeUi()
         QObject::connect(this->m_remoteRenderWidget,
                          &RemoteRenderWidget::connectionStateChanged,
                          this, &vtkWindowCube::onRemoteRenderConnectionStateChanged);
+        // The session's camera, kept for a session that replaces a lost one.
+        QObject::connect(this->m_remoteRenderWidget, &RemoteRenderWidget::viewTurnedByUser,
+                         this, &vtkWindowCube::scheduleRemoteCameraSnapshot);
     }
 
     this->refreshRemoteRecommendBanner();
@@ -1932,6 +1935,8 @@ void vtkWindowCube::sendCameraPresetToRemote(double azimuth, double elevation)
     // window's does not drive (issue #390): the preset is named, and the
     // backend turns its own camera to it. Dropped when the view is local.
     this->sendRemoteRenderStateCommand(visivo::remote::cameraPresetCommand(azimuth, elevation));
+    if (this->m_effectiveRenderMode == RenderMode::Remote)
+        this->scheduleRemoteCameraSnapshot();
 }
 
 void vtkWindowCube::resetCameraFront()
