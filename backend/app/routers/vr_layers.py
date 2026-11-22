@@ -188,9 +188,22 @@ async def points_series(request: PointInfoRequest, _: None = _auth,
         except (PermissionError, OSError, ValueError):
             return False
         return True
-    series = await asyncio.to_thread(snapshot_series, str(path), allowed)
-    if suffix:
-        series["paths"] = [p + suffix for p in series["paths"]]
+    def listed() -> dict:
+        series = snapshot_series(str(path), allowed)
+        if suffix:
+            # Each output is checked for this particle type (issue #446): an
+            # early one may have no stars yet, a broken one does not open.
+            # The client steps over the members marked False.
+            from ..gadget_snapshot import has_type, split_ref   # noqa: PLC0415
+            ptype = split_ref(suffix)[1]
+            # The open one is open: it is not read again.
+            series["available"] = [k == series["index"] or has_type(p, ptype)
+                                   for k, p in enumerate(series["paths"])]
+            series["paths"] = [p + suffix for p in series["paths"]]
+        else:
+            series["available"] = [True] * len(series["paths"])
+        return series
+    series = await asyncio.to_thread(listed)
     return {"valid": True, **series}
 
 

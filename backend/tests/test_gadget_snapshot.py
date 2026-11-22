@@ -446,6 +446,55 @@ def test_series_over_snapdirs(tmp_path):
     assert snapshot_series(str(tmp_path / "flat" / "snap_000"))["count"] == 2
 
 
+def test_has_type_reads_the_header_only(tmp_path):
+    files, _ = _snapshot(tmp_path)
+    assert gs.has_type(files[0], 4) and gs.has_type(files[0].parent, 1)
+    early, _ = _snapshot(tmp_path, folder="snapdir_000", name="snap_000",
+                         parts=_parts(n_star=0, n_bh=0))
+    assert not gs.has_type(early[0], 4) and gs.has_type(early[0], 0)
+    # A file of it missing: it does not open, so it has nothing.
+    files[1].unlink()
+    assert not gs.has_type(files[0], 0)
+    assert not gs.has_type(tmp_path / "nothing", 0)
+
+
+def test_has_type_with_totals_left_at_zero(tmp_path):
+    """Some writers leave the header's totals at zero: the files' own
+    counts decide (issue #446)."""
+    files, _ = _snapshot(tmp_path, fmt=1, num_files=1, folder="z", name="snap_000",
+                         parts=_parts(n_star=0, n_bh=0))
+    raw = bytearray(files[0].read_bytes())
+    raw[4 + 96:4 + 120] = bytes(24)     # NumPart_Total, low words
+    raw[4 + 168:4 + 192] = bytes(24)    # and the high words
+    files[0].write_bytes(bytes(raw))
+    assert not any(gs.read_header(files[0]).npart_total)
+    assert gs.has_type(files[0], 0) and gs.has_type(files[0], 1)
+    assert not gs.has_type(files[0], 4)
+
+
+@pytest.mark.asyncio
+async def test_series_marks_the_outputs_without_the_particle_type(client, auth_headers,
+                                                                  tmp_path):
+    """Issue #446: stepping a snapshot's stars, an early output without stars
+    and one that does not open are marked unavailable, so the timeline steps
+    over them instead of failing on each."""
+    run = tmp_path / "run"
+    for k in (0, 1, 2, 3):
+        n_star = 0 if k == 0 else 500
+        G.write_gadget(run / f"snapdir_{k:03d}" / f"snap_{k:03d}", _parts(seed=k, n_star=n_star),
+                       num_files=2, mass_table=MASS_TABLE)
+    (run / "snapdir_002" / "snap_002.1").unlink()      # broken output
+    ref = f"{run / 'snapdir_001' / 'snap_001.0'}{gs.REF_SEP}4"
+    cat = (await client.post("/v1/catalogue/open", json={"path": ref, "format": "csv"},
+                             headers=auth_headers)).json()
+    assert cat["valid"], cat
+    s = (await client.post("/v1/points/series", json={"dataset_id": cat["dataset_id"]},
+                           headers=auth_headers)).json()
+    assert s["valid"] and s["count"] == 4 and s["index"] == 1
+    assert s["available"] == [False, True, False, True]
+    assert all(p.endswith(gs.REF_SEP + "4") for p in s["paths"])
+
+
 # ── The same routes as a VBT point table ──────────────────────────────────────
 
 def _vbt_of(component, path: Path) -> str:

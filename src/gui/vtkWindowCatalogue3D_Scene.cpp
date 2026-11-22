@@ -1,5 +1,6 @@
 #include "vtkWindowCatalogue3D.h"
 #include "ParticleSplatDefaults.h"
+#include "SnapshotTimelineSteps.h"
 #include "app/DatasetUsers.h"
 #include "app/TaskQuitDrain.h"
 #include "ui_vtkWindowCatalogue3D.h"
@@ -75,6 +76,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableView>
@@ -178,6 +180,21 @@ void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
         event->ignore();   // closing now would delete the window mid-buildScene()
         return;
     }
+    this->releaseDataset();
+    // Out of the comparison now, not when deleted: the views left must not
+    // count this one (the last one leaves the group).
+    this->teardownComparisonLink();
+    QMainWindow::closeEvent(event);
+}
+
+void vtkWindowCatalogue3D::releaseDataset()
+{
+    if (this->remoteDatasetId.isEmpty())
+        return;
+    // Comparison views waiting for the columns this window's query (or the
+    // one it waits on) is bringing could wait for ever: they ask themselves.
+    if (this->m_hydratingAttributes || this->m_awaitingHydration)
+        this->shareHydratedRows(HydrationShare::LoadOwn);
     // The last window on the dataset closes it on the backend: its table (a
     // VBT's memory map) is not kept for a window that is gone. Fire and
     // forget, and never once the application quits (TaskQuitDrain.h).
@@ -194,7 +211,6 @@ void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
         });
     }
     this->remoteDatasetId.clear();
-    QMainWindow::closeEvent(event);
 }
 
 void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
@@ -211,7 +227,7 @@ void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
-void vtkWindowCatalogue3D::buildScene()
+void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
 {
     // For very large catalogues, build with the glyph/points actors hidden and
     // pump the event loop in the O(N) loops, so the multi-second construction
@@ -451,8 +467,21 @@ void vtkWindowCatalogue3D::buildScene()
     this->updateColorMapping();
     this->updateGlyphPipeline();   // re-shows the glyph/points actor + renders
 
-    renderer->ResetCamera();
-    renderWindow->Render();
+    // Framed once; then kept while the same rows gain their other columns and
+    // in a linked comparison, where one view's reframe moved every view and
+    // undid the camera a timeline step had given back (issue #446).
+    if (SnapshotTimelineSteps::rebuildKeepsCamera(this->m_sceneFramed, why,
+                                                  this->linkedWithPeers())) {
+        renderer->ResetCameraClippingRange();
+        renderWindow->Render();
+    } else {
+        // The view's own reframe, not a user's move: never sent to peers.
+        const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
+        renderer->ResetCamera();
+        this->m_comparisonCameraTracker.refit(this->comparisonCameraPose());
+        renderWindow->Render();
+    }
+    this->m_sceneFramed = true;
 
     if (this->m_sceneBuilding) {
         this->m_sceneBuilding = false;
