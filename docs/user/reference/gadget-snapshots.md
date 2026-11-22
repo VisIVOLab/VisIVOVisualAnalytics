@@ -168,6 +168,11 @@ the interactive rendering sample. Select an optional weight quantity for a
 weighted histogram and weighted mean, and choose the number of bins before
 running the calculation.
 
+In a cosmological snapshot the box is periodic: a box or sphere selection
+near one face also takes the particles just across the opposite face, as the
+simulation sees them. This applies to the position columns and to the
+diagnostics, the table and the remote view alike.
+
 The result records the quantity and weight units (when the snapshot declares
 them), the complete selection expression, the number of selected and finite
 rows, and the binning. Use **Save CSV…** to preserve the numerical result and

@@ -438,6 +438,9 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "MBID": ((1,), 1, ("most_bound_id",)),
     "GRNR": ((1,), 1, ("group_number",)),
 }
+#: Columns that are positions in the box: periodic in a cosmological run.
+PERIODIC_COLUMNS = frozenset({"x", "y", "z", "centre_of_mass_x", "centre_of_mass_y",
+                              "centre_of_mass_z"})
 #: Blocks of integers (read as unsigned of 4 or 8 bytes).
 INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB",
               "NCON", "MBID", "GRNR"}
@@ -634,6 +637,10 @@ class UnitSystem:
     #: Lengths and masses in units of 1/h.
     hubble_units: bool = True
     source: str = "Gadget defaults"
+    #: The box is periodic: a Gadget-4 HDF5 file's ``Config/PERIODIC``, or
+    #: ``periodic=`` in VISIVO_GADGET_UNITS; None when nothing states it
+    #: (then a comoving run is taken as periodic, see Component.periods).
+    periodic: bool | None = None
 
     def describe(self) -> dict:
         return {"length_cm": self.length_cm, "mass_g": self.mass_g,
@@ -759,7 +766,7 @@ def _from_env(text: str, units: UnitSystem) -> UnitSystem:
         key, value = key.strip(), value.strip()
         if key in ("length_cm", "mass_g", "velocity_cm_s"):
             kw[key] = float(value)
-        elif key in ("comoving", "hubble_units"):
+        elif key in ("comoving", "hubble_units", "periodic"):
             kw[key] = value.lower() not in ("0", "false", "no", "")
         elif key:
             raise ValueError(f"{UNITS_ENV}: unknown key {key!r}")
@@ -1290,6 +1297,10 @@ def _hdf5_units(path: str) -> dict:
                         out[attr] = float(a[key])
                 if "ComovingIntegrationOn" in a and "comoving" not in out:
                     out["comoving"] = bool(int(a["ComovingIntegrationOn"]))
+            # Gadget-4 lists its compile-time options as attributes of
+            # Config: PERIODIC among them or not says whether the box is.
+            if "Config" in f:
+                out["periodic"] = "PERIODIC" in f["Config"].attrs
     except Exception:   # noqa: BLE001 - units are optional
         return {}
     return out
@@ -1455,6 +1466,23 @@ class Component:
     def columns(self) -> "LazyColumns":
         return LazyColumns(self)
 
+    def periods(self) -> dict[str, float]:
+        """The period of each coordinate column: the BoxSize (positive) of a
+        periodic run, {} for any other. Periodic is what the run states (a
+        Gadget-4 HDF5 ``Config/PERIODIC``, ``periodic=`` in
+        VISIVO_GADGET_UNITS); when nothing states it, a comoving run is taken
+        as periodic and any other as not. That guess is wrong for a
+        non-periodic cosmological zoom and for an isolated run integrated in
+        comoving coordinates: state ``periodic=0`` for those (or send
+        ``period: 0`` with a selection). Box and sphere selections wrap on
+        these columns (app/periodic.py)."""
+        units = self.snapshot.units
+        periodic = units.periodic if units.periodic is not None else bool(units.comoving)
+        box = float(self.snapshot.header.box_size)
+        if not (periodic and math.isfinite(box) and box > 0):
+            return {}
+        return {name: box for name in self.names if name in PERIODIC_COLUMNS}
+
     # ── physics ──
     def _u_cgs(self) -> np.ndarray:
         """Specific internal energy in erg/g."""
@@ -1530,7 +1558,7 @@ class Component:
                  "num_subhalos": "count", "first_subhalo": "subhalo index",
                  "num_contaminated": "particle count", "subhalo_length": "particle count",
                  "subhalo_offset": "particle index", "subhalo_parent": "subhalo index",
-                 "group_number": "group index", "metallicity": "dimensionless"}
+                 "group_number": "group index"}
         return {n: table.get(n, "code units (physical conversion not declared)")
                 for n in self.names}
 
@@ -1590,6 +1618,9 @@ class LazyColumns(Mapping):
     def __init__(self, component: Component):
         self._component = component
         self._kept = {}
+        # Read by the point sessions' box and sphere filters; a name no
+        # column takes (a mapping's keys are its columns).
+        self.column_periods = component.periods()
 
     def __getitem__(self, name: str):
         if name not in self._kept:
@@ -1690,14 +1721,25 @@ def resolve(path: str | Path) -> Component:
     return open_snapshot(base).component(ptype)
 
 
+def _offered(snapshot: Snapshot, ptype: int) -> bool:
+    """Whether type ``ptype`` opens as points: it has particles, and in a
+    SubFind catalogue positions too (its ID list and large-group table have
+    none, issue #448)."""
+    if not snapshot.counts()[ptype]:
+        return False
+    return not snapshot.is_subfind or {"x", "y", "z"} <= set(snapshot.component(ptype).names)
+
+
 def default_type(snapshot: Snapshot) -> int | None:
-    """The type a snapshot opens on: the first with particles (gas first)."""
-    return next((t for t, n in enumerate(snapshot.counts()) if n), None)
+    """The type a snapshot opens on: the first offered (gas first)."""
+    return next((t for t in range(NTYPES) if _offered(snapshot, t)), None)
 
 
 def gadget_components(path: str | Path) -> list[dict]:
-    """Every particle type with particles: ``{name, path, num_rows}``."""
+    """Every particle type with particles: ``{name, path, num_rows}``. Of a
+    SubFind catalogue, only the types with positions (groups, subhalos):
+    its ID list and large-group table are no points to draw (issue #448)."""
     snap = open_snapshot(split_ref(path)[0])
     names = SUBFIND_TYPE_NAMES if snap.is_subfind else TYPE_NAMES
     return [{"name": names[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
-            for t, n in enumerate(snap.counts()) if n]
+            for t, n in enumerate(snap.counts()) if _offered(snap, t)]
