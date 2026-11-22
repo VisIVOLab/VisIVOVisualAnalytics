@@ -835,3 +835,32 @@ def test_splats_are_coloured_by_their_codes(tmp_path, can_render):
     finally:
         run(s.close())
         loop.close()
+
+
+@pytest.mark.parametrize("azimuth, elevation, direction", [
+    (0.0, 0.0, (0, 0, 1)), (90.0, 0.0, (1, 0, 0)), (0.0, 90.0, (0, 1, 0))])
+def test_a_camera_preset_turns_the_point_session_camera(tmp_path, azimuth, elevation,
+                                                        direction):
+    """The desktop's Camera menu on a Remote catalogue or snapshot view (#448):
+    the point session turns its own camera, as a volume session does. Checked
+    on a renderer without a window, so no GPU is needed."""
+    import vtk
+    s = PointRenderSession("p" * 32, _table(tmp_path))
+    s._renderer = vtk.vtkRenderer()
+    cube = vtk.vtkCubeSource()
+    cube.SetBounds(-10, 10, -2, 2, -2, 2)
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(cube.GetOutputPort())
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    s._renderer.AddActor(actor)
+    s._renderer.ResetCamera()
+    s._renderer.GetActiveCamera().Azimuth(33)
+    s._apply_command_on_thread({"type": "camera_preset", "azimuth": azimuth,
+                                "elevation": elevation})
+    cam = s._renderer.GetActiveCamera()
+    sight = np.subtract(cam.GetPosition(), cam.GetFocalPoint())
+    assert np.allclose(sight / np.linalg.norm(sight), direction, atol=1e-9)
+    before = cam.GetPosition()
+    s._apply_command_on_thread({"type": "camera_preset", "azimuth": "nan"})
+    assert cam.GetPosition() == before          # refused, camera unchanged

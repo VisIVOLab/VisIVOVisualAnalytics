@@ -1303,6 +1303,20 @@ BackendPointSeriesResult BackendClient::parsePointSeries(const QJsonObject &obje
         result.paths.append(path);
         result.numbers.append(numbers.at(i).toInt());
     }
+    const QJsonValue available = object.value(QStringLiteral("available"));
+    if (available.isArray()) {
+        const QJsonArray flags = available.toArray();
+        if (flags.size() != paths.size()) {
+            result.valid = false;
+            result.error = QStringLiteral("The backend returned an invalid snapshot series.");
+            result.paths.clear();
+            result.numbers.clear();
+            return result;
+        }
+        result.available.reserve(flags.size());
+        for (const QJsonValue &flag : flags)
+            result.available.append(flag.toBool(true));
+    }
     result.index = object.value(QStringLiteral("index")).toInt(-1);
     result.count = object.value(QStringLiteral("count")).toInt(result.paths.size());
     if (result.index < 0 || result.index >= result.paths.size()

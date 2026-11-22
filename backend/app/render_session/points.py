@@ -68,9 +68,11 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+from ..periodic import box_inside, selection_period, separation
 from ..point_splat import SPLAT_RULES
 from ..point_sample import _Q, _STAT_CHUNK, _colour_stats, place_rows, quantise64
-from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
+from ._common import (SessionStats, _build_color_tf, _parse_tf_points, camera_preset,
+                      set_camera)
 from ._stereo_points import PointStereoMixin, _vtk_matrix
 from ._window import (RenderThreadError, new_offscreen_window, offscreen_kind,
                       render_executor)
@@ -227,25 +229,29 @@ def _widened(lo: float) -> float:
 
 def _box_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
     """A box filter (issue #259, the headset's box selection):
-    ``{"box": {"fields": [x, y, z], "min": [...], "max": [...]}, "op":
-    "inside" | "outside"}``: the rows inside the box (bounds included), or
-    those outside it."""
+    ``{"box": {"fields": [x, y, z], "min": [...], "max": [...], "period":
+    optional}, "op": "inside" | "outside"}``: the rows inside the box (bounds
+    included), or those outside it. On a periodic coordinate (the snapshot's
+    box, ``columns.column_periods``, or the ``period`` given) the box wraps round
+    the volume (app/periodic.py)."""
     box = f.get("box") or {}
     fields, lo, hi = box.get("fields") or [], box.get("min") or [], box.get("max") or []
     op = str(f.get("op", "inside"))
     if not (len(fields) == len(lo) == len(hi)) or not fields or op not in ("inside", "outside"):
         raise ValueError("A box filter is {box: {fields, min, max}, op: inside | outside}.")
+    periods = getattr(columns, "column_periods", None)
     inside = np.ones(len(rows), dtype=bool)
     for name, a, b in zip(fields, lo, hi):
         if name not in columns:
             raise ValueError(f"Unknown field: {name!r}")
-        col = np.asarray(columns[name][rows])
-        inside &= (col >= float(a)) & (col <= float(b))
+        inside &= box_inside(columns[name][rows], float(a), float(b),
+                             selection_period(box.get("period"), name, periods))
     return inside if op == "inside" else ~inside
 
 
 def _sphere_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
-    """A spherical selection in the units of its three coordinate fields."""
+    """A spherical selection in the units of its three coordinate fields,
+    by the nearest image on a periodic coordinate (see _box_mask)."""
     sphere = f.get("sphere") or {}
     fields = sphere.get("fields") or []
     center = sphere.get("center") or []
@@ -256,11 +262,13 @@ def _sphere_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
         raise ValueError(
             "A sphere filter is {sphere: {fields: [x,y,z], center: [x,y,z], "
             "radius: positive}, op: inside | outside}.")
+    periods = getattr(columns, "column_periods", None)
     distance2 = np.zeros(len(rows), dtype=np.float64)
     for name, origin in zip(fields, center):
         if name not in columns:
             raise ValueError(f"Unknown field: {name!r}")
-        delta = np.asarray(columns[name][rows], dtype=np.float64) - float(origin)
+        delta = separation(columns[name][rows], float(origin),
+                           selection_period(sphere.get("period"), name, periods))
         distance2 += delta * delta
     inside = distance2 <= radius * radius
     return inside if op == "inside" else ~inside
@@ -780,6 +788,14 @@ class PointRenderSession(PointStereoMixin):
             # meanwhile, hands it back.
             set_camera(cam, command)
             self._renderer.ResetCameraClippingRange()
+        elif ctype == "camera_preset" and self._renderer is not None:
+            # The desktop's Camera menu (issues #390, #448): as for a volume
+            # session, the view is named, the scene fitted along it.
+            try:
+                camera_preset(self._renderer, command)
+            except ValueError as exc:
+                logger.warning("[point-render %s] camera_preset refused: %s",
+                               self.session_id[:8], exc)
         elif ctype == "set_interactive":
             self.view.interactive = bool(command.get("value", False))
             self._apply_style_on_thread()

@@ -122,6 +122,8 @@ async def close_dataset(
     if entry is not None:
         logger.info("[close] session=%s dataset_id=%s kind=%s",
                     session.session_id[:8] + "…", dataset_id, entry.get("kind", ""))
+        # A snapshot's decompressed HDF5 pieces go with its last dataset.
+        await asyncio.to_thread(session.release_particle_cache, entry)
     return {"valid": True, "error": "", "closed": entry is not None}
 
 
