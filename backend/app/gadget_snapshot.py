@@ -57,6 +57,7 @@ the entropy K = kT / n_e^(2/3) in keV cm^2.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import struct
@@ -435,6 +436,9 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "MBID": ((1,), 1, ("most_bound_id",)),
     "GRNR": ((1,), 1, ("group_number",)),
 }
+#: Columns that are positions in the box: periodic in a cosmological run.
+PERIODIC_COLUMNS = frozenset({"x", "y", "z", "centre_of_mass_x", "centre_of_mass_y",
+                              "centre_of_mass_z"})
 #: Blocks of integers (read as unsigned of 4 or 8 bytes).
 INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB",
               "NCON", "MBID", "GRNR"}
@@ -1231,6 +1235,16 @@ class Component:
     def columns(self) -> "LazyColumns":
         return LazyColumns(self)
 
+    def periods(self) -> dict[str, float]:
+        """The period of each coordinate column: the box size for a
+        cosmological (comoving) run with a positive BoxSize, which is periodic;
+        {} for any other run (an isolated galaxy's box is no period). Box
+        and sphere selections wrap on these columns (app/periodic.py)."""
+        box = float(self.snapshot.header.box_size)
+        if not (self.snapshot.units.comoving and math.isfinite(box) and box > 0):
+            return {}
+        return {name: box for name in self.names if name in PERIODIC_COLUMNS}
+
     # ── physics ──
     def _u_cgs(self) -> np.ndarray:
         """Specific internal energy in erg/g."""
@@ -1306,7 +1320,7 @@ class Component:
                  "num_subhalos": "count", "first_subhalo": "subhalo index",
                  "num_contaminated": "particle count", "subhalo_length": "particle count",
                  "subhalo_offset": "particle index", "subhalo_parent": "subhalo index",
-                 "group_number": "group index", "metallicity": "dimensionless"}
+                 "group_number": "group index"}
         return {n: table.get(n, "code units (physical conversion not declared)")
                 for n in self.names}
 
@@ -1366,6 +1380,8 @@ class LazyColumns(Mapping):
     def __init__(self, component: Component):
         self._component = component
         self._kept = {}
+        # Read by the point sessions' box and sphere filters.
+        self.periods = component.periods()
 
     def __getitem__(self, name: str):
         if name not in self._kept:
@@ -1438,8 +1454,11 @@ def default_type(snapshot: Snapshot) -> int | None:
 
 
 def gadget_components(path: str | Path) -> list[dict]:
-    """Every particle type with particles: ``{name, path, num_rows}``."""
+    """Every particle type with particles: ``{name, path, num_rows}``. Of a
+    SubFind catalogue, only the types with positions (groups, subhalos):
+    its ID list and large-group table are no points to draw (issue #448)."""
     snap = open_snapshot(split_ref(path)[0])
     names = SUBFIND_TYPE_NAMES if snap.is_subfind else TYPE_NAMES
     return [{"name": names[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
-            for t, n in enumerate(snap.counts()) if n]
+            for t, n in enumerate(snap.counts())
+            if n and (not snap.is_subfind or {"x", "y", "z"} <= set(snap.component(t).names))]

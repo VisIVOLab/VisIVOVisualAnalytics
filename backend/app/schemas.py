@@ -565,12 +565,18 @@ class TabularBox(BaseModel):
     fields: list[str]
     min: list[float]
     max: list[float]
+    # The period of the three coordinates (a periodic simulation box), so the
+    # box wraps round it; None: the dataset's own when it states one (a
+    # cosmological Gadget snapshot's BoxSize), 0: no wrapping.
+    period: float | None = None
 
 
 class TabularSphere(BaseModel):
     fields: list[str]
     center: list[float]
     radius: float
+    # As TabularBox.period: distances by the nearest periodic image.
+    period: float | None = None
 
 
 class TabularFilter(BaseModel):

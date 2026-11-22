@@ -217,6 +217,21 @@ use the same accumulator after applying their complete query filters. Weighted
 results reject non-finite and negative weights, while unweighted results reject
 only non-finite field values.
 
+Both passes read one chunk at a time, through the matcher for a component or
+a million rows of the loaded table at a time (only the columns needed), and
+check between chunks whether their task was cancelled
+(`/v1/tasks/catalogue_diagnostics`, issue #448). The variance combines each
+chunk's count, mean and squared deviations (Chan's pairwise update) instead of
+`E[x^2] - E[x]^2`, which loses every digit for positions far from the origin.
+
+**Periodic selections (issue #448).** A cosmological box is periodic, so a
+sphere around a halo near a face must reach the particles across it.
+`Component.periods()` gives the snapshot's `BoxSize` for its position columns
+when the run is comoving and the box positive; an isolated run has none. The
+out-of-core matcher, the point sessions' masks (`LazyColumns.periods`) and the
+DataFrame path use the nearest image for spheres and wrap boxes round the
+faces (`app/periodic.py`). A selection may state its own `period` (0: none).
+
 The response includes field and weight units from component metadata, the
 selection expression and explicit bin edges. The desktop carries these into
 the result summary and CSV export. No physical total is inferred when units are
