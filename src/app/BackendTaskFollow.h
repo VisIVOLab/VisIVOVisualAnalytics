@@ -149,7 +149,7 @@ inline const QStringList &taskCreateKinds()
     static const QStringList kinds{ QStringLiteral("moment"),      QStringLiteral("moment_fits"),
                                     QStringLiteral("pv"),          QStringLiteral("sourcefind"),
                                     QStringLiteral("decompress"),  QStringLiteral("particle_render"),
-                                    QStringLiteral("volume_render") };
+                                    QStringLiteral("volume_render"), QStringLiteral("catalogue_diagnostics") };
     return kinds;
 }
 
