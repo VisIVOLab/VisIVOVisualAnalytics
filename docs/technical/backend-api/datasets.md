@@ -305,6 +305,19 @@ column, string comparison otherwise), `contains` (case-insensitive substring)
 and `in` (comma-separated values). An unknown field or operator is answered
 with `valid: false`.
 
+A spatial selection is a filter with `"op": "inside"` or `"outside"` and a
+`box` (`{"fields": [x, y, z], "min": [...], "max": [...]}`) or a `sphere`
+(`{"fields": [x, y, z], "center": [...], "radius": r}`). Either may carry
+`"period": L`, the length of a periodic box: distances then use the nearest
+periodic image and a box wraps round the faces. Without it, a cosmological
+Gadget snapshot's `BoxSize` is the period of its position columns (`x`, `y`,
+`z`, `centre_of_mass_*`) when the run is periodic (a Gadget-4 `Config/PERIODIC`,
+`periodic=` in `VISIVO_GADGET_UNITS`, else a comoving run); `"period": 0`
+turns wrapping off. A VBT or catalogue
+wraps only when the period is given. On a loaded table the selection is one
+boolean mask applied with the scalar filters, so a big-endian VBT read in
+place works and only the page's rows are copied.
+
 ### `POST /v1/catalogue/diagnostics`
 
 Exact histogram and summary moments over the complete filtered population:
@@ -315,18 +328,34 @@ Exact histogram and summary moments over the complete filtered population:
   "field": "rho",
   "weight_field": "mass",
   "bins": 64,
-  "range": [1e-12, 1e-3],
+  "range_min": 1e-12,
+  "range_max": 1e-3,
   "filters": [
     { "field": "x", "op": ">=", "value": "-1000" }
   ]
 }
 ```
 
-`weight_field` and `range` are optional; `bins` is between 4 and 512. The
-response contains `selected_rows`, `finite_rows`, extrema, mean and standard
-deviation, optional `weighted_mean` and `weight_sum`, `bin_edges`, `counts`,
-the field and weight units, and textual weighting and selection provenance.
-Counts are floating point because weighted bins contain sums of weights.
+`weight_field` and the range (both ends or neither) are optional; `bins` is
+between 4 and 512. The response contains `selected_rows`, `finite_rows`,
+extrema, mean and standard deviation (population, combined chunk by chunk with
+Chan's update, so it keeps its digits far from zero), optional `weighted_mean`
+and `weight_sum`, `bin_edges`, `counts`, the field and weight units, and
+textual weighting and selection provenance. Counts are floating point because
+weighted bins contain sums of weights. A loaded table is read a million rows
+at a time, only the columns the filters, the field and the weight need.
+
+### `POST /v1/tasks/catalogue_diagnostics`
+
+The same request and computation as a task, for a table large enough that the
+two passes take a while: the answer is `{task_id, status: "running"}`. It
+takes one of the session's compute slots until the computation ends (HTTP 429
+when none comes free), as the other heavy tasks do.
+`GET /v1/tasks/{task_id}` gives `progress` (0 to 1 over both passes; one pass
+when the range is given) and, once `completed`, `result`, the diagnostics
+response above (`valid: false` with the reason for an unknown field or a bad
+range). `DELETE /v1/tasks/{task_id}` stops it between two chunks (status
+`cancelled`).
 
 For out-of-core particle tables the calculation is a bounded-memory two-pass
 scan over the full component. It is independent of the point-render sample and
