@@ -81,7 +81,9 @@ not: its lengths and velocities are not scaled by a.
 
 A block whose particle types cannot be told from its size (for example,
 equal numbers of gas and dark-matter particles in a single file) is left out
-rather than guessed. The snapshot's information lists it and says why.
+rather than guessed. So is a block whose `INFO` entry does not match its size
+or names a type the reader does not know. The snapshot's information and the
+file browser list it and say why; the other blocks open as usual.
 
 The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one

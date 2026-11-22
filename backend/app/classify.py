@@ -101,8 +101,12 @@ def classify_path(path: str | Path, allowed=None) -> dict:
     """
     path = Path(path)
     if path.is_dir():
-        # A snapdir: the snapshot it holds (issue #31).
-        particles = _classify_particles(path, allowed)
+        # A snapdir: the snapshot it holds (issue #31). One whose files
+        # reach outside the data roots is shown as a plain directory.
+        try:
+            particles = _classify_particles(path, allowed)
+        except PermissionError:
+            particles = None
         if particles is not None:
             return particles
         return _result("directory", "ask", False, "This is a directory.")
@@ -136,7 +140,7 @@ def classify_path(path: str | Path, allowed=None) -> dict:
 
     # ── A particle snapshot (Gadget binary or HDF5), by its header record ────
     # Read in place as a table of points, one particle type at a time (#31).
-    particles = _classify_particles(path)
+    particles = _classify_particles(path, allowed)
     if particles is not None:
         return particles
 
@@ -327,6 +331,10 @@ def _classify_particles(path: Path, allowed=None) -> dict | None:
                 return None
             path = Path(gs.split_ref(validated[0])[0])
         snap = gs.open_snapshot(path)
+    except PermissionError:
+        # A member of the snapshot outside the data roots: the caller answers
+        # as for a refused path, without naming where it leads.
+        raise
     except (OSError, ValueError) as exc:
         return _result("particles", "unsupported", True,
                        f"Gadget snapshot that cannot be read: {exc}")
@@ -340,7 +348,10 @@ def _classify_particles(path: Path, allowed=None) -> dict | None:
     detail = (f"{snap.fmt} snapshot ({files}) at z = {snap.header.redshift:.3g}: {counts}. "
               "Each particle type opens as a table of points.")
     if snap.skipped:
-        detail += f" Blocks left out (their size fits no particle types): {', '.join(snap.skipped)}."
+        reasons = dict(snap.skip_reasons)
+        detail += " Blocks left out: " + "; ".join(
+            f"{name} ({reasons[name]})" if reasons.get(name) else name
+            for name in snap.skipped) + "."
     return _result("particles", "catalogue", True, detail, open_path=ref,
                    components=components)
 

@@ -255,9 +255,26 @@ def _particle_matcher(component, filters):
             continue
         if item.field not in component.names:
             raise ValueError(f"Unknown field: {item.field!r}")
+        if item.op == "in":
+            # As the in-memory path (_apply_tabular_query): numbers when every
+            # value is one, else the values' text against the column's.
+            raw = [v.strip() for v in str(item.value).split(",")]
+            try:
+                prepared.append(("in", item.field, np.asarray([float(v) for v in raw])))
+            except ValueError:
+                prepared.append(("text-in", item.field, raw))
+            continue
+        if item.op == "contains":
+            prepared.append(("contains", item.field, str(item.value)))
+            continue
         if item.op not in numeric_ops:
-            raise ValueError(f"Particle filtering supports numeric operators only, not {item.op!r}")
-        prepared.append(("scalar", item.field, item.op, float(item.value)))
+            raise ValueError(f"Unknown filter operator: {item.op!r}")
+        try:
+            value = float(item.value)
+        except ValueError:
+            raise ValueError(
+                f"Cannot convert {item.value!r} to number for field {item.field!r}") from None
+        prepared.append(("scalar", item.field, item.op, value))
 
     def matching(start, stop):
         source_rows = np.arange(start, stop, dtype=np.int64)
@@ -269,6 +286,16 @@ def _particle_matcher(component, filters):
                 keep &= {"=": column == value, "!=": column != value,
                          ">": column > value, ">=": column >= value,
                          "<": column < value, "<=": column <= value}[op]
+            elif criterion[0] == "in":
+                _, field, values = criterion
+                keep &= np.isin(component.take(field, source_rows), values)
+            elif criterion[0] in ("text-in", "contains"):
+                # Text matching, a chunk at a time, exactly as pandas does it
+                # on a loaded catalogue (contains: case-insensitive regex).
+                _, field, value = criterion
+                text = pd.Series(component.take(field, source_rows)).astype(str)
+                keep &= (text.isin(value) if criterion[0] == "text-in" else
+                         text.str.contains(value, case=False, na=False)).to_numpy(dtype=bool)
             elif criterion[0] == "box":
                 _, fields, lo, hi, op, period = criterion
                 inside = np.ones(stop - start, dtype=bool)
@@ -573,6 +600,20 @@ async def create_catalogue_diagnostics_task(
     return TaskCreateResponse(valid=True, error="", task_id=task.task_id, status="running")
 
 
+def _sorted_order(values: np.ndarray, rows: np.ndarray, descending: bool) -> np.ndarray:
+    """The order of ``values`` by value (NaN last either way), ties by row
+    ascending: a total order, so every page of a sort is a slice of one
+    sequence, whatever the chunking (reversing a stable ascending sort put
+    ties in descending row order and let pages repeat or skip rows)."""
+    missing = np.isnan(values) if values.dtype.kind == "f" else np.zeros(values.shape, bool)
+    key = np.where(missing, 0, values) if missing.any() else values
+    if not descending:
+        return np.lexsort((rows, key, missing))
+    # Ascending by (present first, value, -row), reversed: NaN last, value
+    # descending, row ascending. Row numbers are non-negative int64.
+    return np.lexsort((-rows, key, ~missing))[::-1]
+
+
 def _particle_sorted_page(path: str, filters, sort, limit: int, offset: int,
                           fields=None):
     """Sort a page while retaining at most ``offset + limit`` candidate rows."""
@@ -603,13 +644,7 @@ def _particle_sorted_page(path: str, filters, sort, limit: int, offset: int,
         values = np.asarray(component.take(sort.field, selected))
         rows = np.concatenate((kept_rows, selected))
         values = values if kept_values is None else np.concatenate((kept_values, values))
-        key = values
-        if values.dtype.kind == "f":
-            key = np.where(np.isnan(values), -np.inf if descending else np.inf, values)
-        order = np.argsort(key, kind="stable")
-        if descending:
-            order = order[::-1]
-        order = order[:window]
+        order = _sorted_order(values, rows, descending)[:window]
         kept_rows, kept_values = rows[order], values[order]
     page_rows = kept_rows[offset:window]
     return particle_rows(path, page_rows, fields), int(total), page_rows
