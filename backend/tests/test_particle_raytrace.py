@@ -491,6 +491,44 @@ def test_nan_colours_of_a_still_are_the_tables_nan_colour(tmp_path):
         assert rgb[1] == pytest.approx([0.5, 0.0, 0.0], abs=1 / 255)
 
 
+def test_nan_particles_show_dark_red_where_they_are_alone(tmp_path, monkeypatch):
+    """End to end on the reference renderer (the stills, which the GPU view
+    matches): particles whose colour is NaN emit the NaN colour, dark red,
+    and a region of them alone is plainly dark red. Mixed in among coloured
+    particles they are not seen as such: the light adds up, and dark red
+    carries about an eighth of the luminance of a map's bright end."""
+    from app.routers import particle_render as router
+    monkeypatch.setattr(router, "_PREPARED", router.OrderedDict())
+    rng = np.random.default_rng(5)
+    n = 4000
+    x = np.concatenate([rng.uniform(-2, -0.5, n // 2), rng.uniform(0.5, 2, n // 2)])
+    y, z = rng.uniform(-1, 1, n), rng.uniform(-1, 1, n)
+    # Left half coloured from the map's bright end; right half NaN.
+    t = np.concatenate([np.full(n // 2, 0.95), np.full(n // 2, np.nan)])
+    np.vstack([x, y, z, t]).astype("<f4").tofile(tmp_path / "h.bin")
+    (tmp_path / "h.bin.head").write_text(f"float\n4\n{n}\nlittle\nX\nY\nZ\nT\n")
+    session = _Session(str(tmp_path / "h.bin.head"))
+    cam = {"position": (0, 0, 10), "focal_point": (0, 0, 0), "view_up": (0, 1, 0)}
+    req = router.ParticlePreviewRequest(dataset_id="cat_1", cameras=[cam], width=160, height=80,
+                                        colour={"field": "T", "lut": "Inferno", "min": 0.0,
+                                                "max": 1.0})
+    loop = asyncio.new_event_loop()
+    try:
+        reply = loop.run_until_complete(router.particle_render_preview(
+            req, token="tok", session=session))
+    finally:
+        loop.close()
+    from PIL import Image
+    rgb = np.asarray(Image.open(io.BytesIO(reply.body)).convert("RGB"), dtype=float)
+    left, right = rgb[:, :60].reshape(-1, 3), rgb[:, 100:].reshape(-1, 3)
+    left, right = left[left.sum(1) > 30], right[right.sum(1) > 30]
+    assert len(right) > 0.3 * len(left) > 0        # the NaN half is drawn, not black
+    r, g, b = right.mean(0)
+    assert r > 60 and g < 0.15 * r and b < 0.15 * r  # dark red
+    lr, lg, _ = left.mean(0)
+    assert lg > 0.5 * lr                            # Inferno's bright end: yellow
+
+
 def test_palette_and_range_do_not_prepare_scalar_colour_particles_again(tmp_path, monkeypatch):
     """With colour_values the prepared particles hold the colour column's
     values: palette, range and log scale are the client's and share one

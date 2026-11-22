@@ -25,6 +25,29 @@ void TestRaytraceViewRules::nanTakesTheNanColour()
     QCOMPARE(*visivo::colourPosition(-std::numeric_limits<double>::infinity(), linear), 0.0);
 }
 
+void TestRaytraceViewRules::theShaderSeesTheWiresNan()
+{
+    // A row's colour value as the backend packs it (numpy float32 NaN, little
+    // endian), read back as the vertex attribute is: the bit test finds it.
+    const auto fromBytes = [](std::uint32_t bits) {
+        const unsigned char le[4] = { static_cast<unsigned char>(bits),
+                                      static_cast<unsigned char>(bits >> 8),
+                                      static_cast<unsigned char>(bits >> 16),
+                                      static_cast<unsigned char>(bits >> 24) };
+        const QByteArray row(reinterpret_cast<const char *>(le), 4);
+        return *reinterpret_cast<const float *>(row.constData());
+    };
+    QVERIFY(visivo::nanBits(fromBytes(0x7fc00000u)));   // numpy's NaN
+    QVERIFY(visivo::nanBits(fromBytes(0xffc00000u)));   // negative NaN
+    QVERIFY(visivo::nanBits(fromBytes(0x7f800001u)));   // signalling NaN
+    QVERIFY(visivo::nanBits(std::numeric_limits<float>::quiet_NaN()));
+    QVERIFY(!visivo::nanBits(std::numeric_limits<float>::infinity()));
+    QVERIFY(!visivo::nanBits(-std::numeric_limits<float>::infinity()));
+    QVERIFY(!visivo::nanBits(-4.599f));
+    QVERIFY(!visivo::nanBits(0.0f));
+    QVERIFY(!visivo::nanBits(1e-40f));   // subnormal
+}
+
 void TestRaytraceViewRules::cgsDensitiesKeepTheirRange()
 {
     // A gas density in g/cm³: the former shader floored at 1e-30, so the

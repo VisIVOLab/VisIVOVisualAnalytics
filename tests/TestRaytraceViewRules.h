@@ -12,6 +12,7 @@ class TestRaytraceViewRules : public QObject
 
 private slots:
     void nanTakesTheNanColour();
+    void theShaderSeesTheWiresNan();
     void cgsDensitiesKeepTheirRange();
     void aLogScaleNeedsAPositiveLowEnd();
     void aFlatRangeTakesTheLowestColour();

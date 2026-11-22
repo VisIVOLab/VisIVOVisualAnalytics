@@ -21,7 +21,10 @@ scene card are greyed out until the check is cleared.
   the check is cleared.
 - The *VISUAL ENCODING* colour column and map, and the *FILTERS*, set the
   particles' colours and which rows are drawn. A colour value that is blank
-  (NaN) is drawn in the map's NaN colour, dark red, as on saved stills.
+  (NaN) is drawn in the map's NaN colour, dark red, as on saved stills. The
+  light of overlapping particles adds up, and dark red is faint, so blank
+  particles mixed in among coloured ones only tint the picture; a region of
+  blank particles alone shows dark red.
   Changing the map, range or scale recolours the particles already on the GPU
   without loading them again.
 - While the particles are prepared for the first time, a panel covers the

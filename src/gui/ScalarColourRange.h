@@ -6,6 +6,8 @@
 // rule can be unit-tested; the vertex shader applies the same rule in float.
 
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <optional>
 
 namespace visivo {
@@ -35,6 +37,16 @@ inline ScalarColourRange scalarColourRange(double lo, double hi, bool log)
         r.lo = std::isfinite(a) ? a : 0.0;
     }
     return r;
+}
+
+/// The shader's NaN test (ParticleGLView, nanValue), by the float's bits: a
+/// GPU compiler's fast maths may take isnan() to be always false. Any NaN,
+/// quiet or signalling, of either sign; not an infinity.
+inline bool nanBits(float x)
+{
+    std::uint32_t u;
+    std::memcpy(&u, &x, sizeof u);
+    return (u & 0x7fffffffu) > 0x7f800000u;
 }
 
 /// Where ``value`` falls in the colour table, 0 to 1, as the shader places
