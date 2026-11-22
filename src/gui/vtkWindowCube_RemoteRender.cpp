@@ -689,9 +689,11 @@ void vtkWindowCube::runRemoteReconnectStep(visivo::ReconnectStep step)
         qDebug().noquote() << "[remote-render] session" << this->m_renderSessionId
                            << "is still there; connecting its stream again";
         this->showRemoteReconnecting(0);
-        this->m_remoteReconnectingSame = true;
         if (this->m_remoteRenderWidget)
             this->connectRemoteRenderWidgetWithTransport(this->m_renderSessionId);
+        // After the call: its own teardown says Disconnected first, which is
+        // not this attempt failing.
+        this->m_remoteReconnectingSame = true;
         // A negotiation may hang without ever saying so.
         this->m_remoteReconnectTimer->start(visivo::kReconnectAttemptTimeoutMs);
         return;
@@ -750,14 +752,22 @@ void vtkWindowCube::checkRemoteSessionForReconnect()
         reply->deleteLater();
         // The user went Local or switched again, the window let the session
         // go, or another check is under way: not this check's to act on.
-        if (serial != this->m_remoteReconnectSerial || !this->m_remoteReconnect.active()
-            || !visivo::dropCheckStillWanted(this->m_effectiveRenderMode == RenderMode::Remote,
-                                             sid == this->m_renderSessionId,
-                                             this->m_remoteSwitchInProgress))
+        if (serial != this->m_remoteReconnectSerial || !this->m_remoteReconnect.active())
             return;
+        if (!visivo::dropCheckStillWanted(this->m_effectiveRenderMode == RenderMode::Remote,
+                                          sid == this->m_renderSessionId,
+                                          this->m_remoteSwitchInProgress)) {
+            // Something else has the view now: this reconnection is over, or
+            // it would stay "under way" with nothing to end it.
+            this->cancelRemoteReconnect();
+            return;
+        }
         const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (code == 0 || code >= 500)
             this->m_remoteReconnectWhy = visivo::replacementFailure(code, QString());
+        else if (code == 401 || code == 403)
+            this->m_remoteReconnectWhy =
+                    u"the backend refused this client's token (HTTP %1)"_s.arg(code);
         this->runRemoteReconnectStep(this->m_remoteReconnect.onCheck(code));
     });
 }

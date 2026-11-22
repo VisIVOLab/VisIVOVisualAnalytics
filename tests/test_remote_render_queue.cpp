@@ -9,6 +9,7 @@
 
 #include <QJsonDocument>
 #include <QTest>
+#include <QThread>
 
 using visivo::parseRenderSessionAnswer;
 using visivo::RenderQueuePlace;
@@ -567,4 +568,71 @@ void TestRemoteRenderQueue::aDropCheckAfterLocalChangesNothing()
     QVERIFY(!visivo::RemoteReplacement::mayStart(false, true));
     // Still the same remote view: acted on.
     QVERIFY(visivo::dropCheckStillWanted(true, true, false));
+}
+
+void TestRemoteRenderQueue::aSilentDropIsLiveOnlyUpToItsLastSignOfLife()
+{
+    // A half-dead link: frames stop at once, the drop is noticed only after
+    // the watchdog's silence. Its live time ends at the last frame, so it is
+    // not a stable stream that resets the reconnection's budget.
+    visivo::StreamCloseRecorder rec;
+    rec.connecting();
+    rec.markLive();
+    QThread::msleep(20);
+    rec.markTraffic();
+    QThread::msleep(200);   // silence, then the watchdog's drop
+    rec.closed(true, QString());
+    QVERIFY2(rec.liveMs() < 150, qPrintable(QString::number(rec.liveMs())));
+    QVERIFY(rec.liveMs() >= 15);
+    // Without any traffic seen, up to the close as before.
+    rec.connecting();
+    rec.markLive();
+    QThread::msleep(60);
+    rec.closed(true, QString());
+    QVERIFY(rec.liveMs() >= 50);
+    // Traffic before Live does not count.
+    rec.connecting();
+    rec.markTraffic();
+    rec.markLive();
+    QThread::msleep(30);
+    rec.closed(true, QString());
+    QVERIFY(rec.liveMs() >= 25);
+}
+
+void TestRemoteRenderQueue::aLiveStreamWithoutFramesIsCaughtAfterItsGrace()
+{
+    using V = visivo::StreamWatchdog::Verdict;
+    constexpr qint64 kCheck = visivo::StreamWatchdog::kCheckMs;
+    constexpr qint64 kSilence = 20'000, kGrace = 60'000;
+    visivo::StreamWatchdog w;
+    w.start(0, kGrace);   // WebRTC Live: no frame yet
+    qint64 t = 0;
+    while (t < kGrace + kSilence - kCheck) {
+        t += kCheck;
+        QCOMPARE(w.check(t, kSilence), V::Fine);
+    }
+    // Still no frame: caught, not left Live for good.
+    V v = V::Fine;
+    while (v == V::Fine && t < kGrace + kSilence + 3 * kCheck) {
+        t += kCheck;
+        v = w.check(t, kSilence);
+    }
+    QCOMPARE(v, V::Stalled);
+    // A late check during the grace does not cut it short.
+    w.start(0, kGrace);
+    QCOMPARE(w.check(30'000, kSilence), V::Fine);
+    QCOMPARE(w.check(30'000 + kCheck, kSilence), V::Fine);
+}
+
+void TestRemoteRenderQueue::aRefusedTokenStopsAtOnce()
+{
+    visivo::RemoteReconnect r;
+    QCOMPARE(r.onDrop(liveDrop(QString(), 60'000)), RStep::CheckSession);
+    QVERIFY(!r.refusedAccess());
+    QCOMPARE(r.onCheck(401), RStep::GiveUp);
+    QVERIFY(r.refusedAccess());
+    QVERIFY(!r.active());
+    QCOMPARE(r.userReconnect(), RStep::CheckSession);
+    QVERIFY(!r.refusedAccess());
+    QCOMPARE(r.onCheck(403), RStep::GiveUp);
 }

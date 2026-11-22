@@ -92,6 +92,7 @@ public:
     {
         if (!d.showingRemote || !d.wasLive)
             return ReconnectStep::Ignore;
+        m_refused = false;
         if (d.liveMs >= kStableLiveMs) {
             // What came before worked for a while: a new outage, a new budget.
             m_failures = 0;
@@ -119,6 +120,13 @@ public:
             return ReconnectStep::Ignore;
         if (httpStatus == 404 || httpStatus == 410)
             return newSessionOrGiveUp();
+        if (httpStatus == 401 || httpStatus == 403) {
+            // The backend refuses this client's token: asking again changes
+            // nothing (refusedAccess() lets the view say so).
+            m_active = false;
+            m_refused = true;
+            return ReconnectStep::GiveUp;
+        }
         if (httpStatus >= 200 && httpStatus < 300)
             return ReconnectStep::SameSession;
         return failed();   // out of reach, or an error: the session may still be there
@@ -157,6 +165,7 @@ public:
         m_replacedLive = false;
         m_replacing = false;
         m_inOutage = true;   // what it brings back is judged as any reconnection
+        m_refused = false;
         m_active = true;
         return ReconnectStep::CheckSession;
     }
@@ -170,6 +179,8 @@ public:
 
     /// Between a drop and Live (or giving up).
     bool active() const { return m_active; }
+    /// The last give-up was the backend refusing the token (401/403).
+    bool refusedAccess() const { return m_refused; }
     /// The attempt under way, from 1.
     int attempt() const { return m_failures + 1; }
     static constexpr int maxAttempts() { return int(kReconnectDelaysMs.size()) + 1; }
@@ -207,6 +218,7 @@ private:
     bool m_replacing = false;      ///< the attempt under way is a new session
     bool m_replacedLive = false;   ///< a new session went live in this outage
     bool m_inOutage = false;       ///< dropped, and not stable since
+    bool m_refused = false;        ///< gave up on a 401/403
     int m_failures = 0;
 };
 
@@ -241,10 +253,14 @@ public:
 
     enum class Verdict { Off, Fine, Stalled };
 
-    void start(qint64 nowMs)
+    /// @p firstTrafficGraceMs: extra time before the first sign of life is
+    /// due (a WebRTC stream is Live before its first frame, which a large
+    /// cube may take a while to render).
+    void start(qint64 nowMs, qint64 firstTrafficGraceMs = 0)
     {
         m_on = true;
-        m_lastTraffic = m_lastCheck = nowMs;
+        m_lastCheck = nowMs;
+        m_lastTraffic = nowMs + std::max<qint64>(0, firstTrafficGraceMs);
     }
     void stop() { m_on = false; }
     bool running() const { return m_on; }
@@ -258,7 +274,7 @@ public:
         if (!m_on)
             return Verdict::Off;
         if (nowMs - m_lastCheck > kSuspendedGapMs)
-            m_lastTraffic = nowMs;   // away, not silent
+            m_lastTraffic = std::max(m_lastTraffic, nowMs);   // away, not silent
         m_lastCheck = nowMs;
         if (nowMs - m_lastTraffic > silenceMs) {
             m_on = false;
@@ -338,6 +354,7 @@ public:
         m_wasLive = false;
         m_reason.clear();
         m_liveMs = 0;
+        m_lastTrafficMs = -1;
         m_liveSince.invalidate();
     }
 
@@ -348,12 +365,26 @@ public:
             m_liveSince.start();
     }
 
-    /// The stream ended; @p reason is the WebSocket's close reason.
+    /// A sign of life from the backend (a frame, a pong) while live.
+    void markTraffic()
+    {
+        if (m_liveSince.isValid())
+            m_lastTrafficMs = m_liveSince.elapsed();
+    }
+
+    /// The stream ended; @p reason is the WebSocket's close reason. It was
+    /// live up to its last sign of life, not up to when its end was noticed:
+    /// a stream that died at once but was taken for lost only after the
+    /// watchdog's silence (or WebRTC's own checks) is not a stable one, or a
+    /// half-dead link would reset the reconnection's budget at every drop.
     void closed(bool wasLive, const QString &reason)
     {
         m_wasLive = wasLive;
         m_reason = reason;
-        m_liveMs = m_liveSince.isValid() ? m_liveSince.elapsed() : 0;
+        m_liveMs = !m_liveSince.isValid() ? 0
+                : m_lastTrafficMs >= 0    ? m_lastTrafficMs
+                                          : m_liveSince.elapsed();
+        m_lastTrafficMs = -1;
         m_liveSince.invalidate();
     }
 
@@ -381,6 +412,7 @@ private:
     bool m_wasLive = false;
     QString m_reason;
     qint64 m_liveMs = 0;
+    qint64 m_lastTrafficMs = -1;   ///< since live; -1: none seen
     QElapsedTimer m_liveSince;
 };
 

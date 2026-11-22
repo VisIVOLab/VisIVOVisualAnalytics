@@ -110,30 +110,49 @@ async def test_reap_noop_when_all_active():
     assert (await mgr.snapshot())["active_sessions"] == 2
 
 
-async def test_reap_does_not_count_a_suspension_as_idle_time(monkeypatch):
-    """Issue #411: a laptop that slept (or a stopped backend) wakes with the
-    wall clock far ahead. The time nothing ran is not idle time: a view left
-    on screen is not closed on waking, one idle before the sleep still is."""
-    wall = [time.time()]
-    monkeypatch.setattr(rm.time, "time", lambda: wall[0])
-    mgr = rm.RenderManager(max_sessions=8, idle_ttl_seconds=300)
+class _Clocks:
+    """A wall clock and a monotonic one, moved by hand: a sleep moves the
+    wall clock only (the monotonic clock stops then on macOS and Linux)."""
+
+    def __init__(self) -> None:
+        self.wall = time.time()
+        self.mono = 1000.0
+
+    def run(self, seconds: float) -> None:
+        self.wall += seconds
+        self.mono += seconds
+
+    def sleep(self, seconds: float) -> None:
+        self.wall += seconds
+
+
+def _clocked_manager(monkeypatch, ttl: float) -> tuple[rm.RenderManager, _Clocks]:
+    clocks = _Clocks()
+    monkeypatch.setattr(rm.time, "time", lambda: clocks.wall)
+    return rm.RenderManager(max_sessions=8, idle_ttl_seconds=ttl,
+                            clock=lambda: clocks.mono), clocks
+
+
+async def test_reap_does_not_count_a_sleep_as_idle_time(monkeypatch):
+    """Issue #411: a laptop that slept wakes with the wall clock far ahead.
+    The time it slept is not idle time: a view left on screen is not closed on
+    waking, one idle before the sleep still is."""
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=300)
     watched = await mgr.create_session("/data/watched.fits")
     forgotten = await mgr.create_session("/data/forgotten.fits")
-    watched.stats.last_command_at = wall[0] - 10.0      # a keepalive just before
-    forgotten.stats.last_command_at = wall[0] - 298.0   # idle before the sleep
+    watched.stats.last_command_at = clocks.wall - 10.0      # a keepalive just before
+    forgotten.stats.last_command_at = clocks.wall - 298.0   # idle before the sleep
     assert await mgr._reap_once() == []
 
-    wall[0] += 600.0   # ten minutes asleep: no pass in between
+    clocks.sleep(600.0)   # ten minutes asleep
+    clocks.run(5.0)       # and the reaper's interval
     evicted = await mgr._reap_once()
 
     assert evicted == [forgotten.session_id]
     assert not watched.closed
-    # Idle time counts again from the waking pass on.
-    wall[0] += 5.0
-    assert await mgr._reap_once() == []
-    wall[0] += 300.0
-    for _ in range(60):   # passes every 5 s: no suspension in between
-        wall[0] += 5.0
+    # Idle time counts again from waking on.
+    for _ in range(61):
+        clocks.run(5.0)
         await mgr._reap_once()
     assert watched.closed
 
@@ -141,31 +160,38 @@ async def test_reap_does_not_count_a_suspension_as_idle_time(monkeypatch):
 async def test_a_sleep_before_the_first_pass_is_not_idle_time(monkeypatch):
     """The reaper starts with the first session: a machine that sleeps before
     the reaper's first pass is still told by the start time (issue #411)."""
-    wall = [time.time()]
-    monkeypatch.setattr(rm.time, "time", lambda: wall[0])
-    mgr = rm.RenderManager(max_sessions=8, idle_ttl_seconds=30)
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=30)
     await mgr.start()
     try:
         sess = await mgr.create_session("/data/a.fits")
-        sess.stats.last_command_at = wall[0]
-        wall[0] += 50.0   # asleep: the first pass comes after the TTL
+        sess.stats.last_command_at = clocks.wall
+        clocks.sleep(50.0)   # asleep: the first pass comes after the TTL
+        clocks.run(1.0)
         assert await mgr._reap_once() == []
         assert not sess.closed
     finally:
         await mgr.stop()
 
 
-async def test_regular_passes_are_not_a_suspension(monkeypatch):
-    wall = [time.time()]
-    monkeypatch.setattr(rm.time, "time", lambda: wall[0])
-    mgr = rm.RenderManager(max_sessions=8, idle_ttl_seconds=100)
+async def test_a_late_pass_is_not_a_sleep(monkeypatch):
+    """A slow pass, a blocked event loop or a stopped process moves both clocks:
+    the time is idle time as any other, and an idle session is closed."""
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=30)
     sess = await mgr.create_session("/data/a.fits")
-    sess.stats.last_command_at = wall[0]
+    sess.stats.last_command_at = clocks.wall
+    assert await mgr._reap_once() == []
+    clocks.run(45.0)
+    assert await mgr._reap_once() == [sess.session_id]
+
+
+async def test_regular_passes_are_not_a_sleep(monkeypatch):
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=100)
+    sess = await mgr.create_session("/data/a.fits")
+    sess.stats.last_command_at = clocks.wall
     for _ in range(21):
-        wall[0] += rm._REAP_INTERVAL_S
+        clocks.run(rm._REAP_INTERVAL_S)
         await mgr._reap_once()
     assert sess.closed
-
 
 async def test_evicting_a_session_closes_its_webrtc_peer(monkeypatch):
     """Issue #411: a peer left connected to a closed session sends no frame and

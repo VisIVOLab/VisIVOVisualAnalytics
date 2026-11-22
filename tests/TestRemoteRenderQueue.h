@@ -38,6 +38,9 @@ private slots:
     void theReconnectionSaysWhereItIs();
     void aSilentStreamIsTakenForLost();
     void aLateCheckIsNotSilence();
+    void aSilentDropIsLiveOnlyUpToItsLastSignOfLife();
+    void aLiveStreamWithoutFramesIsCaughtAfterItsGrace();
+    void aRefusedTokenStopsAtOnce();
     void bothTransportsSayHowTheStreamEnded();
     void aFailedReplacementSaysWhyWithoutBlamingTheBackend();
     void onlyAReplacementsFailureOffersRetry();

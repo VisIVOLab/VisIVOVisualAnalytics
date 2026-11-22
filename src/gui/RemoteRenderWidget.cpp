@@ -39,6 +39,10 @@ constexpr int    kKeepaliveMs       = 60 * 1000;
 // WebSocket, no frame on WebRTC (whose frames come continuously). Well above a
 // slow frame of a large cube; the WebRTC peer's own checks take about as long.
 constexpr qint64 kStallMs           = 20 * 1000;
+// A WebRTC stream is Live when its peer connects, before its first frame,
+// which a large cube can take a while to render: the silence counts from
+// this much later. A Live stream that never sends a frame is still caught.
+constexpr qint64 kFirstFrameGraceMs = 60 * 1000;
 } // namespace
 
 RemoteRenderWidget::RemoteRenderWidget(QWidget *parent)
@@ -120,11 +124,10 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             if (!m_live) {
                 m_live = true;
             }
-            // Frames come continuously: from the first one on, their silence
-            // is a stream that stopped.
+            // Frames come continuously: their silence is a stream that stopped.
             if (!m_watchdog.running())
                 startWatchdog();
-            m_watchdog.traffic(m_clock.elapsed());
+            sawTraffic();
             update();
         });
         connect(m_webrtc, &RemoteRenderWebRTCClient::framesPerSecondChanged,
@@ -151,6 +154,9 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             if (state == QLatin1String("Live")) {
                 m_live = true;
                 m_keepaliveTimer->start();
+                // From Live on, a stream that sends no frame is caught too.
+                if (!m_watchdog.running())
+                    startWatchdog(kFirstFrameGraceMs);
             } else {
                 // Any other state is not a channel a keepalive could cross;
                 // commands posted now would only queue up for a channel that
@@ -241,7 +247,11 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
     // The server answers pings by itself (the WebSocket protocol), while the
     // view is still too: the watchdog's sign of life.
     connect(m_ws, &QWebSocket::pong, this,
-            [this](quint64, const QByteArray &) { m_watchdog.traffic(m_clock.elapsed()); });
+            [this](quint64, const QByteArray &) { sawTraffic(); });
+    // A large JPEG over a slow tunnel arrives in many frames: its progress is
+    // a sign of life before it is whole.
+    connect(m_ws, &QWebSocket::binaryFrameReceived, this,
+            [this](const QByteArray &, bool) { sawTraffic(); });
     // Qt6 unified error signal:
     connect(m_ws, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
         const QString msg = m_ws ? m_ws->errorString() : QStringLiteral("(no socket)");
@@ -298,10 +308,16 @@ void RemoteRenderWidget::teardownTransports()
     m_frameRequestPending = false;
 }
 
-void RemoteRenderWidget::startWatchdog()
+void RemoteRenderWidget::startWatchdog(qint64 firstTrafficGraceMs)
 {
-    m_watchdog.start(m_clock.elapsed());
+    m_watchdog.start(m_clock.elapsed(), firstTrafficGraceMs);
     m_watchdogTimer->start();
+}
+
+void RemoteRenderWidget::sawTraffic()
+{
+    m_watchdog.traffic(m_clock.elapsed());
+    m_close.markTraffic();   // a drop's live time ends at the last sign of life
 }
 
 void RemoteRenderWidget::checkStream()
@@ -442,7 +458,7 @@ void RemoteRenderWidget::onTextMessageReceived(const QString &message)
     // Diagnostic JSON from the server (e.g. {"error": "…"}). We don't
     // expose it to the UI directly yet; future commit can wire it.
     qDebug().noquote() << "[remote-render] server text:" << message;
-    m_watchdog.traffic(m_clock.elapsed());
+    sawTraffic();
     // The server's answer to ``stream``: from here on it sends the frames.
     // It comes before any pushed frame, so every frame after it is acked.
     const QJsonObject obj = QJsonDocument::fromJson(message.toUtf8()).object();
@@ -455,7 +471,7 @@ void RemoteRenderWidget::onTextMessageReceived(const QString &message)
 
 void RemoteRenderWidget::onBinaryMessageReceived(const QByteArray &bytes)
 {
-    m_watchdog.traffic(m_clock.elapsed());
+    sawTraffic();
     // Acknowledged at once, before decoding: the server sends the next frame
     // as soon as the ack frees a slot in its window.
     if (m_push && m_ws && m_ws->state() == QAbstractSocket::ConnectedState)

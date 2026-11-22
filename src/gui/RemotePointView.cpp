@@ -276,9 +276,11 @@ void RemotePointView::runStep(visivo::ReconnectStep step)
                            << "is still there; connecting its stream again";
         if (!m_widget)
             return;
-        m_attemptConnecting = true;
         m_widget->setTransport(RemoteRenderWidget::Transport::JpegWS);
         m_widget->connectToSession(m_backendUrl, m_renderSessionId, m_token);
+        // After the call, as in created(): its own teardown says Disconnected
+        // first, which is not this attempt failing.
+        m_attemptConnecting = true;
         m_reconnectTimer->start(visivo::kReconnectAttemptTimeoutMs);
         return;
     case Step::NewSession:
@@ -331,11 +333,18 @@ void RemotePointView::checkSession()
     const QString sid = m_renderSessionId;
     QObject::connect(reply, &QNetworkReply::finished, this, [this, reply, serial, sid]() {
         reply->deleteLater();
-        if (serial != m_checkSerial || sid != m_renderSessionId || !m_reconnect.active())
+        if (serial != m_checkSerial || !m_reconnect.active())
             return;   // stopped, or another check under way
+        if (sid != m_renderSessionId) {
+            // Another session by now: this reconnection has nothing to do.
+            m_reconnect.cancel();
+            return;
+        }
         const int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (code == 0 || code >= 500)
             m_reconnectWhy = visivo::replacementFailure(code, QString());
+        else if (code == 401 || code == 403)
+            m_reconnectWhy = u"the backend refused this client's token (HTTP %1)"_s.arg(code);
         runStep(m_reconnect.onCheck(code));
     });
 }
@@ -394,6 +403,10 @@ void RemotePointView::flush()
             continue;
         m_widget->sendStateCommand(*it);
         m_sent.insert(type, *it);
+        // The backend fits its camera to new positions: the one a replacement
+        // session would get is read again.
+        if (type == u"set_point_fields"_s || type == u"set_sky_positions"_s)
+            scheduleCameraSnapshot();
         // The new range: the backend answers the levels after the commands
         // already sent (routers/render.py), so one question, once the command
         // is on its way, is enough.

@@ -242,6 +242,8 @@ void vtkWindowCube::setRaytraced(bool on)
                 command.insert(u"type"_s, u"set_camera"_s);
                 this->m_renderStack->setCurrentIndex(this->m_rtPreviousPage);
                 this->sendRemoteRenderStateCommand(command);
+                // The camera a replacement session gets, if this one is lost.
+                this->scheduleRemoteCameraSnapshot();
                 return;
             }
             vtkRenderWindow *win = ui->vtkCube->renderWindow();

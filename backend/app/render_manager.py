@@ -82,9 +82,11 @@ logger = logging.getLogger("visivo.render")
 # runs (it also passes on the slots of sessions nobody is connected to).
 POLL_AFTER_SECONDS = 2.0
 _REAP_INTERVAL_S = 5.0
-# A reaper pass that comes this long after the one before did not run in
-# between: the machine slept, or the process was stopped (issue #411).
-_SUSPENDED_GAP_S = 30.0
+# Wall time that passed between two reaper passes while the monotonic clock
+# did not (the machine slept: on macOS and Linux the monotonic clock stops
+# then) beyond this much is taken for a sleep (issue #411). The margin covers
+# clock slewing; a slow pass or a blocked loop moves both clocks alike.
+_SLEEP_MIN_S = 5.0
 
 
 class RenderCapacityError(RuntimeError):
@@ -201,8 +203,9 @@ class RenderManager:
         self._detached_at: dict[str, float] = {}
         self._background: set[asyncio.Task] = set()
         self._reaper_task: asyncio.Task | None = None
-        # Wall time of the last reaper pass, to tell a suspension from idling.
-        self._last_reap_wall: float | None = None
+        # (wall, monotonic) at the end of the last reaper pass, to tell a sleep
+        # from idling.
+        self._last_reap: tuple[float, float] | None = None
 
     async def start(self) -> None:
         """Kick off the reaper. Idempotent."""
@@ -210,7 +213,7 @@ class RenderManager:
             # The first pass is compared with this moment: a machine that
             # sleeps before it would otherwise have no earlier pass to tell
             # the sleep by.
-            self._last_reap_wall = time.time()
+            self._last_reap = (time.time(), self._clock())
             self._reaper_task = asyncio.create_task(self._reap_loop())
 
     async def stop(self, budget_s: float | None = None) -> None:
@@ -227,6 +230,9 @@ class RenderManager:
             self._tickets.clear()
             self._attached.clear()
             self._detached_at.clear()
+        # The peers first: they pull frames from the sessions.
+        for sess in sessions:
+            await _close_webrtc_peer(sess.session_id)
         # All at once: one after the other, a few slow children add up to a
         # shutdown the client kills half-done.
         results = await asyncio.gather(
@@ -236,8 +242,6 @@ class RenderManager:
         for result in results:
             if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                 logger.error("[render-manager] close on shutdown raised", exc_info=result)
-        for sess in sessions:
-            await _close_webrtc_peer(sess.session_id)
 
     async def create_session(self, dataset_path: str,
                              owner_token: str | None = None,
@@ -541,23 +545,24 @@ class RenderManager:
                 continue
             logger.info("[render-manager] session %s closed: %s",
                         sess.session_id[:8] + "…", reason)
+            # The peer first: it pulls frames from the session.
+            await _close_webrtc_peer(sess.session_id)
             try:
                 await sess.close()
             except Exception:
                 logger.exception("[render-manager] close raised for %s",
                                  sess.session_id[:8] + "…")
-            await _close_webrtc_peer(sess.session_id)
 
     async def _evict(self, session_id: str) -> bool:
         async with self._lock:
             sess = self._forget_locked(session_id)
         if sess is None:
             return False
+        await _close_webrtc_peer(session_id)   # first: it pulls frames from the session
         try:
             await sess.close()
         except Exception:
             logger.exception("[render-manager] close raised for %s", session_id[:8] + "…")
-        await _close_webrtc_peer(session_id)
         logger.info(
             "[render-manager] closed session %s - %d frames rendered, %.1f MB sent",
             session_id, sess.stats.frames_rendered,
@@ -577,7 +582,7 @@ class RenderManager:
         wall, now = time.time(), self._clock()
         to_evict: list[str] = []
         async with self._lock:
-            self._credit_suspension_locked(wall)
+            self._credit_sleep_locked(wall, now)
             ended = self._pop_ended_locked()
             self._expire_tickets_locked(now)
             for sid, sess in self._sessions.items():
@@ -608,26 +613,29 @@ class RenderManager:
             now = self._clock()
             self._expire_tickets_locked(now)
             self._promote_locked(now)
+            # At the end: the time this pass took is not a sleep either.
+            self._last_reap = (time.time(), self._clock())
         return to_evict
 
-    def _credit_suspension_locked(self, wall: float) -> None:
-        """Time this process did not run is not idle time. The idle TTL counts
-        on the wall clock, which goes on while a laptop sleeps: on waking, the
-        first pass found every session idle past the TTL and closed them all,
-        the views a user had left on screen with the lid closed or the screen
-        locked included (issue #411). A pass that comes long after the last one
-        moves each session's last command on by the time nothing ran."""
-        last, self._last_reap_wall = self._last_reap_wall, wall
+    def _credit_sleep_locked(self, wall: float, mono: float) -> None:
+        """Time the machine slept is not idle time. The idle TTL counts on the
+        wall clock, which goes on while a laptop sleeps: on waking, the first
+        pass found every session idle past the TTL and closed them all, the
+        views a user had left on screen with the lid closed or the screen
+        locked included (issue #411). The monotonic clock stops during a sleep
+        (mach_absolute_time on macOS, CLOCK_MONOTONIC on Linux), so the wall
+        time that passed beyond it since the last pass is the sleep, and each
+        session's last command moves on by it."""
+        last = self._last_reap
         if last is None:
             return
-        gap = wall - last
-        if gap <= _SUSPENDED_GAP_S:
+        slept = (wall - last[0]) - (mono - last[1])
+        if slept <= _SLEEP_MIN_S:
             return
-        credit = gap - _REAP_INTERVAL_S
-        logger.info("[render-manager] no reaper pass for %.0f s (the machine slept or the "
-                    "process was stopped): not counted as idle time", gap)
+        logger.info("[render-manager] the machine slept for %.0f s: not counted as idle time",
+                    slept)
         for sess in self._sessions.values():
-            sess.stats.last_command_at = min(wall, sess.stats.last_command_at + credit)
+            sess.stats.last_command_at = min(wall, sess.stats.last_command_at + slept)
 
     def _pop_unattended_locked(self, now: float) -> Any:
         """The session no client has been connected to for longest past the

@@ -245,7 +245,9 @@ private:
     QTimer *m_watchdogTimer{ nullptr };
     visivo::StreamWatchdog m_watchdog;
     QElapsedTimer m_clock;
-    void startWatchdog();
+    void startWatchdog(qint64 firstTrafficGraceMs = 0);
+    /// A sign of life from the backend: a frame (or part of one), a pong, a text.
+    void sawTraffic();
     void checkStream();
     /// Closes the transports and forgets the stream's state, without saying
     /// why: disconnectFromSession() (asked for) and checkStream() (a stall)
