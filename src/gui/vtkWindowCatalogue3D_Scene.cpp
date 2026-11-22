@@ -1143,7 +1143,7 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     vtkIdType n = static_cast<vtkIdType>(this->entries.size());
     if (this->m_renderDecimated && this->m_renderBudget > 0)
         n = std::min<vtkIdType>(n, this->m_renderBudget);
-    if (this->activeFilters.empty() || this->m_splatCount <= 0) {
+    if (this->m_appliedFilters.filters().empty() || this->m_splatCount <= 0) {
         this->sourcePoints->GetBounds(this->m_splatBounds);
         this->m_splatCount = n;
     }

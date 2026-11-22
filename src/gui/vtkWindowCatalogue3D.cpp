@@ -198,9 +198,12 @@ static QString filterDisplayText(const BackendTabularFilter &filter)
     return u"%1 %2 %3"_s.arg(filter.field, filter.op, filter.value);
 }
 
+// takenNames: the other regions' names. A new region is offered the first
+// free "Region N", and a name already in use is refused: the list, the
+// diagnostics and the backend tell regions apart by it.
 static std::optional<BackendTabularFilter> showSpatialFilterDialog(
         QWidget *parent, const QStringList &fields, const std::array<double, 6> &bounds,
-        const BackendTabularFilter *existing = nullptr)
+        const QStringList &takenNames, const BackendTabularFilter *existing = nullptr)
 {
     auto *dlg = new QDialog(parent);
     dlg->setWindowTitle(existing ? u"Edit 3-D Region"_s : u"Select 3-D Region"_s);
@@ -211,7 +214,7 @@ static std::optional<BackendTabularFilter> showSpatialFilterDialog(
 
     auto *name = new QLineEdit(dlg);
     name->setPlaceholderText(u"e.g. Northern outflow"_s);
-    name->setText(existing ? existing->name : u"Region 1"_s);
+    name->setText(existing ? existing->name : visivo::selection::nextRegionName(takenNames));
     auto *shape = new QComboBox(dlg);
     shape->addItem(u"Box"_s, u"box"_s);
     shape->addItem(u"Sphere"_s, u"sphere"_s);
@@ -297,7 +300,18 @@ static std::optional<BackendTabularFilter> showSpatialFilterDialog(
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
     layout->addRow(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, dlg, [dlg, name, takenNames]() {
+        // Kept open on a clash, so the name can be changed in place.
+        if (visivo::selection::isTakenName(name->text(), takenNames)) {
+            QMessageBox::warning(dlg, u"Name in use"_s,
+                                 u"Another 3-D region is already called \u201c%1\u201d. "
+                                 u"Choose another name."_s.arg(name->text().trimmed()));
+            name->setFocus();
+            name->selectAll();
+            return;
+        }
+        dlg->accept();
+    });
     QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
     if (dlg->exec() != QDialog::Accepted) {
         dlg->deleteLater();
@@ -385,6 +399,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          if (!result.valid) {
                              if (this->m_loadIndicator)
                                  this->m_loadIndicator->hide();
+                             // The rows on screen are still the previous
+                             // filters': so is the Remote view again.
+                             if (this->m_appliedFilters.fail()) {
+                                 this->pushRemoteState();
+                                 emit appliedFiltersChanged(this->m_appliedFilters.filters());
+                             }
                              if (std::exchange(this->m_awaitingHydration, false)) {
                                  // The views waiting on these columns stop
                                  // waiting: they keep the rows they have.
@@ -431,6 +451,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  this->entries, this->schema, this->selectedIndex);
                          this->entries = result.entries;
                          this->unplacedEntries = result.unplaced;
+                         if (this->m_appliedFilters.succeed())
+                             emit appliedFiltersChanged(this->m_appliedFilters.filters());
                          // Update pagination state
                          // By rows consumed: rows skipped for bad coordinates
                          // must not be fetched again by the next page.
@@ -680,6 +702,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_pageSize = comparisonSource->m_pageSize;
         this->m_totalCount = comparisonSource->m_totalCount;
         this->activeFilters = comparisonSource->activeFilters;
+        this->m_appliedFilters.adopt(comparisonSource->m_appliedFilters.settled());
         // The source's rows may still lack the columns its background query
         // is bringing: this view takes them from it when they arrive.
         this->m_awaitingHydration = comparisonSource->m_awaitingHydration;
@@ -970,7 +993,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  fields.prepend(*it);
                              }
                              const auto filter = showSpatialFilterDialog(
-                                     this, fields, bounds);
+                                     this, fields, bounds,
+                                     visivo::selection::regionNames(this->activeFilters));
                              if (!filter)
                                  return;
                              this->activeFilters.push_back(*filter);
@@ -1002,7 +1026,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                             std::copy(std::begin(currentBounds), std::end(currentBounds),
                                       bounds.begin());
                         }
-                        updated = showSpatialFilterDialog(this, filterableFields, bounds, &current);
+                        updated = showSpatialFilterDialog(
+                                this, filterableFields, bounds,
+                                visivo::selection::regionNames(this->activeFilters, row),
+                                &current);
                     } else {
                         updated = showAddFilterDialog(this, filterableFields, &current);
                     }
@@ -1097,11 +1124,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             actionSelectionDiagnostics->setEnabled(
                     this->m_cartesian && !this->remoteDatasetId.isEmpty());
             QObject::connect(actionSelectionDiagnostics, &QAction::triggered, this, [this]() {
+                // The population of the rows on screen: the applied filters,
+                // followed as they change, not the list being edited.
                 auto *dialog = new SimulationDiagnosticsDialog(
                         this->backendUrl, this->backendToken, this->remoteSessionId,
                         this->remoteDatasetId, this->numericColumns(),
-                        this->m_componentMetadata.value(u"units"_s).toObject(),
-                        this->activeFilters, this);
+                        this->m_appliedFilters.filters(), this);
+                QObject::connect(this, &vtkWindowCatalogue3D::appliedFiltersChanged, dialog,
+                                 &SimulationDiagnosticsDialog::setFilters);
                 dialog->show();
                 dialog->raise();
                 dialog->activateWindow();

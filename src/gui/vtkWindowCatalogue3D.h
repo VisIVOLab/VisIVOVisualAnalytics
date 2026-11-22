@@ -3,6 +3,8 @@
 
 #include "Catalogue3DParser.h"
 #include "CataloguePlacement.h"
+#include "CatalogueSelectionKey.h"
+#include "CatalogueSelectionState.h"
 #include "LinkedCameraSync.h"
 #include "SnapshotTimelineSteps.h"
 
@@ -32,6 +34,7 @@ class WorkspaceChrome;
 // VTK forward declarations
 class vtkActor;
 class vtkBillboardTextActor3D;
+class vtkCamera;
 class vtkCubeAxesActor;
 class vtkCubeSource;
 class vtkGenericOpenGLRenderWindow;
@@ -217,6 +220,10 @@ signals:
     /// Emitted when a session-expiry error is detected and the user requests
     /// that the dataset be reopened.  Connect to MainWindow::doOpenCataloguePath.
     void reopenRequested(const QString &filepath, const QStringList &paths = QStringList());
+    /// The filters the rows were last queried with changed (Apply, or a
+    /// failed query that put the previous ones back): Selection Diagnostics
+    /// follows these, not the list being edited.
+    void appliedFiltersChanged(const std::vector<BackendTabularFilter> &filters);
 
 protected:
     // Refuse to close (and self-delete via WA_DeleteOnClose) while a large scene
@@ -336,7 +343,12 @@ private:
 
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();
+    /// Apply: the edited filter list becomes the applied one, then the rows
+    /// are queried with it.
     void applyFilter();
+    /// The rows queried again with the applied filters (Load all, attribute
+    /// hydration): edits not yet applied stay unapplied.
+    void queryAppliedFilters();
     /// @p why decides whether the camera is kept (rebuildKeepsCamera).
     void buildScene(SnapshotTimelineSteps::Rebuild why = SnapshotTimelineSteps::Rebuild::NewRows);
     /// Linked, and another window of the group is still open.
@@ -369,9 +381,30 @@ private:
     // Projects all source points to display space; returns index of nearest
     // within hoverThresholdPx, or -1.
     int pickNearestSource(int displayX, int displayY) const;
+    /// The same over a view of @p width x @p height pixels seen by @p camera
+    /// (the Remote or ray-traced view's, not this window's renderer).
+    int pickNearestSource(vtkCamera *camera, double width, double height, int displayX,
+                          int displayY) const;
     void setHoveredSource(int idx);
     void setSelectedSource(int idx);
+    /// Brings source @p idx to the middle of the view on screen (local,
+    /// Remote or ray-traced). @p frame: a SubFind target is framed by its
+    /// radius; otherwise the distance is divided by @p zoomFactor. A SAMP
+    /// highlight only recentres (recentreLocalView) and never reframes.
     void centerOnSource(int idx, double zoomFactor = 3.0);
+    /// SAMP: the local view looks at source @p idx from where it is.
+    void recentreLocalView(int idx);
+    /// The radius a SubFind target is framed by, and its column; 0 when the
+    /// table is not a SubFind catalogue or the row has none.
+    double framingRadius(int idx, QString *field = nullptr) const;
+    /// A double-click on the Remote or ray-traced view (they have no VTK
+    /// picker): picks the nearest marker with that view's camera and frames it.
+    void frameSourceAtViewPoint(QWidget *view, const QPoint &pos);
+    /// centerOnSource once the shown view's @p camera is known (@p error:
+    /// why there is none).
+    void frameSourceWithCamera(const CatalogueSelection::Key &key, double zoomFactor,
+                               const QJsonObject &camera, const QString &error);
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     // ── UI helpers ──────────────────────────────────────────────────────────
     void updateInfoPanel();
@@ -677,7 +710,14 @@ private:
     QPointer<QPushButton> btnFilterClearAll;
     QPointer<QPushButton> btnFilterApply;
     QPointer<QLabel> filterStatusLabel;
+    /// The filter list as edited; Apply copies it into m_appliedFilters.
     std::vector<BackendTabularFilter> activeFilters;
+    /// What the rows on screen, the next page, the Remote view and Selection
+    /// Diagnostics are filtered by.
+    visivo::selection::AppliedFilters m_appliedFilters;
+    /// Bumped by every framing request: a backend camera that arrives after a
+    /// newer one was asked for is dropped.
+    quint64 m_frameRequest{ 0 };
     bool filterBusy{ false };
     QFutureWatcher<Catalogue3DFilterTaskResult> filterWatcher;
     // ── Pagination ────────────────────────────────────────────────────────────

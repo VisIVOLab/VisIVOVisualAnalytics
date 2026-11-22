@@ -606,11 +606,8 @@ void vtkWindowCatalogue3D::startAttributeHydration()
     // Ordinary asynchronous filtering with no new filters: the fixed RNG
     // returns the same row indices and the watcher atomically replaces the
     // partial rows once all columns have arrived.
-    // FOLLOW-UP (#450): applyFilter() queries the filter list as edited;
-    // once m_appliedFilters exists, the columns must be asked for with the
-    // filters the loaded rows were selected by.
     this->m_hydratingAttributes = true;
-    this->applyFilter();
+    this->queryAppliedFilters();
     if (!this->filterBusy) {
         this->m_hydratingAttributes = false;
         this->m_awaitingHydration = false;

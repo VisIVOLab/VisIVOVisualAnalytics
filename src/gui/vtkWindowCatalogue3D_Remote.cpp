@@ -69,6 +69,8 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     this->m_renderStack->addWidget(ui->vtk);
     this->m_remoteWidget = new RemoteRenderWidget(this->m_renderStack);
     this->m_renderStack->addWidget(this->m_remoteWidget);
+    // A double-click on a marker selects it there too (eventFilter).
+    this->m_remoteWidget->installEventFilter(this);
 
     // The colour bar of the cube viewer's 3-D view, over whichever view shows.
     this->m_colorbar = new VolumeColorbar(this);
@@ -309,7 +311,7 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
     static const QStringList numericOps{ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s };
     QVariantList filters;
     bool skipped = false;
-    for (const BackendTabularFilter &f : this->activeFilters) {
+    for (const BackendTabularFilter &f : this->m_appliedFilters.filters()) {
         if (f.shape == u"box"_s) {
             filters << QVariantMap{
                     { u"name"_s, f.name }, { u"op"_s, f.op },
@@ -951,6 +953,13 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
         QObject::connect(this->m_rtView, &RaytraceViewport::cameraChanged, this,
                          &vtkWindowCatalogue3D::broadcastComparisonRaytraceCamera);
         this->m_renderStack->addWidget(this->m_rtView);
+        // Its pages (the GPU view, or the backend's frames) take the mouse:
+        // a double-click on a marker selects it there too (eventFilter). Not
+        // the loading overlay over them, which has nothing to pick.
+        for (QWidget *page : this->m_rtView->findChildren<QWidget *>(
+                     QString(), Qt::FindDirectChildrenOnly))
+            if (page->inherits("ParticleGLView") || page->inherits("QLabel"))
+                page->installEventFilter(this);
         const auto overlayShown = [self, boxCheck, barCheck]() {
             if (self && self->m_rtView)
                 self->m_rtView->setOverlayShown(boxCheck->isChecked(), barCheck->isChecked());

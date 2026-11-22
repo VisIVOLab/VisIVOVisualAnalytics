@@ -3074,7 +3074,7 @@ BackendTabularQueryResponse BackendClient::queryTabularCatalogue(
 }
 
 BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
-        const BackendCatalogueDiagnosticsRequest &req) const
+        const BackendCatalogueDiagnosticsRequest &req, const std::atomic_bool *abort) const
 {
     BackendCatalogueDiagnosticsResponse result;
     BackendTabularQueryRequest query;
@@ -3089,7 +3089,7 @@ BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
     QString error;
     const QByteArray payload = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/diagnostics")),
-            QJsonDocument(body), error);
+            QJsonDocument(body), error, nullptr, nullptr, true, abort);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
@@ -3504,6 +3504,9 @@ const QStringList &heavyComputePaths()
         // A second on a laptop, but it runs under _run_heavy_with_limit: on
         // slow storage the server's ceiling, not 120 s, is the one to honour.
         QStringLiteral("/sofia2/suggest"),
+        // Selection Diagnostics: two exact passes over every particle of the
+        // selection, minutes on a large snapshot read out of core (#448).
+        QStringLiteral("/catalogue/diagnostics"),
     };
     return paths;
 }
@@ -4146,7 +4149,8 @@ QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error,
                                       QMap<QString, QString> *responseHeaders,
-                                      int *statusOut, bool announceStart) const
+                                      int *statusOut, bool announceStart,
+                                      const std::atomic_bool *abort) const
 {
     // Counted while it runs (RAII), so the status bar can say "N running" for a
     // synchronous compute — and announced when it STARTS, not only when it ends:
@@ -4224,6 +4228,19 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
             loop.quit();
         });
         timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
+        // A caller that may be cancelled (a long compute the user gave up on)
+        // must not hold this worker thread for the whole timeout.
+        QTimer abortWatch;
+        if (abort) {
+            QObject::connect(&abortWatch, &QTimer::timeout, &loop, [&]() {
+                if (!abort->load())
+                    return;
+                attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+                reply->abort();
+                loop.quit();
+            });
+            abortWatch.start(100);
+        }
         QTimer quitWatch;
         bool abandoned = false;
         abandonWhenQuitting(quitWatch, loop, reply, abandoned);
@@ -4232,9 +4249,14 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         // grace (the watch).
         if (visivo::TaskQuitDrain::instance().quitting())
             abandoned = true;
-        else
+        else if (!(abort && abort->load()))
             loop.exec();
+        else {
+            attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+            reply->abort();
+        }
         quitWatch.stop();
+        abortWatch.stop();
         timeoutTimer.stop();
         // On the application thread, exit() ends this loop at once, before the
         // watch has fired: an unanswered reply is then no empty success (and
@@ -4269,7 +4291,7 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
 
         // No second token while quitting: the exit waits for this worker.
         if (status == 401 && attempt + 1 < tokenCandidates.size()
-            && !visivo::TaskQuitDrain::instance().quitting()) {
+            && !visivo::TaskQuitDrain::instance().quitting() && !(abort && abort->load())) {
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
                     QStringLiteral("BackendClient"),
