@@ -124,9 +124,11 @@ the copilot read rows through `Component.take`, a slice of rows at a time.
 A chunked or compressed HDF5 piece (TNG, EAGLE, Gadget-4) up to
 `VISIVO_GADGET_CACHE_MB` (default 512) is decompressed once into a cache
 shared by every component, least recently used out first, keyed by the file's
-size and modification time. A larger piece is read in windows of whole HDF5
-chunks (at most 64 MB each), each from its first to its last row asked for, so
-a contiguous slice reads only its own chunks. Placing 4 M of 8 M rows from
+size and modification time. Readers missing the same piece at once wait for
+the first one's decompression instead of repeating it, and closing a
+snapshot's last dataset drops its pieces. A larger piece is read in windows of
+whole HDF5 chunks (at most 64 MB each), each from its first to its last row
+asked for, so a contiguous slice reads only its own chunks. Placing 4 M of 8 M rows from
 four gzip shards went from 48 shard decompressions (4.2 s) to 4 (0.9 s).
 
 **Out-of-core queries.** Without a DataFrame, `/v1/catalogue/query` filters
@@ -202,7 +204,14 @@ The other files of a multi-file snapshot, the file a `snapdir` folder holds
 and the run's parameter file are read too. `/v1/catalogue/open` and
 `/v1/files/classify` check each of them against the backend's data roots,
 resolving symbolic links, as they check the named file. A snapshot with one
-file outside the roots is refused.
+of its own files outside the roots is refused, and the classifier answers
+"File not found." without naming it. A parameter file outside the roots (one
+folder above a root, or a link out of it) is treated as absent: the snapshot
+opens with the default units, and `units.source` says the file was not used.
+
+The copilot's `catalogue_summary` of a component with more than 2 million
+rows reads an evenly spaced sample of 2 million rows per column, and says so
+in `sample` (`rows`, `of`, `every`).
 
 ## Desktop splats and linked quantities
 

@@ -529,31 +529,11 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
     }
 }
 
-void vtkWindowCatalogue3D::hydrateParticleAttributesWhenIdle()
-{
-    if (!this->m_hydrationPending || this->remoteDatasetId.isEmpty())
-        return;
-    if (this->filterBusy || this->m_sceneBuilding) {
-        // Retried when the scene build ends (buildScene); a filter running
-        // now already fetches every column and clears the request.
-        if (this->filterStatusLabel)
-            this->filterStatusLabel->setText(
-                    u"Particle attributes load once the scene is ready…"_s);
-        return;
-    }
-    if (this->filterStatusLabel)
-        this->filterStatusLabel->setText(u"Loading particle attributes in background…"_s);
-    this->applyFilter();
-}
-
 void vtkWindowCatalogue3D::applyFilter()
 {
     if (this->remoteDatasetId.isEmpty() || this->filterBusy || this->m_sceneBuilding) {
         return;
     }
-    // Any query fetches every column: the first page's missing particle
-    // attributes come with it.
-    this->m_hydrationPending = false;
 
     // Reset pagination state for a fresh query
     this->m_currentOffset = 0;

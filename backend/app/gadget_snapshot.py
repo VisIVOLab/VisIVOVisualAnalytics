@@ -57,6 +57,7 @@ the entropy K = kT / n_e^(2/3) in keV cm^2.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import struct
@@ -652,9 +653,9 @@ def _unit_name(value: float, names: dict, base: str) -> str:
     return f"{value:.6g} {base}"
 
 
-def parameter_file(first_file: str | Path) -> Path | None:
-    """The run's parameter file Gadget writes (``parameters-usedvalues`` ...)
-    beside the snapshot or one folder up, or None."""
+def _parameter_candidate(first_file: str | Path) -> Path | None:
+    """The first parameter file beside the snapshot or one folder up,
+    wherever it lies."""
     folder = Path(first_file).parent
     for where in (folder, folder.parent):
         for name in _PARAM_FILES:
@@ -662,6 +663,34 @@ def parameter_file(first_file: str | Path) -> Path | None:
             if p.is_file():
                 return p
     return None
+
+
+def _within_env_roots(path: Path) -> bool:
+    """Whether ``path`` (resolved, so a symbolic link counts where it leads)
+    lies in VISIVO_DATA_ROOTS; True when no roots are set. The same rule as
+    the backend's own path check, without importing it (render and pyramid
+    processes read snapshots without the rest of the backend)."""
+    raw = os.environ.get("VISIVO_DATA_ROOTS", "").strip()
+    roots = [Path(part).expanduser().resolve() for part in raw.split(os.pathsep)
+             if part.strip()]
+    if not roots:
+        return True
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def parameter_file(first_file: str | Path) -> Path | None:
+    """The run's parameter file Gadget writes (``parameters-usedvalues`` ...)
+    beside the snapshot or one folder up, or None. One outside the data
+    roots (the folder above a root, a symbolic link out of it) counts as
+    absent: the snapshot opens with the default units and says so
+    (:func:`units_for`), rather than being refused for a file it only
+    reads units from."""
+    p = _parameter_candidate(first_file)
+    return p if p is not None and _within_env_roots(p) else None
 
 
 def looks_comoving(header: Header) -> bool:
@@ -684,6 +713,9 @@ def units_for(first_file: str | Path, hdf5_units: dict | None = None,
     params = parameter_file(first_file)
     if params is not None:
         units = _from_params(params, units)
+    elif _parameter_candidate(first_file) is not None:
+        units = replace(units, source=units.source + " (the run's parameter file lies "
+                        "outside the folders this backend may read and was not used)")
     if hdf5_units:
         units = replace(units, source="the HDF5 file's units", **hdf5_units)
     env = os.environ.get(UNITS_ENV, "").strip()
@@ -781,22 +813,30 @@ WINDOW_BYTES = 64 << 20
 
 
 def piece_cache_bytes() -> int:
-    """The cache budget, from the environment when it is a number."""
+    """The cache budget, from the environment when it is a finite number of
+    megabytes (0 or more); the default otherwise (nan, inf, text)."""
     try:
         mb = float(os.environ.get(PIECE_CACHE_ENV, PIECE_CACHE_DEFAULT_MB))
-    except ValueError:
-        mb = PIECE_CACHE_DEFAULT_MB
-    return max(0, int(mb * (1 << 20)))
+        if not math.isfinite(mb) or mb < 0:
+            raise ValueError(mb)
+        return int(mb * (1 << 20))
+    except (ValueError, OverflowError):
+        return int(PIECE_CACHE_DEFAULT_MB * (1 << 20))
 
 
 class _PieceCache:
     """Least recently used decompressed pieces, at most the budget in bytes,
-    keyed by the file's identity (a rewritten file is not served stale)."""
+    keyed by the file's identity (a rewritten file is not served stale).
+
+    Concurrent misses on one piece decompress it once: the first reader
+    holds that key's lock while it reads, the others wait on it and then
+    find the entry (other pieces are read meanwhile)."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._items: OrderedDict = OrderedDict()
         self._bytes = 0
+        self._loading: dict = {}            # key -> (lock, waiters)
 
     def get(self, piece: Piece) -> np.ndarray | None:
         """The piece's (rows, dims) values, or None when it exceeds the budget."""
@@ -810,15 +850,38 @@ class _PieceCache:
             if hit is not None:
                 self._items.move_to_end(key)
                 return hit
-        values = piece.array()              # outside the lock: may take seconds
+            entry = self._loading.setdefault(key, [threading.Lock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:                  # one reader per piece at a time
+                with self._lock:
+                    hit = self._items.get(key)
+                    if hit is not None:     # read by the reader before us
+                        self._items.move_to_end(key)
+                        return hit
+                values = piece.array()      # outside the cache lock: seconds
+                with self._lock:
+                    self._items[key] = values
+                    self._bytes += values.nbytes
+                    while self._bytes > budget and len(self._items) > 1:
+                        _, old = self._items.popitem(last=False)
+                        self._bytes -= old.nbytes
+                return values
+        finally:
+            with self._lock:
+                entry[1] -= 1
+                if entry[1] == 0:
+                    self._loading.pop(key, None)
+
+    def drop(self, paths) -> int:
+        """Forget the pieces read from ``paths`` (a closed dataset's files);
+        the number dropped."""
+        wanted = {str(p) for p in paths}
         with self._lock:
-            if key not in self._items:
-                self._items[key] = values
-                self._bytes += values.nbytes
-            while self._bytes > budget and len(self._items) > 1:
-                _, old = self._items.popitem(last=False)
-                self._bytes -= old.nbytes
-        return values
+            keys = [k for k in self._items if k[0] in wanted]
+            for k in keys:
+                self._bytes -= self._items.pop(k).nbytes
+        return len(keys)
 
     def clear(self):
         with self._lock:
@@ -1596,6 +1659,17 @@ class SegmentedColumn:
 
 
 # ── References ───────────────────────────────────────────────────────────────
+
+def release(path: str | Path) -> int:
+    """Drop what is kept in memory for the snapshot ``path`` (a component
+    reference or a file of it) once no dataset reads it: its decompressed
+    HDF5 pieces. The number of pieces dropped; 0 for anything else."""
+    try:
+        snap = open_snapshot(split_ref(path)[0])
+    except (OSError, ValueError):
+        return 0
+    return PIECE_CACHE.drop(f.path for f in snap.files)
+
 
 def gadget_ref(first_file: str | Path, ptype: int) -> str:
     return f"{first_file}{REF_SEP}{int(ptype)}"

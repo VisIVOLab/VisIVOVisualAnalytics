@@ -252,6 +252,10 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
 
 #: Rows a particle summary reads at a time (8 MB of float64 per column).
 PARTICLE_SUMMARY_CHUNK = 1_000_000
+#: Rows a particle summary reads per column at most: a larger component is
+#: summarised on an evenly spaced sample of this many rows, and says so
+#: (the copilot answers in seconds, not in a scan of 10^9 particles).
+PARTICLE_SUMMARY_MAX_ROWS = 2_000_000
 
 
 def _particle_catalogue_summary(path: str, params: dict[str, Any],
@@ -259,22 +263,26 @@ def _particle_catalogue_summary(path: str, params: dict[str, Any],
     """catalogue_summary of an out-of-core snapshot component: the same
     statistics, each column read through ``take`` a chunk of rows at a time
     (bounded memory; a compressed HDF5 shard is decompressed once, see
-    gadget_snapshot.PIECE_CACHE)."""
+    gadget_snapshot.PIECE_CACHE). Beyond PARTICLE_SUMMARY_MAX_ROWS rows they
+    come from an evenly spaced sample, stated in ``sample``: min and max are
+    then those of the sample, not necessarily of the component."""
     from .. import gadget_snapshot as gs  # noqa: PLC0415
     from ..point_table import particle_catalogue_metadata  # noqa: PLC0415
     component = gs.resolve(path)
     meta = context if context.get("fields") else {**particle_catalogue_metadata(path), **context}
     fields = list(meta.get("fields") or [])
     max_cols = max(1, int(params.get("max_columns", 40)))
+    n = int(component.num_rows)
+    step = max(1, -(-n // PARTICLE_SUMMARY_MAX_ROWS))
+    rows_read = np.arange(0, n, step, dtype=np.int64)
     columns: list[dict[str, Any]] = []
     for info in fields[:max_cols]:
         name = info["name"]
         entry: dict[str, Any] = {"name": name, "type": info["type"]}
         if info["type"] in ("int", "float"):
             count, lo, hi, total = 0, np.inf, -np.inf, 0.0
-            for start in range(0, component.num_rows, PARTICLE_SUMMARY_CHUNK):
-                rows = np.arange(start, min(component.num_rows, start + PARTICLE_SUMMARY_CHUNK),
-                                 dtype=np.int64)
+            for start in range(0, rows_read.size, PARTICLE_SUMMARY_CHUNK):
+                rows = rows_read[start:start + PARTICLE_SUMMARY_CHUNK]
                 col = np.asarray(component.take(name, rows), dtype=np.float64)
                 fin = col[np.isfinite(col)]
                 if fin.size:
@@ -295,6 +303,10 @@ def _particle_catalogue_summary(path: str, params: dict[str, Any],
         "coordinate_fields": meta.get("coordinate_fields") or {},
         "columns": columns,
         "columns_truncated": len(fields) > max_cols,
+        "sample": ({"rows": int(rows_read.size), "of": n, "every": step,
+                    "note": f"statistics of every {step}th row; finite_count counts "
+                            "the sample, min/max are the sample's"}
+                   if step > 1 else {"rows": n, "of": n, "every": 1, "note": "every row"}),
     }
     _describe_particles(out, meta, component.units())
     return out

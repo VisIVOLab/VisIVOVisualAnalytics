@@ -1197,3 +1197,93 @@ async def test_a_snapshot_file_reaching_outside_the_roots_classifies_as_not_foun
                                headers=auth_headers)).json()
     assert reply["valid"] and reply["kind"] == "directory"
     assert "outside_secret" not in str(reply)
+
+
+def test_a_parameter_file_outside_the_data_roots_counts_as_absent(tmp_path, monkeypatch):
+    from app.classify import classify_path
+    from app.dependencies import _within_data_roots
+    from app.point_table import particle_dataset_path
+    root = tmp_path / "run" / "root"
+    files, _ = _snapshot(root)
+    # One folder above the snapshot's folder: outside the root.
+    (root / "parameters-usedvalues").write_text("UnitLength_in_cm 3.085678e24\n")
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root / "snapdir_002"))
+    assert gs.parameter_file(files[0]) is None
+    snap = gs.open_snapshot(files[0])
+    assert snap.units.describe()["length"] == "kpc"            # defaults, not Mpc
+    assert "outside the folders this backend may read" in snap.units.source
+    assert particle_dataset_path(str(files[0]), _within_data_roots) is not None
+    verdict = classify_path(files[0], _within_data_roots)
+    assert verdict["kind"] == "particles" and verdict["opener"] == "catalogue"
+    monkeypatch.setenv("VISIVO_DATA_ROOTS", str(root))
+    assert gs.open_snapshot(files[0]).units.describe()["length"] == "Mpc"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "-3", "lots"])
+def test_a_cache_budget_that_is_no_size_falls_back_to_the_default(monkeypatch, value):
+    monkeypatch.setenv(gs.PIECE_CACHE_ENV, value)
+    assert gs.piece_cache_bytes() == gs.PIECE_CACHE_DEFAULT_MB << 20
+
+
+def test_concurrent_misses_decompress_a_piece_once_and_close_drops_it(tmp_path, monkeypatch):
+    import threading
+    ref = _compressed_hdf5(tmp_path / "h5c", 4000, 2, 256)
+    gs.PIECE_CACHE.clear()
+    monkeypatch.delenv(gs.PIECE_CACHE_ENV, raising=False)
+    reads = []
+    real = gs.Piece.array
+
+    def slow(self):
+        reads.append((self.path, self.dataset))
+        threading.Event().wait(0.05)        # long enough for the others to miss too
+        return real(self)
+    monkeypatch.setattr(gs.Piece, "array", slow)
+    component = gs.resolve(ref)
+    rows = np.arange(0, component.num_rows, 7)
+    results = [None] * 6
+
+    def work(i):
+        results[i] = component.take("rho", rows)
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(reads) == 2 and len(set(reads)) == 2          # one per shard
+    assert all(np.array_equal(r, results[0]) for r in results)
+    assert gs.release(ref) == 2
+    assert gs.release(ref) == 0
+
+
+@pytest.mark.asyncio
+async def test_closing_the_last_dataset_of_a_snapshot_releases_its_pieces(
+        client, auth_headers, tmp_path, monkeypatch):
+    ref = _compressed_hdf5(tmp_path / "h5d", 3000, 2, 256)
+    gs.PIECE_CACHE.clear()
+    opened = [(await client.post("/v1/catalogue/open", json={"path": ref, "format": "gadget"},
+                                 headers=auth_headers)).json() for _ in range(2)]
+    assert all(o["valid"] for o in opened), opened
+    await client.post("/v1/catalogue/query", json={
+        "dataset_id": opened[0]["dataset_id"], "limit": 10, "random_sample": True,
+        "filters": [{"field": "rho", "op": ">", "value": "0.5"}]}, headers=auth_headers)
+    kept = len(gs.PIECE_CACHE._items)
+    assert kept == 4
+    await client.delete(f"/v1/datasets/{opened[0]['dataset_id']}", headers=auth_headers)
+    assert len(gs.PIECE_CACHE._items) == kept               # the other still reads it
+    await client.delete(f"/v1/datasets/{opened[1]['dataset_id']}", headers=auth_headers)
+    assert len(gs.PIECE_CACHE._items) == 0
+
+
+def test_the_copilot_summary_of_a_large_type_is_a_stated_sample(tmp_path, monkeypatch):
+    from app.assistant import tools
+    from app.point_table import particle_catalogue_metadata
+    files, _ = _snapshot(tmp_path)
+    ref = gs.gadget_ref(files[0], 1)
+    monkeypatch.setattr(tools, "PARTICLE_SUMMARY_MAX_ROWS", 1000)
+    out = tools._catalogue_summary(ref, {}, {"path": ref, "dataframe": None,
+                                             **particle_catalogue_metadata(ref)})
+    assert out["num_rows"] == 4000
+    assert out["sample"]["every"] == 4 and out["sample"]["rows"] == 1000
+    x = gs.resolve(ref).column("x")[::4].astype(np.float64)
+    col = next(c for c in out["columns"] if c["name"] == "x")
+    assert col["finite_count"] == 1000 and col["mean"] == pytest.approx(x.mean(), rel=1e-9)
