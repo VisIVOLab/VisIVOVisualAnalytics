@@ -1,5 +1,6 @@
 #include "vtkWindowCatalogue3D.h"
 #include "ParticleSplatDefaults.h"
+#include "ParticleSplatVtk.h"
 #include "SnapshotTimelineSteps.h"
 #include "app/DatasetUsers.h"
 #include "app/TaskQuitDrain.h"
@@ -383,6 +384,7 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     this->gaussianMapper->SetEmissive(true);
     this->gaussianMapper->SetBoundScale(3.0f);
     this->gaussianMapper->SetOpacityArray(this->morphScalars->GetName());
+    ParticleSplatVtk::setUnitOpacity(this->gaussianOpacity);
     this->gaussianMapper->SetScalarOpacityFunction(this->gaussianOpacity);
     this->gaussianMapper->SetLookupTable(this->morphologyLut);
     this->gaussianMapper->SetScalarRange(-0.5, nMorph - 0.5);
@@ -463,7 +465,9 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     cubeAxesActor->SetVisibility(this->chkShowBoundingBox && this->chkShowBoundingBox->isChecked() ? 1 : 0);
 
     this->buildShells();
-    this->updatePointPositions();
+    // Other rows from a filter or Load more keep the splats of the table
+    // with no filter, as the same rows with more columns do.
+    this->updatePointPositions(why == SnapshotTimelineSteps::Rebuild::Placement);
     this->updateColorMapping();
     this->updateGlyphPipeline();   // re-shows the glyph/points actor + renders
 
@@ -682,7 +686,7 @@ QString vtkWindowCatalogue3D::fallbackDetailsText(const Catalogue3DEntry &entry)
     return text.trimmed();
 }
 
-void vtkWindowCatalogue3D::updatePointPositions()
+void vtkWindowCatalogue3D::updatePointPositions(bool newSplatBasis)
 {
     if (this->entries.empty()) {
         return;
@@ -749,8 +753,10 @@ void vtkWindowCatalogue3D::updatePointPositions()
     qInfo() << "[catalogue3d] axis mapping updated"
             << "X=" << this->mapXKey << "resolved=" << resolvedXKey
             << "Y=" << this->mapYKey << "resolved=" << resolvedYKey
-            << "Z=" << this->mapZKey << "resolved=" << resolvedZKey;    // New positions: the splats are sized again, on the points drawn now.
-    this->m_splatCount = 0;
+            << "Z=" << this->mapZKey << "resolved=" << resolvedZKey;
+    if (newSplatBasis)
+        this->m_splatCount = 0;
+    this->captureSplatBasis();
     if (this->geometryMode == GeometryMode::Gaussian)
         this->updateGaussianSplats();   // sized to the new extent
     this->pushRemoteState();
@@ -911,7 +917,8 @@ void vtkWindowCatalogue3D::applyRenderBudget()
     // is thinned. Under budget (or budget == 0) the mappers read the cloud
     // directly with no extra pipeline pass.
     const vtkIdType n = static_cast<vtkIdType>(this->entries.size());
-    const bool decimate = this->m_renderBudget > 0 && n > this->m_renderBudget;
+    this->m_renderStride = ParticleSplatDefaults::renderStride(n, this->m_renderBudget);
+    const bool decimate = this->m_renderStride > 1;
     this->m_renderDecimated = decimate;
 
     if (decimate) {
@@ -922,11 +929,9 @@ void vtkWindowCatalogue3D::applyRenderBudget()
         // edits bump the input MTime, making the cloud shimmer (verified against
         // VTK 9.6.2). OnRatio is stable and, for ID-ordered catalogues, samples
         // all spatial regions proportionally so density still reads correctly.
-        const int ratio = std::max<vtkIdType>(1, (n + this->m_renderBudget - 1)
-                                                          / this->m_renderBudget);
         this->renderDecimator->SetInputData(this->sourcesPolyData);
         this->renderDecimator->RandomModeOff();
-        this->renderDecimator->SetOnRatio(ratio);
+        this->renderDecimator->SetOnRatio(static_cast<int>(this->m_renderStride));
         this->renderDecimator->GenerateVerticesOn();   // Point mode needs vert cells
         this->renderDecimator->SingleVertexPerCellOn();
         this->glyphMapper->SetInputConnection(this->renderDecimator->GetOutputPort());
@@ -939,8 +944,24 @@ void vtkWindowCatalogue3D::applyRenderBudget()
     }
 }
 
+void vtkWindowCatalogue3D::updateSplatPass()
+{
+    if (this->geometryMode == GeometryMode::Gaussian) {
+        if (!this->m_splatPass)
+            this->m_splatPass = ParticleSplatVtk::floatTargetPass();
+        this->renderer->SetPass(this->m_splatPass);
+    } else if (this->m_splatPass && this->renderer->GetPass() == this->m_splatPass) {
+        // Its float framebuffer stays on the GPU unless released here, with
+        // the window's context current.
+        this->renderWindow->MakeCurrent();
+        this->m_splatPass->ReleaseGraphicsResources(this->renderWindow);
+        this->renderer->SetPass(nullptr);
+    }
+}
+
 void vtkWindowCatalogue3D::updateGlyphPipeline()
 {
+    this->updateSplatPass();
     if (entries.empty()) {
         return;
     }
@@ -1130,41 +1151,35 @@ double vtkWindowCatalogue3D::splatSizeFromScale() const
     return std::clamp(3.0 * ui->sliderScale->value() / 100.0, 0.25, 12.0);
 }
 
+void vtkWindowCatalogue3D::captureSplatBasis()
+{
+    // Taken in every shape, so that splats chosen after a filter still have
+    // the table with no filter; another table or snapshot starts again.
+    const QString key = this->filepath + u'|' + this->m_cataloguePaths.join(u'|') + u'|'
+            + QString::number(this->m_tableRows);
+    if (key != this->m_splatBasisKey)
+        this->m_splatCount = 0;
+    if (this->m_appliedFilters.filters().empty() || this->m_splatCount <= 0) {
+        this->sourcePoints->GetBounds(this->m_splatBounds);
+        this->m_splatCount = static_cast<vtkIdType>(this->entries.size());
+        this->m_splatBasisKey = key;
+    }
+}
+
 void vtkWindowCatalogue3D::updateGaussianSplats()
 {
     // Sized to the mean spacing of the points drawn and faded by their number,
-    // as the former VBT point viewer (and the backend's point session,
-    // app/render_session/points.py gaussian_splat) do: radius = spacing ×
-    // size / 8. Opacity is normalized by the estimated sightline depth so a
-    // typical column does not start several times past full brightness.
-    // The spacing is ∛(volume / N) of the box the points fill: a filter that
-    // cuts a slab keeps it, as it keeps the density (a flat axis counts as a
-    // thousandth of the longest).
-    vtkIdType n = static_cast<vtkIdType>(this->entries.size());
-    if (this->m_renderDecimated && this->m_renderBudget > 0)
-        n = std::min<vtkIdType>(n, this->m_renderBudget);
-    if (this->m_appliedFilters.filters().empty() || this->m_splatCount <= 0) {
-        this->sourcePoints->GetBounds(this->m_splatBounds);
-        this->m_splatCount = n;
-    }
-    const double *b = this->m_splatBounds;
-    n = this->m_splatCount;
-    const double dims[3] = { b[1] - b[0], b[3] - b[2], b[5] - b[4] };
-    const double longest = std::max({ dims[0], dims[1], dims[2], 1.0e-6 });
-    double volume = 1.0;
-    for (const double d : dims)
-        volume *= std::max(d, longest * 1.0e-3);
-    const double spacing = std::cbrt(volume / std::max<double>(1.0, static_cast<double>(n)));
-    const double radius = spacing * this->splatSizeFromScale() / 8.0;
-    // Splats along the longest sightline: ∛N for a cube (the former viewer's
-    // rule), and unchanged by a filter that cuts a slab.
-    const double depth = std::max(longest / spacing, 1.0);
-    // A whole 8-bit step, at least eight (ParticleSplatDefaults): VTK stores
-    // the opacity as the splat colour's 8-bit alpha.
-    const double opacity = ParticleSplatDefaults::vtkOpacityValue(
-            ParticleSplatDefaults::opacityForDepth(depth));
-    this->gaussianOpacity->RemoveAllPoints();
-    this->gaussianOpacity->AddPoint(-1.0e15, opacity);
-    this->gaussianOpacity->AddPoint(1.0e15, opacity);
-    this->gaussianMapper->SetScaleFactor(radius);
+    // as the former VBT point viewer and the backend's point session do
+    // (ParticleSplatDefaults::splatStyle). The box and the number of points
+    // are those with no filter: a filter that cuts a slab keeps the density.
+    // The render budget's level of detail draws every stride-th point, so it
+    // is sized as table / stride points over the same box: larger splats,
+    // each carrying the light of the points it stands for.
+    this->captureSplatBasis();
+    const double rows = static_cast<double>(this->m_splatCount)
+            / static_cast<double>(std::max<long long>(1, this->m_renderStride));
+    const ParticleSplatDefaults::SplatStyle style = ParticleSplatDefaults::splatStyle(
+            this->m_splatBounds, rows, this->splatSizeFromScale());
+    this->gaussianMapper->SetScaleFactor(style.radius);
+    ParticleSplatVtk::setSplatGain(this->gaussianMapper, style.gain);
 }
