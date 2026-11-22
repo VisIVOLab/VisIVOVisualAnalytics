@@ -692,7 +692,8 @@ void AssistantPanel::applyResult(const BackendAssistantResult &r, const QString 
         m_entries.push_back(le);
         // Route each directive to its target view (the active one by default) —
         // the copilot can act across several open views at once (Phase 2).
-        CopilotActionRouter::instance()->dispatch(r.actions, m_datasetId);
+        CopilotActionRouter::instance()->dispatch(
+                r.actions, m_actionTarget.isEmpty() ? m_datasetId : m_actionTarget);
     }
     // Record this exchange as follow-up context; clamp each turn to the server's
     // per-turn cap (4000) and cap the retained turn count so requests stay bounded.

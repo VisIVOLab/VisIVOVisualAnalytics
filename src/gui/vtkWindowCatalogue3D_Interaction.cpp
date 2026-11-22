@@ -557,8 +557,8 @@ void vtkWindowCatalogue3D::applyCameraPreset(double azimuth, double elevation)
     const bool raytraced = this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView;
     if (raytraced) {
+        // Its cameraChanged reaches the linked views.
         this->m_rtView->setCameraPreset(azimuth, elevation);
-        this->broadcastComparisonRaytraceCamera(this->m_rtView->camera());
         return;
     }
     const bool remote = this->m_remoteView && this->m_renderStack

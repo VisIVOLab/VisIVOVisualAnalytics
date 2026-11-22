@@ -12,6 +12,7 @@
 #include "TestRemoteSliceCache.h"
 #include "TestLinkedWindowRegistry.h"
 #include "TestLinkedCameraSync.h"
+#include "TestSnapshotTimelineSteps.h"
 #include "TestSpectralUnitConvert.h"
 #include "TestCubeRegionGeom.h"
 #include "TestCubeToolGate.h"
@@ -104,6 +105,7 @@ int main(int argc, char *argv[])
     { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedCameraSync     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSnapshotTimelineSteps t; status |= QTest::qExec(&t, argc, argv); }
     { TestSpectralUnitConvert t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeRegionGeom   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeToolGate     t; status |= QTest::qExec(&t, argc, argv); }

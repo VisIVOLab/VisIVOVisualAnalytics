@@ -1096,10 +1096,13 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
                     u"What columns does this catalogue have?"_s,
                     u"What's the redshift range?"_s,
                     u"Comoving distance at redshift 0.1?"_s });
+            // By this window's own key: comparison views share the dataset id,
+            // and the last one registered took every view's actions (#446).
+            this->m_copilot->setActionTarget(this->m_copilotRouteKey);
             CopilotActionRouter::instance()->registerTarget(
                     this->remoteDatasetId, this,
                     [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
-                    [this]() { this->undoCopilotActions(); });
+                    [this]() { this->undoCopilotActions(); }, this->m_copilotRouteKey);
         }
     }
 

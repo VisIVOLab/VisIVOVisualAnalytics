@@ -442,6 +442,33 @@ private:
     void applyComparisonCamera(const LinkedCameraSync::Pose &pose);
     void applyComparisonRaytraceCamera(const QJsonObject &camera);
     LinkedCameraSync::Pose comparisonCameraPose() const;
+    /// The camera of this window's VTK view in the ray-traced/remote views' terms.
+    QJsonObject localCameraJson() const;
+    /// Show the VTK camera just set in the view actually on screen: the
+    /// ray-traced view, or the backend's when the points are drawn there.
+    void followCameraInShownView(const QJsonObject &camera);
+    /// The points are drawn on the backend and streamed (Remote, or Auto with
+    /// more rows than loaded): their camera turns there, not in this window.
+    bool drawnOnBackend() const;
+    /// A window of the comparison group (or this one) is busy with something a
+    /// step would cut short: its scene, a query, its rows' other columns.
+    QString timelineBusyReason() const;
+    /// Stop Play in every view of the group.
+    void stopSnapshotPlayback();
+    /// Ask the backend for the rest of the first rows' columns (particles open
+    /// with positions and one quantity first).
+    void startAttributeHydration();
+    /// What the views sharing this dataset and still waiting for the rows'
+    /// other columns do when this window's wait ends: take the rows from
+    /// here (they arrived), keep the rows they have (they will not come), or
+    /// ask for them themselves (this window's rows changed meanwhile).
+    enum class HydrationShare { Rows, StopWaiting, LoadOwn };
+    void shareHydratedRows(HydrationShare how);
+    /// Take @p source's rows, now with every column: same rows, same camera.
+    void adoptHydratedRows(const vtkWindowCatalogue3D &source);
+    /// Release this window's hold on its backend dataset, closing it there
+    /// when no other window holds it (closeEvent, a step that failed).
+    void releaseDataset();
     void openInVrHeadset();   // issue #190: vtkWindowCatalogue3D_VrHeadset.cpp
     QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     /// The applied frame, distance mode and cosmology the headset places a
@@ -486,6 +513,24 @@ private:
     QFutureWatcher<BackendPointSeriesResult> m_snapshotSeriesWatcher;
     bool m_snapshotSwitching{ false };
     bool m_snapshotPlaying{ false };
+    /// The scene was framed once: later rebuilds may keep the camera
+    /// (SnapshotTimelineSteps::rebuildKeepsCamera).
+    bool m_sceneFramed{ false };
+    /// The loaded rows lack columns that a background query (this window's,
+    /// or the window this comparison view was made from) is bringing.
+    bool m_awaitingHydration{ false };
+    /// That query is this window's and in flight (also while its rows rebuild).
+    bool m_hydratingAttributes{ false };
+    /// Opened by a timeline step: a failed open is reported by the step, not
+    /// by a modal box per output (Play would stack them).
+    bool m_quietOpenErrors{ false };
+    /// Why the open failed, for the step's message.
+    QString m_openError;
+    /// Set around the construction of a step's windows (see m_quietOpenErrors).
+    static bool s_openQuietly;
+    /// The copilot's actions reach this window by this key: comparison views
+    /// share their dataset id, so it cannot be the key.
+    QString m_copilotRouteKey;
     std::vector<Catalogue3DEntry> entries;
     /// Rows with no distance (issue #265), never in entries: not drawn.
     std::vector<Catalogue3DEntry> unplacedEntries;

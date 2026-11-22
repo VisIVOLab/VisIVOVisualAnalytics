@@ -579,6 +579,9 @@ struct BackendPointSeriesResult
     QString error;
     QStringList paths;
     QVector<int> numbers;
+    /// Per output: whether it can be opened with the particle type shown
+    /// (issue #446). Empty from an older backend: every output can.
+    QVector<bool> available;
     int index{ -1 };
     int count{ 0 };
 };

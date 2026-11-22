@@ -197,7 +197,22 @@ mode; the physical quantity, colormap, colour range and stretch are
 deliberately excluded. On relink, the joining view first adopts the enabled
 linked properties from a peer, so the group is coherent immediately and no
 echo loop is produced. Both flags and each autonomous camera survive snapshot
-replacement on the timeline.
+replacement on the timeline: a replacement window takes its own flags before
+its controls are restored, under the applying guard, because it is created with
+its source's flags (`SnapshotTimelineSteps::restoreWithOwnFlags`).
+
+A particle window opens with positions and one quantity and loads the other
+columns of the same rows in the background. A comparison view made before those
+columns arrive waits for them (`m_awaitingHydration`) and takes the rows from
+its source when they do; if the source closes first, the view asks for them
+itself. After the first framing a rebuild keeps the camera while those columns
+arrive and whenever the view is linked in a group
+(`SnapshotTimelineSteps::rebuildKeepsCamera`); a reframe is never broadcast.
+The camera received from a peer is also handed to the ray-traced view or, for a
+view drawn on the backend, sent to its render session (`set_camera`). The
+backend's own moves are not observed by the client, so a remote view follows
+but does not lead. The copilot's actions are routed by a per-window key, since
+comparison windows share their dataset id.
 
 ## Selected-population diagnostics (issue #426)
 
@@ -230,7 +245,10 @@ a number. A multi-file snapshot lives in a folder named with the same number
 (`snapdir_010/snap_010.0`), so when that folder holds no other member of the
 series, the series runs over the sibling folders, with the file renumbered
 (`snapdir_011/snap_011.0`). `/v1/points/series` keeps the particle type, so
-each member's path is a reference to the same type.
+each member's path is a reference to the same type, and returns `available`:
+per member, whether its first file's header announces particles of that type
+(`gadget_snapshot.has_type`, false as well for a member that cannot be read).
+The desktop steps over the members marked false.
 
 The desktop asks for this route after opening a particle table. More than one
 member adds the Snapshot Timeline card. A time step constructs the replacement
@@ -241,7 +259,10 @@ Camera and per-view visual encoding are restored; selection and explicit
 numeric colour limits are not, because neither particle identity nor equal
 distributions across outputs may be assumed. Playback starts the next step only
 after the current replacement has completed, so there are no stale concurrent
-opens to apply out of order.
+opens to apply out of order; a step is also refused while any view of the group
+is building its scene or loading rows. A replacement that fails to open is
+reported once in the status bar, stops playback, releases its backend dataset
+and is marked unavailable in the group's series.
 
 ## SubFind (issue #392)
 

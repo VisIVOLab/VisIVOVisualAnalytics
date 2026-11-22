@@ -234,6 +234,9 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
 
 void vtkWindowCatalogue3D::updateRenderBadge()
 {
+    // The comparison card says what camera linking does while the view is
+    // drawn on the backend; it follows every change of where it is drawn.
+    this->updateComparisonUi();
     if (!this->m_renderBadge)
         return;
     if (!this->m_serverSideRendering) {
@@ -688,6 +691,45 @@ QJsonObject vtkWindowCatalogue3D::raytraceViewState() const
     return state;
 }
 
+QJsonObject vtkWindowCatalogue3D::localCameraJson() const
+{
+    vtkCamera *cam = this->renderer->GetActiveCamera();
+    const double *p = cam->GetPosition(), *f = cam->GetFocalPoint(), *u = cam->GetViewUp();
+    return QJsonObject{ { u"position"_s, QJsonArray{ p[0], p[1], p[2] } },
+                        { u"focal_point"_s, QJsonArray{ f[0], f[1], f[2] } },
+                        { u"view_up"_s, QJsonArray{ u[0], u[1], u[2] } },
+                        { u"view_angle"_s, cam->GetViewAngle() },
+                        { u"parallel"_s, cam->GetParallelProjection() != 0 },
+                        { u"parallel_scale"_s, cam->GetParallelScale() } };
+}
+
+bool vtkWindowCatalogue3D::drawnOnBackend() const
+{
+    return this->m_renderStack && this->m_remoteView && this->m_remoteView->isActive()
+            && this->m_renderStack->currentWidget() == this->m_remoteWidget;
+}
+
+void vtkWindowCatalogue3D::followCameraInShownView(const QJsonObject &camera)
+{
+    if (camera.isEmpty())
+        return;
+    // The ray-traced view draws from its own camera: a peer's move in a point
+    // view reached only this window's hidden VTK camera (issue #446).
+    if (this->m_rtView && this->m_renderStack
+        && this->m_renderStack->currentWidget() == this->m_rtView
+        && !this->m_rtView->camera().isEmpty()) {
+        this->m_rtView->setCamera(camera);
+        return;
+    }
+    // Drawn on the backend: its view turns there, by the same command the
+    // ray-traced view's camera is handed back with.
+    if (this->drawnOnBackend()) {
+        QVariantMap command = camera.toVariantMap();
+        command.insert(u"type"_s, u"set_camera"_s);
+        this->m_remoteView->send(command);
+    }
+}
+
 void vtkWindowCatalogue3D::viewCamera(
         std::function<void(const QJsonObject &, const QString &)> done)
 {
@@ -703,15 +745,7 @@ void vtkWindowCatalogue3D::viewCamera(
             && this->m_renderStack->currentWidget() == this->m_remoteWidget
             && !this->m_remoteView->renderSessionId().isEmpty();
     if (!remote) {
-        vtkCamera *cam = this->renderer->GetActiveCamera();
-        const double *p = cam->GetPosition(), *f = cam->GetFocalPoint(), *u = cam->GetViewUp();
-        done(QJsonObject{ { u"position"_s, QJsonArray{ p[0], p[1], p[2] } },
-                          { u"focal_point"_s, QJsonArray{ f[0], f[1], f[2] } },
-                          { u"view_up"_s, QJsonArray{ u[0], u[1], u[2] } },
-                          { u"view_angle"_s, cam->GetViewAngle() },
-                          { u"parallel"_s, cam->GetParallelProjection() != 0 },
-                          { u"parallel_scale"_s, cam->GetParallelScale() } },
-             QString());
+        done(this->localCameraJson(), QString());
         return;
     }
     auto *nam = this->findChild<QNetworkAccessManager *>(u"raytraceCamera"_s);

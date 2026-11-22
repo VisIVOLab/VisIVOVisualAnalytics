@@ -1432,6 +1432,25 @@ def resolve(path: str | Path) -> Component:
     return open_snapshot(base).component(ptype)
 
 
+def has_type(path: str | Path, ptype: int) -> bool:
+    """Whether the snapshot ``path`` names (a file of it, its base name or
+    its folder) has particles of type ``ptype``, from its first file's
+    header: an early output without stars, or one that cannot be read (a
+    file missing, not a snapshot), has none. Only headers and the files'
+    names are read, so a whole series can be checked."""
+    try:
+        files = snapshot_files(path)
+        header = scan_file(files[0]).header
+    except (OSError, ValueError):
+        return False
+    if not 0 <= ptype < len(header.npart_total):
+        return False
+    # Some writers leave the totals at zero in a single-file snapshot.
+    if not any(header.npart_total) and len(files) == 1:
+        return header.npart[ptype] > 0
+    return header.npart_total[ptype] > 0
+
+
 def default_type(snapshot: Snapshot) -> int | None:
     """The type a snapshot opens on: the first with particles (gas first)."""
     return next((t for t, n in enumerate(snapshot.counts()) if n), None)

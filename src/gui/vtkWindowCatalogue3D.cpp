@@ -20,6 +20,7 @@
 #include "CatalogueSelectionKey.h"
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
+#include "SnapshotTimelineSteps.h"
 #include "SimulationDiagnosticsDialog.h"
 #include "theme/VisivoTheme.h"
 
@@ -82,6 +83,8 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
+#include <QUuid>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableView>
@@ -331,6 +334,8 @@ static std::optional<BackendTabularFilter> showSpatialFilterDialog(
 // Construction / destruction
 // ─────────────────────────────────────────────────────────────────────────────
 
+bool vtkWindowCatalogue3D::s_openQuietly = false;
+
 vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
                                            const QString &backendToken, const QStringList &paths,
                                            const Catalogue3DLabel &label, QWidget *parent,
@@ -341,6 +346,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     , backendUrl(backendUrl)
     , backendToken(backendToken)
     , m_cataloguePaths(paths)
+    , m_quietOpenErrors(s_openQuietly)
+    , m_copilotRouteKey(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {
     // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
     visivo::installCloseWindowShortcut(this);
@@ -354,6 +361,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     QObject::connect(&this->filterWatcher, &QFutureWatcher<Catalogue3DFilterTaskResult>::finished,
                      this, [this]() {
                          this->filterBusy = false;
+                         // The background query for the first rows' other
+                         // columns, if this was it: read by buildScene() (the
+                         // camera stays), cleared on every way out.
+                         const bool hydration = this->m_hydratingAttributes;
+                         const auto hydrationDone = qScopeGuard(
+                                 [this]() { this->m_hydratingAttributes = false; });
                          // Re-enable filter controls
                          if (this->btnFilterApply) {
                              this->btnFilterApply->setEnabled(true);
@@ -372,6 +385,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          if (!result.valid) {
                              if (this->m_loadIndicator)
                                  this->m_loadIndicator->hide();
+                             if (std::exchange(this->m_awaitingHydration, false)) {
+                                 // The views waiting on these columns stop
+                                 // waiting: they keep the rows they have.
+                                 this->shareHydratedRows(HydrationShare::StopWaiting);
+                             }
                              DiagnosticsManager::instance()->publish(
                                      DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
                                      u"Catalogue3D"_s,
@@ -473,6 +491,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->renderWindow->Render();
                          if (this->m_loadIndicator)
                              this->m_loadIndicator->hide();
+                         // Any query answered here brings every column; the
+                         // views waiting on this one take its rows when they
+                         // are the same rows, else ask for their own.
+                         if (std::exchange(this->m_awaitingHydration, false))
+                             this->shareHydratedRows(hydration ? HydrationShare::Rows
+                                                               : HydrationShare::LoadOwn);
                      });
 
     // ── Connect "load more" watcher ───────────────────────────────────────────
@@ -589,12 +613,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  this->backendUrl, this->remoteSessionId, this->remoteDatasetId);
                          if (this->m_copilot) {
                              this->m_copilot->setDatasetId(this->remoteDatasetId);
+                             this->m_copilot->setActionTarget(this->m_copilotRouteKey);
                              CopilotActionRouter::instance()->registerTarget(
                                      this->remoteDatasetId, this,
                                      [this](const QList<QJsonObject> &acts) {
                                          this->applyCopilotActions(acts);
                                      },
-                                     [this]() { this->undoCopilotActions(); });
+                                     [this]() { this->undoCopilotActions(); },
+                                     this->m_copilotRouteKey);
                          }
                          // The window is on a NEW session now: the status rail
                          // and the Inspector both named the expired one until
@@ -642,6 +668,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_pageSize = comparisonSource->m_pageSize;
         this->m_totalCount = comparisonSource->m_totalCount;
         this->activeFilters = comparisonSource->activeFilters;
+        // The source's rows may still lack the columns its background query
+        // is bringing: this view takes them from it when they arrive.
+        this->m_awaitingHydration = comparisonSource->m_awaitingHydration;
         this->detectVelocityColumns();
     } else {
         opened = this->m_cataloguePaths.size() > 1
@@ -671,9 +700,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     } else if (!opened.valid) {
         // Before the box: its reading time is not the open's ("Last 5 jobs").
         this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
-        // The opener's busy indicator is not up behind the box (#159).
-        const visivo::BusyPause box;
-        QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
+        this->m_openError = opened.error;
+        if (!this->m_quietOpenErrors) {
+            // The opener's busy indicator is not up behind the box (#159).
+            const visivo::BusyPause box;
+            QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
+        }
         ui->labelStatus->setText(u"Load error: "_s + opened.error);
     } else {
         this->remoteDatasetId = opened.datasetId;
@@ -707,10 +739,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         // still matters for a re-open into a live window.
         if (this->m_copilot) {
             this->m_copilot->setDatasetId(this->remoteDatasetId);
+            this->m_copilot->setActionTarget(this->m_copilotRouteKey);
             CopilotActionRouter::instance()->registerTarget(
                     this->remoteDatasetId, this,
                     [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
-                    [this]() { this->undoCopilotActions(); });
+                    [this]() { this->undoCopilotActions(); }, this->m_copilotRouteKey);
         }
         this->schema.headers.clear();
         this->schema.fields.clear();
@@ -765,6 +798,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 }
             }
             hydrateParticleAttributes = qreq.fields.size() < opened.fields.size();
+            this->m_awaitingHydration = hydrateParticleAttributes;
         }
         const auto subset = client.queryTabularCatalogue(qreq);
         this->m_sampleStep = subset.step;
@@ -774,8 +808,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         if (!subset.valid || !parsed.valid) {
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
             this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
-            const visivo::BusyPause box;
-            QMessageBox::critical(this, u"Catalogue Error"_s, error);
+            this->m_openError = error;
+            if (!this->m_quietOpenErrors) {
+                const visivo::BusyPause box;
+                QMessageBox::critical(this, u"Catalogue Error"_s, error);
+            }
             ui->labelStatus->setText(u"Load error: "_s + error);
         } else {
             this->entries = parsed.entries;
@@ -841,13 +878,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         // then ordinary asynchronous filtering with no filters: the fixed RNG
         // returns the same row indices and the watcher atomically replaces the
         // partial rows once all columns have arrived.
-        QTimer::singleShot(0, this, [this]() {
-            if (this->filterBusy || this->remoteDatasetId.isEmpty())
-                return;
-            if (this->filterStatusLabel)
-                this->filterStatusLabel->setText(u"Loading particle attributes in background…"_s);
-            this->applyFilter();
-        });
+        QTimer::singleShot(0, this, [this]() { this->startAttributeHydration(); });
     }
 
     // ── Filter signal/slot connections ───────────────────────────────────────

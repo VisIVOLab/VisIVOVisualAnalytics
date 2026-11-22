@@ -110,13 +110,23 @@ its position in the discovered series, the header time and redshift when
 available. Use **Previous**, **Next**, the slider or **Play** to move through
 the series. Both flat series (`snap_000`, `snap_001`, …) and Gadget's numbered
 folders (`snapdir_000/snap_000.0`, …) are supported; the selected particle type
-is retained.
+is retained. A catalogue opened from several files at once (the pieces of one
+output, `snap_z0_1_1_1.vbt` … `_8`) has no timeline.
+
+Outputs that do not have the selected particle type (an early output without
+stars yet) or that cannot be read are skipped by **Previous**, **Next**, the
+slider and **Play**; the card says how many are skipped. If an output still
+fails to open, the status bar says why, playback stops and that output is
+skipped from then on.
 
 If several physical-quantity windows are linked, the new output is opened for
-the complete group before the old windows close. Each view keeps its quantity,
-colormap, stretch, representation, render budget, camera and window placement.
-The numerical colour range is recalculated for the new output because its data
-distribution may differ.
+the complete group before the old windows close. Each view keeps its quantity
+(found by its column name, so a different column order cannot switch it),
+colormap, stretch, representation, point or splat size, render budget, camera
+and window placement. When the new output has no column of that name, the
+status bar lists the missing quantity. The numerical colour range is
+recalculated for the new output because its data distribution may differ. A
+step waits until every view has finished loading its particles' quantities.
 
 Source selection is deliberately cleared at every step. The timeline compares
 the same particle *type* and region, but it does not claim that a row in one
@@ -141,7 +151,11 @@ another quantity…* for creating a third view. In Visual Encoding:
 
 The **Linked** button is on by default. Linked views share camera, source
 selection and representation: shape, splat or point size, render budget and
-ray-traced-light mode. This keeps rendering choices from masquerading as
+ray-traced-light mode. A filter or *Load more* in a linked view keeps the
+group's camera; use *Reset Camera* to frame the new rows in every view. A view
+drawn on the backend (*View ▸ Rendering ▸ Remote*, or *Auto* with more rows than
+loaded) follows the group's camera, but turning it does not move the others: its
+comparison card says so. Switch it to *Local* to lead the group. This keeps rendering choices from masquerading as
 physical differences. Quantity, colormap, colour range and stretch remain
 independent because different physical fields need different encodings.
 

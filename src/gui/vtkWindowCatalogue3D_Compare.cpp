@@ -3,6 +3,8 @@
 #include "CatalogueSelectionKey.h"
 #include "LinkedWindowRegistry.h"
 #include "RaytraceViewport.h"
+#include "RemotePointView.h"
+#include "SnapshotTimelineSteps.h"
 #include "app/DatasetName.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -33,6 +35,7 @@
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <vector>
 
 using namespace Qt::StringLiterals;
 
@@ -249,7 +252,15 @@ void vtkWindowCatalogue3D::updateComparisonUi()
                         .arg(quantity.toHtmlEscaped())
                         .arg(this->m_comparisonRepresentationLinked
                                      ? u", representation"_s
-                                     : u"; rendering is autonomous"_s));
+                                     : u"; rendering is autonomous"_s)
+                + (linked && this->drawnOnBackend()
+                           // The backend turns this view: its moves are not
+                           // seen here, so they cannot be sent (issue #446).
+                           ? u"<br><small><b>Drawn on the backend:</b> this view follows the "
+                              "group's camera, but turning it here does not move the "
+                              "others. Use View ▸ Rendering ▸ Local to lead the group."
+                              "</small>"_s
+                           : QString()));
     }
     this->updateWindowTitle();
 }
@@ -290,16 +301,19 @@ void vtkWindowCatalogue3D::applyComparisonRepresentation(
 
 void vtkWindowCatalogue3D::broadcastComparisonRepresentation()
 {
-    if (!this->m_comparisonLinked || !this->m_comparisonRepresentationLinked
-        || this->m_comparisonGroup.isEmpty()
-        || this->m_applyingComparisonUpdate)
+    const auto flags = [](const vtkWindowCatalogue3D *window) {
+        return SnapshotTimelineSteps::LinkFlags{ !window->m_comparisonGroup.isEmpty(),
+                                                 window->m_comparisonLinked,
+                                                 window->m_comparisonRepresentationLinked,
+                                                 window->m_applyingComparisonUpdate };
+    };
+    if (!SnapshotTimelineSteps::representationSends(flags(this)))
         return;
     const ComparisonRepresentation state = this->comparisonRepresentation();
     const auto windows = comparisonWindows().snapshot();
     for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
-        if (window && window != this && window->m_comparisonLinked
-            && window->m_comparisonRepresentationLinked
-            && window->m_comparisonGroup == this->m_comparisonGroup)
+        if (window && window != this && window->m_comparisonGroup == this->m_comparisonGroup
+            && SnapshotTimelineSteps::representationReceives(flags(window)))
             window->applyComparisonRepresentation(state);
     }
 }
@@ -351,6 +365,8 @@ void vtkWindowCatalogue3D::setComparisonLinked(bool linked)
                 reference->entries, reference->schema, reference->selectedIndex);
         const int index = CatalogueSelection::indexOf(this->entries, this->schema, selected);
         const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
+        // The group's selection, not the user's: not sent over SAMP again.
+        const QScopedValueRollback<bool> samp(this->m_applyingSampSelection, true);
         this->setSelectedSource(index);
     }
     this->m_comparisonCameraTracker.adopt(this->comparisonCameraPose());
@@ -387,7 +403,10 @@ void vtkWindowCatalogue3D::setComparisonRepresentationLinked(bool linked)
 
 void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
 {
-    if (!this->m_pointTable || this->remoteDatasetId.isEmpty())
+    // A catalogue opened from several files is pieces of one output, which a
+    // step would have read as a run's outputs.
+    if (!this->m_pointTable || this->remoteDatasetId.isEmpty()
+        || !SnapshotTimelineSteps::timelineApplies(this->m_cataloguePaths.size()))
         return;
     if (source) {
         this->m_snapshotSeries = source->m_snapshotSeries;
@@ -405,6 +424,11 @@ void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
             if (window == this
                 || (!this->m_comparisonGroup.isEmpty()
                     && window->m_comparisonGroup == this->m_comparisonGroup)) {
+                // A failed reply (the window opened by a step asks again)
+                // never hides a timeline that works, in the middle of Play.
+                if (!SnapshotTimelineSteps::acceptsSeriesReply(window->m_snapshotSeries.valid,
+                                                               result.valid))
+                    continue;
                 window->m_snapshotSeries = result;
                 window->updateSnapshotTimelineUi();
             }
@@ -424,18 +448,19 @@ void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
 
 void vtkWindowCatalogue3D::updateSnapshotTimelineUi()
 {
-    const bool available = this->m_snapshotSeries.valid
-            && this->m_snapshotSeries.paths.size() > 1
-            && this->m_snapshotSeries.index >= 0;
+    const BackendPointSeriesResult &series = this->m_snapshotSeries;
+    const bool available = SnapshotTimelineSteps::timelineApplies(this->m_cataloguePaths.size())
+            && series.valid && series.paths.size() > 1 && series.index >= 0;
     if (this->m_timelineCard)
         this->m_timelineCard->setVisible(available);
     if (!available)
         return;
 
-    const int index = this->m_snapshotSeries.index;
-    const int number = this->m_snapshotSeries.numbers.value(index);
+    const int index = series.index;
+    const int count = static_cast<int>(series.paths.size());
+    const int number = series.numbers.value(index);
     QString details = u"Output %1 · %2 of %3"_s
-            .arg(number).arg(index + 1).arg(this->m_snapshotSeries.count);
+            .arg(number).arg(index + 1).arg(series.count);
     const double time = this->m_snapshotMetadata.value(u"time"_s).toDouble(
             std::numeric_limits<double>::quiet_NaN());
     const double redshift = this->m_snapshotMetadata.value(u"redshift"_s).toDouble(
@@ -444,20 +469,28 @@ void vtkWindowCatalogue3D::updateSnapshotTimelineUi()
         details += u" · time %1"_s.arg(time, 0, 'g', 5);
     if (std::isfinite(redshift) && redshift >= 0.0)
         details += u" · z %1"_s.arg(redshift, 0, 'g', 5);
+    const auto skipped = static_cast<int>(series.available.count(false));
+    if (skipped > 0) {
+        details += u"\n%1 output(s) without this particle type, or that do not open, are "
+                   "skipped."_s.arg(skipped);
+    }
     details += u"\nChanging output clears source selection; it does not track particles."_s;
     if (this->m_timelineSummary)
         this->m_timelineSummary->setText(details);
     if (this->m_timelineSlider) {
         const QSignalBlocker block(this->m_timelineSlider);
-        this->m_timelineSlider->setRange(0, this->m_snapshotSeries.paths.size() - 1);
+        this->m_timelineSlider->setRange(0, count - 1);
         this->m_timelineSlider->setValue(index);
         this->m_timelineSlider->setEnabled(!this->m_snapshotSwitching);
     }
     if (this->m_timelinePrevious)
-        this->m_timelinePrevious->setEnabled(!this->m_snapshotSwitching && index > 0);
+        this->m_timelinePrevious->setEnabled(
+                !this->m_snapshotSwitching
+                && SnapshotTimelineSteps::stepTarget(series.available, count, index, -1) >= 0);
     if (this->m_timelineNext)
         this->m_timelineNext->setEnabled(
-                !this->m_snapshotSwitching && index + 1 < this->m_snapshotSeries.paths.size());
+                !this->m_snapshotSwitching
+                && SnapshotTimelineSteps::stepTarget(series.available, count, index, 1) >= 0);
     if (this->m_timelinePlay) {
         this->m_timelinePlay->setText(this->m_snapshotPlaying ? u"Pause"_s : u"Play"_s);
         this->m_timelinePlay->setEnabled(!this->m_snapshotSwitching);
@@ -468,10 +501,12 @@ void vtkWindowCatalogue3D::stepSnapshot(int delta)
 {
     if (!this->m_snapshotSeries.valid || this->m_snapshotSwitching)
         return;
-    const int target = this->m_snapshotSeries.index + delta;
-    if (target < 0 || target >= this->m_snapshotSeries.paths.size()) {
+    const int target = SnapshotTimelineSteps::stepTarget(
+            this->m_snapshotSeries.available, static_cast<int>(this->m_snapshotSeries.paths.size()),
+            this->m_snapshotSeries.index, delta);
+    if (target < 0) {
         if (this->m_snapshotPlaying)
-            this->toggleSnapshotPlayback();
+            this->stopSnapshotPlayback();
         return;
     }
     this->switchSnapshotIndex(target);
@@ -497,20 +532,173 @@ void vtkWindowCatalogue3D::toggleSnapshotPlayback()
         this->m_timelineTimer->start();
 }
 
-void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
+void vtkWindowCatalogue3D::stopSnapshotPlayback()
 {
-    if (!this->m_snapshotSeries.valid || this->m_snapshotSwitching
-        || index == this->m_snapshotSeries.index || index < 0
-        || index >= this->m_snapshotSeries.paths.size())
+    if (this->m_snapshotPlaying)
+        this->toggleSnapshotPlayback();
+}
+
+QString vtkWindowCatalogue3D::timelineBusyReason() const
+{
+    const auto windows = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+        if (!window)
+            continue;
+        if (window != this
+            && (this->m_comparisonGroup.isEmpty()
+                || window->m_comparisonGroup != this->m_comparisonGroup))
+            continue;
+        // A window building its scene refuses to close, and would be left
+        // behind by the step; the others would lose what they are loading.
+        if (window->m_snapshotSwitching)
+            return u"the output being opened is ready"_s;
+        if (window->m_sceneBuilding)
+            return u"the scene is built"_s;
+        if (window->m_awaitingHydration)
+            return u"the particles' quantities are loaded"_s;
+        if (window->filterBusy || window->m_loadingMore)
+            return u"the particles are loaded"_s;
+    }
+    return {};
+}
+
+void vtkWindowCatalogue3D::startAttributeHydration()
+{
+    if (!this->m_awaitingHydration || this->m_hydratingAttributes)
         return;
+    if (this->remoteDatasetId.isEmpty() || this->m_openFailedAtMs >= 0) {
+        this->m_awaitingHydration = false;
+        this->shareHydratedRows(HydrationShare::StopWaiting);
+        return;
+    }
+    // Another query is answering with every column: its answer ends the wait.
+    if (this->filterBusy)
+        return;
+    if (this->m_sceneBuilding) {
+        QTimer::singleShot(200, this, [this]() { this->startAttributeHydration(); });
+        return;
+    }
+    // Ordinary asynchronous filtering with no new filters: the fixed RNG
+    // returns the same row indices and the watcher atomically replaces the
+    // partial rows once all columns have arrived.
+    this->m_hydratingAttributes = true;
+    this->applyFilter();
+    if (!this->filterBusy) {
+        this->m_hydratingAttributes = false;
+        this->m_awaitingHydration = false;
+        this->shareHydratedRows(HydrationShare::StopWaiting);
+        return;
+    }
+    if (this->filterStatusLabel)
+        this->filterStatusLabel->setText(u"Loading particle attributes in background…"_s);
+}
+
+void vtkWindowCatalogue3D::shareHydratedRows(HydrationShare how)
+{
+    if (this->remoteDatasetId.isEmpty())
+        return;
+    // Comparison views opened before the columns arrived hold the same rows
+    // without them: their quantity drew as one flat colour (issue #446).
+    const auto windows = comparisonWindows().snapshot();
+    for (const QPointer<vtkWindowCatalogue3D> &window : windows) {
+        if (!window || window == this || !window->m_awaitingHydration
+            || window->m_hydratingAttributes
+            || window->remoteDatasetId != this->remoteDatasetId)
+            continue;
+        switch (how) {
+        case HydrationShare::Rows:
+            window->adoptHydratedRows(*this);
+            break;
+        case HydrationShare::StopWaiting:
+            window->m_awaitingHydration = false;
+            break;
+        case HydrationShare::LoadOwn: {
+            QPointer<vtkWindowCatalogue3D> peer = window;
+            QTimer::singleShot(0, peer, [peer]() {
+                if (peer)
+                    peer->startAttributeHydration();
+            });
+            break;
+        }
+        }
+    }
+}
+
+void vtkWindowCatalogue3D::adoptHydratedRows(const vtkWindowCatalogue3D &source)
+{
+    // Busy with its own query, whose answer brings every column too.
+    if (this->filterBusy)
+        return;
+    if (this->m_sceneBuilding) {
+        // Its rows cannot be replaced mid-build: it asks for the columns
+        // itself once the build is over.
+        QTimer::singleShot(0, this, [this]() { this->startAttributeHydration(); });
+        return;
+    }
+    const CatalogueSelection::Key selected =
+            CatalogueSelection::keyOf(this->entries, this->schema, this->selectedIndex);
+    this->entries = source.entries;
+    this->unplacedEntries = source.unplacedEntries;
+    this->m_currentOffset = source.m_currentOffset;
+    this->m_sampleStep = source.m_sampleStep;
+    this->m_samplePhase = source.m_samplePhase;
+    this->m_sampleLimit = source.m_sampleLimit;
+    this->m_totalCount = source.m_totalCount;
+    this->m_awaitingHydration = false;
+
+    this->renderer->RemoveAllViewProps();
+    this->morphologyNames.clear();
+    this->morphologyIndexOf.clear();
+    this->labelActors.clear();
+    this->shellActors.clear();
+    this->mappedPositions.clear();
+    this->hoveredIndex = -1;
+    this->selectedIndex = CatalogueSelection::indexOf(this->entries, this->schema, selected);
+    if (!this->entries.empty()) {
+        // The same rows: the camera stays where the step or the user put it.
+        const QScopedValueRollback<bool> sameRows(this->m_hydratingAttributes, true);
+        this->buildScene();
+        this->buildLabels();
+    }
+    this->refreshCatalogueTable();
+    this->refreshViewerChrome();
+    this->refreshSelectionAfterReplacement();
+    this->updateComparisonUi();
+    this->renderWindow->Render();
+}
+
+void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
+{
+    if (!this->m_snapshotSeries.valid || this->m_snapshotSwitching)
+        return;
+    const int count = static_cast<int>(this->m_snapshotSeries.paths.size());
+    // The slider can land on an output that cannot be opened: the nearest
+    // that can, in the direction it moved.
+    const int index = SnapshotTimelineSteps::sliderTarget(
+            this->m_snapshotSeries.available, count, this->m_snapshotSeries.index, requested);
+    if (index < 0) {
+        this->updateSnapshotTimelineUi();
+        return;
+    }
+    const QString busy = this->timelineBusyReason();
+    if (!busy.isEmpty()) {
+        // Play tries again on its next tick; a click is told why.
+        if (!this->m_snapshotPlaying)
+            this->statusBar()->showMessage(
+                    u"Wait until %1 before changing output."_s.arg(busy), 5000);
+        this->updateSnapshotTimelineUi();
+        return;
+    }
 
     struct ViewState {
         QPointer<vtkWindowCatalogue3D> old;
         QString colourBy;
+        QString colourName;   ///< the column colourBy names, matched by name
         QString colormap;
         int colourScale{ 0 };
         double gamma{ 2.0 };
         int geometry{ 0 };
+        int sizeSlider{ 0 };
         int renderBudget{ 1000000 };
         bool raytraced{ false };
         bool linked{ true };
@@ -529,18 +717,19 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
                     && window->m_comparisonGroup == this->m_comparisonGroup);
         if (!same)
             continue;
-        if (window->m_snapshotSwitching)
-            return;
         ViewState state;
         state.old = window;
         state.colourBy = window->comboMapColor
                 ? window->comboMapColor->currentData().toString() : QString();
+        if (state.colourBy.startsWith(u"raw:"_s))
+            state.colourName = window->rawHeaders.value(state.colourBy.mid(4).toInt());
         state.colormap = window->comboColormap
                 ? window->comboColormap->currentData().toString() : QString();
         state.colourScale = window->comboColorScale
                 ? window->comboColorScale->currentIndex() : 0;
         state.gamma = window->spinColorGamma ? window->spinColorGamma->value() : 2.0;
         state.geometry = window->comboGeometry ? window->comboGeometry->currentIndex() : 0;
+        state.sizeSlider = window->ui->sliderScale ? window->ui->sliderScale->value() : 0;
         state.renderBudget = window->comboRenderBudget
                 ? window->comboRenderBudget->currentData().toInt() : 1000000;
         state.raytraced = window->m_rtLightCheck && window->m_rtLightCheck->isChecked();
@@ -574,29 +763,60 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
         visivo::rememberFieldNames({ { particle, targetPath } });
     const Catalogue3DLabel label{ visivo::datasetDisplayName(targetPath), false };
 
-    auto *primary = new vtkWindowCatalogue3D(
-            targetPath, this->backendUrl, this->backendToken, {}, label,
-            this->parentWidget(), nullptr);
+    vtkWindowCatalogue3D *primary = nullptr;
+    {
+        // One message for the step below, not a modal box per output.
+        const QScopedValueRollback<bool> quiet(s_openQuietly, true);
+        primary = new vtkWindowCatalogue3D(
+                targetPath, this->backendUrl, this->backendToken, {}, label,
+                this->parentWidget(), nullptr);
+    }
     primary->setAttribute(Qt::WA_DeleteOnClose);
     if (!primary->catalogueOpened()) {
+        const QString why = primary->m_openError.isEmpty()
+                ? u"it could not be opened"_s
+                : primary->m_openError;
+        // Opened on the backend and then failed to load: not left held there.
+        primary->releaseDataset();
         primary->deleteLater();
         for (ViewState &state : states) {
             if (!state.old)
                 continue;
+            BackendPointSeriesResult &series = state.old->m_snapshotSeries;
+            // Next, Previous and Play step over it from now on.
+            if (series.available.size() != series.paths.size())
+                series.available = QVector<bool>(series.paths.size(), true);
+            if (index < series.available.size())
+                series.available[index] = false;
             state.old->m_snapshotSwitching = false;
-            state.old->m_snapshotPlaying = resumePlayback;
+            state.old->m_snapshotPlaying = false;
+            if (state.old->m_timelineTimer)
+                state.old->m_timelineTimer->stop();
             state.old->updateSnapshotTimelineUi();
         }
-        if (resumePlayback && this->m_timelineTimer)
-            this->m_timelineTimer->start();
+        // Play stops: retrying every tick put up one error box after another.
+        this->statusBar()->showMessage(
+                u"Output %1 not opened: %2.%3 It is skipped from now on."_s
+                        .arg(targetSeries.numbers.value(index))
+                        .arg(why)
+                        .arg(resumePlayback ? u" Playback stopped."_s : QString()),
+                15000);
         return;
     }
 
-    const auto restore = [](vtkWindowCatalogue3D *window, const ViewState &state) {
+    QStringList missingQuantities;
+    const auto restore = [&missingQuantities](vtkWindowCatalogue3D *window,
+                                              const ViewState &state) {
         if (window->comboMapColor) {
-            const int item = window->comboMapColor->findData(state.colourBy);
+            // By the column's name: another output may list its columns in
+            // another order, and an index would show another quantity.
+            const QString key = SnapshotTimelineSteps::quantityKey(
+                    state.colourBy, state.colourName, window->rawHeaders);
+            const int item = key.isEmpty() ? -1 : window->comboMapColor->findData(key);
             if (item >= 0)
                 window->comboMapColor->setCurrentIndex(item);
+            else if (!state.colourName.isEmpty() && !missingQuantities.contains(state.colourName))
+                missingQuantities.append(state.colourName);
         }
         if (window->comboColormap) {
             const int item = window->comboColormap->findData(state.colormap);
@@ -609,6 +829,8 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
             window->spinColorGamma->setValue(state.gamma);
         if (window->comboGeometry)
             window->comboGeometry->setCurrentIndex(state.geometry);
+        if (window->ui->sliderScale)
+            window->ui->sliderScale->setValue(state.sizeSlider);
         if (window->comboRenderBudget) {
             const int item = window->comboRenderBudget->findData(state.renderBudget);
             if (item >= 0)
@@ -618,55 +840,63 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int index)
             window->m_rtLightCheck->setChecked(true);
         window->setGeometry(state.windowGeometry);
     };
+    // Each window takes its own link flags before its controls, under the
+    // applying guard: a new window starts with its source's flags, and an
+    // unlinked view's restored shape reached the linked ones (issue #446).
+    const auto restoreView = [&restore](vtkWindowCatalogue3D *window, const ViewState &state) {
+        SnapshotTimelineSteps::restoreWithOwnFlags(
+                window->m_comparisonLinked, window->m_comparisonRepresentationLinked,
+                window->m_applyingComparisonUpdate, state.linked, state.representationLinked,
+                [&]() { restore(window, state); });
+    };
 
     primary->m_snapshotSeries = targetSeries;
     primary->updateSnapshotTimelineUi();
-    restore(primary, states.first());
-    primary->m_comparisonLinked = states.first().linked;
-    primary->m_comparisonRepresentationLinked = states.first().representationLinked;
+    restoreView(primary, states.first());
     QList<QPointer<vtkWindowCatalogue3D>> replacements{ primary };
     if (states.size() > 1) {
         primary->m_comparisonGroup = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        primary->m_comparisonLinked = states.first().linked;
         for (int i = 1; i < states.size(); ++i) {
+            // Made from the primary: they share its dataset and take its rows'
+            // other columns when its background query brings them.
             auto *peer = new vtkWindowCatalogue3D(
                     targetPath, this->backendUrl, this->backendToken, {}, label,
                     states.at(i).old ? states.at(i).old->parentWidget() : this->parentWidget(),
                     primary);
             peer->setAttribute(Qt::WA_DeleteOnClose);
             peer->m_snapshotSeries = targetSeries;
-            restore(peer, states.at(i));
-            peer->m_comparisonLinked = states.at(i).linked;
-            peer->m_comparisonRepresentationLinked = states.at(i).representationLinked;
+            restoreView(peer, states.at(i));
             replacements.append(peer);
         }
     }
-    for (const QPointer<vtkWindowCatalogue3D> &window : replacements) {
+    for (int i = 0; i < replacements.size(); ++i) {
+        const QPointer<vtkWindowCatalogue3D> &window = replacements.at(i);
         if (!window)
             continue;
         window->m_snapshotSwitching = false;
-        const int replacementIndex = replacements.indexOf(window);
-        if (replacementIndex >= 0) {
-            const ViewState &state = states.at(replacementIndex);
-            window->applyComparisonCamera(state.camera);
-            if (!state.rayCamera.isEmpty())
-                window->applyComparisonRaytraceCamera(state.rayCamera);
-        }
+        const ViewState &state = states.at(i);
+        window->applyComparisonCamera(state.camera);
+        if (!state.rayCamera.isEmpty())
+            window->applyComparisonRaytraceCamera(state.rayCamera);
         window->updateComparisonUi();
         window->updateSnapshotTimelineUi();
         window->show();
         window->raise();
     }
-    primary->statusBar()->showMessage(
-            u"Snapshot changed for every linked view. Source selection was cleared; "
-             "no cross-snapshot particle identity was assumed."_s,
-            10000);
+    QString message = u"Snapshot changed for every linked view. Source selection was cleared; "
+                       "no cross-snapshot particle identity was assumed."_s;
+    if (!missingQuantities.isEmpty())
+        message += u" Not in this output: %1."_s.arg(missingQuantities.join(u", "_s));
+    primary->statusBar()->showMessage(message, 10000);
 
     for (ViewState &state : states) {
         if (state.old)
             state.old->close();
     }
-    if (resumePlayback && index + 1 < targetSeries.paths.size()) {
+    if (resumePlayback
+        && SnapshotTimelineSteps::stepTarget(targetSeries.available,
+                                             static_cast<int>(targetSeries.paths.size()), index, 1)
+                >= 0) {
         primary->m_snapshotPlaying = true;
         primary->updateSnapshotTimelineUi();
         if (primary->m_timelineTimer)
@@ -721,7 +951,7 @@ void vtkWindowCatalogue3D::applyComparisonCamera(const LinkedCameraSync::Pose &p
 {
     if (!pose.finite())
         return;
-    this->m_applyingComparisonUpdate = true;
+    const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
     vtkCamera *camera = this->renderer->GetActiveCamera();
     camera->SetPosition(pose.position.data());
     camera->SetFocalPoint(pose.focalPoint.data());
@@ -732,7 +962,8 @@ void vtkWindowCatalogue3D::applyComparisonCamera(const LinkedCameraSync::Pose &p
     this->renderer->ResetCameraClippingRange();
     this->m_comparisonCameraTracker.adopt(pose);
     this->renderWindow->Render();
-    this->m_applyingComparisonUpdate = false;
+    // A ray-traced or backend-drawn view shows its own camera, not this one.
+    this->followCameraInShownView(this->localCameraJson());
 }
 
 void vtkWindowCatalogue3D::broadcastComparisonSelection(int index)
@@ -750,11 +981,9 @@ void vtkWindowCatalogue3D::broadcastComparisonSelection(int index)
         const int peerIndex = index < 0
                 ? -1
                 : CatalogueSelection::indexOf(peer->entries, peer->schema, key);
-        peer->m_applyingComparisonUpdate = true;
-        const bool wasSamp = std::exchange(peer->m_applyingSampSelection, true);
+        const QScopedValueRollback<bool> applying(peer->m_applyingComparisonUpdate, true);
+        const QScopedValueRollback<bool> samp(peer->m_applyingSampSelection, true);
         peer->setSelectedSource(peerIndex);
-        peer->m_applyingSampSelection = wasSamp;
-        peer->m_applyingComparisonUpdate = false;
     }
 }
 
@@ -778,7 +1007,7 @@ void vtkWindowCatalogue3D::applyComparisonRaytraceCamera(const QJsonObject &came
     const auto value = [&camera](const QString &name, int component) {
         return camera.value(name).toArray().at(component).toDouble();
     };
-    this->m_applyingComparisonUpdate = true;
+    const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
     vtkCamera *vtkCamera = this->renderer->GetActiveCamera();
     vtkCamera->SetPosition(value(u"position"_s, 0), value(u"position"_s, 1),
                            value(u"position"_s, 2));
@@ -797,5 +1026,8 @@ void vtkWindowCatalogue3D::applyComparisonRaytraceCamera(const QJsonObject &came
     if (this->m_rtView)
         this->m_rtView->setCamera(camera);
     this->renderWindow->Render();
-    this->m_applyingComparisonUpdate = false;
+    // A peer drawn on the backend turns there (the ray-traced view, when it
+    // is the one shown, already has the camera).
+    if (this->drawnOnBackend())
+        this->followCameraInShownView(camera);
 }

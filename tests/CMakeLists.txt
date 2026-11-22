@@ -76,6 +76,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/gui/OrbitPath.cpp
     ${VISIVO_ROOT}/src/gui/ParticleFrame.cpp
     ${VISIVO_ROOT}/src/gui/CopilotStatus.cpp
+    ${VISIVO_ROOT}/src/gui/CopilotActionRouter.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
@@ -114,6 +115,8 @@ add_executable(VisIVOTests
     test_linked_window_registry.cpp
     TestLinkedCameraSync.h
     test_linked_camera_sync.cpp
+    TestSnapshotTimelineSteps.h
+    test_snapshot_timeline_steps.cpp
     TestSpectralUnitConvert.h
     test_spectral_unit_convert.cpp
     TestCubeRegionGeom.h
