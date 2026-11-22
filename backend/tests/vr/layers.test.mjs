@@ -62,14 +62,19 @@ test('splats are sized by the desktop rule and grow for a sample', () => {
   // The desktop's depth-normalized opacity, 1.5 / 100 = 3.8 steps of 255,
   // kept at the floor of eight (#447).
   close(s.opacity, 8 / 255, 1e-12);
-  // In a float32 target over size² (#263): the size changes the size, not the light.
-  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35, 'v2-f32').opacity, 8 / 255 / 64, 1e-12);
-  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 1, 35, 'v2-f32').opacity, 8 / 255, 1e-12);
+  // In a float32 target over size² (#263): the size changes the size, not the
+  // light; unquantised there, with no 8-bit store to round it (#447).
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35, 'v2-f32').opacity, 0.015 / 64, 1e-12);
+  close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 1, 35, 'v2-f32').opacity, 0.015, 1e-12);
   // Whole 8-bit steps, half up, between 8 and 64.
   close(PT.splatOpacity(30, 35), 13 / 255, 1e-12);
   close(PT.splatOpacity(1, 35), 64 / 255, 1e-12);
   close(PT.splatOpacity(1000, 35), 8 / 255, 1e-12);
   close(PT.splatOpacity(0, 35), 64 / 255, 1e-12);
+  // A hair from a step's boundary: the same steps as the desktop
+  // (test_solid_splats.cpp) and the point session (test_point_render.py).
+  for (const [depth, k] of [[12.966, 30], [6.4286, 59], [6.3223, 61], [6.0236, 64]])
+    assert.equal(PT.splatOpacity(depth, 35), k / 255);
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e3, 8, 35).sampleRadius, 10, 1e-9);
 });
 

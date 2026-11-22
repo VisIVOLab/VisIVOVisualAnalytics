@@ -192,13 +192,17 @@ the splat colour's 8-bit alpha (truncated) and the splats add up in an 8-bit
 framebuffer. The former floor of 0.005 was stored as 1/255 (22 % low), a step
 more or less changed the brightness by 25 %, and the dark end of a colour map
 or a kernel's wings rounded to nothing. With at least 8 steps a cloud deeper
-than about 48 spacings is brighter than 1.5 (about 3 for a million particles
-in a cube) but keeps its faint colours. The value handed to VTK is a quarter
-step above the step (`ParticleSplatDefaults::vtkOpacityValue`,
+than about 48 spacings is brighter than the nominal 1.5 (2.1× at a million
+particles in a cube, 3.2× at 3.66 million, 4.5× at 10 million) but keeps its
+faint colours. Whether to keep that, move to a float framebuffer with a tone
+map, or thin the splats stochastically is still open. The value handed to VTK
+is a quarter step above the step (`ParticleSplatDefaults::vtkOpacityValue`,
 `point_splat.VTK_ALPHA_NUDGE`), so truncation cannot drop it a step. The
-backend's point session (`point_splat.splat_opacity`) and the VR page
-(`points.js splatOpacity`) use the same rule; the page's float targets divide
-it by size² as before. The same normalized size is sent to server-side
+backend's point session (`point_splat.splat_opacity`) and the VR page's 8-bit
+targets (`points.js splatOpacity`) use the same rule, in the same floating-point
+operations, so the three agree at a step's boundary. The page's float targets
+(`v2-f16`, `v2-f32`) have no 8-bit store: they keep the unquantised
+`clamp(1.5 / depth, 0.005, 0.25)`, divided by size² as before. The same normalized size is sent to server-side
 rendering. The automatic Gaussian slider value (25) is the splats' own:
 switching to *Point* restores 100 while the user has not moved the slider
 (`ParticleSplatDefaults::automaticSliderValue`).

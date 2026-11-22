@@ -93,6 +93,27 @@ void TestRaytraceViewRules::aRefetchOverAFrameIsABadge()
     QCOMPARE(s.show(), Show::Nothing);
 }
 
+void TestRaytraceViewRules::aStaleFrameDoesNotEndAFetch()
+{
+    RaytraceLoadingState s;
+    s.begin();
+    s.frameShown();
+    // Fetch B begins; the frame of A's data (or a still) is painted after.
+    s.begin();
+    s.frameShown(true);
+    QCOMPARE(s.show(), Show::Badge);
+    QVERIFY(s.busy());
+    // Before any frame at all: a still shown during the first fetch.
+    RaytraceLoadingState first;
+    first.begin();
+    first.frameShown(true);
+    QVERIFY(first.busy() && first.hasFrame());
+    QCOMPARE(first.show(), Show::Badge);
+    // B's own frame ends it.
+    s.frameShown(false);
+    QCOMPARE(s.show(), Show::Nothing);
+}
+
 void TestRaytraceViewRules::errorsNeverLeaveASpinner()
 {
     RaytraceLoadingState s;

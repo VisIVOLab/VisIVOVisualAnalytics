@@ -142,7 +142,8 @@ private:
     /// from the brightest column of an emission-only pass at a quarter size.
     double gridKappa(const QSize &size);
     void toneTo(GLuint fbo, const QSize &size);
-    void toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo, double hueHi);
+    void toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo, double hueHi,
+                  bool hueLog);
 
     bool m_ready{ false };
     bool m_framePending{ false };

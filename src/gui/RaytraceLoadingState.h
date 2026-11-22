@@ -25,10 +25,14 @@ public:
         m_error = false;
     }
     /// A frame is on screen: the GPU view's first after new data, the
-    /// backend's frame, or a still.
-    void frameShown()
+    /// backend's frame, or a still. ``fetching``: another fetch is still in
+    /// flight (the frame is of earlier data, painted after that fetch began,
+    /// or a still shown meanwhile), so the wait it shows goes on.
+    void frameShown(bool fetching = false)
     {
         m_hasFrame = true;
+        if (fetching)
+            return;
         m_busy = false;
         m_error = false;
     }

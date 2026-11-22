@@ -85,6 +85,14 @@ void TestSolidSplats::gaussianOpacityAdaptsToSightlineDepth()
     QCOMPARE(alphaStepsForDepth(100.0), kMinAlphaSteps);
     QCOMPARE(alphaStepsForDepth(1000.0), kMinAlphaSteps);
     QCOMPARE(opacityForDepth(1000.0), 8.0 / 255.0);
+    // A hair from a step's boundary: the same steps as the point session
+    // (backend test_point_render.py) and the VR page (layers.test.mjs).
+    QCOMPARE(alphaStepsForDepth(12.966), 30);
+    QCOMPARE(alphaStepsForDepth(6.4286), 59);
+    QCOMPARE(alphaStepsForDepth(6.3223), 61);
+    QCOMPARE(alphaStepsForDepth(6.0236), 64);
+    // The intensity, as the point session's control scales it.
+    QCOMPARE(alphaStepsForDepth(40.0, 70.0), 19);   // 19.125 steps
 }
 
 void TestSolidSplats::gaussianOpacityIsStoredOnItsStep()

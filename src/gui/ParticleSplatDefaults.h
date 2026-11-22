@@ -40,17 +40,23 @@ inline int automaticSliderValue(bool toSplats, int value)
 /// of a colour map or a kernel's wings added nothing at all. So the opacity is
 /// a whole number of steps, at least 8. A cloud deeper than about 48 splats
 /// along its longest sightline then comes out brighter than the nominal 1.5,
-/// rather than losing its faint colours. The backend's point session and the
-/// VR page use the same steps (backend/app/point_splat.py, splat_opacity).
+/// rather than losing its faint colours (about 2.1× the nominal brightness at
+/// a million rows, 3.2× at 3.66 M, 4.5× at 10 M). The backend's point session
+/// and the VR page's 8-bit targets use the same steps (backend/app/
+/// point_splat.py, splat_opacity); the page's float targets, which have no
+/// 8-bit store, keep 1.5 / depth unquantised.
 inline constexpr int kMinAlphaSteps = 8;
 inline constexpr int kMaxAlphaSteps = 64;   ///< about 0.25
 
-inline int alphaStepsForDepth(double depth)
+/// ``intensity``: the point session's and the page's brightness control, 35
+/// its standard (the desktop has none).
+inline int alphaStepsForDepth(double depth, double intensity = 35.0)
 {
     if (!(std::isfinite(depth) && depth > 0.0))
         return kMaxAlphaSteps;
-    // Half up, as the backend's and the page's copies round.
-    const double steps = std::floor(1.5 / depth * 255.0 + 0.5);
+    // Half up, in the same operations as the backend's and the page's copies,
+    // so that the three agree to the bit on a step's boundary.
+    const double steps = std::floor(1.5 * intensity / (35.0 * depth) * 255.0 + 0.5);
     return static_cast<int>(std::clamp(steps, double(kMinAlphaSteps), double(kMaxAlphaSteps)));
 }
 

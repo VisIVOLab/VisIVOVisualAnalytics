@@ -17,6 +17,7 @@ private slots:
     void aFlatRangeTakesTheLowestColour();
     void theFirstLoadCoversTheView();
     void aRefetchOverAFrameIsABadge();
+    void aStaleFrameDoesNotEndAFetch();
     void errorsNeverLeaveASpinner();
     void aGpuFailureCoversUntilTheBackendsFrame();
 };

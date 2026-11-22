@@ -279,14 +279,21 @@ export const F16_OPACITY_FLOOR = 1 / 512;
  * depth at the standard intensity (35), in whole 8-bit steps (half up), at
  * least ALPHA_STEPS_MIN (issue #447: VTK keeps it as an 8-bit alpha and adds
  * into an 8-bit framebuffer, where fewer steps lost the faint colours). The
- * desktop and the point session use the same steps (point_splat.splat_opacity).
+ * desktop and the point session use the same steps, in the same operations
+ * (point_splat.splat_opacity). With `steps` false (a float target, no 8-bit
+ * store) it is unquantised, kept in [FLOAT_OPACITY_MIN, FLOAT_OPACITY_MAX].
  */
 export const ALPHA_STEPS_MIN = 8;
 export const ALPHA_STEPS_MAX = 64;
-export function splatOpacity(depth, intensity = 35) {
-  if (!(Number.isFinite(depth) && depth > 0)) return ALPHA_STEPS_MAX / 255;
-  const steps = Math.floor((1.5 / depth) * intensity / 35 * 255 + 0.5);
-  return Math.min(Math.max(steps, ALPHA_STEPS_MIN), ALPHA_STEPS_MAX) / 255;
+export const FLOAT_OPACITY_MIN = 0.005;
+export const FLOAT_OPACITY_MAX = 0.25;
+export function splatOpacity(depth, intensity = 35, steps = true) {
+  if (!(Number.isFinite(depth) && depth > 0)) return steps ? ALPHA_STEPS_MAX / 255 : FLOAT_OPACITY_MAX;
+  if (!steps) {
+    return Math.min(Math.max(1.5 * intensity / (35 * depth), FLOAT_OPACITY_MIN), FLOAT_OPACITY_MAX);
+  }
+  const k = Math.floor(1.5 * intensity / (35 * depth) * 255 + 0.5);
+  return Math.min(Math.max(k, ALPHA_STEPS_MIN), ALPHA_STEPS_MAX) / 255;
 }
 
 /** The desktop's opacity as `rule` draws it (point_splat.rule_opacity). */
@@ -307,8 +314,9 @@ export function acceptFrame(header, style, rule) {
  * Splat radius (data units) and opacity, as the desktop and the point session
  * size them (render_session/points.py gaussian_splat): spacing ∛(volume / N)
  * of the box the points fill, radius = spacing × size / 8; opacity is
- * 1.5 / D at the standard intensity in whole 8-bit steps (splatOpacity),
- * with D the longest side / spacing, as the
+ * 1.5 / D at the standard intensity, in whole 8-bit steps in an 8-bit
+ * target and unquantised in a float one (splatOpacity), with D the longest
+ * side / spacing, as the
  * splat `rule` draws it (ruleOpacity: over size² in a float target, issue
  * #263, so the size step changes the size, not the brightness; the
  * desktop's at size 1, the default). N is the table's rows: a sample of
@@ -322,7 +330,8 @@ export function splatStyle(bounds, totalRows, sampleRows, size, intensity, rule 
   const spacing = Math.cbrt(volume / Math.max(1, totalRows));
   const radius = (spacing * size) / 8;
   const depth = Math.max(longest / spacing, 1);
-  const opacity = ruleOpacity(splatOpacity(depth, intensity), size, rule);
+  const floatTarget = rule === 'v2-f16' || rule === 'v2-f32';
+  const opacity = ruleOpacity(splatOpacity(depth, intensity, !floatTarget), size, rule);
   const grow = Math.cbrt(Math.max(1, totalRows / Math.max(1, sampleRows)));
   return { radius, opacity, sampleRadius: radius * grow };
 }

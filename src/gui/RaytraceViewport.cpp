@@ -175,7 +175,9 @@ void RaytraceViewport::finishLoading()
 
 void RaytraceViewport::frameShown()
 {
-    m_loading.frameShown();
+    // A frame of the data before a fetch still in flight (or a still shown
+    // meanwhile) does not end that fetch's wait.
+    m_loading.frameShown(!m_reply.isNull());
     showLoadingState();
 }
 

@@ -1146,8 +1146,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                     this->comboGeometry->currentText() == u"Gaussian splats"_s,
                     ui->sliderScale->value());
             if (value != ui->sliderScale->value()) {
+                // Quietly: updateGeometryMode below restyles once with it
+                // (scaleChanged would restyle the old shape first), and the
+                // shape's broadcast to linked views carries the slider too.
+                const QSignalBlocker quiet(ui->sliderScale);
                 ui->sliderScale->setValue(value);
-                this->m_sliderAutomatic = true;   // still not the user's
             }
         }
         this->updateGeometryMode();

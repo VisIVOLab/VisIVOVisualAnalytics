@@ -449,7 +449,10 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
             o.lut = m_tone.lut;
             o.lo = m_tone.hueMin;
             o.hi = m_tone.hueMax;
-            o.log = m_tone.hueLog;
+            // Linear when a log range reaches zero, as the picture is drawn.
+            o.log = m_tone.hue == Hue::Index
+                    ? m_tone.hueLog
+                    : visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog).log;
         }
         o.hasBar = !o.lut.empty() && o.hi > o.lo;
         return o;
@@ -458,7 +461,8 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
     o.lut = m_tone.lut;
     o.lo = m_tone.hueMin;
     o.hi = m_tone.hueMax;
-    o.log = m_tone.hueLog;
+    // Linear when a log range reaches zero, as the splats are coloured.
+    o.log = visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog).log;
     o.hasBar = !o.lut.empty() && o.hi > o.lo;
     return o;
 }
@@ -677,14 +681,21 @@ void ParticleGLView::toneTo(GLuint fbo, const QSize &size)
     const int curve = m_tone.curve == u"log"_s ? 1 : m_tone.curve == u"exponential"_s ? 2
                     : m_tone.curve == u"linear"_s ? 3 : 0;
     double hueLo = m_hueLo, hueHi = m_hueHi;
-    if (m_tone.hue == Hue::ViewColours) {   // the view's own range
-        hueLo = m_tone.hueLog ? std::log10(std::max(m_tone.hueMin, 1e-300)) : m_tone.hueMin;
-        hueHi = m_tone.hueLog ? std::log10(std::max(m_tone.hueMax, 1e-300)) : m_tone.hueMax;
+    bool hueLog = m_tone.hueLog;
+    if (m_tone.hue == Hue::ViewColours) {
+        // The view's own range, as the 3-D render's splats take it: linear
+        // when a log range reaches zero.
+        const visivo::ScalarColourRange r =
+                visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog);
+        hueLo = r.lo;
+        hueHi = r.lo + r.span;
+        hueLog = r.log;
     } else if (m_tone.hue == Hue::Index) {   // the mean index is the table's place
         hueLo = 0.0;
         hueHi = 1.0;
+        hueLog = false;
     }
-    toneWith(fbo, lo, hi, curve, hueLo, hueHi);
+    toneWith(fbo, lo, hi, curve, hueLo, hueHi, hueLog);
 }
 
 void ParticleGLView::ensureLut()
@@ -707,7 +718,7 @@ void ParticleGLView::ensureLut()
 }
 
 void ParticleGLView::toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo,
-                              double hueHi)
+                              double hueHi, bool hueLog)
 {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     m_tonePass->bind();
@@ -727,8 +738,7 @@ void ParticleGLView::toneWith(GLuint fbo, double lo, double hi, int curve, doubl
     m_tonePass->setUniformValue("u_hi", float(hi));
     m_tonePass->setUniformValue("u_hue", m_tone.hue == Hue::Density ? 0
                                        : m_tone.hue == Hue::NamedMap ? 1 : 2);
-    m_tonePass->setUniformValue("u_hueLog",
-                                m_tone.hueLog && m_tone.hue != Hue::Index ? 1 : 0);
+    m_tonePass->setUniformValue("u_hueLog", hueLog ? 1 : 0);
     m_tonePass->setUniformValue("u_hueLo", float(hueLo));
     m_tonePass->setUniformValue("u_hueHi", float(hueHi));
     m_quadVao->bind();

@@ -82,10 +82,17 @@ F16_OPACITY_FLOOR = 1.0 / 512.0
 #: colour map or a kernel's wings added nothing. So it is a whole number of
 #: steps, at least ALPHA_STEPS_MIN: a cloud deeper than about 48 splats along
 #: its longest sightline comes out brighter than the nominal 1.5 instead of
-#: losing its faint colours. The desktop (src/gui/ParticleSplatDefaults.h)
-#: and the VR page (points.js splatOpacity) use the same steps.
+#: losing its faint colours (about 2.1× the nominal brightness at a million
+#: rows, 3.2× at 3.66 M, 4.5× at 10 M). The desktop
+#: (src/gui/ParticleSplatDefaults.h) and the VR page's 8-bit targets
+#: (points.js splatOpacity) use the same steps; the page's float targets keep
+#: the unquantised value, as before, in [FLOAT_OPACITY_MIN, FLOAT_OPACITY_MAX].
 ALPHA_STEPS_MIN = 8
 ALPHA_STEPS_MAX = 64
+FLOAT_OPACITY_MIN = 0.005
+FLOAT_OPACITY_MAX = 0.25
+#: The splat rules that add into a float target (no 8-bit store).
+FLOAT_RULES = ("v2-f16", "v2-f32")
 #: Added to an opacity given to VTK's opacity function: VTK truncates to its
 #: 8-bit step, and k / 255 × 255 can come out a hair below k; a quarter step
 #: above lands on k whether it truncates or rounds.
@@ -112,14 +119,20 @@ def rule_tone(rule: str) -> str:
     return "exposure" if rule in ("v2-f16", "v2-f32") else "none"
 
 
-def splat_opacity(depth: float, intensity: float = 35.0) -> float:
+def splat_opacity(depth: float, intensity: float = 35.0, steps: bool = True) -> float:
     """The per-splat opacity for ``depth`` splats along the longest sightline:
     1.5 / depth at the standard intensity (35), in whole 8-bit steps (half
-    up) from ALPHA_STEPS_MIN to ALPHA_STEPS_MAX."""
+    up) from ALPHA_STEPS_MIN to ALPHA_STEPS_MAX, in the same operations as
+    the desktop's and the page's copies so the three agree to the bit. With
+    ``steps`` false (a float target, which has no 8-bit store) it is not
+    quantised, only kept in [FLOAT_OPACITY_MIN, FLOAT_OPACITY_MAX]."""
     if not (math.isfinite(depth) and depth > 0.0):
-        return ALPHA_STEPS_MAX / 255.0
-    steps = math.floor(1.5 / depth * float(intensity) / 35.0 * 255.0 + 0.5)
-    return min(max(steps, ALPHA_STEPS_MIN), ALPHA_STEPS_MAX) / 255.0
+        return ALPHA_STEPS_MAX / 255.0 if steps else FLOAT_OPACITY_MAX
+    if not steps:
+        return min(max(1.5 * float(intensity) / (35.0 * depth), FLOAT_OPACITY_MIN),
+                   FLOAT_OPACITY_MAX)
+    k = math.floor(1.5 * float(intensity) / (35.0 * depth) * 255.0 + 0.5)
+    return min(max(k, ALPHA_STEPS_MIN), ALPHA_STEPS_MAX) / 255.0
 
 
 def rule_opacity(opacity: float, size: float, rule: str) -> float:
@@ -142,19 +155,19 @@ def splat_style(bounds, total_rows: int, sample_rows: int, size: float,
     total rows) of the box the points fill (a flat axis counted as a
     thousandth of the longest), radius = spacing × size / 8, opacity =
     1.5 / D at the standard intensity with D the longest side
-    over the spacing (:func:`splat_opacity`: whole 8-bit steps, at least 8),
-    as the splat ``rule`` draws it (:func:`rule_opacity`:
-    over size² in a float target, issue #263), and the sample's radius larger
-    by ∛(total / sample rows). It is
-    :func:`app.render_session.points.gaussian_splat` (the desktop's rule)
-    plus the sample's growth, and the same at size 1 or in an 8-bit target."""
+    over the spacing (:func:`splat_opacity`: whole 8-bit steps, at least 8,
+    in an 8-bit target; unquantised in a float one), as the splat ``rule``
+    draws it (:func:`rule_opacity`: over size² in a float target, issue
+    #263), and the sample's radius larger by ∛(total / sample rows). In an
+    8-bit target it is :func:`app.render_session.points.gaussian_splat` (the
+    desktop's rule) plus the sample's growth."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     volume = math.prod(max(d, longest * 1.0e-3) for d in dims)
     spacing = math.cbrt(volume / max(1, int(total_rows)))
     radius = spacing * float(size) / 8.0
     depth = max(longest / spacing, 1.0)
-    opacity = rule_opacity(splat_opacity(depth, intensity), size, rule)
+    opacity = rule_opacity(splat_opacity(depth, intensity, rule not in FLOAT_RULES), size, rule)
     grow = math.cbrt(max(1.0, total_rows / max(1, int(sample_rows))))
     return radius, opacity, radius * grow
 

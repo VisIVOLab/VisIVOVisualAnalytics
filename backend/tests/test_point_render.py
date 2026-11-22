@@ -230,6 +230,13 @@ def test_splat_opacity_is_a_whole_8bit_step_vtk_keeps():
             assert ALPHA_STEPS_MIN / 255 <= op <= ALPHA_STEPS_MAX / 255
             assert op * 255 == pytest.approx(round(op * 255))
     assert splat_opacity(float("nan")) == ALPHA_STEPS_MAX / 255
+    # Depths a hair from a step's boundary: the desktop (test_solid_splats.cpp)
+    # and the page (layers.test.mjs) assert the same steps.
+    for depth, k in ((12.966, 30), (6.4286, 59), (6.3223, 61), (6.0236, 64)):
+        assert splat_opacity(depth) == k / 255
+    # A float target's: unquantised, as before.
+    assert splat_opacity(100.0, 35, steps=False) == pytest.approx(0.015)
+    assert splat_opacity(1000.0, 35, steps=False) == 0.005
 
 
 def test_the_render_route_starts_a_point_session(tmp_path, monkeypatch):
