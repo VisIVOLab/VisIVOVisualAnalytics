@@ -69,6 +69,18 @@ public:
     void setTransport(Transport t) { m_transport = t; }
     Transport transport() const { return m_transport; }
 
+    /// Where the last frame is drawn in this widget: scaled to fit and
+    /// centred (paintEvent), so a click can be mapped into the backend's
+    /// picture. The whole widget before the first frame.
+    QRect frameRect() const
+    {
+        if (m_currentFrame.isNull())
+            return rect();
+        const QSize fitted = m_currentFrame.size().scaled(size(), Qt::KeepAspectRatio);
+        return QRect(QPoint((width() - fitted.width()) / 2, (height() - fitted.height()) / 2),
+                     fitted);
+    }
+
     /// Open a session channel. The branch — JPEG-WS vs H.264-WebRTC
     /// — is chosen by the current :c:`transport` setting at the time
     /// of this call. Both branches share the same paint pipeline so

@@ -16,6 +16,8 @@ private slots:
     void editingARegionKeepsItsOwnName();
     void diagnosticsFollowTheAppliedFilters();
     void aFailedQueryPutsThePreviousFiltersBack();
+    void loadAllKeepsTheAppliedFilters();
+    void aPeerOpenedMidApplyTakesTheSettledFilters();
     void theFramingDistanceGrowsWithTheRadius();
     void framingKeepsTheViewDirection();
     void aRecentreKeepsTheDistance();

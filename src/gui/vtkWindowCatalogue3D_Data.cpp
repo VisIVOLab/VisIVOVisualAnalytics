@@ -534,6 +534,17 @@ void vtkWindowCatalogue3D::applyFilter()
     if (this->remoteDatasetId.isEmpty() || this->filterBusy || this->m_sceneBuilding) {
         return;
     }
+    // From here on the rows, the next pages and the Remote view follow the
+    // list as edited now; a failed query puts the previous one back.
+    this->m_appliedFilters.begin(this->activeFilters);
+    this->queryAppliedFilters();
+}
+
+void vtkWindowCatalogue3D::queryAppliedFilters()
+{
+    if (this->remoteDatasetId.isEmpty() || this->filterBusy || this->m_sceneBuilding) {
+        return;
+    }
 
     // Reset pagination state for a fresh query
     this->m_currentOffset = 0;
@@ -563,9 +574,6 @@ void vtkWindowCatalogue3D::applyFilter()
         this->filterStatusLabel->setText(u"Applying filters…"_s);
     }
 
-    // From here on the rows, the next pages and the Remote view follow the
-    // list as edited now; a failed query puts the previous one back.
-    this->m_appliedFilters.begin(this->activeFilters);
     const int nFilters = static_cast<int>(this->m_appliedFilters.filters().size());
     DiagnosticsManager::instance()->publish(
             DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
@@ -660,11 +668,13 @@ void vtkWindowCatalogue3D::loadAllEntries()
         if (answer != QMessageBox::Yes)
             return;
     }
-    // One page = everything. applyFilter() captures the page size synchronously,
+    // One page = everything. queryAppliedFilters() captures the page size synchronously,
     // so we can restore it immediately for any later paginated query.
+    // The rows on screen, all of them: the applied filters, not edits to the
+    // list that were never applied.
     const int savedPageSize = this->m_pageSize;
     this->m_pageSize = total;
-    this->applyFilter();
+    this->queryAppliedFilters();
     this->m_pageSize = savedPageSize;
     if (this->filterBusy && this->m_loadMessage)
         this->m_loadMessage->setText(

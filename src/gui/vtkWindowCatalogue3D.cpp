@@ -664,7 +664,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_pageSize = comparisonSource->m_pageSize;
         this->m_totalCount = comparisonSource->m_totalCount;
         this->activeFilters = comparisonSource->activeFilters;
-        this->m_appliedFilters.adopt(comparisonSource->m_appliedFilters.filters());
+        this->m_appliedFilters.adopt(comparisonSource->m_appliedFilters.settled());
         this->detectVelocityColumns();
     } else {
         opened = this->m_cataloguePaths.size() > 1
@@ -869,7 +869,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 return;
             if (this->filterStatusLabel)
                 this->filterStatusLabel->setText(u"Loading particle attributes in background…"_s);
-            this->applyFilter();
+            this->queryAppliedFilters();
         });
     }
 

@@ -5,6 +5,7 @@
 #include "RemoteRenderWidget.h"
 #include "RaytraceViewport.h"
 #include "SubfindTargetFraming.h"
+#include "RaytraceSettingsPanel.h"
 #include <vtkPointGaussianMapper.h>
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -876,21 +877,25 @@ void vtkWindowCatalogue3D::centerOnSource(int idx, double zoomFactor)
         || static_cast<std::size_t>(idx) >= this->mappedPositions.size())
         return;
     // The camera of the view on screen: the backend's for a Remote view (it
-    // is asked for), so the target is framed from where the user looks.
+    // is asked for), so the target is framed from where the user looks. The
+    // target by its key: a filter may replace the rows meanwhile.
+    const CatalogueSelection::Key key = CatalogueSelection::keyOf(this->entries, this->schema, idx);
     const quint64 request = ++this->m_frameRequest;
-    this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this), request, idx,
+    this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this), request, key,
                       zoomFactor](const QJsonObject &camera, const QString &error) {
         if (!self || request != self->m_frameRequest)
-            return;   // closed, or another target asked for meanwhile
-        self->frameSourceWithCamera(idx, zoomFactor, camera, error);
+            return;   // closed, turned meanwhile, or another target asked for
+        self->frameSourceWithCamera(key, zoomFactor, camera, error);
     });
 }
 
-void vtkWindowCatalogue3D::frameSourceWithCamera(int idx, double zoomFactor,
-                                                 const QJsonObject &camera,
+void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &key,
+                                                 double zoomFactor, const QJsonObject &camera,
                                                  const QString &error)
 {
-    // The rows may have been replaced while a backend camera was on its way.
+    // The rows may have been replaced while a backend camera was on its way:
+    // the target where it is now, if it is still loaded.
+    const int idx = CatalogueSelection::indexOf(this->entries, this->schema, key);
     if (idx < 0 || idx >= static_cast<int>(this->entries.size())
         || static_cast<std::size_t>(idx) >= this->mappedPositions.size())
         return;
@@ -980,14 +985,25 @@ void vtkWindowCatalogue3D::frameSourceAtViewPoint(QWidget *view, const QPoint &p
 {
     if (!view || this->entries.empty())
         return;
-    const double w = view->width();
-    const double h = view->height();
+    // The picture the camera drew: the backend's frame is fitted into the
+    // Remote widget with bars on two sides, at its own aspect.
+    QRect picture = view->rect();
+    if (view == this->m_remoteWidget)
+        picture = this->m_remoteWidget->frameRect();
+    if (!picture.contains(pos) || picture.width() <= 0 || picture.height() <= 0)
+        return;   // on a bar: no marker there
+    const double w = picture.width();
+    const double h = picture.height();
     // Qt counts y down from the top, the projection up from the bottom.
-    const int x = pos.x();
-    const int y = static_cast<int>(h) - 1 - pos.y();
+    const int x = pos.x() - picture.left();
+    const int y = static_cast<int>(h) - 1 - (pos.y() - picture.top());
+    // A projected map is drawn without perspective, as wide as the camera's
+    // angle at its distance (ParticleGLView::paintGL).
+    const bool projected = view->parentWidget() == this->m_rtView && this->m_rtPanel
+            && this->m_rtPanel->projected();
     const quint64 request = ++this->m_frameRequest;
-    this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this), request, w, h, x,
-                      y](const QJsonObject &json, const QString &error) {
+    this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this), request, w, h, x, y,
+                      projected](const QJsonObject &json, const QString &error) {
         if (!self || request != self->m_frameRequest)
             return;
         const std::optional<visivo::framing::Camera> cam = visivo::framing::cameraFromJson(json);
@@ -1003,6 +1019,15 @@ void vtkWindowCatalogue3D::frameSourceAtViewPoint(QWidget *view, const QPoint &p
         camera->SetViewAngle(cam->viewAngle);
         camera->SetParallelProjection(cam->parallel ? 1 : 0);
         camera->SetParallelScale(cam->parallelScale);
+        if (projected && !cam->parallel) {
+            const double dx = cam->position[0] - cam->focal[0];
+            const double dy = cam->position[1] - cam->focal[1];
+            const double dz = cam->position[2] - cam->focal[2];
+            const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            camera->SetParallelProjection(1);
+            camera->SetParallelScale(
+                    dist * std::tan(vtkMath::RadiansFromDegrees(cam->viewAngle * 0.5)));
+        }
         const int idx = self->pickNearestSource(camera, w, h, x, y);
         qInfo() << "[catalogue3d] double-click on the streamed view, picked source:" << idx;
         if (idx < 0) {
@@ -1012,7 +1037,8 @@ void vtkWindowCatalogue3D::frameSourceAtViewPoint(QWidget *view, const QPoint &p
         if (idx != self->selectedIndex)
             self->setSelectedSource(idx);
         if (self->framingRadius(idx) > 0.0)
-            self->frameSourceWithCamera(idx, 3.0, json, error);
+            self->frameSourceWithCamera(
+                    CatalogueSelection::keyOf(self->entries, self->schema, idx), 3.0, json, error);
     });
 }
 
@@ -1022,6 +1048,11 @@ bool vtkWindowCatalogue3D::eventFilter(QObject *watched, QEvent *event)
     // their own: a double-click there selects (and frames a SubFind target)
     // as one in the local view does. Not consumed, so the views' own mouse
     // handling sees the gesture as before.
+    // Turned or zoomed by hand after a framing request went out: the camera
+    // that comes back for it is older than the view, so it is dropped.
+    if ((event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Wheel)
+        && this->m_remoteWidget && watched == this->m_remoteWidget)
+        ++this->m_frameRequest;
     if (event->type() == QEvent::MouseButtonDblClick) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         auto *widget = qobject_cast<QWidget *>(watched);

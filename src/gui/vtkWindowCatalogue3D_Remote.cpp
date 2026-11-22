@@ -896,10 +896,12 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
                          &vtkWindowCatalogue3D::broadcastComparisonRaytraceCamera);
         this->m_renderStack->addWidget(this->m_rtView);
         // Its pages (the GPU view, or the backend's frames) take the mouse:
-        // a double-click on a marker selects it there too (eventFilter).
+        // a double-click on a marker selects it there too (eventFilter). Not
+        // the loading overlay over them, which has nothing to pick.
         for (QWidget *page : this->m_rtView->findChildren<QWidget *>(
                      QString(), Qt::FindDirectChildrenOnly))
-            page->installEventFilter(this);
+            if (page->inherits("ParticleGLView") || page->inherits("QLabel"))
+                page->installEventFilter(this);
         const auto overlayShown = [self, boxCheck, barCheck]() {
             if (self && self->m_rtView)
                 self->m_rtView->setOverlayShown(boxCheck->isChecked(), barCheck->isChecked());

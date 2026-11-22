@@ -7,6 +7,9 @@
 #include <QElapsedTimer>
 #include <QPointer>
 
+#include <atomic>
+#include <memory>
+
 class QComboBox;
 class QLabel;
 class QProgressBar;
@@ -26,6 +29,7 @@ public:
                                 const QStringList &numericFields,
                                 const std::vector<BackendTabularFilter> &filters,
                                 QWidget *parent = nullptr);
+    ~SimulationDiagnosticsDialog() override;
 
     /// The window applied other filters: the population line follows, and a
     /// result on show (or a run under way) is computed again for them.
@@ -35,6 +39,7 @@ private:
     void run();
     void cancel();
     void finishRun();
+    void clearResult();
     void updatePopulation();
     void present(const BackendCatalogueDiagnosticsResponse &result);
     void saveCsv();
@@ -47,9 +52,16 @@ private:
     BackendCatalogueDiagnosticsResponse m_result;
     bool m_hasResult = false;
     /// Bumped by every run and by Cancel: an answer for an older one is
-    /// dropped (the request itself cannot be withdrawn from the backend).
+    /// dropped.
     quint64 m_runId = 0;
+    /// A run is shown as under way (the bar, Cancel).
     bool m_running = false;
+    /// A worker is still out, maybe one given up on: the next run waits for
+    /// it, so the backend is never asked for two passes at once from here.
+    bool m_inFlight = false;
+    bool m_rerunQueued = false;
+    /// The out worker's cancel flag (shared: it outlives this dialog).
+    std::shared_ptr<std::atomic_bool> m_abort;
     QElapsedTimer m_elapsed;
     QPointer<QTimer> m_tick;
     QPointer<QComboBox> m_field;

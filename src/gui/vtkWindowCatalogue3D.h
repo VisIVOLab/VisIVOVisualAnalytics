@@ -3,6 +3,7 @@
 
 #include "Catalogue3DParser.h"
 #include "CataloguePlacement.h"
+#include "CatalogueSelectionKey.h"
 #include "CatalogueSelectionState.h"
 #include "LinkedCameraSync.h"
 
@@ -341,7 +342,12 @@ private:
 
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();
+    /// Apply: the edited filter list becomes the applied one, then the rows
+    /// are queried with it.
     void applyFilter();
+    /// The rows queried again with the applied filters (Load all, attribute
+    /// hydration): edits not yet applied stay unapplied.
+    void queryAppliedFilters();
     void buildScene();
     void buildLabels();
     void buildShells();
@@ -392,8 +398,8 @@ private:
     void frameSourceAtViewPoint(QWidget *view, const QPoint &pos);
     /// centerOnSource once the shown view's @p camera is known (@p error:
     /// why there is none).
-    void frameSourceWithCamera(int idx, double zoomFactor, const QJsonObject &camera,
-                               const QString &error);
+    void frameSourceWithCamera(const CatalogueSelection::Key &key, double zoomFactor,
+                               const QJsonObject &camera, const QString &error);
     bool eventFilter(QObject *watched, QEvent *event) override;
 
     // ── UI helpers ──────────────────────────────────────────────────────────

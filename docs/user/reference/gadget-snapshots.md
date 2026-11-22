@@ -182,7 +182,9 @@ running the calculation.
 
 On a large snapshot the two exact passes can take minutes: a progress bar and
 the elapsed time are shown while the backend works. **Cancel** stops waiting
-for the answer; the backend may still finish the pass it started.
+for the answer and drops the request; the backend may still finish the pass it
+started. One run is out at a time: a new one waits until the previous request
+has stopped.
 
 3-D regions (**Select 3-D region…** under the filter list) are named. A new
 region is offered the first free name (*Region 1*, *Region 2*, …), and a name

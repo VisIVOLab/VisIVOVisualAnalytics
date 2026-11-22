@@ -125,6 +125,40 @@ void TestCatalogueSelection::aFailedQueryPutsThePreviousFiltersBack()
     QVERIFY(!peer.fail());
 }
 
+void TestCatalogueSelection::loadAllKeepsTheAppliedFilters()
+{
+    // Applied: region 1. Edited since, not applied: region 1 and 2.
+    selection::AppliedFilters applied;
+    applied.begin({ region(QStringLiteral("Region 1")) });
+    applied.succeed();
+    const std::vector<BackendTabularFilter> edited{ region(QStringLiteral("Region 1")),
+                                                    region(QStringLiteral("Region 2")) };
+    // Load all queries the applied list again without beginning an Apply:
+    // whatever the query does, the applied list is not the edited one.
+    QVERIFY(!applied.succeed());
+    QVERIFY(!applied.fail());
+    QCOMPARE(applied.filters().size(), std::size_t(1));
+    QVERIFY(!selection::sameFilters(applied.filters(), edited));
+}
+
+void TestCatalogueSelection::aPeerOpenedMidApplyTakesTheSettledFilters()
+{
+    selection::AppliedFilters source;
+    source.begin({ region(QStringLiteral("Region 1")) });
+    source.succeed();
+    // An Apply is out: the rows a Compare window copies are still Region 1's.
+    source.begin({ region(QStringLiteral("Region 2")) });
+    QCOMPARE(source.settled().front().name, QStringLiteral("Region 1"));
+    selection::AppliedFilters peer;
+    peer.adopt(source.settled());
+    source.fail();
+    QVERIFY(selection::sameFilters(peer.filters(), source.filters()));
+    // Settled once the query answers.
+    source.begin({ region(QStringLiteral("Region 3")) });
+    source.succeed();
+    QCOMPARE(source.settled().front().name, QStringLiteral("Region 3"));
+}
+
 void TestCatalogueSelection::theFramingDistanceGrowsWithTheRadius()
 {
     // 30 degrees: 1.25 r / tan(15 deg).

@@ -93,12 +93,12 @@ public:
 
     /// Apply was pressed with @p edited: it is the applied list from now on
     /// (the Remote view is sent it at once). True when it differs from the
-    /// list applied before. A query still pending (Load all over an Apply)
-    /// keeps the list from before both as the one to go back to.
+    /// list applied before. The window refuses Apply while a query is out,
+    /// so there is never one pending here. A query of the applied list
+    /// itself (Load all) does not begin: succeed and fail are then no-ops.
     bool begin(const std::vector<BackendTabularFilter> &edited)
     {
-        if (!m_pending)
-            m_previous = m_applied;
+        m_previous = m_applied;
         m_applied = edited;
         m_pending = true;
         return !sameFilters(m_previous, m_applied);
@@ -130,8 +130,15 @@ public:
         return changed;
     }
 
+    /// The list the rows on screen were actually queried with: while an
+    /// Apply is out, still the one before it (it may yet fail).
+    const std::vector<BackendTabularFilter> &settled() const
+    {
+        return m_pending ? m_previous : m_applied;
+    }
+
     /// A window opened on another's rows (Compare Quantity) starts from its
-    /// applied list.
+    /// settled list, the one its copied rows were queried with.
     void adopt(const std::vector<BackendTabularFilter> &applied)
     {
         m_applied = applied;

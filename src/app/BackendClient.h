@@ -2509,8 +2509,10 @@ public:
                                         int channelStart, int channelEnd) const;
     BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
     BackendTabularQueryResponse queryTabularCatalogue(const BackendTabularQueryRequest &req) const;
+    /// @p abort, when given and set, drops the request at once (Cancel).
     BackendCatalogueDiagnosticsResponse catalogueDiagnostics(
-            const BackendCatalogueDiagnosticsRequest &req) const;
+            const BackendCatalogueDiagnosticsRequest &req,
+            const std::atomic_bool *abort = nullptr) const;
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
@@ -3404,7 +3406,11 @@ private:
                            int *statusOut = nullptr,
                            /// False on a 429 retry: the "started" line belongs to the
                            /// attempt the user triggered, not to each retry of it.
-                           bool announceStart = true) const;
+                           bool announceStart = true,
+                           /// As performGet's: set, the reply is dropped at once
+                           /// (no 401 retry), so a cancelled caller's worker
+                           /// thread is free again.
+                           const std::atomic_bool *abort = nullptr) const;
     std::chrono::milliseconds requestTimeoutFor(const QUrl &url) const;
 
     static QByteArray decodePayload(const QJsonObject &object, const QString &base64Field,
