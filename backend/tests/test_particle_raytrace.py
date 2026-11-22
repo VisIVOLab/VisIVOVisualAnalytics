@@ -453,6 +453,116 @@ def test_a_projected_value_the_gpu_gets_is_never_nan(tmp_path, monkeypatch):
     assert np.isfinite(rows).all()
     assert np.array_equal(rows[:, 5], [1.0, 0.0, 3.0, 0.0])
 
+
+def test_a_3d_colour_value_the_gpu_gets_keeps_its_nan(tmp_path, monkeypatch):
+    """A 3-D render's colour values: NaN reaches the client, which colours it
+    with the table's NaN colour as the stills do, instead of as 0 (#447)."""
+    from app.routers import particle_render as router
+    particles = {"positions": np.zeros((4, 3), np.float32), "radius": np.ones(4, np.float32),
+                 "intensity": np.ones(4, np.float32),
+                 "value": np.array([1.0, np.nan, 3.0, np.nan], np.float32)}
+    monkeypatch.setattr(router, "_prepared", lambda entry, req, token: particles)
+    session = _Session(_vbt(tmp_path, n=10))
+    loop = asyncio.new_event_loop()
+    try:
+        req = router.ParticleDataRequest(dataset_id="cat_1", colour={"field": "T"},
+                                         colour_values=True)
+        reply = loop.run_until_complete(router.particle_render_particles(
+            req, token="tok", session=session))
+    finally:
+        loop.close()
+    assert reply.headers["X-Visivo-Particle-Fields"] == "x,y,z,r,e,v"
+    rows = np.frombuffer(reply.body, dtype="<f4").reshape(-1, 6)
+    assert np.isfinite(rows[:, :5]).all()
+    assert rows[0, 5] == 1.0 and rows[2, 5] == 3.0
+    assert np.isnan(rows[1, 5]) and np.isnan(rows[3, 5])
+
+
+def test_nan_colours_of_a_still_are_the_tables_nan_colour(tmp_path):
+    """The stills' colours (_colours): a NaN takes the lookup table's NaN
+    colour, VTK's dark red, on a linear and on a log scale; the GPU view
+    uses the same (ParticleGLView::Tone::nanColour)."""
+    pytest.importorskip("vtk")
+    from app.routers import particle_render as router
+    columns = {"T": np.array([1.0, np.nan, 10.0], np.float64)}
+    rows = np.arange(3)
+    for log in (False, True):
+        rgb = router._colours(columns, rows, router.RaytraceColour(field="T", log=log))
+        assert rgb[1] == pytest.approx([0.5, 0.0, 0.0], abs=1 / 255)
+
+
+def test_nan_particles_show_dark_red_where_they_are_alone(tmp_path, monkeypatch):
+    """End to end on the reference renderer (the stills, which the GPU view
+    matches): particles whose colour is NaN emit the NaN colour, dark red,
+    and a region of them alone is plainly dark red. Mixed in among coloured
+    particles they are not seen as such: the light adds up, and dark red
+    carries about an eighth of the luminance of a map's bright end."""
+    from app.routers import particle_render as router
+    monkeypatch.setattr(router, "_PREPARED", router.OrderedDict())
+    rng = np.random.default_rng(5)
+    n = 4000
+    x = np.concatenate([rng.uniform(-2, -0.5, n // 2), rng.uniform(0.5, 2, n // 2)])
+    y, z = rng.uniform(-1, 1, n), rng.uniform(-1, 1, n)
+    # Left half coloured from the map's bright end; right half NaN.
+    t = np.concatenate([np.full(n // 2, 0.95), np.full(n // 2, np.nan)])
+    np.vstack([x, y, z, t]).astype("<f4").tofile(tmp_path / "h.bin")
+    (tmp_path / "h.bin.head").write_text(f"float\n4\n{n}\nlittle\nX\nY\nZ\nT\n")
+    session = _Session(str(tmp_path / "h.bin.head"))
+    cam = {"position": (0, 0, 10), "focal_point": (0, 0, 0), "view_up": (0, 1, 0)}
+    req = router.ParticlePreviewRequest(dataset_id="cat_1", cameras=[cam], width=160, height=80,
+                                        colour={"field": "T", "lut": "Inferno", "min": 0.0,
+                                                "max": 1.0})
+    loop = asyncio.new_event_loop()
+    try:
+        reply = loop.run_until_complete(router.particle_render_preview(
+            req, token="tok", session=session))
+    finally:
+        loop.close()
+    from PIL import Image
+    rgb = np.asarray(Image.open(io.BytesIO(reply.body)).convert("RGB"), dtype=float)
+    left, right = rgb[:, :60].reshape(-1, 3), rgb[:, 100:].reshape(-1, 3)
+    left, right = left[left.sum(1) > 30], right[right.sum(1) > 30]
+    assert len(right) > 0.3 * len(left) > 0        # the NaN half is drawn, not black
+    r, g, b = right.mean(0)
+    assert r > 60 and g < 0.15 * r and b < 0.15 * r  # dark red
+    lr, lg, _ = left.mean(0)
+    assert lg > 0.5 * lr                            # Inferno's bright end: yellow
+
+
+def test_palette_and_range_do_not_prepare_scalar_colour_particles_again(tmp_path, monkeypatch):
+    """With colour_values the prepared particles hold the colour column's
+    values: palette, range and log scale are the client's and share one
+    preparation; another column, or baked colours, do not (#447)."""
+    from app.routers import particle_render as router
+    session = _Session(_vbt(tmp_path, n=200))
+    prepared = []
+    real = router._prepare
+    monkeypatch.setattr(router, "_prepare", lambda e, r: prepared.append(1) or real(e, r))
+    monkeypatch.setattr(router, "_PREPARED", router.OrderedDict())
+    entry = session.datasets["cat_1"]
+
+    def data(colour_values=True, **colour):
+        return router.ParticleDataRequest(dataset_id="cat_1", radius_field="H",
+                                          colour=colour, colour_values=colour_values)
+
+    first = router._prepared(entry, data(field="T", lut="Inferno"), "tok")
+    for colour in ({"field": "T", "lut": "Glow"}, {"field": "T", "min": 1.2, "max": 1.8},
+                   {"field": "T", "log": True},
+                   {"field": "T", "points": [[1.0, 0, 0, 0], [2.0, 1, 1, 1]]}):
+        assert router._prepared(entry, data(**colour), "tok") is first
+    assert len(prepared) == 1
+    # Another column: prepared again.
+    router._prepared(entry, data(field="logM"), "tok")
+    assert len(prepared) == 2
+    # Baked colours: the palette is part of them.
+    router._prepared(entry, data(False, field="T", lut="Inferno"), "tok")
+    router._prepared(entry, data(False, field="T", lut="Glow"), "tok")
+    assert len(prepared) == 4
+    # A projected map keeps its colour settings in the key.
+    assert router._particle_key_fields(
+        router.ParticleDataRequest(dataset_id="cat_1", mode="projected", colour_values=True,
+                                   colour={"field": "T", "lut": "Glow"}))["colour"]["lut"] == "Glow"
+
 def test_a_render_deleted_while_it_runs_stops_and_leaves_nothing(tmp_path, monkeypatch):
     from app.routers import particle_render as router
     from app.tasks import TASKS

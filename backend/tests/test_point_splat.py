@@ -38,7 +38,11 @@ def page_style(bounds, total_rows, sample_rows, size, intensity, rule="v1"):
     spacing = (volume / max(1, total_rows)) ** (1 / 3)
     radius = spacing * size / 8
     depth = max(longest / spacing, 1)
-    opacity = min(max(1.5 / depth * intensity / 35, 0.005), 0.25)
+    if rule in ("v2-f16", "v2-f32"):   # a float target: unquantised
+        opacity = min(max(1.5 * intensity / (35 * depth), 0.005), 0.25)
+    else:                              # 8-bit: whole steps, at least 8 (#447)
+        steps = math.floor(1.5 * intensity / (35 * depth) * 255 + 0.5)
+        opacity = min(max(steps, 8), 64) / 255
     if rule == "v2-f32":
         opacity /= size * size
     elif rule == "v2-f16":
@@ -282,7 +286,12 @@ def test_the_pages_splat_style_is_the_desktops_plus_the_samples_growth():
                 page_style(bounds, total, sample, 3, 35, rule))
     r, op = gaussian_splat(bounds, 1000, 3, 35)
     assert splat_style(bounds, 1000, 1000, 3, 35) == pytest.approx((r, op, r))
-    assert splat_style(bounds, 1000, 1000, 3, 35, "v2-f32") == pytest.approx((r, op / 9, r))
+    # A float target has no 8-bit store: 1.5 / depth unquantised (#447),
+    # over size².
+    depth = 100 / (100 * 50 * 10 / 1000) ** (1 / 3)
+    assert splat_style(bounds, 1000, 1000, 3, 35, "v2-f32") == pytest.approx(
+        (r, 1.5 / depth / 9, r))
+    assert op != pytest.approx(1.5 / depth)   # the 8-bit one is a whole step
     r, op = gaussian_splat(bounds, 1000, 1, 35)
     assert splat_style(bounds, 1000, 1000, 1, 35) == pytest.approx((r, op, r))
     # The sample's radius is the radius for the sampled rows alone.
@@ -574,12 +583,17 @@ def test_splats_take_their_opacity_without_a_colour_column(tmp_path):
         loop.run_until_complete(s.initialize())
         loop.run_until_complete(s.apply_command({"type": "set_color", "field": None}))
         means = []
+        # From the floor of eight 8-bit steps (#447) to 18; size 1, so that
+        # the clusters' cores do not saturate at both.
         for intensity in (1, 100):
             loop.run_until_complete(s.apply_command({"type": "set_point_style", "mode": "gaussian",
-                                                     "size": 3, "intensity": intensity}))
+                                                     "size": 1, "intensity": intensity}))
             jpeg = loop.run_until_complete(s.render_frame())
-            means.append(np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float).mean())
-        assert means[1] > means[0] + 3, means
+            grey = np.asarray(Image.open(io.BytesIO(jpeg)).convert("L"), dtype=float)
+            # The light over the background (its median: the clusters cover
+            # a few per cent of the frame).
+            means.append(grey.mean() - np.median(grey))
+        assert means[1] > 1.3 * means[0] > 0, means
     finally:
         loop.run_until_complete(s.close())
         loop.close()

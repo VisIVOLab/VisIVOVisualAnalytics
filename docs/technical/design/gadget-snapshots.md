@@ -218,10 +218,29 @@ in `sample` (`rows`, `of`, `every`).
 The local Gaussian renderer sizes a uniform splat from the mean 3-D spacing
 `cuberoot(volume / rendered rows)`. Its initial normalized size is 0.75, so the
 radius passed to VTK is `spacing × 0.75 / 8`; the UI can still move below or
-above it. The opacity is `clamp(1.5 / depth, 0.005, 0.25)`, where `depth` is
-the estimated number of mean spacings along the longest axis. Thus a typical
-line of sight starts near a total optical contribution of 1.5 instead of the
-former value 7. The same normalized size is sent to server-side rendering.
+above it. The opacity is `1.5 / depth` in whole 8-bit steps,
+`clamp(floor(255 × 1.5 / depth + 0.5), 8, 64) / 255`, where `depth` is the
+estimated number of mean spacings along the longest axis. Thus a typical line
+of sight starts near a total optical contribution of 1.5 instead of the former
+value 7. The steps follow from VTK's 8-bit pipeline: the opacity is stored as
+the splat colour's 8-bit alpha (truncated) and the splats add up in an 8-bit
+framebuffer. The former floor of 0.005 was stored as 1/255 (22 % low), a step
+more or less changed the brightness by 25 %, and the dark end of a colour map
+or a kernel's wings rounded to nothing. With at least 8 steps a cloud deeper
+than about 48 spacings is brighter than the nominal 1.5 (2.1× at a million
+particles in a cube, 3.2× at 3.66 million, 4.5× at 10 million) but keeps its
+faint colours. Whether to keep that, move to a float framebuffer with a tone
+map, or thin the splats stochastically is still open. The value handed to VTK
+is a quarter step above the step (`ParticleSplatDefaults::vtkOpacityValue`,
+`point_splat.VTK_ALPHA_NUDGE`), so truncation cannot drop it a step. The
+backend's point session (`point_splat.splat_opacity`) and the VR page's 8-bit
+targets (`points.js splatOpacity`) use the same rule, in the same floating-point
+operations, so the three agree at a step's boundary. The page's float targets
+(`v2-f16`, `v2-f32`) have no 8-bit store: they keep the unquantised
+`clamp(1.5 / depth, 0.005, 0.25)`, divided by size² as before. The same normalized size is sent to server-side
+rendering. The automatic Gaussian slider value (25) is the splats' own:
+switching to *Point* restores 100 while the user has not moved the slider
+(`ParticleSplatDefaults::automaticSliderValue`).
 
 Quantity-comparison windows share one backend dataset. Each window has its own
 link flag. A change of camera, selected source or representation is broadcast

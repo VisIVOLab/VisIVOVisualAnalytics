@@ -239,6 +239,8 @@ add_executable(VisIVOTests
     test_velocity_lod_geometry.cpp
     TestSolidSplats.h
     test_solid_splats.cpp
+    TestRaytraceViewRules.h
+    test_raytrace_view_rules.cpp
     TestSystemQuitRedirect.h
     test_system_quit_redirect.cpp
     TestSupportedFormats.h

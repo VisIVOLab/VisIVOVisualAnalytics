@@ -550,6 +550,8 @@ void vtkWindowCatalogue3D::toggleMorphColors(bool checked)
 
 void vtkWindowCatalogue3D::scaleChanged(int value)
 {
+    // Moved by the user (or a linked view): a change of shape keeps it.
+    this->m_sliderAutomatic = false;
     if (entries.empty())
         return;
     Q_UNUSED(value);

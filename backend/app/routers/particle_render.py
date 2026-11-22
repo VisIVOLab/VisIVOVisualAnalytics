@@ -434,8 +434,20 @@ _PARTICLE_FIELDS = ("dataset_id", "x", "y", "z", "sky", "filters", "colour", "ra
                     "intensity_power", "mode", "colour_by", "velocity", "colour_values")
 
 
-def _prepared(entry: dict, req: ParticleRenderRequest, token: str) -> dict:
+def _particle_key_fields(req: ParticleRenderRequest) -> dict:
+    """What in ``req`` shapes the prepared particles. A 3-D render whose
+    colours go to the client as the colour column's values (``colour_values``)
+    depends on the column alone: its palette, range and log scale are the
+    client's, and changing them must not prepare the particles again (the
+    smoothing lengths' neighbour search) nor abort a first load (#447)."""
     fields = req.model_dump(include=set(_PARTICLE_FIELDS))
+    if fields.get("colour_values") and req.mode == "light" and req.colour.field:
+        fields["colour"] = {"field": req.colour.field}
+    return fields
+
+
+def _prepared(entry: dict, req: ParticleRenderRequest, token: str) -> dict:
+    fields = _particle_key_fields(req)
     # The files' version too: a table rewritten under the same dataset id is
     # prepared again rather than drawn from the particles of the old one.
     key = token + dataset_identity(entry) + json.dumps(fields, sort_keys=True, default=str)
@@ -563,7 +575,9 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
             names = "x,y,z,r,w,v"
         elif "value" in particles:
             weight = emission_weights(particles["intensity"], radius, request.quantity)
-            value = np.nan_to_num(np.asarray(particles["value"], dtype=np.float32))
+            # NaN stays NaN: the client colours it with the table's NaN colour,
+            # as the stills do (_colours); as 0 it looked like data (#447).
+            value = np.asarray(particles["value"], dtype=np.float32)
             columns = [pos, radius[:, None], weight[:, None], value[:, None]]
             names = "x,y,z,r,e,v"
         else:

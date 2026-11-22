@@ -646,6 +646,10 @@ private:
     /// them, so that a filter removes points without restyling the others.
     double m_splatBounds[6]{ 0, 0, 0, 0, 0, 0 };
     vtkIdType m_splatCount{ 0 };
+    /// The size slider holds a value the viewer chose (the Gaussian default
+    /// for a large table), not the user: a change of shape may change it
+    /// (ParticleSplatDefaults::automaticSliderValue).
+    bool m_sliderAutomatic{ false };
 
     // Hover highlight (wireframe, yellow)
     vtkNew<vtkSphereSource> hoverSphere;

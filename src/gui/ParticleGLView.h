@@ -63,6 +63,9 @@ public:
         bool hueLog = false;
         double hueMin = 0.0, hueMax = 1.0;   ///< the view's colours' range (ViewColours)
         std::vector<QVector3D> lut;          ///< 256 colours
+        /// A colour value that is NaN (LightScalar): the stills' colour for
+        /// it, VTK's lookup-table default (particle_render.py, _colours).
+        QVector3D nanColour{ 0.5f, 0.0f, 0.0f };
         double slab = 0.0;   ///< a map's thickness about the focal plane (0: everything)
         /// A grid: the optical depth where the light is brightest (0: none),
         /// and the samples per voxel along a ray.
@@ -139,7 +142,8 @@ private:
     /// from the brightest column of an emission-only pass at a quarter size.
     double gridKappa(const QSize &size);
     void toneTo(GLuint fbo, const QSize &size);
-    void toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo, double hueHi);
+    void toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo, double hueHi,
+                  bool hueLog);
 
     bool m_ready{ false };
     bool m_framePending{ false };

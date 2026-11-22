@@ -1,5 +1,6 @@
 #include "CatalogueFormat.h"
 #include "CameraPresetActions.h"
+#include "ParticleSplatDefaults.h"
 #include "WindowCloseShortcut.h"
 #include "BusyStatus.h"
 #include "VbtByteOrderPrompt.h"
@@ -1209,8 +1210,24 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         QObject::connect(this, &vtkWindowCatalogue3D::sourceSelectionChanged, clear,
                          [clear](int idx) { clear->setEnabled(idx >= 0); });
     }
-    QObject::connect(this->comboGeometry, &QComboBox::currentIndexChanged, this,
-                     [this](int) { this->updateGeometryMode(); });
+    QObject::connect(this->comboGeometry, &QComboBox::currentIndexChanged, this, [this](int) {
+        // The Gaussian default size (a quarter of the slider's) is the
+        // splats'; points drawn at it were one pixel wide. While the user has
+        // not moved the slider, it follows the shape.
+        if (this->m_sliderAutomatic) {
+            const int value = ParticleSplatDefaults::automaticSliderValue(
+                    this->comboGeometry->currentText() == u"Gaussian splats"_s,
+                    ui->sliderScale->value());
+            if (value != ui->sliderScale->value()) {
+                // Quietly: updateGeometryMode below restyles once with it
+                // (scaleChanged would restyle the old shape first), and the
+                // shape's broadcast to linked views carries the slider too.
+                const QSignalBlocker quiet(ui->sliderScale);
+                ui->sliderScale->setValue(value);
+            }
+        }
+        this->updateGeometryMode();
+    });
     QObject::connect(this->m_rtLightCheck, &QCheckBox::toggled, this,
                      [this](bool) { this->updateGeometryMode(); });
     QObject::connect(this->comboSizeMode, &QComboBox::currentIndexChanged, this,
