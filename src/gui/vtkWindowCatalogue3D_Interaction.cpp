@@ -911,8 +911,33 @@ void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &
     const double radius = this->framingRadius(idx, &radiusField);
     const visivo::framing::Camera framed =
             visivo::framing::frameTarget(*current, { p[0], p[1], p[2] }, radius, zoomFactor);
-    if (visivo::framing::sameView(*current, framed))
-        return;   // already there: nothing moved, nothing to report
+    // A SubFind target says what it is framed by, after the selection line
+    // the gesture's clicks wrote, also when the view was already there (a
+    // second double-click): the line then still describes the view.
+    const auto reportFraming = [this, idx, radius, &radiusField]() {
+        if (!(radius > 0.0))
+            return;
+        const QString definition = this->m_componentMetadata.value(u"radius_definitions"_s)
+                                           .toObject()
+                                           .value(radiusField)
+                                           .toString();
+        const QString name = Catalogue3DParser::detail::entryDisplayName(
+                this->entries[static_cast<std::size_t>(idx)], this->schema);
+        this->showSelectionStatus(
+                visivo::framing::framingStatus(name, radiusField, definition, radius));
+    };
+    const bool raytraced = this->m_rtView && this->m_renderStack
+            && this->m_renderStack->currentWidget() == this->m_rtView;
+    const bool remote = !raytraced && this->m_remoteView && this->m_remoteWidget
+            && this->m_renderStack
+            && this->m_renderStack->currentWidget() == this->m_remoteWidget;
+    if (visivo::framing::sameView(*current, framed)) {
+        qInfo() << "[catalogue3d] framing: the view is already on source" << idx;
+        reportFraming();
+        return;
+    }
+    qInfo() << "[catalogue3d] framing source" << idx << "in the"
+            << (raytraced ? "ray-traced" : remote ? "Remote" : "local") << "view";
     const QJsonObject framedJson = visivo::framing::cameraToJson(framed);
 
     // This window's camera always follows, so the local view shows the same
@@ -931,11 +956,6 @@ void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &
         if (this->renderWindow)
             this->renderWindow->Render();
     }
-    const bool raytraced = this->m_rtView && this->m_renderStack
-            && this->m_renderStack->currentWidget() == this->m_rtView;
-    const bool remote = !raytraced && this->m_remoteView && this->m_remoteWidget
-            && this->m_renderStack
-            && this->m_renderStack->currentWidget() == this->m_remoteWidget;
     if (raytraced) {
         this->m_rtView->setCamera(framedJson);
         this->m_rtView->refresh();
@@ -948,17 +968,7 @@ void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &
         }
         this->onComparisonCameraFrame();
     }
-    if (radius > 0.0) {
-        const QString definition = this->m_componentMetadata.value(u"radius_definitions"_s)
-                                           .toObject()
-                                           .value(radiusField)
-                                           .toString();
-        this->showSelectionStatus(
-                u"Framed target at %1 × %2 = %3."_s
-                        .arg(visivo::framing::kRadiusMargin)
-                        .arg(visivo::framing::radiusWithDefinition(radiusField, definition))
-                        .arg(radius, 0, 'g', 6));
-    }
+    reportFraming();
 }
 
 void vtkWindowCatalogue3D::recentreLocalView(int idx)

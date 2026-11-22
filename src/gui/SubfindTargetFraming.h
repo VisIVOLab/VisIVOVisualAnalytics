@@ -173,4 +173,18 @@ inline QString radiusWithDefinition(const QString &field, const QString &definit
     return QStringLiteral("%1 (%2)").arg(field, text);
 }
 
+/// The status line after a double-click on a SubFind target: what is framed
+/// and by which radius. Shown also when the view was already framed (a second
+/// double-click), so the selection line the gesture's clicks wrote does not
+/// stay in its place.
+inline QString framingStatus(const QString &target, const QString &field,
+                             const QString &definition, double radius)
+{
+    return QStringLiteral("Framed %1 at %2 × %3 = %4.")
+            .arg(target.isEmpty() ? QStringLiteral("target") : target)
+            .arg(kRadiusMargin)
+            .arg(radiusWithDefinition(field, definition))
+            .arg(radius, 0, 'g', 6);
+}
+
 } // namespace visivo::framing

@@ -47,9 +47,9 @@ the marker (in the Local, Remote or ray-traced view) or its table row to
 centre the camera on it and frame 1.25 times its radius. The radius the
 markers are sized by is used when it is one of them; otherwise `rvir`, then
 R500/R2500 (half-mass radius or Rmax for a subhalo). The camera keeps the
-direction it looks from. The status line reports the radius used only when the
-view actually moved. A row highlighted from another tool over SAMP is only
-recentred, at the same distance, and never reframed.
+direction it looks from. The status line names the target and the radius used
+(also when the view was already framed). A row highlighted from another tool
+over SAMP is only recentred, at the same distance, and never reframed.
 
 The Inspector states that the dataset is a SubFind catalogue and distinguishes
 FoF groups from subhalos. Stored code units and their kpc/M☉/km s⁻¹ conversions

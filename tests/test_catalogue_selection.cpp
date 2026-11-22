@@ -240,6 +240,13 @@ void TestCatalogueSelection::radiiSayWhatTheyAreDefinedAgainst()
              QStringLiteral("r500 (500 times the mean background density)"));
     QCOMPARE(framing::radiusWithDefinition(QStringLiteral("mass"), QString()),
              QStringLiteral("mass"));
+    // The status line names the target, so it replaces the selection line.
+    QCOMPARE(framing::framingStatus(QStringLiteral("Row 1"), QStringLiteral("rvir"),
+                                    QStringLiteral("mean background density"), 250.0),
+             QStringLiteral("Framed Row 1 at 1.25 × rvir (relative to the mean background "
+                            "density) = 250."));
+    QCOMPARE(framing::framingStatus(QString(), QStringLiteral("rmax"), QString(), 1.5),
+             QStringLiteral("Framed target at 1.25 × rmax = 1.5."));
 }
 
 void TestCatalogueSelection::cameraJsonRoundTrips()
