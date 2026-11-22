@@ -330,9 +330,10 @@ def _diagnostic_accumulate(chunks, field_range, bins: int, weighted: bool,
         for item in chunks():
             if stop is not None and stop.is_set():
                 raise DiagnosticsCancelled("Cancelled by client.")
+            yield item[0], item[1]
+            # After the chunk has been counted: the progress is work done.
             if progress is not None and len(item) > 2:
                 progress((index + float(item[2])) / passes)
-            yield item[0], item[1]
 
     def valid(values, weights):
         values = np.asarray(values, dtype=np.float64)
@@ -408,13 +409,20 @@ def _filter_fields(filters) -> set[str]:
 
 def _entry_periods(entry) -> dict[str, float]:
     """The periodic coordinates of a catalogue entry: a Gadget snapshot's
-    box on its positions (app/periodic.py), {} for any other table."""
+    box on its positions (app/periodic.py), {} for any other table. Kept in
+    the entry after the first query (the snapshot does not change while it
+    is open)."""
+    cached = entry.get("_periods")
+    if cached is not None:
+        return cached
     from ..point_table import component_format  # noqa: PLC0415
     path = entry.get("path")
-    if not path or component_format(path) != "gadget":
-        return {}
-    from .. import gadget_snapshot as gs  # noqa: PLC0415
-    return gs.resolve(path).periods()
+    periods = {}
+    if path and component_format(path) == "gadget":
+        from .. import gadget_snapshot as gs  # noqa: PLC0415
+        periods = gs.resolve(path).periods()
+    entry["_periods"] = periods
+    return periods
 
 
 def _diagnostic_chunks(entry, request):
@@ -523,6 +531,10 @@ async def create_catalogue_diagnostics_task(
     entry = _require_dataset(session, request.dataset_id)
     if entry["kind"] != "catalogue":
         raise HTTPException(422, "This endpoint requires a catalogue dataset.")
+    # A heavy task like the others: one of the session's compute slots, held
+    # until the computation itself ends (not when a cancelled runner does).
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
     task = TASKS.create("catalogue_diagnostics", owner_token=token)
     TASKS.update(task.task_id, status="running", progress=0.0)
     stop = threading.Event()
@@ -533,6 +545,14 @@ async def create_catalogue_diagnostics_task(
     async def _runner() -> None:
         work = asyncio.ensure_future(
             asyncio.to_thread(_run_diagnostics, entry, request, progress, stop))
+
+        def _ended(future) -> None:
+            session.release_task_slot()
+            # A cancelled run ends in DiagnosticsCancelled after its runner
+            # has gone: retrieved here, so asyncio does not log it as lost.
+            if not future.cancelled():
+                future.exception()
+        work.add_done_callback(_ended)
         TASKS.update(task.task_id, work_handle=work)
         try:
             result = await asyncio.shield(work)

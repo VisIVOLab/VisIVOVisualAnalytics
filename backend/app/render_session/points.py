@@ -232,14 +232,14 @@ def _box_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
     ``{"box": {"fields": [x, y, z], "min": [...], "max": [...], "period":
     optional}, "op": "inside" | "outside"}``: the rows inside the box (bounds
     included), or those outside it. On a periodic coordinate (the snapshot's
-    box, ``columns.periods``, or the ``period`` given) the box wraps round
+    box, ``columns.column_periods``, or the ``period`` given) the box wraps round
     the volume (app/periodic.py)."""
     box = f.get("box") or {}
     fields, lo, hi = box.get("fields") or [], box.get("min") or [], box.get("max") or []
     op = str(f.get("op", "inside"))
     if not (len(fields) == len(lo) == len(hi)) or not fields or op not in ("inside", "outside"):
         raise ValueError("A box filter is {box: {fields, min, max}, op: inside | outside}.")
-    periods = getattr(columns, "periods", None)
+    periods = getattr(columns, "column_periods", None)
     inside = np.ones(len(rows), dtype=bool)
     for name, a, b in zip(fields, lo, hi):
         if name not in columns:
@@ -262,7 +262,7 @@ def _sphere_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
         raise ValueError(
             "A sphere filter is {sphere: {fields: [x,y,z], center: [x,y,z], "
             "radius: positive}, op: inside | outside}.")
-    periods = getattr(columns, "periods", None)
+    periods = getattr(columns, "column_periods", None)
     distance2 = np.zeros(len(rows), dtype=np.float64)
     for name, origin in zip(fields, center):
         if name not in columns:

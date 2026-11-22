@@ -226,8 +226,14 @@ chunk's count, mean and squared deviations (Chan's pairwise update) instead of
 
 **Periodic selections (issue #448).** A cosmological box is periodic, so a
 sphere around a halo near a face must reach the particles across it.
-`Component.periods()` gives the snapshot's `BoxSize` for its position columns
-when the run is comoving and the box positive; an isolated run has none. The
+`Component.periods()` gives the snapshot's `BoxSize` (when positive) for its
+position columns when the run is periodic. What the run states decides: a
+Gadget-4 HDF5 file's `Config` group (`PERIODIC` among its attributes or not),
+or `periodic=0`/`1` in `VISIVO_GADGET_UNITS`. When nothing states it, a
+comoving run is taken as periodic and any other as not. That guess is wrong
+for a non-periodic cosmological zoom, or an isolated galaxy integrated in
+comoving coordinates: set `periodic=0` for such a run, or send `"period": 0`
+with the selection. The
 out-of-core matcher, the point sessions' masks (`LazyColumns.periods`) and the
 DataFrame path use the nearest image for spheres and wrap boxes round the
 faces (`app/periodic.py`). A selection may state its own `period` (0: none).

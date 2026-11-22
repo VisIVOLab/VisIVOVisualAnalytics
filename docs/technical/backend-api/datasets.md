@@ -311,7 +311,9 @@ A spatial selection is a filter with `"op": "inside"` or `"outside"` and a
 `"period": L`, the length of a periodic box: distances then use the nearest
 periodic image and a box wraps round the faces. Without it, a cosmological
 Gadget snapshot's `BoxSize` is the period of its position columns (`x`, `y`,
-`z`, `centre_of_mass_*`); `"period": 0` turns wrapping off. A VBT or catalogue
+`z`, `centre_of_mass_*`) when the run is periodic (a Gadget-4 `Config/PERIODIC`,
+`periodic=` in `VISIVO_GADGET_UNITS`, else a comoving run); `"period": 0`
+turns wrapping off. A VBT or catalogue
 wraps only when the period is given. On a loaded table the selection is one
 boolean mask applied with the scalar filters, so a big-endian VBT read in
 place works and only the page's rows are copied.
@@ -346,7 +348,9 @@ at a time, only the columns the filters, the field and the weight need.
 ### `POST /v1/tasks/catalogue_diagnostics`
 
 The same request and computation as a task, for a table large enough that the
-two passes take a while: the answer is `{task_id, status: "running"}`.
+two passes take a while: the answer is `{task_id, status: "running"}`. It
+takes one of the session's compute slots until the computation ends (HTTP 429
+when none comes free), as the other heavy tasks do.
 `GET /v1/tasks/{task_id}` gives `progress` (0 to 1 over both passes; one pass
 when the range is given) and, once `completed`, `result`, the diagnostics
 response above (`valid: false` with the reason for an unknown field or a bad

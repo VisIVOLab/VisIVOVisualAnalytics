@@ -192,7 +192,7 @@ def test_the_point_session_masks_wrap_with_the_snapshot(tmp_path):
     from app.render_session.points import _filter_mask
     files, _ = _snapshot(tmp_path)
     table = open_point_table(gs.gadget_ref(files[0], 1))
-    assert table.columns.periods == {"x": 1000.0, "y": 1000.0, "z": 1000.0}
+    assert table.columns.column_periods == {"x": 1000.0, "y": 1000.0, "z": 1000.0}
     rows = np.arange(table.num_rows)
     x = np.asarray(table.columns["x"][rows], dtype=np.float64)
     # A box from x = 900 across the face to x = max - 1000 + 1: the halo
@@ -345,3 +345,53 @@ def test_subfind_id_and_large_group_types_are_not_offered(tmp_path):
     snap = gs.open_snapshot(path)
     assert snap.is_subfind and snap.counts()[2] == 4
     assert [c["name"] for c in gs.gadget_components(path)] == ["FoF groups", "subhalos"]
+
+
+# ── What decides that a box is periodic ──────────────────────────────────────
+
+def _hdf5_box(path, *, periodic=None, comoving=True):
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "w") as h:
+        hd = h.create_group("Header")
+        hd.attrs["NumPart_ThisFile"] = np.array([0, 4, 0, 0, 0, 0], dtype=np.int32)
+        hd.attrs["NumPart_Total"] = np.array([0, 4, 0, 0, 0, 0], dtype=np.uint32)
+        hd.attrs["MassTable"] = np.array([0, 1.0, 0, 0, 0, 0])
+        hd.attrs["NumFilesPerSnapshot"] = 1
+        hd.attrs["BoxSize"] = 50.0
+        h.create_group("Parameters").attrs["ComovingIntegrationOn"] = int(comoving)
+        if periodic is not None:
+            config = h.create_group("Config")
+            config.attrs["NTYPES"] = 6
+            if periodic:
+                config.attrs["PERIODIC"] = 1
+        h.create_group("PartType1").create_dataset(
+            "Coordinates", data=np.random.default_rng(0).random((4, 3)) * 50)
+    return gs.open_snapshot(path).component(1)
+
+
+def test_gadget4_config_decides_periodicity_before_the_comoving_guess(tmp_path, monkeypatch):
+    monkeypatch.delenv(gs.UNITS_ENV, raising=False)
+    assert _hdf5_box(tmp_path / "a.hdf5", periodic=True, comoving=False).periods() == {
+        "x": 50.0, "y": 50.0, "z": 50.0}
+    assert _hdf5_box(tmp_path / "b.hdf5", periodic=False, comoving=True).periods() == {}
+    assert _hdf5_box(tmp_path / "c.hdf5", periodic=None, comoving=True).periods() != {}
+    assert _hdf5_box(tmp_path / "d.hdf5", periodic=None, comoving=False).periods() == {}
+
+
+def test_the_environment_can_state_that_a_cosmological_run_is_not_periodic(
+        tmp_path, monkeypatch):
+    files, _ = _snapshot(tmp_path)
+    assert gs.open_snapshot(files[0]).component(1).periods()
+    monkeypatch.setenv(gs.UNITS_ENV, "periodic=0")
+    assert gs.open_snapshot(files[0]).component(1).periods() == {}
+
+
+def test_a_subfind_catalogue_without_groups_opens_on_its_subhalos(tmp_path):
+    e = "<"
+    npart = [0, 2, 5, 0, 0, 0]
+    head = G._gadget_header(npart, [0.0] * 6, 0.5, 1.0, npart, 1, 1000.0, 0.3, 0.7, 0.7, e)
+    path = tmp_path / "sub_003.0"
+    path.write_bytes(G._gadget_block("HEAD", head, e)
+                     + G._gadget_block("SPOS", np.full((2, 3), 500, "<f4").tobytes(), e))
+    snap = gs.open_snapshot(path)
+    assert snap.is_subfind and gs.default_type(snap) == 1
