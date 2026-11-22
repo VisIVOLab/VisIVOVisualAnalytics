@@ -274,6 +274,21 @@ export function colourCommand(field, range, log, lut, c0 = 0, c1 = 1, n = 32) {
 export const SPLAT_RULES = ['v1', 'v2-8bit', 'v2-f16', 'v2-f32'];
 export const F16_OPACITY_FLOOR = 1 / 512;
 
+/**
+ * The per-splat opacity for `depth` splats along the longest sightline: 1.5 /
+ * depth at the standard intensity (35), in whole 8-bit steps (half up), at
+ * least ALPHA_STEPS_MIN (issue #447: VTK keeps it as an 8-bit alpha and adds
+ * into an 8-bit framebuffer, where fewer steps lost the faint colours). The
+ * desktop and the point session use the same steps (point_splat.splat_opacity).
+ */
+export const ALPHA_STEPS_MIN = 8;
+export const ALPHA_STEPS_MAX = 64;
+export function splatOpacity(depth, intensity = 35) {
+  if (!(Number.isFinite(depth) && depth > 0)) return ALPHA_STEPS_MAX / 255;
+  const steps = Math.floor((1.5 / depth) * intensity / 35 * 255 + 0.5);
+  return Math.min(Math.max(steps, ALPHA_STEPS_MIN), ALPHA_STEPS_MAX) / 255;
+}
+
 /** The desktop's opacity as `rule` draws it (point_splat.rule_opacity). */
 export function ruleOpacity(opacity, size, rule) {
   if (rule === 'v2-f32') return opacity / (size * size);
@@ -292,8 +307,8 @@ export function acceptFrame(header, style, rule) {
  * Splat radius (data units) and opacity, as the desktop and the point session
  * size them (render_session/points.py gaussian_splat): spacing ∛(volume / N)
  * of the box the points fill, radius = spacing × size / 8; opacity is
- * 1.5 / D at the standard intensity, clamped to 0.005..0.25, with D the
- * longest side / spacing, as the
+ * 1.5 / D at the standard intensity in whole 8-bit steps (splatOpacity),
+ * with D the longest side / spacing, as the
  * splat `rule` draws it (ruleOpacity: over size² in a float target, issue
  * #263, so the size step changes the size, not the brightness; the
  * desktop's at size 1, the default). N is the table's rows: a sample of
@@ -307,8 +322,7 @@ export function splatStyle(bounds, totalRows, sampleRows, size, intensity, rule 
   const spacing = Math.cbrt(volume / Math.max(1, totalRows));
   const radius = (spacing * size) / 8;
   const depth = Math.max(longest / spacing, 1);
-  const opacity = ruleOpacity(Math.min(Math.max((1.5 / depth) * intensity / 35, 0.005), 0.25),
-    size, rule);
+  const opacity = ruleOpacity(splatOpacity(depth, intensity), size, rule);
   const grow = Math.cbrt(Math.max(1, totalRows / Math.max(1, sampleRows)));
   return { radius, opacity, sampleRadius: radius * grow };
 }

@@ -515,8 +515,11 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
             // This applies only to the automatic Gaussian default; explicit
             // user choices and every other representation keep their value.
             if (this->comboGeometry->currentText() == u"Gaussian splats"_s
-                && ui->sliderScale->value() == 100)
+                && ui->sliderScale->value() == ParticleSplatDefaults::kDefaultSliderValue) {
                 ui->sliderScale->setValue(ParticleSplatDefaults::initialSliderValue());
+                // After setValue: scaleChanged takes any change for the user's.
+                this->m_sliderAutomatic = true;
+            }
         }
         // Called before the combo's signal is connected: applied here, or the
         // combo would read splats while points are drawn.

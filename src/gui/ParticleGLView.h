@@ -63,6 +63,9 @@ public:
         bool hueLog = false;
         double hueMin = 0.0, hueMax = 1.0;   ///< the view's colours' range (ViewColours)
         std::vector<QVector3D> lut;          ///< 256 colours
+        /// A colour value that is NaN (LightScalar): the stills' colour for
+        /// it, VTK's lookup-table default (particle_render.py, _colours).
+        QVector3D nanColour{ 0.5f, 0.0f, 0.0f };
         double slab = 0.0;   ///< a map's thickness about the focal plane (0: everything)
         /// A grid: the optical depth where the light is brightest (0: none),
         /// and the samples per voxel along a ray.

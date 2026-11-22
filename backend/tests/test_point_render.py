@@ -204,11 +204,32 @@ def test_gaussian_splats_follow_the_desktop_rules():
     # Half the points in half the box (a filter's slab): the same splats.
     assert gaussian_splat((0, 5, 0, 10, 0, 10), 500, 3, 35)[0] == pytest.approx(3 / 8)
     depth = 100 / (100 * 50 * 10 / 1000) ** (1 / 3)
-    assert opacity == pytest.approx(max(0.005, min(0.25, 1.5 / depth)))
+    # 1.5 / depth in whole 8-bit steps (14.09 here: 14), as VTK stores it (#447).
+    assert opacity == round(1.5 / depth * 255) / 255 == 14 / 255
     # A cube: 1.5 / ∛N, and a filter's slab of it keeps the opacity.
-    assert gaussian_splat((0, 64, 0, 64, 0, 64), 64 ** 3, 3, 35)[1] == pytest.approx(1.5 / 64)
-    assert gaussian_splat((0, 32, 0, 64, 0, 64), 64 ** 3 // 2, 3, 35)[1] == pytest.approx(1.5 / 64)
-    assert gaussian_splat((0, 1, 0, 1, 0, 1), 10 ** 9, 1, 1)[1] == 0.005
+    assert gaussian_splat((0, 16, 0, 16, 0, 16), 16 ** 3, 3, 35)[1] == 24 / 255
+    assert gaussian_splat((0, 8, 0, 16, 0, 16), 16 ** 3 // 2, 3, 35)[1] == 24 / 255
+    # Never below eight steps: 1.5 / 64 (6 steps) and a billion rows' depth.
+    assert gaussian_splat((0, 64, 0, 64, 0, 64), 64 ** 3, 3, 35)[1] == 8 / 255
+    assert gaussian_splat((0, 1, 0, 1, 0, 1), 10 ** 9, 1, 1)[1] == 8 / 255
+
+
+def test_splat_opacity_is_a_whole_8bit_step_vtk_keeps():
+    """VTK keeps the opacity as an 8-bit alpha, truncating: every step, nudged
+    as the session gives it, is stored as that step (also through float32,
+    its opacity table's type), and none is below eight (#447)."""
+    from app.point_splat import ALPHA_STEPS_MAX, ALPHA_STEPS_MIN, VTK_ALPHA_NUDGE, splat_opacity
+    for k in range(ALPHA_STEPS_MIN, ALPHA_STEPS_MAX + 1):
+        value = k / 255 + VTK_ALPHA_NUDGE
+        assert int(value * 255) == k
+        assert int(float(np.float32(value)) * 255) == k
+        assert round(value * 255) == k
+    for depth in np.geomspace(1, 1e6, 200):
+        for intensity in (1, 35, 200):
+            op = splat_opacity(float(depth), intensity)
+            assert ALPHA_STEPS_MIN / 255 <= op <= ALPHA_STEPS_MAX / 255
+            assert op * 255 == pytest.approx(round(op * 255))
+    assert splat_opacity(float("nan")) == ALPHA_STEPS_MAX / 255
 
 
 def test_the_render_route_starts_a_point_session(tmp_path, monkeypatch):

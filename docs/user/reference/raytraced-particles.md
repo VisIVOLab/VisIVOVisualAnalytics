@@ -20,7 +20,15 @@ scene card are greyed out until the check is cleared.
 - The camera starts from the 3-D view's, and the 3-D view takes it back when
   the check is cleared.
 - The *VISUAL ENCODING* colour column and map, and the *FILTERS*, set the
-  particles' colours and which rows are drawn.
+  particles' colours and which rows are drawn. A colour value that is blank
+  (NaN) is drawn in the map's NaN colour, dark red, as on saved stills.
+  Changing the map, range or scale recolours the particles already on the GPU
+  without loading them again.
+- While the particles are prepared for the first time, a panel covers the
+  view. Later changes that need new particles (size, filters, light) keep the
+  current picture on screen and turnable, with a small badge in the top-right
+  corner until the new particles arrive. If preparing fails, the panel or the
+  badge says why.
 - Above 8 million rows an even sample is sent to the desktop, each particle
   carrying the light of those it stands for. With a distant backend and a
   large table, *View ▸ Rendering ▸ Remote (GPU on backend)* is the better

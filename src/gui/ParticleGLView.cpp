@@ -1,4 +1,5 @@
 #include "ParticleGLView.h"
+#include "ScalarColourRange.h"
 
 #include <QJsonArray>
 #include <QMatrix4x4>
@@ -39,13 +40,16 @@ uniform float u_pxPerUnit;   // parallel: pixels per unit; perspective: the foca
 uniform int u_projected;
 uniform int u_scalarColour;
 uniform int u_hueLog;
-uniform float u_hueLo;
-uniform float u_hueHi;
+uniform float u_hueLo;     // the colour range's low end (its log10 on a log scale)
+uniform float u_hueSpan;   // and its width, both worked out in double; 0: flat
+uniform vec3 u_nanColour;
 uniform float u_slab;    // a map's half thickness about the focal plane; 0: everything
 uniform float u_focal;   // the focal plane's depth
 out vec2 v_xy;
 out vec3 v_emit;
 const float CUT = 2.5;
+// By its bits: a compiler's fast maths may take isnan() to be always false.
+bool nanValue(float x) { return (floatBitsToUint(x) & 0x7fffffffu) > 0x7f800000u; }
 void main() {
     vec2 corner = vec2((gl_VertexID & 1) == 0 ? -1.0 : 1.0, (gl_VertexID & 2) == 0 ? -1.0 : 1.0);
     vec4 c = u_view * vec4(a_pos, 1.0);
@@ -66,11 +70,23 @@ void main() {
     v_xy = corner * CUT;
     vec3 colour = a_col;
     if (u_scalarColour == 1) {
-        float x = u_hueLog == 1 ? log(max(a_col.x, 1e-30)) / log(10.0) : a_col.x;
-        float lo = u_hueLog == 1 ? log(max(u_hueLo, 1e-30)) / log(10.0) : u_hueLo;
-        float hi = u_hueLog == 1 ? log(max(u_hueHi, 1e-30)) / log(10.0) : u_hueHi;
-        float t = clamp((x - lo) / max(hi - lo, 1e-30), 0.0, 1.0);
-        colour = texture(u_lut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+        // As the stills colour it (particle_render.py, _colours): NaN in the
+        // table's NaN colour; on a log scale, a value at or below zero in the
+        // lowest colour. No absolute floor: cgs densities reach 1e-30 and less.
+        float v = a_col.x;
+        if (nanValue(v)) {
+            colour = u_nanColour;
+        } else {
+            float t = 0.0;
+            if (u_hueSpan > 0.0) {
+                if (u_hueLog == 1)
+                    t = v > 0.0 ? (log2(v) * 0.30102999566398120 - u_hueLo) / u_hueSpan : 0.0;
+                else
+                    t = (v - u_hueLo) / u_hueSpan;
+            }
+            t = clamp(t, 0.0, 1.0);
+            colour = texture(u_lut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+        }
     }
     v_emit = u_projected == 1 ? vec3(a_e * w, a_e * w * a_col.x, 0.0)
                               : colour * (a_e * w);
@@ -131,8 +147,17 @@ void main() {
             rgb = b > 0.0 ? lut(b) : vec3(0.0);
         } else {
             float m = a.g / d;
-            float x = u_hueLog == 1 ? log(max(m, 1e-30)) / log(10.0) : m;
-            float f = clamp((x - u_hueLo) / max(u_hueHi - u_hueLo, 1e-30), 0.0, 1.0);
+            // No absolute floor (a mean of cgs densities is below 1e-30): on
+            // a log scale a mean at or below zero takes the lowest hue.
+            float span = u_hueHi - u_hueLo;
+            float f = 0.0;
+            if (span > 0.0) {
+                if (u_hueLog == 1)
+                    f = m > 0.0 ? (log2(m) * 0.30102999566398120 - u_hueLo) / span : 0.0;
+                else
+                    f = (m - u_hueLo) / span;
+            }
+            f = clamp(f, 0.0, 1.0);
             rgb = lut(u_hue == 1 ? 0.3 + 0.7 * f : f) * b;
         }
         o = vec4(clamp(rgb, 0.0, 1.0), 1.0);
@@ -581,9 +606,12 @@ void ParticleGLView::accumulate(const QSize &size)
     m_splat->setUniformValue("u_pxPerUnit", float(pxPerUnit));
     m_splat->setUniformValue("u_projected", m_mode == Mode::Projected ? 1 : 0);
     m_splat->setUniformValue("u_scalarColour", m_mode == Mode::LightScalar ? 1 : 0);
-    m_splat->setUniformValue("u_hueLog", m_tone.hueLog ? 1 : 0);
-    m_splat->setUniformValue("u_hueLo", float(m_tone.hueMin));
-    m_splat->setUniformValue("u_hueHi", float(m_tone.hueMax));
+    const visivo::ScalarColourRange hue =
+            visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog);
+    m_splat->setUniformValue("u_hueLog", hue.log ? 1 : 0);
+    m_splat->setUniformValue("u_hueLo", float(hue.lo));
+    m_splat->setUniformValue("u_hueSpan", float(hue.span));
+    m_splat->setUniformValue("u_nanColour", m_tone.nanColour);
     glActiveTexture(GL_TEXTURE0);
     m_lutTexture->bind(0);
     m_splat->setUniformValue("u_lut", 0);

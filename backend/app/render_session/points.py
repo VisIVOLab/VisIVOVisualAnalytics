@@ -68,7 +68,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from ..point_splat import SPLAT_RULES
+from ..point_splat import SPLAT_RULES, VTK_ALPHA_NUDGE, splat_opacity
 from ..point_sample import _Q, _STAT_CHUNK, _colour_stats, place_rows, quantise64
 from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
 from ._stereo_points import PointStereoMixin, _vtk_matrix
@@ -315,9 +315,9 @@ def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[floa
     (vtkWindowCatalogue3D::updateGaussianSplats): radius = mean spacing ×
     size / 8, the spacing ∛(volume / N) of the box the points fill (a filter
     that cuts a slab keeps it, as it keeps the density); opacity is normalized
-    to 1.5 / D at the standard intensity, clamped to [0.005, 0.25], D the
-    splats along the longest sightline (longest side / spacing: ∛N for a cube,
-    and unchanged by a filter)."""
+    to 1.5 / D at the standard intensity, D the splats along the longest
+    sightline (longest side / spacing: ∛N for a cube, and unchanged by a
+    filter), in whole 8-bit steps from 8 to 64 (point_splat.splat_opacity)."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     # A flat axis (points in a plane) counts as a thousandth of the longest.
@@ -325,8 +325,7 @@ def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[floa
     spacing = math.cbrt(volume / max(npts, 1))
     radius = spacing * size / 8.0
     depth = max(longest / spacing, 1.0)
-    opacity = min(max(1.5 / depth * intensity / 35.0, 0.005), 0.25)
-    return radius, opacity
+    return radius, splat_opacity(depth, intensity)
 
 
 class PointRenderSession(PointStereoMixin):
@@ -718,6 +717,8 @@ class PointRenderSession(PointStereoMixin):
         if self.view.mode == "gaussian":
             bounds, count = self._splat_basis
             radius, opacity = gaussian_splat(bounds, count, self.view.size, self.view.intensity)
+            # VTK stores it as an 8-bit alpha: nudged onto its step.
+            opacity += VTK_ALPHA_NUDGE
             self._gauss_opacity.RemoveAllPoints()
             self._gauss_opacity.AddPoint(-1.0e15, opacity)
             self._gauss_opacity.AddPoint(1.0e15, opacity)

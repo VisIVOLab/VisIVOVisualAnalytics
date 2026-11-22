@@ -9,6 +9,7 @@
 // (drag: turn; Shift-drag or right button: move; wheel: zoom).
 
 #include "ParticleGLView.h"
+#include "RaytraceLoadingState.h"
 
 #include <QImage>
 #include <QJsonObject>
@@ -103,9 +104,16 @@ protected:
 
 private:
     void fetch(const QString &key, const QJsonObject &request);
-    void beginLoading(const QString &what);
+    /// A fetch started: ``what`` a short title, ``detail`` a sentence under it
+    /// (empty: the view appears when its first frame is ready).
+    void beginLoading(const QString &what, const QString &detail = QString());
+    /// The fetch was superseded by the data already on screen.
     void finishLoading();
+    /// A frame is on screen (the GPU view's, the backend's, or a still).
+    void frameShown();
     void loadingError(const QString &detail);
+    /// The cover or the corner badge, as m_loading says.
+    void showLoadingState();
     void redraw(bool settle);
     void showImage(const QImage &image);
     void showGl();
@@ -117,6 +125,8 @@ private:
     /// A reply of a backend without the route: says so (unavailable) and
     /// returns true.
     bool routeMissing(QNetworkReply *reply, const QByteArray &body);
+    /// Why a reply failed: the backend's detail, else Qt's error.
+    static QString replyError(QNetworkReply *reply, const QByteArray &body);
     /// A grid's box and colours from a backend frame's headers, read with the
     /// settings the frame was asked with.
     void takeFallbackGrid(QNetworkReply *reply, bool projected,
@@ -141,6 +151,10 @@ private:
     QLabel *m_loadingLabel{ nullptr };     ///< short preparation/error title
     QLabel *m_loadingDetail{ nullptr };    ///< wrapping explanation below it
     QProgressBar *m_loadingProgress{ nullptr };
+    QWidget *m_loadingBadge{ nullptr };    ///< over a frame already drawn
+    QLabel *m_badgeLabel{ nullptr };
+    QProgressBar *m_badgeProgress{ nullptr };
+    visivo::RaytraceLoadingState m_loading;
     bool m_showingStill{ false };
     QImage m_shown;
     QPointer<QNetworkReply> m_fallbackReply;

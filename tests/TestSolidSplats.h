@@ -12,6 +12,8 @@ private slots:
     void theTableMapsEverythingNaNIncludedToTheSolidColour();
     void gaussianDefaultsAvoidImmediateSaturation();
     void gaussianOpacityAdaptsToSightlineDepth();
+    void gaussianOpacityIsStoredOnItsStep();
+    void splatSizeDefaultDoesNotCarryOverToPoints();
 };
 
 #endif

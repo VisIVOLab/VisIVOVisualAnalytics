@@ -74,9 +74,46 @@ void TestSolidSplats::gaussianDefaultsAvoidImmediateSaturation()
 
 void TestSolidSplats::gaussianOpacityAdaptsToSightlineDepth()
 {
-    QCOMPARE(ParticleSplatDefaults::opacityForDepth(1.0), 0.25);
-    QCOMPARE(ParticleSplatDefaults::opacityForDepth(30.0), 0.05);
-    QCOMPARE(ParticleSplatDefaults::opacityForDepth(100.0), 0.015);
-    QCOMPARE(ParticleSplatDefaults::opacityForDepth(1000.0), 0.005);
-    QCOMPARE(ParticleSplatDefaults::opacityForDepth(0.0), 0.25);
+    using namespace ParticleSplatDefaults;
+    // Whole 8-bit steps of 1.5 / depth, half up, from 8 to 64.
+    QCOMPARE(opacityForDepth(1.0), 64.0 / 255.0);
+    QCOMPARE(opacityForDepth(30.0), 13.0 / 255.0);    // 12.75 steps
+    QCOMPARE(opacityForDepth(0.0), 64.0 / 255.0);
+    QCOMPARE(opacityForDepth(std::numeric_limits<double>::quiet_NaN()), 64.0 / 255.0);
+    // A million-row cube (depth 100, 3.8 steps) and a deep one (0.4 steps)
+    // keep at least eight steps: their dark colours still add something.
+    QCOMPARE(alphaStepsForDepth(100.0), kMinAlphaSteps);
+    QCOMPARE(alphaStepsForDepth(1000.0), kMinAlphaSteps);
+    QCOMPARE(opacityForDepth(1000.0), 8.0 / 255.0);
+}
+
+void TestSolidSplats::gaussianOpacityIsStoredOnItsStep()
+{
+    using namespace ParticleSplatDefaults;
+    // Every step survives VTK's truncating 8-bit store, also through float
+    // (its opacity table is float), and so does rounding.
+    for (int k = kMinAlphaSteps; k <= kMaxAlphaSteps; ++k) {
+        const double value = vtkOpacityValue(k / 255.0);
+        QCOMPARE(storedAlphaSteps(value), k);
+        QCOMPARE(storedAlphaSteps(double(float(value))), k);
+        QCOMPARE(int(std::lround(value * 255.0)), k);
+    }
+    // The former floor, 0.005, was stored as one step: 22 % low.
+    QCOMPARE(storedAlphaSteps(0.005), 1);
+    // No depth gives an effective alpha below eight steps.
+    for (double depth = 1.0; depth < 1.0e6; depth *= 1.37)
+        QVERIFY(storedAlphaSteps(vtkOpacityValue(opacityForDepth(depth))) >= kMinAlphaSteps);
+}
+
+void TestSolidSplats::splatSizeDefaultDoesNotCarryOverToPoints()
+{
+    using namespace ParticleSplatDefaults;
+    // The automatic Gaussian size leaves with the splats and comes back with them.
+    QCOMPARE(automaticSliderValue(false, initialSliderValue()), kDefaultSliderValue);
+    QCOMPARE(automaticSliderValue(true, kDefaultSliderValue), initialSliderValue());
+    // Already right for the shape, or another value: kept.
+    QCOMPARE(automaticSliderValue(true, initialSliderValue()), initialSliderValue());
+    QCOMPARE(automaticSliderValue(false, kDefaultSliderValue), kDefaultSliderValue);
+    QCOMPARE(automaticSliderValue(false, 60), 60);
+    QCOMPARE(automaticSliderValue(true, 60), 60);
 }

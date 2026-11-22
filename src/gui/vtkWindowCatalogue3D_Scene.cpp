@@ -1130,7 +1130,10 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     // Splats along the longest sightline: ∛N for a cube (the former viewer's
     // rule), and unchanged by a filter that cuts a slab.
     const double depth = std::max(longest / spacing, 1.0);
-    const double opacity = ParticleSplatDefaults::opacityForDepth(depth);
+    // A whole 8-bit step, at least eight (ParticleSplatDefaults): VTK stores
+    // the opacity as the splat colour's 8-bit alpha.
+    const double opacity = ParticleSplatDefaults::vtkOpacityValue(
+            ParticleSplatDefaults::opacityForDepth(depth));
     this->gaussianOpacity->RemoveAllPoints();
     this->gaussianOpacity->AddPoint(-1.0e15, opacity);
     this->gaussianOpacity->AddPoint(1.0e15, opacity);
