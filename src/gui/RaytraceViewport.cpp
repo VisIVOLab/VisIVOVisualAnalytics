@@ -376,6 +376,8 @@ void RaytraceViewport::setCameraPreset(double azimuth, double elevation)
     };
     m_camera.insert(u"position"_s, array(position));
     m_camera.insert(u"view_up"_s, array(up));
+    // A preset is a move like a drag: linked views follow it (issue #446).
+    emit cameraChanged(m_camera);
     redraw(true);
 }
 

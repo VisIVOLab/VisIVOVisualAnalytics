@@ -70,4 +70,5 @@ private slots:
     void parseParticleComponents_readsNameAndPath();
     void parsePointSeries_readsNumberedSnapshots();
     void parsePointSeries_rejectsMalformedPositions();
+    void parsePointSeries_readsWhichOutputsOpen();
 };
