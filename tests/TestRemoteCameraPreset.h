@@ -14,4 +14,5 @@ private slots:
     void thePresetIsNamedWithItsAngles();
     void aLostSessionsCameraGoesToItsReplacement();
     void thePointStyleFollowsTheSizeSlider();
+    void aTableWithoutLocalRowsStillGetsTheNewSize();
 };

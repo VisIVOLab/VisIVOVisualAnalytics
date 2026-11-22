@@ -2,7 +2,9 @@
 #define ParticleSplatDefaults_h
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 
 namespace ParticleSplatDefaults {
 
@@ -33,13 +35,45 @@ inline int automaticSliderValue(bool toSplats, int value)
     return value;
 }
 
-/// The splats' size for the size slider's @p value: the former VBT viewer's
-/// size step, 3 at the slider's default (100 %), and continuous so the whole
-/// slider reaches below and above it. The local view, the backend's point
-/// session and the comparison peers all size splats from it.
+/// The size slider's range, as the window's form sets it
+/// (ui/vtkWindowCatalogue3D.ui).
+inline constexpr int kSliderMinimum = 1;
+inline constexpr int kSliderMaximum = 500;
+
+/// A size from the slider's @p value, linear between @p knots (slider value,
+/// size), in increasing order of both, and held at the end knots outside them.
+template <std::size_t N>
+double sizeThroughKnots(int value, const std::array<std::array<double, 2>, N> &knots)
+{
+    const double v = static_cast<double>(value);
+    if (v <= knots.front()[0])
+        return knots.front()[1];
+    for (std::size_t i = 1; i < N; ++i) {
+        if (v <= knots[i][0]) {
+            const double t = (v - knots[i - 1][0]) / (knots[i][0] - knots[i - 1][0]);
+            return knots[i - 1][1] + t * (knots[i][1] - knots[i - 1][1]);
+        }
+    }
+    return knots.back()[1];
+}
+
+/// The splats' size for the size slider's @p value, in the former VBT
+/// viewer's size step. The whole slider changes it (issue #456): it ran as
+/// 3 × value / 100 clamped to 0.25..12, so the right fifth of the slider and
+/// its first steps did nothing, and a drag there looked broken. The ends stay
+/// 0.25 and 12, the range the backend's point session accepts
+/// (render_session/points.py, set_point_style), and the splat default (25,
+/// size 0.75) and the slider's own default (100, size 3) keep their sizes, as
+/// does everything between them, so views opened at a default do not change;
+/// a view saved at another value draws its splats a little differently.
 inline double splatSizeForSlider(int value)
 {
-    return std::clamp(3.0 * value / 100.0, 0.25, 12.0);
+    static constexpr std::array<std::array<double, 2>, 4> knots{ {
+            { double(kSliderMinimum), 0.25 },
+            { kInitialSize * 100.0 / 3.0, kInitialSize },
+            { double(kDefaultSliderValue), 3.0 },
+            { double(kSliderMaximum), 12.0 } } };
+    return sizeThroughKnots(value, knots);
 }
 
 /// A local splat's radius for the mean particle @p spacing and the size
@@ -50,10 +84,19 @@ inline double splatRadiusForSlider(double spacing, int value)
     return spacing * splatSizeForSlider(value) / 8.0;
 }
 
-/// The points' size in pixels for the size slider's @p value.
-inline int pointSizeForSlider(int value)
+/// The points' size in pixels for the size slider's @p value. It was
+/// 4 × value / 100 rounded and clamped to 3..12 pixels, flat below 75 and
+/// above 300 (issue #456); that middle stretch is kept as it was, and the
+/// ends now reach 1 and 16 pixels. Not rounded: VTK takes a fractional point
+/// size, and the backend's physical pixels are rounded after the pixel ratio.
+inline double pointSizeForSlider(int value)
 {
-    return static_cast<int>(std::lround(std::clamp(4.0 * (value / 100.0), 3.0, 12.0)));
+    static constexpr std::array<std::array<double, 2>, 4> knots{ {
+            { double(kSliderMinimum), 1.0 },
+            { 75.0, 3.0 },
+            { 300.0, 12.0 },
+            { double(kSliderMaximum), 16.0 } } };
+    return sizeThroughKnots(value, knots);
 }
 
 /// The per-splat opacity counts in steps of an 8-bit channel (issue #447).

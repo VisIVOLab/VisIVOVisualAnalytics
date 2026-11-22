@@ -110,7 +110,10 @@ plain widget in `tests/widget_stubs/`) and drags the Splat size slider's handle
 with QTest's mouse (issue #456): every step of the drag must emit
 `valueChanged`, the signal the window's `scaleChanged` follows, and each step
 must give a new size to the local splats and to the Remote view's
-`set_point_style` command (through the functions the window calls). The window
+`set_point_style` command (through the functions the window calls), from the
+slider's first value to its last, for splats and points alike (the Remote
+view's points are whole pixels, so they never shrink, though not every step
+grows them). The window
 itself needs VTK and is not built there. It needs only the base
 Qt and runs offscreen (`QT_QPA_PLATFORM=offscreen` is set by CTest). It is
 built only when Qt6::Widgets is found.

@@ -108,8 +108,10 @@ colour map visible. Very large tables (more than about 100,000 particles in a
 cube) therefore start brighter: about twice the nominal brightness at a
 million particles, three times at 3.7 million and four and a half times at 10
 million. Lower **Splat size** if dense regions saturate. **Splat size** remains available for deliberately emphasizing compact
-or diffuse features. Switching the shape to *Point* gives the slider its
-default value back, as long as you have not moved it.
+or diffuse features. The whole slider changes the size, in the Local and
+Remote views alike: splats from 0.25 to 12 on the scale of the 0.75 above
+(3 at the slider's default), points from 1 to 16 pixels. Switching the shape to *Point* gives the
+slider its default value back, as long as you have not moved it.
 
 ## Rendering and analysis
 

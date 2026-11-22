@@ -35,6 +35,7 @@ private slots:
     void theFormsSliderTracksItsHandle();
     void draggingTheHandleResizesEveryStep();
     void aClickInTheGrooveResizesToo();
+    void theWholeSliderResizesEveryGeometry();
 
 private:
     struct Received
@@ -43,6 +44,8 @@ private:
         bool handleHeld;
         double localRadius;
         double remoteSize;
+        double localPointSize;
+        int remotePointSize;
     };
 
     QPoint handleCentre() const;
@@ -84,7 +87,11 @@ void TestSizeSliderDrag::follow()
                   ParticleSplatDefaults::splatRadiusForSlider(1.0, value),
                   visivo::remote::pointStyleCommand(true, value, 2.0)
                           .value(QStringLiteral("size"))
-                          .toDouble() });
+                          .toDouble(),
+                  ParticleSplatDefaults::pointSizeForSlider(value),
+                  visivo::remote::pointStyleCommand(false, value, 2.0)
+                          .value(QStringLiteral("size"))
+                          .toInt() });
     });
 }
 
@@ -115,6 +122,10 @@ void TestSizeSliderDrag::theFormsSliderTracksItsHandle()
     // Without tracking, valueChanged would wait for the release.
     QVERIFY(m_ui.sliderScale->hasTracking());
     QCOMPARE(m_ui.sliderScale->orientation(), Qt::Horizontal);
+    // The size mappings span this range; a form with another one would
+    // bring the flat stretches back.
+    QCOMPARE(m_ui.sliderScale->minimum(), ParticleSplatDefaults::kSliderMinimum);
+    QCOMPARE(m_ui.sliderScale->maximum(), ParticleSplatDefaults::kSliderMaximum);
 }
 
 void TestSizeSliderDrag::draggingTheHandleResizesEveryStep()
@@ -167,6 +178,42 @@ void TestSizeSliderDrag::aClickInTheGrooveResizesToo()
     QVERIFY(m_received.back().remoteSize > visivo::remote::pointStyleCommand(true, before, 2.0)
                                                    .value(QStringLiteral("size"))
                                                    .toDouble());
+}
+
+void TestSizeSliderDrag::theWholeSliderResizesEveryGeometry()
+{
+    // From the far left to past the far right in small steps: the size must
+    // keep growing to the end for splats and points alike, as the right
+    // fifth of the slider used to leave splats unchanged (issue #456).
+    QSlider *slider = m_ui.sliderScale;
+    slider->setValue(slider->minimum());
+    m_received.clear();
+    const QPoint start = handleCentre();
+    QTest::mousePress(slider, Qt::LeftButton, Qt::NoModifier, start);
+    QVERIFY(slider->isSliderDown());
+    QPoint at = start;
+    while (at.x() < slider->width() + 10) {
+        at += QPoint(2, 0);
+        QTest::mouseMove(slider, at);
+    }
+    QTest::mouseRelease(slider, Qt::LeftButton, Qt::NoModifier, at);
+
+    QCOMPARE(slider->value(), slider->maximum());
+    QVERIFY(m_received.size() > 20);
+    QCOMPARE(m_received.back().value, slider->maximum());
+    QCOMPARE(m_received.back().remoteSize, 12.0);
+    for (std::size_t i = 1; i < m_received.size(); ++i) {
+        const Received &a = m_received[i - 1];
+        const Received &b = m_received[i];
+        QVERIFY(b.value > a.value);
+        QVERIFY2(b.localRadius > a.localRadius && b.remoteSize > a.remoteSize,
+                 qPrintable(QStringLiteral("splats flat from %1 to %2").arg(a.value).arg(b.value)));
+        QVERIFY2(b.localPointSize > a.localPointSize,
+                 qPrintable(QStringLiteral("points flat from %1 to %2").arg(a.value).arg(b.value)));
+        // The backend draws whole physical pixels.
+        QVERIFY(b.remotePointSize >= a.remotePointSize);
+    }
+    QVERIFY(m_received.back().remotePointSize > m_received.front().remotePointSize);
 }
 
 QTEST_MAIN(TestSizeSliderDrag)

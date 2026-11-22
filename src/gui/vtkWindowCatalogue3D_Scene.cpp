@@ -1117,7 +1117,7 @@ void vtkWindowCatalogue3D::updateGlyphScales()
             << "visual range:" << minVisual << maxVisual;
 }
 
-int vtkWindowCatalogue3D::pointSizeFromScale() const
+double vtkWindowCatalogue3D::pointSizeFromScale() const
 {
     return ParticleSplatDefaults::pointSizeForSlider(ui->sliderScale->value());
 }

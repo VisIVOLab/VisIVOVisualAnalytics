@@ -11,7 +11,9 @@
 #include <QString>
 #include <QVariantMap>
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace visivo::remote {
 
@@ -26,14 +28,32 @@ inline QVariantMap pointStyleCommand(bool gaussian, int sliderValue, double devi
 {
     const QVariant size = gaussian
             ? QVariant(ParticleSplatDefaults::splatSizeForSlider(sliderValue))
-            : QVariant(static_cast<int>(std::lround(
+            : QVariant(std::max(1, static_cast<int>(std::lround(
                       ParticleSplatDefaults::pointSizeForSlider(sliderValue)
-                      * devicePixelRatio)));
+                      * devicePixelRatio))));
     return QVariantMap{ { QStringLiteral("type"), QStringLiteral("set_point_style") },
                         { QStringLiteral("mode"),
                           gaussian ? QStringLiteral("gaussian") : QStringLiteral("points") },
                         { QStringLiteral("size"), size },
                         { QStringLiteral("intensity"), kPointStyleIntensity } };
+}
+
+/// What a move of the size slider updates. The local view is restyled only
+/// when it has rows; the backend's views are told in any case, as a table
+/// shown only there has no local rows and used to keep its old size
+/// (issue #456).
+struct SizeSliderTargets
+{
+    std::function<void()> restyleLocal;
+    std::function<void()> updateServerViews;
+};
+
+inline void applySizeSlider(bool hasLocalRows, const SizeSliderTargets &targets)
+{
+    if (hasLocalRows && targets.restyleLocal)
+        targets.restyleLocal();
+    if (targets.updateServerViews)
+        targets.updateServerViews();
 }
 
 } // namespace visivo::remote
