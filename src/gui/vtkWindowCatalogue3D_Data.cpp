@@ -162,7 +162,7 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     // A click while a large scene is built (it pumps the event loop) still
     // selects or deselects as usual: the marker hides until its point exists.
     if (!this->entries.empty()) {
-        this->buildScene();
+        this->buildScene(SnapshotTimelineSteps::Rebuild::Placement);
         this->buildLabels();
     }
     // buildScene() rebuilds the redshift shells hidden; reapply the user's toggle

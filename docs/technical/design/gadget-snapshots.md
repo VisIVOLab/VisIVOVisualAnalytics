@@ -205,14 +205,18 @@ A particle window opens with positions and one quantity and loads the other
 columns of the same rows in the background. A comparison view made before those
 columns arrive waits for them (`m_awaitingHydration`) and takes the rows from
 its source when they do; if the source closes first, the view asks for them
-itself. After the first framing a rebuild keeps the camera while those columns
-arrive and whenever the view is linked in a group
-(`SnapshotTimelineSteps::rebuildKeepsCamera`); a reframe is never broadcast.
-The camera received from a peer is also handed to the ray-traced view or, for a
-view drawn on the backend, sent to its render session (`set_camera`). The
-backend's own moves are not observed by the client, so a remote view follows
-but does not lead. The copilot's actions are routed by a per-window key, since
-comparison windows share their dataset id.
+itself. After the first framing, a rebuild states why
+(`SnapshotTimelineSteps::Rebuild`): the same rows keep the camera, other rows
+(filter, Load more) keep it while the view is linked to open peers, and rows
+placed anew (frame, cosmology, distance mode) are framed again in that view
+only; a window's own framing is never broadcast. A closed window leaves the
+group in `closeEvent`. The camera received from a peer is also handed to the
+ray-traced view or, for a view drawn on the backend, kept as the render
+session's `set_camera` state (sent when the stream is live, at most every
+50 ms). The backend's own moves are not observed by the client, so a remote
+view follows but does not lead. The copilot's actions are routed by a
+per-window key, since comparison windows share their dataset id; the
+backend's dataset target is mapped to the asking panel's key.
 
 ## Selected-population diagnostics (issue #426)
 
@@ -248,7 +252,10 @@ series, the series runs over the sibling folders, with the file renumbered
 each member's path is a reference to the same type, and returns `available`:
 per member, whether its first file's header announces particles of that type
 (`gadget_snapshot.has_type`, false as well for a member that cannot be read).
-The desktop steps over the members marked false.
+The desktop steps over the members marked false, and keeps marked the members
+it failed to open. The check reads headers only (`read_header`) and is cached
+by the first file's size and modification time; a window opened by a step is
+handed the series instead of asking for it again.
 
 The desktop asks for this route after opening a particle table. More than one
 member adds the Snapshot Timeline card. A time step constructs the replacement

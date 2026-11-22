@@ -334,7 +334,7 @@ static std::optional<BackendTabularFilter> showSpatialFilterDialog(
 // Construction / destruction
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool vtkWindowCatalogue3D::s_openQuietly = false;
+bool vtkWindowCatalogue3D::s_openingStep = false;
 
 vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
                                            const QString &backendToken, const QStringList &paths,
@@ -346,7 +346,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     , backendUrl(backendUrl)
     , backendToken(backendToken)
     , m_cataloguePaths(paths)
-    , m_quietOpenErrors(s_openQuietly)
+    , m_openedByStep(s_openingStep)
     , m_copilotRouteKey(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {
     // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
@@ -395,6 +395,15 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                      u"Catalogue3D"_s,
                                      u"Filter failed: "_s + result.error,
                                      this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
+                             if (hydration) {
+                                 // A background load: said, not put up as a
+                                 // box (a step's window during Play, too).
+                                 this->statusBar()->showMessage(
+                                         u"The particles' other quantities were not loaded: %1"_s
+                                                 .arg(result.error),
+                                         10000);
+                                 return;
+                             }
                              if (isSessionExpiryError(result.error)) {
                                  QMessageBox msg(this);
                                  msg.setWindowTitle(u"Session Expired"_s);
@@ -479,7 +488,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->selectedIndex = CatalogueSelection::indexOf(
                                  this->entries, this->schema, selected);
                          if (!this->entries.empty()) {
-                             this->buildScene();
+                             // The background load brings the same rows.
+                             this->buildScene(hydration
+                                                      ? SnapshotTimelineSteps::Rebuild::SameRows
+                                                      : SnapshotTimelineSteps::Rebuild::NewRows);
                              this->buildLabels();
                          }
                          this->refreshCatalogueTable();
@@ -701,7 +713,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         // Before the box: its reading time is not the open's ("Last 5 jobs").
         this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
         this->m_openError = opened.error;
-        if (!this->m_quietOpenErrors) {
+        if (!this->m_openedByStep) {
             // The opener's busy indicator is not up behind the box (#159).
             const visivo::BusyPause box;
             QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
@@ -809,7 +821,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
             this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
             this->m_openError = error;
-            if (!this->m_quietOpenErrors) {
+            if (!this->m_openedByStep) {
                 const visivo::BusyPause box;
                 QMessageBox::critical(this, u"Catalogue Error"_s, error);
             }
@@ -1187,7 +1199,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->hoveredIndex  = -1;
         // Same rows, only turned: the selected source stays selected (#298).
         if (!this->entries.empty()) {
-            this->buildScene();
+            this->buildScene(SnapshotTimelineSteps::Rebuild::Placement);
             this->buildLabels();
         }
         this->refreshSelectionAfterReplacement();

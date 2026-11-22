@@ -181,6 +181,9 @@ void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
         return;
     }
     this->releaseDataset();
+    // Out of the comparison now, not when deleted: the views left must not
+    // count this one (the last one leaves the group).
+    this->teardownComparisonLink();
     QMainWindow::closeEvent(event);
 }
 
@@ -188,9 +191,9 @@ void vtkWindowCatalogue3D::releaseDataset()
 {
     if (this->remoteDatasetId.isEmpty())
         return;
-    // Comparison views waiting for the columns this window's query is
-    // bringing would wait for ever: they ask for them themselves.
-    if (this->m_hydratingAttributes)
+    // Comparison views waiting for the columns this window's query (or the
+    // one it waits on) is bringing could wait for ever: they ask themselves.
+    if (this->m_hydratingAttributes || this->m_awaitingHydration)
         this->shareHydratedRows(HydrationShare::LoadOwn);
     // The last window on the dataset closes it on the backend: its table (a
     // VBT's memory map) is not kept for a window that is gone. Fire and
@@ -224,7 +227,7 @@ void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
-void vtkWindowCatalogue3D::buildScene()
+void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
 {
     // For very large catalogues, build with the glyph/points actors hidden and
     // pump the event loop in the O(N) loops, so the multi-second construction
@@ -467,9 +470,8 @@ void vtkWindowCatalogue3D::buildScene()
     // Framed once; then kept while the same rows gain their other columns and
     // in a linked comparison, where one view's reframe moved every view and
     // undid the camera a timeline step had given back (issue #446).
-    const bool linkedInGroup = this->m_comparisonLinked && !this->m_comparisonGroup.isEmpty();
-    if (SnapshotTimelineSteps::rebuildKeepsCamera(this->m_sceneFramed,
-                                                  this->m_hydratingAttributes, linkedInGroup)) {
+    if (SnapshotTimelineSteps::rebuildKeepsCamera(this->m_sceneFramed, why,
+                                                  this->linkedWithPeers())) {
         renderer->ResetCameraClippingRange();
         renderWindow->Render();
     } else {

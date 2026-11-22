@@ -28,6 +28,7 @@
 #include <QSlider>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -227,6 +228,10 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
             this->updateRenderBadge();
         });
         this->pushRemoteState();
+        // Switched to the backend in a linked comparison: it starts on the
+        // group's camera (this window's VTK camera follows the group).
+        if (this->linkedWithPeers())
+            this->followCameraInShownView(this->localCameraJson());
         this->m_remoteView->start();
     }
     this->updateRenderBadge();
@@ -722,11 +727,30 @@ void vtkWindowCatalogue3D::followCameraInShownView(const QJsonObject &camera)
         return;
     }
     // Drawn on the backend: its view turns there, by the same command the
-    // ray-traced view's camera is handed back with.
-    if (this->drawnOnBackend()) {
-        QVariantMap command = camera.toVariantMap();
+    // ray-traced view's camera is handed back with. Kept as state, so a
+    // stream not live yet (or reconnecting) gets it when it is; at most
+    // every 50 ms, the rest of a drag's poses joining the next send.
+    if (!this->m_remoteView)
+        return;
+    this->m_remoteCameraPending = camera;
+    if (!this->m_remoteCameraThrottle) {
+        this->m_remoteCameraThrottle = new QTimer(this);
+        this->m_remoteCameraThrottle->setSingleShot(true);
+        this->m_remoteCameraThrottle->setInterval(50);
+        QObject::connect(this->m_remoteCameraThrottle, &QTimer::timeout, this, [this]() {
+            if (this->m_remoteCameraPending.isEmpty() || !this->m_remoteView)
+                return;
+            QVariantMap command = std::exchange(this->m_remoteCameraPending, {}).toVariantMap();
+            command.insert(u"type"_s, u"set_camera"_s);
+            this->m_remoteView->setState(command);
+            this->m_remoteCameraThrottle->start();
+        });
+    }
+    if (!this->m_remoteCameraThrottle->isActive()) {
+        QVariantMap command = std::exchange(this->m_remoteCameraPending, {}).toVariantMap();
         command.insert(u"type"_s, u"set_camera"_s);
-        this->m_remoteView->send(command);
+        this->m_remoteView->setState(command);
+        this->m_remoteCameraThrottle->start();
     }
 }
 

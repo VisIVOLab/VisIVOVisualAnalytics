@@ -110,6 +110,20 @@ void TestSnapshotTimelineSteps::seriesReply_invalidNeverHidesAValidSeries()
     QVERIFY(Steps::acceptsSeriesReply(false, true));
 }
 
+void TestSnapshotTimelineSteps::seriesReply_keepsTheOutputsThatFailedHere()
+{
+    const QStringList held{ u"/r/snap_0"_s, u"/r/snap_1"_s, u"/r/snap_2"_s };
+    // snap_1 failed to open here; the backend still lists it as openable,
+    // and now lists one more output.
+    const QStringList reply{ u"/r/snap_0"_s, u"/r/snap_1"_s, u"/r/snap_2"_s, u"/r/snap_3"_s };
+    QCOMPARE(Steps::mergedAvailability(held, { true, false, true }, reply,
+                                       { true, true, false, true }),
+             QVector<bool>({ true, false, false, true }));
+    // An older backend sends no marks; the failed one stays marked.
+    QCOMPARE(Steps::mergedAvailability(held, { true, false, true }, reply, {}),
+             QVector<bool>({ true, false, true, true }));
+}
+
 void TestSnapshotTimelineSteps::quantity_isRestoredByName()
 {
     // Temperature was column 4; the next output lists one column more first.
@@ -134,17 +148,20 @@ void TestSnapshotTimelineSteps::quantity_builtInKey_isKept()
 
 void TestSnapshotTimelineSteps::rebuild_framesFirstThenKeepsTheStepCamera()
 {
+    using Steps::Rebuild;
     // The step's new window: its first build frames the data ...
-    QVERIFY(!Steps::rebuildKeepsCamera(false, false, false));
-    QVERIFY(!Steps::rebuildKeepsCamera(false, true, true));
+    QVERIFY(!Steps::rebuildKeepsCamera(false, Rebuild::NewRows, false));
+    QVERIFY(!Steps::rebuildKeepsCamera(false, Rebuild::SameRows, true));
     // ... then the step gives back the camera, and the rows' other columns
     // arrive: that rebuild keeps it, linked or not.
-    QVERIFY(Steps::rebuildKeepsCamera(true, true, false));
-    QVERIFY(Steps::rebuildKeepsCamera(true, true, true));
+    QVERIFY(Steps::rebuildKeepsCamera(true, Rebuild::SameRows, false));
+    QVERIFY(Steps::rebuildKeepsCamera(true, Rebuild::SameRows, true));
     // A filter or Load more in a linked view keeps the group's camera.
-    QVERIFY(Steps::rebuildKeepsCamera(true, false, true));
-    // Alone, a filter frames what it kept.
-    QVERIFY(!Steps::rebuildKeepsCamera(true, false, false));
+    QVERIFY(Steps::rebuildKeepsCamera(true, Rebuild::NewRows, true));
+    // Alone (or the last of a group), a filter frames what it kept.
+    QVERIFY(!Steps::rebuildKeepsCamera(true, Rebuild::NewRows, false));
+    // Another frame or cosmology moves every point: framed again.
+    QVERIFY(!Steps::rebuildKeepsCamera(true, Rebuild::Placement, true));
 }
 
 void TestSnapshotTimelineSteps::representation_receiversNeedEveryFlag()
@@ -226,10 +243,23 @@ void TestSnapshotTimelineSteps::copilot_routesEachComparisonViewByItsOwnKey()
         QJsonObject{ { u"type"_s, u"reset_camera"_s }, { u"target"_s, dataset } } };
     QCOMPARE(router->dispatch(targeted, QString()), QStringList{ dataset });
     QCOMPARE(toB, 1);
+    // The backend tags every directive with the asking panel's dataset: from
+    // view A's panel, retargeted to A's own key, it reaches A, not B.
+    const auto fromA = CopilotActionRouter::retarget(targeted, dataset, u"view-a"_s);
+    QCOMPARE(fromA.first().value(u"target"_s).toString(), u"view-a"_s);
+    router->dispatch(fromA, u"view-a"_s);
+    QCOMPARE(toA, 2);
+    QCOMPARE(toB, 1);
+    // Another dataset's directive is left alone.
+    const QList<QJsonObject> other{
+        QJsonObject{ { u"type"_s, u"reset_camera"_s }, { u"target"_s, u"ds-other"_s } } };
+    QCOMPARE(CopilotActionRouter::retarget(other, dataset, u"view-a"_s).first()
+                     .value(u"target"_s).toString(),
+             u"ds-other"_s);
     // B closes: the dataset's directives reach A.
     b.reset();
     router->dispatch(targeted, QString());
-    QCOMPARE(toA, 2);
+    QCOMPARE(toA, 3);
     a.reset();
     QVERIFY(router->dispatch(targeted, QString()).isEmpty());
 }

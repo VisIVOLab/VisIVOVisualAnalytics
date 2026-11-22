@@ -834,7 +834,7 @@ def snapshot_files(path: str | Path) -> list[Path]:
             if cand.is_file():
                 p = cand
                 break
-    header = scan_file(p).header
+    header = read_header(p)
     if header.num_files <= 1:
         return [p]
     m = re.match(r"^(?P<base>.*)\.(?P<k>\d+)(?P<ext>\.hdf5|\.h5)?$", p.name)
@@ -1432,23 +1432,48 @@ def resolve(path: str | Path) -> Component:
     return open_snapshot(base).component(ptype)
 
 
+def read_header(path: str | Path) -> Header:
+    """The header of one snapshot file, read alone (no block is scanned)."""
+    found = detect(path)
+    if found is None:
+        raise ValueError(f"{path} is not a Gadget snapshot file.")
+    fmt, e = found
+    if fmt == 0:
+        return _scan_hdf5(str(path)).header
+    with open(path, "rb") as fh:
+        # Format 1: the header record first; format 2: after its 8-byte
+        # "HEAD" name record (16 bytes with its markers).
+        fh.seek(4 if fmt == 1 else 20)
+        return parse_header(fh.read(HEADER_BYTES), e)
+
+
 def has_type(path: str | Path, ptype: int) -> bool:
     """Whether the snapshot ``path`` names (a file of it, its base name or
-    its folder) has particles of type ``ptype``, from its first file's
-    header: an early output without stars, or one that cannot be read (a
-    file missing, not a snapshot), has none. Only headers and the files'
-    names are read, so a whole series can be checked."""
+    its folder) has particles of type ``ptype``, from its headers: an early
+    output without stars, or one that cannot be read (a file missing, not a
+    snapshot), has none. Only headers and the files' names are read, and
+    the answer is kept while the first file is unchanged, so a whole series
+    can be checked at every open."""
     try:
         files = snapshot_files(path)
-        header = scan_file(files[0]).header
+        size, mtime = _stat(files[0])
+        return _has_type(tuple(str(f) for f in files), int(ptype), size, mtime)
     except (OSError, ValueError):
         return False
-    if not 0 <= ptype < len(header.npart_total):
+
+
+@lru_cache(maxsize=4096)
+def _has_type(files: tuple[str, ...], ptype: int, _size: int, _mtime: int) -> bool:
+    try:
+        header = read_header(files[0])
+        if not 0 <= ptype < len(header.npart_total):
+            return False
+        if any(header.npart_total):
+            return header.npart_total[ptype] > 0
+        # Some writers leave the totals at zero: the files' own counts.
+        return any(read_header(f).npart[ptype] > 0 for f in files)
+    except (OSError, ValueError):
         return False
-    # Some writers leave the totals at zero in a single-file snapshot.
-    if not any(header.npart_total) and len(files) == 1:
-        return header.npart[ptype] > 0
-    return header.npart_total[ptype] > 0
 
 
 def default_type(snapshot: Snapshot) -> int | None:

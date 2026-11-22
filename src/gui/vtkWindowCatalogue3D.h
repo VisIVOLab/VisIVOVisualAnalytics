@@ -4,6 +4,7 @@
 #include "Catalogue3DParser.h"
 #include "CataloguePlacement.h"
 #include "LinkedCameraSync.h"
+#include "SnapshotTimelineSteps.h"
 
 #include "app/BackendClient.h"
 #include "app/SampProtocol.h"
@@ -336,7 +337,10 @@ private:
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();
     void applyFilter();
-    void buildScene();
+    /// @p why decides whether the camera is kept (rebuildKeepsCamera).
+    void buildScene(SnapshotTimelineSteps::Rebuild why = SnapshotTimelineSteps::Rebuild::NewRows);
+    /// Linked, and another window of the group is still open.
+    bool linkedWithPeers() const;
     void buildLabels();
     void buildShells();
     void updateGlyphPipeline();
@@ -522,12 +526,17 @@ private:
     /// That query is this window's and in flight (also while its rows rebuild).
     bool m_hydratingAttributes{ false };
     /// Opened by a timeline step: a failed open is reported by the step, not
-    /// by a modal box per output (Play would stack them).
-    bool m_quietOpenErrors{ false };
+    /// by a modal box per output (Play would stack them), and the step hands
+    /// it the series instead of the backend listing it again.
+    bool m_openedByStep{ false };
     /// Why the open failed, for the step's message.
     QString m_openError;
-    /// Set around the construction of a step's windows (see m_quietOpenErrors).
-    static bool s_openQuietly;
+    /// Set around the construction of a step's windows (see m_openedByStep).
+    static bool s_openingStep;
+    /// The group's camera for the view drawn on the backend, at most every
+    /// 50 ms during a drag (followCameraInShownView).
+    QPointer<QTimer> m_remoteCameraThrottle;
+    QJsonObject m_remoteCameraPending;
     /// The copilot's actions reach this window by this key: comparison views
     /// share their dataset id, so it cannot be the key.
     QString m_copilotRouteKey;

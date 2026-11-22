@@ -152,7 +152,9 @@ another quantity…* for creating a third view. In Visual Encoding:
 The **Linked** button is on by default. Linked views share camera, source
 selection and representation: shape, splat or point size, render budget and
 ray-traced-light mode. A filter or *Load more* in a linked view keeps the
-group's camera; use *Reset Camera* to frame the new rows in every view. A view
+group's camera; use *Reset Camera* to frame the new rows in every view. A new
+coordinate frame or cosmology frames that view again, without moving the
+others. A view
 drawn on the backend (*View ▸ Rendering ▸ Remote*, or *Auto* with more rows than
 loaded) follows the group's camera, but turning it does not move the others: its
 comparison card says so. Switch it to *Local* to lead the group. This keeps rendering choices from masquerading as

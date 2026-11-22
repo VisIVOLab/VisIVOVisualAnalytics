@@ -81,6 +81,19 @@ QStringList CopilotActionRouter::dispatch(const QList<QJsonObject> &actions,
     return dispatched;
 }
 
+QList<QJsonObject> CopilotActionRouter::retarget(QList<QJsonObject> actions,
+                                                 const QString &datasetId,
+                                                 const QString &routeKey)
+{
+    if (routeKey.isEmpty() || datasetId.isEmpty())
+        return actions;
+    for (QJsonObject &action : actions) {
+        if (action.value(u"target"_s).toString() == datasetId)
+            action.insert(u"target"_s, routeKey);
+    }
+    return actions;
+}
+
 void CopilotActionRouter::undoLast()
 {
     // Exactly the views the last dispatch reached: a dataset id resolved then

@@ -70,6 +70,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStatusBar>
@@ -550,17 +551,25 @@ void vtkWindowCatalogue3D::resetCamera()
 
 void vtkWindowCatalogue3D::applyCameraPreset(double azimuth, double elevation)
 {
-    visivo::applyCameraPreset(this->renderer, azimuth, elevation);
-    if (this->renderWindow)
-        this->renderWindow->Render();
-
     const bool raytraced = this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView;
     if (raytraced) {
-        // Its cameraChanged reaches the linked views.
+        // The hidden VTK camera follows, but is not sent: its pose may be
+        // older than the ray-traced one and would override the peers after
+        // the preset below. The preset's cameraChanged reaches them.
+        {
+            const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
+            visivo::applyCameraPreset(this->renderer, azimuth, elevation);
+            this->m_comparisonCameraTracker.refit(this->comparisonCameraPose());
+            if (this->renderWindow)
+                this->renderWindow->Render();
+        }
         this->m_rtView->setCameraPreset(azimuth, elevation);
         return;
     }
+    visivo::applyCameraPreset(this->renderer, azimuth, elevation);
+    if (this->renderWindow)
+        this->renderWindow->Render();
     const bool remote = this->m_remoteView && this->m_renderStack
             && this->m_remoteWidget
             && this->m_renderStack->currentWidget() == this->m_remoteWidget;

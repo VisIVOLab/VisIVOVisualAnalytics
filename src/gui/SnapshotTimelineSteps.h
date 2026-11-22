@@ -68,6 +68,24 @@ inline int sliderTarget(const QVector<bool> &available, int count, int from, int
     return back == from ? -1 : back;
 }
 
+/// The marks of a series reply @p paths / @p available, with the outputs the
+/// window found it cannot open (@p heldPaths marked false in
+/// @p heldAvailable) kept marked: a reply does not bring a failed output back.
+inline QVector<bool> mergedAvailability(const QStringList &heldPaths,
+                                        const QVector<bool> &heldAvailable,
+                                        const QStringList &paths, const QVector<bool> &available)
+{
+    QVector<bool> out(paths.size(), true);
+    for (qsizetype k = 0; k < paths.size(); ++k) {
+        if (k < available.size())
+            out[k] = available.at(k);
+        const qsizetype held = heldPaths.indexOf(paths.at(k));
+        if (held >= 0 && held < heldAvailable.size() && !heldAvailable.at(held))
+            out[k] = false;
+    }
+    return out;
+}
+
 /// Whether a series reply replaces the series a window holds: a failed or
 /// malformed reply never hides a timeline that works (mid-playback).
 inline bool acceptsSeriesReply(bool heldValid, bool replyValid)
@@ -100,15 +118,33 @@ inline QString quantityKey(const QString &savedKey, const QString &savedName,
     return index < 0 ? QString() : QStringLiteral("raw:%1").arg(index);
 }
 
-/// Whether rebuilding the scene keeps the camera instead of framing the data
-/// again. The first build frames it. Afterwards a view that is still loading
-/// its rows' other columns (the same rows, so the same extent) keeps it, and
-/// so does a view linked in a comparison: framing one view there would move
-/// every view of the group, and a timeline step would lose the camera it was
-/// given back.
-inline bool rebuildKeepsCamera(bool sceneFramed, bool hydrating, bool linkedInGroup)
+/// Why the particle scene is rebuilt.
+enum class Rebuild
 {
-    return sceneFramed && (hydrating || linkedInGroup);
+    NewRows,     ///< a filter or Load more: other rows
+    SameRows,    ///< the same rows with their other columns (background load)
+    Placement,   ///< the same rows placed anew: frame, cosmology, distance mode
+};
+
+/// Whether rebuilding the scene keeps the camera instead of framing the data
+/// again. The first build frames it. The same rows (their other columns
+/// arriving after a timeline step) keep it. Other rows keep it in a view
+/// linked to peers: framing one view there moved every view of the group.
+/// Rows placed anew (another frame or cosmology) are framed again, in that
+/// view only (the window does not send its own framing).
+inline bool rebuildKeepsCamera(bool sceneFramed, Rebuild why, bool linkedWithPeers)
+{
+    if (!sceneFramed)
+        return false;
+    switch (why) {
+    case Rebuild::SameRows:
+        return true;
+    case Rebuild::NewRows:
+        return linkedWithPeers;
+    case Rebuild::Placement:
+        return false;
+    }
+    return false;
 }
 
 /// A comparison view's link state, as the representation broadcast sees it.

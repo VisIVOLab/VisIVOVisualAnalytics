@@ -458,6 +458,20 @@ def test_has_type_reads_the_header_only(tmp_path):
     assert not gs.has_type(tmp_path / "nothing", 0)
 
 
+def test_has_type_with_totals_left_at_zero(tmp_path):
+    """Some writers leave the header's totals at zero: the files' own
+    counts decide (issue #446)."""
+    files, _ = _snapshot(tmp_path, fmt=1, num_files=1, folder="z", name="snap_000",
+                         parts=_parts(n_star=0, n_bh=0))
+    raw = bytearray(files[0].read_bytes())
+    raw[4 + 96:4 + 120] = bytes(24)     # NumPart_Total, low words
+    raw[4 + 168:4 + 192] = bytes(24)    # and the high words
+    files[0].write_bytes(bytes(raw))
+    assert not any(gs.read_header(files[0]).npart_total)
+    assert gs.has_type(files[0], 0) and gs.has_type(files[0], 1)
+    assert not gs.has_type(files[0], 4)
+
+
 @pytest.mark.asyncio
 async def test_series_marks_the_outputs_without_the_particle_type(client, auth_headers,
                                                                   tmp_path):

@@ -19,6 +19,7 @@ private slots:
     void step_pastTheLastOpenable_isNone();
     void slider_landsOnTheNearestOpenable();
     void seriesReply_invalidNeverHidesAValidSeries();
+    void seriesReply_keepsTheOutputsThatFailedHere();
     void quantity_isRestoredByName();
     void quantity_missingInTheOutput_isEmpty();
     void quantity_builtInKey_isKept();

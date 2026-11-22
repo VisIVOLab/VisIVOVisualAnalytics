@@ -132,9 +132,10 @@ void vtkWindowCatalogue3D::openQuantityComparison()
     // The constructor builds the scene before it can join the group. Give the
     // new view the already-framed camera now, so it opens on precisely the
     // same region rather than briefly asking the user to align it by hand.
-    peer->applyComparisonCamera(this->comparisonCameraPose());
     if (this->m_rtView && !this->m_rtView->camera().isEmpty())
         peer->applyComparisonRaytraceCamera(this->m_rtView->camera());
+    else
+        peer->applyComparisonCamera(this->comparisonCameraPose());
     if (this->selectedIndex >= 0)
         this->broadcastComparisonSelection(this->selectedIndex);
 
@@ -358,9 +359,10 @@ void vtkWindowCatalogue3D::setComparisonLinked(bool linked)
     if (reference) {
         if (this->m_comparisonRepresentationLinked)
             this->applyComparisonRepresentation(reference->comparisonRepresentation());
-        this->applyComparisonCamera(reference->comparisonCameraPose());
         if (reference->m_rtView && !reference->m_rtView->camera().isEmpty())
             this->applyComparisonRaytraceCamera(reference->m_rtView->camera());
+        else
+            this->applyComparisonCamera(reference->comparisonCameraPose());
         const CatalogueSelection::Key selected = CatalogueSelection::keyOf(
                 reference->entries, reference->schema, reference->selectedIndex);
         const int index = CatalogueSelection::indexOf(this->entries, this->schema, selected);
@@ -413,6 +415,10 @@ void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
         this->updateSnapshotTimelineUi();
         return;
     }
+    // A step's window is handed the series it steps along: listing (and
+    // reading every output's header) again per step is not needed.
+    if (this->m_openedByStep)
+        return;
 
     QObject::connect(&this->m_snapshotSeriesWatcher,
                      &QFutureWatcher<BackendPointSeriesResult>::finished, this, [this]() {
@@ -429,7 +435,12 @@ void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
                 if (!SnapshotTimelineSteps::acceptsSeriesReply(window->m_snapshotSeries.valid,
                                                                result.valid))
                     continue;
-                window->m_snapshotSeries = result;
+                BackendPointSeriesResult merged = result;
+                if (merged.valid && window->m_snapshotSeries.valid)
+                    merged.available = SnapshotTimelineSteps::mergedAvailability(
+                            window->m_snapshotSeries.paths, window->m_snapshotSeries.available,
+                            merged.paths, merged.available);
+                window->m_snapshotSeries = merged;
                 window->updateSnapshotTimelineUi();
             }
         }
@@ -538,6 +549,20 @@ void vtkWindowCatalogue3D::stopSnapshotPlayback()
         this->toggleSnapshotPlayback();
 }
 
+bool vtkWindowCatalogue3D::linkedWithPeers() const
+{
+    if (!this->m_comparisonLinked || this->m_comparisonGroup.isEmpty())
+        return false;
+    // Closed windows leave the registry in closeEvent: the last one left is
+    // no longer in a comparison, whatever its flags still say.
+    const auto windows = comparisonWindows().snapshot();
+    return std::any_of(windows.cbegin(), windows.cend(),
+                       [this](const QPointer<vtkWindowCatalogue3D> &window) {
+                           return window && window != this
+                                   && window->m_comparisonGroup == this->m_comparisonGroup;
+                       });
+}
+
 QString vtkWindowCatalogue3D::timelineBusyReason() const
 {
     const auto windows = comparisonWindows().snapshot();
@@ -581,6 +606,9 @@ void vtkWindowCatalogue3D::startAttributeHydration()
     // Ordinary asynchronous filtering with no new filters: the fixed RNG
     // returns the same row indices and the watcher atomically replaces the
     // partial rows once all columns have arrived.
+    // FOLLOW-UP (#450): applyFilter() queries the filter list as edited;
+    // once m_appliedFilters exists, the columns must be asked for with the
+    // filters the loaded rows were selected by.
     this->m_hydratingAttributes = true;
     this->applyFilter();
     if (!this->filterBusy) {
@@ -629,9 +657,12 @@ void vtkWindowCatalogue3D::adoptHydratedRows(const vtkWindowCatalogue3D &source)
     // Busy with its own query, whose answer brings every column too.
     if (this->filterBusy)
         return;
-    if (this->m_sceneBuilding) {
-        // Its rows cannot be replaced mid-build: it asks for the columns
-        // itself once the build is over.
+    // Its rows are not the source's any more (a page loaded or loading
+    // here), or cannot be replaced mid-build: it asks for the columns itself.
+    const auto rows = [](const vtkWindowCatalogue3D &w) {
+        return w.entries.size() + w.unplacedEntries.size();
+    };
+    if (this->m_sceneBuilding || this->m_loadingMore || rows(*this) != rows(source)) {
         QTimer::singleShot(0, this, [this]() { this->startAttributeHydration(); });
         return;
     }
@@ -645,6 +676,9 @@ void vtkWindowCatalogue3D::adoptHydratedRows(const vtkWindowCatalogue3D &source)
     this->m_sampleLimit = source.m_sampleLimit;
     this->m_totalCount = source.m_totalCount;
     this->m_awaitingHydration = false;
+    // Placed in this view's frame and cosmology, not the source's.
+    this->applyFrameToEntries();
+    this->reapplyCosmologyAfterReload();
 
     this->renderer->RemoveAllViewProps();
     this->morphologyNames.clear();
@@ -656,8 +690,7 @@ void vtkWindowCatalogue3D::adoptHydratedRows(const vtkWindowCatalogue3D &source)
     this->selectedIndex = CatalogueSelection::indexOf(this->entries, this->schema, selected);
     if (!this->entries.empty()) {
         // The same rows: the camera stays where the step or the user put it.
-        const QScopedValueRollback<bool> sameRows(this->m_hydratingAttributes, true);
-        this->buildScene();
+        this->buildScene(SnapshotTimelineSteps::Rebuild::SameRows);
         this->buildLabels();
     }
     this->refreshCatalogueTable();
@@ -766,7 +799,7 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
     vtkWindowCatalogue3D *primary = nullptr;
     {
         // One message for the step below, not a modal box per output.
-        const QScopedValueRollback<bool> quiet(s_openQuietly, true);
+        const QScopedValueRollback<bool> quiet(s_openingStep, true);
         primary = new vtkWindowCatalogue3D(
                 targetPath, this->backendUrl, this->backendToken, {}, label,
                 this->parentWidget(), nullptr);
@@ -829,6 +862,9 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
             window->spinColorGamma->setValue(state.gamma);
         if (window->comboGeometry)
             window->comboGeometry->setCurrentIndex(state.geometry);
+        // FOLLOW-UP (#453): once m_sliderAutomatic exists, save it in ViewState
+        // and put it back after this setValue, which marks the size as the
+        // user's (a later switch to Points would keep the splats' size).
         if (window->ui->sliderScale)
             window->ui->sliderScale->setValue(state.sizeSlider);
         if (window->comboRenderBudget) {
@@ -875,9 +911,12 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
             continue;
         window->m_snapshotSwitching = false;
         const ViewState &state = states.at(i);
-        window->applyComparisonCamera(state.camera);
+        // The camera the view showed: the ray-traced one when it had it (it
+        // sets the VTK camera too), so the view is not drawn twice.
         if (!state.rayCamera.isEmpty())
             window->applyComparisonRaytraceCamera(state.rayCamera);
+        else
+            window->applyComparisonCamera(state.camera);
         window->updateComparisonUi();
         window->updateSnapshotTimelineUi();
         window->show();
@@ -1028,6 +1067,7 @@ void vtkWindowCatalogue3D::applyComparisonRaytraceCamera(const QJsonObject &came
     this->renderWindow->Render();
     // A peer drawn on the backend turns there (the ray-traced view, when it
     // is the one shown, already has the camera).
-    if (this->drawnOnBackend())
+    if (this->m_remoteView && !(this->m_renderStack
+                                && this->m_renderStack->currentWidget() == this->m_rtView))
         this->followCameraInShownView(camera);
 }

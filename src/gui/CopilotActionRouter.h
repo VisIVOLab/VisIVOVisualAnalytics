@@ -44,6 +44,13 @@ public:
     /// Returns the set of targets (keys as given) that actually received a directive.
     QStringList dispatch(const QList<QJsonObject> &actions, const QString &defaultTarget);
 
+    /// @p actions with every ``target`` that names @p datasetId (the backend
+    /// tags each directive with the asking panel's dataset) replaced by
+    /// @p routeKey: the panel's own view, not the view of that dataset
+    /// registered last. Unchanged when @p routeKey is empty.
+    static QList<QJsonObject> retarget(QList<QJsonObject> actions, const QString &datasetId,
+                                       const QString &routeKey);
+
     /// Undo the most recent dispatch (every view it touched).
     void undoLast();
 
