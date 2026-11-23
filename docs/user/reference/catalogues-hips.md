@@ -104,8 +104,10 @@ In a Cartesian table (VBT points, Gadget snapshots, Cartesian catalogues):
 - *Tools ▸ Selection Diagnostics…*: an exact histogram and summary
   statistics of one quantity, optionally weighted, over every row the
   **applied** filters match (those last sent with *Apply*), not only the
-  loaded ones. It follows a new *Apply* while open. A long run shows a
-  progress bar; *Cancel* stops waiting. *Save CSV…* keeps the numbers with
+  loaded ones. It follows a new *Apply* while open. It runs as a backend
+  task: the progress bar shows how far it has gone, and *Cancel* stops the
+  task. It takes one of the session's compute slots, so while a moment map or
+  a ray-traced render holds them the dialog says the backend is busy. *Save CSV…* keeps the numbers with
   their units and selection, *Save PNG…* the plot. Non-finite values and
   negative weights are left out and counted.
 
