@@ -190,10 +190,12 @@ if njit is not None:
                 reach = cutoff * r
                 inv_r2 = 1.0 / (r * r)
                 cx, cy = sx[i], sy[i]
-                px0 = max(x0, int(math.floor(cx - reach)))
-                px1 = min(x1, int(math.ceil(cx + reach)) + 1)
-                py0 = max(y0, int(math.floor(cy - reach)))
-                py1 = min(y1, int(math.ceil(cy + reach)) + 1)
+                # Clamped to the tile before int(): a float beyond int64's
+                # range has no defined conversion (a radius of 1e30).
+                px0 = int(math.floor(min(max(cx - reach, x0), x1)))
+                px1 = min(x1, int(math.ceil(min(max(cx + reach, x0 - 1.0), x1))) + 1)
+                py0 = int(math.floor(min(max(cy - reach, y0), y1)))
+                py1 = min(y1, int(math.ceil(min(max(cy + reach, y0 - 1.0), y1))) + 1)
                 if px1 <= px0 or py1 <= py0:
                     continue
                 w = weight[i]
@@ -221,8 +223,8 @@ if njit is not None:
                     # widened by _EDGE so a centre exactly on the circle is in
                     # whatever the rounding of the square root (fastmath).
                     xr = math.sqrt(max(cut2 - dy2, 0.0)) * r + _EDGE
-                    qx0 = max(px0, int(math.ceil(cx - 0.5 - xr)))
-                    qx1 = min(px1, int(math.floor(cx - 0.5 + xr)) + 1)
+                    qx0 = max(px0, int(math.ceil(max(cx - 0.5 - xr, px0 - 1.0))))
+                    qx1 = min(px1, int(math.floor(min(cx - 0.5 + xr, float(px1)))) + 1)
                     wy = w * math.exp(-dy2)
                     if kappa > 0.0:
                         for px in range(qx0, qx1):
@@ -297,7 +299,7 @@ def render(positions: np.ndarray, radius: np.ndarray, colour: np.ndarray,
         return np.zeros((height, width, 3), dtype=np.float32)
     radius = np.asarray(radius, dtype=np.float64)
     sx, sy, sr, depth = project(positions, radius, camera, width, height)
-    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & (sr > 0) \
+    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & np.isfinite(sr) & (sr > 0) \
         & np.isfinite(intensity) & (intensity > 0)
     # Widened to a visible size with the same light: the column scales as the
     # square of the size ratio.
@@ -758,6 +760,9 @@ _SUBSAMPLED_PX = 8.0         # below this support (pixels), F is averaged over s
 _MAX_SUBSAMPLES = 6          # per pixel side
 _GRID_SUM_PX = 8.0           # below this support the share is summed on the grid;
                              # above, its integral (within 3e-6 of the sum)
+#: fastmath without nnan/ninf: a comparison with NaN or inf stays false rather
+#: than being assumed away, so no such value can reach a table index.
+_NAN_SAFE_MATH = {"nsz", "arcp", "contract", "afn", "reassoc"}
 
 
 def _m4(q: np.ndarray) -> np.ndarray:
@@ -825,7 +830,7 @@ if njit is not None:
             return _MAX_SUBSAMPLES
         return int(math.ceil(_SUBSAMPLED_PX / h))
 
-    @njit(cache=True, nogil=True, fastmath=True)
+    @njit(cache=True, nogil=True, fastmath=_NAN_SAFE_MATH)
     def _share(px, py, cx, cy, inv_h2, sub, table):
         """H² F at pixel (px, py), its mean over ``sub`` × ``sub`` sub-pixels."""
         steps = table.size - 1
@@ -841,11 +846,11 @@ if njit is not None:
                 s = dx * dx * inv_h2 + dy2
                 if s < 1.0:
                     f = s * steps
-                    k = min(int(f), steps - 1)
+                    k = min(max(int(f), 0), steps - 1)
                     total += table[k] + (f - k) * (table[k + 1] - table[k])
         return total / (sub * sub)
 
-    @njit(parallel=True, fastmath=True, cache=True, nogil=True)
+    @njit(parallel=True, fastmath=_NAN_SAFE_MATH, cache=True, nogil=True)
     def _grid_norms(sx, sy, sh, order, table, grid_sum_px):
         """Per particle, 1 / the sum of its shares over the whole pixel grid
         (0: it falls between the sub-pixels, all of it goes to its pixel)."""
@@ -868,7 +873,7 @@ if njit is not None:
             out[i] = 1.0 / total if total > 0.0 else 0.0
         return out
 
-    @njit(parallel=True, fastmath=True, cache=True, nogil=True)
+    @njit(parallel=True, fastmath=_NAN_SAFE_MATH, cache=True, nogil=True)
     def _stamp(sx, sy, sh, amount, norm, table, counts, items, width, height,
                tiles_x, tiles_y):
         """(height, width, 3): each particle's ``amount`` (N, 3) spread over

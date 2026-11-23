@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_projected_units import _plummer, _surface_density, _top  # noqa: E402
 
 SPH = ("m4", "wendland_c4")
+KERNELS = ("gauss", *SPH)
 
 
 def _w(kernel: str, q: float) -> float:
@@ -174,6 +175,44 @@ def test_the_mean_is_weighted_by_the_mass_the_kernel_puts_in_a_pixel(kernel):
                          kernel=kernel)
     assert np.allclose(nan[..., 1][overlap], 50.0, rtol=1e-6)
     assert np.isnan(nan[..., 1][(one[0] > 0) & (one[1] == 0)]).all()
+
+
+@pytest.mark.parametrize("kernel", KERNELS)
+@pytest.mark.parametrize("h", [1e-40, 1e-30, 0.0, 1e19, 1e25, 1e38, np.inf, np.nan])
+def test_an_extreme_support_never_reads_outside_its_arrays(kernel, h):
+    """A support of a subnormal, 0, beyond int64 in pixels, infinite or NaN,
+    among ordinary particles on tile and pixel edges of an image that is no
+    multiple of the tile: the ordinary ones keep their mass (a float beyond
+    int64 once crashed the process in a pixel loop's int())."""
+    cam = _top(35.0)   # 70 × 45 pixels, one unit a pixel
+    edges = np.array([[-35.0 + 32.0, 22.5 - 32.0, 0.0], [-35.0 + 64.0, 0.0, 0.0],
+                      [0.0, 0.0, 0.0], [-3.0, 22.5 - 1.0, 0.0], [10.25, -7.75, 0.0]],
+                     np.float32)
+    pos = np.vstack([edges, [[1.5, 2.5, 0.0]]]).astype(np.float32)
+    radius = np.array([3.0, 4.0, 40.0, 2.0, 0.6, h])
+    maps = projected_maps(pos, radius, np.ones(len(pos), np.float32), None, cam, 70, 45,
+                          kernel=kernel)
+    alone = projected_maps(edges, radius[:-1], np.ones(len(edges), np.float32), None, cam, 70,
+                           45, kernel=kernel)
+    if kernel == "gauss" and 0.0 < h < 1e-20:
+        # The Gaussian's per-particle light, (median h / h)², overflows
+        # float32 there: NaN pixels, though nothing is read out of bounds.
+        return
+    assert np.isfinite(maps[..., 0]).all()
+    extra = maps[..., 0].sum(dtype=np.float64) - alone[..., 0].sum(dtype=np.float64)
+    if kernel == "gauss" or not np.isfinite(h) or h > 1e3:
+        assert -1e-4 <= extra <= 1.0 + 1e-4
+    else:
+        assert extra == pytest.approx(1.0, abs=1e-4)
+
+
+@pytest.mark.parametrize("kernel", KERNELS)
+def test_positions_that_are_not_finite_are_left_out(kernel):
+    pos = np.array([[np.nan, 0, 0], [np.inf, 0, 0], [0, -np.inf, 0], [1, 1, 0]], np.float32)
+    maps = projected_maps(pos, np.full(4, 2.0), np.ones(4, np.float32), None, _top(16.0), 32,
+                          32, kernel=kernel)
+    assert np.isfinite(maps[..., 0]).all()
+    assert maps[..., 0].sum(dtype=np.float64) == pytest.approx(1.0, rel=2e-3)
 
 
 @pytest.mark.parametrize("kernel", SPH)
