@@ -249,6 +249,14 @@ if njit is not None:
         return image, zsum
 
 
+def kernel_scale(radius: np.ndarray) -> float:
+    """The size :func:`emission_weights` measures the particles against: the
+    median of their positive smoothing lengths (1 when none)."""
+    radius = np.asarray(radius, dtype=np.float64)
+    sized = radius[np.isfinite(radius) & (radius > 0)]
+    return float(np.median(sized)) if sized.size else 1.0
+
+
 def emission_weights(intensity: np.ndarray, radius: np.ndarray, quantity: str) -> np.ndarray:
     """Each particle's emission at the peak of its kernel, from its intensity
     and what that measures (see the module doc): a density by ``h``, an amount
@@ -260,8 +268,7 @@ def emission_weights(intensity: np.ndarray, radius: np.ndarray, quantity: str) -
         raise ValueError(f"Unknown quantity {quantity!r}: one of {QUANTITIES}.")
     e = np.asarray(intensity, dtype=np.float64)
     radius = np.asarray(radius, dtype=np.float64)
-    sized = radius[np.isfinite(radius) & (radius > 0)]
-    scale = float(np.median(sized)) if sized.size else 1.0
+    scale = kernel_scale(radius)
     if quantity == "density":
         return e * (radius / scale)
     return e * (scale / np.maximum(radius, 1e-30 * scale)) ** 2
@@ -545,7 +552,8 @@ def normalised_light(values, log10: bool = False,
     ``usable``: a finite value (in linear, a positive one too) whose light
     stays above 0 in float32. ``stats``: ``dropped_rows`` (the others),
     ``clipped_rows`` (capped) and ``light_span_decades`` (of the finite
-    values), for a client to say what was left out."""
+    values), for a client to say what was left out, and ``light_unit``: the
+    value (in linear) a light of 1 stands for, before the power."""
     logs = _log_light(values, log10)
     usable = np.isfinite(logs)
     finite = logs[usable]
@@ -555,6 +563,8 @@ def normalised_light(values, log10: bool = False,
         return np.zeros(0, dtype=np.float32), usable, stats
     stats["light_span_decades"] = float(finite.max() - finite.min())
     reference, top = _light_reference(finite, stats["light_span_decades"])
+    with np.errstate(over="ignore", under="ignore"):
+        stats["light_unit"] = float(np.power(10.0, reference))
     excess = float(power) * (finite - reference)
     # The sum of every particle's light stays finite in float32.
     ceiling = min(max(LIGHT_CEILING_DECADES, float(power) * (top - reference)),
@@ -723,21 +733,33 @@ def in_slab(positions: np.ndarray, camera: Camera, thickness: float | None) -> n
 def projected_maps(positions: np.ndarray, radius: np.ndarray, weight: np.ndarray,
                    value: np.ndarray | None, camera: Camera, width: int, height: int, *,
                    slab: float | None = None) -> np.ndarray:
-    """``(height, width, 2)``: the projected density (the columns of the
-    particles' kernels, each of mass ``weight``) and the density-weighted mean
-    of ``value`` along each line of sight (NaN where nothing lies)."""
+    """``(height, width, 2)``: the projected density (the particles' kernels,
+    each of mass ``weight``: the mass each pixel holds) and the
+    density-weighted mean of ``value`` along each
+    line of sight (NaN where nothing lies, or no particle has a value)."""
     cam = parallel_camera(camera)
     keep = in_slab(positions, cam, slab)
     w = np.asarray(weight, dtype=np.float32)[keep]
-    v = (np.zeros(int(keep.sum()), dtype=np.float32) if value is None
-         else np.nan_to_num(np.asarray(value, dtype=np.float32)[keep]))
-    # Three additive channels: the mass, the mass times the value, nothing.
-    channels = np.stack([np.ones_like(w), v, np.zeros_like(w)], axis=1)
-    light = render(positions[keep], np.asarray(radius)[keep], channels, w, cam, width, height,
+    radius = np.asarray(radius)[keep]
+    if value is None:
+        v, has = np.zeros_like(w), np.ones_like(w)
+    else:
+        v = np.asarray(value, dtype=np.float32)[keep]
+        has = np.isfinite(v).astype(np.float32)
+        v = np.where(has > 0, v, 0.0).astype(np.float32)
+    # Three additive channels: the mass, the mass times the value, the mass
+    # of the particles that have a value (a NaN is no value, not 0).
+    channels = np.stack([np.ones_like(w), v, has], axis=1)
+    light = render(positions[keep], radius, channels, w, cam, width, height,
                    quantity="per_particle")
-    density = light[..., 0]
+    # A particle of weight 1 sums, over the pixels, to its kernel's area
+    # pi s^2 (1 - exp(-cutoff^2)) in pixels (s the size emission_weights
+    # measures it against, in pixels): the column over that area is the
+    # mass each pixel holds.
+    s_px = kernel_scale(radius) * height / (2.0 * max(cam.parallel_scale, 1e-30))
+    density = light[..., 0] / (math.pi * s_px * s_px * (1.0 - math.exp(-_CUTOFF * _CUTOFF)))
     with np.errstate(divide="ignore", invalid="ignore"):
-        mean = np.where(density > 0, light[..., 1] / density, np.nan)
+        mean = np.where(light[..., 2] > 0, light[..., 1] / light[..., 2], np.nan)
     return np.stack([density, mean], axis=-1).astype(np.float32)
 
 

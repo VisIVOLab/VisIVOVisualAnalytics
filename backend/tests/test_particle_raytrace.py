@@ -364,8 +364,9 @@ def test_a_projected_still_is_rendered_and_graded_again(tmp_path, monkeypatch):
         from astropy.io import fits
         with fits.open(io.BytesIO(run(router.particle_render_light_fits(
                 task.task_id, token="tok")).body)) as hdul:
-            assert hdul[0].data.shape == (2, 90, 120)
-            assert hdul[0].header["CTYPE3"] == "MAP"
+            # The density and its mean, one HDU each: a VBT states no units.
+            assert hdul[0].data.shape == hdul["MEAN"].data.shape == (90, 120)
+            assert hdul[0].header["BUNIT"] == hdul["MEAN"].header["BUNIT"] == "relative"
     finally:
         loop.close()
     # Without velocity columns, the dispersion is refused with a reason.

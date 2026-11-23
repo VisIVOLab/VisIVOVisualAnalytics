@@ -55,6 +55,8 @@
     "X-Visivo-Line-Points",
     "X-Visivo-Lines",
     "X-Visivo-Log-Range",
+    "X-Visivo-Map-Unit",
+    "X-Visivo-Map-Value-Unit",
     "X-Visivo-N-Basins",
     "X-Visivo-Nonpositive-Voxels",
     "X-Visivo-Origin",

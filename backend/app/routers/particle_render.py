@@ -33,7 +33,8 @@ from ..dependencies import _require_dataset, get_exports_dir
 from ..product_cache import dataset_identity
 from ..response_headers import (X_EXPOSURE, X_PARTICLE_CLIPPED, X_PARTICLE_COUNT,
                                 X_PARTICLE_DROPPED, X_PARTICLE_FIELDS, X_PARTICLE_ORIGIN,
-                                X_PARTICLE_SCALE, X_PARTICLE_STEP, X_RENDER_MS)
+                                X_PARTICLE_SCALE, X_PARTICLE_STEP, X_PROJECTED_UNIT,
+                                X_PROJECTED_VALUE_UNIT, X_RENDER_MS)
 from ..schemas import TaskCreateResponse
 from ..sessions import Session, get_session
 from ..tasks import TASKS
@@ -223,6 +224,12 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     boxsize = [p / scale if p else 0.0 for p in periods]
     if req.intensity_field and req.intensity_field not in table.columns:
         raise ValueError(f"Unknown intensity field: {req.intensity_field!r}")
+    component = _snapshot_component(spec)
+    # A snapshot's projected map weighs its particles by their mass unless
+    # told otherwise: a surface density, in Msun/kpc^2 (issue #393).
+    weight = req.intensity_field or (
+        "mass" if req.mode == "projected" and component is not None
+        and "mass" in table.columns else None)
     if not len(rows):
         raise ValueError("No particle to draw: no row has a position and a positive intensity.")
     if req.radius_field:
@@ -255,14 +262,16 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
             pos, np.nan_to_num(vel), req.neighbours, boxsize=boxsize,
             region=_region(table.columns, axes, population, origin, scale, periods,
                            names) if spatial else None)
-    if req.intensity_field:
-        light, keep, stats = normalised_light(table.columns[req.intensity_field][rows],
-                                              req.intensity_log10, req.intensity_power)
+    if weight:
+        light, keep, stats = normalised_light(table.columns[weight][rows],
+                                              bool(req.intensity_field and req.intensity_log10),
+                                              req.intensity_power)
         rows, pos, radius = rows[keep], pos[keep], radius[keep]
         sigma = sigma[keep] if sigma is not None else None
     else:
         light = np.ones(len(rows), dtype=np.float32)
         stats = {"dropped_rows": 0, "clipped_rows": 0, "light_span_decades": 0.0}
+    light_unit = stats.pop("light_unit", 1.0)
     if not len(rows):
         raise ValueError("No particle to draw: no row has a position and a positive intensity.")
     radius = (radius * req.radius_scale).astype(np.float32)
@@ -271,6 +280,13 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     # _local_camera moves the camera into it.
     particles = {"positions": pos, "radius": radius, "intensity": light,
                  "frame": (origin, scale), "stats": stats}
+    if req.mode == "projected":
+        from ..projected_units import map_units  # noqa: PLC0415
+        particles["map_units"] = map_units(
+            component, axes=axes, weight=weight, power=req.intensity_power,
+            clipped=stats["clipped_rows"], light_unit=light_unit,
+            colour_by=req.colour_by, value_field=req.colour.field,
+            velocity=req.velocity or _velocity_columns(table.columns))
     if req.mode == "light":
         # The interactive GPU view can apply the point viewer's LUT itself.
         # Keep the scalar instead of baking RGB: changing its range, scale or
@@ -290,6 +306,16 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     elif sigma is not None:
         particles["value"] = sigma
     return particles
+
+
+def _snapshot_component(spec: str):
+    """The Gadget particle type a table of points reads (None for any other
+    table): what states its units."""
+    from ..point_table import component_format  # noqa: PLC0415
+    if str(spec).startswith("{") or component_format(spec) != "gadget":
+        return None
+    from .. import gadget_snapshot  # noqa: PLC0415
+    return gadget_snapshot.resolve(spec)
 
 
 def _region(columns, axes, population: np.ndarray, origin, scale: float, periods,
@@ -439,7 +465,8 @@ def _run(task_id: str, entry: dict, req: ParticleRenderRequest, stop: threading.
         lambda particles, cam, exposure: _frame(particles, req, cam, req.width, req.height,
                                                 req.tone, exposure),
         lambda particles: {"particles": int(len(particles["positions"])),
-                           **particles.get("stats", {})})
+                           **particles.get("stats", {}),
+                           **{k: particles[k] for k in ("map_units",) if k in particles}})
 
 
 def run_frames(task_id: str, req, stop: threading.Event, prepare, frame, summary) -> dict:
@@ -542,13 +569,16 @@ class ParticlePreviewRequest(ParticleRenderRequest):
     max_particles: int | None = Field(None, ge=1000)
 
 
+#: What describes the prepared particles, not one value a particle.
+_PER_TABLE = ("frame", "stats", "map_units")
+
+
 def _sampled(particles: dict, limit: int | None) -> dict:
     n = len(particles["positions"])
     if not limit or n <= limit:
         return particles
     step = -(-n // limit)
-    # ``frame`` and ``stats`` describe the particles, not one value a particle.
-    out = {k: v if k in ("frame", "stats") else v[::step] for k, v in particles.items()}
+    out = {k: v if k in _PER_TABLE else v[::step] for k, v in particles.items()}
     out["intensity"] = out["intensity"] * np.float32(step)
     return out
 
@@ -576,24 +606,31 @@ async def particle_render_preview(request: ParticlePreviewRequest, token: str = 
         from PIL import Image  # noqa: PLC0415
         buf = io.BytesIO()
         Image.fromarray(rgb).save(buf, format="JPEG", quality=88)
-        return buf.getvalue(), exposure, (time.time() - t0) * 1000.0, particles.get("stats", {})
+        return buf.getvalue(), exposure, (time.time() - t0) * 1000.0, particles
 
     # One at a time: a client sends its next frame when this one is back, and
     # two clients would only slow each other down.
     async with _PREVIEW_LOCK:
         try:
-            jpeg, exposure, ms, stats = await asyncio.to_thread(frame)
+            jpeg, exposure, ms, particles = await asyncio.to_thread(frame)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     return Response(jpeg, media_type="image/jpeg",
                     headers={X_EXPOSURE: repr(float(exposure)), X_RENDER_MS: f"{ms:.0f}",
-                             **_light_headers(stats)})
+                             **_light_headers(particles)})
 
 
-def _light_headers(stats: dict) -> dict[str, str]:
-    """The rows the light left out and capped (normalised_light), as headers."""
-    return {X_PARTICLE_DROPPED: str(int(stats.get("dropped_rows", 0))),
-            X_PARTICLE_CLIPPED: str(int(stats.get("clipped_rows", 0)))}
+def _light_headers(particles: dict) -> dict[str, str]:
+    """The rows the light left out and capped (normalised_light), and a
+    projected map's units (projected_units.map_units), as headers."""
+    stats = particles.get("stats", {})
+    out = {X_PARTICLE_DROPPED: str(int(stats.get("dropped_rows", 0))),
+           X_PARTICLE_CLIPPED: str(int(stats.get("clipped_rows", 0)))}
+    units = particles.get("map_units")
+    if units:
+        out[X_PROJECTED_UNIT] = units["density_unit"]
+        out[X_PROJECTED_VALUE_UNIT] = units["value_unit"]
+    return out
 
 
 class ParticleDataRequest(ParticleRenderRequest):
@@ -665,18 +702,19 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
             names = "x,y,z,r,e,red,green,blue"
         rows = np.hstack([np.asarray(c, dtype="<f4") for c in columns])
         return (np.ascontiguousarray(rows).tobytes(), len(rows), names, step, origin, scale,
-                particles.get("stats", {}))
+                particles)
 
     async with _PREVIEW_LOCK:
         try:
-            body, count, names, step, origin, scale, stats = await asyncio.to_thread(pack)
+            body, count, names, step, origin, scale, particles = await asyncio.to_thread(pack)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     return Response(body, media_type="application/octet-stream",
                     headers={X_PARTICLE_COUNT: str(count), X_PARTICLE_FIELDS: names,
                              X_PARTICLE_STEP: str(step),
                              X_PARTICLE_ORIGIN: ",".join(repr(float(v)) for v in origin),
-                             X_PARTICLE_SCALE: repr(float(scale)), **_light_headers(stats)})
+                             X_PARTICLE_SCALE: repr(float(scale)),
+                             **_light_headers(particles)})
 
 
 def _table_coordinates(pos: np.ndarray, radius: np.ndarray, origin: np.ndarray,
@@ -805,6 +843,16 @@ async def particle_render_light_fits(task_id: str, token: str = _auth) -> Respon
     three planes red, green and blue, rows bottom up as FITS shows them."""
     from astropy.io import fits  # noqa: PLC0415
     light = _light(task_id, token)
+    from .tasks import _owned_task  # noqa: PLC0415
+    task = _owned_task(task_id, token)
+    units = (task.result or {}).get("map_units") if task.operation == "particle_render" else None
+    if units and light.shape[-1] == 2:
+        # A projected map of particles: its planes in their units (issue #393).
+        from ..projected_units import projected_fits  # noqa: PLC0415
+        req = ParticleRenderRequest.model_validate_json(
+            (_owned_render(task_id, token) / "request.json").read_text())
+        return Response(projected_fits(light, units, req.cameras[0], req.width, req.height,
+                                       req.slab), media_type="application/fits")
     cube = np.ascontiguousarray(np.moveaxis(light, -1, 0)[:, ::-1, :])
     hdu = fits.PrimaryHDU(cube.astype(np.float32))
     if cube.shape[0] == 2:   # a projected map

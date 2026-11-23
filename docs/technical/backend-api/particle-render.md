@@ -90,9 +90,55 @@ Body: a `tone`. The still graded again (PNG), nothing rendered again.
 
 ### `GET /v1/particle_render/{task_id}/light.fits`
 
-The still before the tone curve, float32: three planes (red, green, blue), or
-for a projected map two (`CTYPE3 = MAP`: the density and its weighted mean).
-Only a still (one camera) keeps its light: a movie's task answers 404.
+The still before the tone curve, float32: three planes (red, green, blue). A
+projected map is written as two HDUs instead, each with its unit (see
+[Projected maps in physical units](#projected-maps-in-physical-units)): the
+surface density in the primary HDU and the weighted mean in `MEAN`. Only a
+still (one camera) keeps its light: a movie's task answers 404.
+
+### Projected maps in physical units
+
+Issue #393. A projected map holds the weight each pixel receives from the
+particles' kernels. That is each particle's weight times its kernel's share
+of the pixel, so the map's sum is the total weight in view. The map also
+holds the mean of the colour column, weighted by that weight. A NaN value is
+left out of the mean.
+
+For a Gadget particle type, `projected_units.map_units` takes the units from
+the snapshot (`Component.physical()`):
+
+- The weight is the mass unless `intensity_field` is set. The surface density
+  is then in `Msun/kpc^2`, as long as `intensity_power` is 1 and no row was
+  capped; otherwise it is `relative`.
+- With no weight, the map counts particles, in `kpc^-2`.
+- The mean is in its column's unit: `K` for `temperature`, `keV cm^2` for
+  `entropy`, `km/s` for a velocity column or the velocity dispersion.
+- Lengths in kpc/h comoving are made physical as the reader does (× a / h).
+  Masses in 1e10 Msun/h are divided by h. A surface density in code units is
+  therefore multiplied by h / a².
+
+Any other table states no units: its planes are `relative`, and the density
+is per square unit of the table's coordinates.
+
+The task result carries `map_units`: `density_unit`, `value_unit`,
+`weighting`, `kpc_per_unit`, `comoving`, `redshift`, `hubble` and
+`scale_factor`. The preview and particle routes carry `X-Visivo-Map-Unit` and
+`X-Visivo-Map-Value-Unit`.
+
+The FITS header has a linear grid centred on the focal point:
+
+- `CDELT1`/`CDELT2` in physical kpc (`CUNIT kpc`), plus `CDELTCOM` in comoving
+  kpc for a comoving run.
+- `COMOVING`, `REDSHIFT`, `HUBBLE` (h) and `SCALEFAC` (a).
+- `PROJAXIS`: the line of sight along the table's axes.
+- `FOCALX`/`FOCALY`/`FOCALZ`: the focal point.
+- `DEPTH`: the slab in physical kpc, or `all`.
+- `WEIGHT`: what each particle carries.
+
+The kernel is a Gaussian of width h (σ = h/√2). Given Gadget's `HSML` (the
+cubic spline's support), maps come out about 2.6 times smoother than an SPH
+code's own. The total mass is unchanged. `radius_scale` 0.39 matches the
+two kernels' widths.
 
 ### `DELETE /v1/particle_render/{task_id}`
 
