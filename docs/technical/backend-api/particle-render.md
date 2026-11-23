@@ -24,6 +24,7 @@ A **render request** is shared by all the routes:
 | `absorption` | Grey absorption, as the optical depth where the emitted light is brightest (0: emission only). |
 | `mode` | `light` (a 3-D render) or `projected` (a map: no perspective, log density). |
 | `slab`, `colour_by`, `velocity` | A map's thickness around the focal plane; its hue (`density`, `colour` for the view's column, `velocity_dispersion` from `velocity` or the columns named VX/VY/VZ). |
+| `kernel` | A map's kernel: `auto` (default), `m4`, `wendland_c4` or `gauss`. See [Projected kernels](#projected-kernels). |
 | `width`, `height` | Pixels, 16 to 8192. |
 | `cameras` | `[{position, focal_point, view_up, view_angle, parallel, parallel_scale}]`, VTK's camera; 1 to 7200 (one: a still). |
 | `tone` | `{exposure, ev, curve, stretch, gamma, saturation, decades}`: `exposure` null is automatic (the 99.5th percentile of the lit pixels' luminance); `ev` stops over it; `curve` `asinh`, `log`, `exponential` or `linear`; `decades` a map's brightness range. |
@@ -123,7 +124,7 @@ is per square unit of the table's coordinates.
 The task result carries `map_units`: `density_unit`, `value_unit`,
 `weighting`, `kpc_per_unit`, `comoving`, `redshift`, `hubble` and
 `scale_factor`. The preview and particle routes carry `X-Visivo-Projected-Unit` and
-`X-Visivo-Projected-Value-Unit`.
+`X-Visivo-Projected-Value-Unit`, and `X-Visivo-Projected-Kernel`.
 
 The FITS header has a linear grid centred on the focal point:
 
@@ -137,7 +138,8 @@ The FITS header has a linear grid centred on the focal point:
 - `DEPTH`: the slab in physical kpc, or `all`.
 - `WEIGHT`, `POWER` and `CLIPPED`: what each particle carries, the power it
   is raised to, and the rows whose weight was capped.
-- `KERNEL` (`GAUSS`), `KSCALE` (the `radius_scale` used), `HSMLDEF`
+- `KERNEL` (`M4`, `WENDLAND_C4` or `GAUSS`, see
+  [Projected kernels](#projected-kernels)), `KSCALE` (the `radius_scale` used), `HSMLDEF`
   (`support`: a smoothing-length column is read as the support radius H, as
   Gadget defines it) and `HSMLSRC` (the column, or the neighbour count). The
   same keys are in `map_units` (`kernel`, `kernel_scale`, `hsml_definition`,
@@ -149,10 +151,39 @@ perspective camera's map is drawn without perspective, as seen at the focal
 plane. The GPU view (`/particles`) still counts a NaN value as 0 in its mean;
 the stills and FITS leave it out.
 
-The kernel is a Gaussian of width h (σ = h/√2). Given Gadget's `HSML` (the
-cubic spline's support), maps come out about 2.6 times smoother than an SPH
-code's own. The total mass is unchanged. `radius_scale` 0.39 matches the
-two kernels' widths.
+### Projected kernels
+
+Issue #477. `kernel` picks how a projected map draws each particle:
+
+- `m4`: the cubic spline, W = 8/(πH³)·{1−6q²+6q³ for q < ½; 2(1−q)³ for
+  q < 1}, q = r/H. This is Gadget-2's kernel, with support radius H.
+- `wendland_c4`: W = 495/(32πH³)(1−q)⁶(1+6q+35q²/3). Gadget headers do not
+  say which kernel a run used, so choose this one when the run used it.
+- `gauss`: the 3-D render's Gaussian of width h (σ = h/√2), as before.
+- `auto` (the default): `m4` when `radius_field` is an SPH smoothing length
+  (`hsml`, `hsml_stars`, `SmoothingLength`, `smoothing_length`, in any case),
+  otherwise `gauss`. Tables without one look as they did.
+
+The SPH kernels are integrated along the line of sight, as SPLASH and Smac
+do: F(R) = ∫W dz is tabulated once (F(0) = 1.910/H² and σ = 0.274 H for M4;
+2.918/H² and 0.226 H for C4). A smoothing-length column is H itself, times
+`radius_scale`. With no column, H is twice the estimated h, the distance to
+the `neighbours`-th particle. Each particle's weights on the pixel grid
+are divided by their sum over the unbounded grid, so the map holds its mass
+exactly. The part of a particle that falls outside the image is the only
+part missing. When H is below two pixels, F is averaged over up to 6×6
+sub-pixels per pixel. A particle smaller than every sub-pixel spacing goes
+whole to the pixel it lies in. The kernel only applies to `mode`
+`projected`; a 3-D render always uses the Gaussian.
+
+`map_units.kernel` and `KERNEL` (`M4`, `WENDLAND_C4`, `GAUSS`) state the
+kernel used. The preview and particle routes send it in
+`X-Visivo-Projected-Kernel`, which also says what the GPU rows' `r` is:
+H for an SPH kernel, h for the Gaussian. The desktop's GPU view still
+draws a Gaussian.
+
+With the Gaussian and Gadget's `HSML`, maps come out about 2.6 times
+smoother than the SPH code's own. The total mass is the same either way.
 
 ### `DELETE /v1/particle_render/{task_id}`
 

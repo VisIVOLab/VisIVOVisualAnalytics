@@ -113,6 +113,8 @@ def test_prepared_particles_follow_a_rewritten_vbt_binary(tmp_path, monkeypatch)
     entry = {"kind": "vbt", "head_path": str(head), "bin_path": str(data)}
 
     class Req:
+        mode = "light"
+
         def model_dump(self, **_kwargs):
             return {"dataset_id": "vbt_demo"}
 

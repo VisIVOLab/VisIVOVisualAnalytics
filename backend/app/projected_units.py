@@ -20,16 +20,21 @@ import math
 import numpy as np
 
 RELATIVE = "relative"
-#: The kernel the maps are drawn with (particle_raytrace: exp(-d²/h²), sigma
-#: h/√2, h the smoothing length times radius_scale) and how a smoothing-length
-#: column is read: as the support radius H, Gadget's convention (#393).
-_KERNEL = {"kernel": "gauss", "hsml_definition": "support"}
+#: The kernels a map is drawn with (particle_raytrace.projected_maps), as the
+#: FITS header describes them. A smoothing-length column is read as the
+#: support radius H, Gadget's convention (#393, #477): the Gaussian's width h
+#: is set to it, the SPH kernels' support H is it, each times radius_scale.
+_KERNEL_NOTES = {"gauss": ("exp(-d^2/h^2), sigma = h/sqrt 2", "h = smoothing length x KSCALE"),
+                 "m4": ("cubic spline, line-of-sight integral",
+                        "H = smoothing length x KSCALE"),
+                 "wendland_c4": ("Wendland C4, line-of-sight integral",
+                                 "H = smoothing length x KSCALE")}
 
 
 def map_units(component, *, axes, weight: str | None, power: float, clipped: int,
               light_unit: float, colour_by: str, value_field: str | None,
               velocity: tuple[str, str, str] | None, log10: bool = False,
-              radius_scale: float = 1.0, smoothing: str = "") -> dict:
+              radius_scale: float = 1.0, smoothing: str = "", kernel: str = "gauss") -> dict:
     """What a projected map's two planes are and the factors that make them
     physical, for a table of points (``component`` a Gadget snapshot's
     particle type, or None for any other table).
@@ -45,11 +50,14 @@ def map_units(component, *, axes, weight: str | None, power: float, clipped: int
     ``power``, ``clipped_rows``, and for a snapshot ``kpc_per_unit``
     (physical kpc per table unit, when the positions are lengths),
     ``comoving``, ``redshift`` (a comoving run's), ``hubble``,
-    ``hubble_units``, ``scale_factor``."""
+    ``hubble_units``, ``scale_factor``. ``kernel`` (particle_raytrace.KERNELS),
+    ``kernel_scale`` (``radius_scale``), ``hsml_definition`` and
+    ``smoothing`` (where the lengths came from) say how it was drawn."""
     out = {"density_unit": RELATIVE, "density_factor": 1.0, "value_unit": RELATIVE,
            "value_factor": 1.0, "weighting": weight or "number",
            "power": float(power) if weight else 1.0, "clipped_rows": int(clipped),
-           **_KERNEL, "kernel_scale": float(radius_scale), "smoothing": smoothing}
+           "kernel": kernel, "hsml_definition": "support",
+           "kernel_scale": float(radius_scale), "smoothing": smoothing}
     if component is None:
         return out
     physical, stored = component.physical(), component.units()
@@ -168,8 +176,10 @@ def projected_fits(maps: np.ndarray, units: dict, camera, width: int, height: in
         h["WEIGHT"] = (units["weighting"], "what each particle carries")
         h["POWER"] = (units.get("power", 1.0), "the weight raised to this power")
         h["CLIPPED"] = (units.get("clipped_rows", 0), "rows whose weight was capped")
-        h["KERNEL"] = (units.get("kernel", "gauss").upper(), "exp(-d^2/h^2), sigma = h/sqrt 2")
-        h["KSCALE"] = (units.get("kernel_scale", 1.0), "h = smoothing length x KSCALE")
+        kernel = units.get("kernel", "gauss")
+        shape, scaled = _KERNEL_NOTES.get(kernel, _KERNEL_NOTES["gauss"])
+        h["KERNEL"] = (kernel.upper(), shape)
+        h["KSCALE"] = (units.get("kernel_scale", 1.0), scaled)
         h["HSMLDEF"] = (units.get("hsml_definition", "support"),
                         "HSML read as the support radius H (Gadget)")
         if units.get("smoothing"):

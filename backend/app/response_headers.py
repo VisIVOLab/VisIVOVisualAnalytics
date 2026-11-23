@@ -84,6 +84,10 @@ X_PARTICLE_CLIPPED = "X-Visivo-Particle-Clipped"
 # by ("relative" when the table states none) (issue #393).
 X_PROJECTED_UNIT = "X-Visivo-Projected-Unit"
 X_PROJECTED_VALUE_UNIT = "X-Visivo-Projected-Value-Unit"
+# The kernel its stills draw the particles with: "gauss", "m4" or
+# "wendland_c4" (issue #477). The GPU view's rows' ``r`` is always a
+# Gaussian's width, of the SPH kernel's second moment for "m4"/"wendland_c4".
+X_PROJECTED_KERNEL = "X-Visivo-Projected-Kernel"
 
 # ── Ray-traced volume grid (issue #106) ─────────────────────────────────────
 X_VOLUME_SHAPE = "X-Visivo-Volume-Shape"

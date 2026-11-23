@@ -104,8 +104,12 @@ if njit is not None:
         """The tiles a kernel at (x, y) of width r, drawn out to cutoff r,
         touches: tx0, tx1, ty0, ty1."""
         reach = cutoff * r
-        return (max(0, int((x - reach) // _TILE)), min(tiles_x - 1, int((x + reach) // _TILE)),
-                max(0, int((y - reach) // _TILE)), min(tiles_y - 1, int((y + reach) // _TILE)))
+        # Clamped before int(): a reach of 1e19 pixels would overflow it.
+        right, bottom = float(tiles_x * _TILE), float(tiles_y * _TILE)
+        return (int(min(max(x - reach, 0.0), right) // _TILE),
+                min(tiles_x - 1, int(min(max(x + reach, -1.0), right) // _TILE)),
+                int(min(max(y - reach, 0.0), bottom) // _TILE),
+                min(tiles_y - 1, int(min(max(y + reach, -1.0), bottom) // _TILE)))
 
     @njit(parallel=True, cache=True, nogil=True)
     def _bin(sx, sy, sr, order, cutoff, width, height, tiles_x, tiles_y):
@@ -186,10 +190,12 @@ if njit is not None:
                 reach = cutoff * r
                 inv_r2 = 1.0 / (r * r)
                 cx, cy = sx[i], sy[i]
-                px0 = max(x0, int(math.floor(cx - reach)))
-                px1 = min(x1, int(math.ceil(cx + reach)) + 1)
-                py0 = max(y0, int(math.floor(cy - reach)))
-                py1 = min(y1, int(math.ceil(cy + reach)) + 1)
+                # Clamped to the tile before int(): a float beyond int64's
+                # range has no defined conversion (a radius of 1e30).
+                px0 = int(math.floor(min(max(cx - reach, x0), x1)))
+                px1 = min(x1, int(math.ceil(min(max(cx + reach, x0 - 1.0), x1))) + 1)
+                py0 = int(math.floor(min(max(cy - reach, y0), y1)))
+                py1 = min(y1, int(math.ceil(min(max(cy + reach, y0 - 1.0), y1))) + 1)
                 if px1 <= px0 or py1 <= py0:
                     continue
                 w = weight[i]
@@ -217,8 +223,8 @@ if njit is not None:
                     # widened by _EDGE so a centre exactly on the circle is in
                     # whatever the rounding of the square root (fastmath).
                     xr = math.sqrt(max(cut2 - dy2, 0.0)) * r + _EDGE
-                    qx0 = max(px0, int(math.ceil(cx - 0.5 - xr)))
-                    qx1 = min(px1, int(math.floor(cx - 0.5 + xr)) + 1)
+                    qx0 = max(px0, int(math.ceil(max(cx - 0.5 - xr, px0 - 1.0))))
+                    qx1 = min(px1, int(math.floor(min(cx - 0.5 + xr, float(px1)))) + 1)
                     wy = w * math.exp(-dy2)
                     if kappa > 0.0:
                         for px in range(qx0, qx1):
@@ -293,7 +299,7 @@ def render(positions: np.ndarray, radius: np.ndarray, colour: np.ndarray,
         return np.zeros((height, width, 3), dtype=np.float32)
     radius = np.asarray(radius, dtype=np.float64)
     sx, sy, sr, depth = project(positions, radius, camera, width, height)
-    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & (sr > 0) \
+    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & np.isfinite(sr) & (sr > 0) \
         & np.isfinite(intensity) & (intensity > 0)
     # Widened to a visible size with the same light: the column scales as the
     # square of the size ratio.
@@ -363,8 +369,8 @@ def composite(sx, sy, radius, weight, emission, absorption, order, width: int, h
 def smoothing_lengths(positions: np.ndarray, neighbours: int = 32, *,
                       boxsize=None, region=None) -> np.ndarray:
     """Smoothing lengths where a snapshot has none: half the distance to the
-    ``neighbours``-th nearest particle, the support an SPH kernel would have
-    with that many neighbours.
+    ``neighbours``-th nearest particle: SPLASH's h, the Gaussian's width. An
+    SPH kernel with that many neighbours has twice it as its support H.
 
     ``boxsize``: the period of each axis (0: none), so a periodic box's
     particles find their neighbours across its faces (positions wrapped into
@@ -730,13 +736,233 @@ def in_slab(positions: np.ndarray, camera: Camera, thickness: float | None) -> n
     return np.abs(depth) <= thickness / 2.0
 
 
+# ── The SPH kernel along the line of sight (issue #477) ────────────────────
+#
+# A projected map can draw each particle as SPH codes do: its kernel W(r, H),
+# of support radius H (Gadget's HSML; SPLASH's h is H / 2), integrated along
+# the line of sight, F(R) = ∫ W(√(R² + z²)) dz, as SPLASH (Price 2007, PASA
+# 24, 159) and Smac (Dolag et al. 2005) draw it. Two kernels: the cubic
+# spline M4 (Gadget-2's; F(0) = 6 / (π H²), σ = 0.274 H) and Wendland C4
+# (Dehnen & Aly 2012, recommended by Beck et al. 2016 with 200 neighbours;
+# F(0) = 2.918 / H², σ = 0.226 H). A snapshot does not say which one its
+# code used: M4 unless told. Each particle's mass is spread over the pixels
+# in proportion to F at them and divided by their sum over the whole pixel
+# grid, so the map holds the mass in view however small the particle is,
+# up to float rounding. One smaller than eight pixels has F averaged over
+# sub-pixels, within about 1 % of its integral over the pixel (which Petkova,
+# Laibe & Bonnell 2018 compute exactly); one that misses every sub-pixel, or
+# has no support, goes to the pixel it lies in.
+
+KERNELS = ("gauss", "m4", "wendland_c4")
+SPH_KERNELS = ("m4", "wendland_c4")
+_TABLE_STEPS = 4096          # F tabulated at q² = k / 4096, k = 0 … 4096
+_SUBSAMPLED_PX = 8.0         # below this support (pixels), F is averaged over sub-pixels
+_MAX_SUBSAMPLES = 6          # per pixel side
+_GRID_SUM_PX = 8.0           # below this support the share is summed on the grid;
+                             # above, its integral (within 3e-6 of the sum)
+#: fastmath without nnan/ninf: a comparison with NaN or inf stays false rather
+#: than being assumed away, so no such value can reach a table index.
+_NAN_SAFE_MATH = {"nsz", "arcp", "contract", "afn", "reassoc"}
+
+
+def _m4(q: np.ndarray) -> np.ndarray:
+    """The cubic spline M4 of support 1, normalised in 3-D."""
+    return (8.0 / math.pi) * np.where(q < 0.5, 1.0 - 6.0 * q ** 2 + 6.0 * q ** 3,
+                                      np.where(q < 1.0, 2.0 * (1.0 - q) ** 3, 0.0))
+
+
+def _wendland_c4(q: np.ndarray) -> np.ndarray:
+    """Wendland C4 of support 1, normalised in 3-D."""
+    return (495.0 / (32.0 * math.pi)) * np.where(
+        q < 1.0, (1.0 - q) ** 6 * (1.0 + 6.0 * q + 35.0 / 3.0 * q * q), 0.0)
+
+
+_TABLES: dict[str, np.ndarray] = {}
+
+
+def projected_kernel(kernel: str) -> np.ndarray:
+    """H² F(R) of ``kernel`` (one of SPH_KERNELS) at (R / H)² = k / _TABLE_STEPS:
+    the kernel of support 1 integrated along the line of sight, by
+    Gauss-Legendre on each side of M4's break at q = 1/2. Its integral over
+    the plane is 1."""
+    if kernel not in SPH_KERNELS:
+        raise ValueError(f"Unknown SPH kernel {kernel!r}: one of {SPH_KERNELS}.")
+    if kernel not in _TABLES:
+        w, brk = (_m4, 0.5) if kernel == "m4" else (_wendland_c4, 0.0)
+        r2 = np.linspace(0.0, 1.0, _TABLE_STEPS + 1)
+        nodes, weights = np.polynomial.legendre.leggauss(64)
+        top = np.sqrt(1.0 - r2)
+        knee = np.sqrt(np.maximum(brk * brk - r2, 0.0))
+        f = np.zeros_like(r2)
+        for lo, hi in ((np.zeros_like(r2), knee), (knee, top)):
+            z = 0.5 * (lo + hi)[:, None] + 0.5 * (hi - lo)[:, None] * nodes
+            f += 0.5 * (hi - lo) * (w(np.sqrt(r2[:, None] + z * z)) @ weights)
+        f = 2.0 * f
+        f[-1] = 0.0
+        _TABLES[kernel] = f
+    return _TABLES[kernel]
+
+
+def gaussian_width(kernel: str) -> float:
+    """The width h, in units of the support H, of the Gaussian exp(-d²/h²)
+    with ``kernel``'s projected second moment (σ = h/√2): 0.387 for M4, 0.320
+    for Wendland C4, 1 for the Gaussian itself. The GPU view, which draws
+    Gaussians, draws an SPH map's particles that wide."""
+    if kernel == "gauss":
+        return 1.0
+    f = projected_kernel(kernel)
+    r2 = np.linspace(0.0, 1.0, f.size)
+    # <R²> = ∫ 2πR · R² F dR = π ∫ R² F d(R²); σ² = <R²> / 2 per axis.
+    mean_r2 = math.pi * float(np.trapezoid(r2 * f, r2))
+    return math.sqrt(mean_r2)
+
+
+if njit is not None:
+    @njit(cache=True, nogil=True)
+    def _subsamples(h):
+        """Sub-pixels per side for a kernel of support ``h`` pixels, so that
+        its mean over a pixel is within about 1 % of the pixel's integral:
+        ceil(_SUBSAMPLED_PX / h), at most _MAX_SUBSAMPLES (a spacing at most
+        h / 2 down to h = 1/3 pixel, so that its disc holds some)."""
+        if h >= _SUBSAMPLED_PX:
+            return 1
+        if h * _MAX_SUBSAMPLES <= _SUBSAMPLED_PX:
+            return _MAX_SUBSAMPLES
+        return int(math.ceil(_SUBSAMPLED_PX / h))
+
+    @njit(cache=True, nogil=True, fastmath=_NAN_SAFE_MATH)
+    def _share(px, py, cx, cy, inv_h2, sub, table):
+        """H² F at pixel (px, py), its mean over ``sub`` × ``sub`` sub-pixels."""
+        steps = table.size - 1
+        step = 1.0 / sub
+        total = 0.0
+        for a in range(sub):
+            dy = py + (a + 0.5) * step - cy
+            dy2 = dy * dy * inv_h2
+            if dy2 >= 1.0:
+                continue
+            for b in range(sub):
+                dx = px + (b + 0.5) * step - cx
+                s = dx * dx * inv_h2 + dy2
+                if s < 1.0:
+                    f = s * steps
+                    k = min(max(int(f), 0), steps - 1)
+                    total += table[k] + (f - k) * (table[k + 1] - table[k])
+        return total / (sub * sub)
+
+    @njit(parallel=True, fastmath=_NAN_SAFE_MATH, cache=True, nogil=True)
+    def _grid_norms(sx, sy, sh, order, table, grid_sum_px):
+        """Per particle, 1 / the sum of its shares over the whole pixel grid
+        (0: it falls between the sub-pixels, all of it goes to its pixel)."""
+        out = np.zeros(sx.size, dtype=np.float64)
+        for j in prange(order.size):
+            i = order[j]
+            h = np.float64(sh[i])
+            if not h > 0.0:
+                continue
+            if h >= grid_sum_px:
+                out[i] = 1.0 / (h * h)
+                continue
+            cx, cy = np.float64(sx[i]), np.float64(sy[i])
+            inv_h2 = 1.0 / (h * h)
+            sub = _subsamples(h)
+            total = 0.0
+            for py in range(int(math.floor(cy - h)), int(math.floor(cy + h)) + 1):
+                for px in range(int(math.floor(cx - h)), int(math.floor(cx + h)) + 1):
+                    total += _share(px, py, cx, cy, inv_h2, sub, table)
+            out[i] = 1.0 / total if total > 0.0 else 0.0
+        return out
+
+    @njit(parallel=True, fastmath=_NAN_SAFE_MATH, cache=True, nogil=True)
+    def _stamp(sx, sy, sh, amount, norm, table, counts, items, width, height,
+               tiles_x, tiles_y):
+        """(height, width, 3): each particle's ``amount`` (N, 3) spread over
+        the pixels by its shares times ``norm``, tile by tile, summed in
+        float64 (millions of particles on a few pixels lose mass in float32)."""
+        image = np.zeros((height, width, 3), dtype=np.float32)
+        n_tiles = tiles_x * tiles_y
+        stride = np.int64(7919) if n_tiles % 7919 != 0 else np.int64(1)
+        for j in prange(n_tiles):
+            t = (np.int64(j) * stride) % n_tiles
+            ty, tx = t // tiles_x, t % tiles_x
+            x0, y0 = tx * _TILE, ty * _TILE
+            x1, y1 = min(width, x0 + _TILE), min(height, y0 + _TILE)
+            acc = np.zeros((_TILE, _TILE, 3), dtype=np.float64)
+            for k in range(counts[t], counts[t + 1]):
+                i = items[k]
+                cx, cy = np.float64(sx[i]), np.float64(sy[i])
+                a0, a1, a2 = amount[i, 0], amount[i, 1], amount[i, 2]
+                c = norm[i]
+                if c == 0.0:
+                    px, py = int(math.floor(cx)), int(math.floor(cy))
+                    if x0 <= px < x1 and y0 <= py < y1:
+                        acc[py - y0, px - x0, 0] += a0
+                        acc[py - y0, px - x0, 1] += a1
+                        acc[py - y0, px - x0, 2] += a2
+                    continue
+                h = np.float64(sh[i])
+                inv_h2 = 1.0 / (h * h)
+                sub = _subsamples(h)
+                # Clamped to the tile before int(): an H of 1e19 pixels
+                # would overflow it.
+                qy0 = int(math.floor(max(cy - h, y0 - 1.0)))
+                qy1 = int(math.floor(min(cy + h, y1 + 1.0))) + 1
+                qx0 = int(math.floor(max(cx - h, x0 - 1.0)))
+                qx1 = int(math.floor(min(cx + h, x1 + 1.0))) + 1
+                for py in range(max(y0, qy0), min(y1, qy1)):
+                    for px in range(max(x0, qx0), min(x1, qx1)):
+                        f = _share(px, py, cx, cy, inv_h2, sub, table) * c
+                        if f > 0.0:
+                            acc[py - y0, px - x0, 0] += a0 * f
+                            acc[py - y0, px - x0, 1] += a1 * f
+                            acc[py - y0, px - x0, 2] += a2 * f
+            for py in range(y0, y1):
+                for px in range(x0, x1):
+                    for ch in range(3):
+                        image[py, px, ch] = acc[py - y0, px - x0, ch]
+        return image
+
+
+def sph_project(positions: np.ndarray, support: np.ndarray, amount: np.ndarray,
+                camera: Camera, width: int, height: int, kernel: str = "m4") -> np.ndarray:
+    """``(height, width, 3)`` float32: each particle's ``amount`` (N, 3)
+    spread over the pixels by its SPH ``kernel`` of ``support`` radius H (in
+    the positions' units) integrated along the line of sight, its shares of
+    the unbounded pixel grid summing to 1 (see above). ``camera`` parallel;
+    particles behind it, or of infinite support, are left out; one of no
+    positive support goes whole to the pixel it lies in."""
+    if njit is None:   # pragma: no cover
+        raise RuntimeError("Projected particle maps need numba.")
+    table = projected_kernel(kernel)
+    if not len(positions):
+        return np.zeros((height, width, 3), dtype=np.float32)
+    sx, sy, sh, depth = project(positions, np.asarray(support, dtype=np.float64), camera,
+                                width, height)
+    amount = np.ascontiguousarray(amount, dtype=np.float32)
+    sh = np.where(sh > 0, sh, np.float32(0.0))
+    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & np.isfinite(sh) \
+        & np.isfinite(amount).all(axis=1)
+    keep &= (sx + sh >= 0) & (sx - sh < width) & (sy + sh >= 0) & (sy - sh < height)
+    order = np.flatnonzero(keep).astype(np.int64)
+    tiles_x, tiles_y = -(-width // _TILE), -(-height // _TILE)
+    with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
+        norm = _grid_norms(sx, sy, sh, order, table, _GRID_SUM_PX)
+        counts, items = _bin(sx, sy, sh, order, 1.0, width, height, tiles_x, tiles_y)
+        return _stamp(sx, sy, sh, amount, norm, table, counts, items, width, height,
+                      tiles_x, tiles_y)
+
+
 def projected_maps(positions: np.ndarray, radius: np.ndarray, weight: np.ndarray,
                    value: np.ndarray | None, camera: Camera, width: int, height: int, *,
-                   slab: float | None = None) -> np.ndarray:
+                   slab: float | None = None, kernel: str = "gauss") -> np.ndarray:
     """``(height, width, 2)``: the projected density (the particles' kernels,
     each of mass ``weight``: the mass each pixel holds) and the
     density-weighted mean of ``value`` along each
-    line of sight (NaN where nothing lies, or no particle has a value)."""
+    line of sight (NaN where nothing lies, or no particle has a value).
+    ``kernel``: ``gauss`` (``radius`` its width h, as the 3-D render draws
+    it) or one of SPH_KERNELS (``radius`` its support H)."""
+    if kernel not in KERNELS:
+        raise ValueError(f"Unknown kernel {kernel!r}: one of {KERNELS}.")
     cam = parallel_camera(camera)
     keep = in_slab(positions, cam, slab)
     w = np.asarray(weight, dtype=np.float32)[keep]
@@ -750,14 +976,21 @@ def projected_maps(positions: np.ndarray, radius: np.ndarray, weight: np.ndarray
     # Three additive channels: the mass, the mass times the value, the mass
     # of the particles that have a value (a NaN is no value, not 0).
     channels = np.stack([np.ones_like(w), v, has], axis=1)
-    light = render(positions[keep], radius, channels, w, cam, width, height,
-                   quantity="per_particle")
-    # A particle of weight 1 sums, over the pixels, to its kernel's area
-    # pi s^2 (1 - exp(-cutoff^2)) in pixels (s the size emission_weights
-    # measures it against, in pixels): the column over that area is the
-    # mass each pixel holds.
-    s_px = kernel_scale(radius) * height / (2.0 * max(cam.parallel_scale, 1e-30))
-    density = light[..., 0] / (math.pi * s_px * s_px * (1.0 - math.exp(-_CUTOFF * _CUTOFF)))
+    if kernel in SPH_KERNELS:
+        lit = np.isfinite(w) & (w > 0)
+        light = sph_project(positions[keep][lit], radius[lit], channels[lit] * w[lit, None],
+                            cam, width, height, kernel)
+        density = light[..., 0]
+    else:
+        light = render(positions[keep], radius, channels, w, cam, width, height,
+                       quantity="per_particle")
+        # A particle of weight 1 sums, over the pixels, to its kernel's area
+        # pi s^2 (1 - exp(-cutoff^2)) in pixels (s the size emission_weights
+        # measures it against, in pixels): the column over that area is the
+        # mass each pixel holds.
+        s_px = kernel_scale(radius) * height / (2.0 * max(cam.parallel_scale, 1e-30))
+        density = light[..., 0] / (math.pi * s_px * s_px
+                                   * (1.0 - math.exp(-_CUTOFF * _CUTOFF)))
     with np.errstate(divide="ignore", invalid="ignore"):
         mean = np.where(light[..., 2] > 0, light[..., 1] / light[..., 2], np.nan)
     return np.stack([density, mean], axis=-1).astype(np.float32)

@@ -33,8 +33,8 @@ from ..dependencies import _require_dataset, get_exports_dir
 from ..product_cache import dataset_identity
 from ..response_headers import (X_EXPOSURE, X_PARTICLE_CLIPPED, X_PARTICLE_COUNT,
                                 X_PARTICLE_DROPPED, X_PARTICLE_FIELDS, X_PARTICLE_ORIGIN,
-                                X_PARTICLE_SCALE, X_PARTICLE_STEP, X_PROJECTED_UNIT,
-                                X_PROJECTED_VALUE_UNIT, X_RENDER_MS)
+                                X_PARTICLE_SCALE, X_PARTICLE_STEP, X_PROJECTED_KERNEL,
+                                X_PROJECTED_UNIT, X_PROJECTED_VALUE_UNIT, X_RENDER_MS)
 from ..schemas import TaskCreateResponse
 from ..sessions import Session, get_session
 from ..tasks import TASKS
@@ -121,6 +121,12 @@ class ParticleRenderRequest(BaseModel):
     # or the columns named VX/VY/VZ).
     colour_by: Literal["density", "colour", "velocity_dispersion"] = "density"
     velocity: tuple[str, str, str] | None = None
+    # The kernel a projected map draws each particle with (issue #477): the
+    # cubic spline M4 or Wendland C4 integrated along the line of sight, of
+    # support H the smoothing length, or the Gaussian of the 3-D render.
+    # ``auto``: M4 when the size is an SPH code's smoothing-length column
+    # (_SPH_LENGTHS), else the Gaussian, so other tables look as they did.
+    kernel: Literal["auto", "m4", "wendland_c4", "gauss"] = "auto"
     width: int = Field(1920, ge=16, le=8192)
     height: int = Field(1080, ge=16, le=8192)
     cameras: list[RaytraceCamera] = Field(..., min_length=1, max_length=7200)
@@ -277,7 +283,11 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
     light_unit = stats.pop("light_unit", 1.0)
     if not len(rows):
         raise ValueError("No particle to draw: no row has a position and a positive intensity.")
-    radius = (radius * req.radius_scale).astype(np.float32)
+    kernel = _projected_kernel(req)
+    # An estimated length is half the distance to the neighbours-th particle:
+    # an SPH kernel's support reaches that particle.
+    support = 2.0 if kernel != "gauss" and not req.radius_field else 1.0
+    radius = (radius * (req.radius_scale * support)).astype(np.float32)
     # Positions and sizes in the local frame; ``frame`` (origin, scale) maps
     # it to the table's coordinates, table = origin + scale * local, and
     # _local_camera moves the camera into it.
@@ -285,13 +295,15 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
                  "frame": (origin, scale), "stats": stats}
     if req.mode == "projected":
         from ..projected_units import map_units  # noqa: PLC0415
+        particles["kernel"] = kernel
         particles["map_units"] = map_units(
-            component, axes=axes, weight=weight, power=req.intensity_power,
+            component, kernel=kernel, axes=axes, weight=weight, power=req.intensity_power,
             clipped=stats["clipped_rows"], light_unit=light_unit,
             log10=bool(req.intensity_field and req.intensity_log10),
             radius_scale=req.radius_scale,
             smoothing=(f"column {req.radius_field}" if req.radius_field
-                       else f"{req.neighbours} neighbours"),
+                       else f"{req.neighbours} neighbours" if support == 1.0
+                       else f"distance to neighbour {req.neighbours}"),
             colour_by=req.colour_by, value_field=req.colour.field,
             velocity=req.velocity or _velocity_columns(table.columns))
     if req.mode == "light":
@@ -316,6 +328,23 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
         particles["columns"] = {name: np.asarray(table.columns[name][rows], dtype=np.float64)
                                 for name in columns if name in table.columns}
     return particles
+
+
+#: The names SPH codes' smoothing lengths have as columns: Gadget's HSML (and
+#: its stars'), as the snapshot reader names them, and their HDF5 name.
+_SPH_LENGTHS = ("hsml", "hsml_stars", "smoothinglength", "smoothing_length")
+
+
+def _projected_kernel(req: ParticleRenderRequest) -> str:
+    """The kernel ``req`` draws its particles with (particle_raytrace.KERNELS):
+    the Gaussian in a 3-D render, else the one asked for, ``auto`` resolved
+    (see ParticleRenderRequest.kernel)."""
+    if req.mode != "projected":
+        return "gauss"
+    if req.kernel != "auto":
+        return req.kernel
+    sph = bool(req.radius_field) and req.radius_field.lower() in _SPH_LENGTHS
+    return "m4" if sph else "gauss"
 
 
 def _snapshot_component(spec: str):
@@ -457,7 +486,8 @@ def _frame(particles: dict, req: ParticleRenderRequest, camera, width: int, heig
     if req.mode == "projected":
         maps = projected_maps(particles["positions"], particles["radius"],
                               particles["intensity"], particles.get("value"), cam, width, height,
-                              slab=req.slab / scale if req.slab else req.slab)
+                              slab=req.slab / scale if req.slab else req.slab,
+                              kernel=particles.get("kernel", "gauss"))
         return _projected_image(maps, req, tone), maps, 1.0
     light = render(particles["positions"], particles["radius"], particles["colour"],
                    particles["intensity"], cam, width, height,
@@ -540,7 +570,8 @@ _PREVIEW_LOCK = asyncio.Lock()
 _PREVIEW_WORK = threading.Lock()
 _PARTICLE_FIELDS = ("dataset_id", "x", "y", "z", "sky", "filters", "colour", "radius_field",
                     "radius_scale", "neighbours", "period", "intensity_field", "intensity_log10",
-                    "intensity_power", "mode", "colour_by", "velocity", "colour_values")
+                    "intensity_power", "mode", "colour_by", "velocity", "colour_values",
+                    "kernel")
 
 
 def _particle_key_fields(req: ParticleRenderRequest) -> dict:
@@ -548,10 +579,12 @@ def _particle_key_fields(req: ParticleRenderRequest) -> dict:
     colours go to the client as the colour column's values (``colour_values``)
     depends on the column alone: its palette, range and log scale are the
     client's, and changing them must not prepare the particles again (the
-    smoothing lengths' neighbour search) nor abort a first load (#447)."""
+    smoothing lengths' neighbour search) nor abort a first load (#447). The
+    kernel counts as it resolves (a 3-D render's is always the Gaussian)."""
     fields = req.model_dump(include=set(_PARTICLE_FIELDS))
     if fields.get("colour_values") and req.mode == "light" and req.colour.field:
         fields["colour"] = {"field": req.colour.field}
+    fields["kernel"] = _projected_kernel(req)
     return fields
 
 
@@ -580,7 +613,7 @@ class ParticlePreviewRequest(ParticleRenderRequest):
 
 
 #: What describes the prepared particles, not one value a particle.
-_PER_TABLE = ("frame", "stats", "map_units")
+_PER_TABLE = ("frame", "stats", "map_units", "kernel")
 
 
 def _sampled(particles: dict, limit: int | None) -> dict:
@@ -640,6 +673,7 @@ def _light_headers(particles: dict) -> dict[str, str]:
     if units:
         out[X_PROJECTED_UNIT] = units["density_unit"]
         out[X_PROJECTED_VALUE_UNIT] = units["value_unit"]
+        out[X_PROJECTED_KERNEL] = units["kernel"]
     return out
 
 
@@ -670,7 +704,7 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
     emission_weights) and colour (RGB, or its scalar when ``colour_values``);
     a projected map's: position, size, mass at the peak and the quantity its
     hue averages (0 without one)."""
-    from ..particle_raytrace import emission_weights  # noqa: PLC0415
+    from ..particle_raytrace import emission_weights, gaussian_width  # noqa: PLC0415
     entry = _require_dataset(session, request.dataset_id)
     from .render import point_table_spec  # noqa: PLC0415
     if point_table_spec(entry) is None:
@@ -685,6 +719,11 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
         particles = _sampled(_prepared(entry, request, token), request.max_particles)
         step = -(-n_all // request.max_particles) if n_all > request.max_particles else 1
         pos, radius = particles["positions"], particles["radius"]
+        kernel = particles.get("kernel", "gauss")
+        if kernel != "gauss":
+            # The GPU draws Gaussians: an SPH map's as wide as its kernel's
+            # projected second moment, not of width H.
+            radius = (radius * np.float32(gaussian_width(kernel))).astype(np.float32)
         origin, scale = particles.get("frame", ((0.0, 0.0, 0.0), 1.0))
         origin, scale = np.asarray(origin, dtype=np.float64), float(scale)
         if not request.local_frame:
