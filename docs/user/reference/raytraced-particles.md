@@ -48,11 +48,11 @@ The card shows the main settings; *More settings* opens the rest.
 | Setting | What it does |
 |---|---|
 | *Mode* | *3-D light*: particles emit (and optionally absorb) light, in perspective. *Projected map*: the column of density along each line of sight, without perspective, as cosmological simulations are usually shown. |
-| *Light* | The column a particle's brightness comes from; *log* when the column holds a logarithm (LogMass, LogD). *Same for all*: every particle alike. |
+| *Light* | The column a particle's brightness comes from; *log* when the column holds a logarithm (LogMass, LogD). *Same for all*: every particle alike. Rows with no usable value (blank, zero or negative, or a logarithm of −∞) are not drawn. When the column holds two populations tens of decades apart, as gas and stars in one table, the larger one sets the brightness and the other is capped at its brightest; filter by type to see either one on its own. |
 | *Contrast* | The light raised to this power. Above 1, diffuse particles fade and dense structure stands out; try 1.5 when a gas looks foggy. |
 | *Exposure* | Stops over the automatic exposure (the 99.5th percentile of the lit pixels); +1 doubles the light. |
 | *Colour by*, *Map* | A projected map's colour: *Density*, *View's colours* (the colour column averaged along each ray) or *Velocity dispersion* (needs VX, VY, VZ columns). |
-| *Size* | Each particle's width: a smoothing-length column, or *From neighbours*, half the distance to its N-th nearest particle (N = 32 by default); *×* scales it. |
+| *Size* | Each particle's width: a smoothing-length column, or *From neighbours*, half the distance to its N-th nearest particle (N = 32 by default); *×* scales it. The neighbours come from the whole table, beyond the faces of a box, sphere or coordinate filter, and across the faces of a periodic simulation box (a cosmological Gadget snapshot's), so the particles at a cut's edge are not drawn larger than the others. A filter on any other column chooses which particles count as neighbours. |
 | *Measures* | *Per particle* (a mass, a luminosity): a particle sends the same total light however wide it is. *Density*: a ray sees the column it crosses. A density read as *Per particle* often gives the clearer picture, because large particles in voids stay dim. |
 | *Absorption* | Grey absorption, as the optical depth reached where the light is brightest. 0 is emission only; 1 or more lets dense regions hide what is behind them. Only in stills and movies; the GPU view shows emission only. |
 | *Slab*, *Range* | A projected map's thickness around the focal plane, in the table's units (*Everything* by default), and the decades of density its brightness spans (*Automatic* by default). |

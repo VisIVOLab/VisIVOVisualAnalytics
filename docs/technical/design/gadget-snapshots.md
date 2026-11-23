@@ -325,6 +325,10 @@ with the selection. The
 out-of-core matcher, the point sessions' masks (`LazyColumns.periods`) and the
 DataFrame path use the nearest image for spheres and wrap boxes round the
 faces (`app/periodic.py`). A selection may state its own `period` (0: none).
+The snapshot's description says the outcome: `units.periodic` (a boolean, by
+the rule above) with `box_size`, so a client's "Periodic box" setting starts
+as the backend decides. The ray-traced render's neighbour searches (smoothing
+lengths, velocity dispersion) wrap round the same box (request `period`).
 
 The response includes field and weight units from component metadata, the
 selection expression and explicit bin edges. The desktop carries these into
