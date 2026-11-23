@@ -421,7 +421,8 @@ centre search and the passes.
               "shrink_factor": 0.975, "min_particles": 1000, "velocity": null },
   "r_min": null, "r_max": null, "bins": 32,
   "axis": null,
-  "period": null
+  "period": null,
+  "geometry": "spherical", "z_min": null, "z_max": null
 }
 ```
 
@@ -466,6 +467,21 @@ centre search and the passes.
   `outside` box or sphere. `r_min` defaults to the larger of the smallest
   positive distance and `r_max`/1000.
 
+- `geometry`: `spherical` (default, shells in the distance from the centre),
+  `cylindrical` or `axial`. Both of the last two use an axis through the
+  centre: `axis` if given, else the angular momentum of the particles of the
+  centre-velocity sphere above (needs velocities), else the table's z. The
+  result's `axis` says which. R, the distance from the axis, and z, the
+  signed height along it, come from the minimum-image vector from the centre.
+  - `cylindrical`: log-spaced annuli in R from `r_min` to `r_max` (`r_max`
+    as above; `r_min` defaults to `r_max`/1000). With both `z_min` and `z_max`, only particles with
+    `z_min` ≤ z < `z_max` count (a slab); without them the whole selection
+    along the axis does.
+  - `axial`: linear slabs in z from `z_min` to `z_max` (default ±the
+    `r_max` default above). `r_max`, when given, keeps only particles with
+    R < `r_max`; `r_min` is refused.
+  - `axis` no longer needs velocities for these two.
+
 The response has `profile`, `centre`, `units` and `provenance`.
 
 `profile`:
@@ -493,6 +509,41 @@ The response has `profile`, `centre`, `units` and `provenance`.
 
 Empty shells give `null`.
 
+With `geometry: "cylindrical"` the bins keep the `r_*` names (R) and
+`inside_r_min`, `outside_r_max` (now with their mass too), and add:
+- `surface_density`: annulus mass over π (r_hi² − r_lo²), the selection
+  projected along the axis;
+- `density`: annulus mass over that area times `z_max − z_min`, or `null`
+  without a slab;
+- `enclosed_mass`: every particle with R < `r_hi` (inside the slab, if any);
+- `z_range` (`null` without a slab), `outside_z_range` (`count`, `mass`:
+  particles outside the slab, in no bin);
+- `axis`: `vector`, `from` (`given`, the angular momentum of the central
+  particles, or the table's z) and `through` (the centre);
+- `complete` is conservative: the farthest corner of the annulus's cylinder
+  (R = `r_hi`, height `max(|z_min|, |z_max|)`) must be inside the region the
+  selection samples fully, and a cylinder without a slab is complete only
+  when nothing bounds the selection.
+
+With `geometry: "axial"` the bins are `z_lo`, `z_hi`, `z_mid`, `z_mean`
+(mass-weighted) and `z_min`, `z_max`, with `count`, `mass`, `columns`,
+`axis` as above, and:
+- `linear_density`: slab mass over `z_hi − z_lo`;
+- `density`: slab mass over π `r_max`² (`z_hi − z_lo`), or `null` without
+  `r_max` (`r_limit` echoes it);
+- `enclosed_mass`: every particle below `z_hi` (within R < `r_max` when given), those below `z_min` included;
+- `below_z_min`, `above_z_max` (`count`, `mass`) and `outside_r_limit`
+  (particles with R ≥ `r_max`, in no bin);
+- `complete`: as for the cylinder, with the slab's largest |z| and `r_max`.
+
+In both, the closure is: every usable particle is below, in a bin, above, or
+outside the slab or cylinder. `velocity` holds the cylindrical components
+about the axis instead of the spherical ones: `mean_cylindrical_radial`,
+`mean_azimuthal`, `mean_vertical`, `sigma_R`, `sigma_phi`, `sigma_z`,
+`sigma_1d` = sqrt((σ_R² + σ_φ² + σ_z²)/3) and
+`sigma_cartesian_with_streaming`; v_R is 0 on the axis. `units` adds
+`height`, `surface_density` and `linear_density`.
+
 `centre`: the mode and the centre. For `shrinking_sphere` it also has
 `radius`, `particles_inside`, `steps`, `n_min`, `start`, `initial_radius`,
 `shrink_factor`, `selected_particles` and `out_of_core_passes`.
@@ -505,6 +556,56 @@ factor and unit to physical kpc, M☉ and km/s, and M☉/kpc³ for the density.
 `provenance`: the dataset, the selection, the position and velocity fields,
 the weights, the frame (periods and minimum image), the binning, the
 definitions of every quantity, and the snapshot's redshift, time, h and box.
+
+### `POST /v1/catalogue/totals` and `POST /v1/tasks/catalogue_totals`
+
+Physical totals of the exact selected population (every row the filters
+keep), read out of core in one pass, with the progress and cancellation of
+the profile task.
+
+```json
+{
+  "dataset_id": "...",
+  "filters": [],
+  "velocity_fields": null,
+  "mass_field": null,
+  "energy_field": null,
+  "position_fields": ["x", "y", "z"]
+}
+```
+
+`velocity_fields` (`null`: `vx, vy, vz` when present, `[]`: none),
+`mass_field` (`null`: `mass` when present, `""`: none) and `energy_field`
+(`null`: `u`, the specific internal energy, when present, `""`: none).
+`position_fields` only supplies a column to count rows with when none of the
+others is read. A field the request names that the table lacks is refused.
+
+`totals`:
+- `count`, and `rows`: `selected`, `with_mass` (finite, non-negative mass),
+  `with_velocity` (those that also have finite velocities) and
+  `with_energy` (finite internal energy ≥ 0). `mass_with_velocity` is the
+  mass of the `with_velocity` rows, which the centre-of-mass velocity is
+  relative to;
+- `quantities.<name>`: `mass`, `centre_of_mass_velocity`, `momentum` (vector),
+  `momentum_magnitude`, `kinetic_energy` (0.5 Σ m |v|², in the frame of the
+  stored velocities), `kinetic_energy_com_frame` (0.5 Σ m |v − v_com|²),
+  `velocity_dispersion_1d` (sqrt of 2 × that over 3M) and `thermal_energy`
+  (Σ m u). Each has `value` (physical), `unit` (Msun, km/s, Msun km/s or
+  erg), `stored` (`value` and `unit` in the table's own units) and `reason`.
+
+A `value` is `null` when a field it needs has no declared physical factor,
+or one in another unit, or when the factors of the three velocity fields
+differ. `reason` then says what is missing and `stored` is kept. When the
+field itself is missing (no velocities, no mass, no `u`, as for dark matter),
+`stored` is `null` too. Velocities are the peculiar velocities the reader
+converts to km/s (a cosmological snapshot stores v/√a), so the energies are
+those of the peculiar motion in the simulation frame. The centre-of-mass
+frame energy is accumulated from per-chunk second moments merged pairwise
+(Chan et al. 1983), not as Σ m v² − M v_com², so a large bulk velocity does
+not cancel it.
+
+`provenance` has the dataset, the selection, the fields used, the
+definitions and the snapshot's redshift, time, h and box.
 
 ### `POST /v1/catalogue/phase_diagram` and `POST /v1/tasks/catalogue_phase_diagram`
 

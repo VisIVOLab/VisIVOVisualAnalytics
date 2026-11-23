@@ -14,14 +14,16 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import particle_profiles as pp
+from .. import particle_totals as pt
 from ..auth import verify_token
 from ..dependencies import (
     _apply_tabular_query, _require_dataset, acquire_task_slot, task_slot_busy_error,
 )
 from ..periodic import box_inside, separation
 from ..schemas import (
-    ParticleProfileRequest, ParticleProfileResponse, PhaseDiagramRequest,
-    PhaseDiagramResponse, ProfileCentre, TaskCreateResponse,
+    ParticleProfileRequest, ParticleProfileResponse, ParticleTotalsRequest,
+    ParticleTotalsResponse, PhaseDiagramRequest, PhaseDiagramResponse, ProfileCentre,
+    TaskCreateResponse,
 )
 from ..sessions import Session, get_session
 from ..tasks import TASKS
@@ -253,19 +255,23 @@ def _units(entry, pos, vel, mass, columns) -> tuple[dict, dict]:
         return str(declared.get(name, _NOT_DECLARED)) if name else ""
 
     length, mass_unit = unit(pos[0]), (unit(mass) if mass else "particle")
-    units = {"radius": length, "mass": mass_unit,
+    units = {"radius": length, "height": length, "mass": mass_unit,
              "density": f"{mass_unit} / ({length})^3",
+             "surface_density": f"{mass_unit} / ({length})^2",
+             "linear_density": f"{mass_unit} / {length}",
              **({"velocity": unit(vel[0])} if vel else {}),
              "columns": {c: (unit(vel[0]) if c == "radial_velocity" else
                              length if c == "radius" else unit(c)) for c in columns}}
     phys = {}
     if pos[0] in physical:
-        phys["radius"] = physical[pos[0]]
+        phys["radius"] = phys["height"] = physical[pos[0]]
         if mass and mass in physical:
             phys["mass"] = physical[mass]
-            phys["density"] = {
-                "factor": physical[mass]["factor"] / physical[pos[0]]["factor"] ** 3,
-                "unit": f"{physical[mass]['unit']}/{physical[pos[0]]['unit']}^3"}
+            for name, power in (("density", 3), ("surface_density", 2), ("linear_density", 1)):
+                phys[name] = {
+                    "factor": physical[mass]["factor"] / physical[pos[0]]["factor"] ** power,
+                    "unit": f"{physical[mass]['unit']}/{physical[pos[0]]['unit']}"
+                            + (f"^{power}" if power > 1 else "")}
     if vel and vel[0] in physical:
         phys["velocity"] = physical[vel[0]]
     for c in columns:
@@ -316,6 +322,38 @@ def _monotonic(progress):
     return report
 
 
+def _shape_definitions(geometry: str, profile: dict) -> dict:
+    complete = ("bin inside the region the selection samples fully (the selected region and "
+                "half the period, as a sphere about the centre)")
+    if geometry == "spherical":
+        return {
+            "density": "shell mass / (4/3 pi (r_hi^3 - r_lo^3))",
+            "enclosed_mass": "mass of every particle closer than r_hi (r_min included)",
+            "complete": "shell inside the selected region and within half the period"}
+    if geometry == "cylindrical":
+        return {
+            "surface_density": "annulus mass / (pi (r_hi^2 - r_lo^2)): the selection "
+                               "projected along the axis, over the heights it spans",
+            "density": ("annulus mass / (pi (r_hi^2 - r_lo^2) (z_max - z_min)) within the "
+                        "given slab" if profile["z_range"] else
+                        "null: give z_min and z_max to bound the heights"),
+            "enclosed_mass": "mass of every particle with R < r_hi (R < r_min included), "
+                             "inside the slab when one is given",
+            "outside_z_range": "particles outside the slab, in no bin",
+            "complete": complete + "; the farthest corner of the annulus's cylinder must be "
+                        "inside it, and without a slab only when nothing bounds the "
+                        "selection"}
+    return {
+        "linear_density": "slab mass / (z_hi - z_lo)",
+        "density": ("slab mass / (pi r_max^2 (z_hi - z_lo)) for the particles with R < r_max"
+                    if profile["r_limit"] else
+                    "null: give r_max to bound the distance from the axis"),
+        "enclosed_mass": "mass below z_hi, from the particles below z_min up (within R < "
+                         "r_max when given)",
+        "complete": complete + "; the farthest corner of the slab's cylinder must be inside "
+                    "it, and without r_max only when nothing bounds the selection"}
+
+
 def _run_profile(session, entry, request: ParticleProfileRequest,
                  progress=None, stop=None) -> ParticleProfileResponse:
     _require_catalogue(entry)
@@ -330,7 +368,7 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
     if request.axis is not None and (not _three_finite(request.axis)
                                      or not any(request.axis)):
         raise ValueError("The polar axis needs three finite values, not all zero.")
-    if request.axis is not None and not vel:
+    if request.axis is not None and not vel and request.geometry == "spherical":
         raise ValueError("A polar axis needs the velocity fields.")
     periods = _periods(entry, request, pos)
     searching = request.centre.mode == "shrinking_sphere"
@@ -342,18 +380,39 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
         _selection_chunks(entry, request.filters, read), pos_fields=pos, mass_field=mass,
         vel_fields=vel, columns=columns, centre=centre["centre"], periods=periods,
         centre_velocity_value=request.centre.velocity, axis=request.axis,
-        r_min=request.r_min,
-        r_max=request.r_max, bins=request.bins,
+        r_min=request.r_min, r_max=request.r_max, bins=request.bins,
+        geometry=request.geometry, z_min=request.z_min, z_max=request.z_max,
         region_limit=_region_limit(request.filters, pos, centre["centre"], periods),
         stop=stop, progress=_stages(progress, 0.4 if searching else 0.0, 1.0))
     units, physical = _units(entry, pos, vel, mass, columns)
     provenance = _provenance(entry, request.filters, pos, vel, mass, periods)
-    provenance["binning"] = (f"{request.bins} log-spaced shells [r_lo, r_hi) from "
-                             f"{profile['r_min']:.6g} to {profile['r_max']:.6g}")
+    if request.geometry == "axial":
+        cut = ("" if request.r_max is None else
+               f", particles within R < {request.r_max:.6g} of the axis")
+        provenance["binning"] = (f"{request.bins} linear slabs [z_lo, z_hi) in the signed "
+                                 f"height along the axis, from {profile['z_min']:.6g} to "
+                                 f"{profile['z_max']:.6g}{cut}")
+    elif request.geometry == "cylindrical":
+        slab = ("" if profile["z_range"] is None else
+                f", within heights {profile['z_range'][0]:.6g} .. {profile['z_range'][1]:.6g}")
+        provenance["binning"] = (f"{request.bins} log-spaced annuli [r_lo, r_hi) in the "
+                                 f"distance R from the axis, from {profile['r_min']:.6g} to "
+                                 f"{profile['r_max']:.6g}{slab}")
+    else:
+        provenance["binning"] = (f"{request.bins} log-spaced shells [r_lo, r_hi) from "
+                                 f"{profile['r_min']:.6g} to {profile['r_max']:.6g}")
+    if request.geometry != "spherical":
+        provenance["axis"] = {
+            **profile["axis"],
+            "frame": "the table's coordinate frame, through the centre; R and z are taken "
+                     "from the minimum-image vector from the centre (z signed along the "
+                     "axis vector, R the distance from the line)",
+            "default": "the angular momentum of the particles of the smallest sphere about "
+                       "the centre holding 1000 particles, in the centre-velocity frame "
+                       "(needs velocities); the table's z without them or without net "
+                       "rotation"}
     provenance["definitions"] = {
-        "density": "shell mass / (4/3 pi (r_hi^3 - r_lo^3))",
-        "enclosed_mass": "mass of every particle closer than r_hi (r_min included)",
-        "complete": "shell inside the selected region and within half the period",
+        **_shape_definitions(request.geometry, profile),
         "columns": "mass-weighted mean and standard deviation; 16/50/84 % mass-weighted "
                    "quantiles from a 1024-bin histogram per shell refined once in the "
                    "bin of the quantile (log10 axis when the shell's values are positive "
@@ -363,14 +422,109 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
                     "sphere about the centre holding 1000 particles unless given; "
                     "spherical components about the centre with the polar axis "
                     "velocity.axis (by default the angular momentum of those particles); "
-                    "sigma_1d = sqrt((sigma_r^2 + sigma_theta^2 + sigma_phi^2)/3), "
-                    "each about its shell mean; beta = 1 - (sigma_theta^2 + sigma_phi^2) / "
-                    "(2 sigma_r^2); sigma_cartesian_with_streaming includes infall and "
-                    "rotation",
+                    + ("sigma_1d = sqrt((sigma_R^2 + sigma_phi^2 + sigma_z^2)/3) of the "
+                       "cylindrical components v_R, v_phi, v_z about the axis, each about "
+                       "its bin mean; "
+                       if request.geometry != "spherical" else
+                       "sigma_1d = sqrt((sigma_r^2 + sigma_theta^2 + sigma_phi^2)/3), "
+                       "each about its shell mean; beta = 1 - (sigma_theta^2 + sigma_phi^2) / "
+                       "(2 sigma_r^2); ")
+                    + "sigma_cartesian_with_streaming includes infall and rotation",
     }
     return ParticleProfileResponse(valid=True, error="", profile=profile, centre=centre,
                                    units={**units, "physical": physical},
                                    provenance=provenance)
+
+
+def _resolve_totals_fields(entry, request) -> tuple[list[str], str, str, dict]:
+    """(velocity, mass, energy) fields of a totals request and, for each one
+    the table lacks by default or by request, the reason it is missing. A
+    field the request names that the table does not have is refused."""
+    fields = _field_names(entry)
+    missing: dict[str, str] = {}
+    if request.velocity_fields is None:
+        vel = ["vx", "vy", "vz"] if {"vx", "vy", "vz"} <= fields else []
+        if not vel:
+            missing["velocity"] = "The dataset has no velocity fields (vx, vy, vz)."
+    else:
+        vel = list(request.velocity_fields)
+        if vel and len(vel) != 3:
+            raise ValueError("Give three velocity fields, or none.")
+        if not vel:
+            missing["velocity"] = "No velocity fields were requested."
+    if request.mass_field is None:
+        mass = "mass" if "mass" in fields else ""
+        if not mass:
+            missing["mass"] = ("The dataset has no mass field, so no mass-weighted total "
+                               "is defined.")
+    else:
+        mass = request.mass_field
+        if not mass:
+            missing["mass"] = ("No mass field was requested, so no mass-weighted total "
+                               "is defined.")
+    if request.energy_field is None:
+        energy = "u" if "u" in fields else ""
+        if not energy:
+            missing["energy"] = ("The dataset has no internal-energy field ('u'); only gas "
+                                 "particles carry one.")
+    else:
+        energy = request.energy_field
+        if not energy:
+            missing["energy"] = "No internal-energy field was requested."
+    _check_numeric(entry, vel + ([mass] if mass else []) + ([energy] if energy else []))
+    return vel, mass, energy, missing
+
+
+def _run_totals(entry, request: ParticleTotalsRequest, progress=None,
+                stop=None) -> ParticleTotalsResponse:
+    _require_catalogue(entry)
+    vel, mass, energy, missing = _resolve_totals_fields(entry, request)
+    read = vel + ([mass] if mass else []) + ([energy] if energy else [])
+    if not read:
+        counting = [f for f in request.position_fields if f in _field_names(entry)]
+        if not counting:
+            raise ValueError("The dataset has none of the position fields to count rows with.")
+        read = counting[:1]
+        _check_numeric(entry, read)
+    component = entry.get("component") or {}
+    totals = pt.selection_totals(
+        _selection_chunks(entry, request.filters, read), mass_field=mass, vel_fields=vel,
+        energy_field=energy,
+        stored_units={k: str(v) for k, v in (component.get("units") or {}).items()},
+        physical=component.get("physical") or {}, missing=missing, stop=stop,
+        progress=progress)
+    snapshot = entry.get("snapshot") or {}
+    provenance = {
+        "dataset": entry.get("path", ""),
+        "selection": _diagnostic_selection(request.filters),
+        "fields": {"mass": mass or None, "velocity": vel, "internal_energy": energy or None},
+        "definitions": {
+            "count": "rows the selection keeps",
+            "mass": "sum of the finite, non-negative masses of those rows",
+            "centre_of_mass_velocity": "mass-weighted mean velocity of the rows with finite "
+                                       "velocities (mass_with_velocity is their mass)",
+            "momentum": "sum of m v over those rows; momentum_magnitude is its norm",
+            "kinetic_energy": "0.5 sum m |v|^2 in the frame the velocities are given in "
+                              "(peculiar velocities of the simulation frame)",
+            "kinetic_energy_com_frame": "0.5 sum m |v - v_com|^2, summed as per-chunk second "
+                                        "moments merged pairwise (no sum m v^2 - M v_com^2 "
+                                        "cancellation); equals kinetic_energy - 0.5 M "
+                                        "|v_com|^2",
+            "velocity_dispersion_1d": "sqrt(2 kinetic_energy_com_frame / (3 M)) of the rows "
+                                      "with velocities",
+            "thermal_energy": "sum m u over the rows with finite u >= 0 (u: specific "
+                              "internal energy)",
+            "units": "value is physical, in unit, from the reader's declared factors; null "
+                     "with a reason when a field or its unit is missing or undeclared; "
+                     "stored is the value in the table's own units",
+            "velocity": "peculiar velocities (no Hubble flow); a cosmological Gadget "
+                        "snapshot stores v/sqrt(a), which the factor converts",
+        },
+        **({"snapshot": {k: snapshot[k] for k in ("redshift", "time", "hubble_param",
+                                                   "box_size") if k in snapshot}}
+           if snapshot else {}),
+    }
+    return ParticleTotalsResponse(valid=True, error="", totals=totals, provenance=provenance)
 
 
 def _run_phase(session, entry, request: PhaseDiagramRequest,
@@ -525,6 +679,41 @@ async def create_catalogue_profile_task(
                  lambda progress, stop: _run_profile(session, entry, request,
                                                      _monotonic(progress), stop),
                  lambda error: ParticleProfileResponse(valid=False, error=error))
+
+
+@router.post("/v1/catalogue/totals", response_model=ParticleTotalsResponse,
+             tags=["catalogue"])
+async def catalogue_totals(
+    request: ParticleTotalsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> ParticleTotalsResponse:
+    """Physical totals of the selected particles (count, mass, centre-of-mass
+    velocity, momentum, kinetic and thermal energy), answered when done;
+    /v1/tasks/catalogue_totals runs it as a task."""
+    try:
+        entry = _require_dataset(session, request.dataset_id)
+        return await asyncio.to_thread(_run_totals, entry, request)
+    except HTTPException:
+        raise
+    except Exception as exc:   # noqa: BLE001 - reported in the response
+        return ParticleTotalsResponse(valid=False, error=str(exc))
+
+
+@router.post("/v1/tasks/catalogue_totals", response_model=TaskCreateResponse, tags=["tasks"])
+async def create_catalogue_totals_task(
+    request: ParticleTotalsRequest,
+    token: str = _auth,
+    session: Session = Depends(get_session),
+) -> TaskCreateResponse:
+    """/v1/catalogue/totals as a task (see the profile task)."""
+    entry = _require_dataset(session, request.dataset_id)
+    _require_catalogue(entry)
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
+    return _task(session, token, "catalogue_totals",
+                 lambda progress, stop: _run_totals(entry, request, _monotonic(progress), stop),
+                 lambda error: ParticleTotalsResponse(valid=False, error=error))
 
 
 @router.post("/v1/catalogue/phase_diagram", response_model=PhaseDiagramResponse,

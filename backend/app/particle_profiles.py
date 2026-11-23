@@ -47,6 +47,10 @@ CENTRE_MEMORY_ROWS = 2_000_000
 #: centre holding this many particles (centre_kinematics).
 CENTRE_VELOCITY_PARTICLES = 1000
 DERIVED_COLUMNS = ("radius", "radial_velocity")
+GEOMETRIES = ("spherical", "cylindrical", "axial")
+#: Bin index of a row outside a cylindrical profile's slab or an axial
+#: profile's cylinder (below the first edge is -1, above the last ``bins``).
+EXCLUDED = -2
 
 
 class ProfileCancelled(Exception):
@@ -297,7 +301,7 @@ class Geometry:
     not depend on it."""
 
     def __init__(self, pos_fields, vel_fields, centre, periods, centre_velocity=None,
-                 axis=None):
+                 axis=None, axial_coordinates: bool = False):
         self.pos_fields = list(pos_fields)
         self.vel_fields = list(vel_fields or [])
         self.centre = np.asarray(centre, dtype=np.float64)
@@ -305,23 +309,42 @@ class Geometry:
         self.centre_velocity = (np.asarray(centre_velocity, dtype=np.float64)
                                 if centre_velocity is not None else None)
         self.basis = _basis(axis if axis is not None else (0.0, 0.0, 1.0))
+        self.axial_coordinates = axial_coordinates
 
     def derive(self, columns: dict) -> dict:
         """``columns`` with "radius" and, when velocities and a centre
-        velocity are known, "radial_velocity" plus the private components."""
+        velocity are known, "radial_velocity" plus the private components.
+        With ``axial_coordinates`` also the minimum-image height "_z" along
+        the axis (signed) and the distance "_R" from it, and with velocities
+        the cylindrical components "_v_R", "_v_phi" (the azimuthal one of
+        the spherical set) and "_v_z"; on the axis itself v_R is taken as
+        0, as the azimuthal components are."""
         delta = _separations(columns, self.pos_fields, self.centre, self.periods)
         out = dict(columns)
         out["_delta"] = delta
-        if self.vel_fields and self.centre_velocity is not None:
-            vel = [np.asarray(columns[f], dtype=np.float64) - c
-                   for f, c in zip(self.vel_fields, self.centre_velocity)]
-            b = self.basis
+        b = self.basis
+        moving = bool(self.vel_fields) and self.centre_velocity is not None
+        rotated = None
+        if moving or self.axial_coordinates:
             rotated = [b[k, 0] * delta[0] + b[k, 1] * delta[1] + b[k, 2] * delta[2]
                        for k in range(3)]
+        if rotated is not None and self.axial_coordinates:
+            out["_z"] = rotated[2]
+            out["_R"] = np.sqrt(rotated[0] ** 2 + rotated[1] ** 2)
+        if moving:
+            vel = [np.asarray(columns[f], dtype=np.float64) - c
+                   for f, c in zip(self.vel_fields, self.centre_velocity)]
             rotated_v = [b[k, 0] * vel[0] + b[k, 1] * vel[1] + b[k, 2] * vel[2]
                          for k in range(3)]
             d, v_r, v_t, v_p = _spherical(rotated, rotated_v)
             out.update(radius=d, radial_velocity=v_r, _v_theta=v_t, _v_phi=v_p, _vel=vel)
+            if self.axial_coordinates:
+                cyl = out["_R"]
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    out["_v_R"] = np.where(
+                        cyl > 0, (rotated[0] * rotated_v[0] + rotated[1] * rotated_v[1]) / cyl,
+                        0.0)
+                out["_v_z"] = rotated_v[2]
         else:
             out["radius"] = np.sqrt(delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2)
         return out
@@ -430,6 +453,7 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
                    centre, periods, centre_velocity_value=None, axis=None,
                    r_min=None, r_max=None,
                    bins: int = 32, region_limit: float | None = None,
+                   geometry: str = "spherical", z_min=None, z_max=None,
                    stop=None, progress=None) -> dict:
     """Log-spaced shells [r_lo, r_hi) around ``centre`` (see module text).
 
@@ -442,9 +466,36 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
     sqrt((sigma_r^2 + sigma_theta^2 + sigma_phi^2) / 3) (each about its shell
     mean, so infall and rotation are not dispersion) and the anisotropy beta
     = 1 - (sigma_theta^2 + sigma_phi^2) / (2 sigma_r^2); the Cartesian
-    dispersion, which counts streaming, is given apart."""
+    dispersion, which counts streaming, is given apart.
+
+    ``geometry`` "cylindrical" bins in R, the distance from the axis through
+    the centre (log-spaced from ``r_min`` to ``r_max``, as the shells are),
+    over the whole selection along the axis or, with both ``z_min`` and
+    ``z_max``, within that slab of signed heights. "axial" bins in the signed
+    height z along the axis (linear from ``z_min`` to ``z_max``, by default
+    +-the largest extent), over every distance from the axis or only R <
+    ``r_max`` when it is given. The axis is ``axis``, else the angular
+    momentum of the central particles (needs velocities), else the table's
+    z. Distances are the minimum image about the centre, then R and z are
+    taken from that vector. A bin's density is its mass over its annulus or
+    slab volume; the surface density (cylindrical) and linear density
+    (axial) need no extent along or across the axis. The velocity block then
+    gives the cylindrical components (v_R, v_phi, v_z) about the axis."""
     if not 4 <= bins <= 256:
         raise ValueError("A profile has between 4 and 256 shells.")
+    if geometry not in GEOMETRIES:
+        raise ValueError(f"geometry must be one of {', '.join(GEOMETRIES)}.")
+    spherical, axial = geometry == "spherical", geometry == "axial"
+    if spherical and (z_min is not None or z_max is not None):
+        raise ValueError("z_min and z_max need a cylindrical or axial profile.")
+    if axial and r_min is not None:
+        raise ValueError("An axial profile has no r_min; r_max limits the distance from "
+                         "the axis.")
+    if geometry == "cylindrical" and (z_min is None) != (z_max is None):
+        raise ValueError("Give both z_min and z_max, or neither.")
+    for name, value in (("z_min", z_min), ("z_max", z_max), ("r_min", r_min), ("r_max", r_max)):
+        if value is not None and not math.isfinite(value):
+            raise ValueError(f"{name} must be finite.")
     with_velocity = bool(vel_fields)
     passes = _Passes(chunks, stop, progress,
                      expected=4 + int(with_velocity and (centre_velocity_value is None
@@ -458,42 +509,84 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
         limits.append(region_limit)
     half_periods = [0.5 * p for p in periods if p]
     limits += half_periods
-    if r_max is None:
-        r_max = min(limits)
-    if r_min is None:
-        r_min = max(smallest if math.isfinite(smallest) else 0.0, r_max * 1e-3)
-    if not (math.isfinite(r_min) and math.isfinite(r_max) and 0 < r_min < r_max):
-        raise ValueError("The profile needs 0 < r_min < r_max.")
+    reach = min(limits)
+    default_min = max(smallest if math.isfinite(smallest) else 0.0, reach * 1e-3)
     complete_radius = min([math.inf if region_limit is None else region_limit] + half_periods)
-    edges = np.geomspace(r_min, r_max, bins + 1)
+    if axial:
+        # r_max, when given, only cuts the particles; the bins run along z.
+        z_hi = reach if z_max is None else z_max
+        z_lo = -z_hi if z_min is None else z_min
+        if not z_lo < z_hi:
+            raise ValueError("The profile needs z_min < z_max.")
+        if r_max is not None and not r_max > 0:
+            raise ValueError("r_max, the distance from the axis, must be positive.")
+        r_min = None
+        edges = np.linspace(z_lo, z_hi, bins + 1)
+    else:
+        if r_max is None:
+            r_max = reach
+        if r_min is None:
+            # The smallest 3-D distance says nothing about the smallest R of a
+            # cylinder (a particle near the axis can be far along it).
+            r_min = max(smallest if math.isfinite(smallest) and spherical else 0.0,
+                        r_max * 1e-3)
+        if not (math.isfinite(r_min) and math.isfinite(r_max) and 0 < r_min < r_max):
+            raise ValueError("The profile needs 0 < r_min < r_max.")
+        if z_min is not None and not z_min < z_max:
+            raise ValueError("The profile needs z_min < z_max.")
+        edges = np.geomspace(r_min, r_max, bins + 1)
+    slab = geometry == "cylindrical" and z_min is not None
 
     velocity_info = None
     if with_velocity and (centre_velocity_value is None or axis is None):
+        # The central sphere is a 3-D one whatever the profile's geometry.
+        k_lo, k_hi = (r_min, r_max) if spherical else (default_min, reach)
         velocity_info = centre_kinematics(
-            passes, Geometry(pos_fields, vel_fields, centre, periods), mass_field, r_min, r_max,
+            passes, Geometry(pos_fields, vel_fields, centre, periods), mass_field, k_lo, k_hi,
             velocity=centre_velocity_value, axis=axis)
         centre_velocity_value, axis = velocity_info["velocity"], velocity_info["axis"]
-    geometry = Geometry(pos_fields, vel_fields, centre, periods,
-                        centre_velocity_value if with_velocity else None, axis)
+    if axis is None:
+        axis_from = "the table's z"
+    elif velocity_info is not None:
+        axis_from = velocity_info["axis_from"]
+    else:
+        axis_from = "given"
+    frame = Geometry(pos_fields, vel_fields, centre, periods,
+                     centre_velocity_value if with_velocity else None, axis,
+                     axial_coordinates=not spherical)
     columns = list(columns)
     if "radial_velocity" in columns and not with_velocity:
         raise ValueError("radial_velocity needs the velocity fields.")
-    vel_keys = (["radial_velocity", "_v_theta", "_v_phi", "_vx", "_vy", "_vz"]
-                if with_velocity else [])
+    if not with_velocity:
+        vel_keys = []
+    elif spherical:
+        vel_keys = ["radial_velocity", "_v_theta", "_v_phi", "_vx", "_vy", "_vz"]
+    else:
+        vel_keys = ["_v_R", "_v_phi", "_v_z", "_vx", "_vy", "_vz"]
 
     def shells_of(chunk):
+        """Each usable row's weight, binning coordinate and bin: -1 below the
+        first edge, ``bins`` or more above the last, EXCLUDED outside the
+        profile's slab (cylindrical) or cylinder (axial)."""
         keep, weight = _usable(chunk, pos_fields, mass_field)
         sub = {k: np.asarray(v, dtype=np.float64)[keep] for k, v in chunk.items()}
-        derived = geometry.derive(sub)
+        derived = frame.derive(sub)
         if with_velocity:
             derived["_vx"], derived["_vy"], derived["_vz"] = derived["_vel"]
-        d = derived["radius"]
+        d = derived["radius"] if spherical else derived["_z"] if axial else derived["_R"]
         shell = np.searchsorted(edges, d, side="right") - 1
+        if axial and r_max is not None:
+            shell[derived["_R"] >= r_max] = EXCLUDED
+        elif slab:
+            shell[(derived["_z"] < z_min) | (derived["_z"] >= z_max)] = EXCLUDED
         return derived, weight[keep], d, shell
 
     n_inner = 0
     m_inner = 0.0
     n_outer = 0
+    m_outer = 0.0
+    n_excluded = 0
+    m_excluded = 0.0
     count = np.zeros(bins)
     mass = np.zeros(bins)
     radius_sum = np.zeros(bins)
@@ -507,11 +600,15 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
     for chunk in passes.run():
         selected += len(chunk[pos_fields[0]])
         derived, w, d, shell = shells_of(chunk)
-        inner = d < r_min
+        inner = shell == -1
         n_inner += int(inner.sum())
         m_inner += float(w[inner].sum())
         outer = shell >= bins
         n_outer += int(outer.sum())
+        m_outer += float(w[outer].sum())
+        excluded = shell == EXCLUDED
+        n_excluded += int(excluded.sum())
+        m_excluded += float(w[excluded].sum())
         ok = (shell >= 0) & ~outer
         s, ws = shell[ok], w[ok]
         count += np.bincount(s, minlength=bins)
@@ -639,23 +736,74 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
 
     if progress is not None:
         progress(1.0)
-    volume = 4.0 / 3.0 * math.pi * (edges[1:] ** 3 - edges[:-1] ** 3)
+    lo, hi = edges[:-1], edges[1:]
     with np.errstate(invalid="ignore", divide="ignore"):
-        mean_radius = np.where(mass > 0, radius_sum / mass, np.nan)
-        result = {
-            "r_lo": edges[:-1].tolist(), "r_hi": edges[1:].tolist(),
-            "r_mid": np.sqrt(edges[:-1] * edges[1:]).tolist(),
-            "r_mean": _finite_list(mean_radius),
-            "complete": (edges[1:] <= complete_radius * (1 + 1e-12)).tolist(),
+        mean_coordinate = np.where(mass > 0, radius_sum / mass, np.nan)
+        result = {"geometry": geometry}
+        if axial:
+            result.update({
+                "z_lo": lo.tolist(), "z_hi": hi.tolist(), "z_mid": (0.5 * (lo + hi)).tolist(),
+                "z_mean": _finite_list(mean_coordinate)})
+        else:
+            result.update({
+                "r_lo": lo.tolist(), "r_hi": hi.tolist(),
+                "r_mid": np.sqrt(lo * hi).tolist(), "r_mean": _finite_list(mean_coordinate)})
+        # A bin is complete while the volume it covers is entirely inside the
+        # region the selection samples fully (a sphere of radius
+        # ``complete_radius`` about the centre): a shell by its outer radius,
+        # a cylinder or slab by the farthest corner of its bin. Without a
+        # slab (cylindrical) or cylinder (axial) the profile reaches as far
+        # along (across) the axis as the selection does, so it is complete only
+        # when nothing bounds the selection.
+        if spherical:
+            complete = hi <= complete_radius * (1 + 1e-12)
+        elif math.isinf(complete_radius):
+            complete = np.ones(bins, dtype=bool)
+        elif axial:
+            far = np.maximum(np.abs(lo), np.abs(hi))
+            across = r_max if r_max is not None else math.inf
+            complete = np.sqrt(far ** 2 + across ** 2) <= complete_radius * (1 + 1e-12)
+        else:
+            along = max(abs(z_min), abs(z_max)) if slab else math.inf
+            complete = np.sqrt(hi ** 2 + along ** 2) <= complete_radius * (1 + 1e-12)
+        result.update({
+            "complete": np.asarray(complete).tolist(),
             "count": count.astype(np.int64).tolist(), "mass": mass.tolist(),
-            "density": (mass / volume).tolist(),
-            "enclosed_mass": (m_inner + np.cumsum(mass)).tolist(),
-            "inside_r_min": {"count": n_inner, "mass": m_inner},
-            "outside_r_max": {"count": n_outer},
-            "selected_rows": selected, "r_min": float(r_min), "r_max": float(r_max),
+            "selected_rows": selected,
             "complete_radius": None if math.isinf(complete_radius) else float(complete_radius),
             "columns": {},
-        }
+        })
+        if spherical:
+            volume = 4.0 / 3.0 * math.pi * (hi ** 3 - lo ** 3)
+            result.update({"density": (mass / volume).tolist(),
+                           "enclosed_mass": (m_inner + np.cumsum(mass)).tolist()})
+        elif axial:
+            result["linear_density"] = (mass / (hi - lo)).tolist()
+            result["density"] = (None if r_max is None else
+                                 (mass / (math.pi * r_max ** 2 * (hi - lo))).tolist())
+            result["enclosed_mass"] = (m_inner + np.cumsum(mass)).tolist()
+        else:
+            area = math.pi * (hi ** 2 - lo ** 2)
+            result["surface_density"] = (mass / area).tolist()
+            result["density"] = ((mass / (area * (z_max - z_min))).tolist() if slab else None)
+            result["enclosed_mass"] = (m_inner + np.cumsum(mass)).tolist()
+        if axial:
+            result["below_z_min"] = {"count": n_inner, "mass": m_inner}
+            result["above_z_max"] = {"count": n_outer, "mass": m_outer}
+            result["z_min"], result["z_max"] = float(z_lo), float(z_hi)
+            result["r_limit"] = None if r_max is None else float(r_max)
+            if r_max is not None:
+                result["outside_r_limit"] = {"count": n_excluded, "mass": m_excluded}
+        else:
+            result["inside_r_min"] = {"count": n_inner, "mass": m_inner}
+            result["outside_r_max"] = {"count": n_outer, "mass": m_outer}
+            result["r_min"], result["r_max"] = float(r_min), float(r_max)
+            if geometry == "cylindrical":
+                result["z_range"] = [float(z_min), float(z_max)] if slab else None
+                result["outside_z_range"] = {"count": n_excluded, "mass": m_excluded}
+        if not spherical:
+            result["axis"] = {"vector": [float(v) for v in frame.basis[2]], "from": axis_from,
+                              "through": [float(v) for v in centre]}
         for c in columns:
             std = np.sqrt(np.where(col_w[c] > 0, col_dev[c] / col_w[c], np.nan))
             result["columns"][c] = {
@@ -668,21 +816,35 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
             }
         if with_velocity:
             var = {k: np.where(vel_w > 0, vel_dev[k] / vel_w, np.nan) for k in vel_keys}
-            sigma_t2 = var["_v_theta"] + var["_v_phi"]
-            result["velocity"] = {
-                "centre_velocity": [float(v) for v in geometry.centre_velocity],
-                "axis": [float(v) for v in geometry.basis[2]],
+            block = {
+                "centre_velocity": [float(v) for v in frame.centre_velocity],
+                "axis": [float(v) for v in frame.basis[2]],
                 "centre_velocity_from": velocity_info,
-                "mean_radial": _finite_list(vel_mean["radial_velocity"]),
-                "mean_azimuthal": _finite_list(vel_mean["_v_phi"]),
-                "sigma_r": _finite_list(np.sqrt(var["radial_velocity"])),
-                "sigma_theta": _finite_list(np.sqrt(var["_v_theta"])),
-                "sigma_phi": _finite_list(np.sqrt(var["_v_phi"])),
-                "sigma_1d": _finite_list(np.sqrt((var["radial_velocity"] + sigma_t2) / 3.0)),
-                "beta": _finite_list(1.0 - sigma_t2 / (2.0 * var["radial_velocity"])),
                 "sigma_cartesian_with_streaming": _finite_list(
                     np.sqrt((var["_vx"] + var["_vy"] + var["_vz"]) / 3.0)),
             }
+            if spherical:
+                sigma_t2 = var["_v_theta"] + var["_v_phi"]
+                block.update({
+                    "mean_radial": _finite_list(vel_mean["radial_velocity"]),
+                    "mean_azimuthal": _finite_list(vel_mean["_v_phi"]),
+                    "sigma_r": _finite_list(np.sqrt(var["radial_velocity"])),
+                    "sigma_theta": _finite_list(np.sqrt(var["_v_theta"])),
+                    "sigma_phi": _finite_list(np.sqrt(var["_v_phi"])),
+                    "sigma_1d": _finite_list(
+                        np.sqrt((var["radial_velocity"] + sigma_t2) / 3.0)),
+                    "beta": _finite_list(1.0 - sigma_t2 / (2.0 * var["radial_velocity"]))})
+            else:
+                block.update({
+                    "mean_cylindrical_radial": _finite_list(vel_mean["_v_R"]),
+                    "mean_azimuthal": _finite_list(vel_mean["_v_phi"]),
+                    "mean_vertical": _finite_list(vel_mean["_v_z"]),
+                    "sigma_R": _finite_list(np.sqrt(var["_v_R"])),
+                    "sigma_phi": _finite_list(np.sqrt(var["_v_phi"])),
+                    "sigma_z": _finite_list(np.sqrt(var["_v_z"])),
+                    "sigma_1d": _finite_list(np.sqrt(
+                        (var["_v_R"] + var["_v_phi"] + var["_v_z"]) / 3.0))})
+            result["velocity"] = block
     return result
 
 
