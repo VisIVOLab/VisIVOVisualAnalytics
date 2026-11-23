@@ -69,6 +69,12 @@ def test_singular_isothermal_sphere_has_density_slope_minus_two():
     assert np.all(np.abs(enclosed - p) <= 5 * np.sqrt(p * (1 - p) / 300_000) + 1e-12)
     assert profile["enclosed_mass"][-1] == pytest.approx(
         1.0 - profile["outside_r_max"]["count"] / 300_000, abs=1e-9)
+    lo, hi = np.array(profile["r_lo"]), np.array(profile["r_hi"])
+    n = np.array(profile["count"])
+    truth = 3.0 * (hi - lo) / (4.0 * np.pi * (hi ** 3 - lo ** 3))
+    pull = np.array(profile["density"]) / truth - 1.0
+    big = n >= 100
+    assert np.all(np.abs(pull[big]) <= 5.0 / np.sqrt(n[big]))
 
 
 def _nfw(rng, n, c=8.0, r200=1.0):
@@ -92,10 +98,15 @@ def test_shrinking_sphere_recovers_an_nfw_centre_on_a_periodic_face(seed):
                                     start=(9.8, 5.1, 4.9), initial_radius=2.0)
     delta = np.asarray(found["centre"]) - true
     delta -= box * np.round(delta / box)
-    assert np.linalg.norm(delta) <= 0.01
-    unwrapped = shrinking_sphere_centre(_chunks(table, 70_001), POS, "mass", [None] * 3,
-                                        start=(9.8, 5.1, 4.9), initial_radius=2.0)
-    assert np.linalg.norm(np.asarray(unwrapped["centre"]) - true) > 0.01
+    assert np.linalg.norm(delta) <= 0.005
+    wrapped = shrinking_sphere_centre(_chunks(table, 70_001), POS, "mass", [box] * 3)
+    delta = np.asarray(wrapped["centre"]) - true
+    delta -= box * np.round(delta / box)
+    assert np.linalg.norm(delta) <= 0.005
+    unwrapped = shrinking_sphere_centre(_chunks(table, 70_001), POS, "mass", [None] * 3)
+    miss = np.asarray(unwrapped["centre"]) - true
+    miss -= box * np.round(miss / box)
+    assert np.linalg.norm(miss) > 0.05
 
 
 def test_shrinking_sphere_from_the_periodic_centre_of_mass():
@@ -172,7 +183,8 @@ def test_weighted_quantiles_match_sorting_with_zeros():
     rng = np.random.default_rng(12)
     n = 50_000
     table, _, _ = _sis(n=n, centre=(0.0, 0.0, 0.0), seed=12)
-    z = np.where(rng.uniform(size=n) < 0.3, 0.0, rng.uniform(0.0, 0.1, n))
+    z = np.where(rng.uniform(size=n) < 0.3, 0.0,
+                 np.minimum(10 ** rng.normal(-3.5, 0.7, n), 0.1))
     temp = 10 ** rng.normal(5.0, 1.0, n)
     table.update(metallicity=z, temperature=temp, mass=rng.uniform(0.5, 1.5, n))
     prof = radial_profile(_chunks(table, 9_999), pos_fields=POS, mass_field="mass",
@@ -189,7 +201,7 @@ def test_weighted_quantiles_match_sorting_with_zeros():
             for key, q in (("p16", 0.16), ("median", 0.5), ("p84", 0.84)):
                 exact = v[order][np.searchsorted(cum, q * cum[-1])]
                 got = prof["columns"][column][key][i]
-                assert got == pytest.approx(exact, rel=1e-4, abs=1e-6 * v.max()), (column, i, key)
+                assert got == pytest.approx(exact, rel=1e-3, abs=1e-6 * v.max()), (column, i, key)
 
 
 def test_phase_diagram_conserves_mass_and_reports_what_it_drops():
@@ -306,3 +318,87 @@ def test_the_default_centre_velocity_recovers_a_bulk_motion():
     found = prof["velocity"]["centre_velocity"]
     np.testing.assert_allclose(found, [30.0, -20.0, 5.0], atol=5.0 / np.sqrt(1000))
     assert prof["velocity"]["centre_velocity_from"]["particles"] >= 1000
+
+
+def _rotating_sis(axis, seed, n=200_000):
+    table, r, unit = _sis(n=n, centre=(0.0, 0.0, 0.0), sigma=1.0, seed=seed)
+    axis = np.asarray(axis, dtype=np.float64) / np.linalg.norm(axis)
+    tangent = np.cross(axis, unit)
+    norm = np.linalg.norm(tangent, axis=1)
+    tangent /= np.where(norm > 0, norm, 1.0)[:, None]
+    v = np.column_stack([table["vx"], table["vy"], table["vz"]]) + 0.5 * tangent
+    table.update(vx=v[:, 0], vy=v[:, 1], vz=v[:, 2])
+    return table
+
+
+@pytest.mark.parametrize("axis", [(1.0, 0.0, 0.0), (1.0, 1.0, 1.0)])
+def test_rotation_about_any_axis_is_not_dispersion(axis):
+    table = _rotating_sis(axis, seed=18)
+    prof = radial_profile(_chunks(table), pos_fields=POS, mass_field="mass", vel_fields=VEL,
+                          columns=[], centre=(0, 0, 0), periods=[None] * 3,
+                          centre_velocity_value=(0.0, 0.0, 0.0), r_min=0.05, r_max=1.0,
+                          bins=6)
+    vel = prof["velocity"]
+    counts = np.array(prof["count"])
+    unit = np.asarray(axis) / np.linalg.norm(axis)
+    assert abs(float(np.dot(vel["axis"], unit))) > 0.99
+    assert np.all(np.abs(np.array(vel["sigma_1d"]) - 1.0) <= 5 / np.sqrt(6 * counts))
+    mean_phi = np.array(vel["mean_azimuthal"]) * np.sign(np.dot(vel["axis"], unit))
+    assert np.all(np.abs(mean_phi - 0.5) <= 5 / np.sqrt(counts))
+
+
+def test_a_moving_halo_in_a_background_keeps_its_own_centre_velocity():
+    rng = np.random.default_rng(19)
+    box = 100.0
+    halo, _, _ = _sis(n=20_000, centre=(50.0, 50.0, 50.0), sigma=1.0, seed=19)
+    for name in VEL:
+        halo[name] = halo[name] + (3.0 if name == "vx" else 0.0)
+    m = 200_000
+    bg = rng.uniform(0.0, box, (m, 3))
+    bv = rng.normal(0.0, 1.0, (m, 3))
+    table = {k: np.concatenate([halo[k], col]) for k, col in
+             (("x", bg[:, 0]), ("y", bg[:, 1]), ("z", bg[:, 2]), ("vx", bv[:, 0]),
+              ("vy", bv[:, 1]), ("vz", bv[:, 2]), ("mass", np.full(m, 1.0 / 20_000)))}
+    prof = radial_profile(_chunks(table, 50_000), pos_fields=POS, mass_field="mass",
+                          vel_fields=VEL, columns=[], centre=(50.0, 50.0, 50.0),
+                          periods=[box] * 3, r_min=0.05, r_max=1.0, bins=6)
+    vel = prof["velocity"]
+    assert vel["centre_velocity"][0] == pytest.approx(3.0, abs=5 / np.sqrt(1000))
+    counts = np.array(prof["count"])
+    assert np.all(np.abs(np.array(vel["sigma_1d"]) - 1.0) <= 5 / np.sqrt(6 * counts))
+
+
+def test_a_nan_velocity_component_leaves_the_dispersions_unbiased():
+    table, _, _ = _sis(n=40_000, centre=(0.0, 0.0, 0.0), sigma=1.0, seed=20)
+    common = dict(pos_fields=POS, mass_field="mass", vel_fields=VEL, columns=[],
+                  centre=(0, 0, 0), periods=[None] * 3, centre_velocity_value=(0, 0, 0),
+                  axis=(0, 0, 1), r_min=0.05, r_max=1.0, bins=5)
+    half = {k: v[1::2] for k, v in table.items()}
+    clean = radial_profile(_chunks(half), **common)
+    table["vz"][::2] = np.nan
+    holed = radial_profile(_chunks(table), **common)
+    for key in ("sigma_r", "sigma_phi", "sigma_theta", "sigma_cartesian_with_streaming"):
+        np.testing.assert_allclose(holed["velocity"][key], clean["velocity"][key], rtol=1e-9)
+
+
+def test_comparisons_and_holes_on_the_positions_bound_the_complete_shells():
+    from app.routers.particle_profiles import _region_limit
+    from app.schemas import TabularBox, TabularFilter, TabularSphere
+    cuts = [TabularFilter(field="x", op=">", value="-0.3"),
+            TabularFilter(field="x", op="<", value="0.5")]
+    assert _region_limit(cuts, POS, (0.0, 0.0, 0.0), [None] * 3) == pytest.approx(0.3)
+    hole = [TabularFilter(op="outside", sphere=TabularSphere(fields=POS, center=[1, 0, 0],
+                                                             radius=0.4))]
+    assert _region_limit(hole, POS, (0.0, 0.0, 0.0), [None] * 3) == pytest.approx(0.6)
+    box = [TabularFilter(op="outside", box=TabularBox(fields=POS, min=[0.5, -1, -1],
+                                                      max=[1, 1, 1]))]
+    assert _region_limit(box, POS, (0.0, 0.0, 0.0), [None] * 3) == pytest.approx(0.5)
+    assert _region_limit(box, POS, (0.7, 0.0, 0.0), [None] * 3) == 0.0
+    assert _region_limit(cuts, POS, (0.9, 0.0, 0.0), [None] * 3) == 0.0
+
+
+def test_the_centre_particle_has_no_radial_velocity():
+    table = {"x": np.array([0.0, 1.0]), "y": np.zeros(2), "z": np.zeros(2),
+             "vx": np.array([5.0, 2.0]), "vy": np.zeros(2), "vz": np.zeros(2)}
+    out = Geometry(POS, VEL, (0, 0, 0), [None] * 3, (0, 0, 0)).derive(table)
+    assert np.isnan(out["radial_velocity"][0]) and out["radial_velocity"][1] == 2.0

@@ -41,8 +41,8 @@ def _gadget(tmp_path, pos, vel, mass):
         hd.attrs["MassTable"] = np.zeros(6)
         hd.attrs["NumFilesPerSnapshot"] = 1
         hd.attrs["BoxSize"] = BOX
-        hd.attrs["Time"] = 1.0
-        hd.attrs["Redshift"] = 0.0
+        hd.attrs["Time"] = 0.5
+        hd.attrs["Redshift"] = 1.0
         hd.attrs["HubbleParam"] = 0.7
         hd.attrs["Omega0"] = 0.3
         hd.attrs["OmegaLambda"] = 0.7
@@ -118,7 +118,13 @@ async def test_profile_out_of_core_equals_in_memory_and_wraps(client, auth_heade
     assert out_of_core["units"]["radius"] and out_of_core["provenance"]["selection"] == [
         "complete dataset"]
     assert "minimum-image" in out_of_core["provenance"]["frame"]
-    assert out_of_core["units"]["physical"]["radius"]["unit"] == "kpc"
+    physical = out_of_core["units"]["physical"]
+    assert physical["radius"]["unit"] == "kpc"
+    assert physical["radius"]["factor"] == pytest.approx(0.5 / 0.7, rel=1e-3)
+    assert physical["velocity"]["factor"] == pytest.approx(np.sqrt(0.5), rel=1e-6)
+    assert physical["density"]["factor"] == pytest.approx(
+        (1e10 / 0.7) / (0.5 / 0.7) ** 3, rel=1e-3)
+    assert physical["density"]["unit"] == "Msun/kpc^3"
 
     unwrapped = (await client.post("/v1/catalogue/profile",
                                    json={"dataset_id": vbt, "period": 0, **request},

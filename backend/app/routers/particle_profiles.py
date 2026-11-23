@@ -122,26 +122,51 @@ def _periods(entry, request, pos) -> list[float | None]:
 
 
 def _region_limit(filters, pos, centre, periods) -> float | None:
-    """Distance from ``centre`` to the nearest face of the region the
-    selection keeps (inside boxes and spheres on the position fields):
-    shells beyond it are only partly sampled. None without such a region."""
+    """Distance from ``centre`` to the nearest boundary of the region the
+    selection keeps on the position fields: shells beyond it are only partly
+    sampled. Inside boxes and spheres bound it from within, comparisons on a
+    position field (x > 10, ...) are half-spaces, and outside boxes and
+    spheres are holes whose nearest point bounds it. None without such a
+    boundary; 0 when the centre itself is not kept."""
+    axis_of = {f: k for k, f in enumerate(pos)}
     limits = []
     for item in filters:
         spatial = item.box if item.box is not None else item.sphere
-        if spatial is None or item.op != "inside" or list(spatial.fields) != list(pos):
+        if spatial is None:
+            k = axis_of.get(item.field)
+            if k is None or item.op not in ("<", "<=", ">", ">="):
+                continue
+            try:
+                value = float(item.value)
+            except ValueError:
+                continue
+            gap = float(separation(centre[k], value, periods[k]))
+            kept = gap < 0 if item.op.startswith("<") else gap > 0
+            limits.append(abs(gap) if kept else 0.0)
             continue
-        if item.box is not None:
-            for axis, (lo, hi) in enumerate(zip(item.box.min, item.box.max)):
-                p = periods[axis]
-                if not bool(box_inside(np.array([centre[axis]]), lo, hi, p)[0]):
-                    limits.append(0.0)
-                    continue
-                limits.append(min(abs(float(separation(centre[axis], lo, p))),
-                                  abs(float(separation(hi, centre[axis], p)))))
-        else:
+        if list(spatial.fields) != list(pos) or item.op not in ("inside", "outside"):
+            continue
+        if item.sphere is not None:
             d = math.sqrt(sum(float(separation(c, s, p)) ** 2 for c, s, p
                               in zip(centre, item.sphere.center, periods)))
-            limits.append(max(0.0, float(item.sphere.radius) - d))
+            radius = float(item.sphere.radius)
+            limits.append(max(0.0, radius - d) if item.op == "inside" else max(0.0, d - radius))
+            continue
+        gaps, inside_all = [], True
+        for k, (lo, hi) in enumerate(zip(item.box.min, item.box.max)):
+            p = periods[k]
+            to_faces = min(abs(float(separation(centre[k], lo, p))),
+                           abs(float(separation(hi, centre[k], p))))
+            if bool(box_inside(np.array([centre[k]]), lo, hi, p)[0]):
+                gaps.append((True, to_faces))
+            else:
+                inside_all = False
+                gaps.append((False, to_faces))
+        if item.op == "inside":
+            limits.append(min(g for _, g in gaps) if inside_all else 0.0)
+        else:
+            limits.append(0.0 if inside_all else
+                          math.sqrt(sum(g * g for inside, g in gaps if not inside)))
     return min(limits) if limits else None
 
 
@@ -253,8 +278,9 @@ def _provenance(entry, filters, pos, vel, mass, periods) -> dict:
                      + str({f: p for f, p in zip(pos, periods) if p}) if any(periods) else
                      "; no periodic wrapping")),
         "code_units_note": ("Computed in the table's stored units; a cosmological Gadget "
-                            "snapshot stores comoving lengths and densities, /h where it "
-                            "uses Hubble units, and velocities as v/sqrt(a). 'physical' "
+                            "snapshot stores comoving lengths (length/h in Hubble units), "
+                            "masses (mass/h), densities in those units ((mass/h)/(length/h)^3, "
+                            "so h^2 overall) and velocities as v/sqrt(a). 'physical' "
                             "gives the reader's factors to physical units."),
         **({"snapshot": {k: snapshot[k] for k in ("redshift", "time", "hubble_param",
                                                    "box_size") if k in snapshot}}
@@ -292,6 +318,9 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
     if "radial_velocity" in columns and not vel:
         raise ValueError("radial_velocity needs the velocity fields.")
     _check_centre_velocity(request.centre, vel)
+    if request.axis is not None and (not _three_finite(request.axis)
+                                     or not any(request.axis)):
+        raise ValueError("The polar axis needs three finite values, not all zero.")
     periods = _periods(entry, request, pos)
     searching = request.centre.mode == "shrinking_sphere"
     centre = _centre(session, entry, request.filters, request.centre, pos, mass, periods,
@@ -301,7 +330,8 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
     profile = pp.radial_profile(
         _selection_chunks(entry, request.filters, read), pos_fields=pos, mass_field=mass,
         vel_fields=vel, columns=columns, centre=centre["centre"], periods=periods,
-        centre_velocity_value=request.centre.velocity, r_min=request.r_min,
+        centre_velocity_value=request.centre.velocity, axis=request.axis,
+        r_min=request.r_min,
         r_max=request.r_max, bins=request.bins,
         region_limit=_region_limit(request.filters, pos, centre["centre"], periods),
         stop=stop, progress=_stages(progress, 0.4 if searching else 0.0, 1.0))
@@ -317,11 +347,15 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
                    "quantiles from a 1024-bin histogram per shell refined once in the "
                    "bin of the quantile (log10 axis when the shell's values are positive "
                    "and span over a factor 100)",
-        "velocity": "relative to the centre velocity; spherical components about the "
-                    "centre; sigma_1d = sqrt((sigma_r^2 + sigma_theta^2 + sigma_phi^2)/3), "
+        "velocity": "peculiar velocities (no Hubble flow H(a) a r added) relative to the "
+                    "centre velocity, the mass-weighted mean velocity of the smallest "
+                    "sphere about the centre holding 1000 particles unless given; "
+                    "spherical components about the centre with the polar axis "
+                    "velocity.axis (by default the angular momentum of those particles); "
+                    "sigma_1d = sqrt((sigma_r^2 + sigma_theta^2 + sigma_phi^2)/3), "
                     "each about its shell mean; beta = 1 - (sigma_theta^2 + sigma_phi^2) / "
                     "(2 sigma_r^2); sigma_cartesian_with_streaming includes infall and "
-                    "rotation; peculiar velocities, without the Hubble flow",
+                    "rotation",
     }
     return ParticleProfileResponse(valid=True, error="", profile=profile, centre=centre,
                                    units={**units, "physical": physical},

@@ -702,6 +702,9 @@ class ParticleProfileRequest(BaseModel):
     r_min: float | None = None
     r_max: float | None = None
     bins: int = Field(default=32, ge=4, le=256)
+    #: Polar axis of the polar and azimuthal velocity components; None: the
+    #: angular momentum of the particles the centre velocity is taken from.
+    axis: list[float] | None = None
     #: None: the dataset's own box (a periodic Gadget snapshot); 0: no
     #: wrapping; a length: that period on the three position fields.
     period: float | None = None
