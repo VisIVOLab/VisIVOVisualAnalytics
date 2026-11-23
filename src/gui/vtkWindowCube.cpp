@@ -21,6 +21,7 @@
 #include "RegionSessionController.h"
 #include "WorkspaceChrome.h"
 #include "app/DatasetName.h"
+#include "DatasetBeamControl.h"
 #include "InspectorPanel.h"
 #include "theme/SegmentedToggle.h"
 #include "app/ProductRegistry.h"
@@ -1983,6 +1984,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                         + u"\nAxis 3 semantics: %1\nWCS frame: %2"_s
                                   .arg(this->spectralAxisTitle())
                                   .arg(this->currentWcsFrameLabel());
+                if (!this->m_intensityUnitNote.isEmpty())
+                    this->momentProvenanceState.details +=
+                            u"\nIntensity unit: %1"_s.arg(this->m_intensityUnitNote);
                 this->updateMomentProvenancePanel();
 
                 // Transition card to Ready and update info label with provenance.
@@ -4658,11 +4662,44 @@ bool vtkWindowCube::updatePvFromDisplayPosition(int displayX, int displayY)
 
 // ── Beam ellipse indicator ───────────────────────────────────────────────────
 
+void vtkWindowCube::setIntensityUnit(const QString &unit, const QString &note)
+{
+    m_brightnessUnit = unit;
+    m_intensityUnitNote = note;
+    this->refreshUnitAndBeamRows();
+}
+
+void vtkWindowCube::setBeamSource(const QString &source)
+{
+    // A field of a VBT file has no header to keep a beam for; the backend
+    // reports "none" for it but refuses a typed one.
+    m_beamSource = visivo::isFieldReference(this->filepath) ? QString() : source;
+    this->refreshUnitAndBeamRows();
+}
+
+QString vtkWindowCube::intensityAxisLabel() const
+{
+    return visivo::beam::intensityAxisLabel(m_brightnessUnit, m_intensityUnitNote);
+}
+
+void vtkWindowCube::refreshUnitAndBeamRows()
+{
+    if (m_unitValueLabel) {
+        InspectorPanel::applyValueStyle(
+                m_unitValueLabel, visivo::beam::unitDisplay(m_brightnessUnit, m_intensityUnitNote));
+        if (!m_intensityUnitNote.isEmpty())
+            m_unitValueLabel->setToolTip(m_intensityUnitNote);
+    }
+    if (m_beamControl)
+        m_beamControl->setBeam(m_beamMajorDeg, m_beamMinorDeg, m_beamPaDeg, m_beamSource);
+}
+
 void vtkWindowCube::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
 {
     m_beamMajorDeg = majorDeg;
     m_beamMinorDeg = minorDeg;
     m_beamPaDeg    = paDeg;
+    this->refreshUnitAndBeamRows();
 
     if (!std::isfinite(majorDeg) || !std::isfinite(minorDeg)
         || majorDeg <= 0.0 || minorDeg <= 0.0) {
@@ -11829,7 +11866,7 @@ void vtkWindowCube::startLiveSpectrum()
     m_spectrumLiveId = this->scopedProductId(u"spectrumlive"_s);
     Spectrum1D s;
     s.xLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s : this->spectralAxisTitle();
-    s.yLabel = u"Intensity"_s;
+    s.yLabel = this->intensityAxisLabel();
     s.label = u"Spectrum (live)"_s;
     m_products1d.insert(m_spectrumLiveId, s);
     // No Provenance reveal: this product exists because the user just ARMED a tool
@@ -13263,6 +13300,18 @@ void vtkWindowCube::setupInspector()
     panel->addPropertyRow(u"Backend"_s, this->remoteBackendUrl);
     panel->addPropertyRow(u"Sanity"_s, this->remoteWcsStatus.isEmpty() ? u"-"_s
                                                                        : this->remoteWcsStatus);
+    m_unitValueLabel = new QLabel();
+    panel->addPropertyRow(u"Unit"_s, m_unitValueLabel.data());
+    m_beamControl = new DatasetBeamControl();
+    m_beamControl->setDataset(this->remoteBackendUrl, this->remoteBackendToken,
+                              this->remoteDatasetId);
+    panel->addPropertyRow(u"Beam"_s, m_beamControl.data());
+    connect(m_beamControl, &DatasetBeamControl::beamChanged, this,
+            [this](double majorDeg, double minorDeg, double paDeg, const QString &source) {
+                m_beamSource = source;
+                this->setBeamInfo(majorDeg, minorDeg, paDeg);
+            });
+    this->refreshUnitAndBeamRows();
 
     // Flatten a re-hosted stat widget so it reads as a value, not an input box.
     const QString statCss =
@@ -13484,6 +13533,32 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
     smoothRow->addWidget(m_specInspSmooth, 1);
     col->addLayout(smoothRow);
 
+    auto *fitRangeRow = new QHBoxLayout();
+    fitRangeRow->setSpacing(6);
+    auto *fitRangeLabel = new QLabel(u"Fit:"_s);
+    fitRangeLabel->setStyleSheet(QStringLiteral("color:%1; font-size:11px;").arg(fgMuted));
+    m_specInspFitRange = new QComboBox();
+    ProfileWidget::populateFitRangeCombo(m_specInspFitRange);
+    fitRangeRow->addWidget(fitRangeLabel);
+    fitRangeRow->addWidget(m_specInspFitRange, 1);
+    col->addLayout(fitRangeRow);
+    QObject::connect(m_specInspFitRange, qOverload<int>(&QComboBox::activated), this,
+                     [this](int index) {
+                         QPointer<ProfileWidget> target = m_specInspTarget;
+                         if (!target || !m_specInspFitRange)
+                             return;
+                         const auto mode = static_cast<visivo::linefit::RangeMode>(
+                                 m_specInspFitRange->itemData(index).toInt());
+                         if (mode == visivo::linefit::RangeMode::Typed
+                             && !target->editTypedFitRange()) {
+                             if (target)
+                                 target->setFitRangeMode(target->fitRangeMode());
+                             return;
+                         }
+                         if (target)
+                             target->setFitRangeMode(mode);
+                     });
+
     // Action buttons in a 2-column grid.
     const QString btnCss = VisivoTheme::sidebarToolButtonStyleSheet();
     auto mkBtn = [&](const QString &text, const QString &tip) {
@@ -13609,6 +13684,12 @@ void vtkWindowCube::updateSpectrumInspectorControls()
         if (idx >= 0)
             m_specInspSmooth->setCurrentIndex(idx);
     }
+    if (m_specInspFitRange) {
+        QSignalBlocker b(m_specInspFitRange);
+        const int idx = m_specInspFitRange->findData(static_cast<int>(sp->fitRangeMode()));
+        if (idx >= 0)
+            m_specInspFitRange->setCurrentIndex(idx);
+    }
     const bool haveSpec = sp->hasSpectrum();
     m_specInspFit->setEnabled(haveSpec && sp->canFit());
     m_specInspClearFit->setEnabled(sp->hasFit());
@@ -13621,6 +13702,7 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     m_specInspSavePng->setEnabled(haveSpec);
     const QString stats = sp->statsText();
     m_specInspStats->setText(stats.isEmpty() ? u"-"_s : stats);
+    m_specInspStats->setToolTip(sp->statsToolTip());
 }
 
 void vtkWindowCube::refreshCubeStatRows()
@@ -15425,7 +15507,7 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
                         u"Copilot Spectrum"_s,
                         QStringLiteral("copilotspec_%1_%2").arg(px).arg(py),
                         QStringLiteral("Spectrum @ (%1, %2)").arg(px).arg(py),
-                        key, values, xLabel, u"Intensity"_s, {});
+                        key, values, xLabel, this->intensityAxisLabel(), {});
                 // fit=true → overlay a Gaussian fit on the pinned profile, reusing
                 // the ProfileWidget's own backend fit machinery (which draws the
                 // model curve). Fit the VISIBLE pane now showing this product —

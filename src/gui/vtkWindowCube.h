@@ -96,6 +96,7 @@ class CatalogueTableModel;
 class QDockWidget;
 class QFrame;
 class QLabel;
+class DatasetBeamControl;
 class QPushButton;
 class QSlider;
 class QSplitter;
@@ -325,6 +326,13 @@ public:
     /// Raw BUNIT (brightness value unit, e.g. "Jy/beam") from the FITS header.
     /// Set once by MainWindow after construction; shown in the cursor readout.
     void setBrightnessUnit(const QString &unit) { m_brightnessUnit = unit; }
+    /// The values' unit and, when it did not come from BUNIT, how it was
+    /// inferred (issue #416). Shown in the Inspector and on spectrum axes.
+    void setIntensityUnit(const QString &unit, const QString &note);
+    /// Where the beam came from: "header", "user" or "none" (issue #416).
+    void setBeamSource(const QString &source);
+    /// The y-axis title of this cube's spectra.
+    QString intensityAxisLabel() const;
 
     /// The cube's rest frequency in Hz (header RESTFRQ/RESTFREQ; 0 when absent),
     /// handed to every spectrum plot so a REST-frame line list can be placed on
@@ -594,6 +602,7 @@ private:
     QLabel        *m_specInspTitle     { nullptr };
     QLabel        *m_specInspStats     { nullptr };
     QComboBox     *m_specInspSmooth    { nullptr };
+    QComboBox     *m_specInspFitRange  { nullptr };
     QPushButton   *m_specInspFit       { nullptr };
     QPushButton   *m_specInspClearFit  { nullptr };   ///< remove the fitted-curve overlay
     QPushButton   *m_specInspLoadLines { nullptr };
@@ -3154,6 +3163,11 @@ protected:
     double m_slice2dFitBottom{ -1. };   ///< gutter.bottom of that fit (the channel bar's room)
     double m_moment2dFitBottom{ -1. };
     QString m_brightnessUnit;   ///< raw BUNIT for the cursor readout (may be empty)
+    QString m_intensityUnitNote;   ///< how the unit was inferred without BUNIT, or empty
+    QString m_beamSource;          ///< "header", "user", "none", or empty (older backend)
+    QPointer<QLabel> m_unitValueLabel;
+    QPointer<DatasetBeamControl> m_beamControl;
+    void refreshUnitAndBeamRows();
 
     /// Aspect-preserving gutter fit + colorbar placement for the currently-visible
     /// 2-D pane. Cheap and idempotent: returns immediately unless the viewport

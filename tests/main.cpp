@@ -31,6 +31,7 @@
 #include "TestKinematicLevelField.h"
 #include "TestRayVoxelPick.h"
 #include "TestSedBuilder.h"
+#include "TestMolecularLineClient.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
 #include "TestCatalogueCosmology.h"
@@ -129,6 +130,7 @@ int main(int argc, char *argv[])
     { TestKinematicLevelField t; status |= QTest::qExec(&t, argc, argv); }
     { TestRayVoxelPick     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSedBuilder       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestMolecularLineClient t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
     { TestCatalogueCosmology       t; status |= QTest::qExec(&t, argc, argv); }
