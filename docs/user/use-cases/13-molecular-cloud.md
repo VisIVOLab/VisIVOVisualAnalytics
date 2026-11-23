@@ -35,12 +35,19 @@ turn their ratio into an optical depth.
 
 2. In the main window's *VLKB* tab, set *glon* 40.0, *glat* 0.228, *dl*
    0.352, *db* 0.144 and press *Query*. Double-click the C¹⁸O 3-2 row whose
-   *Identifier* ends in `CHIMPS_C18O_40p00+0p33` (*Coverage* `full`). It opens
-   in its own cube window, 69 × 166 pixels and 400 channels. This tile stores
+   *Identifier* ends in `CHIMPS_C18O_40p00+0p33` (*Coverage* `full`; the filter
+   box takes `CHIMPS`). The backend downloads the cutout and it opens in its
+   own cube window as `d1eaf07408f20949__sync.fits`, 69 × 166 pixels and 400
+   channels. This tile stores
    latitude along x, so its map looks turned by 90°; regions read from a file
    still land on the same sky. Its channels sit 0.25 km/s off the ¹³CO ones.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/13-molecular-cloud-1.png -->
+   ```{figure} img/13-molecular-cloud-1.png
+   :alt: The VLKB Inventory window filtered on CHIMPS: the C18O 3-2 row CHIMPS_C18O_40p00+0p33.fits is selected and marked full, the 13CO row of the same tile is marked full, and the 40p33 rows are marked partial.
+   :width: 100%
+
+   The CHIMPS rows for the query region.
+   ```
 
 3. In each window, *Tools ▸ Statistics ▸ Estimate Noise...* on all channels of
    a line-free box (*X (columns)* 100 → 160, *Y (rows)* 35 → 65 on ¹³CO;
@@ -60,7 +67,12 @@ turn their ratio into an optical depth.
 
 6. In the C¹⁸O window compute Moment 0 over 129 → 138 (85.75 to 81.25 km/s).
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/13-molecular-cloud-2.png -->
+   ```{figure} img/13-molecular-cloud-2.png
+   :alt: The 13CO cube window with two panes: the Moment 0 map of the clump on the left and the Moment 1 map on the right, with both moment products listed in Session Data.
+   :width: 100%
+
+   Moment 0 and Moment 1 of the clump in ¹³CO.
+   ```
 
 ### A PV cut along the filament
 
@@ -70,7 +82,12 @@ turn their ratio into an optical depth.
    at the bottom edge and again at b ≈ 0.22°, then double-click. Set *Width*
    to 3.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/13-molecular-cloud-3.png -->
+   ```{figure} img/13-molecular-cloud-3.png
+   :alt: The 13CO cube window with a Moment 0 map of the filament and its two-point path on the left, and the resulting PV diagram on the right.
+   :width: 100%
+
+   The PV cut along the filament, width 3.
+   ```
 
 ### Spectra at the same position
 
@@ -79,10 +96,18 @@ turn their ratio into an optical depth.
 
 9. Click the clump's Moment 0 pane, right-click the *Clump* row in *Session
    Data* and choose *Analyse*. *Inspector ▸ Parameters* shows the map's *Mean*
-   in the circle, and the mean spectrum opens in a pane. Press *Fit Gaussian*
-   above it. Repeat in the C¹⁸O window.
+   in the circle, and the mean spectrum opens in a pane. In *Inspector ▸
+   Analysis*, zoom the spectrum onto the line with the mouse wheel (70 to
+   95 km/s) and press *Fit Gaussian*. The *Fit* menu above the button says
+   which channels the fit sees: *Fit visible range* (the default), *Fit typed
+   range…* or *Fit whole spectrum*. Repeat in the C¹⁸O window.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/13-molecular-cloud-4.png -->
+   ```{figure} img/13-molecular-cloud-4.png
+   :alt: The C18O cube window with two panes: the Moment 0 map with the Clump and Filament circles on the left, and the Clump spectrum with the fitted Gaussian and its peak, centre, FWHM and integral on the right.
+   :width: 100%
+
+   The C¹⁸O clump spectrum with its Gaussian fit.
+   ```
 
 ### From the line ratio to the optical depth
 
@@ -92,7 +117,8 @@ X = [¹³CO]/[C¹⁸O] = (¹⁶O/¹⁸O)/(¹²C/¹³C). Inside the solar circle 
 sightline stays between R₀ sin l ≈ 5.5 kpc and R₀ = 8.5 kpc from the Galactic
 centre, where the gradients of Wilson & Rood (1994) give X = 7.4 to 7.5. The
 T_A* scale cancels in R, since one efficiency applies to two lines 1.3 GHz
-apart. The app does not solve for τ; do it by hand.
+apart. The fit does not solve for τ; do it by hand, or use *Tools ▸ Spectral ▸
+CO Isotopologues (LTE)…* (next section).
 
 ## What you get
 
@@ -100,13 +126,13 @@ apart. The app does not solve for τ; do it by hand.
 |---|---|---|
 | Moment 0 *Mean* (K km/s, T_A*), pixels | 5.04, 28 | 1.15, 29 |
 | Moment 1 / Moment 2 *Mean*, masked (km/s) | 84.01 / 0.59 | |
-| Fit: peak (K) | 1.68 ± 0.08 | 0.61 ± 0.10 |
-| Fit: centre (km/s) | 83.90 ± 0.06 | 84.11 ± 0.14 |
-| Fit: FWHM (km/s) | 2.59 ± 0.14 | 1.75 ± 0.32 |
-| Fit: ∫ (K km/s) | 4.63 ± 0.21 | 1.14 ± 0.18 |
+| Fit: peak (K) | 1.95 ± 0.08 | 0.62 ± 0.10 |
+| Fit: centre (km/s) | 83.93 ± 0.04 | 83.98 ± 0.15 |
+| Fit: FWHM (km/s) | 2.31 ± 0.11 | 1.86 ± 0.35 |
+| Fit: ∫ (K km/s) | 4.79 ± 0.21 | 1.22 ± 0.21 |
 
-The fit integrals give R = 4.06 ± 0.68, hence τ(C¹⁸O) = 0.22 (0.16 to 0.31)
-and τ(¹³CO) = 1.6 (1.2 to 2.3) for X = 7.4. The Moment 0 means give
+Fits on 70 to 95 km/s. The fit integrals give R = 3.9 ± 0.7, hence
+τ(¹³CO) = 1.75 (1.2 to 2.5) and τ(C¹⁸O) = 0.24 for X = 7.4. The Moment 0 means give
 R = 4.4 ± 1.4 (error from the channel σ, 10 channels and a 15″ beam of 4.4
 pixels). The broader ¹³CO line fits an optically thick ¹³CO. Moment 0 equals
 the channel sum times 0.5 km/s computed with numpy, to 3 × 10⁻⁷ K km/s.
@@ -116,12 +142,24 @@ peaks at 2.3 K. On the diagram saved as FITS its centroid stays between 8.8
 and 9.4 km/s up to 190″, then reaches 9.7 km/s where it fades. C¹⁸O does not
 detect the filament (Moment 0 mean 0.74 K km/s, about 2σ).
 
+## The LTE tool
+
+*Tools ▸ Spectral ▸ CO Isotopologues (LTE)…* (also in *Inspector ▸
+Analysis*) does the same sum map-wide. Run it from the ¹³CO window: pick the
+C¹⁸O cutout, leave the velocity window at 70 to 95 km/s (taken from the
+spectrum's fit range), set η_mb to 0.72 for both lines (CHIMPS, Rigby et al.
+2016) and X(¹³CO)/X(C¹⁸O) to 7.4. For the clump it reports W_mb of 8.52 ± 0.5
+and 1.73 ± 0.52 K km/s, R = 4.92 ± 1.5 and τ(¹³CO) = 1.04 (0.33 to 2.25). These
+are not the hand numbers above: it sums the channels of the window on the
+T_mb scale instead of fitting a Gaussian, and takes T_ex from the ¹³CO
+peak. The filament gives no detection.
+
 ## Caveats
 
 - Divide T_A* by η_mb = 0.72 for main-beam temperature (Rigby et al. 2016);
   `ETAL = 0.85` in the header is another efficiency.
-- With no `BUNIT` the app labels Moment 0 *km/s* and writes that unit into
-  the exported FITS. Read it as K km/s.
+- With no `BUNIT` the app reads the intensities as K from `TEMPSCAL` and
+  labels Moment 0 *K km/s* (*Unit* in *Inspector ▸ Parameters*).
 - The masked Moment 2 (0.59 km/s) is below the fitted σ (1.10 km/s) because
   the 3σ mask drops the line wings. Take widths from the fit.
 - *Fit Gaussian* fits the whole 200 km/s spectrum; on the filament in C¹⁸O it
