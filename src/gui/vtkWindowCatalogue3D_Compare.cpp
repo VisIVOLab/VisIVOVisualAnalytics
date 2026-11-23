@@ -407,7 +407,7 @@ void vtkWindowCatalogue3D::setupSnapshotTimeline(vtkWindowCatalogue3D *source)
 {
     // A catalogue opened from several files is pieces of one output, which a
     // step would have read as a run's outputs.
-    if (!this->m_pointTable || this->remoteDatasetId.isEmpty()
+    if (!this->m_pointTable || this->m_particlesByRule || this->remoteDatasetId.isEmpty()
         || !SnapshotTimelineSteps::timelineApplies(this->m_cataloguePaths.size()))
         return;
     if (source) {

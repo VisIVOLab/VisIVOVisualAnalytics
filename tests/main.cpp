@@ -86,6 +86,8 @@
 #include "TestSourceTable.h"
 #include "TestBackendTaskFollow.h"
 #include "TestParticleLightReport.h"
+#include "TestDiagnosticsTask.h"
+#include "TestParticleTableRule.h"
 #include "TestSamp.h"
 #include "TestCosmologyTools.h"
 #include "TestCopilotStatus.h"
@@ -179,6 +181,8 @@ int main(int argc, char *argv[])
     { TestSourceTable      t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendTaskFollow t; status |= QTest::qExec(&t, argc, argv); }
     { TestParticleLightReport t; status |= QTest::qExec(&t, argc, argv); }
+    { TestDiagnosticsTask t; status |= QTest::qExec(&t, argc, argv); }
+    { TestParticleTableRule t; status |= QTest::qExec(&t, argc, argv); }
     { TestSamp             t; status |= QTest::qExec(&t, argc, argv); }
     { TestCosmologyTools   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCopilotStatus    t; status |= QTest::qExec(&t, argc, argv); }
