@@ -44,7 +44,7 @@ class SceneMixin:
         from vtk.util.numpy_support import numpy_to_vtk
         from ._window import new_offscreen_window
         from ..cube_reader import CubeReader
-        from ..volume_source import volume_data, volume_shape
+        from ..volume_source import volume_cube_shape, volume_data, volume_shape
 
         # ── 1. Peek the FITS for cube shape WITHOUT loading data ─────
         # Phase 4 Path 1: the FITS read happens in a separate worker
@@ -58,7 +58,9 @@ class SceneMixin:
             raise ValueError(
                 f"Volume rendering requires a 3-D cube, got shape {shape}"
             )
-        disk_shape = shape[-3:]   # (nz, ny, nx); leading axes: first plane
+        # (nz, ny, nx): the dataset's cube axes (fits_dataset.cube_axes), the
+        # first plane of any other; an image one plane deep.
+        disk_shape = volume_cube_shape(self.dataset_path, shape, hdu_index)
         nz, ny, nx = disk_shape
         cube_size_bytes = int(np.prod(disk_shape)) * 4   # float32
 

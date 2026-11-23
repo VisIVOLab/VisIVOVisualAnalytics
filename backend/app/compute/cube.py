@@ -944,10 +944,11 @@ def _cube_preview_from_pyramid(path: str, stride: int, pyramid_path: str) -> dic
     from ..noise_threshold import default_threshold  # noqa: PLC0415
     from ..preview_pyramid import choose_level, describe, pyramid_preview  # noqa: PLC0415
     from ..render_session._ooc import level0_sample  # noqa: PLC0415
+    from ..fits_dataset import cube_shape  # noqa: PLC0415
     from ..volume_source import volume_shape  # noqa: PLC0415
 
     full, _ = volume_shape(path, None)
-    shape0 = tuple(int(n) for n in full[-3:])
+    shape0 = tuple(int(n) for n in cube_shape(full))
     with BrickPyramid(pyramid_path, source=path) as pyr:
         shapes = [pyr.shape(k) for k in range(pyr.levels)]
         if tuple(shapes[0]) != shape0:

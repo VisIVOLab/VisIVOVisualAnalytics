@@ -173,14 +173,15 @@ async def _pyramid_preparing(path: str, hdu: int | None) -> JSONResponse | None:
     ready)."""
     from ..pyramid_builds import BuildStatus, ensure_pyramid  # noqa: PLC0415
     from ..render_session._ooc import wants_out_of_core  # noqa: PLC0415
+    from ..fits_dataset import cube_shape  # noqa: PLC0415
     from ..volume_source import volume_shape  # noqa: PLC0415
 
     def status() -> BuildStatus | None:
         try:
             # As the render session decides (render_session/_scene.py): the
-            # HDU it opens and the last three axes of its header shape.
+            # HDU it opens and the cube axes of its header shape.
             full, index = volume_shape(path, hdu)
-            shape = full[-3:]
+            shape = cube_shape(full)
         except Exception as exc:  # noqa: BLE001
             return BuildStatus("failed", 0.0, f"the cube could not be read: {exc}")
         if len(shape) < 3 or not wants_out_of_core(shape[0] * shape[1] * shape[2] * 4):

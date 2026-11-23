@@ -69,6 +69,10 @@ class SourceSignature:
     #: A PLUTO variable (issue #315): what its samples are read as
     #: (``volume_source.RawField.layout``), from its line of the .out; else "".
     #: Not the .out's size and time, which change at every output of a run.
+    #: A FITS cube whose axes are not the last three of the array (RA, DEC,
+    #: STOKES = 1, FREQ, issue #506): which ones, ``fits_dataset.cube_layout``.
+    #: A pyramid built before that rule took the last three, so it is another
+    #: one (and a cube read the same either way keeps its name).
     layout: str = ""
 
     @property
@@ -98,11 +102,28 @@ class SourceSignature:
                 side = os.stat(sidecar)
                 size, mtime = size + int(side.st_size), max(mtime, int(side.st_mtime_ns))
         layout = raw.layout if raw is not None and raw.kind == "pluto" else ""
+        if raw is None:
+            layout = _fits_layout(path, hdu)
         # Keyed on the stored name: on a case-insensitive file system the
         # same file named in another case is the same pyramid (#325).
         from .canonical_path import canonical_path  # noqa: PLC0415
 
         return cls(str(canonical_path(path)), int(hdu), size, mtime, order, layout)
+
+
+def _fits_layout(path: str | os.PathLike, hdu: int) -> str:
+    """``fits_dataset.cube_layout`` of HDU ``hdu``'s header shape; "" when it
+    cannot be read here (the build or the open then says why), and for a file
+    compressed as a whole, which astropy would decompress to give a header."""
+    from .fits_dataset import cube_layout  # noqa: PLC0415
+    from .volume_source import volume_shape  # noqa: PLC0415
+
+    if str(path).lower().endswith((".gz", ".bz2", ".zip")):
+        return ""
+    try:
+        return cube_layout(volume_shape(path, hdu)[0])
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def default_brick(shape: tuple[int, int, int]) -> int:
@@ -120,16 +141,17 @@ def _min_block_bytes(shape: tuple[int, int, int], brick: int) -> int:
 
 def source_shape(path: str | os.PathLike, hdu: int) -> tuple[int, int, int]:
     """The (z, y, x) shape a pyramid of HDU ``hdu`` of ``path`` has, from the
-    header alone: the last three axes, and a 2-D image one plane deep (as
-    :class:`_SourceCube` and the render session read it). For a VBT volume,
-    ``hdu`` is the field (``app.volume_source``)."""
+    header alone: the axes ``fits_dataset.cube_axes`` picks, and a 2-D image
+    one plane deep (as :class:`_SourceCube` and the render session read it).
+    For a VBT volume, ``hdu`` is the field (``app.volume_source``)."""
     from .volume_source import volume_shape  # noqa: PLC0415
 
     full, _ = volume_shape(path, hdu)
     if sum(1 for n in full if n > 1) < 2:
         raise ValueError(f"HDU {hdu} of {path} is neither an image nor a cube (shape {full}).")
-    last = tuple(int(n) for n in full[-3:])
-    return (1, *last) if len(last) == 2 else last
+    from .volume_source import volume_cube_shape  # noqa: PLC0415
+
+    return volume_cube_shape(path, full, hdu)
 
 
 def level_shapes(shape: tuple[int, int, int], brick: int) -> list[tuple[int, int, int]]:
@@ -266,8 +288,9 @@ class _SourceCube:
     BZERO apply. Two inputs cannot be read in bounded memory and are refused: a
     whole-file compressed FITS (``.fits.gz``), which astropy decompresses whole,
     and a tile-compressed image whose tiles are larger than ``max_bytes``.
-    The cube is the last three axes, the first plane of any leading one, as
-    the render session reads it (``volume_source.volume_data``)."""
+    The cube is the axes ``fits_dataset.cube_axes`` picks (those longer than
+    one, the first plane of any beyond three), as the dataset, the render
+    session and ``volume_source.volume_data`` read it (issue #506)."""
 
     def __init__(self, path: str, hdu: int, max_bytes: int) -> None:
         import logging  # noqa: PLC0415
@@ -298,20 +321,20 @@ class _SourceCube:
             full = tuple(int(n) for n in (item.shape or ()))
             if sum(1 for n in full if n > 1) < 2:
                 raise ValueError(f"HDU {hdu} of {path} is neither an image nor a cube (shape {full}).")
-            # The last three axes, the first plane of any leading one: the
-            # rule of the render session (render_session/_scene.py), so the
-            # pyramid holds the cube the scene reports and cuts. Dropping the
-            # degenerate axes first picked another cube for (2, 1, Y, X).
-            leading = [n for n in full[:-3] if n > 1]
-            if leading:
+            # The dataset's cube, so that the pyramid holds the cube the
+            # scene reports and cuts: the same rule (issue #506).
+            from .fits_dataset import cube_axes  # noqa: PLC0415
+
+            self._axes = list(cube_axes(full))
+            dropped = [n for i, n in enumerate(full) if n > 1 and i not in self._axes]
+            if dropped:
                 logging.getLogger(__name__).warning(
                     "brick pyramid of %s: keeping the first plane of the leading axes %s",
-                    path, leading)
-            # A 2-D image is read as a cube one plane deep: its z is not an
-            # axis of the file.
-            self._axes = list(range(max(0, len(full) - 3), len(full)))
+                    path, dropped)
             self._ndim = len(full)
             self.shape = tuple(full[i] for i in self._axes)
+            # A 2-D image is read as a cube one plane deep: its z is not an
+            # axis of the file.
             if len(self.shape) == 2:
                 self.shape = (1, *self.shape)
             header = item.header

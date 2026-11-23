@@ -477,10 +477,23 @@ def volume_shape(path: str | Path, hdu: int | None = None) -> tuple[tuple[int, .
         return tuple(int(n) for n in (hdul[index].shape or ())), index
 
 
+def volume_cube_shape(path: str | Path, full, hdu: int | None = None) -> tuple[int, int, int]:
+    """The (z, y, x) shape :func:`volume_data` yields for a volume whose
+    ``volume_shape`` is ``full``: a raw field (VBT, PLUTO) is already a cube,
+    a FITS array is cut to ``fits_dataset.cube_axes`` (an image one plane
+    deep)."""
+    if raw_field(path, hdu) is not None:
+        return tuple(int(n) for n in full)  # type: ignore[return-value]
+    from .fits_dataset import cube_shape  # noqa: PLC0415
+
+    dims = cube_shape(full)
+    return (1, *dims) if len(dims) == 2 else dims  # type: ignore[return-value]
+
+
 @contextlib.contextmanager
 def volume_data(path: str | Path, hdu: int | None = None) -> Iterator[np.ndarray]:
-    """The volume's data, memory-mapped, with its leading axes beyond three
-    reduced to their first plane: (z, y, x). Read-only, and possibly of the
+    """The volume's data, memory-mapped, as the cube ``fits_dataset.cube_axes``
+    picks: (z, y, x), an image one plane deep. Read-only, and possibly of the
     file's own type: copy what is to be changed or kept."""
     raw = raw_field(path, hdu)
     if raw is not None:
@@ -491,9 +504,8 @@ def volume_data(path: str | Path, hdu: int | None = None) -> Iterator[np.ndarray
         return
     from astropy.io import fits  # noqa: PLC0415
 
-    from .fits_dataset import image_hdu_index  # noqa: PLC0415
+    from .fits_dataset import cube_index, image_hdu_index  # noqa: PLC0415
     with fits.open(str(path), memmap=True) as hdul:
         data = hdul[image_hdu_index(hdul) if hdu is None else int(hdu)].data
-        while data.ndim > 3:
-            data = data[0]
-        yield data
+        data = data[cube_index(data.shape)]   # a view: nothing is read
+        yield data[np.newaxis] if data.ndim == 2 else data

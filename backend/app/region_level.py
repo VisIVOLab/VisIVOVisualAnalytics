@@ -60,20 +60,20 @@ def box_bytes(box, ghost: int) -> int:
 
 def cube_shape(full) -> tuple[int, ...]:
     """The (z, y, x) shape the desktop's cube readers see for a file of shape
-    ``full``: its axes longer than one, with the first plane of any leading
-    axis beyond three (``ScientificFitsDataset.squeeze_to_3d``). Fewer than
-    three entries for an image."""
-    dims = [int(n) for n in full if int(n) > 1]
-    return tuple(dims[-3:])
+    ``full``: ``fits_dataset.cube_shape``, the one rule for the cube's axes
+    (``ScientificFitsDataset.squeeze_to_3d``). Fewer than three entries for an
+    image."""
+    from .fits_dataset import cube_shape as rule  # noqa: PLC0415
+
+    return rule(full)
 
 
 def pyramid_eligible(full) -> bool:
-    """A pyramid holds the HDU's last three axes: it is the cube the desktop
-    reads only when every other axis is one plane and none of these three is
+    """A pyramid holds the cube the desktop reads (the same axes, issue #506)
+    when the file has exactly three axes longer than one: beyond three the
+    desktop shows plane 0 of the rest, which no pyramid is asked to stand for
     (the rule of ``preview_pyramid.ready_pyramid``)."""
-    full = [int(n) for n in full]
-    shape = full[-3:]
-    return len(shape) == 3 and min(shape) > 1 and all(n == 1 for n in full[:-3])
+    return sum(1 for n in full if int(n) > 1) == 3
 
 
 def default_level_shapes(shape0) -> list[tuple[int, int, int]]:

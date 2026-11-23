@@ -35,7 +35,7 @@ import math
 import os
 import shutil
 import tempfile
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 import numpy as np
 
@@ -179,6 +179,7 @@ class _WholePlane:
         from .fits_dataset import ScientificFitsDataset  # noqa: PLC0415
 
         dataset = ScientificFitsDataset(path)
+        dataset.hdu_index = hdu
         hdul, raw = dataset.open_memmap()
         try:
             data = np.asarray(ScientificFitsDataset.squeeze_to_3d(raw), dtype=np.float64)
@@ -194,10 +195,13 @@ class _WholePlane:
         pass
 
 
-def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable[[], Iterator[np.ndarray]]:
-    """A function that reads the region again on each call and yields its
-    pixels' values (NaN included) in double precision, block of rows by block
-    of rows."""
+def _cube_opener(path: str, hdu: int) -> Callable[[], Any]:
+    """A function opening the cube of ``path`` for block reads: the dataset's
+    cube (``fits_dataset.cube_axes``: a CASA RA, DEC, STOKES = 1, FREQ file is
+    a FREQ cube), memory-mapped or read through ``section``, with the scaling
+    applied block by block; a file compressed as a whole, which cannot be read
+    in parts, is read once, whole, and the opener then returns that plane every
+    time (``opener.whole`` is not empty)."""
     from .brick_pyramid import _SourceCube  # noqa: PLC0415
 
     whole: list = []
@@ -212,6 +216,16 @@ def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable
                 raise
             whole.append(_WholePlane(path, hdu))
             return whole[0]
+
+    open_source.whole = whole  # type: ignore[attr-defined]
+    return open_source
+
+
+def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable[[], Iterator[np.ndarray]]:
+    """A function that reads the region again on each call and yields its
+    pixels' values (NaN included) in double precision, block of rows by block
+    of rows."""
+    open_source = _cube_opener(path, hdu)
 
     def read() -> Iterator[np.ndarray]:
         cube = open_source()
@@ -231,7 +245,7 @@ def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable
             mapped = 0
             for y0 in range(y_min, y_max + 1, rows):
                 y1 = min(y_max + 1, y0 + rows)
-                if mapped > _REMAP_BYTES and not whole:
+                if mapped > _REMAP_BYTES and not open_source.whole:
                     cube.close()
                     cube = open_source()
                     mapped = 0
@@ -561,30 +575,6 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
     return result
 
 
-class _DatasetCube:
-    """The cube as the dataset shows it (``ScientificFitsDataset``: degenerate
-    axes dropped, so RA, DEC, STOKES=1, FREQ is a FREQ cube), memory-mapped
-    and read in blocks. ``_SourceCube`` keeps the last three axes instead,
-    which for that order is the single Stokes plane."""
-
-    def __init__(self, path: str, hdu: int) -> None:
-        from .fits_dataset import ScientificFitsDataset  # noqa: PLC0415
-
-        dataset = ScientificFitsDataset(path)
-        dataset.hdu_index = hdu
-        self._hdul, raw = dataset.open_memmap()
-        data = ScientificFitsDataset.squeeze_to_3d(raw)
-        self.data = data[np.newaxis] if data.ndim == 2 else data
-        self.shape = tuple(int(n) for n in self.data.shape)
-
-    def block(self, z0, z1, y0, y1, x0, x1, dtype=np.float64):
-        return np.asarray(self.data[z0:z1, y0:y1, x0:x1], dtype=dtype)
-
-    def close(self) -> None:
-        self.data = None
-        self._hdul.close()
-
-
 def region_spectrum(path: str, region: Region, hdu: int, stop=None,
                     progress=None) -> dict:
     """The mean spectrum of a region over every pixel of it, at full
@@ -596,9 +586,7 @@ def region_spectrum(path: str, region: Region, hdu: int, stop=None,
     of the region inside the image) and ``nz``. ``stop`` (an Event) set
     between two blocks raises RuntimeError("cancelled")."""
 
-    def open_source():
-        return _DatasetCube(path, hdu)
-
+    open_source = _cube_opener(path, hdu)
     cube = open_source()
     mapped = 0
     try:
@@ -620,7 +608,7 @@ def region_spectrum(path: str, region: Region, hdu: int, stop=None,
                 y1 = min(y_max + 1, y0 + rows)
                 # Pages of a mapped file stay resident: map it again now and
                 # then, as _value_blocks does, so a large cube stays bounded.
-                if mapped > _REMAP_BYTES:
+                if mapped > _REMAP_BYTES and not open_source.whole:
                     cube.close()
                     cube = open_source()
                     mapped = 0

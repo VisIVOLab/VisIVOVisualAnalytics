@@ -14,6 +14,46 @@ from astropy.wcs import WCS
 logger = logging.getLogger("visivo.fits")
 
 
+def cube_axes(shape) -> tuple[int, ...]:
+    """The numpy axes of an array of ``shape`` that form its cube, in order.
+
+    The one rule for which three axes of a FITS array are the cube (issue
+    #506), shared by the dataset (``ScientificFitsDataset``: its
+    ``active_axes`` and ``display_fits_axes``), the brick pyramid, the render
+    session and the volume source: the axes longer than one, wherever they
+    sit, so a size-1 STOKES axis is ignored whether it is before or after
+    FREQ. With more than three, the last three (the FITS-first ones): the
+    others, the leading ones in numpy order, keep their first plane. Two axes
+    are an image, fewer are no cube."""
+    active = [i for i, n in enumerate(shape) if int(n) > 1]
+    return tuple(active[-3:])
+
+
+def cube_index(shape) -> tuple:
+    """The index that views an array of ``shape`` as its cube: a full slice on
+    each axis of :func:`cube_axes`, plane 0 on every other. A basic index, so
+    on a memory map or a tile-compressed ``section`` it reads nothing."""
+    axes = cube_axes(shape)
+    return tuple(slice(None) if i in axes else 0 for i in range(len(shape)))
+
+
+def cube_shape(shape) -> tuple[int, ...]:
+    """The shape :func:`cube_index` gives: ``(z, y, x)``, or two entries for an
+    image, fewer for no cube."""
+    return tuple(int(shape[i]) for i in cube_axes(shape))
+
+
+def cube_layout(shape) -> str:
+    """What makes a pyramid of a file of ``shape`` another one than the last
+    three axes read as a cube (the rule before #506): ``axes=a,b,c`` when
+    :func:`cube_axes` is not the file's last three axes (nor, for an image,
+    its last two: the old rule read those as one plane deep too), else "" (same
+    data, same pyramid, no rebuild)."""
+    axes, n = cube_axes(shape), len(shape)
+    unchanged = axes == tuple(range(n - len(axes), n)) and len(axes) in (2, 3)
+    return "" if unchanged else "axes=" + ",".join(str(a) for a in axes)
+
+
 @dataclass(frozen=True)
 class BeamMetadata:
     major: float | None
@@ -481,20 +521,24 @@ class ScientificFitsDataset:
 
     @staticmethod
     def squeeze_to_3d(data: np.ndarray) -> np.ndarray:
-        arr = np.squeeze(data)
-        # np.squeeze already dropped all degenerate (size-1) axes. If we still have
-        # >3 dims, a *non-degenerate* extra axis remains (e.g. a real multi-plane
-        # STOKES/FREQ axis): taking arr[0] keeps only plane 0 with no guarantee it
-        # is Stokes I (R-10). Warn loudly rather than silently picking a plane.
-        while arr.ndim > 3:
+        """The cube of ``data``: the axes :func:`cube_axes` picks, as a view
+        (nothing is read from a memory map). Fewer than three dimensions for
+        an image."""
+        arr = np.asarray(data)
+        axes = cube_axes(arr.shape)
+        if not axes:
+            return np.squeeze(arr)
+        # A non-degenerate axis beyond the three (e.g. a real multi-plane
+        # STOKES/FREQ axis) keeps plane 0 only, with no guarantee it is Stokes
+        # I (R-10). Warn loudly rather than silently picking a plane.
+        dropped = [int(n) for i, n in enumerate(arr.shape) if n > 1 and i not in axes]
+        if dropped:
             logger.warning(
-                "squeeze_to_3d: dropping a non-degenerate leading axis of size %d "
-                "(keeping index 0 only), remaining shape %s; if this is a STOKES "
-                "axis the plane may not be Stokes I.",
-                arr.shape[0], arr.shape,
+                "squeeze_to_3d: keeping only index 0 of the non-degenerate leading "
+                "axes %s of shape %s; if one is a STOKES axis the plane may not be "
+                "Stokes I.", dropped, arr.shape,
             )
-            arr = arr[0]
-        return arr
+        return arr[cube_index(arr.shape)]
 
     def degenerate_axes_summary(self) -> str:
         entries: list[str] = []

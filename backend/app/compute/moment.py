@@ -338,10 +338,10 @@ def _cube_shape_3d(shape: tuple) -> tuple | None:
     ``shape``: the size-1 axes dropped, then the leading axes beyond three
     reduced to their first index. That array is the first nz·ny·nx samples
     of the data, contiguous. None when it is not three-dimensional."""
-    dims = [int(n) for n in shape if int(n) != 1]
-    if len(dims) < 3:
-        return None
-    return tuple(dims[-3:])
+    from ..fits_dataset import cube_shape  # noqa: PLC0415
+
+    dims = cube_shape(shape)
+    return dims if len(dims) == 3 else None
 
 
 _FITS_RAW_DTYPES = {8: ">u1", 16: ">i2", 32: ">i4", 64: ">i8", -32: ">f4", -64: ">f8"}
