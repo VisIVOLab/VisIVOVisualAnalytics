@@ -314,6 +314,13 @@ private:
     QPointer<QLabel> m_placementStatus;
     QPointer<QPushButton> m_unplacedButton;
     QPointer<QAction> m_actionUnplaced;
+    /// A plain table of points may be marked as particles or as objects
+    /// (ParticleTableRule.h); a snapshot or a VBT is not asked.
+    bool m_particleChoiceOffered{ false };
+    /// Particles by the rule or the user's choice, not by the file's format:
+    /// no snapshot timeline (its files are not known to be a run's outputs).
+    bool m_particlesByRule{ false };
+    void setParticleChoice(bool particles);
     void refreshPlacementStatus();
     /// The "Unplaced sources" table: Name, RA, Dec, cz [km/s], Reason.
     void showUnplacedSources();
