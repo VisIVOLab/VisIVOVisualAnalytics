@@ -397,6 +397,12 @@ private:
     /// The radius a SubFind target is framed by, and its column; 0 when the
     /// table is not a SubFind catalogue or the row has none.
     double framingRadius(int idx, QString *field = nullptr) const;
+    /// The x, y, z columns of the selected row, as a profile centre
+    /// (issue #426); none without a selection or those columns.
+    std::optional<std::array<double, 3>> selectedPosition() const;
+    /// The SubFind group or subhalo selected in a catalogue window of the
+    /// same backend session, as a profile centre; none when there is none.
+    std::optional<visivo::profiles::CentreChoice> subfindTargetInSession() const;
     /// A double-click on the Remote or ray-traced view (they have no VTK
     /// picker): picks the nearest marker with that view's camera and frames it.
     void frameSourceAtViewPoint(QWidget *view, const QPoint &pos);

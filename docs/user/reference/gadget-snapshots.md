@@ -115,9 +115,12 @@ A particle type works wherever a VBT point table does: filters and colour by
 any column, the *Camera* presets, the remote 3-D view on the backend,
 [ray-traced particles](raytraced-particles.md) and the [VR headset](vr.md),
 whose *Previous* and *Next* buttons step through the numbered outputs. The
-3-D regions and *Selection Diagnostics…* described in
+3-D regions and *Selection Diagnostics…* (histogram, radial profile and
+phase diagram) described in
 [Catalogues and HiPS](catalogues-hips.md#3-d-regions-and-selection-diagnostics)
-evaluate every particle of the type, not only the loaded sample.
+evaluate every particle of the type, not only the loaded sample. A profile
+can be centred on a SubFind group or subhalo selected in the SubFind
+catalogue's window.
 
 In a cosmological snapshot the box is periodic: a box or sphere selection near
 one face also takes the particles just across the opposite face. A run that

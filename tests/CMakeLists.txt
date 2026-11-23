@@ -222,6 +222,8 @@ add_executable(VisIVOTests
     test_backend_task_follow.cpp
     TestDiagnosticsTask.h
     test_diagnostics_task.cpp
+    TestParticleProfiles.h
+    test_particle_profiles.cpp
     TestSamp.h
     test_samp.cpp
     ${VISIVO_ROOT}/src/app/SampCallbackServer.cpp
