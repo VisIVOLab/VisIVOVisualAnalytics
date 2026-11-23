@@ -1350,6 +1350,30 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     this->setupSnapshotTimeline(comparisonSource);
 }
 
+void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString &value)
+{
+    if (this->filterBusy || this->m_sceneBuilding) {
+        this->statusBar()->showMessage(
+                u"Wait for the current load to finish, then try again."_s, 6000);
+        return;
+    }
+    if (this->remoteDatasetId.isEmpty())
+        return;
+    // The condition joins the filters the view was drawn with, not edits to
+    // the list the user has not applied: those stay in the list, with the
+    // condition, for their own Apply.
+    this->activeFilters =
+            visivo::selection::withOnlyCondition(this->activeFilters, field, u"="_s, value);
+    if (this->filterList) {
+        this->filterList->clear();
+        for (const BackendTabularFilter &f : this->activeFilters)
+            this->filterList->addItem(filterDisplayText(f));
+    }
+    this->m_appliedFilters.begin(visivo::selection::withOnlyCondition(
+            this->m_appliedFilters.filters(), field, u"="_s, value));
+    this->queryAppliedFilters();
+}
+
 void vtkWindowCatalogue3D::setParticleChoice(bool particles)
 {
     if (!this->m_particleChoiceOffered || particles == this->m_pointTable)

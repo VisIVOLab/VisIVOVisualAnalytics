@@ -85,6 +85,26 @@ inline bool sameFilters(const std::vector<BackendTabularFilter> &a,
     return true;
 }
 
+/// @p filters with ``field op value`` as the only condition on that column:
+/// its other conditions (type = 4 with type = 0) would leave nothing, and are
+/// replaced. Spatial selections are kept, in their order.
+inline std::vector<BackendTabularFilter> withOnlyCondition(
+        const std::vector<BackendTabularFilter> &filters, const QString &field, const QString &op,
+        const QString &value)
+{
+    std::vector<BackendTabularFilter> out;
+    out.reserve(filters.size() + 1);
+    for (const BackendTabularFilter &f : filters)
+        if (f.isSpatial() || f.field != field)
+            out.push_back(f);
+    BackendTabularFilter condition;
+    condition.field = field;
+    condition.op = op;
+    condition.value = value;
+    out.push_back(condition);
+    return out;
+}
+
 /// The filters the rows on screen were queried with.
 class AppliedFilters
 {

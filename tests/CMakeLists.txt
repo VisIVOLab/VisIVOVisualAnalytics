@@ -224,6 +224,8 @@ add_executable(VisIVOTests
     TestCosmologyTools.h
     test_cosmology_tools.cpp
     test_backend_task_follow.cpp
+    TestParticleLightReport.h
+    test_particle_light_report.cpp
     TestDiagnosticsTask.h
     test_diagnostics_task.cpp
     TestParticleTableRule.h
