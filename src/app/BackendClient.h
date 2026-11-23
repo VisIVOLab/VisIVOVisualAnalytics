@@ -1010,6 +1010,15 @@ struct BackendImageQualityResult
     QVariantMap metrics;
 };
 
+/// Answer of POST /v1/products/lte_co (issue #416), kept as JSON: the dialog
+/// reads it through app/LteCoRequest.h, where the unit tests can reach it.
+struct BackendLteCoResult
+{
+    bool valid{ false };
+    QString error;
+    QJsonObject payload;
+};
+
 // ── S-02: Line-width maps ─────────────────────────────────────────────────────
 
 struct BackendLinewidthResult
@@ -2784,6 +2793,9 @@ public:
 
     /** POST /v1/products/image_quality — quality/artifact metrics (UC 4.2). */
     BackendImageQualityResult imageQuality(const QString &datasetId) const;
+
+    /** POST /v1/products/lte_co — LTE analysis of CO isotopologues (issue #416). */
+    BackendLteCoResult lteCo(const QJsonObject &body) const;
 
     BackendImageResult requestImagePreview(const QString &datasetId, int maxLongestSide) const;
     BackendImageResult requestImage(const QString &datasetId) const;

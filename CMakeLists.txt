@@ -468,6 +468,7 @@ set(PROJECT_SOURCES
         src/app/SofiaSuggest.h
         src/app/DatasetBeam.h
         src/app/LineFitRequest.h
+        src/app/LteCoRequest.h
         src/app/FinderTaskRun.h
         src/app/RenderTaskHandle.h
         src/app/ThumbnailCache.cpp
@@ -613,6 +614,8 @@ set(PROJECT_SOURCES
         src/gui/ScienceMapWindow.h
         src/gui/LinewidthDialog.cpp
         src/gui/LinewidthDialog.h
+        src/gui/LteCoDialog.cpp
+        src/gui/LteCoDialog.h
         src/gui/BaselineDialog.cpp
         src/gui/BaselineDialog.h
         src/gui/StackDialog.cpp
@@ -679,6 +682,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_RemoteSlice.cpp
         src/gui/vtkWindowCube_Probe.cpp
         src/gui/vtkWindowCube_Polarisation.cpp
+        src/gui/vtkWindowCube_Lte.cpp
         src/gui/vtkWindowCube_Cosmology.cpp
         src/gui/vtkWindowCube_Region.cpp
         src/gui/vtkWindowCube_Setup.cpp

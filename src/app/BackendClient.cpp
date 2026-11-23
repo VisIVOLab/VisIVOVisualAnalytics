@@ -3533,6 +3533,9 @@ const QStringList &heavyComputePaths()
         // Selection Diagnostics: two exact passes over every particle of the
         // selection, minutes on a large snapshot read out of core (#448).
         QStringLiteral("/catalogue/diagnostics"),
+        // Reads two or three whole cubes, reprojects and solves per pixel,
+        // with no ceiling of its own on the server (issue #416).
+        QStringLiteral("/products/lte_co"),
     };
     return paths;
 }

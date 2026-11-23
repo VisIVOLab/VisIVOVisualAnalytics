@@ -1083,6 +1083,10 @@ void MainWindow::wireImageViewerProducts(vtkWindowImage *window,
     // a table, and dispatchOpenForPath knows the difference.
     QObject::connect(window, &vtkWindowImage::openInOwnWindowRequested, this,
                      [this](const QString &path) { this->dispatchOpenForPath(path); });
+    QObject::connect(window, &vtkWindowImage::openBackendFitsRequested, this,
+                     [this, backendUrl, backendToken](const QString &path, const QString &label) {
+                         this->openBackendProductFits(backendUrl, backendToken, path, label);
+                     });
     QObject::connect(window, &vtkWindowImage::imageQualityRequested, this,
                      [this, owner, backendUrl, backendToken, sessionId, datasetId]() {
                          this->runImageQuality(

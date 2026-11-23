@@ -1119,6 +1119,15 @@ void vtkWindowImage::setupInspector()
         QObject::connect(this->m_actImageQuality, &QAction::triggered, this,
                          [this]() { emit this->imageQualityRequested(); });
     }
+    if (!this->m_actLteCo) {
+        this->m_actLteCo = ui->menuTools->addAction(u"CO Isotopologues (LTE)…"_s);
+        this->m_actLteCo->setToolTip(
+                u"Optical depth, T_ex, column densities, N(H₂) and mass from ¹³CO and C¹⁸O "
+                u"(optionally ¹²CO) open in this session, per region and as maps."_s);
+        this->m_actLteCo->setEnabled(!this->remoteDatasetId.isEmpty());
+        QObject::connect(this->m_actLteCo, &QAction::triggered, this,
+                         &vtkWindowImage::openLteCoDialog);
+    }
 
     // Every tool, from the one table, on both surfaces — the same treatment the
     // cube viewer got and for the same reason: this list held eleven entries
@@ -1291,6 +1300,7 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     };
 
     add(u"Spectral"_s, self->actionExtractSpectrum);
+    add(u"Spectral"_s, self->m_actLteCo);
 
     add(u"Regions"_s, self->actionBoxRegion);
     add(u"Regions"_s, self->actionCircleRegion);

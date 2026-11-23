@@ -162,6 +162,8 @@ public:
     /// widget's mode; for a caller that hosts the fit controls elsewhere.
     static void populateFitRangeCombo(QComboBox *combo);
     bool hasSpectrum() const { return !m_lastSpectrumValues.isEmpty(); }
+    /// The x-axis title now on the plot, which says what the fit range is in.
+    QString spectrumXAxisLabel() const;
     QString statsText() const;                    ///< the current stats-bar text (or empty)
     QString statsToolTip() const;                 ///< its tooltip: fit warnings and caveats
 
