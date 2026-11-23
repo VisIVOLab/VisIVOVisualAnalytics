@@ -6,6 +6,30 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.3.1 (2026-11-23)
+
+- **Profiles along and around an axis (#426).** *Selection Diagnostics* →
+  *Profile* now has a geometry: spherical shells as before, cylindrical
+  annuli in the distance R from an axis through the centre (surface density,
+  and the volume density inside an optional slab in z), or linear slabs in
+  the signed height z along the axis (linear density, and the volume density
+  within an optional radius limit). The axis is given, or the angular
+  momentum of the central particles, or the table's z; velocities come as
+  v_R, v_φ, v_z with their dispersions. Every particle is accounted for:
+  in a bin, below, above, or outside the slab or limit.
+- **Physical totals of a selection (#426).** A new *Totals* tab gives the
+  mass, centre-of-mass velocity, momentum, kinetic energy (also in the
+  centre-of-mass frame), 1-D velocity dispersion and thermal energy of the
+  whole selection, out of core and cancellable, in Msun, km/s and erg when
+  the snapshot declares its units and as stored otherwise. A total that
+  cannot be computed (no internal energy for dark matter, an undeclared
+  unit) is left empty with the reason. New routes `/v1/catalogue/totals`
+  and `/v1/tasks/catalogue_totals`.
+- **Fixes (#448).** In the diagnostics histogram a row with a negative or
+  non-finite weight now weighs zero instead of being dropped, so choosing a
+  weight no longer changes the unweighted count, range, mean and σ. The
+  *Camera* menu sits after *View* instead of before *File*.
+
 ## 1.3.0 (2026-11-23)
 
 - **Gadget and SubFind simulations (#31, #392, #398).** Gadget snapshots
