@@ -42,8 +42,10 @@ backend.
 ### The remote 3-D view is choppy, frozen or shows only the proxy
 
 - The view is coarser while it moves and sharpens when you release the mouse.
-- A view that stops updating usually means the SSH tunnel dropped; the cluster
-  helper reopens it within a few seconds.
+- A view that stops updating has lost its stream (sleep, network, SSH
+  tunnel). It reconnects by itself, with the attempt and the wait shown, for
+  about two minutes; then the cube view offers *Reconnect* and a point table
+  goes back to its loaded rows.
 - A decimated proxy means the backend cannot render on its side (no EGL in its
   image, or no GPU for its job). See
   [Running the backend on a cluster](../../technical/deployment/hpc-slurm.md#troubleshooting).

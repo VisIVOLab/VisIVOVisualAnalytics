@@ -1,6 +1,7 @@
 #include "SimulationDiagnosticsDialog.h"
 
 #include "CatalogueSelectionState.h"
+#include "app/BackendTaskFollow.h"
 
 #include "qcustomplot.h"
 #include "theme/VisivoTheme.h"
@@ -60,8 +61,8 @@ SimulationDiagnosticsDialog::SimulationDiagnosticsDialog(
     m_run = new QPushButton(u"Compute exact diagnostics"_s, this);
     QObject::connect(m_run, &QPushButton::clicked, this, &SimulationDiagnosticsDialog::run);
     runRow->addWidget(m_run);
-    // Two passes over every particle of a large snapshot take minutes: the
-    // bar says it is still going, Cancel stops waiting for it.
+    // Two passes over every particle of a large snapshot take minutes: a
+    // backend task, whose progress the bar shows and which Cancel stops.
     m_progress = new QProgressBar(this);
     m_progress->setRange(0, 0);
     m_progress->setTextVisible(false);
@@ -74,10 +75,7 @@ SimulationDiagnosticsDialog::SimulationDiagnosticsDialog(
     outer->addLayout(runRow);
     m_tick = new QTimer(this);
     m_tick->setInterval(1000);
-    QObject::connect(m_tick, &QTimer::timeout, this, [this]() {
-        m_summary->setText(u"Computing over the complete selected population… %1 s"_s
-                                   .arg(m_elapsed.elapsed() / 1000));
-    });
+    QObject::connect(m_tick, &QTimer::timeout, this, &SimulationDiagnosticsDialog::showProgress);
 
     m_summary = new QLabel(u"Choose a quantity and compute."_s, this);
     m_summary->setWordWrap(true);
@@ -124,10 +122,26 @@ void SimulationDiagnosticsDialog::updatePopulation()
 
 SimulationDiagnosticsDialog::~SimulationDiagnosticsDialog()
 {
-    // Closed while a run is out: its worker drops the request and frees its
-    // thread (and the busy count) within a tenth of a second.
-    if (m_abort)
-        m_abort->store(true);
+    // Closed while a run is out: its worker cancels the task on the backend
+    // and frees its thread.
+    if (m_control)
+        m_control->requestAbort();
+}
+
+void SimulationDiagnosticsDialog::showProgress()
+{
+    if (!m_running || !m_control)
+        return;
+    const int percent = m_control->currentPercent();
+    if (percent >= 0) {
+        m_progress->setRange(0, 100);
+        m_progress->setValue(percent);
+    } else {
+        m_progress->setRange(0, 0);
+    }
+    m_summary->setText(visivo::describeTaskProgress(
+            u"Computing over the complete selected population"_s, m_control->currentPhase(),
+            m_elapsed.elapsed(), percent));
 }
 
 void SimulationDiagnosticsDialog::setFilters(const std::vector<BackendTabularFilter> &filters)
@@ -160,12 +174,13 @@ void SimulationDiagnosticsDialog::run()
     // One request out at a time: a run given up on is dropped first, and
     // this one goes out when its worker has returned.
     if (m_inFlight) {
-        if (m_abort)
-            m_abort->store(true);
+        if (m_control)
+            m_control->requestAbort();
         ++m_runId;   // the old answer is not this one
         m_rerunQueued = true;
         m_running = true;
         m_run->setEnabled(false);
+        m_progress->setRange(0, 0);
         m_progress->setVisible(true);
         m_cancel->setVisible(true);
         m_tick->stop();
@@ -181,8 +196,9 @@ void SimulationDiagnosticsDialog::run()
     const quint64 runId = ++m_runId;
     m_running = true;
     m_inFlight = true;
-    m_abort = std::make_shared<std::atomic_bool>(false);
+    m_control = std::make_shared<visivo::BackendTaskControl>();
     m_run->setEnabled(false);
+    m_progress->setRange(0, 0);
     m_progress->setVisible(true);
     m_cancel->setVisible(true);
     m_elapsed.start();
@@ -204,10 +220,10 @@ void SimulationDiagnosticsDialog::run()
         }
     });
     watcher->setFuture(QtConcurrent::run([url = m_backendUrl, token = m_backendToken,
-                                          session = m_sessionId, request, abort = m_abort]() {
+                                          session = m_sessionId, request, control = m_control]() {
         BackendClient client(url, token);
         client.setSessionId(session);
-        return client.catalogueDiagnostics(request, abort.get());
+        return client.catalogueDiagnosticsFollowingTask(request, control.get());
     }));
 }
 
@@ -225,17 +241,22 @@ void SimulationDiagnosticsDialog::cancel()
 {
     if (!m_running)
         return;
-    if (m_abort)
-        m_abort->store(true);   // the worker drops the request
-    ++m_runId;                  // and its answer, if one comes, is ignored
+    if (m_control)
+        m_control->requestAbort();   // the worker sends DELETE to the task
+    ++m_runId;                       // and its answer, if one comes, is ignored
     m_rerunQueued = false;
     this->finishRun();
     this->clearResult();
-    m_summary->setText(u"Cancelled. The backend may still finish the pass it had started."_s);
+    m_summary->setText(u"Cancelled."_s);
 }
 
 void SimulationDiagnosticsDialog::present(const BackendCatalogueDiagnosticsResponse &result)
 {
+    if (result.cancelled) {
+        m_summary->setText(u"Cancelled."_s);
+        this->clearResult();
+        return;
+    }
     if (!result.valid) {
         m_summary->setText(u"Diagnostics failed: %1"_s.arg(result.error));
         this->clearResult();   // what is plotted is not this population's

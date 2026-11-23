@@ -703,6 +703,7 @@ struct BackendCatalogueDiagnosticsResponse
 {
     bool valid{ false };
     QString error;
+    bool cancelled{ false };   ///< stopped by the user (catalogueDiagnosticsFollowingTask)
     QString field;
     QString fieldUnit;
     QString weightField;
@@ -2516,6 +2517,22 @@ public:
     BackendCatalogueDiagnosticsResponse catalogueDiagnostics(
             const BackendCatalogueDiagnosticsRequest &req,
             const std::atomic_bool *abort = nullptr) const;
+    /** POST /v1/tasks/catalogue_diagnostics: the same request as
+     *  catalogueDiagnostics(), as a task (issue #448); its result is the
+     *  diagnostics response. */
+    BackendTaskCreateResult createCatalogueDiagnosticsTask(
+            const BackendCatalogueDiagnosticsRequest &req) const;
+    /** The diagnostics through the task route, followed to its end: its
+     *  progress (0-100) in @p control, whose abort sends DELETE
+     *  /v1/tasks/{id}. Falls back to the synchronous catalogueDiagnostics()
+     *  only on a backend without the task route. A run stopped by the user
+     *  comes back with ``cancelled`` set. Blocks: call it on a worker thread. */
+    BackendCatalogueDiagnosticsResponse catalogueDiagnosticsFollowingTask(
+            const BackendCatalogueDiagnosticsRequest &req,
+            visivo::BackendTaskControl *control) const;
+    /// A diagnostics response from its JSON (the route's answer or the
+    /// task's result).
+    static BackendCatalogueDiagnosticsResponse parseCatalogueDiagnostics(const QJsonObject &object);
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
