@@ -267,7 +267,7 @@ Request fields:
 3. BEAMEFF/FORWEFF (GILDAS/CLASS);
 4. ETAMB.
 
-Otherwise the request is refused. ETAL is never used, because it is the rear-spillover efficiency and is already in T_A*.
+Otherwise the request is refused. ETAL is never used, because it is the rear-spillover efficiency and is already in T_A*. The ¹²CO efficiency is needed only when ¹²CO gives T_ex; a ¹²CO dataset sent with a typed `t_ex_k` is not used, and `warnings` says so. Channel numbers in the notes count from 1, as in the cube viewer.
 
 Without `t_ex_k`, T_ex comes from the peak of ¹²CO, taken as optically thick (a cube or a peak map). Without ¹²CO it comes from the ¹³CO peak with τ at the peak, solved from the ratio of the ¹³CO and C¹⁸O peaks: both must be cubes, or `peak_13co` and `peak_c18o` must be given. The τ from the integrated ratio is a line average, smaller than at the peak, and would raise T_ex. Where the peaks give no optical depth (thin, or no solution), T_ex and the column densities are unknown. A region's peaks are those of its mean spectra, not means of per-pixel peaks. Per pixel the two peaks are each the maximum over the window, so where C¹⁸O is weak (S/N below about 5) its noise raises the C¹⁸O peak and lowers T_ex: read the `tex` map there with care, or use regions. No uncertainty is given for T_ex. A T_ex at or below T_bg is refused when typed and left unknown when derived.
 

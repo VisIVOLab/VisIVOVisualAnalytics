@@ -207,7 +207,8 @@ def read_cube(path: str, v_min: float, v_max: float, rms_chan: float | None,
     if unit and unit.upper() != "K":
         raise ValueError(f"{path!r} is in {unit}, not K: LTE needs brightness temperatures.")
     wcs, _ = _celestial_header(header)
-    notes = [f"integrated over channels {c0}-{c1} ({vel[c0]:g} to {vel[c1]:g} km/s, "
+    notes = [f"integrated over channels {c0 + 1}-{c1 + 1} of {depth} "
+             f"({vel[c0]:g} to {vel[c1]:g} km/s, "
              f"{axis['convention']})"]
     if need_noise:
         notes.append("noise: user rms per channel, channels independent" if rms_chan is not None
@@ -449,10 +450,6 @@ def compute_lte(req: dict[str, Any], *, path13: str | None = None, path18: str |
     eta13, src13 = eta_mb_for(d13.header, req.get("eta_mb_13co"), "13CO")
     eta18, src18 = eta_mb_for(d18.header, req.get("eta_mb_c18o"), "C18O")
     assumptions["eta_mb"] = {"13CO": [eta13, src13], "C18O": [eta18, src18]}
-    eta12 = None
-    if d12 is not None:
-        eta12, src12 = eta_mb_for(d12.header, req.get("eta_mb_12co"), "12CO")
-        assumptions["eta_mb"]["12CO"] = [eta12, src12]
     w13, s13 = d13.w / eta13, d13.sigma_w / eta13
     w18, s18 = d18.w / eta18, d18.sigma_w / eta18
     assumptions["inputs"] = {"13CO": d13.notes, "C18O": d18.notes}
@@ -467,6 +464,14 @@ def compute_lte(req: dict[str, Any], *, path13: str | None = None, path18: str |
     assumptions["x_ratio"] = [x, x_src]
 
     tex_mode = _tex_mode(req, d12, d13, d18)
+    # η_mb of 12CO only when its peak gives T_ex: a 12CO dataset that is not
+    # used (T_ex typed) needs no efficiency.
+    eta12 = None
+    if tex_mode == "12co":
+        eta12, src12 = eta_mb_for(d12.header, req.get("eta_mb_12co"), "12CO")
+        assumptions["eta_mb"]["12CO"] = [eta12, src12]
+    elif d12 is not None:
+        warnings_out.append("12CO was given but not used: T_ex was typed.")
     if tex_mode == "user":
         t_user = _user_tex(req)
         tex = np.full(shape, t_user)

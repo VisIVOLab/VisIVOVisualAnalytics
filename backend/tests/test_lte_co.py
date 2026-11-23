@@ -538,3 +538,27 @@ async def test_a_bad_region_is_named(client, auth_headers, tmp_path):
                              json=_cube_body(a, b, regions=[{"shape": "circle"}]),
                              headers=h)).json()
     assert out["valid"] is False and "Region 0" in out["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_unused_12co_needs_no_efficiency(client, auth_headers, tmp_path):
+    a, b, h, tau = await _pair(client, auth_headers, tmp_path)
+    p12 = _write_cube(tmp_path / "12co.fits", L.line("12CO", "3-2"), np.full_like(tau, 60.0))
+    c = await _open(client, auth_headers, p12, headers=h)
+    out = (await client.post("/v1/products/lte_co",
+                             json=_cube_body(a, b, dataset_id_12co=c["dataset_id"]),
+                             headers=h)).json()
+    assert out["valid"], out["error"]
+    assert "12CO" not in out["assumptions"]["eta_mb"]
+    assert any("not used" in w for w in out["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_channels_in_the_notes_count_from_one(client, auth_headers, tmp_path):
+    a, b, h, _ = await _pair(client, auth_headers, tmp_path)
+    out = (await client.post("/v1/products/lte_co", json=_cube_body(a, b), headers=h)).json()
+    assert out["valid"], out["error"]
+    # 69 to 76 km/s on an axis starting at 60 km/s in 0.5 km/s steps: the
+    # 19th to the 33rd of 60 channels, as the cube viewer numbers them.
+    assert out["assumptions"]["inputs"]["13CO"][0].startswith(
+        "integrated over channels 19-33 of 60 (69 to 76 km/s")
