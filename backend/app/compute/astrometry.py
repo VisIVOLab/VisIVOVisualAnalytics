@@ -69,7 +69,7 @@ def worker_region_stats(
         return {"shape": region["shape"], "total_count": stats["total_count"], "valid_count": 0,
                 "blanked_count": stats["blank_count"], "min": None, "max": None, "mean": None,
                 "rms": None, "sum": 0.0, "median": None, "mad_sigma": None,
-                "bunit": dataset.bunit, "flux_jy": None, "channel": ch}
+                "bunit": dataset.intensity_unit, "flux_jy": None, "channel": ch}
 
     result: dict[str, Any] = {
         "shape": region["shape"],
@@ -83,7 +83,7 @@ def worker_region_stats(
         "sum": stats["sum"],
         "median": stats["median"],
         "mad_sigma": stats["mad_sigma"],
-        "bunit": dataset.bunit,
+        "bunit": dataset.intensity_unit,
         "flux_jy": None,
         "channel": ch,
     }

@@ -1,6 +1,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "CameraPresetActions.h"
 #include "RemoteCameraPreset.h"
+#include "RemotePointStyle.h"
 #include "RemotePointView.h"
 #include "RemoteRenderWidget.h"
 #include "RaytraceViewport.h"
@@ -552,14 +553,16 @@ void vtkWindowCatalogue3D::scaleChanged(int value)
 {
     // Moved by the user (or a linked view): a change of shape keeps it.
     this->m_sliderAutomatic = false;
-    if (entries.empty())
-        return;
     Q_UNUSED(value);
-    this->updateGlyphScales();
-    if (this->geometryMode == GeometryMode::Gaussian)
-        this->updateGaussianSplats();
-    renderWindow->Render();
-    this->pushRemoteState();
+    visivo::remote::SizeSliderTargets targets;
+    targets.restyleLocal = [this]() {
+        this->updateGlyphScales();
+        if (this->geometryMode == GeometryMode::Gaussian)
+            this->updateGaussianSplats();
+        renderWindow->Render();
+    };
+    targets.updateServerViews = [this]() { this->pushRemoteState(); };
+    visivo::remote::applySizeSlider(!entries.empty(), targets);
 }
 
 void vtkWindowCatalogue3D::resetCamera()
@@ -934,8 +937,13 @@ void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &
                                            .toString();
         const QString name = Catalogue3DParser::detail::entryDisplayName(
                 this->entries[static_cast<std::size_t>(idx)], this->schema);
-        this->showSelectionStatus(
-                visivo::framing::framingStatus(name, radiusField, definition, radius));
+        const visivo::framing::FramingOutputs outputs{
+            [this](const QString &text) { this->showSelectionStatus(text); },
+            [this](const QString &text, int timeoutMs) {
+                this->statusBar()->showMessage(text, timeoutMs);
+            }
+        };
+        visivo::framing::reportFraming(outputs, name, radiusField, definition, radius);
     };
     const bool raytraced = this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView;

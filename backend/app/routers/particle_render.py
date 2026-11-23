@@ -185,8 +185,7 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     """Positions, sizes, colours and light of the particles drawn."""
     from ..particle_raytrace import normalised_light, smoothing_lengths  # noqa: PLC0415
     from ..point_sample import place_rows  # noqa: PLC0415
-    from ..point_table import (filter_mask, open_point_table, positions_within,  # noqa: PLC0415
-                               sky_arguments)
+    from ..point_table import filter_mask, open_point_table, sky_arguments  # noqa: PLC0415
     from .render import point_table_spec  # noqa: PLC0415
     spec = point_table_spec(entry)
     if spec is None:
@@ -220,6 +219,8 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     rows, pos = placed.rows, placed.xyz
     origin, scale = placed.origin.copy(), float(placed.scale[0])
     del placed
+    periods = _axis_periods(table.columns, axes, req.period)
+    boxsize = [p / scale if p else 0.0 for p in periods]
     if req.intensity_field and req.intensity_field not in table.columns:
         raise ValueError(f"Unknown intensity field: {req.intensity_field!r}")
     if not len(rows):
@@ -239,22 +240,26 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     else:
         # Before the light leaves rows out: a particle's neighbours are its
         # population's, whatever their intensity (a zero SFR, a blank).
-        periods = _axis_periods(table.columns, axes, req.period)
-        region = None
-        if spatial:
-            def region(lo, hi):
-                xyz = positions_within(table.columns, axes, population,
-                                       origin + scale * np.asarray(lo, dtype=np.float64),
-                                       origin + scale * np.asarray(hi, dtype=np.float64),
-                                       periods)
-                return (xyz - origin) / scale
-
-        radius = smoothing_lengths(pos, req.neighbours, region=region,
-                                   boxsize=[p / scale if p else 0.0 for p in periods])
+        radius = smoothing_lengths(pos, req.neighbours, boxsize=boxsize,
+                                   region=_region(table.columns, axes, population, origin,
+                                                  scale, periods) if spatial else None)
+    sigma = None
+    if req.mode == "projected" and req.colour_by == "velocity_dispersion":
+        from ..particle_raytrace import velocity_dispersion  # noqa: PLC0415
+        names = req.velocity or _velocity_columns(table.columns)
+        if names is None or any(n not in table.columns for n in names):
+            raise ValueError("No velocity columns (VX, VY, VZ) for the velocity dispersion.")
+        vel = np.stack([np.asarray(table.columns[n][rows], dtype=np.float32) for n in names],
+                       axis=1)
+        sigma = velocity_dispersion(
+            pos, np.nan_to_num(vel), req.neighbours, boxsize=boxsize,
+            region=_region(table.columns, axes, population, origin, scale, periods,
+                           names) if spatial else None)
     if req.intensity_field:
         light, keep, stats = normalised_light(table.columns[req.intensity_field][rows],
                                               req.intensity_log10, req.intensity_power)
         rows, pos, radius = rows[keep], pos[keep], radius[keep]
+        sigma = sigma[keep] if sigma is not None else None
     else:
         light = np.ones(len(rows), dtype=np.float32)
         stats = {"dropped_rows": 0, "clipped_rows": 0, "light_span_decades": 0.0}
@@ -282,15 +287,27 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
         if req.colour.field not in table.columns:
             raise ValueError(f"Unknown colour field: {req.colour.field!r}")
         particles["value"] = np.asarray(table.columns[req.colour.field][rows], dtype=np.float32)
-    elif req.colour_by == "velocity_dispersion":
-        from ..particle_raytrace import velocity_dispersion  # noqa: PLC0415
-        names = req.velocity or _velocity_columns(table.columns)
-        if names is None or any(n not in table.columns for n in names):
-            raise ValueError("No velocity columns (VX, VY, VZ) for the velocity dispersion.")
-        vel = np.stack([np.asarray(table.columns[n][rows], dtype=np.float32) for n in names],
-                       axis=1)
-        particles["value"] = velocity_dispersion(pos, np.nan_to_num(vel), req.neighbours)
+    elif sigma is not None:
+        particles["value"] = sigma
     return particles
+
+
+def _region(columns, axes, population: np.ndarray, origin, scale: float, periods,
+            extra=()):
+    """``region(lo, hi)`` for particle_raytrace's neighbour searches: the
+    population's positions within [lo, hi] in the particles' local frame,
+    then the ``extra`` columns (NaN as 0)."""
+    from ..point_table import positions_within  # noqa: PLC0415
+
+    def region(lo, hi):
+        out = positions_within(columns, axes, population,
+                               origin + scale * np.asarray(lo, dtype=np.float64),
+                               origin + scale * np.asarray(hi, dtype=np.float64),
+                               periods, extra)
+        out[:, :3] = (out[:, :3] - origin) / scale
+        return np.nan_to_num(out) if extra else out
+
+    return region
 
 
 def _split_filters(filters: list[dict], axes) -> tuple[list[dict], list[dict]]:

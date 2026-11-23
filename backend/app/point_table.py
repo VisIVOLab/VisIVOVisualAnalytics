@@ -161,16 +161,18 @@ _REGION_CHUNK = 2_000_000
 
 
 def positions_within(columns, axes, rows: np.ndarray, lo, hi,
-                     periods=(None, None, None)) -> np.ndarray:
-    """(n, 3) float64 positions of the ``rows`` inside [lo, hi] on each of
-    ``axes`` (a bound may be infinite; an axis with a period wraps round it,
-    app/periodic.py), read a chunk at a time."""
+                     periods=(None, None, None), extra=()) -> np.ndarray:
+    """(n, 3 + len(extra)) float64 positions of the ``rows`` inside [lo, hi]
+    on each of ``axes`` (a bound may be infinite; an axis with a period
+    wraps round it, app/periodic.py), then their ``extra`` columns, read a
+    chunk at a time."""
     from .periodic import box_inside   # noqa: PLC0415
     parts = []
     for start in range(0, len(rows), _REGION_CHUNK):
         chunk = rows[start:start + _REGION_CHUNK]
-        xyz = np.stack([np.asarray(columns[a][chunk], dtype=np.float64) for a in axes], axis=1)
-        inside = np.isfinite(xyz).all(axis=1)
+        xyz = np.stack([np.asarray(columns[a][chunk], dtype=np.float64)
+                        for a in (*axes, *extra)], axis=1)
+        inside = np.isfinite(xyz[:, :3]).all(axis=1)
         for i in range(3):
             a, b = float(lo[i]), float(hi[i])
             if periods[i] is None:
@@ -178,7 +180,7 @@ def positions_within(columns, axes, rows: np.ndarray, lo, hi,
             elif math.isfinite(a) and math.isfinite(b):
                 inside &= box_inside(xyz[:, i], a, b, periods[i])
         parts.append(xyz[inside])
-    return np.concatenate(parts) if parts else np.zeros((0, 3))
+    return np.concatenate(parts) if parts else np.zeros((0, 3 + len(extra)))
 
 
 # ── Particle tables: a VBT of points, a component of a snapshot ──────────────

@@ -12,6 +12,7 @@
 #include "ParticleLightReport.h"
 #include "RaytraceSettingsPanel.h"
 #include "RaytraceViewport.h"
+#include "RemotePointStyle.h"
 #include "RemotePointView.h"
 #include "RemoteRenderWidget.h"
 #include "LUTCustomizerDialog.h"
@@ -393,16 +394,9 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
     }
     add(color);
 
-    const bool gaussian = this->geometryMode == GeometryMode::Gaussian;
-    add({ { u"type"_s, u"set_point_style"_s },
-          { u"mode"_s, gaussian ? u"gaussian"_s : u"points"_s },
-          // Points in pixels: the backend draws in physical ones.
-          // Splats: the same continuous size step as here.
-          { u"size"_s, gaussian ? QVariant(this->splatSizeFromScale())
-                                : QVariant(static_cast<int>(std::lround(
-                                          this->pointSizeFromScale()
-                                          * this->devicePixelRatioF()))) },
-          { u"intensity"_s, 35 } });
+    add(visivo::remote::pointStyleCommand(this->geometryMode == GeometryMode::Gaussian,
+                                          ui->sliderScale->value(),
+                                          this->devicePixelRatioF()));
     add({ { u"type"_s, u"set_show_outline"_s },
           { u"visible"_s,
             !this->chkShowBoundingBox || this->chkShowBoundingBox->isChecked() } });
@@ -856,6 +850,8 @@ void vtkWindowCatalogue3D::leaveRaytraced(const QString &why)
 void vtkWindowCatalogue3D::setRaytraced(bool on)
 {
     this->enablePointOnlyControls(!on);
+    if (on)
+        this->updateSplatPass();   // nothing local is drawn meanwhile
     if (!on) {
         if (this->m_rtCard)
             this->m_rtCard->hide();

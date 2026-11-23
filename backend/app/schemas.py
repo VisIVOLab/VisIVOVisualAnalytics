@@ -134,6 +134,15 @@ class OpenDatasetResponse(BaseModel):
     beam_minor: float | None = None
     beam_pa: float | None = None
     beam_per_channel: bool = False   # a BEAMS table: one beam per channel (issue #401)
+    # "header", "user" (typed with /v1/datasets/beam, issue #416), "none", or
+    # "not_applicable" for data without celestial axes (VBT fields, raw
+    # simulation fields), where no beam can be set.
+    beam_source: str = ""
+    # The values' unit when BUNIT is missing (TEMPSCAL/BTYPE/LABEL); equals
+    # bunit when it is present, "" when nothing says. The note says where it
+    # came from.
+    intensity_unit: str = ""
+    intensity_unit_note: str = ""
     # Size-aware loading policy. Clients use ``recommended_load_mode``
     # to decide whether to auto-load full resolution or default to
     # preview-only. Threshold is configurable via
@@ -294,6 +303,17 @@ class CubeSliceRequest(BaseModel):
     dataset_id: str
     axis: str
     index: int
+    #: The longest side of the answer, in samples: the plane (or the region
+    #: below) is read every ``stride`` pixels so that neither side exceeds it.
+    #: 0 is the whole resolution, what clients before issue #381 get: a
+    #: 7233 x 7233 channel is 209 MB of float32 at full resolution.
+    max_longest_side: int = Field(0, ge=0)
+    #: The region to read, inclusive source pixels, all four or none: the part
+    #: of the plane a zoomed view shows. Clamped to the plane.
+    x0: int | None = None
+    x1: int | None = None
+    y0: int | None = None
+    y1: int | None = None
 
 
 class CubeSliceResponse(BaseModel):
@@ -306,6 +326,13 @@ class CubeSliceResponse(BaseModel):
     range_max: float = 0.0
     compression: str = ""
     data_base64: str = ""
+    #: Where the samples sit on the plane: sample (i, j) is source pixel
+    #: (x0 + i * stride, y0 + j * stride) of a full_width x full_height plane.
+    full_width: int = 0
+    full_height: int = 0
+    x0: int = 0
+    y0: int = 0
+    stride: int = 1
 
 
 class CubeSubvolumeRequest(BaseModel):
@@ -661,6 +688,94 @@ class CatalogueDiagnosticsResponse(BaseModel):
     counts: list[float] = []
     weighting: str = "unweighted"
     selection: list[str] = []
+
+
+class ProfileCentre(BaseModel):
+    """Where a radial profile or a radius axis is measured from (issue #426).
+
+    ``point``: the three coordinates in ``point``. ``target``: the position
+    columns of row ``target_row`` of another open catalogue (a SubFind group
+    or subhalo; same coordinate units as the particles). ``shrinking_sphere``:
+    the mass-weighted shrinking-sphere centre of the selection (Power et al.
+    2003), from ``start`` (default: the selection's periodic centre of mass)
+    and ``initial_radius`` (default: its largest distance from the start),
+    each sphere ``shrink_factor`` times the last, stopping before fewer than
+    min(``min_particles``, max(100, 1 % of the selection)) particles remain.
+    ``velocity``: the centre velocity radial velocities are taken against;
+    by default the mass-weighted mean velocity of the particles within a
+    tenth of the outer radius (at least 1000 of them)."""
+    mode: Literal["point", "target", "shrinking_sphere"] = "shrinking_sphere"
+    point: list[float] | None = None
+    target_dataset_id: str = ""
+    target_row: int | None = None
+    start: list[float] | None = None
+    initial_radius: float | None = None
+    shrink_factor: float = Field(default=0.975, ge=0.5, lt=1.0)
+    min_particles: int = Field(default=1000, ge=10)
+    velocity: list[float] | None = None
+
+
+class ParticleProfileRequest(BaseModel):
+    dataset_id: str
+    filters: list[TabularFilter] = []
+    position_fields: list[str] = ["x", "y", "z"]
+    #: None: vx, vy, vz when the table has them; []: no velocities.
+    velocity_fields: list[str] | None = None
+    #: None: "mass" when the table has it; "": every particle weighs 1.
+    mass_field: str | None = None
+    #: Numeric columns profiled per shell, and "radial_velocity".
+    columns: list[str] = []
+    centre: ProfileCentre = ProfileCentre()
+    r_min: float | None = None
+    r_max: float | None = None
+    bins: int = Field(default=32, ge=4, le=256)
+    #: Polar axis of the polar and azimuthal velocity components; None: the
+    #: angular momentum of the particles the centre velocity is taken from.
+    axis: list[float] | None = None
+    #: None: the dataset's own box (a periodic Gadget snapshot); 0: no
+    #: wrapping; a length: that period on the three position fields.
+    period: float | None = None
+
+
+class ParticleProfileResponse(BaseModel):
+    valid: bool
+    error: str
+    profile: dict[str, Any] = {}
+    centre: dict[str, Any] = {}
+    units: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+
+
+class PhaseAxis(BaseModel):
+    #: A numeric column, or "radius" / "radial_velocity" (needs a centre).
+    field: str
+    scale: Literal["linear", "log"] = "linear"
+    bins: int = Field(default=64, ge=4, le=512)
+    min: float | None = None
+    max: float | None = None
+
+
+class PhaseDiagramRequest(BaseModel):
+    dataset_id: str
+    filters: list[TabularFilter] = []
+    x: PhaseAxis
+    y: PhaseAxis
+    #: "": every row weighs 1 (a count histogram).
+    weight_field: str = ""
+    position_fields: list[str] = ["x", "y", "z"]
+    velocity_fields: list[str] | None = None
+    mass_field: str | None = None
+    centre: ProfileCentre | None = None
+    period: float | None = None
+
+
+class PhaseDiagramResponse(BaseModel):
+    valid: bool
+    error: str
+    diagram: dict[str, Any] = {}
+    centre: dict[str, Any] = {}
+    units: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
 
 
 class VbtOpenRequest(BaseModel):

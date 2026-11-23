@@ -43,7 +43,8 @@ so every h equals the one the whole population gives. On a periodic table
 (`period`) the search uses the minimum image (`cKDTree(boxsize)`, positions
 wrapped into [0, L)), and a cut across a face is one interval round the box.
 The intensity does not change h: rows left out for their light still count
-as neighbours. A box over position and other columns is split into the two
+as neighbours. A projected map's `velocity_dispersion` takes its neighbours
+the same way (past the cut's faces, round a periodic box). A box over position and other columns is split into the two
 kinds of filter. An `outside` box, or a sphere on another column, chooses the
 population.
 

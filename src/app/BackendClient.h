@@ -1,6 +1,7 @@
 #ifndef BackendClient_h
 #define BackendClient_h
 
+#include "DatasetBeam.h"
 #include "FilePreview.h"
 #include "VbtByteOrder.h"
 
@@ -223,6 +224,13 @@ struct BackendOpenDatasetResult
     /// The cube has one beam per channel (a BEAMS table); the beam above is
     /// the header's (issue #401).
     bool beamPerChannel{ false };
+    /// Where the beam above came from: "header", "user" (typed with
+    /// setDatasetBeam) or "none"; empty from a backend older than #416.
+    QString beamSource;
+    /// The values' unit, inferred from TEMPSCAL/BTYPE/LABEL when BUNIT is
+    /// missing (see visivo::beam::intensityUnit), and the note saying how.
+    QString intensityUnit;
+    QString intensityUnitNote;
     /// Size-aware loading policy (added for Pattern B).
     /// ``recommendedLoadMode`` is "auto_full" when the cube fits the
     /// laptop's RAM/VTK budget comfortably, or "preview_only" when the
@@ -440,6 +448,14 @@ struct BackendCubeSliceResult
     double rangeMin{ 0. };
     double rangeMax{ 0. };
     QByteArray data;
+    /// Sample (i, j) is plane pixel (x0 + i * stride, y0 + j * stride) of a
+    /// fullWidth x fullHeight plane (issue #381). A backend before it sends
+    /// none of these and answers every pixel: the defaults say so.
+    int fullWidth{ 0 };
+    int fullHeight{ 0 };
+    int x0{ 0 };
+    int y0{ 0 };
+    int stride{ 1 };
 };
 
 struct BackendCubeSubvolumeResult
@@ -2086,6 +2102,9 @@ struct BackendLineFitResult
     /// correlated channels OR from a model that does not fit, and the backend
     /// cannot tell them apart. Shown to the user rather than swallowed.
     QString spectralCorrelationNote;
+    /// The backend found no resolved solution and returned its best one
+    /// anyway; to be shown with the result, never swallowed (issue #416).
+    QString fitWarning;
 };
 
 class QJsonDocument;
@@ -2478,6 +2497,9 @@ public:
     /// cube (@p z: the channel), from the file's full WCS.
     BackendPixelSkyResult pixelToSky(const QString &datasetId, double x, double y,
                                      double z = 0.0) const;
+    /// POST /v1/datasets/beam: type the beam of a dataset whose header has
+    /// none, or forget it (issue #416).
+    visivo::beam::BeamResult setDatasetBeam(const visivo::beam::BeamRequest &request) const;
     BackendSampImportResult importSampUrl(const QString &url,
                                           const QString &filename = QString()) const;
     BackendSampImportResult uploadFileToSampStorage(const QString &localPath,
@@ -2500,8 +2522,12 @@ public:
     BackendRegionLevelResult requestRegionLevel(const QString &datasetId, int level, int x0, int x1,
                                                 int y0, int y1, int z0, int z1, int ghost = 1,
                                                 const QString &source = QStringLiteral("auto")) const;
+    /// One channel, or the part @p region (inclusive plane pixels) of it, read
+    /// every stride pixels so neither side exceeds @p maxLongestSide (0: every
+    /// pixel). Issue #381.
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,
-                                        int index) const;
+                                        int index, int maxLongestSide = 0,
+                                        const std::optional<QRect> &region = std::nullopt) const;
     BackendCubeSubvolumeResult requestSubvolume(const QString &datasetId, int x0, int x1, int y0,
                                                 int y1, int z0, int z1,
                                                 bool keepSlabs = false) const;
@@ -2757,9 +2783,13 @@ public:
                                          int channel = -1) const;
 
     /** POST /v1/spectral/linefit — Gaussian fit of an extracted 1-D spectrum. */
+    /// @p xMin / @p xMax restrict the fit to a window in axis units (NaN for
+    /// none); see visivo::linefit.
     BackendLineFitResult fitSpectralLine(const QVector<double> &values,
                                          const QVector<double> &axis,
-                                         bool withBaseline = true) const;
+                                         bool withBaseline = true,
+                                         double xMin = std::numeric_limits<double>::quiet_NaN(),
+                                         double xMax = std::numeric_limits<double>::quiet_NaN()) const;
 
     /** POST /v1/products/map_math — pixel-wise math on one/two 2-D maps
      *  (UC 3.2). ``op`` ∈ {add,subtract,multiply,divide,ratio,log10,abs,

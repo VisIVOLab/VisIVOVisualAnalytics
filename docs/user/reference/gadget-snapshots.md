@@ -15,7 +15,7 @@ header.
 | One file (`snap_010`) | the file |
 | Several files (`snapdir_010/snap_010.0` … `.N`) | any one of the files, or the `snapdir_010` folder; all the files are read together |
 | HDF5 (`snap_010.hdf5`, `snap_010.0.hdf5` …) | as above |
-| SubFind (`groups_010/sub_010.0` …) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
+| SubFind (`groups_010/sub_010.0` …, or the HDF5 `fof_subhalo_tab_010.hdf5` of Gadget-4 and Arepo) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
 
 Binary format 1 (no block names) and format 2 (named blocks) are both read,
 in either byte order. If a file of a multi-file snapshot is missing, or the
@@ -47,8 +47,9 @@ the marker (in the Local, Remote or ray-traced view) or its table row to
 centre the camera on it and frame 1.25 times its radius. The radius the
 markers are sized by is used when it is one of them; otherwise `rvir`, then
 R500/R2500 (half-mass radius or Rmax for a subhalo). The camera keeps the
-direction it looks from. The status line names the target and the radius used
-(also when the view was already framed). A row highlighted from another tool
+direction it looks from. A line naming the target and the radius used
+appears in the window's status bar for a few seconds and stays in the
+Inspector's selection line (also when the view was already framed). A row highlighted from another tool
 over SAMP is only recentred, at the same distance, and never reframed.
 
 The Inspector states that the dataset is a SubFind catalogue and distinguishes
@@ -85,6 +86,8 @@ values are used instead (a run in Mpc/h, for example). An administrator can
 set them on the backend with `VISIVO_GADGET_UNITS`
 (see [Configuration](../../technical/configuration.md)).
 
+In a SubFind catalogue, subhalo velocities are taken as peculiar km/s and Vmax as physical km/s, as Gadget-4 and Arepo write them; an HDF5 catalogue's group velocity is converted with 1/a. The convention of the P-Gadget3 SubFind writer (binary `sub_…` files) is not public and is unconfirmed: `svel=snapshot` or `svel=canonical` (and `srad=` for the subhalo radii) in `VISIVO_GADGET_UNITS` state another one.
+
 Without a parameter file, the header decides whether the run is
 cosmological. A run with a matter density and a redshift that matches its
 scale factor is comoving. Any other run, an isolated galaxy for example, is
@@ -98,16 +101,19 @@ file browser list it and say why; the other blocks open as usual.
 
 The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
-to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
+to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a for particles; × 1 for SubFind subhalos).
 
 A large particle table starts as Gaussian splats 0.75 mean particle spacings
-wide, with an opacity that falls as the cloud gets deeper. Above about 100,000
-particles in a cube the picture comes out brighter than nominal (about twice
-at a million particles, four and a half times at 10 million), so splat
-brightness is not comparable between tables of different size; use a
-[projected map](raytraced-particles.md) for that. Lower **Splat size** if
-dense regions saturate. Switching the shape to *Point* restores the default
-size, as long as you have not moved the slider.
+wide, with an opacity that falls as the cloud gets deeper, so the same field
+looks equally bright from 100,000 or 30 million particles at one intensity:
+in the Local and *Remote* views and in a headset with a float target. A
+headset without one still brightens large tables. For quantitative
+comparisons use a [projected map](raytraced-particles.md). Lower
+**Splat size** if dense regions saturate. The whole slider changes the size,
+in the Local and Remote views alike: splats from 0.25 to 12 on the scale of
+the 0.75 above (3 at the slider's default), points from 1 to 16 pixels.
+Switching the shape to *Point* restores the default size, as long as you have
+not moved the slider.
 
 ## Rendering and analysis
 

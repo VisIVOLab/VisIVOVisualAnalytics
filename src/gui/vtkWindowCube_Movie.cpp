@@ -17,6 +17,7 @@
 #include "ui_vtkWindowCube.h"
 
 #include "app/BackendClient.h"
+#include "SliceDetailPlan.h"
 
 #include <vtkCamera.h>
 #include <vtkImageData.h>
@@ -252,6 +253,8 @@ void vtkWindowCube::showExportMovieDialog()
     int written = 0;   // contiguous frame index → no gaps for ffmpeg's %05d
     if (scan) {
         const int origChannel = ui->spinSlice ? ui->spinSlice->value() - 1 : -1;   // restore after
+        this->hideSliceDetail();
+        this->m_sliceDetailSuspended = true;
         BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
         client.setSessionId(this->remoteSessionId);
         for (int i = 0; i < nFrames; ++i) {
@@ -260,29 +263,26 @@ void vtkWindowCube::showExportMovieDialog()
             if (progress.wasCanceled()) { cancelled = true; break; }
 
             const int ch = c0 + i;
-            const BackendCubeSliceResult resp = client.requestSlice(this->remoteDatasetId, u"z"_s, ch);
-            if (!resp.valid || resp.scalarType != u"float32"_s
-                || resp.data.size()
-                        != qint64(resp.width) * resp.height * qint64(sizeof(float))) {
+            const BackendCubeSliceResult resp = client.requestSlice(
+                    this->remoteDatasetId, u"z"_s, ch, visivo::kRemoteSliceLongestSide);
+            auto img = resp.valid && resp.scalarType == u"float32"_s ? decodeRemoteSlice(resp)
+                                                                      : nullptr;
+            if (!img)
                 continue;   // skip a bad channel rather than abort the whole movie
-            }
-            auto img = vtkSmartPointer<vtkImageData>::New();
-            img->SetExtent(0, resp.width - 1, 0, resp.height - 1, 0, 0);
-            img->SetOrigin(0., 0., 0.);
-            img->SetSpacing(1., 1., 1.);
-            img->AllocateScalars(VTK_FLOAT, 1);
-            std::memcpy(img->GetScalarPointer(), resp.data.constData(),
-                        static_cast<std::size_t>(resp.data.size()));
 
             RemoteCubeSliceResult r;
             r.valid = true;
             r.imageData = img;
             r.index = ch;
             r.imageRange = { resp.rangeMin, resp.rangeMax };
+            r.fullWidth = resp.fullWidth;
+            r.fullHeight = resp.fullHeight;
+            r.stride = resp.stride;
             this->applyRemoteSliceResult(r);   // renders sliceWin (+ 2-D model contour)
             if (captureWidgetToPng(ui->vtkImage, framePath(workDir, written)))
                 ++written;
         }
+        this->m_sliceDetailSuspended = false;
         // Restore the channel the user was viewing before the scan.
         if (origChannel >= 0)
             this->requestRemoteSlice(origChannel);

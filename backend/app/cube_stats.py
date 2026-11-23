@@ -516,5 +516,5 @@ def cube_statistics(path: str, exact: bool = False) -> dict[str, Any]:
             out = sampled_statistics(reader, summary)
     finally:
         reader.close()
-    out["bunit"] = dataset.bunit
+    out["bunit"] = dataset.intensity_unit
     return out

@@ -15,7 +15,7 @@ cube of its first field, or a PLUTO binary output (see *PLUTO output* below). A 
 (see *Compressed FITS* below). Any other file type is answered with
 `valid: false` ("Unsupported file type. Expected FITS (.fits, .fit, also
 compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).").
-Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa`, and `beam_per_channel`: true when a `BEAMS` table gives one beam per channel, the beam fields then being the header's), `bunit`, and:
+Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa` in degrees, `beam_per_channel`: true when a `BEAMS` table gives one beam per channel, the beam fields then being the header's, and `beam_source`: `header`, `user` for a beam typed with [`/v1/datasets/beam`](#post-v1datasetsbeam), `none`, or `not_applicable` for data without celestial axes such as VBT fields and raw simulation fields, where no beam can be set), `bunit` (the header's `BUNIT`, possibly empty), `intensity_unit` and `intensity_unit_note` (the unit of the values when `BUNIT` is missing: `K` when `TEMPSCAL` names a temperature scale, as on JCMT/ACSIS cubes with `TEMPSCAL = 'TA*'`, or when `BTYPE` or `LABEL` names a temperature; empty when nothing says; the note says which keyword gave it), and:
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -129,6 +129,37 @@ answers **503** with `Retry-After` while the copy is made again.
 
 The ICRS position of a pixel of an open image or cube, from the file's full
 WCS; used for SAMP `coord.pointAt.sky`. See [SAMP](samp.md), "Pixel positions".
+
+### `POST /v1/datasets/beam`
+
+Type the restoring beam of a FITS image or cube whose header has none (no
+complete `BMAJ`/`BMIN` and no `BEAMS` table), or forget it.
+
+```json
+{ "dataset_id": "...", "major_arcsec": 15.0, "minor_arcsec": 15.0, "pa_deg": 0.0,
+  "clear": false }
+```
+
+`minor_arcsec` defaults to `major_arcsec` (a circular beam) and `pa_deg` to 0.
+The beam is kept with the file, not the session: it is stored in
+`.beam-overrides.json` in the Workspace (or `$VISIVO_BEAM_OVERRIDES`), keyed by
+the file the user opened and valid while that file is unchanged (size,
+modification time, inode). Every later request on the file, in any session
+and in every worker process, then sees it as if the header carried
+`BMAJ`/`BMIN`/`BPA`: per-beam fluxes, beam areas and the per-beam error terms
+use it, and moment maps and PV diagrams saved as FITS carry it with a
+`COMMENT` saying it was typed. Reopening the file reports
+`beam_source: "user"`. A complete header beam is never overridden; an
+incomplete one (only one of `BMAJ`/`BMIN`, or a zero or non-finite value) is,
+and `note` says so. Rewriting the file, a header edit included, retires the
+typed beam.
+
+Response: `valid`, `error`, `beam_major`, `beam_minor`, `beam_pa` (degrees,
+as in the open response), `beam_source` and `note`. `valid: false` when the header
+already has a beam (the header's beam is returned), when `major_arcsec` is
+missing, when an axis is not positive, the minor axis exceeds the major, the
+major exceeds 10 degrees, or the position angle is not finite, and for a
+dataset that is not a FITS image or cube or has no celestial axes (`beam_source: "not_applicable"`).
 
 ### `DELETE /v1/datasets/{dataset_id}`
 Close a dataset of the session (any kind: image, cube, catalogue, VBT); what it
@@ -367,6 +398,154 @@ scan over the full component. It is independent of the point-render sample and
 render budget. Non-finite field values are excluded; weighted calculations also
 exclude non-finite and negative weights. An unknown field, invalid range or
 population with no finite values returns `valid: false`.
+
+### `POST /v1/catalogue/profile` and `POST /v1/tasks/catalogue_profile`
+
+Radial profile of the selected particles of a catalogue (a Gadget particle
+type read out of core, a VBT or another loaded table), in log-spaced shells
+around a centre. The task route takes the same body and is polled and
+cancelled like `/v1/tasks/catalogue_diagnostics`, reporting progress over the
+centre search and the passes.
+
+```json
+{
+  "dataset_id": "...",
+  "filters": [],
+  "position_fields": ["x", "y", "z"],
+  "velocity_fields": null,
+  "mass_field": null,
+  "columns": ["temperature", "radial_velocity"],
+  "centre": { "mode": "shrinking_sphere", "start": null, "initial_radius": null,
+              "shrink_factor": 0.975, "min_particles": 1000, "velocity": null },
+  "r_min": null, "r_max": null, "bins": 32,
+  "axis": null,
+  "period": null
+}
+```
+
+- `velocity_fields`: `null` uses `vx, vy, vz` when present, `[]` none.
+  `mass_field`: `null` uses `mass` when present, `""` gives every particle
+  weight 1 (densities are then number densities).
+- `columns`: numeric columns profiled per shell, plus the derived
+  `radial_velocity`.
+- `period`: `null` is the dataset's own box (a periodic Gadget snapshot), `0`
+  turns wrapping off, a length sets it on the three position fields.
+  Distances use the minimum image.
+- `centre.mode`:
+  - `point` with `point: [x, y, z]`;
+  - `target` with `target_dataset_id` and `target_row`, the position columns
+    of a row of another open catalogue, such as a SubFind group or subhalo.
+    It is taken to be in the particles' coordinate units;
+  - `shrinking_sphere`. The nested shrinking spheres of Power et al. (2003),
+    mass-weighted. Each sphere is `shrink_factor` times the last and holds
+    only the particles of the previous one. The search stops before fewer
+    than min(`min_particles`, max(100, 1 % of the selection)) particles
+    remain. The default start is the periodic centre of mass (Bai & Breen
+    2008), and the default initial radius is the largest distance from it.
+    Step 0 is the centre of the start sphere itself. A selection with fewer
+    than 100 particles, or a start sphere holding fewer than the minimum,
+    is refused. Out of core, the search keeps one bit per row for the
+    current sphere's members, so each step reads the table once. Once the
+    sphere holds at most 2 million particles, it keeps those in memory,
+    with the same result.
+- `centre.velocity`: velocities are measured relative to it. They are
+  peculiar velocities, without the Hubble flow. The default is the
+  mass-weighted mean velocity of the smallest sphere about the centre that
+  holds 1000 particles. A small sphere keeps a halo's own motion from being
+  diluted by the background of a large selection.
+- `axis`: the polar axis of the polar and azimuthal velocity components. The
+  default is the angular momentum, about the centre and in the centre's
+  frame, of the particles of that same sphere. The table's z is used when the
+  angular momentum vanishes. The radial velocity does not depend on it.
+- `r_max` defaults to the smallest of the largest distance, half the period,
+  and the distance to the nearest boundary of the selected region on the
+  position fields. The boundaries counted are `inside` boxes and spheres,
+  comparisons such as `x > 10` (half-spaces), and the nearest point of an
+  `outside` box or sphere. `r_min` defaults to the larger of the smallest
+  positive distance and `r_max`/1000.
+
+The response has `profile`, `centre`, `units` and `provenance`.
+
+`profile`:
+- `r_lo`, `r_hi`, `r_mid` (geometric) and `r_mean` (mass-weighted);
+- `complete`: true while the shell is inside the selected region (as for
+  `r_max`) and within half the period. It is never true when the centre
+  itself is outside the region;
+- `count`, `mass`, `density` (shell mass over shell volume);
+- `enclosed_mass`: every particle closer than `r_hi`, those inside `r_min`
+  included;
+- `inside_r_min`, `outside_r_max`, `selected_rows`, `r_min`, `r_max`,
+  `complete_radius`;
+- `columns.<name>`: `mean`, `std`, `p16`, `median`, `p84` (mass-weighted),
+  `weight`, and `quantile_axis`. The quantiles are read from a 1024-bin
+  histogram per shell, refined once inside the quantile's bin, on log10 when
+  the shell's values are positive and span more than a factor 100;
+- with velocities, `velocity`: `centre_velocity`, `axis`,
+  `centre_velocity_from` (the radius and particle count of the central
+  sphere, and where the velocity and axis came from),
+  `mean_radial`, `mean_azimuthal` (over the particles with finite
+  velocities; the others still count in the mass and density), `sigma_r`, `sigma_theta`, `sigma_phi`,
+  `sigma_1d` = sqrt((σ_r² + σ_θ² + σ_φ²)/3), each about its shell mean so
+  that infall and rotation are not counted as dispersion, `beta` = 1 −
+  (σ_θ² + σ_φ²)/(2σ_r²), and `sigma_cartesian_with_streaming`.
+
+Empty shells give `null`.
+
+`centre`: the mode and the centre. For `shrinking_sphere` it also has
+`radius`, `particles_inside`, `steps`, `n_min`, `start`, `initial_radius`,
+`shrink_factor`, `selected_particles` and `out_of_core_passes`.
+
+`units`: the units the table states (a Gadget snapshot's code units: comoving
+and /h where the run uses them, velocities as v/√a) for `radius`, `mass`,
+`density`, `velocity` and each column. `units.physical` gives the reader's
+factor and unit to physical kpc, M☉ and km/s, and M☉/kpc³ for the density.
+
+`provenance`: the dataset, the selection, the position and velocity fields,
+the weights, the frame (periods and minimum image), the binning, the
+definitions of every quantity, and the snapshot's redshift, time, h and box.
+
+### `POST /v1/catalogue/phase_diagram` and `POST /v1/tasks/catalogue_phase_diagram`
+
+2-D histogram of two columns of the selected rows, weighted or not; the task
+route as above.
+
+```json
+{
+  "dataset_id": "...",
+  "filters": [],
+  "x": { "field": "rho", "scale": "log", "bins": 64, "min": null, "max": null },
+  "y": { "field": "temperature", "scale": "log", "bins": 64 },
+  "weight_field": "mass",
+  "centre": null,
+  "position_fields": ["x", "y", "z"], "velocity_fields": null, "mass_field": null,
+  "period": null
+}
+```
+
+An axis `field` is a numeric column, or `radius` or `radial_velocity`, which
+need a `centre` (as for the profile). With a `centre`, these two names take
+the place of table columns with the same name. Without one, a table column
+with that name is used.
+
+`min`/`max` give both ends of an axis range, or neither. Without them the
+range is the extent of the selection's placeable values.
+
+Bins are [lo, hi), except the last, which holds its upper edge.
+
+`diagram` has:
+- `x_edges`, `y_edges`;
+- `counts` and `weights`, indexed [x][y];
+- `selected_rows` and `selected_weight`, `binned_*`, `outside_*` (outside a
+  given range) and `dropped_*` (non-finite values, or values ≤ 0 on a log
+  axis);
+- `invalid_weight_rows`: rows whose weight is not finite and ≥ 0. They carry
+  no weight.
+
+The totals close: `binned + outside + dropped` equals the selected weight,
+and `binned + outside + dropped + invalid_weight` equals the selected rows.
+
+`units` gives `x`, `y`, `weight` and `physical`. `centre` and `provenance` are
+as for the profile.
 
 ---
 

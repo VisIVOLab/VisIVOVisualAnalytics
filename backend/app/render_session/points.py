@@ -69,7 +69,7 @@ import pandas as pd
 from PIL import Image
 
 from ..periodic import box_inside, selection_period, separation
-from ..point_splat import SPLAT_RULES, VTK_ALPHA_NUDGE, splat_opacity
+from ..point_splat import SPLAT_RULES, splat_opacity, vtk_splat_shader
 from ..point_sample import _Q, _STAT_CHUNK, _colour_stats, place_rows, quantise64
 from ._common import (SessionStats, _build_color_tf, _parse_tf_points, camera_preset,
                       set_camera)
@@ -325,7 +325,10 @@ def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[floa
     that cuts a slab keeps it, as it keeps the density); opacity is normalized
     to 1.5 / D at the standard intensity, D the splats along the longest
     sightline (longest side / spacing: ∛N for a cube, and unchanged by a
-    filter), in whole 8-bit steps from 8 to 64 (point_splat.splat_opacity)."""
+    filter), unquantised (point_splat.splat_opacity with ``steps`` false):
+    the session adds its splats into a float target (issue #457), where N
+    splats give the same light for any N; in 8-bit steps, at least 8, a
+    table of 10 M rows came out 4.5 times too bright."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     # A flat axis (points in a plane) counts as a thousandth of the longest.
@@ -333,7 +336,20 @@ def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[floa
     spacing = math.cbrt(volume / max(npts, 1))
     radius = spacing * size / 8.0
     depth = max(longest / spacing, 1.0)
-    return radius, splat_opacity(depth, intensity)
+    return radius, splat_opacity(depth, intensity, steps=False)
+
+
+def _float_target_pass():
+    """The renderer's passes drawn into a float32 target and clamped onto the
+    window (vtkToneMappingPass, Clamp; VTK 9.0 and later): splats of an
+    opacity below an 8-bit step add up there instead of being rounded away at
+    every addition. The clamp leaves what is within 0..1 (the background, the
+    box, the labels) as it was."""
+    import vtk
+    tone = vtk.vtkToneMappingPass()
+    tone.SetToneMappingType(vtk.vtkToneMappingPass.Clamp)
+    tone.SetDelegatePass(vtk.vtkRenderStepsPass())
+    return tone
 
 
 class PointRenderSession(PointStereoMixin):
@@ -546,6 +562,9 @@ class PointRenderSession(PointStereoMixin):
         self._polydata = vtk.vtkPolyData()
         self._lod_polydata = vtk.vtkPolyData()
         self._gauss_opacity = vtk.vtkPiecewiseFunction()
+        self._gauss_opacity.AddPoint(-1.0e15, 1.0)
+        self._gauss_opacity.AddPoint(1.0e15, 1.0)
+        self._float_pass = _float_target_pass()
         for lod, poly in ((False, self._polydata), (True, self._lod_polydata)):
             points = vtk.vtkPolyDataMapper()
             # The Gaussian mapper draws the same arrays and VTK shares their
@@ -724,18 +743,22 @@ class PointRenderSession(PointStereoMixin):
     def _apply_style_on_thread(self) -> None:
         if self.view.mode == "gaussian":
             bounds, count = self._splat_basis
-            radius, opacity = gaussian_splat(bounds, count, self.view.size, self.view.intensity)
-            # VTK stores it as an 8-bit alpha: nudged onto its step.
-            opacity += VTK_ALPHA_NUDGE
-            self._gauss_opacity.RemoveAllPoints()
-            self._gauss_opacity.AddPoint(-1.0e15, opacity)
-            self._gauss_opacity.AddPoint(1.0e15, opacity)
+            radius, gain = gaussian_splat(bounds, count, self.view.size, self.view.intensity)
             for lod in (False, True):
                 # The radius is in the table's units; VTK scales a splat by
-                # the actor's matrix (uniform, see uniform_scale).
-                self._mappers[("gaussian", lod)].SetScaleFactor(
-                    radius / float(self._local_to_table[0, 0]))
+                # the actor's matrix (uniform, see uniform_scale). A drag's
+                # sample of every stride-th row carries the stride's light, so
+                # the view does not dim while it moves.
+                mapper = self._mappers[("gaussian", lod)]
+                mapper.SetScaleFactor(radius / float(self._local_to_table[0, 0]))
+                shader = vtk_splat_shader(gain * (self._lod_stride if lod else 1))
+                if (mapper.GetSplatShaderCode() or "") != shader:
+                    mapper.SetSplatShaderCode(shader)
+            self._renderer.SetPass(self._float_pass)
         else:
+            # Points write the depth a headset's frame reads back, which the
+            # float target's pass keeps in its own framebuffer.
+            self._renderer.SetPass(None)
             self._actor.GetProperty().SetPointSize(self.view.size)
         self._actor.SetMapper(self._mappers[(self.view.mode, self.view.interactive)])
         self._actor.GetProperty().SetOpacity(1.0)
@@ -956,6 +979,8 @@ class PointRenderSession(PointStereoMixin):
 
     def _close_on_thread(self) -> None:
         if self._render_window is not None:
+            if getattr(self, "_float_pass", None) is not None:
+                self._float_pass.ReleaseGraphicsResources(self._render_window)
             self._render_window.Finalize()
         self._render_window = self._renderer = None
         self._columns = {}

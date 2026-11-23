@@ -213,6 +213,65 @@ def test_a_box_over_position_and_another_column_is_split():
                      {"field": "T", "op": ">", "value": 2.0}]
 
 
+def _moving(tmp_path, n=20_000):
+    """A uniform box whose velocities vary along x (a shear, sigma depends
+    on which neighbours a particle has) plus noise."""
+    pts = _uniform(n)
+    rng = np.random.default_rng(12)
+    vel = np.column_stack([np.sin(2 * np.pi * pts[:, 0] / L) * 100.0,
+                           rng.normal(0, 30, n), rng.normal(0, 30, n)])
+    entry = _vbt(tmp_path, {"X": pts[:, 0], "Y": pts[:, 1], "Z": pts[:, 2],
+                            "VX": vel[:, 0], "VY": vel[:, 1], "VZ": vel[:, 2],
+                            "S": (np.arange(n) % 3 != 0).astype(float)})
+    return pts, vel, entry
+
+
+def test_the_intensity_does_not_change_the_velocity_dispersion(tmp_path):
+    """Rows of zero intensity are not drawn but are still neighbours, with or
+    without a position filter."""
+    from app.particle_raytrace import velocity_dispersion
+    pts, vel, entry = _moving(tmp_path)
+    drawn = np.arange(len(pts)) % 3 != 0
+    whole = velocity_dispersion(pts, vel, 32)[drawn]
+    assert np.allclose(_sigma(entry, intensity_field="S"), whole, rtol=1e-4)
+    everything = [_box((-1, -1, -1), (L + 1, L + 1, L + 1))]
+    assert np.allclose(_sigma(entry, intensity_field="S", filters=everything), whole, rtol=1e-4)
+
+
+def _sigma(entry, **kw):
+    return router._prepare(entry, _req(mode="projected", colour_by="velocity_dispersion",
+                                       **kw))["value"]
+
+
+@pytest.mark.parametrize("cut", ["box", "sphere"])
+def test_a_cut_has_the_velocity_dispersion_of_the_whole_table(tmp_path, cut):
+    from app.particle_raytrace import velocity_dispersion
+    pts, vel, entry = _moving(tmp_path)
+    if cut == "box":
+        filters = [_box((3, 3, 3), (6, 6, 6))]
+        inside = np.all((pts >= 3) & (pts <= 6), axis=1)
+    else:
+        filters = [{"sphere": {"fields": ["X", "Y", "Z"], "center": [5, 5, 5], "radius": 2.0},
+                    "op": "inside"}]
+        inside = np.sum((pts - 5.0) ** 2, axis=1) <= 4.0
+    whole = velocity_dispersion(pts, vel, 32)
+    got = _sigma(entry, filters=filters)
+    assert np.abs(got / whole[inside] - 1.0).max() < 0.01
+    alone = velocity_dispersion(pts[inside], vel[inside], 32)
+    assert np.abs(alone / whole[inside] - 1.0).max() > 0.05
+
+
+def test_the_velocity_dispersion_wraps_round_a_periodic_box(tmp_path):
+    from app.particle_raytrace import velocity_dispersion
+    pts, vel, entry = _moving(tmp_path)
+    periodic = velocity_dispersion(pts, vel, 32, boxsize=L)
+    assert np.allclose(_sigma(entry, period=L), periodic, rtol=1e-4)
+    assert not np.allclose(velocity_dispersion(pts, vel, 32), periodic, rtol=1e-3)
+    inside = pts[:, 0] < 1.0
+    got = _sigma(entry, period=L, filters=[{"field": "X", "op": "<", "value": 1.0}])
+    assert np.abs(got / periodic[inside] - 1.0).max() < 0.01
+
+
 # ── A Gadget particle type: its BoxSize is the period ───────────────────────
 
 def _generator():
@@ -371,3 +430,26 @@ def test_the_dropped_rows_reach_the_client(tmp_path, monkeypatch):
         loop.run_until_complete(router.delete_particle_render(task.task_id, token="tok"))
     finally:
         loop.close()
+
+
+# ── The client's "Periodic box": the snapshot states it as the backend decides ─
+
+def test_the_snapshot_units_state_whether_the_box_wraps(tmp_path, monkeypatch):
+    """``units.periodic`` in a snapshot's description follows the rule its
+    selections and neighbour searches use (Component.periods)."""
+    import sys
+
+    from app import gadget_snapshot as gs
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_selection_review_448 import _hdf5_box, _snapshot
+    monkeypatch.delenv(gs.UNITS_ENV, raising=False)
+    for name, periodic, comoving in (("a", True, False), ("b", False, True),
+                                     ("c", None, True), ("d", None, False)):
+        component = _hdf5_box(tmp_path / f"{name}.hdf5", periodic=periodic, comoving=comoving)
+        described = component.snapshot.describe()
+        assert described["units"]["periodic"] is bool(component.periods()), name
+        assert described["box_size"] == 50.0
+    files, _ = _snapshot(tmp_path / "binary")
+    assert gs.open_snapshot(files[0]).describe()["units"]["periodic"] is True
+    monkeypatch.setenv(gs.UNITS_ENV, "periodic=0")
+    assert gs.open_snapshot(files[0]).describe()["units"]["periodic"] is False

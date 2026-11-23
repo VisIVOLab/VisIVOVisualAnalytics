@@ -707,6 +707,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_totalCount = comparisonSource->m_totalCount;
         this->activeFilters = comparisonSource->activeFilters;
         this->m_appliedFilters.adopt(comparisonSource->m_appliedFilters.settled());
+        // Its splats are those of the table with no filter, as the source's.
+        std::copy(std::begin(comparisonSource->m_splatBounds),
+                  std::end(comparisonSource->m_splatBounds), std::begin(this->m_splatBounds));
+        this->m_splatCount = comparisonSource->m_splatCount;
+        this->m_splatBasisKey = comparisonSource->m_splatBasisKey;
         // The source's rows may still lack the columns its background query
         // is bringing: this view takes them from it when they arrive.
         this->m_awaitingHydration = comparisonSource->m_awaitingHydration;

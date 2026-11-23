@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 import numpy as np
@@ -150,6 +151,87 @@ def pixel_to_icrs(wcs, axis_map: dict[int, int], x: float, y: float,
             "lon_deg": lon % 360.0, "lat_deg": lat}
 
 
+#: Placeholder for an intensity unit no header keyword gives: a moment-0 map
+#: of such a cube is "(unknown) × km/s", never plain "km/s".
+UNKNOWN_INTENSITY_UNIT = "(unknown)"
+
+
+def intensity_unit_from_header(header) -> tuple[str, str]:
+    """``(unit, note)`` of the pixel values: ``BUNIT`` when present, else K
+    when ``TEMPSCAL`` names a temperature scale or ``BTYPE``/``LABEL`` say
+    temperature, else ``""``. ``note`` is empty when ``BUNIT`` gave the unit
+    and otherwise says where the unit came from, so a derived product can
+    record it.
+
+    Single-dish line cubes from JCMT/ACSIS (CHIMPS, issue #416) carry no
+    BUNIT, only ``TEMPSCAL = 'TA*'`` and a Starlink ``LABEL`` ending in
+    "corrected antenna temperature"; without this their moment-0 map was
+    labelled and saved as ``km/s``."""
+    bunit = str(header.get("BUNIT", "") or "").strip()
+    if bunit:
+        return bunit, ""
+    scale = str(header.get("TEMPSCAL", "") or "").strip()
+    if scale:
+        if scale.upper().startswith("T"):
+            return "K", (f"Source has no BUNIT: its intensities were taken as K on the "
+                         f"{scale} scale (TEMPSCAL), not converted.")
+        return "", (f"Source has no BUNIT and TEMPSCAL = '{scale}' is not a temperature "
+                    f"scale: the intensity unit is unknown.")
+    for key in ("BTYPE", "LABEL"):
+        text = str(header.get(key, "") or "").strip()
+        if _names_temperature(text):
+            return "K", (f"Source has no BUNIT: its intensities were taken as K from "
+                         f"{key} (a temperature), not converted.")
+    return "", "Source has no BUNIT, TEMPSCAL, BTYPE or LABEL: the intensity unit is unknown."
+
+
+#: COMMENT on a product whose beam was typed (``/v1/datasets/beam``).
+USER_BEAM_NOTE = "Beam typed by the user: the source header has no complete BMAJ/BMIN."
+
+
+def copy_intensity_provenance(src_header, out_header, skip_note: bool = False) -> None:
+    """Carry onto a derived product the cards that say what its intensities
+    are when the source has no BUNIT: TEMPSCAL (and ETAL) as machine-readable
+    cards, and the note naming the keyword the unit came from."""
+    if str(src_header.get("BUNIT", "") or "").strip():
+        return
+    for key in ("TEMPSCAL", "ETAL"):
+        if key in src_header and key not in out_header:
+            out_header[key] = src_header[key]
+    note = intensity_unit_from_header(src_header)[1]
+    if note and not skip_note:
+        out_header.add_comment(note)
+
+
+_TEMPERATURE_TOKENS = frozenset({"tb", "t_b", "tmb", "t_mb", "ta", "ta*", "t_a", "t_a*",
+                                 "tr*", "t_r*"})
+
+
+def _names_temperature(text: str) -> bool:
+    """A BTYPE or LABEL that names a brightness or antenna temperature: the
+    word, or the short symbols (Tb, Tmb, Ta*, ...). "Surface brightness"
+    alone is an MJy/sr map, not a temperature."""
+    low = text.lower()
+    if "temperature" in low:
+        return True
+    return any(tok in _TEMPERATURE_TOKENS for tok in re.split(r"[\s,;()\[\]]+", low))
+
+
+_SKY_AXES = frozenset({"RA", "DEC", "GLON", "GLAT", "ELON", "ELAT", "HLON", "HLAT",
+                       "SLON", "SLAT", "TLON", "TLAT"})
+
+
+def _sky_ctype(ctype: str) -> bool:
+    """A CTYPE naming a celestial longitude or latitude, with or without a
+    projection code ("RA---SIN", "GLON", "DEC")."""
+    return (ctype or "").strip().upper().split("-")[0] in _SKY_AXES
+
+
+def _beam_complete(beam: BeamMetadata) -> bool:
+    """Both beam axes present, finite and positive."""
+    return all(v is not None and np.isfinite(v) and v > 0 for v in (beam.major, beam.minor))
+
+
 def _open_fits(path, **kwargs):
     # A FITS file, or a field of a VBT volume read in place (issue #83).
     from .volume_source import open_fits  # noqa: PLC0415
@@ -209,6 +291,10 @@ class ScientificFitsDataset:
         self.wcs_status = self._determine_wcs_status()
         self.wcs_warning_message = self._build_wcs_warning_message()
         self.bunit = str(header.get("BUNIT", "")).strip()
+        self.intensity_unit, self.intensity_unit_note = intensity_unit_from_header(header)
+        from .volume_source import is_field_ref  # noqa: PLC0415
+        if is_field_ref(self.path):
+            self.intensity_unit_note = ""
         self.beam = BeamMetadata(
             major=float(header["BMAJ"]) if "BMAJ" in header else None,
             minor=float(header["BMIN"]) if "BMIN" in header else None,
@@ -218,6 +304,20 @@ class ScientificFitsDataset:
         # HDU named "BEAMS" with per-plane BMAJ/BMIN/BPA). Read lazily-safe here so
         # flux/beam-area is correct channel-to-channel on wideband ALMA/SKA cubes.
         self._per_channel_beam: dict[int, BeamMetadata] | None = self._read_beams_table()
+        self.beam_source = "header" if (self._per_channel_beam or _beam_complete(self.beam)) \
+            else "none"
+        self.beam_header_partial = self.beam_source == "none" and (
+            "BMAJ" in header or "BMIN" in header)
+        if self.beam_source == "none" and (is_field_ref(self.path) or not any(
+                _sky_ctype(str(header.get(f"CTYPE{i}", "")))
+                for i in range(1, self.naxis + 1))):
+            self.beam_source = "not_applicable"
+        if self.beam_source == "none":
+            from . import beam_override_store  # noqa: PLC0415
+            typed = beam_override_store.get(self.path)
+            if typed is not None:
+                self.beam = BeamMetadata(major=typed[0], minor=typed[1], pa=typed[2])
+                self.beam_source = "user"
         self._stokes_planes: dict[str, int] | None = None  # lazy
         self._log_axis_debug()
 
@@ -686,6 +786,10 @@ class ScientificFitsDataset:
             "spacing": spacing,
             "origin": origin,
             "bunit": self.bunit,
+            # The unit the values are in when BUNIT is missing (TEMPSCAL,
+            # BTYPE or LABEL, issue #416); equal to bunit when it is present.
+            "intensity_unit": self.intensity_unit,
+            "intensity_unit_note": self.intensity_unit_note,
             "ctype": [str(self.header.get(f"CTYPE{i}", "")) for i in range(1, 4)],
             "cunit": [str(self.header.get(f"CUNIT{i}", "")) for i in range(1, 4)],
             "crval": [self._axis_float(f"CRVAL{i}") for i in range(1, 4)],
@@ -708,6 +812,8 @@ class ScientificFitsDataset:
             # One beam per channel (a CASA BEAMS table): the beam above is the
             # header's, and the viewers say a flux uses it (issue #401).
             "beam_per_channel": self.has_per_channel_beam,
+            # "header", "user" (typed for a header without one, issue #416) or "none".
+            "beam_source": self.beam_source,
             # File-size aware loading policy (added for Pattern B / SDC2).
             # Client reads ``recommended_load_mode`` to decide whether to
             # auto-fetch full-resolution data or stay in preview-only mode
@@ -977,6 +1083,7 @@ class ScientificFitsDataset:
             "beam_major": self.beam.major,
             "beam_minor": self.beam.minor,
             "beam_pa": self.beam.pa,
+            "beam_source": self.beam_source,
             "active_axes": list(self.active_axes),
             "degenerate_axes": list(self.degenerate_axes),
             "wcs_status": self.wcs_status,

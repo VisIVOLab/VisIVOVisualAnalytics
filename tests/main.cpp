@@ -10,6 +10,7 @@
 #include "TestAnalysisParamStore.h"
 #include "TestBackendContract.h"
 #include "TestRemoteSliceCache.h"
+#include "TestSliceDetailPlan.h"
 #include "TestLinkedWindowRegistry.h"
 #include "TestLinkedCameraSync.h"
 #include "TestSnapshotTimelineSteps.h"
@@ -30,6 +31,7 @@
 #include "TestKinematicLevelField.h"
 #include "TestRayVoxelPick.h"
 #include "TestSedBuilder.h"
+#include "TestMolecularLineClient.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
 #include "TestCatalogueCosmology.h"
@@ -108,6 +110,7 @@ int main(int argc, char *argv[])
     { TestAnalysisParamStore t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendContract  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSliceDetailPlan  t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedCameraSync     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSnapshotTimelineSteps t; status |= QTest::qExec(&t, argc, argv); }
@@ -128,6 +131,7 @@ int main(int argc, char *argv[])
     { TestKinematicLevelField t; status |= QTest::qExec(&t, argc, argv); }
     { TestRayVoxelPick     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSedBuilder       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestMolecularLineClient t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
     { TestCatalogueCosmology       t; status |= QTest::qExec(&t, argc, argv); }
