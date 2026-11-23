@@ -123,6 +123,7 @@ rendering, remote-service allowlists, limits) is documented in the
 | Shared selections (VR headset and desktop) | `/v1/share/*` | [Shared selections](backend-api/share.md) |
 | Server-side rendering | `/v1/render/*` | [Server-side rendering](backend-api/render.md) |
 | Ray-traced particles | `/v1/particle_render/*`, `/v1/tasks/particle_render` | [Ray-traced particle rendering](backend-api/particle-render.md) |
+| Several particle components | `/v1/particle_layers/*`, `/v1/tasks/particle_layers` | [Several particle components in one picture](backend-api/particle-layers.md) |
 | Ray-traced volumes | `/v1/volume_render/*`, `/v1/tasks/volume_render` | [Ray-traced volume rendering](backend-api/volume-render.md) |
 | Isosurfaces | `/v1/isosurface/*` | [Isosurfaces for the headset and for export](backend-api/isosurface.md) |
 | VR headset layers | `/v1/points/*`, `/v1/cube/catalogue_pixels`, `/v1/catalogue/classified_votable`, `/v1/cube/mask_layer_bin`, `/v1/cube/mask_layer_save`, `/v1/velocity/lines_bin` | [Points, catalogues and flows for the headset](backend-api/vr-layers.md) |
@@ -156,6 +157,7 @@ backend-api/samp
 backend-api/share
 backend-api/render
 backend-api/particle-render
+backend-api/particle-layers
 backend-api/volume-render
 backend-api/isosurface
 backend-api/vr-layers

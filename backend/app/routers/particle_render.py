@@ -177,8 +177,11 @@ def _colours(columns, rows: np.ndarray, colour: RaytraceColour) -> np.ndarray:
     return (rgba[:, :3].astype(np.float32) / 255.0)
 
 
-def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
-    """Positions, sizes, colours and light of the particles drawn."""
+def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] = ()) -> dict:
+    """Positions, sizes, colours and light of the particles drawn; with
+    ``columns``, those of them the table has, of the same rows (``"columns"``,
+    float64), for a caller that weighs the particles itself
+    (app/routers/particle_layers.py)."""
     from ..particle_raytrace import smoothing_lengths  # noqa: PLC0415
     from ..point_sample import place_rows  # noqa: PLC0415
     from ..point_table import filter_mask, open_point_table, sky_arguments  # noqa: PLC0415
@@ -270,6 +273,9 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
         vel = np.stack([np.asarray(table.columns[n][rows], dtype=np.float32) for n in names],
                        axis=1)
         particles["value"] = velocity_dispersion(pos, np.nan_to_num(vel), req.neighbours)
+    if columns:
+        particles["columns"] = {name: np.asarray(table.columns[name][rows], dtype=np.float64)
+                                for name in columns if name in table.columns}
     return particles
 
 
@@ -624,7 +630,7 @@ async def create_particle_render_task(request: ParticleRenderRequest, token: str
 
 
 # The operations whose results the routes below serve, by task id.
-RENDER_OPERATIONS = ("particle_render", "volume_render")
+RENDER_OPERATIONS = ("particle_render", "volume_render", "particle_layers")
 
 
 def start_render_task(operation: str, token: str, work) -> TaskCreateResponse:
@@ -693,9 +699,12 @@ async def particle_render_tone(task_id: str, tone: RaytraceTone, token: str = _a
     """The still graded again with another tone curve, as PNG (nothing is
     rendered again)."""
     from ..particle_raytrace import tone_map  # noqa: PLC0415
+    from .tasks import _owned_task  # noqa: PLC0415
+    if getattr(_owned_task(task_id, token), "operation", None) == "particle_layers":
+        raise HTTPException(422, "A layered render is graded again by "
+                                 "/v1/particle_layers/{task_id}/compose.")
     light = _light(task_id, token)
     saved = _owned_render(task_id, token) / "request.json"
-    from .tasks import _owned_task  # noqa: PLC0415
     if _owned_task(task_id, token).operation == "volume_render":
         from .volume_render import VolumeRenderRequest, regrade  # noqa: PLC0415
         req = VolumeRenderRequest.model_validate_json(saved.read_text())

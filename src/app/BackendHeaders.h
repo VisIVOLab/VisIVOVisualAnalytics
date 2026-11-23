@@ -61,6 +61,7 @@ inline constexpr const char *FULL_SPEED_MIN = "X-Visivo-Full-Speed-Min";
 inline constexpr const char *GLYPH_CELL = "X-Visivo-Glyph-Cell";
 inline constexpr const char *HEIGHT = "X-Visivo-Height";
 inline constexpr const char *INSTANCE = "X-Visivo-Instance";
+inline constexpr const char *LAYER_WINDOWS = "X-Visivo-Layer-Windows";
 inline constexpr const char *LEVEL = "X-Visivo-Level";
 inline constexpr const char *LEVEL_ORIGIN = "X-Visivo-Level-Origin";
 inline constexpr const char *LINE_POINTS = "X-Visivo-Line-Points";
@@ -117,7 +118,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 103> kAll = {
+inline constexpr std::array<const char *, 104> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -167,6 +168,7 @@ inline constexpr std::array<const char *, 103> kAll = {
     GLYPH_CELL,
     HEIGHT,
     INSTANCE,
+    LAYER_WINDOWS,
     LEVEL,
     LEVEL_ORIGIN,
     LINE_POINTS,
