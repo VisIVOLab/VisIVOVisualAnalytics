@@ -168,6 +168,9 @@ X_FRAME_AGE_MS = "X-Visivo-Frame-Age-Ms"
 X_FRAME_COST_MS = "X-Visivo-Frame-Cost-Ms"
 X_INSTANCE = "X-Visivo-Instance"
 
+# ── Particle layers (issue #394): each layer's windows, JSON ────────────────
+X_LAYER_WINDOWS = "X-Visivo-Layer-Windows"
+
 # ── Cross-cutting / infrastructure ──────────────────────────────────────────
 X_TOKEN = "X-Visivo-Token"
 X_SESSION = "X-Visivo-Session"
