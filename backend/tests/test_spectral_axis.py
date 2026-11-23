@@ -77,6 +77,38 @@ def test_another_frame_shifts_by_a_plausible_amount(tmp_path):
     np.testing.assert_allclose(same["values"], native, rtol=1e-12)
 
 
+def test_absolute_shifts_against_independent_astropy(tmp_path):
+    """Not only plausible: the topocentric shift equals astropy's barycentric
+    correction for that site and date, and the LSRK one the LSRK transform of
+    a source at rest in ICRS, each in its own sign convention."""
+    import astropy.units as u
+    from astropy.coordinates import LSRK, ICRS, EarthLocation, SkyCoord
+    from astropy.time import Time
+
+    path = _cube(tmp_path)
+    bary = np.array(spectral_axis(str(path), "vrad")["values"])
+    topo = np.array(spectral_axis(str(path), "vrad", "TOPOCENT")["values"])
+    lsrk = np.array(spectral_axis(str(path), "vrad", "LSRK")["values"])
+    target = SkyCoord(136.9 * u.deg, -0.7 * u.deg, frame="icrs")
+    site = EarthLocation.from_geocentric(2225142.18, -5440307.37, -2481029.85, unit=u.m)
+    v_corr = target.radial_velocity_correction(
+        kind="barycentric", obstime=Time(57327.4, format="mjd"), location=site)
+    # v_bary = v_topo + v_corr (astropy's convention), at the line centre.
+    assert bary[10] - topo[10] == pytest.approx(v_corr.to_value(u.km / u.s), abs=0.05)
+    at_rest = SkyCoord(ra=136.9 * u.deg, dec=-0.7 * u.deg, distance=1 * u.Mpc,
+                       pm_ra_cosdec=0 * u.mas / u.yr, pm_dec=0 * u.mas / u.yr,
+                       radial_velocity=0 * u.km / u.s, frame=ICRS())
+    v_lsrk = at_rest.transform_to(LSRK()).radial_velocity.to_value(u.km / u.s)
+    assert lsrk[10] - bary[10] == pytest.approx(v_lsrk, abs=0.01)
+
+
+def test_the_lsr_needs_no_date_nor_observatory(tmp_path):
+    with_obs = spectral_axis(str(_cube(tmp_path)), "vrad", "LSRK")["values"]
+    without = spectral_axis(str(_cube(tmp_path, obs=False, name="n.fits")), "vrad", "LSRK")
+    np.testing.assert_allclose(without["values"], with_obs, atol=1e-6)
+    assert without["frame"] == "LSRK"
+
+
 def test_topocentric_and_back_agree(tmp_path):
     bary = _cube(tmp_path)
     topo_values = np.array(spectral_axis(str(bary), "frequency", "TOPOCENT")["values"])
@@ -90,7 +122,7 @@ def test_topocentric_and_back_agree(tmp_path):
 
 def test_missing_information_is_explained(tmp_path):
     with pytest.raises(ValueError, match="observation date"):
-        spectral_axis(str(_cube(tmp_path, obs=False, name="a.fits")), "frequency", "LSRK")
+        spectral_axis(str(_cube(tmp_path, obs=False, name="a.fits")), "frequency", "TOPOCENT")
     with pytest.raises(ValueError, match="no SPECSYS"):
         spectral_axis(str(_cube(tmp_path, specsys=None, name="b.fits")), "frequency", "LSRK")
     with pytest.raises(ValueError, match="rest frequency"):

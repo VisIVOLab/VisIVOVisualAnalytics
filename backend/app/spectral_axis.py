@@ -84,31 +84,56 @@ def _obstime(header):
 
 
 def _at_rest(frame: str, header):
-    """The coordinate the observer is put at rest with: a frame name for
-    the barycentric/LSR/galactocentric ones; for the geocentric and
-    topocentric ones, the Earth's centre or the telescope at the observation
-    time with zero velocity (an observer at rest in a frame that rotates is at
-    rest only at one place)."""
+    """A coordinate at rest (zero velocity) in ``frame``: the observer of a
+    spectrum in that frame. The barycentre, the LSR and the Galactic centre
+    need nothing from the header; the geocentre and the telescope are where
+    they are at the observation time (an observer at rest in a rotating frame
+    is at rest only at one place), so those need the date, and the telescope
+    its position."""
     import astropy.units as u  # noqa: PLC0415
-    from astropy.coordinates import (GCRS, ITRS, CartesianDifferential,  # noqa: PLC0415
-                                     CartesianRepresentation, EarthLocation)
-    if frame not in ("TOPOCENT", "GEOCENTR"):
-        return FRAMES[frame]
+    from astropy.coordinates import (GCRS, ICRS, ITRS, LSRD, LSRK,  # noqa: PLC0415
+                                     CartesianDifferential, CartesianRepresentation,
+                                     EarthLocation, Galactocentric)
+    still = CartesianDifferential([0.0, 0.0, 0.0] * (u.km / u.s))
+    origin = CartesianRepresentation([0.0, 0.0, 0.0] * u.m).with_differentials(still)
+    simple = {"BARYCENT": ICRS, "LSRK": LSRK, "LSRD": LSRD, "GALACTOC": Galactocentric}
+    if frame in simple:
+        return simple[frame](origin)
     obstime = _obstime(header)
     if obstime is None:
-        raise ValueError("Converting to a geocentric or topocentric frame needs the observation "
+        raise ValueError("A geocentric or topocentric spectral frame needs the observation "
                          "date in the header (MJD-OBS or DATE-OBS).")
-    still = CartesianDifferential([0.0, 0.0, 0.0] * (u.km / u.s))
     if frame == "GEOCENTR":
-        origin = CartesianRepresentation([0.0, 0.0, 0.0] * u.m).with_differentials(still)
         return GCRS(origin, obstime=obstime)
     if not all(header.get(k) is not None for k in ("OBSGEO-X", "OBSGEO-Y", "OBSGEO-Z")):
-        raise ValueError("Converting to the topocentric frame needs the observatory's position "
-                         "in the header (OBSGEO-X/Y/Z).")
+        raise ValueError("A topocentric spectral frame needs the observatory's position in "
+                         "the header (OBSGEO-X/Y/Z).")
     site = EarthLocation.from_geocentric(*(float(header[k]) for k in
                                            ("OBSGEO-X", "OBSGEO-Y", "OBSGEO-Z")), unit=u.m)
     position = site.get_itrs(obstime).cartesian.without_differentials()
     return ITRS(position.with_differentials(still), obstime=obstime)
+
+
+def _with_observer(sc, dataset, native_frame: str):
+    """``sc`` with an observer at rest in the file's frame and the target at
+    the celestial reference, when astropy attached none (it does only with a
+    date and an observatory position, which a barycentric or LSR cube does
+    not need)."""
+    from astropy.coordinates import ICRS, SpectralCoord  # noqa: PLC0415
+    from astropy.wcs import WCS  # noqa: PLC0415
+
+    observer = _at_rest(native_frame, dataset.header)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        celestial = WCS(dataset.header).celestial
+        if celestial.naxis != 2:
+            raise ValueError("Converting the spectral frame needs the cube's sky position, "
+                             "and its WCS has no celestial axes.")
+        target = celestial.pixel_to_world(*(c - 1.0 for c in celestial.wcs.crpix))
+        target = target.transform_to(ICRS())
+        return SpectralCoord(sc.quantity, observer=observer, target=target,
+                             doppler_rest=sc.doppler_rest,
+                             doppler_convention=sc.doppler_convention)
 
 
 def spectral_axis(path: str, quantity: str = "native", frame: str = "native",
@@ -145,10 +170,10 @@ def spectral_axis(path: str, quantity: str = "native", frame: str = "native",
         if not native_frame:
             raise ValueError("The header does not say which frame its spectral axis is in "
                              "(no SPECSYS), so it cannot be converted to another one.")
+        if native_frame not in FRAMES:
+            raise ValueError(f"The file's spectral frame '{native_frame}' cannot be converted.")
         if sc.observer is None or sc.target is None:
-            raise ValueError("Converting to another frame needs the observation date and the "
-                             "observatory's position in the header (MJD-OBS or DATE-OBS, "
-                             "OBSGEO-X/Y/Z); this header lacks them.")
+            sc = _with_observer(sc, dataset, native_frame)
         at_rest = _at_rest(frame, dataset.header)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

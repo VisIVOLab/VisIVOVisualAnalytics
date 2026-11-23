@@ -2770,6 +2770,12 @@ protected:
         QVector<double> values;                         ///< one per channel
         QString unit, ctype, frameName, note;
         QString nativeFrame;                            ///< the file's SPECSYS
+        /// The choice last ASKED for: a second pick before the first answer
+        /// builds on it, and only the latest request's answer is applied.
+        QString askedQuantity{ QStringLiteral("native") };
+        QString askedFrame{ QStringLiteral("native") };
+        double askedRestFreqHz{ 0.0 };
+        quint64 requestSeq{ 0 };
     };
     SpectralAxisChoice m_spectralAxis;
     QPointer<QMenu> m_menuSpectralAxis;
