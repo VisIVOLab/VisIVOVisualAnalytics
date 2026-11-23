@@ -54,6 +54,7 @@ class vtkCallbackCommand;
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
 #include "RegionPanePlacement.h"
+#include "SliceDetailPlan.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkWeakPointer.h>
@@ -140,6 +141,7 @@ namespace visivo::samp {
 struct SkyPosition;
 }
 class vtkImageMapToColors;
+class vtkImageSlice;
 class vtkLegendScaleActorWCS;
 class vtkLineSource;
 class vtkLookupTable;
@@ -201,7 +203,17 @@ struct RemoteCubeSliceResult
     vtkSmartPointer<vtkImageData> imageData;
     std::array<double, 2> imageRange{ 0., 0. };
     int index{ 0 };
+    /// Issue #381: the channel read every @p stride pixels of a fullWidth x
+    /// fullHeight plane; @p region is set only for a detail of part of it.
+    int fullWidth{ 0 };
+    int fullHeight{ 0 };
+    int stride{ 1 };
+    QRect region;
 };
+
+/// A /v1/cube/slice answer as an image on the plane's pixel frame (origin the
+/// first sample, spacing the stride); null when the payload does not match.
+vtkSmartPointer<vtkImageData> decodeRemoteSlice(const BackendCubeSliceResult &response);
 
 struct RemoteCubeSubvolumeResult
 {
@@ -2998,6 +3010,60 @@ protected:
     bool tryApplyCachedRemoteSlice(int sliceIndex);
     void startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int requestId = 0);
     void prefetchNeighborRemoteSlices(int sliceIndex);
+
+    // Issue #381: a wide channel is shown every few pixels (SliceDetailPlan.h). Zoomed in, the
+    // part on screen is asked again at a finer stride and drawn over it, through the same colour
+    // table, as the top layer of the slice's image stack. Only pixels on screen: the channel
+    // under it stays what statistics, regions and the probe read.
+    vtkNew<vtkImageMapToColors> m_sliceDetailColors;
+    vtkNew<vtkImageSlice> m_sliceDetailActor;
+    QTimer m_sliceDetailTimer;
+    /// The channel on screen as the backend sampled it: plane size and stride.
+    std::array<int, 3> m_displayedSliceGrid{ 0, 0, 1 };
+    /// The detail drawn (or being fetched): dataset, channel and window.
+    struct SliceDetailState
+    {
+        QString datasetId;
+        int index{ -1 };
+        visivo::SliceDetailWindow window;
+    };
+    std::optional<SliceDetailState> m_sliceDetailShown;
+    std::optional<SliceDetailState> m_sliceDetailPending;
+    int m_sliceDetailSeq{ 0 };
+    /// Set while a channel movie is captured: a detail landing mid-movie would
+    /// change the resolution between frames.
+    bool m_sliceDetailSuspended{ false };
+    /// The plane pixel of sample (i, j) of a 2-D image, and the sample of a
+    /// plane pixel (false off the image). The slice's samples sit on the plane
+    /// every stride pixels (issue #381); any other image is indexed as it is.
+    std::array<int, 2> probePixelOfSample(vtkImageData *image, int i, int j) const;
+    bool probeSampleOfPixel(vtkImageData *image, int x, int y, int &i, int &j) const;
+    void scheduleSliceDetail();
+    void refreshSliceDetail();
+    void hideSliceDetail();
+
+    // The probe's value on a strided channel (issue #381): a pixel between the samples is read
+    // from the detail when it holds it, else asked of the backend as a one-pixel region. The
+    // readout shows "…" meanwhile, never the neighbouring sample's value.
+    struct ExactProbe
+    {
+        enum State { NotNeeded, Loading, Ready, Failed } state{ NotNeeded };
+        float value{ 0.f };
+    };
+    struct ExactProbeValue
+    {
+        QString datasetId;
+        std::array<int, 3> voxel{ 0, 0, 0 };
+        bool valid{ false };
+        float value{ 0.f };
+    };
+    std::optional<ExactProbeValue> m_probeExact;
+    std::optional<ExactProbeValue> m_probeExactPending;
+    QTimer m_probeExactTimer;
+    int m_probeExactSeq{ 0 };
+    void updateSliceStatsCaption();   ///< "sampled every N px" beside a strided channel's stats
+    ExactProbe exactSliceProbeValue(vtkImageData *image);
+    void fetchExactProbeValue();
 
     // Contours
     int level;

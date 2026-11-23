@@ -440,6 +440,14 @@ struct BackendCubeSliceResult
     double rangeMin{ 0. };
     double rangeMax{ 0. };
     QByteArray data;
+    /// Sample (i, j) is plane pixel (x0 + i * stride, y0 + j * stride) of a
+    /// fullWidth x fullHeight plane (issue #381). A backend before it sends
+    /// none of these and answers every pixel: the defaults say so.
+    int fullWidth{ 0 };
+    int fullHeight{ 0 };
+    int x0{ 0 };
+    int y0{ 0 };
+    int stride{ 1 };
 };
 
 struct BackendCubeSubvolumeResult
@@ -703,6 +711,7 @@ struct BackendCatalogueDiagnosticsResponse
 {
     bool valid{ false };
     QString error;
+    bool cancelled{ false };   ///< stopped by the user (catalogueDiagnosticsFollowingTask)
     QString field;
     QString fieldUnit;
     QString weightField;
@@ -2499,8 +2508,12 @@ public:
     BackendRegionLevelResult requestRegionLevel(const QString &datasetId, int level, int x0, int x1,
                                                 int y0, int y1, int z0, int z1, int ghost = 1,
                                                 const QString &source = QStringLiteral("auto")) const;
+    /// One channel, or the part @p region (inclusive plane pixels) of it, read
+    /// every stride pixels so neither side exceeds @p maxLongestSide (0: every
+    /// pixel). Issue #381.
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,
-                                        int index) const;
+                                        int index, int maxLongestSide = 0,
+                                        const std::optional<QRect> &region = std::nullopt) const;
     BackendCubeSubvolumeResult requestSubvolume(const QString &datasetId, int x0, int x1, int y0,
                                                 int y1, int z0, int z1,
                                                 bool keepSlabs = false) const;
@@ -2516,6 +2529,22 @@ public:
     BackendCatalogueDiagnosticsResponse catalogueDiagnostics(
             const BackendCatalogueDiagnosticsRequest &req,
             const std::atomic_bool *abort = nullptr) const;
+    /** POST /v1/tasks/catalogue_diagnostics: the same request as
+     *  catalogueDiagnostics(), as a task (issue #448); its result is the
+     *  diagnostics response. */
+    BackendTaskCreateResult createCatalogueDiagnosticsTask(
+            const BackendCatalogueDiagnosticsRequest &req) const;
+    /** The diagnostics through the task route, followed to its end: its
+     *  progress (0-100) in @p control, whose abort sends DELETE
+     *  /v1/tasks/{id}. Falls back to the synchronous catalogueDiagnostics()
+     *  only on a backend without the task route. A run stopped by the user
+     *  comes back with ``cancelled`` set. Blocks: call it on a worker thread. */
+    BackendCatalogueDiagnosticsResponse catalogueDiagnosticsFollowingTask(
+            const BackendCatalogueDiagnosticsRequest &req,
+            visivo::BackendTaskControl *control) const;
+    /// A diagnostics response from its JSON (the route's answer or the
+    /// task's result).
+    static BackendCatalogueDiagnosticsResponse parseCatalogueDiagnostics(const QJsonObject &object);
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;

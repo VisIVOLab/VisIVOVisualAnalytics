@@ -832,6 +832,7 @@ QWidget *CubeUiAssembler::buildInfoStatsPage(const InfoStatsInput &info)
 
         // ── 2D image sub-section ─────────────────────────────────────────────
         auto *imgSub = new QLabel(u"2D image"_s);
+        imgSub->setObjectName(u"labelImgStatsCaption"_s);
         imgSub->setStyleSheet(kInspectorSubLabelStyle());
         // Insert sub-header above the form layout so the section title +
         // sub-header + KV rows read top-to-bottom.

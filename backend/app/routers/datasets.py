@@ -299,6 +299,11 @@ class DatasetBeamResponse(BaseModel):
 def _set_dataset_beam(path: str, request: DatasetBeamRequest, by: str) -> DatasetBeamResponse:
     from .. import beam_override_store  # noqa: PLC0415
     current = ScientificFitsDataset(path)
+    if current.beam_source == "not_applicable":
+        return DatasetBeamResponse(
+            valid=False, error="This dataset has no celestial axes (a simulation field or "
+            "other non-sky data): a restoring beam does not apply to it.",
+            beam_source="not_applicable")
     if current.beam_source == "header":
         return DatasetBeamResponse(
             valid=False, error="The header already has a beam (BMAJ/BMIN or a BEAMS "
