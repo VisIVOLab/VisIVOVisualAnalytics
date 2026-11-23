@@ -183,3 +183,22 @@ async def test_a_pluto_variable_is_sampled_through_the_same_seam(client, auth_he
     assert body["valid"], body["error"]
     assert body["stride"] == 3
     np.testing.assert_allclose(_decode(body), fields[cube["field_name"]][3, ::3, ::3], rtol=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_the_probe_reads_a_pixel_between_samples_exactly(client, auth_headers, tmp_path):
+    # The desktop's probe on a strided channel asks for the one pixel under the
+    # cursor: the answer is that pixel, not the nearest sample.
+    path, data = _cube(tmp_path)
+    cube = await _open(client, auth_headers, path)
+    x, y = 101, 47
+    resp = await client.post("/v1/cube/slice", headers=cube["headers"],
+                             json={"dataset_id": cube["dataset_id"], "axis": "z", "index": 1,
+                                   "max_longest_side": 2048,
+                                   "x0": x, "x1": x, "y0": y, "y1": y})
+    body = resp.json()
+    assert body["valid"], body["error"]
+    assert (body["width"], body["height"], body["stride"], body["x0"], body["y0"]) == \
+        (1, 1, 1, x, y)
+    assert _decode(body)[0, 0] == data[1, y, x]
+    assert _decode(body)[0, 0] != data[1, 45, 100]

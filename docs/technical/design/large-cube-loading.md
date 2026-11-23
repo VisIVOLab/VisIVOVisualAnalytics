@@ -131,5 +131,9 @@ pixels, about 16 MB on the wire. The samples keep the plane's pixel frame
 linked cameras need no conversion. Zoomed in, the part of the channel on screen
 is asked again (`x0..y1`) at the stride that fits the same budget, full
 resolution once it is 2048 pixels or fewer, and drawn as the top layer of the
-slice's image stack through the same colour table. Statistics, regions and the
-probe keep reading the channel under it.
+slice's image stack through the same colour table. Statistics and regions keep
+reading the channel under it, labelled "sampled every N px". The probe never
+shows a neighbouring sample: a pixel on the channel's or the detail's grid is
+read there, any other is asked of the backend as a one-pixel region (debounced
+120 ms, the last value kept), with "…" in the readout meanwhile
+(`probeValueSource` in `SliceDetailPlan.h`).

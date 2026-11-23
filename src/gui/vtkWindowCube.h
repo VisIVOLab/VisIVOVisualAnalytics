@@ -3042,6 +3042,29 @@ protected:
     void refreshSliceDetail();
     void hideSliceDetail();
 
+    // The probe's value on a strided channel (issue #381): a pixel between the samples is read
+    // from the detail when it holds it, else asked of the backend as a one-pixel region. The
+    // readout shows "…" meanwhile, never the neighbouring sample's value.
+    struct ExactProbe
+    {
+        enum State { NotNeeded, Loading, Ready, Failed } state{ NotNeeded };
+        float value{ 0.f };
+    };
+    struct ExactProbeValue
+    {
+        QString datasetId;
+        std::array<int, 3> voxel{ 0, 0, 0 };
+        bool valid{ false };
+        float value{ 0.f };
+    };
+    std::optional<ExactProbeValue> m_probeExact;
+    std::optional<ExactProbeValue> m_probeExactPending;
+    QTimer m_probeExactTimer;
+    int m_probeExactSeq{ 0 };
+    void updateSliceStatsCaption();   ///< "sampled every N px" beside a strided channel's stats
+    ExactProbe exactSliceProbeValue(vtkImageData *image);
+    void fetchExactProbeValue();
+
     // Contours
     int level;
     vtkNew<vtkFlyingEdges2D> contours;

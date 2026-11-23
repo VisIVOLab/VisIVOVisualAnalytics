@@ -460,20 +460,27 @@ void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
     }
 
     int sampleX = 0, sampleY = 0;
-    const float value = this->probeSampleOfPixel(imageData, this->probeVoxel[0],
-                                                 this->probeVoxel[1], sampleX, sampleY)
+    float value = this->probeSampleOfPixel(imageData, this->probeVoxel[0],
+                                           this->probeVoxel[1], sampleX, sampleY)
             ? imageData->GetScalarComponentAsFloat(sampleX, sampleY, 0, 0)
             : std::numeric_limits<float>::quiet_NaN();
+    const ExactProbe exact = this->exactSliceProbeValue(imageData);
+    const bool loading = exact.state == ExactProbe::Loading;
+    if (exact.state == ExactProbe::Ready)
+        value = exact.value;
     // Value in scientific notation (spec §1.1) — the exact figure is in Inspector ›
     // Properties › STATISTICS; this readout is for a quick glance, not to quote.
-    QString valueText = std::isfinite(value) ? QString::number(value, 'e', 2) : u"NaN"_s;
+    QString valueText = loading ? u"…"_s
+            : exact.state == ExactProbe::Failed ? u"n/a"_s
+            : std::isfinite(value)              ? QString::number(value, 'e', 2)
+                                                : u"NaN"_s;
     // Append the brightness unit from the header when known — an unqualified value
     // in a brightness readout is ambiguous, but a wrong unit is worse than none.
     // On a backdrop map (setSliceBackdrop) the value is the MAP's, in its unit.
     const QString unit = this->m_sliceBackdropProductId.isEmpty()
             ? this->m_brightnessUnit
             : this->m_products2d.value(this->m_sliceBackdropProductId).unit;
-    if (std::isfinite(value) && !unit.isEmpty()) {
+    if (!loading && exact.state != ExactProbe::Failed && std::isfinite(value) && !unit.isEmpty()) {
         valueText += u" %1"_s.arg(unit);
     }
     // On a map worn by the slice there is no channel under the cursor: name the map.

@@ -1465,6 +1465,10 @@ void vtkWindowCube::setupSliceRenderer()
     this->m_sliceDetailTimer.setInterval(300);
     connect(&this->m_sliceDetailTimer, &QTimer::timeout, this, &vtkWindowCube::refreshSliceDetail,
             Qt::UniqueConnection);
+    this->m_probeExactTimer.setSingleShot(true);
+    this->m_probeExactTimer.setInterval(120);
+    connect(&this->m_probeExactTimer, &QTimer::timeout, this,
+            &vtkWindowCube::fetchExactProbeValue, Qt::UniqueConnection);
 
     // Color bar — parked in the right gutter, laid out by layout2dPane().
     this->m_sliceColorbar->SetLookupTable(this->lutSlice);

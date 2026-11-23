@@ -91,4 +91,25 @@ inline bool sliceDetailCovers(const SliceDetailWindow &have, const QRect &visibl
     return have.region.contains(visible) && have.stride <= want.stride;
 }
 
+/// Where the exact value of plane pixel (@p x, @p y) is: on the channel shown
+/// (its first sample at @p channelOrigin, every @p channelStride pixels), on
+/// the detail drawn over it, or only on the backend. A probe reads pixel values
+/// for science, so a pixel between samples is never given its neighbour's.
+enum class ProbeValueSource { Channel, Detail, Backend };
+
+inline ProbeValueSource probeValueSource(int x, int y, const QPoint &channelOrigin,
+                                         int channelStride,
+                                         const std::optional<SliceDetailWindow> &detail)
+{
+    const auto onGrid = [](int v, int first, int stride) {
+        return v >= first && (stride <= 1 || (v - first) % stride == 0);
+    };
+    if (onGrid(x, channelOrigin.x(), channelStride) && onGrid(y, channelOrigin.y(), channelStride))
+        return ProbeValueSource::Channel;
+    if (detail && detail->region.contains(x, y) && onGrid(x, detail->region.left(), detail->stride)
+        && onGrid(y, detail->region.top(), detail->stride))
+        return ProbeValueSource::Detail;
+    return ProbeValueSource::Backend;
+}
+
 }  // namespace visivo

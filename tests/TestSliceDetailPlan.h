@@ -17,4 +17,7 @@ private slots:
     void detail_zoomedInAsksForThePartOnScreen();
     void detail_fullResolutionOnceThePartFits();
     void covers_onlyWhenInsideAndFineEnough();
+    void probe_onASampleReadsTheChannel();
+    void probe_betweenSamplesReadsTheDetailWhenItHoldsThePixel();
+    void probe_betweenSamplesWithoutDetailAsksTheBackend();
 };

@@ -90,8 +90,11 @@ from a sample, so Min and Max may lie inside the true range.
 - Wide channels: a channel wider than 2048 pixels arrives as every second,
   third… pixel, so it shows in a second or two even from a cluster. Zoom in and
   the part on screen fills in at full resolution once it is 2048 pixels or
-  fewer across. Statistics, region measurements and the probe on the slice use
-  the samples of the channel as it first arrived; a region's flux says so.
+  fewer across. The probe always shows the exact value of the pixel under the
+  cursor: between samples it is read from the backend, and the readout shows
+  "…" for the moment it takes. Statistics, the pixel histogram and region
+  measurements on the slice use the samples, and say "sampled every N px"
+  (a region's flux notes it as approximate).
 - *Cutting plane*: the current channel drawn in the 3-D view. *View ▸ Cutting
   Plane Opacity*, or *Opacity* under *Cutting plane* in *LAYERS*, sets how much
   of the volume shows through.

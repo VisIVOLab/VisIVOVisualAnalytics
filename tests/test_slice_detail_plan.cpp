@@ -73,3 +73,28 @@ void TestSliceDetailPlan::covers_onlyWhenInsideAndFineEnough()
     QVERIFY(!sliceDetailCovers(coarse, QRect(QPoint(1500, 1500), QPoint(2500, 2500)), want1));
     QVERIFY(sliceDetailCovers(coarse, QRect(QPoint(1500, 1500), QPoint(2500, 2500)), want2));
 }
+
+void TestSliceDetailPlan::probe_onASampleReadsTheChannel()
+{
+    QCOMPARE(probeValueSource(8, 12, QPoint(0, 0), 4, std::nullopt), ProbeValueSource::Channel);
+    QCOMPARE(probeValueSource(9, 13, QPoint(0, 0), 1, std::nullopt), ProbeValueSource::Channel);
+    QCOMPARE(probeValueSource(103, 51, QPoint(100, 50), 1, std::nullopt),
+             ProbeValueSource::Channel);
+}
+
+void TestSliceDetailPlan::probe_betweenSamplesReadsTheDetailWhenItHoldsThePixel()
+{
+    const SliceDetailWindow full{ QRect(QPoint(1000, 1000), QPoint(2999, 2999)), 1 };
+    QCOMPARE(probeValueSource(1001, 1003, QPoint(0, 0), 4, full), ProbeValueSource::Detail);
+    const SliceDetailWindow half{ QRect(QPoint(1001, 1001), QPoint(2999, 2999)), 2 };
+    QCOMPARE(probeValueSource(1003, 1005, QPoint(0, 0), 4, half), ProbeValueSource::Detail);
+    QCOMPARE(probeValueSource(1002, 1005, QPoint(0, 0), 4, half), ProbeValueSource::Backend);
+}
+
+void TestSliceDetailPlan::probe_betweenSamplesWithoutDetailAsksTheBackend()
+{
+    QCOMPARE(probeValueSource(9, 12, QPoint(0, 0), 4, std::nullopt), ProbeValueSource::Backend);
+    const SliceDetailWindow elsewhere{ QRect(QPoint(5000, 5000), QPoint(5999, 5999)), 1 };
+    QCOMPARE(probeValueSource(9, 13, QPoint(0, 0), 4, elsewhere), ProbeValueSource::Backend);
+    QCOMPARE(probeValueSource(-1, 0, QPoint(0, 0), 4, std::nullopt), ProbeValueSource::Backend);
+}

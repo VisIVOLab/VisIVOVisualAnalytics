@@ -479,6 +479,7 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
         double mean, rms;
         computeImageStats(result.imageData, mean, rms);
         ui->lineImgMean->setText(fmtStat(mean));
+        this->updateSliceStatsCaption();
         ui->lineImgRms->setText(fmtStat(rms));
         this->updateLUTCustomizer();
     }
@@ -678,6 +679,96 @@ void vtkWindowCube::prefetchNeighborRemoteSlices(int sliceIndex)
     }
 }
 
+vtkWindowCube::ExactProbe vtkWindowCube::exactSliceProbeValue(vtkImageData *image)
+{
+    if (!image || image != this->remoteSliceDisplaySource->GetOutputDataObject(0)
+        || !this->m_sliceBackdropProductId.isEmpty() || this->m_displayedSliceGrid[2] <= 1
+        || !this->probeValid)
+        return {};
+    const int x = this->probeVoxel[0], y = this->probeVoxel[1], z = this->probeVoxel[2];
+    if (z == this->m_displayedSliceIndex) {
+        double origin[3];
+        image->GetOrigin(origin);
+        std::optional<visivo::SliceDetailWindow> detail;
+        if (this->m_sliceDetailShown && this->m_sliceDetailShown->index == z
+            && this->m_sliceDetailShown->datasetId == this->remoteDatasetId)
+            detail = this->m_sliceDetailShown->window;
+        const QPoint first(int(std::lround(origin[0])), int(std::lround(origin[1])));
+        switch (visivo::probeValueSource(x, y, first, this->m_displayedSliceGrid[2], detail)) {
+        case visivo::ProbeValueSource::Channel:
+            return {};
+        case visivo::ProbeValueSource::Detail:
+            if (auto *fine = vtkImageData::SafeDownCast(this->m_sliceDetailColors->GetInput())) {
+                int ext[6];
+                fine->GetExtent(ext);
+                const int i = ext[0] + (x - detail->region.left()) / detail->stride;
+                const int j = ext[2] + (y - detail->region.top()) / detail->stride;
+                if (i >= ext[0] && i <= ext[1] && j >= ext[2] && j <= ext[3])
+                    return { ExactProbe::Ready, fine->GetScalarComponentAsFloat(i, j, 0, 0) };
+            }
+            break;
+        case visivo::ProbeValueSource::Backend:
+            break;
+        }
+    }
+    const std::array<int, 3> voxel{ x, y, z };
+    if (this->m_probeExact && this->m_probeExact->voxel == voxel
+        && this->m_probeExact->datasetId == this->remoteDatasetId)
+        return { this->m_probeExact->valid ? ExactProbe::Ready : ExactProbe::Failed,
+                 this->m_probeExact->value };
+    if (!(this->m_probeExactPending && this->m_probeExactPending->voxel == voxel
+          && this->m_probeExactPending->datasetId == this->remoteDatasetId))
+        this->m_probeExactTimer.start();
+    return { ExactProbe::Loading, 0.f };
+}
+
+void vtkWindowCube::fetchExactProbeValue()
+{
+    if (!this->probeValid || this->remoteDatasetId.isEmpty())
+        return;
+    const std::array<int, 3> voxel{ this->probeVoxel[0], this->probeVoxel[1],
+                                    this->probeVoxel[2] };
+    if (this->m_probeExactPending && this->m_probeExactPending->voxel == voxel
+        && this->m_probeExactPending->datasetId == this->remoteDatasetId)
+        return;
+    const int seq = ++this->m_probeExactSeq;
+    this->m_probeExactPending = ExactProbeValue{ this->remoteDatasetId, voxel };
+    auto *watcher = new QFutureWatcher<RemoteCubeSliceResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<RemoteCubeSliceResult>::finished, this,
+                     [this, watcher, seq]() {
+                         watcher->deleteLater();
+                         if (seq != this->m_probeExactSeq || !this->m_probeExactPending)
+                             return;
+                         ExactProbeValue got = *this->m_probeExactPending;
+                         this->m_probeExactPending.reset();
+                         const RemoteCubeSliceResult result = watcher->result();
+                         got.valid = result.valid && result.imageData && result.stride == 1;
+                         if (got.valid) {
+                             got.value = result.imageData->GetScalarComponentAsFloat(0, 0, 0, 0);
+                             this->m_probeExact = got;
+                         } else {
+                             // Shown once as "n/a", not kept: a revisit asks again.
+                             this->m_probeExact = got;
+                             QTimer::singleShot(0, this, [this, voxel = got.voxel]() {
+                                 if (this->m_probeExact && this->m_probeExact->voxel == voxel
+                                     && !this->m_probeExact->valid)
+                                     this->m_probeExact.reset();
+                             });
+                         }
+                         if (this->viewingSlice() && this->m_sliceBackdropProductId.isEmpty()
+                             && this->probeValid && got.datasetId == this->remoteDatasetId
+                             && got.voxel[0] == this->probeVoxel[0]
+                             && got.voxel[1] == this->probeVoxel[1]
+                             && got.voxel[2] == this->probeVoxel[2])
+                             this->updateProbeReadout(vtkImageData::SafeDownCast(
+                                     this->remoteSliceDisplaySource->GetOutputDataObject(0)));
+                     });
+    watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
+                                         this->remoteDatasetId, voxel[2], this->remoteSessionId,
+                                         this->remoteBackendToken,
+                                         std::optional<QRect>(QRect(voxel[0], voxel[1], 1, 1))));
+}
+
 void vtkWindowCube::scheduleSliceDetail()
 {
     if (this->m_sliceDetailSuspended)
@@ -761,7 +852,10 @@ void vtkWindowCube::refreshSliceDetail()
                          this->m_sliceDetailActor->VisibilityOn();
                          this->m_sliceDetailShown = SliceDetailState{
                              asked.datasetId, asked.index,
-                             visivo::SliceDetailWindow{ asked.window.region, result.stride } };
+                             visivo::SliceDetailWindow{
+                                     QRect(result.region.topLeft(),
+                                           asked.window.region.bottomRight()),
+                                     result.stride } };
                          this->sliceWin->Render();
                      });
     watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
