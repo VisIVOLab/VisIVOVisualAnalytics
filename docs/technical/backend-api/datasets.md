@@ -387,6 +387,7 @@ centre search and the passes.
   "centre": { "mode": "shrinking_sphere", "start": null, "initial_radius": null,
               "shrink_factor": 0.975, "min_particles": 1000, "velocity": null },
   "r_min": null, "r_max": null, "bins": 32,
+  "axis": null,
   "period": null
 }
 ```
@@ -416,21 +417,29 @@ centre search and the passes.
     current sphere's members, so each step reads the table once. Once the
     sphere holds at most 2 million particles, it keeps those in memory,
     with the same result.
-- `centre.velocity`: radial velocities are measured against it. They are
-  peculiar velocities, without the Hubble flow. The default
-  is the mass-weighted mean velocity inside a tenth of `r_max`, widened until
-  it holds 1000 particles.
+- `centre.velocity`: velocities are measured relative to it. They are
+  peculiar velocities, without the Hubble flow. The default is the
+  mass-weighted mean velocity of the smallest sphere about the centre that
+  holds 1000 particles. A small sphere keeps a halo's own motion from being
+  diluted by the background of a large selection.
+- `axis`: the polar axis of the polar and azimuthal velocity components. The
+  default is the angular momentum, about the centre and in the centre's
+  frame, of the particles of that same sphere. The table's z is used when the
+  angular momentum vanishes. The radial velocity does not depend on it.
 - `r_max` defaults to the smallest of the largest distance, half the period,
-  and the distance to the nearest face of an `inside` box or sphere selection
-  on the position fields. `r_min` defaults to the larger of the smallest
+  and the distance to the nearest boundary of the selected region on the
+  position fields. The boundaries counted are `inside` boxes and spheres,
+  comparisons such as `x > 10` (half-spaces), and the nearest point of an
+  `outside` box or sphere. `r_min` defaults to the larger of the smallest
   positive distance and `r_max`/1000.
 
 The response has `profile`, `centre`, `units` and `provenance`.
 
 `profile`:
 - `r_lo`, `r_hi`, `r_mid` (geometric) and `r_mean` (mass-weighted);
-- `complete`: true while the shell is inside the selected region and within
-  half the period;
+- `complete`: true while the shell is inside the selected region (as for
+  `r_max`) and within half the period. It is never true when the centre
+  itself is outside the region;
 - `count`, `mass`, `density` (shell mass over shell volume);
 - `enclosed_mass`: every particle closer than `r_hi`, those inside `r_min`
   included;
@@ -440,7 +449,9 @@ The response has `profile`, `centre`, `units` and `provenance`.
   `weight`, and `quantile_axis`. The quantiles are read from a 1024-bin
   histogram per shell, refined once inside the quantile's bin, on log10 when
   the shell's values are positive and span more than a factor 100;
-- with velocities, `velocity`: `centre_velocity`, `centre_velocity_from`,
+- with velocities, `velocity`: `centre_velocity`, `axis`,
+  `centre_velocity_from` (the radius and particle count of the central
+  sphere, and where the velocity and axis came from),
   `mean_radial`, `mean_azimuthal` (over the particles with finite
   velocities; the others still count in the mass and density), `sigma_r`, `sigma_theta`, `sigma_phi`,
   `sigma_1d` = sqrt((σ_r² + σ_θ² + σ_φ²)/3), each about its shell mean so

@@ -43,8 +43,8 @@ MIN_SELECTION = 100
 #: Particles a shrinking sphere keeps in memory once its nested selection is
 #: this small (positions and mass in float64: 32 bytes a particle).
 CENTRE_MEMORY_ROWS = 2_000_000
-#: The centre velocity is the mass-weighted mean velocity inside a tenth of
-#: the profile's outer radius, widened until it holds this many particles.
+#: The centre velocity and polar axis come from the smallest sphere about the
+#: centre holding this many particles (centre_kinematics).
 CENTRE_VELOCITY_PARTICLES = 1000
 DERIVED_COLUMNS = ("radius", "radial_velocity")
 
@@ -264,28 +264,47 @@ def shrinking_sphere_centre(chunks: Chunks, pos_fields, mass_field: str, periods
 
 
 def _spherical(delta, velocity):
-    """Radial, polar and azimuthal velocity components and the distance."""
+    """Distance and the radial, polar and azimuthal velocity components about
+    the third axis of ``delta``/``velocity``. The radial velocity of a
+    particle at the centre is undefined (NaN); on the polar axis the polar
+    and azimuthal components are taken as 0."""
     x, y, z = delta
     vx, vy, vz = velocity
     d = np.sqrt(x * x + y * y + z * z)
     cyl = np.sqrt(x * x + y * y)
     with np.errstate(invalid="ignore", divide="ignore"):
-        v_r = np.where(d > 0, (x * vx + y * vy + z * vz) / d, 0.0)
+        v_r = np.where(d > 0, (x * vx + y * vy + z * vz) / d, np.nan)
         v_theta = np.where((d > 0) & (cyl > 0), (z * (x * vx + y * vy) / cyl - cyl * vz) / d, 0.0)
         v_phi = np.where(cyl > 0, (x * vy - y * vx) / cyl, 0.0)
     return d, v_r, v_theta, v_phi
 
 
-class Geometry:
-    """Centre, centre velocity and periods shared by the derived columns."""
+def _basis(axis) -> np.ndarray:
+    """Rows e1, e2, e3 of a right-handed orthonormal basis with e3 along
+    ``axis``."""
+    e3 = np.asarray(axis, dtype=np.float64)
+    e3 = e3 / np.linalg.norm(e3)
+    ref = np.array([1.0, 0.0, 0.0]) if abs(e3[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = np.cross(ref, e3)
+    e1 /= np.linalg.norm(e1)
+    return np.vstack([e1, np.cross(e3, e1), e3])
 
-    def __init__(self, pos_fields, vel_fields, centre, periods, centre_velocity=None):
+
+class Geometry:
+    """Centre, centre velocity, polar axis and periods shared by the derived
+    columns. The polar axis (default: the table's z) orients the polar and
+    azimuthal velocity components; the radius and the radial velocity do
+    not depend on it."""
+
+    def __init__(self, pos_fields, vel_fields, centre, periods, centre_velocity=None,
+                 axis=None):
         self.pos_fields = list(pos_fields)
         self.vel_fields = list(vel_fields or [])
         self.centre = np.asarray(centre, dtype=np.float64)
         self.periods = list(periods)
         self.centre_velocity = (np.asarray(centre_velocity, dtype=np.float64)
                                 if centre_velocity is not None else None)
+        self.basis = _basis(axis if axis is not None else (0.0, 0.0, 1.0))
 
     def derive(self, columns: dict) -> dict:
         """``columns`` with "radius" and, when velocities and a centre
@@ -296,23 +315,35 @@ class Geometry:
         if self.vel_fields and self.centre_velocity is not None:
             vel = [np.asarray(columns[f], dtype=np.float64) - c
                    for f, c in zip(self.vel_fields, self.centre_velocity)]
-            d, v_r, v_t, v_p = _spherical(delta, vel)
+            b = self.basis
+            rotated = [b[k, 0] * delta[0] + b[k, 1] * delta[1] + b[k, 2] * delta[2]
+                       for k in range(3)]
+            rotated_v = [b[k, 0] * vel[0] + b[k, 1] * vel[1] + b[k, 2] * vel[2]
+                         for k in range(3)]
+            d, v_r, v_t, v_p = _spherical(rotated, rotated_v)
             out.update(radius=d, radial_velocity=v_r, _v_theta=v_t, _v_phi=v_p, _vel=vel)
         else:
             out["radius"] = np.sqrt(delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2)
         return out
 
 
-def centre_velocity(passes: _Passes, geometry: Geometry, mass_field: str,
-                    r_inner: float, r_max: float) -> dict:
-    """Mass-weighted mean velocity inside ``r_inner`` (a tenth of the outer
-    radius), widened to the smallest radius holding
-    CENTRE_VELOCITY_PARTICLES particles, at most ``r_max``: one pass, with
-    the sums kept per log-spaced radius bin."""
-    edges = np.concatenate([[0.0], np.geomspace(r_inner, r_max, 65)])
-    counts = np.zeros(65)
-    masses = np.zeros(65)
-    momenta = np.zeros((3, 65))
+_KINEMATIC_BINS = 128
+
+
+def centre_kinematics(passes: _Passes, geometry: Geometry, mass_field: str,
+                      r_lo: float, r_max: float, velocity=None, axis=None) -> dict:
+    """The centre velocity and polar axis, from the particles inside the
+    smallest sphere around the centre holding CENTRE_VELOCITY_PARTICLES
+    particles (radii resolved to log steps of (r_max/r_lo)^(1/128), from
+    ``r_lo`` up to ``r_max``): their mass-weighted mean velocity unless
+    ``velocity`` is given, and the direction of their angular momentum about
+    the centre in that frame unless ``axis`` is given (the table's z when it
+    vanishes). One pass. A small sphere keeps a halo's own motion from being
+    diluted by the background of a large selection."""
+    nb = _KINEMATIC_BINS + 1
+    edges = np.concatenate([[0.0], np.geomspace(r_lo, r_max, _KINEMATIC_BINS + 1)])
+    counts, masses = np.zeros(nb), np.zeros(nb)
+    momenta, moments, spins = np.zeros((3, nb)), np.zeros((3, nb)), np.zeros((3, nb))
     for columns in passes.run():
         keep, weight = _usable(columns, geometry.pos_fields, mass_field)
         for f in geometry.vel_fields:
@@ -324,38 +355,58 @@ def centre_velocity(passes: _Passes, geometry: Geometry, mass_field: str,
         delta = _separations(sub, geometry.pos_fields, geometry.centre, geometry.periods)
         d = np.sqrt(delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2)
         index = np.searchsorted(edges, d, side="right") - 1
-        inside = index < 65
+        inside = index < nb
         w = weight[keep][inside]
         index = index[inside]
-        counts += np.bincount(index, minlength=65)
-        masses += np.bincount(index, weights=w, minlength=65)
-        for axis, f in enumerate(geometry.vel_fields):
-            momenta[axis] += np.bincount(index, weights=w * sub[f][inside], minlength=65)
+        dl = [c[inside] for c in delta]
+        v = [sub[f][inside] for f in geometry.vel_fields]
+        counts += np.bincount(index, minlength=nb)
+        masses += np.bincount(index, weights=w, minlength=nb)
+        cross = (dl[1] * v[2] - dl[2] * v[1], dl[2] * v[0] - dl[0] * v[2],
+                 dl[0] * v[1] - dl[1] * v[0])
+        for k in range(3):
+            momenta[k] += np.bincount(index, weights=w * v[k], minlength=nb)
+            moments[k] += np.bincount(index, weights=w * dl[k], minlength=nb)
+            spins[k] += np.bincount(index, weights=w * cross[k], minlength=nb)
     cum_n, cum_m = np.cumsum(counts), np.cumsum(masses)
-    chosen = next((k for k in range(65)
-                   if cum_n[k] >= CENTRE_VELOCITY_PARTICLES and cum_m[k] > 0), 64)
+    chosen = next((k for k in range(nb)
+                   if cum_n[k] >= CENTRE_VELOCITY_PARTICLES and cum_m[k] > 0), nb - 1)
     if cum_m[chosen] <= 0:
         raise ValueError("No particle with a finite velocity inside the profile.")
-    velocity = np.cumsum(momenta, axis=1)[:, chosen] / cum_m[chosen]
-    return {"velocity": [float(v) for v in velocity], "radius": float(edges[chosen + 1]),
-            "particles": int(cum_n[chosen])}
+    mean_v = np.cumsum(momenta, axis=1)[:, chosen] / cum_m[chosen]
+    vc = np.asarray(velocity, dtype=np.float64) if velocity is not None else mean_v
+    spin = (np.cumsum(spins, axis=1)[:, chosen]
+            - np.cross(np.cumsum(moments, axis=1)[:, chosen], vc))
+    if axis is not None:
+        polar, axis_from = np.asarray(axis, dtype=np.float64), "given"
+    elif np.linalg.norm(spin) > 0:
+        polar, axis_from = spin, "angular momentum of the central particles"
+    else:
+        polar, axis_from = np.array([0.0, 0.0, 1.0]), "the table's z (no net rotation)"
+    polar = polar / np.linalg.norm(polar)
+    return {"velocity": [float(x) for x in vc],
+            "velocity_from": "given" if velocity is not None else
+            "mass-weighted mean of the central particles",
+            "axis": [float(x) for x in polar], "axis_from": axis_from,
+            "radius": float(edges[chosen + 1]), "particles": int(cum_n[chosen])}
 
 
 def default_centre_velocity(chunks: Chunks, pos_fields, vel_fields, mass_field: str, centre,
                             periods, region_limit: float | None = None, stop=None,
                             progress=None) -> dict:
     """The centre velocity a radius-velocity diagram uses when none is
-    given: as for a profile, with the outer radius the selection's extent
-    (bounded by the selected region and half the period)."""
+    given: as for a profile, between the smallest distance and the
+    selection's extent (bounded by the selected region and half the period)."""
     passes = _Passes(chunks, stop, progress, expected=2)
     centre = np.asarray(centre, dtype=np.float64)
-    largest = _max_distance(passes, pos_fields, mass_field, centre, periods)[0]
-    outer = min([largest] + ([region_limit] if region_limit else [])
+    largest, smallest, _ = _max_distance(passes, pos_fields, mass_field, centre, periods)
+    outer = min([largest * (1.0 + 1e-12)] + ([region_limit] if region_limit else [])
                 + [0.5 * p for p in periods if p])
     if not outer > 0:
         raise ValueError("Every selected particle sits at the centre.")
-    return centre_velocity(passes, Geometry(pos_fields, vel_fields, centre, periods),
-                           mass_field, 0.1 * outer, outer)
+    inner = min(max(smallest if math.isfinite(smallest) else 0.0, outer * 1e-4), 0.5 * outer)
+    return centre_kinematics(passes, Geometry(pos_fields, vel_fields, centre, periods),
+                             mass_field, inner, outer)
 
 
 def _quantile_scale(lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
@@ -376,7 +427,8 @@ def _transform(values, shell, use_log, t_lo, t_hi):
 
 
 def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, columns,
-                   centre, periods, centre_velocity_value=None, r_min=None, r_max=None,
+                   centre, periods, centre_velocity_value=None, axis=None,
+                   r_min=None, r_max=None,
                    bins: int = 32, region_limit: float | None = None,
                    stop=None, progress=None) -> dict:
     """Log-spaced shells [r_lo, r_hi) around ``centre`` (see module text).
@@ -395,7 +447,8 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
         raise ValueError("A profile has between 4 and 256 shells.")
     with_velocity = bool(vel_fields)
     passes = _Passes(chunks, stop, progress,
-                     expected=4 + int(with_velocity and centre_velocity_value is None))
+                     expected=4 + int(with_velocity and (centre_velocity_value is None
+                                                         or axis is None)))
     centre = np.asarray(centre, dtype=np.float64)
     largest, smallest, _ = _max_distance(passes, pos_fields, mass_field, centre, periods)
     if largest <= 0:
@@ -415,12 +468,13 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
     edges = np.geomspace(r_min, r_max, bins + 1)
 
     velocity_info = None
-    if with_velocity and centre_velocity_value is None:
-        velocity_info = centre_velocity(passes, Geometry(pos_fields, vel_fields, centre, periods),
-                                        mass_field, 0.1 * r_max, r_max)
-        centre_velocity_value = velocity_info["velocity"]
+    if with_velocity and (centre_velocity_value is None or axis is None):
+        velocity_info = centre_kinematics(
+            passes, Geometry(pos_fields, vel_fields, centre, periods), mass_field, r_min, r_max,
+            velocity=centre_velocity_value, axis=axis)
+        centre_velocity_value, axis = velocity_info["velocity"], velocity_info["axis"]
     geometry = Geometry(pos_fields, vel_fields, centre, periods,
-                        centre_velocity_value if with_velocity else None)
+                        centre_velocity_value if with_velocity else None, axis)
     columns = list(columns)
     if "radial_velocity" in columns and not with_velocity:
         raise ValueError("radial_velocity needs the velocity fields.")
@@ -498,8 +552,10 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
         derived, w, d, shell = shells_of(chunk)
         ok = (shell >= 0) & (shell < bins)
         s, ws = shell[ok], w[ok]
+        if with_velocity:
+            moving = np.isfinite(derived["_vx"][ok]) & np.isfinite(derived["_vy"][ok]) \
+                & np.isfinite(derived["_vz"][ok])
         for k in vel_keys:
-            moving = np.isfinite(derived[k][ok])
             dev = derived[k][ok][moving] - vel_mean[k][s[moving]]
             vel_dev[k] += np.bincount(s[moving], weights=ws[moving] * dev * dev,
                                       minlength=bins)
@@ -615,6 +671,7 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
             sigma_t2 = var["_v_theta"] + var["_v_phi"]
             result["velocity"] = {
                 "centre_velocity": [float(v) for v in geometry.centre_velocity],
+                "axis": [float(v) for v in geometry.basis[2]],
                 "centre_velocity_from": velocity_info,
                 "mean_radial": _finite_list(vel_mean["radial_velocity"]),
                 "mean_azimuthal": _finite_list(vel_mean["_v_phi"]),
