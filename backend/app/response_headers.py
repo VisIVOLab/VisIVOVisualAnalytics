@@ -76,6 +76,18 @@ X_PARTICLE_STEP = "X-Visivo-Particle-Step"
 # The rows' frame: table = origin + scale * row position (issue #208).
 X_PARTICLE_ORIGIN = "X-Visivo-Particle-Origin"
 X_PARTICLE_SCALE = "X-Visivo-Particle-Scale"
+# Rows left out for their intensity (not finite, not positive, or a light that
+# is 0 in float32) and rows whose light was capped (issue #414).
+X_PARTICLE_DROPPED = "X-Visivo-Particle-Dropped"
+X_PARTICLE_CLIPPED = "X-Visivo-Particle-Clipped"
+# A projected map's units: its surface density and the mean it is coloured
+# by ("relative" when the table states none) (issue #393).
+X_PROJECTED_UNIT = "X-Visivo-Projected-Unit"
+X_PROJECTED_VALUE_UNIT = "X-Visivo-Projected-Value-Unit"
+# The kernel its stills draw the particles with: "gauss", "m4" or
+# "wendland_c4" (issue #477). The GPU view's rows' ``r`` is always a
+# Gaussian's width, of the SPH kernel's second moment for "m4"/"wendland_c4".
+X_PROJECTED_KERNEL = "X-Visivo-Projected-Kernel"
 
 # ── Ray-traced volume grid (issue #106) ─────────────────────────────────────
 X_VOLUME_SHAPE = "X-Visivo-Volume-Shape"
@@ -155,6 +167,9 @@ X_FRAME_EYE = "X-Visivo-Frame-Eye"
 X_FRAME_AGE_MS = "X-Visivo-Frame-Age-Ms"
 X_FRAME_COST_MS = "X-Visivo-Frame-Cost-Ms"
 X_INSTANCE = "X-Visivo-Instance"
+
+# ── Particle layers (issue #394): each layer's windows, JSON ────────────────
+X_LAYER_WINDOWS = "X-Visivo-Layer-Windows"
 
 # ── Cross-cutting / infrastructure ──────────────────────────────────────────
 X_TOKEN = "X-Visivo-Token"

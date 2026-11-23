@@ -129,6 +129,24 @@ BackendImageQualityResult BackendClient::imageQuality(const QString &datasetId) 
     return r;
 }
 
+BackendLteCoResult BackendClient::lteCo(const QJsonObject &body) const
+{
+    QString error;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/products/lte_co")), QJsonDocument(body), error);
+    BackendLteCoResult r;
+    if (!error.isEmpty()) {
+        r.error = error;
+        return r;
+    }
+    r.payload = QJsonDocument::fromJson(payload).object();
+    r.valid = r.payload.value(QStringLiteral("valid")).toBool();
+    r.error = r.payload.value(QStringLiteral("error")).toString();
+    if (!r.valid && r.error.isEmpty())
+        r.error = QStringLiteral("The backend gave no answer the client could read.");
+    return r;
+}
+
 BackendAperturePhotometryResult BackendClient::requestAperturePhotometry(
         const QString &datasetId,
         double raDeg, double decDeg,

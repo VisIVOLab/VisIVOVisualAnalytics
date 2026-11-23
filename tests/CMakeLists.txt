@@ -49,6 +49,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient_Tasks.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_VrPair.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_CubeLod.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient_Products.cpp
     ${VISIVO_ROOT}/src/thirdparty/qrcodegen/qrcodegen.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
@@ -111,6 +112,8 @@ add_executable(VisIVOTests
     test_backend_contract.cpp
     TestRemoteSliceCache.h
     test_remote_slice_cache.cpp
+    TestSliceDetailPlan.h
+    test_slice_detail_plan.cpp
     TestLinkedWindowRegistry.h
     test_linked_window_registry.cpp
     TestLinkedCameraSync.h
@@ -151,6 +154,10 @@ add_executable(VisIVOTests
     test_ray_voxel_pick.cpp
     TestSedBuilder.h
     test_sed_builder.cpp
+    TestMolecularLineClient.h
+    test_molecular_line_client.cpp
+    TestLteCoRequest.h
+    test_lte_co_request.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h
@@ -220,6 +227,14 @@ add_executable(VisIVOTests
     TestCosmologyTools.h
     test_cosmology_tools.cpp
     test_backend_task_follow.cpp
+    TestParticleLightReport.h
+    test_particle_light_report.cpp
+    TestDiagnosticsTask.h
+    test_diagnostics_task.cpp
+    TestParticleProfiles.h
+    test_particle_profiles.cpp
+    TestParticleTableRule.h
+    test_particle_table_rule.cpp
     TestSamp.h
     test_samp.cpp
     ${VISIVO_ROOT}/src/app/SampCallbackServer.cpp

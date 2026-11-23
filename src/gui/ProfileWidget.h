@@ -2,6 +2,7 @@
 #define ProfileWidget_h
 
 #include "AstroUtils.h"
+#include "app/LineFitRequest.h"
 
 #include <vtkSmartPointer.h>
 
@@ -9,6 +10,7 @@
 #include <QWidget>
 #include <QVector>
 
+#include <limits>
 #include <memory>
 
 class QCPGraph;
@@ -147,8 +149,23 @@ public:
     void saveSpectrumCsvNow();                     ///< export the raw spectrum as CSV
     void saveSpectrumPngNow();                     ///< export the plot as PNG
     bool canFit() const { return !m_backendUrl.isEmpty() && !m_fitInProgress; }   ///< can START a fit
+    /// Which part of the spectrum the Gaussian fit sees (issue #416). The
+    /// visible range is the default: a whole-spectrum fit locks onto whatever
+    /// is strongest anywhere, an edge spike as readily as the line.
+    void setFitRangeMode(visivo::linefit::RangeMode mode);
+    visivo::linefit::RangeMode fitRangeMode() const { return m_fitRangeMode; }
+    /// Ask for the typed fit range; true when the user gave one.
+    bool editTypedFitRange();
+    /// The window the next fit will be sent with.
+    visivo::linefit::FitWindow currentFitWindow() const;
+    /// A combo offering the three fit-range modes, kept in step with this
+    /// widget's mode; for a caller that hosts the fit controls elsewhere.
+    static void populateFitRangeCombo(QComboBox *combo);
     bool hasSpectrum() const { return !m_lastSpectrumValues.isEmpty(); }
+    /// The x-axis title now on the plot, which says what the fit range is in.
+    QString spectrumXAxisLabel() const;
     QString statsText() const;                    ///< the current stats-bar text (or empty)
+    QString statsToolTip() const;                 ///< its tooltip: fit warnings and caveats
 
 signals:
     /// Emitted whenever the displayed spectrum / its stats / pin set changes, so an external
@@ -236,7 +253,13 @@ private:
     // captured generation no longer matches is stale and is discarded (the
     // live probe may have moved on while the backend was computing).
     int          m_spectrumGeneration { 0 };
-    void overlayLineFit(const BackendLineFitResult &fit);
+    void overlayLineFit(const BackendLineFitResult &fit, const QString &warning,
+                        const visivo::linefit::FitWindow &window);
+    visivo::linefit::RangeMode m_fitRangeMode{ visivo::linefit::RangeMode::Visible };
+    double m_fitTypedMin{ std::numeric_limits<double>::quiet_NaN() };
+    double m_fitTypedMax{ std::numeric_limits<double>::quiet_NaN() };
+    QString m_fitTypedAxisLabel;   ///< the x-axis the typed range was typed on
+    QComboBox *m_fitRangeCombo{ nullptr };
     void clearFitOverlay();
 
     // ── Spectrum-mode header chrome ─────────────────────────────────────────

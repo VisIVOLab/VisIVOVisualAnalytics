@@ -13,7 +13,11 @@ from typing import Any  # noqa: F401
 
 import numpy as np
 
-from ..fits_dataset import ScientificFitsDataset, image_hdu_index  # noqa: F401
+from ..fits_dataset import (  # noqa: F401
+    UNKNOWN_INTENSITY_UNIT, USER_BEAM_NOTE, ScientificFitsDataset,
+    copy_intensity_provenance,
+    image_hdu_index,
+)
 from .abort import check_abort
 from ._common import (  # noqa: F401
     clamped_sqrt,
@@ -700,13 +704,24 @@ def _finalize_moment2(
     return disp, (spectral_unit or "")
 
 
+def _moment0_unit(bunit: str, spectral_unit: str) -> str:
+    """Unit of an integrated-intensity map. Without an intensity unit it is
+    "(unknown) × <spectral unit>": the bare spectral unit would read as a
+    velocity (issue #416)."""
+    bunit = (bunit or "").strip()
+    spectral_unit = (spectral_unit or "").strip()
+    if not spectral_unit:
+        return bunit
+    if bunit:
+        return f"{bunit} {spectral_unit}"
+    return f"{UNKNOWN_INTENSITY_UNIT} × {spectral_unit}"
+
+
 def _moment_result_unit(order: int, bunit: str, spectral_unit: str) -> str:
     bunit = (bunit or "").strip()
     spectral_unit = (spectral_unit or "").strip()
     if order == 0:
-        if bunit and spectral_unit:
-            return f"{bunit} {spectral_unit}"
-        return bunit or spectral_unit
+        return _moment0_unit(bunit, spectral_unit)
     if order == 1:
         return spectral_unit
     if order == 2:
@@ -1201,7 +1216,8 @@ def _moment_map_dask(
                                           z0, z1, chunk_z, chunk_y, source.stop_file))
         spectral_values = np.asarray(spectral["coordinates"], dtype=np.float64)
         spectral_delta = _integrated_spacing(spectral_values)
-        bunit = dataset.bunit
+        bunit = dataset.intensity_unit
+        intensity_unit_note = dataset.intensity_unit_note
         moment_unit = _moment_result_unit(order, bunit, str(spectral["axis_unit"]))
     finally:
         hdul.close()
@@ -1293,6 +1309,7 @@ def _moment_map_dask(
         "spectral_axis_unit": str(spectral["axis_unit"]),
         "moment_unit": moment_unit,
         "bunit": bunit,
+        "intensity_unit_note": intensity_unit_note,
         "moment_threads_used": n_threads,
         "threshold_used": float(effective_threshold) if mask_enabled else None,
         "data_base64": _b64f32(image),
@@ -1312,8 +1329,7 @@ def _squared_unit(spectral_unit: str) -> str:
 def _moment_unit(order: int, bunit: str, spectral_unit: str) -> str:
     """Derive the physical unit of a moment map from the FITS header units."""
     if order == 0:
-        parts = [p for p in (bunit, spectral_unit) if p]
-        return " ".join(parts)
+        return _moment0_unit(bunit, spectral_unit)
     if order == 1:
         return spectral_unit
     if order == 2:
@@ -1397,7 +1413,8 @@ def worker_moment(
         # Physical-range guard for the position moments (blanks superluminal-M1
         # / out-of-range-M2 noise voxels; shared with the Dask path).
         _apply_position_moment_range_guard(image, order, spectral["coordinates"])
-        bunit = dataset.bunit
+        bunit = dataset.intensity_unit
+        intensity_unit_note = dataset.intensity_unit_note
         moment_unit = _moment_result_unit(order, bunit, str(spectral["axis_unit"]))
         # R-03: order-2 default → velocity dispersion (sqrt of variance).
         image, moment_unit = _finalize_moment2(
@@ -1427,6 +1444,7 @@ def worker_moment(
         "spectral_axis_unit": str(spectral["axis_unit"]),
         "moment_unit": moment_unit,
         "bunit": bunit,
+        "intensity_unit_note": intensity_unit_note,
         "moment_threads_used": _n_moment_threads(),
         "threshold_used": float(effective_threshold) if mask_enabled else None,
         "data_base64": _b64f32(image),
@@ -1493,6 +1511,8 @@ def _moment_beam_cards(src_path: str, channel_start: int, channel_end: int
         return {}, None
     note = None
     beam = dataset.beam
+    if dataset.beam_source == "user":
+        note = USER_BEAM_NOTE
     if dataset.has_per_channel_beam:
         mid = (int(channel_start) + int(channel_end)) // 2
         beam = dataset.beam_for_channel(mid)
@@ -1556,9 +1576,17 @@ def write_moment_fits(
     out_header["NAXIS"]  = 2
     out_header["NAXIS1"] = int(image.shape[1])
     out_header["NAXIS2"] = int(image.shape[0])
+    from .cube import _fits_ascii  # noqa: PLC0415
     moment_unit = str(payload.get("moment_unit") or "")
-    if moment_unit:
-        out_header["BUNIT"] = moment_unit
+    if moment_unit.startswith(UNKNOWN_INTENSITY_UNIT):
+        out_header.add_comment(_fits_ascii(
+            f"No BUNIT: the source intensity unit is unknown, so this map is in "
+            f"(unknown) x {payload.get('spectral_axis_unit') or 'channel'}."))
+    elif moment_unit:
+        out_header["BUNIT"] = _fits_ascii(moment_unit)
+    if int(order) in (0, 6, 8, 10):
+        copy_intensity_provenance(src_header, out_header,
+                                  skip_note=moment_unit.startswith(UNKNOWN_INTENSITY_UNIT))
     out_header["OBJECT"] = src_header.get("OBJECT", out_header.get("OBJECT", ""))
     beam_cards, beam_note = _moment_beam_cards(src_path, channel_start, channel_end)
     for key, value in beam_cards.items():

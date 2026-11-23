@@ -27,6 +27,7 @@
 #include "WorkspaceChrome.h"
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
+#include "DatasetBeamControl.h"
 #include "InspectorPanel.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
@@ -1003,6 +1004,20 @@ void vtkWindowImage::setupInspector()
             { u"Session"_s, this->remoteSessionId },
             { u"Backend"_s, this->remoteBackendUrl },
     });
+    m_unitValueLabel = new QLabel();
+    panel->addPropertyRow(u"Unit"_s, m_unitValueLabel.data());
+    m_beamControl = new DatasetBeamControl();
+    m_beamControl->setDataset(this->remoteBackendUrl, this->remoteBackendToken,
+                              this->remoteDatasetId);
+    panel->addPropertyRow(u"Beam"_s, m_beamControl.data());
+    connect(m_beamControl, &DatasetBeamControl::beamChanged, this,
+            [this](double majorDeg, double minorDeg, double paDeg, const QString &source) {
+                m_beamSource = source;
+                this->setBeamInfo(majorDeg, minorDeg, paDeg);
+                if (ui->vtk && ui->vtk->renderWindow())
+                    ui->vtk->renderWindow()->Render();
+            });
+    this->refreshUnitAndBeamRows();
     // Migrate the former rail pages (layers, catalogue, info/stats) here.
     // Design #1d: layer/catalogue (view) controls live in the LEFT column's
     // LAYERS block; only info/stats stays in the Inspector Properties.
@@ -1103,6 +1118,15 @@ void vtkWindowImage::setupInspector()
                 u"indicators for this map."_s);
         QObject::connect(this->m_actImageQuality, &QAction::triggered, this,
                          [this]() { emit this->imageQualityRequested(); });
+    }
+    if (!this->m_actLteCo) {
+        this->m_actLteCo = ui->menuTools->addAction(u"CO Isotopologues (LTE)…"_s);
+        this->m_actLteCo->setToolTip(
+                u"Optical depth, T_ex, column densities, N(H₂) and mass from ¹³CO and C¹⁸O "
+                u"(optionally ¹²CO) open in this session, per region and as maps."_s);
+        this->m_actLteCo->setEnabled(!this->remoteDatasetId.isEmpty());
+        QObject::connect(this->m_actLteCo, &QAction::triggered, this,
+                         &vtkWindowImage::openLteCoDialog);
     }
 
     // Every tool, from the one table, on both surfaces — the same treatment the
@@ -1276,6 +1300,7 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     };
 
     add(u"Spectral"_s, self->actionExtractSpectrum);
+    add(u"Spectral"_s, self->m_actLteCo);
 
     add(u"Regions"_s, self->actionBoxRegion);
     add(u"Regions"_s, self->actionCircleRegion);

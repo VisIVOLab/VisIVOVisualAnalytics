@@ -104,8 +104,12 @@ if njit is not None:
         """The tiles a kernel at (x, y) of width r, drawn out to cutoff r,
         touches: tx0, tx1, ty0, ty1."""
         reach = cutoff * r
-        return (max(0, int((x - reach) // _TILE)), min(tiles_x - 1, int((x + reach) // _TILE)),
-                max(0, int((y - reach) // _TILE)), min(tiles_y - 1, int((y + reach) // _TILE)))
+        # Clamped before int(): a reach of 1e19 pixels would overflow it.
+        right, bottom = float(tiles_x * _TILE), float(tiles_y * _TILE)
+        return (int(min(max(x - reach, 0.0), right) // _TILE),
+                min(tiles_x - 1, int(min(max(x + reach, -1.0), right) // _TILE)),
+                int(min(max(y - reach, 0.0), bottom) // _TILE),
+                min(tiles_y - 1, int(min(max(y + reach, -1.0), bottom) // _TILE)))
 
     @njit(parallel=True, cache=True, nogil=True)
     def _bin(sx, sy, sr, order, cutoff, width, height, tiles_x, tiles_y):
@@ -186,10 +190,12 @@ if njit is not None:
                 reach = cutoff * r
                 inv_r2 = 1.0 / (r * r)
                 cx, cy = sx[i], sy[i]
-                px0 = max(x0, int(math.floor(cx - reach)))
-                px1 = min(x1, int(math.ceil(cx + reach)) + 1)
-                py0 = max(y0, int(math.floor(cy - reach)))
-                py1 = min(y1, int(math.ceil(cy + reach)) + 1)
+                # Clamped to the tile before int(): a float beyond int64's
+                # range has no defined conversion (a radius of 1e30).
+                px0 = int(math.floor(min(max(cx - reach, x0), x1)))
+                px1 = min(x1, int(math.ceil(min(max(cx + reach, x0 - 1.0), x1))) + 1)
+                py0 = int(math.floor(min(max(cy - reach, y0), y1)))
+                py1 = min(y1, int(math.ceil(min(max(cy + reach, y0 - 1.0), y1))) + 1)
                 if px1 <= px0 or py1 <= py0:
                     continue
                 w = weight[i]
@@ -217,8 +223,8 @@ if njit is not None:
                     # widened by _EDGE so a centre exactly on the circle is in
                     # whatever the rounding of the square root (fastmath).
                     xr = math.sqrt(max(cut2 - dy2, 0.0)) * r + _EDGE
-                    qx0 = max(px0, int(math.ceil(cx - 0.5 - xr)))
-                    qx1 = min(px1, int(math.floor(cx - 0.5 + xr)) + 1)
+                    qx0 = max(px0, int(math.ceil(max(cx - 0.5 - xr, px0 - 1.0))))
+                    qx1 = min(px1, int(math.floor(min(cx - 0.5 + xr, float(px1)))) + 1)
                     wy = w * math.exp(-dy2)
                     if kappa > 0.0:
                         for px in range(qx0, qx1):
@@ -249,6 +255,14 @@ if njit is not None:
         return image, zsum
 
 
+def kernel_scale(radius: np.ndarray) -> float:
+    """The size :func:`emission_weights` measures the particles against: the
+    median of their positive smoothing lengths (1 when none)."""
+    radius = np.asarray(radius, dtype=np.float64)
+    sized = radius[np.isfinite(radius) & (radius > 0)]
+    return float(np.median(sized)) if sized.size else 1.0
+
+
 def emission_weights(intensity: np.ndarray, radius: np.ndarray, quantity: str) -> np.ndarray:
     """Each particle's emission at the peak of its kernel, from its intensity
     and what that measures (see the module doc): a density by ``h``, an amount
@@ -260,8 +274,7 @@ def emission_weights(intensity: np.ndarray, radius: np.ndarray, quantity: str) -
         raise ValueError(f"Unknown quantity {quantity!r}: one of {QUANTITIES}.")
     e = np.asarray(intensity, dtype=np.float64)
     radius = np.asarray(radius, dtype=np.float64)
-    sized = radius[np.isfinite(radius) & (radius > 0)]
-    scale = float(np.median(sized)) if sized.size else 1.0
+    scale = kernel_scale(radius)
     if quantity == "density":
         return e * (radius / scale)
     return e * (scale / np.maximum(radius, 1e-30 * scale)) ** 2
@@ -286,7 +299,7 @@ def render(positions: np.ndarray, radius: np.ndarray, colour: np.ndarray,
         return np.zeros((height, width, 3), dtype=np.float32)
     radius = np.asarray(radius, dtype=np.float64)
     sx, sy, sr, depth = project(positions, radius, camera, width, height)
-    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & (sr > 0) \
+    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & np.isfinite(sr) & (sr > 0) \
         & np.isfinite(intensity) & (intensity > 0)
     # Widened to a visible size with the same light: the column scales as the
     # square of the size ratio.
@@ -353,36 +366,289 @@ def composite(sx, sy, radius, weight, emission, absorption, order, width: int, h
     return light, (zsum if depth is not None else None)
 
 
-def smoothing_lengths(positions: np.ndarray, neighbours: int = 32) -> np.ndarray:
+def smoothing_lengths(positions: np.ndarray, neighbours: int = 32, *,
+                      boxsize=None, region=None) -> np.ndarray:
     """Smoothing lengths where a snapshot has none: half the distance to the
-    ``neighbours``-th nearest particle, the support an SPH kernel would have
-    with that many neighbours."""
+    ``neighbours``-th nearest particle: SPLASH's h, the Gaussian's width. An
+    SPH kernel with that many neighbours has twice it as its support H.
+
+    ``boxsize``: the period of each axis (0: none), so a periodic box's
+    particles find their neighbours across its faces (positions wrapped into
+    [0, L)). ``region(lo, hi)``: the positions of every particle of the
+    population within [lo, hi] on each axis (round the box on a periodic
+    one; a bound may be infinite), these among them. Given, the particles
+    are a cut of that population (a box, a sphere, a slab) and their
+    neighbours are searched beyond its faces too (issue #414): within a
+    margin of the cut's bounds, then, for the particles whose neighbours
+    reach past that margin, within their own distance, which makes every
+    length the one the whole population gives. None: the neighbours are the
+    ``positions``."""
     from scipy.spatial import cKDTree   # noqa: PLC0415
     pts = np.asarray(positions, dtype=np.float64)
-    k = min(neighbours + 1, len(pts))
+    n = len(pts)
+    box = _boxsize(boxsize, pts.shape[1] if pts.ndim == 2 else 3)
+    if region is None:
+        k = min(neighbours + 1, n)
+        if k < 2:
+            return np.ones(n, dtype=np.float32)
+        wrapped = _wrapped(pts, box)
+        # Only the k-th neighbour: the whole (N, k) answer is gigabytes for a
+        # snapshot of tens of millions.
+        dist, _ = cKDTree(wrapped, boxsize=box).query(wrapped, k=[k], workers=-1)
+        return _half_distance(dist[:, 0])
+    if not n:
+        return np.ones(0, dtype=np.float32)
+    return _half_distance(_cut_distances(_contiguous(pts, box), neighbours, region, box))
+
+
+def _cut_distances(pts, neighbours: int, region, box) -> np.ndarray:
+    """The ``neighbours``-th neighbour distance of a cut's particles ``pts``
+    (contiguous round the box) among the region's (see smoothing_lengths)."""
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    dist, margin = _neighbour_distance(pts, region, lo, hi,
+                                       _margin(lo, hi, len(pts), neighbours), neighbours, box)
+    short = np.flatnonzero(dist > _inside_distance(pts, lo, hi, margin, box))
+    # The k-th distance found so far bounds the true one: every neighbour a
+    # particle can have lies within it.
+    for idx in _bands(dist, short):
+        far = pts[idx]
+        dist[idx], _ = _neighbour_distance(far, region, far.min(axis=0), far.max(axis=0),
+                                           float(dist[idx].max()), neighbours, box)
+    return dist
+
+
+def _bands(dist: np.ndarray, which: np.ndarray) -> list[np.ndarray]:
+    """``which`` (indices into ``dist``) in bands of a factor 2 of their
+    distance, so one sparse particle does not widen the search of all the
+    others; at most _MAX_BANDS (quantiles of it), each reading the population."""
+    if not which.size:
+        return []
+    logd = np.log2(np.maximum(dist[which], np.finfo(np.float64).tiny))
+    band = np.floor(logd)
+    if len(np.unique(band)) > _MAX_BANDS:
+        band = np.searchsorted(np.quantile(logd, np.linspace(0, 1, _MAX_BANDS + 1)[1:-1]), logd)
+    return [which[band == b] for b in np.unique(band)]
+
+
+def _margin(lo, hi, n: int, neighbours: int) -> float:
+    """How far past a cut's bounds its neighbours are searched first: three
+    times the radius that holds ``neighbours`` particles at the cut's mean
+    density (on a flat extent, its largest side; 0 for a point)."""
+    extent = np.asarray(hi, dtype=np.float64) - np.asarray(lo, dtype=np.float64)
+    volume = float(np.prod(extent))
+    if not (volume > 0 and math.isfinite(volume)):
+        return float(extent.max()) if extent.size else 0.0
+    return 3.0 * (3.0 * neighbours * volume / (4.0 * math.pi * n)) ** (1.0 / 3.0)
+
+
+_MARGIN_GROWTHS = 8
+_MAX_BANDS = 4
+
+
+def _neighbour_distance(pts, region, lo, hi, margin: float, neighbours: int,
+                        box) -> tuple[np.ndarray, float]:
+    """``(distance, margin)``: the ``neighbours``-th neighbour distance of
+    ``pts`` among the region's particles within ``margin`` of [lo, hi]
+    (``pts`` among them), the margin widened sixteenfold while it holds too few
+    (from a millionth of the bounds' size when it is 0), at last to the
+    whole population."""
+    from scipy.spatial import cKDTree   # noqa: PLC0415
+    scale = max(1.0, float(np.abs(np.concatenate([lo, hi])).max()))
+    for growth in range(_MARGIN_GROWTHS + 1):
+        if growth == _MARGIN_GROWTHS:
+            margin = math.inf
+        pool = np.asarray(region(lo - margin, hi + margin), dtype=np.float64)[:, :3]
+        if len(pool) > neighbours or math.isinf(margin):
+            break
+        margin = 16.0 * margin if margin > 0 else 1e-6 * scale
+    k = min(neighbours + 1, len(pool))
     if k < 2:
-        return np.ones(len(pts), dtype=np.float32)
-    # Only the k-th neighbour: the whole (N, k) answer is gigabytes for a
-    # snapshot of tens of millions.
-    dist, _ = cKDTree(pts).query(pts, k=[k], workers=-1)
-    h = 0.5 * dist[:, 0]
+        return np.zeros(len(pts)), margin
+    dist, _ = cKDTree(_wrapped(pool, box), boxsize=box).query(_wrapped(pts, box), k=[k],
+                                                               workers=-1)
+    return dist[:, 0], margin
+
+
+def _inside_distance(pts, lo, hi, margin: float, box) -> np.ndarray:
+    """How far each of ``pts`` is from the faces of [lo - margin, hi + margin]:
+    a sphere that small around it holds only particles the region gave. An
+    axis whose padded interval covers its period has no face."""
+    reach = np.full(len(pts), np.inf)
+    for i in range(pts.shape[1]):
+        if box is not None and box[i] > 0 and hi[i] - lo[i] + 2.0 * margin >= box[i]:
+            continue
+        reach = np.minimum(reach, np.minimum(pts[:, i] - (lo[i] - margin),
+                                             (hi[i] + margin) - pts[:, i]))
+    return reach
+
+
+def _contiguous(pts: np.ndarray, box: np.ndarray | None) -> np.ndarray:
+    """``pts`` moved round the box on each periodic axis so that they start
+    past the widest empty arc: a cut across a face is one short interval, not
+    one spanning the box (whose search would read the whole population)."""
+    if box is None:
+        return pts
+    out = np.array(pts, dtype=np.float64)
+    for i in np.flatnonzero(box):
+        period = box[i]
+        w = np.sort(np.mod(out[:, i], period))
+        if len(w) < 2:
+            continue
+        gaps = np.diff(np.append(w, w[0] + period))
+        start = w[(int(np.argmax(gaps)) + 1) % len(w)]
+        out[:, i] = start + np.mod(out[:, i] - start, period)
+    return out
+
+
+def _boxsize(boxsize, dims: int) -> np.ndarray | None:
+    """The periods as cKDTree takes them, None when no axis has one."""
+    if boxsize is None:
+        return None
+    box = np.broadcast_to(np.asarray(boxsize, dtype=np.float64), (dims,)).copy()
+    box[~(np.isfinite(box) & (box > 0))] = 0.0
+    return box if box.any() else None
+
+
+def _wrapped(pts: np.ndarray, box: np.ndarray | None) -> np.ndarray:
+    """``pts`` folded into [0, L) on each periodic axis, as cKDTree needs."""
+    if box is None:
+        return pts
+    out = np.array(pts, dtype=np.float64)
+    for i in np.flatnonzero(box):
+        col = np.mod(out[:, i], box[i])
+        col[col >= box[i]] = 0.0
+        out[:, i] = col
+    return out
+
+
+def _half_distance(dist: np.ndarray) -> np.ndarray:
+    h = 0.5 * np.asarray(dist, dtype=np.float64)
     positive = h > 0
     floor = h[positive].min() if positive.any() else 1.0
     return np.where(positive, h, floor).astype(np.float32)
 
 
+LIGHT_PERCENTILE = 99.5
+#: A column spanning more decades than this may mix two populations (gas and
+#: stars in one table), looked for as an empty stretch of
+#: ``POPULATION_GAP_DECADES`` in its values.
+WIDE_SPAN_DECADES = 20.0
+POPULATION_GAP_DECADES = 10.0
+#: How far above the reference the other population's light may reach at
+#: least, in decades.
+LIGHT_CEILING_DECADES = 2.0
+_FLOAT32_DECADES = math.log10(float(np.finfo(np.float32).max))
+
+
+def normalised_light(values, log10: bool = False,
+                     power: float = 1.0) -> tuple[np.ndarray, np.ndarray, dict]:
+    """``(light, usable, stats)`` of an intensity column: the float32 light
+    of the ``usable`` rows raised to ``power``, 1 at a reference, the
+    ``LIGHT_PERCENTILE``-th percentile of the values; ``log10``: the column
+    holds its log10.
+
+    A percentile, not the largest value: in a table mixing gas and stars the
+    star rows lie tens of decades above the gas and, as the reference,
+    pushed all of it to nothing. When the column splits into two populations
+    (see ``WIDE_SPAN_DECADES``) the reference is the larger one's, and the
+    other reaches no higher than that one's brightest row (at least
+    ``LIGHT_CEILING_DECADES`` above the reference). A single population is
+    only kept within float32's range: its contrast is the tone curve's.
+
+    ``usable``: a finite value (in linear, a positive one too) whose light
+    stays above 0 in float32. ``stats``: ``dropped_rows`` (the others),
+    ``clipped_rows`` (capped) and ``light_span_decades`` (of the finite
+    values), for a client to say what was left out, and ``light_unit``: the
+    value (in linear) a light of 1 stands for, before the power."""
+    logs = _log_light(values, log10)
+    usable = np.isfinite(logs)
+    finite = logs[usable]
+    stats = {"dropped_rows": int(len(usable) - len(finite)), "clipped_rows": 0,
+             "light_span_decades": 0.0}
+    if not len(finite):
+        return np.zeros(0, dtype=np.float32), usable, stats
+    stats["light_span_decades"] = float(finite.max() - finite.min())
+    reference, top = _light_reference(finite, stats["light_span_decades"])
+    with np.errstate(over="ignore", under="ignore"):
+        stats["light_unit"] = float(np.power(10.0, reference))
+    excess = float(power) * (finite - reference)
+    # The sum of every particle's light stays finite in float32.
+    ceiling = min(max(LIGHT_CEILING_DECADES, float(power) * (top - reference)),
+                  _FLOAT32_DECADES - math.log10(len(finite)) - 2.0)
+    stats["clipped_rows"] = int(np.count_nonzero(excess > ceiling))
+    with np.errstate(under="ignore"):
+        light = (10.0 ** np.minimum(excess, ceiling)).astype(np.float32)
+    lit = light > 0
+    usable[np.flatnonzero(usable)[~lit]] = False
+    stats["dropped_rows"] += int(np.count_nonzero(~lit))
+    return light[lit], usable, stats
+
+
+def _light_reference(logs: np.ndarray, span: float) -> tuple[float, float]:
+    """``(reference, top)``: the log10 value the light is 1 at and the
+    largest of the population it is taken from (see :func:`normalised_light`)."""
+    if span > WIDE_SPAN_DECADES:
+        ordered = np.sort(logs)
+        gaps = np.diff(ordered)
+        cut = int(np.argmax(gaps))
+        if gaps[cut] > POPULATION_GAP_DECADES:
+            lower, upper = ordered[:cut + 1], ordered[cut + 1:]
+            logs = lower if len(lower) >= len(upper) else upper
+    return float(np.percentile(logs, LIGHT_PERCENTILE)), float(logs.max())
+
+
+def _log_light(values, log10: bool) -> np.ndarray:
+    v = np.asarray(values, dtype=np.float64)
+    if log10:
+        return v
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.log10(v)
+
+
 def velocity_dispersion(positions: np.ndarray, velocities: np.ndarray,
-                        neighbours: int = 32) -> np.ndarray:
+                        neighbours: int = 32, *, boxsize=None, region=None) -> np.ndarray:
     """Each particle's local velocity dispersion: the one-dimensional spread
     of the velocities of its ``neighbours`` nearest particles (itself
-    included), sqrt(<|v - <v>|²> / 3)."""
-    from scipy.spatial import cKDTree   # noqa: PLC0415
+    included), sqrt(<|v - <v>|²> / 3).
+
+    ``boxsize`` and ``region`` as for :func:`smoothing_lengths`, the
+    region's rows carrying the velocities after the positions: a cut's
+    particles take their neighbours from the whole population, past its
+    faces and across a periodic box's."""
     pts = np.asarray(positions, dtype=np.float64)
     vel = np.asarray(velocities, dtype=np.float32)
-    k = min(neighbours + 1, len(pts))
+    box = _boxsize(boxsize, pts.shape[1] if pts.ndim == 2 else 3)
+    if region is None:
+        wrapped = _wrapped(pts, box)
+        return _dispersion(wrapped, wrapped, vel, neighbours, box)
+    out = np.zeros(len(pts), dtype=np.float32)
+    if not len(pts):
+        return out
+    pts = _contiguous(pts, box)
+    dist = _cut_distances(pts, neighbours, region, box)
+    # Every neighbour of a band's particles lies within its largest distance.
+    for idx in _bands(dist, np.arange(len(pts))):
+        near = pts[idx]
+        # Widened by float32's rounding of the cut's positions, which the
+        # region reads back in float64 (coincident particles: a 0 distance).
+        reach = float(dist[idx].max()) + 4.0 * float(np.finfo(np.float32).eps) * max(
+            1.0, float(np.abs(near).max()))
+        pool = np.asarray(region(near.min(axis=0) - reach, near.max(axis=0) + reach),
+                          dtype=np.float64)
+        out[idx] = _dispersion(_wrapped(pool[:, :3], box), _wrapped(near, box),
+                               pool[:, 3:6].astype(np.float32), neighbours, box)
+    return out
+
+
+def _dispersion(pool: np.ndarray, pts: np.ndarray, vel: np.ndarray, neighbours: int,
+                box) -> np.ndarray:
+    """The dispersion of ``pts`` among the ``pool``'s particles (velocities
+    ``vel``), its tree queried in batches of bounded temporaries."""
+    from scipy.spatial import cKDTree   # noqa: PLC0415
+    k = min(neighbours + 1, len(pool))
     if k < 2:
         return np.zeros(len(pts), dtype=np.float32)
-    tree = cKDTree(pts)
+    tree = cKDTree(pool, boxsize=box)
     out = np.empty(len(pts), dtype=np.float32)
     batch = max(4096, 8_000_000 // k)   # bounded temporaries: (batch, k, 3)
     for start in range(0, len(pts), batch):
@@ -470,24 +736,263 @@ def in_slab(positions: np.ndarray, camera: Camera, thickness: float | None) -> n
     return np.abs(depth) <= thickness / 2.0
 
 
+# ── The SPH kernel along the line of sight (issue #477) ────────────────────
+#
+# A projected map can draw each particle as SPH codes do: its kernel W(r, H),
+# of support radius H (Gadget's HSML; SPLASH's h is H / 2), integrated along
+# the line of sight, F(R) = ∫ W(√(R² + z²)) dz, as SPLASH (Price 2007, PASA
+# 24, 159) and Smac (Dolag et al. 2005) draw it. Two kernels: the cubic
+# spline M4 (Gadget-2's; F(0) = 6 / (π H²), σ = 0.274 H) and Wendland C4
+# (Dehnen & Aly 2012, recommended by Beck et al. 2016 with 200 neighbours;
+# F(0) = 2.918 / H², σ = 0.226 H). A snapshot does not say which one its
+# code used: M4 unless told. Each particle's mass is spread over the pixels
+# in proportion to F at them and divided by their sum over the whole pixel
+# grid, so the map holds the mass in view however small the particle is,
+# up to float rounding. One smaller than eight pixels has F averaged over
+# sub-pixels, within about 1 % of its integral over the pixel (which Petkova,
+# Laibe & Bonnell 2018 compute exactly); one that misses every sub-pixel, or
+# has no support, goes to the pixel it lies in.
+
+KERNELS = ("gauss", "m4", "wendland_c4")
+SPH_KERNELS = ("m4", "wendland_c4")
+_TABLE_STEPS = 4096          # F tabulated at q² = k / 4096, k = 0 … 4096
+_SUBSAMPLED_PX = 8.0         # below this support (pixels), F is averaged over sub-pixels
+_MAX_SUBSAMPLES = 6          # per pixel side
+_GRID_SUM_PX = 8.0           # below this support the share is summed on the grid;
+                             # above, its integral (within 3e-6 of the sum)
+#: fastmath without nnan/ninf: a comparison with NaN or inf stays false rather
+#: than being assumed away, so no such value can reach a table index.
+_NAN_SAFE_MATH = {"nsz", "arcp", "contract", "afn", "reassoc"}
+
+
+def _m4(q: np.ndarray) -> np.ndarray:
+    """The cubic spline M4 of support 1, normalised in 3-D."""
+    return (8.0 / math.pi) * np.where(q < 0.5, 1.0 - 6.0 * q ** 2 + 6.0 * q ** 3,
+                                      np.where(q < 1.0, 2.0 * (1.0 - q) ** 3, 0.0))
+
+
+def _wendland_c4(q: np.ndarray) -> np.ndarray:
+    """Wendland C4 of support 1, normalised in 3-D."""
+    return (495.0 / (32.0 * math.pi)) * np.where(
+        q < 1.0, (1.0 - q) ** 6 * (1.0 + 6.0 * q + 35.0 / 3.0 * q * q), 0.0)
+
+
+_TABLES: dict[str, np.ndarray] = {}
+
+
+def projected_kernel(kernel: str) -> np.ndarray:
+    """H² F(R) of ``kernel`` (one of SPH_KERNELS) at (R / H)² = k / _TABLE_STEPS:
+    the kernel of support 1 integrated along the line of sight, by
+    Gauss-Legendre on each side of M4's break at q = 1/2. Its integral over
+    the plane is 1."""
+    if kernel not in SPH_KERNELS:
+        raise ValueError(f"Unknown SPH kernel {kernel!r}: one of {SPH_KERNELS}.")
+    if kernel not in _TABLES:
+        w, brk = (_m4, 0.5) if kernel == "m4" else (_wendland_c4, 0.0)
+        r2 = np.linspace(0.0, 1.0, _TABLE_STEPS + 1)
+        nodes, weights = np.polynomial.legendre.leggauss(64)
+        top = np.sqrt(1.0 - r2)
+        knee = np.sqrt(np.maximum(brk * brk - r2, 0.0))
+        f = np.zeros_like(r2)
+        for lo, hi in ((np.zeros_like(r2), knee), (knee, top)):
+            z = 0.5 * (lo + hi)[:, None] + 0.5 * (hi - lo)[:, None] * nodes
+            f += 0.5 * (hi - lo) * (w(np.sqrt(r2[:, None] + z * z)) @ weights)
+        f = 2.0 * f
+        f[-1] = 0.0
+        _TABLES[kernel] = f
+    return _TABLES[kernel]
+
+
+def gaussian_width(kernel: str) -> float:
+    """The width h, in units of the support H, of the Gaussian exp(-d²/h²)
+    with ``kernel``'s projected second moment (σ = h/√2): 0.387 for M4, 0.320
+    for Wendland C4, 1 for the Gaussian itself. The GPU view, which draws
+    Gaussians, draws an SPH map's particles that wide."""
+    if kernel == "gauss":
+        return 1.0
+    f = projected_kernel(kernel)
+    r2 = np.linspace(0.0, 1.0, f.size)
+    # <R²> = ∫ 2πR · R² F dR = π ∫ R² F d(R²); σ² = <R²> / 2 per axis.
+    mean_r2 = math.pi * float(np.trapezoid(r2 * f, r2))
+    return math.sqrt(mean_r2)
+
+
+if njit is not None:
+    @njit(cache=True, nogil=True)
+    def _subsamples(h):
+        """Sub-pixels per side for a kernel of support ``h`` pixels, so that
+        its mean over a pixel is within about 1 % of the pixel's integral:
+        ceil(_SUBSAMPLED_PX / h), at most _MAX_SUBSAMPLES (a spacing at most
+        h / 2 down to h = 1/3 pixel, so that its disc holds some)."""
+        if h >= _SUBSAMPLED_PX:
+            return 1
+        if h * _MAX_SUBSAMPLES <= _SUBSAMPLED_PX:
+            return _MAX_SUBSAMPLES
+        return int(math.ceil(_SUBSAMPLED_PX / h))
+
+    @njit(cache=True, nogil=True, fastmath=_NAN_SAFE_MATH)
+    def _share(px, py, cx, cy, inv_h2, sub, table):
+        """H² F at pixel (px, py), its mean over ``sub`` × ``sub`` sub-pixels."""
+        steps = table.size - 1
+        step = 1.0 / sub
+        total = 0.0
+        for a in range(sub):
+            dy = py + (a + 0.5) * step - cy
+            dy2 = dy * dy * inv_h2
+            if dy2 >= 1.0:
+                continue
+            for b in range(sub):
+                dx = px + (b + 0.5) * step - cx
+                s = dx * dx * inv_h2 + dy2
+                if s < 1.0:
+                    f = s * steps
+                    k = min(max(int(f), 0), steps - 1)
+                    total += table[k] + (f - k) * (table[k + 1] - table[k])
+        return total / (sub * sub)
+
+    @njit(parallel=True, fastmath=_NAN_SAFE_MATH, cache=True, nogil=True)
+    def _grid_norms(sx, sy, sh, order, table, grid_sum_px):
+        """Per particle, 1 / the sum of its shares over the whole pixel grid
+        (0: it falls between the sub-pixels, all of it goes to its pixel)."""
+        out = np.zeros(sx.size, dtype=np.float64)
+        for j in prange(order.size):
+            i = order[j]
+            h = np.float64(sh[i])
+            if not h > 0.0:
+                continue
+            if h >= grid_sum_px:
+                out[i] = 1.0 / (h * h)
+                continue
+            cx, cy = np.float64(sx[i]), np.float64(sy[i])
+            inv_h2 = 1.0 / (h * h)
+            sub = _subsamples(h)
+            total = 0.0
+            for py in range(int(math.floor(cy - h)), int(math.floor(cy + h)) + 1):
+                for px in range(int(math.floor(cx - h)), int(math.floor(cx + h)) + 1):
+                    total += _share(px, py, cx, cy, inv_h2, sub, table)
+            out[i] = 1.0 / total if total > 0.0 else 0.0
+        return out
+
+    @njit(parallel=True, fastmath=_NAN_SAFE_MATH, cache=True, nogil=True)
+    def _stamp(sx, sy, sh, amount, norm, table, counts, items, width, height,
+               tiles_x, tiles_y):
+        """(height, width, 3): each particle's ``amount`` (N, 3) spread over
+        the pixels by its shares times ``norm``, tile by tile, summed in
+        float64 (millions of particles on a few pixels lose mass in float32)."""
+        image = np.zeros((height, width, 3), dtype=np.float32)
+        n_tiles = tiles_x * tiles_y
+        stride = np.int64(7919) if n_tiles % 7919 != 0 else np.int64(1)
+        for j in prange(n_tiles):
+            t = (np.int64(j) * stride) % n_tiles
+            ty, tx = t // tiles_x, t % tiles_x
+            x0, y0 = tx * _TILE, ty * _TILE
+            x1, y1 = min(width, x0 + _TILE), min(height, y0 + _TILE)
+            acc = np.zeros((_TILE, _TILE, 3), dtype=np.float64)
+            for k in range(counts[t], counts[t + 1]):
+                i = items[k]
+                cx, cy = np.float64(sx[i]), np.float64(sy[i])
+                a0, a1, a2 = amount[i, 0], amount[i, 1], amount[i, 2]
+                c = norm[i]
+                if c == 0.0:
+                    px, py = int(math.floor(cx)), int(math.floor(cy))
+                    if x0 <= px < x1 and y0 <= py < y1:
+                        acc[py - y0, px - x0, 0] += a0
+                        acc[py - y0, px - x0, 1] += a1
+                        acc[py - y0, px - x0, 2] += a2
+                    continue
+                h = np.float64(sh[i])
+                inv_h2 = 1.0 / (h * h)
+                sub = _subsamples(h)
+                # Clamped to the tile before int(): an H of 1e19 pixels
+                # would overflow it.
+                qy0 = int(math.floor(max(cy - h, y0 - 1.0)))
+                qy1 = int(math.floor(min(cy + h, y1 + 1.0))) + 1
+                qx0 = int(math.floor(max(cx - h, x0 - 1.0)))
+                qx1 = int(math.floor(min(cx + h, x1 + 1.0))) + 1
+                for py in range(max(y0, qy0), min(y1, qy1)):
+                    for px in range(max(x0, qx0), min(x1, qx1)):
+                        f = _share(px, py, cx, cy, inv_h2, sub, table) * c
+                        if f > 0.0:
+                            acc[py - y0, px - x0, 0] += a0 * f
+                            acc[py - y0, px - x0, 1] += a1 * f
+                            acc[py - y0, px - x0, 2] += a2 * f
+            for py in range(y0, y1):
+                for px in range(x0, x1):
+                    for ch in range(3):
+                        image[py, px, ch] = acc[py - y0, px - x0, ch]
+        return image
+
+
+def sph_project(positions: np.ndarray, support: np.ndarray, amount: np.ndarray,
+                camera: Camera, width: int, height: int, kernel: str = "m4") -> np.ndarray:
+    """``(height, width, 3)`` float32: each particle's ``amount`` (N, 3)
+    spread over the pixels by its SPH ``kernel`` of ``support`` radius H (in
+    the positions' units) integrated along the line of sight, its shares of
+    the unbounded pixel grid summing to 1 (see above). ``camera`` parallel;
+    particles behind it, or of infinite support, are left out; one of no
+    positive support goes whole to the pixel it lies in."""
+    if njit is None:   # pragma: no cover
+        raise RuntimeError("Projected particle maps need numba.")
+    table = projected_kernel(kernel)
+    if not len(positions):
+        return np.zeros((height, width, 3), dtype=np.float32)
+    sx, sy, sh, depth = project(positions, np.asarray(support, dtype=np.float64), camera,
+                                width, height)
+    amount = np.ascontiguousarray(amount, dtype=np.float32)
+    sh = np.where(sh > 0, sh, np.float32(0.0))
+    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & np.isfinite(sh) \
+        & np.isfinite(amount).all(axis=1)
+    keep &= (sx + sh >= 0) & (sx - sh < width) & (sy + sh >= 0) & (sy - sh < height)
+    order = np.flatnonzero(keep).astype(np.int64)
+    tiles_x, tiles_y = -(-width // _TILE), -(-height // _TILE)
+    with PARALLEL:   # one parallel kernel at a time (app/numba_parallel.py)
+        norm = _grid_norms(sx, sy, sh, order, table, _GRID_SUM_PX)
+        counts, items = _bin(sx, sy, sh, order, 1.0, width, height, tiles_x, tiles_y)
+        return _stamp(sx, sy, sh, amount, norm, table, counts, items, width, height,
+                      tiles_x, tiles_y)
+
+
 def projected_maps(positions: np.ndarray, radius: np.ndarray, weight: np.ndarray,
                    value: np.ndarray | None, camera: Camera, width: int, height: int, *,
-                   slab: float | None = None) -> np.ndarray:
-    """``(height, width, 2)``: the projected density (the columns of the
-    particles' kernels, each of mass ``weight``) and the density-weighted mean
-    of ``value`` along each line of sight (NaN where nothing lies)."""
+                   slab: float | None = None, kernel: str = "gauss") -> np.ndarray:
+    """``(height, width, 2)``: the projected density (the particles' kernels,
+    each of mass ``weight``: the mass each pixel holds) and the
+    density-weighted mean of ``value`` along each
+    line of sight (NaN where nothing lies, or no particle has a value).
+    ``kernel``: ``gauss`` (``radius`` its width h, as the 3-D render draws
+    it) or one of SPH_KERNELS (``radius`` its support H)."""
+    if kernel not in KERNELS:
+        raise ValueError(f"Unknown kernel {kernel!r}: one of {KERNELS}.")
     cam = parallel_camera(camera)
     keep = in_slab(positions, cam, slab)
     w = np.asarray(weight, dtype=np.float32)[keep]
-    v = (np.zeros(int(keep.sum()), dtype=np.float32) if value is None
-         else np.nan_to_num(np.asarray(value, dtype=np.float32)[keep]))
-    # Three additive channels: the mass, the mass times the value, nothing.
-    channels = np.stack([np.ones_like(w), v, np.zeros_like(w)], axis=1)
-    light = render(positions[keep], np.asarray(radius)[keep], channels, w, cam, width, height,
-                   quantity="per_particle")
-    density = light[..., 0]
+    radius = np.asarray(radius)[keep]
+    if value is None:
+        v, has = np.zeros_like(w), np.ones_like(w)
+    else:
+        v = np.asarray(value, dtype=np.float32)[keep]
+        has = np.isfinite(v).astype(np.float32)
+        v = np.where(has > 0, v, 0.0).astype(np.float32)
+    # Three additive channels: the mass, the mass times the value, the mass
+    # of the particles that have a value (a NaN is no value, not 0).
+    channels = np.stack([np.ones_like(w), v, has], axis=1)
+    if kernel in SPH_KERNELS:
+        lit = np.isfinite(w) & (w > 0)
+        light = sph_project(positions[keep][lit], radius[lit], channels[lit] * w[lit, None],
+                            cam, width, height, kernel)
+        density = light[..., 0]
+    else:
+        light = render(positions[keep], radius, channels, w, cam, width, height,
+                       quantity="per_particle")
+        # A particle of weight 1 sums, over the pixels, to its kernel's area
+        # pi s^2 (1 - exp(-cutoff^2)) in pixels (s the size emission_weights
+        # measures it against, in pixels): the column over that area is the
+        # mass each pixel holds.
+        s_px = kernel_scale(radius) * height / (2.0 * max(cam.parallel_scale, 1e-30))
+        density = light[..., 0] / (math.pi * s_px * s_px
+                                   * (1.0 - math.exp(-_CUTOFF * _CUTOFF)))
     with np.errstate(divide="ignore", invalid="ignore"):
-        mean = np.where(density > 0, light[..., 1] / density, np.nan)
+        mean = np.where(light[..., 2] > 0, light[..., 1] / light[..., 2], np.nan)
     return np.stack([density, mean], axis=-1).astype(np.float32)
 
 

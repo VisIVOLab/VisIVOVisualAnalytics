@@ -15,7 +15,7 @@ header.
 | One file (`snap_010`) | the file |
 | Several files (`snapdir_010/snap_010.0` … `.N`) | any one of the files, or the `snapdir_010` folder; all the files are read together |
 | HDF5 (`snap_010.hdf5`, `snap_010.0.hdf5` …) | as above |
-| SubFind (`groups_010/sub_010.0` …) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
+| SubFind (`groups_010/sub_010.0` …, or the HDF5 `fof_subhalo_tab_010.hdf5` of Gadget-4 and Arepo) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
 
 Binary format 1 (no block names) and format 2 (named blocks) are both read,
 in either byte order. If a file of a multi-file snapshot is missing, or the
@@ -86,6 +86,10 @@ values are used instead (a run in Mpc/h, for example). An administrator can
 set them on the backend with `VISIVO_GADGET_UNITS`
 (see [Configuration](../../technical/configuration.md)).
 
+In a SubFind catalogue, subhalo velocities are taken as peculiar km/s and Vmax as physical km/s, as Gadget-4 and Arepo write them; an HDF5 catalogue's group velocity is converted with 1/a. The convention of the P-Gadget3 SubFind writer (binary `sub_…` files) is not public and is unconfirmed: `svel=snapshot` or `svel=canonical` (and `srad=` for the subhalo radii) in `VISIVO_GADGET_UNITS` state another one.
+For a Gadget-4 catalogue with its snapshot beside it, ask the copilot to check the velocity convention: it compares the stored velocity of the most massive subhalos with that of their particles and names the convention.
+A folder holding both a snapshot and its group catalogue opens the snapshot; the file browser names the catalogue, which you open as its own file. Gadget-4 lightcone catalogues (`lc_fof_…`) keep their velocities as written (already peculiar), and their positions, centred on the observer, never wrap round the box.
+
 Without a parameter file, the header decides whether the run is
 cosmological. A run with a matter density and a redshift that matches its
 scale factor is comoving. Any other run, an isolated galaxy for example, is
@@ -99,17 +103,14 @@ file browser list it and say why; the other blocks open as usual.
 
 The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
-to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
+to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a for particles; × 1 for SubFind subhalos).
 
 A large particle table starts as Gaussian splats 0.75 mean particle spacings
-wide, with an opacity that falls as the cloud gets deeper. In the local 3-D
-view, above about 100,000 particles in a cube the picture comes out brighter
-than nominal (about twice at a million particles, four and a half times at 10
-million), so the local view's splat brightness is not comparable between
-tables of different size; use a [projected map](raytraced-particles.md) for
-that. The server-rendered (*Remote*) view, and a headset that has a float
-target at the default splat size, have no such floor: there the same field
-looks the same from 100,000 or 30 million particles at one intensity. Lower
+wide, with an opacity that falls as the cloud gets deeper, so the same field
+looks equally bright from 100,000 or 30 million particles at one intensity:
+in the Local and *Remote* views and in a headset with a float target. A
+headset without one still brightens large tables. For quantitative
+comparisons use a [projected map](raytraced-particles.md). Lower
 **Splat size** if dense regions saturate. The whole slider changes the size,
 in the Local and Remote views alike: splats from 0.25 to 12 on the scale of
 the 0.75 above (3 at the slider's default), points from 1 to 16 pixels.
@@ -122,9 +123,12 @@ A particle type works wherever a VBT point table does: filters and colour by
 any column, the *Camera* presets, the remote 3-D view on the backend,
 [ray-traced particles](raytraced-particles.md) and the [VR headset](vr.md),
 whose *Previous* and *Next* buttons step through the numbered outputs. The
-3-D regions and *Selection Diagnostics…* described in
+3-D regions and *Selection Diagnostics…* (histogram, radial profile and
+phase diagram) described in
 [Catalogues and HiPS](catalogues-hips.md#3-d-regions-and-selection-diagnostics)
-evaluate every particle of the type, not only the loaded sample.
+evaluate every particle of the type, not only the loaded sample. A profile
+can be centred on a SubFind group or subhalo selected in the SubFind
+catalogue's window.
 
 In a cosmological snapshot the box is periodic: a box or sphere selection near
 one face also takes the particles just across the opposite face. A run that

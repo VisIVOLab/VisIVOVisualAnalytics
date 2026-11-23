@@ -61,6 +61,7 @@ right window.
 - *What is the comoving distance at redshift 0.1?*: `cosmology_distance`
   (Planck18).
 - In the Catalogue 3D window, *What is the redshift range?*: `catalogue_summary`.
+- On a Gadget-4 SubFind catalogue, *Are the subhalo velocities peculiar?*: `catalogue_summary` with `subfind_velocity_check`, against the snapshot beside it.
 
 ## Evidence under each answer
 

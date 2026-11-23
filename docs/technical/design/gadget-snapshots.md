@@ -179,6 +179,11 @@ response):
 |---|---|---|
 | `x`, `y`, `z`, `hsml` | L/h, comoving | × L/kpc · a/h → kpc |
 | `vx`, `vy`, `vz` | V, with Gadget's internal √a | × V/(km/s) · √a → km/s, peculiar |
+| subhalo `vx`, `vy`, `vz` (`SVEL`, `SubhaloVel`) | V, peculiar | × V/(km/s) → km/s (`svel=snapshot`: × √a; `svel=canonical`, alias `comoving`: × 1/a) |
+| group `vx`, `vy`, `vz` (HDF5 `GroupVel`) | V, internal a²ẋ | × V/(km/s) / a → km/s, peculiar |
+| `vmax` | V, physical | × V/(km/s) → km/s |
+| subhalo `half_mass_radius`, `rmax`, `subhalohalfmassradtype_k` | L/h, comoving (Gadget-4 HDF5 stores them physical; they are read × 1/a so they size markers like the comoving positions) | × L/kpc · a/h → kpc; `srad=` states the stored frame |
+| HDF5 `spin_*`, `subhaloveldisp` | (L/h)·V and V, physical | × L/kpc / h · V/(km/s); × V/(km/s) |
 | `mass`, `bh_mass` | M/h | × M/M☉ / h → M☉ |
 | `rho` | (M/h)/(L/h)³, comoving | × M/L³ · h²/a³ → g/cm³ |
 | `u` | V² | × V² → erg/g |
@@ -325,6 +330,10 @@ with the selection. The
 out-of-core matcher, the point sessions' masks (`LazyColumns.periods`) and the
 DataFrame path use the nearest image for spheres and wrap boxes round the
 faces (`app/periodic.py`). A selection may state its own `period` (0: none).
+The snapshot's description says the outcome: `units.periodic` (a boolean, by
+the rule above) with `box_size`, so a client's "Periodic box" setting starts
+as the backend decides. The ray-traced render's neighbour searches (smoothing
+lengths, velocity dispersion) wrap round the same box (request `period`).
 
 The response includes field and weight units from component metadata, the
 selection expression and explicit bin edges. The desktop carries these into
@@ -371,6 +380,64 @@ therefore exposed as **FoF groups** and **subhalos**, rather than the ordinary
 particle-type names. The declared schemas cover the group positions, masses,
 overdensity radii, gas/star properties and contamination counters, and the
 subhalo positions, velocities, masses, radii, spin and parent identifiers.
+
+Gadget-4 and Arepo HDF5 catalogues (`fof_subhalo_tab_NNN[.k].hdf5`) open the same way: the
+`Group` and `Subhalo` datasets are types 0 and 1, counted by `Ngroups_*` and `Nsubhalos_*`
+(Arepo: `Nsubgroups_*`), and mapped to the binary blocks (`SUBFIND_HDF5_BLOCKS`):
+`Group_R_TopHat200` (Δ_c(z) of Bryan & Norman 1998 times the critical density) is `rvir`, `Group_R_Crit500` is `r500`, `SubhaloHalfmassRad` is
+`half_mass_radius`; other datasets keep their own names.
+The velocity conventions follow the public writers: Gadget-4 `subfind_properties.cc`
+(subhalo velocity × 1/a of the internal a²ẋ, i.e. peculiar; Vmax = √(GM/r) with r
+physical; half-mass radius physical), `fof.cc` (GroupVel the mass-weighted internal velocity)
+and Arepo `subfind_properties.c` (peculiar subhalo velocity, comoving radii).
+P-Gadget3's writer is not public: the binary catalogues default to the same
+velocity convention and comoving radii, and `svel=` / `srad=` change it.
+
+A folder is opened by `first_in_dir`: the first file of a multi-file set
+(`.0`, `.0.hdf5`), else a `snap*` file, else a single-file catalogue
+(`fof_…`, `lc_fof_…`, `sub_…`); a later file (`.1`) is skipped only when its
+`.0` is there, and the most-bound-only companion of an orphan-tracking run
+(`…-prevmostboundonly_NNN`) never opens. Particles come first: a folder
+holding a snapshot and its group catalogue opens the snapshot, and the file
+browser's description names the catalogue of the same output number
+(`catalogue_in_dir`), which opens as its own window of FoF groups or
+subhalos (the desktop has no pairing of the two beyond that).
+
+Gadget-4 writes its lightcone group catalogues as `lc_groups_NNN/lc_fof_…`
+in a run compiled with `LIGHTCONE_PARTICLES_GROUPS`; the header does not say
+so, so the name and `Config` decide (`_is_lightcone_catalogue`). There the
+particle velocities are already peculiar (`fof<lcparticles>` in
+`subfind_properties.cc`), so `GroupVel` and `SubhaloVel` are taken × 1
+whatever `svel=` says. The subhalo radii are made physical with the group's
+`GroupAscale`, which the current Gadget-4 sets to the time the groups were
+found (the header's), so they are read × 1/a as elsewhere. The positions are
+around the observer, so they never wrap round `BoxSize`; their a/h
+conversion uses the header's a, which is only the code's own approximation
+on a lightcone. The format and the metadata say `lightcone`.
+
+### Checking the velocity convention on the data
+
+`app/subfind_check.py` measures how a Gadget-4 catalogue stores subhalo
+velocities. Gadget-4 sorts the snapshot written with a catalogue by group,
+so `SubhaloOffsetType`/`SubhaloLenType` give each subhalo's particles as one
+run of rows per type. For the N most massive subhalos it takes the members'
+mass-weighted velocity (peculiar, with the snapshot's √a; a type with more
+than 4 million members is read every k-th row) and its projection on the
+stored `SubhaloVel`: the median ratio is 1 for peculiar velocities, √a for
+the snapshot convention and 1/a for a²ẋ, and a convention
+is reported when it is within 2%, no other is within 4%, and at least 80% of
+the subhalos agree with it (a snapshot that is not the catalogue's scatters
+them; `ratio_mad` gives the spread). Member and stored velocities come from
+the same particles at the same time, so the ratio is exact to the files'
+precision and the conventions part from about z = 0.08. The snapshot is the
+one with the same output number beside the catalogue or one folder up (not
+a `-prevmostboundonly` companion), every file of it passing the backend's
+path rule, at the same time. The member velocities are taken × √a, as
+Gadget-4 writes them. The copilot runs it with
+`catalogue_summary` and `subfind_velocity_check=N` on a loaded catalogue. A
+binary P-Gadget3 catalogue indexes its own ID list (`SOFF`/`SLEN`), not the
+snapshot, and an Arepo one keeps its offsets in separate files: the check
+refuses them.
 
 The catalogue metadata carries `catalogue_kind: subfind`, the object kind and
 the radius definitions. Length, mass and velocity fields use the same stored

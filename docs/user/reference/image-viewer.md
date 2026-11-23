@@ -66,6 +66,19 @@ the WCS the edited header describes.
 When the header has `BMAJ` and `BMIN` (and optionally `BPA`), the beam is drawn
 as an ellipse in the bottom-left corner.
 
+*Inspector ▸ Properties* shows the *Unit* and the *Beam* (the same rows exist in
+the cube viewer):
+
+- *Unit*: `BUNIT`, or, when the header has none, the unit read from `TEMPSCAL`,
+  `BTYPE` or `LABEL` marked *(no BUNIT)*; the tooltip says which keyword it
+  came from. Spectrum axes say the same (*Intensity (K, no BUNIT)*).
+- *Beam*: the size and where it came from, *(header)* or *(set by user)*.
+  When the header has no complete beam, *Set beam…* asks for the major axis,
+  the minor axis (same as major if left at zero) and the position angle, in
+  arcsec and degrees. The beam is kept with the file, so per-beam quantities
+  and their errors use it in every later session; *Edit…* changes it and
+  *Clear* forgets it. A beam in the header cannot be overridden.
+
 ## View menu
 
 - *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges.
@@ -120,14 +133,13 @@ sum, mean, median, standard deviation and σ_MAD (1.4826 × the median absolute
 deviation). When the view is reduced, or the region reaches beyond the loaded
 part of the image, these are computed on the full-resolution file, and the
 subtitle says what they were computed on. Quote these figures, not the live
-readout. With a beam in the header, *Radio (beam-aware)* gives the beam size,
-the beam area Ω = π·BMAJ·BMIN/(4 ln 2) in pixels, the integrated flux sum / Ω
-with its error, and the peak SNR in σ_MAD. The flux is in the image's unit
-over the beam: Jy for a Jy/beam image, Jy km/s for a moment-0 map in Jy/beam
-m/s or Jy/beam km/s (an exported moment map keeps the cube's beam). An image
-with no `BUNIT` is taken as Jy/beam, and the window says so; an image not per
-beam (K, MJy/sr) gets no flux. The error and the background follow the rules
-of the cube viewer ([Region flux](region-pv-noise.md#region-flux-and-hi-mass)):
+readout. *Flux* gives the beam size and area Ω = π·BMAJ·BMIN/(4 ln 2) in
+pixels when there is a beam, the region's flux with its error in the unit the
+image allows, and the peak SNR in σ_MAD: Jy (or Jy km/s on a moment-0 map) for
+Jy/beam, Jy/pixel and MJy/sr images; *Mean W* and *Σ W ΔΩ* in K km/s arcsec²
+for an image in K, which is not converted to Jy; no flux, with the reason, for
+an unknown unit or a Jy/beam image without a beam. The rules, the error and
+the background are those of the cube viewer ([Region flux](region-pv-noise.md#region-flux-and-hi-mass)):
 a background region's mean is subtracted and its error added, or the noise of
 the loaded pixels gives the error, and a map that looks masked gets a
 warning. A map integrated over frequency stays in Jy Hz here (an exported map
@@ -242,7 +254,9 @@ client. For full-Stokes cubes use the cube viewer
   pixels with a flux ≤ 0 are skipped. For maps on different grids use
   *Combine ▸ Pixel Math / Spectral Index…* in the Data Hub, which reprojects
   the second map (beams are not matched: smooth both to a common resolution
-  first).
+  first). Two maps that do not overlap on the sky are refused; a partial
+  overlap is computed and the result reports how much of the first map it
+  covers.
 - *Compute Faraday RM…*: fits PA = PA₀ + RM·λ² to three or more (Q, U, ν GHz)
   layer triplets; RM in rad m⁻². PA is not unwrapped, so the result is only
   right while |RM·Δλ²| < π/2 between consecutive frequencies; for larger RM

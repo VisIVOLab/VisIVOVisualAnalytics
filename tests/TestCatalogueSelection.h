@@ -26,4 +26,5 @@ private slots:
     void radiiSayWhatTheyAreDefinedAgainst();
     void theFramingLineGoesToTheInspectorAndTheStatusBar();
     void cameraJsonRoundTrips();
+    void aOneClickConditionJoinsTheAppliedFiltersOnly();
 };

@@ -1512,13 +1512,10 @@ bool vtkWindowCube::mapDisplayToFullVoxel(int dx, int dy, int &outX, int &outY) 
     const double *w = this->coordinate->GetComputedWorldValue(renderer);
     if (!w)
         return false;
-    int extent[6];
-    double origin[3], spacing[3];
-    imageData->GetExtent(extent);
-    imageData->GetOrigin(origin);
-    imageData->GetSpacing(spacing);
-    outX = int(std::lround(extent[0] + (w[0] - origin[0]) / spacing[0]));
-    outY = int(std::lround(extent[2] + (w[1] - origin[1]) / spacing[1]));   // ext[2], not ext[1]
+    // The slice's samples keep the plane's frame, a wide channel every stride pixels (issue
+    // #381): the world point is the full-resolution voxel, not a sample index.
+    outX = int(std::lround(w[0]));
+    outY = int(std::lround(w[1]));
     return true;
 }
 

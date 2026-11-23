@@ -9,6 +9,7 @@
 
 #include "BackendLocality.h"
 #include "RaytraceOutput.h"
+#include "ParticleLightReport.h"
 #include "RaytraceSettingsPanel.h"
 #include "RaytraceViewport.h"
 #include "RemotePointStyle.h"
@@ -849,6 +850,8 @@ void vtkWindowCatalogue3D::leaveRaytraced(const QString &why)
 void vtkWindowCatalogue3D::setRaytraced(bool on)
 {
     this->enablePointOnlyControls(!on);
+    if (on)
+        this->updateSplatPass();   // nothing local is drawn meanwhile
     if (!on) {
         if (this->m_rtCard)
             this->m_rtCard->hide();
@@ -901,6 +904,8 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
     }
     if (!this->m_rtPanel) {
         this->m_rtPanel = new RaytraceSettingsPanel(this->numericColumns());
+        // A periodic snapshot's box: its neighbours may wrap round it.
+        this->m_rtPanel->setPeriodicBoxKnown(visivo::periodicBoxKnown(this->m_snapshotMetadata));
         // Where the view's own encoding is: below the shape, in the sidebar.
         this->m_rtCard = new QFrame;
         this->m_rtCard->setObjectName(u"raytraceCard"_s);
@@ -957,7 +962,10 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
         source.toneJson = [self](double base) {
             return self ? self->m_rtPanel->tone(base) : QJsonObject();
         };
+        source.typeColumn = visivo::particleTypeColumn(this->numericColumns());
         this->m_rtView = new RaytraceViewport(source, this->m_renderStack);
+        QObject::connect(this->m_rtView, &RaytraceViewport::typeFilterRequested, this,
+                         &vtkWindowCatalogue3D::addAndApplyFilter);
         QObject::connect(this->m_rtView, &RaytraceViewport::cameraChanged, this,
                          &vtkWindowCatalogue3D::broadcastComparisonRaytraceCamera);
         this->m_renderStack->addWidget(this->m_rtView);

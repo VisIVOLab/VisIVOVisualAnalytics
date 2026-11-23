@@ -58,6 +58,9 @@ tests/
   test_update_check.cpp            #  9 — GitHub latest-release reply, version comparison
   test_source_table.cpp            # 11 — VLKB cutouts for a source table
   test_backend_task_follow.cpp     # 23 — following a backend task to its end, with back-off
+  test_particle_light_report.cpp   #  5 — rows a ray-traced render dropped or clipped, the gas-only suggestion, period
+  test_diagnostics_task.cpp        #  6 — selection diagnostics as a backend task: create, poll, cancel, fallback
+  test_particle_table_rule.cpp     #  4 — which plain tables hold particles (issue #414) and the per-file choice
   test_samp.cpp                    # 39 — SAMP: XML-RPC codec, callback server, row identity and linking
   test_cosmology_tools.cpp         # 38 — cosmology tools: custom models, distance table, P(ℓ) slope, bindings
   test_copilot_status.cpp          #  8 — why the copilot cannot answer, as the panels show it
@@ -72,7 +75,7 @@ tests/
   test_recent_reopen.cpp           #  9 — reopening a Recent Datasets entry whose file has gone
   test_shared_selection.cpp        # 21 — a selection shared between the headset and the cube viewer
   test_shared_selection_link.cpp   #  5 — the selection hub against a live backend (skipped without one)
-  test_solid_splats.cpp            #  6 — splats in a solid colour, NaN scalars included; splat opacity in 8-bit steps
+  test_solid_splats.cpp            #  9 — splats in a solid colour, NaN scalars included; float splat opacity, its shader literal and level of detail; the VR 8-bit steps
   test_raytrace_view_rules.cpp     #  9 — the ray-traced GPU view: colour values (NaN, cgs ranges), the loading overlay
   test_supported_formats.cpp       # 13 — the file types the file browser offers
   test_vbt_byte_order.cpp          # 10 — a VBT whose header declares the wrong byte order
