@@ -9,6 +9,7 @@
 #include <QTest>
 
 #include <cmath>
+#include <limits>
 
 using namespace visivo;
 
@@ -249,6 +250,53 @@ void TestCatalogueSelection::radiiSayWhatTheyAreDefinedAgainst()
              QStringLiteral("Framed target at 1.25 × rmax = 1.5."));
 }
 
+void TestCatalogueSelection::theFramingLineGoesToTheInspectorAndTheStatusBar()
+{
+    QStringList inspector;
+    QList<QPair<QString, int>> statusBar;
+    const framing::FramingOutputs outputs{
+        [&](const QString &text) { inspector << text; },
+        [&](const QString &text, int timeoutMs) { statusBar << qMakePair(text, timeoutMs); }
+    };
+    const QString line = framing::framingStatus(QStringLiteral("Group 12"),
+                                                QStringLiteral("r500"), QString(), 80.0);
+
+    framing::Camera cam;
+    cam.position = { 0.0, 0.0, 10.0 };
+    const framing::Camera framed = framing::frameTarget(cam, { 0.0, 0.0, 0.0 }, 80.0, 1.0);
+    QVERIFY(!framing::sameView(cam, framed));
+    QVERIFY(framing::reportFraming(outputs, QStringLiteral("Group 12"), QStringLiteral("r500"),
+                                   QString(), 80.0));
+    QCOMPARE(inspector, QStringList{ line });
+    QCOMPARE(statusBar.size(), 1);
+    QCOMPARE(statusBar.first().first, line);
+    QCOMPARE(statusBar.first().second, framing::kFramingStatusBarMs);
+
+    // The window reports again on a second double-click, when the view is
+    // already there: the line must reach both places every time, not only
+    // when the status bar was empty.
+    QVERIFY(framing::sameView(framed, framing::frameTarget(framed, { 0.0, 0.0, 0.0 }, 80.0, 1.0)));
+    QVERIFY(framing::reportFraming(outputs, QStringLiteral("Group 12"), QStringLiteral("r500"),
+                                   QString(), 80.0));
+    QCOMPARE(inspector, (QStringList{ line, line }));
+    QCOMPARE(statusBar.size(), 2);
+    QCOMPARE(statusBar.last().first, line);
+
+    // A source without a radius is only recentred: neither place is touched.
+    QVERIFY(!framing::reportFraming(outputs, QStringLiteral("Row 3"), QString(), QString(), 0.0));
+    QVERIFY(!framing::reportFraming(outputs, QStringLiteral("Row 3"), QString(), QString(),
+                                    std::numeric_limits<double>::quiet_NaN()));
+    QCOMPARE(inspector.size(), 2);
+    QCOMPARE(statusBar.size(), 2);
+
+    // A missing output must not cost the other one its line.
+    QVERIFY(framing::reportFraming(framing::FramingOutputs{ {}, outputs.statusBar },
+                                   QStringLiteral("Group 12"), QStringLiteral("r500"), QString(),
+                                   80.0));
+    QCOMPARE(inspector.size(), 2);
+    QCOMPARE(statusBar.size(), 3);
+}
+
 void TestCatalogueSelection::cameraJsonRoundTrips()
 {
     framing::Camera cam;
@@ -271,4 +319,38 @@ void TestCatalogueSelection::cameraJsonRoundTrips()
     QJsonObject partial = framing::cameraToJson(cam);
     partial.insert(QStringLiteral("view_up"), QJsonArray{ 0.0, 1.0 });
     QVERIFY(!framing::cameraFromJson(partial).has_value());
+}
+
+using namespace Qt::StringLiterals;
+
+void TestCatalogueSelection::aOneClickConditionJoinsTheAppliedFiltersOnly()
+{
+    // Applied: a region and a type of 4. Edited but not applied: a cut on rho.
+    visivo::selection::AppliedFilters applied;
+    applied.begin({ region(u"Halo"_s), predicate(u"type"_s, u"4"_s) });
+    QVERIFY(applied.succeed());   // filtered now, unfiltered before
+    const std::vector<BackendTabularFilter> edits{ region(u"Halo"_s),
+                                                   predicate(u"type"_s, u"4"_s),
+                                                   predicate(u"rho"_s, u"2"_s) };
+    // What the view now queries: the applied list, type 4 replaced by 0.
+    const auto query = visivo::selection::withOnlyCondition(applied.filters(), u"type"_s,
+                                                            u"="_s, u"0"_s);
+    QCOMPARE(int(query.size()), 2);
+    QCOMPARE(query[0].shape, u"sphere"_s);
+    QCOMPARE(query[1].field, u"type"_s);
+    QCOMPARE(query[1].value, u"0"_s);
+    for (const BackendTabularFilter &f : query)
+        QVERIFY(f.field != u"rho"_s);   // the pending edit is not applied
+    applied.begin(query);
+    QVERIFY(applied.succeed());
+    QVERIFY(visivo::selection::sameFilters(applied.filters(), query));
+    // The list keeps the pending edit, with the condition, for its own Apply.
+    const auto list = visivo::selection::withOnlyCondition(edits, u"type"_s, u"="_s, u"0"_s);
+    QCOMPARE(int(list.size()), 3);
+    QCOMPARE(list[1].field, u"rho"_s);
+    QCOMPARE(list[2].field, u"type"_s);
+    QCOMPARE(list[2].value, u"0"_s);
+    // A second click changes nothing.
+    QVERIFY(visivo::selection::sameFilters(
+            visivo::selection::withOnlyCondition(query, u"type"_s, u"="_s, u"0"_s), query));
 }

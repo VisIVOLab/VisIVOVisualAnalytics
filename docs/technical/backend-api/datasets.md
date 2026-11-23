@@ -15,7 +15,7 @@ cube of its first field, or a PLUTO binary output (see *PLUTO output* below). A 
 (see *Compressed FITS* below). Any other file type is answered with
 `valid: false` ("Unsupported file type. Expected FITS (.fits, .fit, also
 compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).").
-Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa`, and `beam_per_channel`: true when a `BEAMS` table gives one beam per channel, the beam fields then being the header's), `bunit`, and:
+Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa` in degrees, `beam_per_channel`: true when a `BEAMS` table gives one beam per channel, the beam fields then being the header's, and `beam_source`: `header`, `user` for a beam typed with [`/v1/datasets/beam`](#post-v1datasetsbeam), `none`, or `not_applicable` for data without celestial axes such as VBT fields and raw simulation fields, where no beam can be set), `bunit` (the header's `BUNIT`, possibly empty), `intensity_unit` and `intensity_unit_note` (the unit of the values when `BUNIT` is missing: `K` when `TEMPSCAL` names a temperature scale, as on JCMT/ACSIS cubes with `TEMPSCAL = 'TA*'`, or when `BTYPE` or `LABEL` names a temperature; empty when nothing says; the note says which keyword gave it), and:
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -129,6 +129,37 @@ answers **503** with `Retry-After` while the copy is made again.
 
 The ICRS position of a pixel of an open image or cube, from the file's full
 WCS; used for SAMP `coord.pointAt.sky`. See [SAMP](samp.md), "Pixel positions".
+
+### `POST /v1/datasets/beam`
+
+Type the restoring beam of a FITS image or cube whose header has none (no
+complete `BMAJ`/`BMIN` and no `BEAMS` table), or forget it.
+
+```json
+{ "dataset_id": "...", "major_arcsec": 15.0, "minor_arcsec": 15.0, "pa_deg": 0.0,
+  "clear": false }
+```
+
+`minor_arcsec` defaults to `major_arcsec` (a circular beam) and `pa_deg` to 0.
+The beam is kept with the file, not the session: it is stored in
+`.beam-overrides.json` in the Workspace (or `$VISIVO_BEAM_OVERRIDES`), keyed by
+the file the user opened and valid while that file is unchanged (size,
+modification time, inode). Every later request on the file, in any session
+and in every worker process, then sees it as if the header carried
+`BMAJ`/`BMIN`/`BPA`: per-beam fluxes, beam areas and the per-beam error terms
+use it, and moment maps and PV diagrams saved as FITS carry it with a
+`COMMENT` saying it was typed. Reopening the file reports
+`beam_source: "user"`. A complete header beam is never overridden; an
+incomplete one (only one of `BMAJ`/`BMIN`, or a zero or non-finite value) is,
+and `note` says so. Rewriting the file, a header edit included, retires the
+typed beam.
+
+Response: `valid`, `error`, `beam_major`, `beam_minor`, `beam_pa` (degrees,
+as in the open response), `beam_source` and `note`. `valid: false` when the header
+already has a beam (the header's beam is returned), when `major_arcsec` is
+missing, when an axis is not positive, the minor axis exceeds the major, the
+major exceeds 10 degrees, or the position angle is not finite, and for a
+dataset that is not a FITS image or cube or has no celestial axes (`beam_source: "not_applicable"`).
 
 ### `DELETE /v1/datasets/{dataset_id}`
 Close a dataset of the session (any kind: image, cube, catalogue, VBT); what it

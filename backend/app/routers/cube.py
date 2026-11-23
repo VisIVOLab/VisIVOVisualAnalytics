@@ -86,12 +86,18 @@ async def cube_slice(
         path = _require_cube_path(session, request.dataset_id)
         if request.axis.lower() != "z":
             raise HTTPException(422, "Only axis='z' is currently supported.")
+        corners = (request.x0, request.x1, request.y0, request.y1)
+        if any(v is None for v in corners) and any(v is not None for v in corners):
+            raise HTTPException(422, "A slice region needs all of x0, x1, y0 and y1.")
+        region = None if corners[0] is None else corners
         # Channel scrubbing must feel instantaneous (<200 ms). Bypass both
         # Dask (overhead ~100-500 ms + queueing behind in-flight slabs/
         # moments) AND the per-session task slot limit (which would 429
-        # rapid scroll bursts). Slice work is a 1.7 MB single-plane read
-        # — runs comfortably in the local ProcessPoolExecutor.
-        result = await _run_interactive(worker_cube_slice, path, request.index)
+        # rapid scroll bursts). A slice is a single-plane read, bounded by
+        # max_longest_side for wide planes (issue #381) — it runs comfortably
+        # in the local ProcessPoolExecutor.
+        result = await _run_interactive(worker_cube_slice, path, request.index,
+                                        request.max_longest_side, region)
     except HTTPException:
         raise
     except Exception as exc:

@@ -209,7 +209,9 @@ vtkWindowCube::regionPlacement(vtkRenderWindow *win) const
         image = m_paneViews[slot]->imageData();
         if (it->hasRegionOrigin)
             crop = std::array<int, 2>{ it->regionOrigin.x(), it->regionOrigin.y() };
-        skyMap = true;
+        // The channels pane holds the slice's own image, on the plane's frame even when a wide
+        // channel is strided (issue #381).
+        skyMap = m_slots[slot].view.productId != channelMirrorId();
     }
     if (!image)
         return std::nullopt;
@@ -1273,33 +1275,30 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
     QString mapUnit = onChannel ? this->m_brightnessUnit : product.unit;
     if (mapUnit == u"-"_s)
         mapUnit.clear();
-    // A cube with no BUNIT is taken as Jy/beam, as the image viewer does, and
-    // says so; its moment 0 is then in the spectral unit alone.
-    QString unitNote;
-    QString parsedUnit = mapUnit;
-    if (this->m_brightnessUnit.trimmed().isEmpty()) {
-        if (onChannel)
-            parsedUnit = u"Jy/beam"_s;
-        else if (isMoment && product.order == 0)
-            parsedUnit = u"Jy/beam "_s + mapUnit;
-        unitNote = u"no BUNIT in the header: Jy/beam assumed"_s;
-    }
-    visivo::flux::FluxUnit unit = visivo::flux::parseFluxUnit(parsedUnit);
+    // The unit decides what the sum of a region is (issues #401, #416): a flux
+    // in Jy for Jy/beam, Jy/pixel or MJy/sr, Σ W ΔΩ for K, nothing for a unit
+    // that is unknown. The cube's unit is BUNIT or the one the backend
+    // inferred from TEMPSCAL/BTYPE/LABEL; it is never assumed to be Jy/beam.
+    visivo::flux::FluxUnit unit = visivo::flux::parseFluxUnit(mapUnit);
     // A frequency-integrated map in km/s through the rest frequency, as the
     // backend's HI products do; without one it stays Jy Hz.
     unit = visivo::flux::withRestFrequency(unit, this->m_restFreqHz);
-    // A Jy/beam map that is neither a channel nor a moment 0 (a peak or mean
-    // map) has no flux: its sum over the beam is nothing physical.
+    // A map that is neither a channel nor a moment 0 (a peak or mean map) has
+    // no flux: its sum over a region is nothing physical.
     const bool integrated = isMoment ? product.order == 0 : !unit.spectral.isEmpty();
-    if (!unit.perBeam || (!onChannel && !integrated))
+    if (!onChannel && !integrated)
         return;
     const double omega = visivo::flux::beamAreaPixels(
             this->m_beamMajorDeg, this->m_beamMinorDeg, this->remoteDatasetCdelt[0],
             this->remoteDatasetCdelt[1]);
-    if (!(omega > 0.0)) {
-        params.insert(u"Flux"_s, u"unknown: the cube has no beam (BMAJ/BMIN) or no pixel scale"_s);
+    const double pixelAreaDeg2 =
+            std::abs(this->remoteDatasetCdelt[0] * this->remoteDatasetCdelt[1]);
+    const QString refusal = visivo::flux::fluxRefusal(unit, mapUnit, omega, pixelAreaDeg2);
+    if (!refusal.isEmpty()) {
+        params.insert(u"Flux"_s, refusal);
         return;
     }
+    const bool temperature = unit.kind == visivo::flux::UnitKind::Temperature;
 
     // The noise: the nearest background region, measured on the same map,
     // its mean subtracted; without one, the MAD σ of the whole map.
@@ -1332,25 +1331,37 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
                              .arg(fmt(noise.sigma), shownUnit);
     }
     const double perSample = std::max(1.0, grid.spacingX) * std::max(1.0, grid.spacingY);
-    const visivo::flux::RegionFlux f =
-            visivo::flux::regionFlux(sum, validCount, omega, unit, noise, perSample);
+    const visivo::flux::RegionFlux f = visivo::flux::regionFlux(
+            sum, validCount, omega, unit, noise, perSample, pixelAreaDeg2);
     if (!f.valid)
         return;
     if (!std::isfinite(f.error))
         noiseFrom += u"; σ cannot be measured (zero, or fewer than two pixels): no error"_s;
-    params.insert(u"Integrated flux"_s, visivo::flux::formatFlux(f));
+    if (temperature && validCount > 0) {
+        const double meanW =
+                (sum / double(validCount) - (noise.subtract ? noise.mean : 0.0)) * unit.scale;
+        params.insert(unit.velocity ? u"Mean W"_s : u"Mean T"_s,
+                      u"%1 %2"_s.arg(meanW, 0, 'g', 5).arg(unit.label));
+        params.insert(unit.velocity ? u"Σ W ΔΩ"_s : u"Σ T ΔΩ"_s, visivo::flux::formatFlux(f));
+    } else {
+        params.insert(u"Integrated flux"_s, visivo::flux::formatFlux(f));
+    }
     params.insert(u"Flux error from"_s, noiseFrom);
-    params.insert(u"Beam area"_s,
-                  u"%1 pixels (%2″ × %3″)"_s.arg(omega, 0, 'f', 2)
-                          .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 1)
-                          .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 1));
+    if (omega > 0.0)
+        params.insert(u"Beam area"_s,
+                      u"%1 pixels (%2″ × %3″)"_s.arg(omega, 0, 'f', 2)
+                              .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 1)
+                              .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 1));
     QStringList notes;
-    if (!unitNote.isEmpty())
-        notes << unitNote;
+    const QString caveat = visivo::flux::fluxCaveat(unit, omega > 0.0);
+    if (!caveat.isEmpty())
+        notes << caveat;
+    if (temperature && !this->m_intensityUnitNote.isEmpty())
+        notes << this->m_intensityUnitNote;
     if (unit.fromFrequency)
         notes << u"integrated over frequency, converted with the rest frequency %1 Hz"_s.arg(
                 this->m_restFreqHz, 0, 'g', 10);
-    if (this->m_beamPerChannel)
+    if (this->m_beamPerChannel && omega > 0.0)
         notes << (onChannel ? u"the cube has one beam per channel: the header beam is used"_s
                             : u"the cube has one beam per channel: the flux uses the header beam, "
                               u"not the beam of each channel"_s);
@@ -1360,18 +1371,19 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
     if (!notes.isEmpty())
         params.insert(u"Flux note"_s, notes.join(u"; "_s));
     // A moment computed with a threshold mask clips the faint emission and
-    // the noise: the flux is biased (faint emission lost) and σ too small.
+    // the noise: the result is biased (faint emission lost) and σ too small.
     const bool maskedMoment = isMoment && product.maskEnabled;
     if (maskedMoment || clipped)
         params.insert(u"Flux warning"_s,
-                      u"the map looks masked or thresholded (%1): the flux is biased (faint emission "
-                      u"below the threshold is lost) and the error too small; compute the moment "
-                      u"with the mask off"_s
+                      u"the map looks masked or thresholded (%1): the result is biased (faint "
+                      u"emission below the threshold is lost) and the error too small; compute "
+                      u"the moment with the mask off"_s
                               .arg(maskedMoment
                                            ? u"computed with a threshold mask"_s
                                            : u"more than a fifth of the noise pixels are 0 or blank"_s));
-    // The HI mass, for a velocity-integrated map at the distance set.
-    if (!unit.velocity)
+    // The HI mass, for a velocity-integrated Jy map of the 21-cm line.
+    QString lineNote;
+    if (!visivo::flux::hiMassApplies(unit, this->m_restFreqHz, &lineNote))
         return;
     const visivo::flux::TypedDistance d = visivo::flux::storedHiDistance();
     if (!d.ok) {
@@ -1380,7 +1392,9 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
     }
     const double massError = std::isfinite(f.error) ? d.hiMass(f.error)
                                                     : std::numeric_limits<double>::quiet_NaN();
-    params.insert(u"HI mass"_s,
-                  u"%1 at %2"_s.arg(visivo::flux::formatHiMass(d.hiMass(f.flux), massError),
-                                    d.describe()));
+    QString mass = u"%1 at %2"_s.arg(visivo::flux::formatHiMass(d.hiMass(f.flux), massError),
+                                     d.describe());
+    if (!lineNote.isEmpty())
+        mass += u"; "_s + lineNote;
+    params.insert(u"HI mass"_s, mass);
 }

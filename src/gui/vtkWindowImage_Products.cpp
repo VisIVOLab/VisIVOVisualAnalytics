@@ -43,6 +43,9 @@
 #include <QUrl>
 #include <vtkImageData.h>
 #include "ProfileWidget.h"
+#include "LteCoDialog.h"
+#include "RegionModel.h"
+#include "app/LteCoRequest.h"
 
 using namespace Qt::StringLiterals;
 
@@ -373,4 +376,51 @@ bool vtkWindowImage::restoreProductOrigin(const QVariantMap &origin)
     this->m_regions.select(id);
     this->onRegionListChanged();
     return true;
+}
+
+void vtkWindowImage::openLteCoDialog()
+{
+    if (this->remoteDatasetId.isEmpty())
+        return;
+    LteCoDialog::Context ctx;
+    ctx.backendUrl = this->remoteBackendUrl;
+    ctx.backendToken = this->remoteBackendToken;
+    ctx.sessionId = this->remoteSessionId;
+    ctx.hostDatasetId = this->remoteDatasetId;
+    for (const visivo::regions::Region &r : this->m_regions.regions()) {
+        QJsonObject canonical = visivo::regions::toCanonical(r, 0.0);
+        if (!visivo::lte::isAreaRegion(canonical))
+            continue;
+        canonical.remove(u"props"_s);
+        ctx.regions.append({ r.name.isEmpty() ? u"Region %1"_s.arg(r.id) : r.name, canonical });
+    }
+
+    if (auto *open = this->findChild<LteCoDialog *>(u"lteCoDialog"_s)) {
+        open->refreshHostContext(ctx);
+        open->show();
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+
+    auto *dlg = new LteCoDialog(ctx, this);
+    dlg->setObjectName(u"lteCoDialog"_s);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    QPointer<vtkWindowImage> self(this);
+    QObject::connect(dlg, &LteCoDialog::openMapRequested, this,
+                     [self](const QString &path, const QString &label) {
+                         if (self)
+                             emit self->openBackendFitsRequested(path, label);
+                     });
+    QObject::connect(dlg, &LteCoDialog::runRecorded, this,
+                     [self](const QString &label, const QVariantMap &params) {
+                         if (!self)
+                             return;
+                         // Each run is its own row: two runs with other assumptions
+                         // are two results to compare, not one to overwrite.
+                         self->registerAnalysisProduct(
+                                 u"lte"_s, label, params,
+                                 self->scopedProductId(u"lte%1"_s.arg(++self->m_lteRuns)));
+                     });
+    dlg->show();
 }
