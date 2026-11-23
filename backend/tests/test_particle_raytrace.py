@@ -366,7 +366,8 @@ def test_a_projected_still_is_rendered_and_graded_again(tmp_path, monkeypatch):
                 task.task_id, token="tok")).body)) as hdul:
             # The density and its mean, one HDU each: a VBT states no units.
             assert hdul[0].data.shape == hdul["MEAN"].data.shape == (90, 120)
-            assert hdul[0].header["BUNIT"] == hdul["MEAN"].header["BUNIT"] == "relative"
+            assert hdul[0].header["BUNIT"] == hdul["MEAN"].header["BUNIT"] == ""
+            assert "COMOVING" not in hdul[0].header
     finally:
         loop.close()
     # Without velocity columns, the dispersion is refused with a reason.

@@ -66,8 +66,6 @@ inline constexpr const char *LEVEL_ORIGIN = "X-Visivo-Level-Origin";
 inline constexpr const char *LINE_POINTS = "X-Visivo-Line-Points";
 inline constexpr const char *LINES = "X-Visivo-Lines";
 inline constexpr const char *LOG_RANGE = "X-Visivo-Log-Range";
-inline constexpr const char *MAP_UNIT = "X-Visivo-Map-Unit";
-inline constexpr const char *MAP_VALUE_UNIT = "X-Visivo-Map-Value-Unit";
 inline constexpr const char *N_BASINS = "X-Visivo-N-Basins";
 inline constexpr const char *NONPOSITIVE_VOXELS = "X-Visivo-Nonpositive-Voxels";
 inline constexpr const char *ORIGIN = "X-Visivo-Origin";
@@ -80,6 +78,8 @@ inline constexpr const char *PARTICLE_SCALE = "X-Visivo-Particle-Scale";
 inline constexpr const char *PARTICLE_STEP = "X-Visivo-Particle-Step";
 inline constexpr const char *PEAK = "X-Visivo-Peak";
 inline constexpr const char *PLACED_ROWS = "X-Visivo-Placed-Rows";
+inline constexpr const char *PROJECTED_UNIT = "X-Visivo-Projected-Unit";
+inline constexpr const char *PROJECTED_VALUE_UNIT = "X-Visivo-Projected-Value-Unit";
 inline constexpr const char *PYRAMID_LEVEL = "X-Visivo-Pyramid-Level";
 inline constexpr const char *RANGE_MAX = "X-Visivo-Range-Max";
 inline constexpr const char *RANGE_MIN = "X-Visivo-Range-Min";
@@ -176,8 +176,6 @@ inline constexpr std::array<const char *, 107> kAll = {
     LINE_POINTS,
     LINES,
     LOG_RANGE,
-    MAP_UNIT,
-    MAP_VALUE_UNIT,
     N_BASINS,
     NONPOSITIVE_VOXELS,
     ORIGIN,
@@ -190,6 +188,8 @@ inline constexpr std::array<const char *, 107> kAll = {
     PARTICLE_STEP,
     PEAK,
     PLACED_ROWS,
+    PROJECTED_UNIT,
+    PROJECTED_VALUE_UNIT,
     PYRAMID_LEVEL,
     RANGE_MAX,
     RANGE_MIN,

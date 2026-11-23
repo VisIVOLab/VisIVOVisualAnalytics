@@ -285,6 +285,7 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
         particles["map_units"] = map_units(
             component, axes=axes, weight=weight, power=req.intensity_power,
             clipped=stats["clipped_rows"], light_unit=light_unit,
+            log10=bool(req.intensity_field and req.intensity_log10),
             colour_by=req.colour_by, value_field=req.colour.field,
             velocity=req.velocity or _velocity_columns(table.columns))
     if req.mode == "light":
@@ -683,8 +684,9 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
         if request.mode == "projected":
             weight = emission_weights(particles["intensity"], radius, "per_particle")
             value = particles.get("value")
-            # As projected_maps reads it: a NaN would blank, on the GPU, every
-            # pixel the particle covers.
+            # A NaN would blank, on the GPU, every pixel the particle covers;
+            # as 0 it still counts in the GPU's mean, which projected_maps
+            # leaves it out of (the stills).
             value = (np.zeros(len(pos)) if value is None
                      else np.nan_to_num(np.asarray(value, dtype=np.float32)))
             columns = [pos, radius[:, None], weight[:, None], value[:, None]]
@@ -840,7 +842,9 @@ def _png(rgb: np.ndarray) -> bytes:
 @router.get("/v1/particle_render/{task_id}/light.fits")
 async def particle_render_light_fits(task_id: str, token: str = _auth) -> Response:
     """The still's light before the tone curve: a float32 FITS cube, its
-    three planes red, green and blue, rows bottom up as FITS shows them."""
+    three planes red, green and blue, rows bottom up as FITS shows them; a
+    projected map of particles as its density and mean, each in its unit
+    (projected_units.projected_fits)."""
     from astropy.io import fits  # noqa: PLC0415
     light = _light(task_id, token)
     from .tasks import _owned_task  # noqa: PLC0415

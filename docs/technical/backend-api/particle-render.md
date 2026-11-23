@@ -122,18 +122,27 @@ is per square unit of the table's coordinates.
 
 The task result carries `map_units`: `density_unit`, `value_unit`,
 `weighting`, `kpc_per_unit`, `comoving`, `redshift`, `hubble` and
-`scale_factor`. The preview and particle routes carry `X-Visivo-Map-Unit` and
-`X-Visivo-Map-Value-Unit`.
+`scale_factor`. The preview and particle routes carry `X-Visivo-Projected-Unit` and
+`X-Visivo-Projected-Value-Unit`.
 
 The FITS header has a linear grid centred on the focal point:
 
 - `CDELT1`/`CDELT2` in physical kpc (`CUNIT kpc`), plus `CDELTCOM` in comoving
   kpc for a comoving run.
-- `COMOVING`, `REDSHIFT`, `HUBBLE` (h) and `SCALEFAC` (a).
-- `PROJAXIS`: the line of sight along the table's axes.
-- `FOCALX`/`FOCALY`/`FOCALZ`: the focal point.
+- `COMOVING`, `REDSHIFT`, `HUBBLE` (h), `HUNITS` (whether lengths and
+  masses were stored per h, now divided out) and `SCALEFAC` (a).
+- `PROJAXIS`, `XAXIS` and `YAXIS`: the line of sight and the image's +x and
+  +y, as unit vectors along the table's axes.
+- `FOCALX`/`FOCALY`/`FOCALZ`: the focal point, in the table's units.
 - `DEPTH`: the slab in physical kpc, or `all`.
-- `WEIGHT`: what each particle carries.
+- `WEIGHT`, `POWER` and `CLIPPED`: what each particle carries, the power it
+  is raised to, and the rows whose weight was capped.
+
+A unit that is not a physical one (`relative`, or `none` for a map coloured
+by its density) leaves `BUNIT` empty and names it in the comment. A
+perspective camera's map is drawn without perspective, as seen at the focal
+plane. The GPU view (`/particles`) still counts a NaN value as 0 in its mean;
+the stills and FITS leave it out.
 
 The kernel is a Gaussian of width h (σ = h/√2). Given Gadget's `HSML` (the
 cubic spline's support), maps come out about 2.6 times smoother than an SPH

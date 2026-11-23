@@ -82,8 +82,8 @@ X_PARTICLE_DROPPED = "X-Visivo-Particle-Dropped"
 X_PARTICLE_CLIPPED = "X-Visivo-Particle-Clipped"
 # A projected map's units: its surface density and the mean it is coloured
 # by ("relative" when the table states none) (issue #393).
-X_PROJECTED_UNIT = "X-Visivo-Map-Unit"
-X_PROJECTED_VALUE_UNIT = "X-Visivo-Map-Value-Unit"
+X_PROJECTED_UNIT = "X-Visivo-Projected-Unit"
+X_PROJECTED_VALUE_UNIT = "X-Visivo-Projected-Value-Unit"
 
 # ── Ray-traced volume grid (issue #106) ─────────────────────────────────────
 X_VOLUME_SHAPE = "X-Visivo-Volume-Shape"

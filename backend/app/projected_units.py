@@ -24,7 +24,7 @@ RELATIVE = "relative"
 
 def map_units(component, *, axes, weight: str | None, power: float, clipped: int,
               light_unit: float, colour_by: str, value_field: str | None,
-              velocity: tuple[str, str, str] | None) -> dict:
+              velocity: tuple[str, str, str] | None, log10: bool = False) -> dict:
     """What a projected map's two planes are and the factors that make them
     physical, for a table of points (``component`` a Gadget snapshot's
     particle type, or None for any other table).
@@ -33,14 +33,17 @@ def map_units(component, *, axes, weight: str | None, power: float, clipped: int
     ``weight``: the column the particles are weighted by (None: one each),
     ``power`` and ``clipped`` as the light was made of it
     (particle_raytrace.normalised_light), ``light_unit`` the column's value
-    the light is 1 at. The keys: ``density_unit`` and ``density_factor``
-    (plane 1 times the factor, over a pixel's area in kpc², is in that
-    unit), ``value_unit`` and ``value_factor`` (plane 2 times the factor),
-    ``weighting``, and for a snapshot ``kpc_per_unit`` (physical kpc per
-    table unit, when the positions are lengths), ``comoving``, ``redshift``
-    (a comoving run's), ``hubble``, ``hubble_units``, ``scale_factor``."""
+    the light is 1 at, ``log10`` whether the column was read as its log10.
+    The keys: ``density_unit`` and ``density_factor`` (plane 1 times the
+    factor, over a pixel's area in kpc², is in that unit), ``value_unit``
+    and ``value_factor`` (plane 2 times the factor), ``weighting``,
+    ``power``, ``clipped_rows``, and for a snapshot ``kpc_per_unit``
+    (physical kpc per table unit, when the positions are lengths),
+    ``comoving``, ``redshift`` (a comoving run's), ``hubble``,
+    ``hubble_units``, ``scale_factor``."""
     out = {"density_unit": RELATIVE, "density_factor": 1.0, "value_unit": RELATIVE,
-           "value_factor": 1.0, "weighting": weight or "number"}
+           "value_factor": 1.0, "weighting": weight or "number",
+           "power": float(power) if weight else 1.0, "clipped_rows": int(clipped)}
     if component is None:
         return out
     physical, stored = component.physical(), component.units()
@@ -51,7 +54,8 @@ def map_units(component, *, axes, weight: str | None, power: float, clipped: int
         if weight is None:
             out["density_unit"] = "kpc^-2"
         elif (physical.get(weight, {}).get("unit") == "Msun" and power == 1.0
-              and not clipped):
+              and not clipped and not log10 and math.isfinite(light_unit)
+              and light_unit > 0):
             out["density_unit"] = "Msun/kpc^2"
             out["density_factor"] = float(light_unit) * float(physical[weight]["factor"])
     out["value_unit"], out["value_factor"] = _value_unit(colour_by, value_field, velocity,
@@ -100,23 +104,31 @@ def projected_fits(maps: np.ndarray, units: dict, camera, width: int, height: in
     weighted mean in the ``MEAN`` extension, each in its unit, rows bottom
     up as FITS shows them, on a linear grid centred on the focal point:
     physical kpc for a snapshot (comoving kpc too), the table's units for
-    any other table. ``camera`` in the table's coordinates."""
+    any other table. ``camera`` in the table's coordinates; a perspective
+    camera's map is drawn without perspective, as seen at its focal plane."""
     from astropy.io import fits  # noqa: PLC0415
     pos = np.asarray(camera.position, dtype=np.float64)
     fp = np.asarray(camera.focal_point, dtype=np.float64)
     forward = fp - pos
     forward /= float(np.linalg.norm(forward)) or 1.0
+    right = np.cross(forward, np.asarray(camera.view_up, dtype=np.float64))
+    right /= float(np.linalg.norm(right)) or 1.0
+    up = np.cross(right, forward)
     per_pixel = pixel_size(camera, height)
     kpc = units.get("kpc_per_unit")
     planes = physical_planes(maps, units, camera, height)
     hdus = [fits.PrimaryHDU(np.ascontiguousarray(planes[0][::-1]).astype(np.float32)),
             fits.ImageHDU(np.ascontiguousarray(planes[1][::-1]).astype(np.float32),
                           name="MEAN")]
+    vector = lambda v: " ".join(f"{x + 0.0:.6g}" for x in v)  # noqa: E731
     for hdu, unit, what in ((hdus[0], units["density_unit"], "projected surface density"),
                             (hdus[1], units["value_unit"],
                              f"mean weighted by {units['weighting']}")):
         h = hdu.header
-        h["BUNIT"] = (_FITS_UNITS.get(unit, unit), what)
+        if unit in (RELATIVE, "none"):
+            h["BUNIT"] = ("", f"{what}, {unit}")
+        else:
+            h["BUNIT"] = (_FITS_UNITS.get(unit, unit), what)
         for axis, n in ((1, width), (2, height)):
             h[f"CTYPE{axis}"] = ("LINEAR", "offset from the focal point in the view plane")
             h[f"CRPIX{axis}"] = (n / 2.0 + 0.5, "the focal point")
@@ -127,21 +139,29 @@ def projected_fits(maps: np.ndarray, units: dict, camera, width: int, height: in
             else:
                 h[f"CDELT{axis}"] = (per_pixel, "table units per pixel")
         if kpc and units.get("comoving"):
-            h["CDELTCOM"] = (per_pixel * kpc / units["scale_factor"], "comoving kpc per pixel")
-        h["COMOVING"] = (bool(units.get("comoving")), "snapshot lengths comoving")
+            h["CDELTCOM"] = (per_pixel * kpc / units["scale_factor"],
+                             "comoving kpc per pixel, h removed")
+        if "comoving" in units:
+            h["COMOVING"] = (bool(units["comoving"]), "snapshot lengths comoving")
         if "redshift" in units:
             h["REDSHIFT"] = units["redshift"]
         if "hubble" in units:
             h["HUBBLE"] = (units["hubble"], "h, H0 / (100 km/s/Mpc)")
+            h["HUNITS"] = (bool(units.get("hubble_units")), "T: stored per h, h divided out")
             h["SCALEFAC"] = (units["scale_factor"], "a, 1 when not comoving")
-        h["PROJAXIS"] = (" ".join(f"{v:.6g}" for v in forward), "line of sight, table axes")
-        h["FOCALX"], h["FOCALY"], h["FOCALZ"] = (float(v) for v in fp)
+        h["PROJAXIS"] = (vector(forward), "line of sight, table axes")
+        h["XAXIS"] = (vector(right), "image +x, table axes")
+        h["YAXIS"] = (vector(up), "image +y, table axes")
+        h["FOCALX"], h["FOCALY"], h["FOCALZ"] = ((float(v), "focal point, table units")
+                                                 for v in fp)
         if slab:
             h["DEPTH"] = ((slab * kpc, "slab thickness, physical kpc") if kpc
                           else (slab, "slab thickness, table units"))
         else:
             h["DEPTH"] = ("all", "the whole selection along the line of sight")
         h["WEIGHT"] = (units["weighting"], "what each particle carries")
+        h["POWER"] = (units.get("power", 1.0), "the weight raised to this power")
+        h["CLIPPED"] = (units.get("clipped_rows", 0), "rows whose weight was capped")
         h["ORIGIN"] = "VisIVO Visual Analytics"
     buf = io.BytesIO()
     fits.HDUList(hdus).writeto(buf)

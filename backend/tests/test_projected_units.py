@@ -154,6 +154,8 @@ def test_a_gadget_map_is_written_in_physical_units(tmp_path, monkeypatch):
             assert head["COMOVING"] is True
             assert head["DEPTH"] == pytest.approx(300.0 * A / H, rel=1e-6)
             assert head["PROJAXIS"] == "0 0 -1"
+            assert head["XAXIS"] == "1 0 0" and head["YAXIS"] == "0 1 0"
+            assert head["HUNITS"] is True and head["POWER"] == 1.0 and head["CLIPPED"] == 0
             # Every particle lies in the slab and the view: their mass, 1e10/h
             # Msun each, is the map's sum over its pixels' area.
             held = hdul[0].data.sum(dtype=np.float64) * head["CDELT1"] * head["CDELT2"]
@@ -164,8 +166,8 @@ def test_a_gadget_map_is_written_in_physical_units(tmp_path, monkeypatch):
             router.ParticlePreviewRequest(dataset_id="g", mode="projected", width=64,
                                           height=64, cameras=[cam]),
             token="tok", session=_Session()))
-        assert preview.headers["X-Visivo-Map-Unit"] == "Msun/kpc^2"
-        assert preview.headers["X-Visivo-Map-Value-Unit"] == "none"
+        assert preview.headers["X-Visivo-Projected-Unit"] == "Msun/kpc^2"
+        assert preview.headers["X-Visivo-Projected-Value-Unit"] == "none"
     finally:
         loop.close()
 
@@ -193,5 +195,9 @@ def test_a_gas_map_states_its_mean_in_physical_units(tmp_path, monkeypatch):
     # units stays relative.
     assert map_units(gas, colour_by="density", value_field=None,
                      **{**common, "power": 2.0})["density_unit"] == "relative"
+    assert map_units(gas, colour_by="density", value_field=None, log10=True,
+                     **common)["density_unit"] == "relative"
+    assert map_units(gas, colour_by="density", value_field=None,
+                     **{**common, "light_unit": float("inf")})["density_unit"] == "relative"
     assert map_units(None, colour_by="density", value_field=None,
                      **common)["density_unit"] == "relative"
