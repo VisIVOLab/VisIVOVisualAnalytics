@@ -751,6 +751,39 @@ async def spectral_aperture(
         raise HTTPException(400, str(exc)) from exc
 
 
+class SpectralRegionRequest(BaseModel):
+    dataset_id: str
+    #: A canonical region in the image frame: 0-based full-resolution pixels
+    #: (app.regions), as /v1/regions/stats takes it.
+    region: dict[str, Any]
+
+
+@router.post("/v1/spectral/region", tags=["spectral"])
+async def spectral_region(
+    request: SpectralRegionRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """Mean spectrum over every pixel of a region, at full resolution, read
+    from the file in bounded blocks (issue #499): the region spectrum of a
+    cube the viewer shows as a preview is not the mean of the preview's
+    samples."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "A region spectrum requires a spectral cube dataset.")
+    region = request.region
+    if region.get("frame", "image") != "image" or region.get("unit", "pix") != "pix":
+        raise HTTPException(422, "The region must be in the image frame, in pixels.")
+    from ..compute import worker_spectral_region  # noqa: PLC0415
+    try:
+        return await asyncio.to_thread(worker_spectral_region, entry["path"], region)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[spectral/region] failed dataset_id=%s error=%s", request.dataset_id, exc)
+        raise HTTPException(500, str(exc)) from exc
+
+
 class LineFitRequest(BaseModel):
     values: list[float]
     axis: list[float]
