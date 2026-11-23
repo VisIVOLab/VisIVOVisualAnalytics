@@ -7,8 +7,9 @@
 
 # VisIVO Visual Analytics
 
-**Interactive analysis of astronomical data cubes, images and catalogues —
-on your desktop, with the heavy computation wherever the data lives.**
+**Interactive analysis of astronomical data cubes, images, catalogues and
+simulations — on your desktop, with the heavy computation wherever the data
+lives.**
 
 [**Documentation**](https://visivo.readthedocs.io/) ·
 [User guide](https://visivo.readthedocs.io/en/latest/user/reference/getting-started.html) ·
@@ -22,7 +23,8 @@ on your desktop, with the heavy computation wherever the data lives.**
 ---
 
 VisIVO Visual Analytics is a desktop application for exploring FITS spectral
-cubes, 2-D maps and 3-D catalogues. FITS files open as they are, gzipped
+cubes, 2-D maps, 3-D catalogues and numerical simulations (particle snapshots,
+halo catalogues and gridded volumes). FITS files open as they are, gzipped
 (`.fits.gz`) and tile-compressed (`.fz`) ones included. It pairs a native Qt/VTK client with a
 Python compute service, so the same interface works whether your data sits on
 the laptop in front of you or on an HPC cluster on another continent — the
@@ -38,6 +40,8 @@ command-line toolkit, with which it shares data formats.
 
 **Spectral cubes** — slice navigation, cutting plane, probe spectra, isosurface
 and GPU volume rendering (composite, MIP, MinIP), camera ROI, animation export.
+Cubes larger than memory open from a brick pyramid: a preview first, then the
+detail where the camera looks.
 
 **Maps and products** — moment maps of orders 0–10 with channel ranges and RMS
 masking; line-width (FWHM) and equivalent-width maps; polynomial or median
@@ -51,12 +55,27 @@ region import/export in CRTF and ds9 formats.
 **Polarimetry** — Stokes Q/U/V companions, polarised intensity and angle, and
 rotation-measure synthesis over the frequency axis.
 
+**Molecular lines** — LTE optical depth, excitation temperature, column
+densities, N(H₂) and mass from ¹³CO and C¹⁸O cubes, per region and as maps.
+
+**Simulations** — Gadget snapshots (formats 1, 2 and HDF5) and SubFind/FoF
+halo catalogues, PLUTO output and VBT particle tables, read out of core with
+their units and periodic boxes; AREPO meshes resampled to cubes. Particles
+are drawn as points, splats or ray-traced images, and projected maps
+integrate the SPH kernel along the line of sight. Several quantities or snapshots sit side by side
+on a linked camera and a timeline. Named 3-D selections feed exact
+diagnostics over every selected particle: histograms, radial, cylindrical
+and axial profiles, phase diagrams, and physical totals (mass, momentum,
+kinetic and thermal energy). Velocity fields have streamlines, glyphs and
+basins of attraction; a cosmology calculator and power spectra complete the
+set.
+
 **Images and surveys** — WCS-aware multi-layer 2-D images, all-sky HiPS,
 3-D catalogue scatter, VLKB archive cutouts with compact-source and filament
 overlays, SED fitting, and SAMP with TOPCAT, Aladin and DS9: images and
 catalogues are sent and received, and selected rows are linked both ways.
 
-**VR headset**: a cube, a simulation snapshot, a catalogue or a velocity
+**VR headset** — a cube, a simulation snapshot, a catalogue or a velocity
 field explored in a Meta Quest, opened from the desktop by a pairing code or
 over the USB cable with the VisIVO VR app; selections, moments, PV slices and
 HI measurements are computed on the full cube by the backend, and what is
@@ -65,6 +84,11 @@ made in the headset opens on the desktop.
 **Scientific Copilot** — ask questions in natural language; every number is
 produced by a real backend tool rather than generated text, with provenance and
 a reproducibility script. Works with a hosted model or one you run yourself.
+
+**Large data and HPC** — the same features against a backend on a cluster
+node: data is read where it is, products are computed there, and cubes and
+particle sets too large to ship are rendered on the node's GPU and streamed
+to the desktop.
 
 The [user guide](https://visivo.readthedocs.io/en/latest/) documents each of
 these, including the scientific interpretation of the products, not only the
