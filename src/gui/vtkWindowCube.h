@@ -1303,6 +1303,17 @@ protected:
     QPointer<Pane2DView> m_paneLutTarget;               ///< the pane the dialog is editing
     QPointer<ProfileWidget> profileWidget;
     QPointer<ProfileWidget> probePlotWidget;
+    /// The region spectrum product probePlotWidget shows last, so a
+    /// full-resolution answer arriving later updates it only if it still does.
+    QString m_probePlotProductId;
+    /// Replaces a region spectrum drawn from the 3-D view's samples with the
+    /// backend's mean over every pixel of the region (issue #499).
+    void requestFullResolutionRegionSpectrum(const QString &productId,
+                                             const visivo::regions::Region &region,
+                                             const QString &plotTitle,
+                                             const QString &regionLabel, QVariantMap params,
+                                             const QVariantMap &origin, int validCount,
+                                             int totalCount, const QString &statsScope);
     // Floating channel scrubber anchored at the bottom of the 3D viewport.
     // Created as a child of ui->vtkCube; positioned via an installed event
     // filter on resize. See ChannelOverlay.h.

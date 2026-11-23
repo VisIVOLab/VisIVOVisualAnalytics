@@ -559,3 +559,87 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
         "median": median, "mad_sigma": _MAD_TO_SIGMA * mad,
     })
     return result
+
+
+class _DatasetCube:
+    """The cube as the dataset shows it (``ScientificFitsDataset``: degenerate
+    axes dropped, so RA, DEC, STOKES=1, FREQ is a FREQ cube), memory-mapped
+    and read in blocks. ``_SourceCube`` keeps the last three axes instead,
+    which for that order is the single Stokes plane."""
+
+    def __init__(self, path: str, hdu: int) -> None:
+        from .fits_dataset import ScientificFitsDataset  # noqa: PLC0415
+
+        dataset = ScientificFitsDataset(path)
+        dataset.hdu_index = hdu
+        self._hdul, raw = dataset.open_memmap()
+        data = ScientificFitsDataset.squeeze_to_3d(raw)
+        self.data = data[np.newaxis] if data.ndim == 2 else data
+        self.shape = tuple(int(n) for n in self.data.shape)
+
+    def block(self, z0, z1, y0, y1, x0, x1, dtype=np.float64):
+        return np.asarray(self.data[z0:z1, y0:y1, x0:x1], dtype=dtype)
+
+    def close(self) -> None:
+        self.data = None
+        self._hdul.close()
+
+
+def region_spectrum(path: str, region: Region, hdu: int, stop=None,
+                    progress=None) -> dict:
+    """The mean spectrum of a region over every pixel of it, at full
+    resolution, read block of rows by block of rows over all channels
+    (bounded memory on a cube of any size, issue #499).
+
+    Returns ``values`` (per channel, None where no pixel of the region is
+    finite), ``counts`` (finite pixels per channel), ``total_count`` (pixels
+    of the region inside the image) and ``nz``. ``stop`` (an Event) set
+    between two blocks raises RuntimeError("cancelled")."""
+
+    def open_source():
+        return _DatasetCube(path, hdu)
+
+    cube = open_source()
+    mapped = 0
+    try:
+        nz, ny, nx = cube.shape
+        sums = np.zeros(nz, dtype=np.float64)
+        counts = np.zeros(nz, dtype=np.int64)
+        total = 0
+        x_min, x_max, y_min, y_max = region.bounds()
+        x_min, x_max = max(0, x_min), min(nx - 1, x_max)
+        y_min, y_max = max(0, y_min), min(ny - 1, y_max)
+        if x_max >= x_min and y_max >= y_min:
+            width = x_max - x_min + 1
+            rows = max(1, _BLOCK_PIXELS // max(1, width * nz))
+            xs = np.arange(x_min, x_max + 1)[np.newaxis, :]
+            starts = range(y_min, y_max + 1, rows)
+            for index, y0 in enumerate(starts):
+                if stop is not None and stop.is_set():
+                    raise RuntimeError("cancelled")
+                y1 = min(y_max + 1, y0 + rows)
+                # Pages of a mapped file stay resident: map it again now and
+                # then, as _value_blocks does, so a large cube stays bounded.
+                if mapped > _REMAP_BYTES:
+                    cube.close()
+                    cube = open_source()
+                    mapped = 0
+                inside = region.mask(xs, np.arange(y0, y1)[:, np.newaxis])
+                n_inside = int(inside.sum())
+                if n_inside:
+                    total += n_inside
+                    block = cube.block(0, nz, y0, y1, x_min, x_max + 1, dtype=np.float64)
+                    mapped += nz * (y1 - y0) * nx * 4
+                    values = block[:, inside]                  # (nz, n_inside)
+                    finite = np.isfinite(values)
+                    sums += np.where(finite, values, 0.0).sum(axis=1)
+                    counts += finite.sum(axis=1)
+                if progress is not None:
+                    progress((index + 1) / len(starts))
+        with np.errstate(invalid="ignore", divide="ignore"):
+            means = np.where(counts > 0, sums / np.maximum(counts, 1), np.nan)
+        return {"values": [float(v) if np.isfinite(v) else None for v in means],
+                "counts": counts.tolist(), "total_count": int(total), "nz": int(nz)}
+    finally:
+        cube.close()
+

@@ -16,6 +16,8 @@
 // display sampling (cubeToDisplay / displayToCube, CubeLodGeometry::Sampling).
 
 #include "vtkWindowCube.h"
+#include <QFutureWatcher>
+#include <QtConcurrent>
 #include "ui_vtkWindowCube.h"
 
 #include "Pane2DView.h"
@@ -1221,11 +1223,27 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
                     label, stats.validCount, stats.totalCount,
                     u"2D stats: %1  ·  "_s.arg(statsScope) + spectrumScope);
             this->probePlotWidget->updateSpectrumPlot(spectral, meanValues, plotTitle, /*live=*/false);
+            this->m_probePlotProductId = pid;
             if (pane < 0) {
                 this->probePlotWidget->show();
                 this->probePlotWidget->raise();
             }
         }
+        // A spectrum from the 3-D view's samples (a preview, or a box of the
+        // cube that does not hold the whole region) is a first answer: the
+        // backend's mean over every pixel of the region replaces it.
+        const bool wholeCubeShown = cubeImage && scale <= 1.0
+                && [&]() {
+                       int e[6];
+                       cubeImage->GetExtent(e);
+                       return e[1] - e[0] + 1 == this->remoteDatasetWidth
+                               && e[3] - e[2] + 1 == this->remoteDatasetHeight
+                               && e[5] - e[4] + 1 == this->remoteDatasetDepth;
+                   }();
+        if (!wholeCubeShown && !this->remoteDatasetId.isEmpty())
+            this->requestFullResolutionRegionSpectrum(pid, region, plotTitle, label, params,
+                                                      origin, stats.validCount,
+                                                      stats.totalCount, statsScope);
         this->statusBar()->showMessage(
                 (pane >= 0 ? u"%1: mean %2 · median %3 · %4/%5 px - spectrum in pane %6, full "
                              u"stats in Inspector › Parameters."_s
@@ -1398,3 +1416,65 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
         mass += u"; "_s + lineNote;
     params.insert(u"HI mass"_s, mass);
 }
+
+void vtkWindowCube::requestFullResolutionRegionSpectrum(
+        const QString &productId, const visivo::regions::Region &region,
+        const QString &plotTitle, const QString &regionLabel, QVariantMap params,
+        const QVariantMap &origin, int validCount, int totalCount, const QString &statsScope)
+{
+    const QJsonObject canonical = visivo::regions::toCanonical(region, 0.0);
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+    const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
+    auto *watcher = new QFutureWatcher<BackendSpectrumResult>(this);
+    QObject::connect(watcher, &QFutureWatcherBase::finished, this, [=, this]() mutable {
+        watcher->deleteLater();
+        // The product may have been closed, or the cube's spectral axis changed.
+        if (!this->m_products1d.contains(productId))
+            return;
+        const BackendSpectrumResult r = watcher->result();
+        if (!r.valid || r.values.isEmpty()) {
+            const QString why = r.valid ? u"no channels"_s : r.error;
+            this->statusBar()->showMessage(
+                    u"%1: the full-resolution spectrum failed (%2); the spectrum shown is the "
+                    u"3-D preview's."_s.arg(regionLabel, why),
+                    8000);
+            return;
+        }
+        Spectrum1D &sp = this->m_products1d[productId];
+        // Every channel of the file: a preview may show fewer (its sampling is
+        // along z too), so the axis is rebuilt, in the viewer's own spectral
+        // convention and unit, from the file's channel indices.
+        sp.key.resize(r.values.size());
+        for (qsizetype i = 0; i < r.values.size(); ++i) {
+            bool okAxis = false;
+            const double v = this->spectralAxisValue(double(i), &okAxis);
+            sp.key[i] = okAxis ? v : double(i);
+        }
+        sp.values = r.values;
+        const QString scope = u"full resolution, %1 pixels (from the file)"_s.arg(r.nPix);
+        params.insert(u"Spectrum from"_s, scope);
+        this->registerAnalysisProduct(u"spectrum"_s, sp.label, params, this, productId,
+                                      u"spectrum1d"_s, /*revealProvenance=*/false, origin);
+        for (int i = 0; i < 4; ++i)
+            if (m_slots[i].frame && m_slots[i].frame->isVisible()
+                && m_slots[i].view == PaneView{ ViewId::Product, productId })
+                this->mountView(i);
+        if (this->probePlotWidget && this->m_probePlotProductId == productId) {
+            this->probePlotWidget->setRegionContext(
+                    regionLabel, validCount, totalCount,
+                    u"2D stats: %1  ·  spectrum: "_s.arg(statsScope) + scope);
+            this->probePlotWidget->updateSpectrumPlot(sp.key, sp.values, plotTitle,
+                                                      /*live=*/false);
+        }
+        this->statusBar()->showMessage(
+                u"%1: spectrum recomputed at full resolution over %2 pixels."_s.arg(regionLabel)
+                        .arg(r.nPix),
+                6000);
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, canonical]() {
+        BackendClient client(url, token);
+        client.setSessionId(session);
+        return client.spectralRegion(dataset, canonical);
+    }));
+}
+

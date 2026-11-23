@@ -1003,6 +1003,43 @@ def worker_spectral_aperture(path: str, x: float, y: float, radius: float) -> di
         hdul.close()
 
 
+def _spectral_axis_of(dataset: ScientificFitsDataset, nspec: int):
+    """(values, unit, ctype) of the spectral axis, channel numbers without one."""
+    from astropy.wcs import WCS  # noqa: PLC0415
+    import astropy.units as u    # noqa: PLC0415
+    try:
+        wcs = WCS(dataset.header)
+        if wcs.has_spectral and wcs.spectral.naxis == 1:
+            world = u.Quantity(wcs.spectral.pixel_to_world(np.arange(nspec)))
+            return ([float(v) for v in np.asarray(world.value)], str(world.unit),
+                    str(wcs.spectral.wcs.ctype[0] or "").strip())
+    except Exception:  # noqa: BLE001 — WCS may be absent/odd
+        pass
+    return list(range(nspec)), "pix", "CHANNEL"
+
+
+def worker_spectral_region(path: str, region: dict[str, Any], stop=None,
+                           progress=None) -> dict[str, Any]:
+    """Mean spectrum over every pixel of a 2-D region (image frame, 0-based
+    full-resolution pixels) of a cube, read in bounded blocks (issue #499)."""
+    from ..region_stats import Region, region_spectrum  # noqa: PLC0415
+
+    if region.get("frame", "image") != "image":
+        raise ValueError("Region must be in image (pixel) frame; convert it first.")
+    dataset = ScientificFitsDataset(path)
+    result = region_spectrum(path, Region(region), dataset.hdu_index, stop=stop,
+                             progress=progress)
+    if result["total_count"] == 0:
+        raise ValueError("No pixels of the region are inside the cube.")
+    axis, unit, ctype = _spectral_axis_of(dataset, result["nz"])
+    return {
+        "valid": True, "error": "", "shape": region.get("shape", ""),
+        "n_pix": result["total_count"], "counts": result["counts"],
+        "spectral_axis": axis, "spectral_unit": unit, "spectral_type": ctype,
+        "bunit": dataset.intensity_unit, "values": result["values"],
+    }
+
+
 def _table_label(text: str) -> str:
     """A column label or comment value on one line, without the CSV separator."""
     return re.sub(r"[\x00-\x1f\x7f]+", " ", str(text)).replace(",", ";").strip()

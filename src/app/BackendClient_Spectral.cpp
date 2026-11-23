@@ -47,6 +47,7 @@ static BackendSpectrumResult parseSpectrum(const QByteArray &raw, const QString 
         r.spectralAxis.append(v.toDouble());
     for (const QJsonValue &v : o.value(QStringLiteral("values")).toArray())
         r.values.append(v.isNull() ? std::numeric_limits<double>::quiet_NaN() : v.toDouble());
+    r.nPix = o.value(QStringLiteral("n_pix")).toInteger(0);
     return r;
 }
 }  // namespace
@@ -397,6 +398,17 @@ BackendSpectralAxisResult BackendClient::spectralAxisTable(const QString &datase
     r.headerRestFreqHz = o.value(QStringLiteral("header_rest_freq_hz")).toDouble(0.0);
     r.note = o.value(QStringLiteral("note")).toString();
     return r;
+}
+
+BackendSpectrumResult BackendClient::spectralRegion(const QString &datasetId,
+                                                    const QJsonObject &region) const
+{
+    const QJsonObject body{ { QStringLiteral("dataset_id"), datasetId },
+                            { QStringLiteral("region"), region } };
+    QString error;
+    const QByteArray raw = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/spectral/region")), QJsonDocument(body), error);
+    return parseSpectrum(raw, error);
 }
 
 BackendLineFitResult BackendClient::fitSpectralLine(const QVector<double> &values,

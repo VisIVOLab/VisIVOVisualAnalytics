@@ -218,6 +218,7 @@
     "POST /v1/spectral/linewidth",
     "POST /v1/spectral/linewidth/binary",
     "POST /v1/spectral/probe",
+    "POST /v1/spectral/region",
     "POST /v1/spectral/stack",
     "POST /v1/spectral/stack/binary",
     "POST /v1/tasks/catalogue_diagnostics",
