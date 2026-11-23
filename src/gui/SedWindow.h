@@ -60,6 +60,10 @@ private slots:
     void showPointTooltip(QMouseEvent *event);
     /// Sum the branches at each wavelength into one point, and back again.
     void setBranchesCollapsed(bool collapsed);
+    /// Tick the bands from the "Fit λ ≥" field up, untick the rest.
+    void applyFitRange();
+    /// Scale the 350 and 500 µm fluxes to the 250 µm source size, and back.
+    void setScaledTo250(bool scaled);
     void runModelFit();
     void onGreybodyFitFinished();
     void onModelFitFinished();
@@ -83,6 +87,11 @@ private:
     void propagateEditsToRawPoints();
     /// Recompute @ref m_rowBranches for a one-row-per-branch (expanded) list.
     void resetRowBranches();
+    /// Rebuild the displayed rows from @ref m_rawPoints, one per branch or
+    /// summed per band as @ref m_branchesCollapsed says.
+    void rebuildDisplayedPoints();
+    /// Redraw the table and plot after the photometry itself changed.
+    void photometryChanged();
     void plotFit(const BackendSedFit &fit, const QColor &colour);
     void plotModel(const BackendSedModel &model, const QColor &colour);
     void showFitResults();
@@ -142,6 +151,9 @@ private:
         /// inputs moved on while the fit was running, the answer describes a
         /// SED that is no longer on screen.
         quint64 revision{ 0 };
+        /// The observed 20–160 µm fluxes the L_bol (observed + greybody)
+        /// integrates, taken when the request was sent.
+        std::vector<std::pair<double, double>> observedForLuminosity;
     };
     FitProvenance m_pending;     ///< the request in flight
     FitProvenance m_provenance;  ///< the request that produced m_fits
@@ -174,6 +186,8 @@ private:
     QPointer<QCheckBox> m_logAxes;
     QPointer<QCheckBox> m_selectOnPlot;
     QPointer<QCheckBox> m_collapseBranches;
+    QPointer<QDoubleSpinBox> m_fitMinWavelength;
+    QPointer<QCheckBox> m_scaleTo250;
 
     QPointer<QDoubleSpinBox> m_massMin, m_massMax;
     QPointer<QSpinBox> m_massSteps;
