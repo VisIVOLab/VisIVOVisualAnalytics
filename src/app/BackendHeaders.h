@@ -123,7 +123,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 108> kAll = {
+inline constexpr std::array<const char *, 109> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
