@@ -234,15 +234,30 @@ more or less changed the brightness by 25 %, and the dark end of a colour map
 or a kernel's wings rounded to nothing. With at least 8 steps a cloud deeper
 than about 48 spacings is brighter than the nominal 1.5 (2.1× at a million
 particles in a cube, 3.2× at 3.66 million, 4.5× at 10 million) but keeps its
-faint colours. Whether to keep that, move to a float framebuffer with a tone
-map, or thin the splats stochastically is still open. The value handed to VTK
+faint colours. The value handed to VTK
 is a quarter step above the step (`ParticleSplatDefaults::vtkOpacityValue`,
-`point_splat.VTK_ALPHA_NUDGE`), so truncation cannot drop it a step. The
-backend's point session (`point_splat.splat_opacity`) and the VR page's 8-bit
-targets (`points.js splatOpacity`) use the same rule, in the same floating-point
-operations, so the three agree at a step's boundary. The page's float targets
-(`v2-f16`, `v2-f32`) have no 8-bit store: they keep the unquantised
-`clamp(1.5 / depth, 0.005, 0.25)`, divided by size² as before. The same normalized size is sent to server-side
+`point_splat.VTK_ALPHA_NUDGE`), so truncation cannot drop it a step. The VR
+page's 8-bit targets (`points.js splatOpacity`) use the same rule, in the same
+floating-point operations, so they agree at a step's boundary.
+
+Issue #457 removes the floor where a float target is available. The backend's
+point session adds its splats into a float32 target (`vtkToneMappingPass`,
+clamped onto the window) with VTK's opacity function at 1 and the peak opacity
+`min(1.5 × intensity / (35 × depth), 0.25)` written into the splat's fragment
+code (`point_splat.vtk_splat_shader`, `point_splat.splat_opacity(depth,
+intensity, steps=False)`), so the light of N splats is the same for any N. The
+exposure is the intensity alone, never derived from the frame, so two panes at
+one intensity compare and a real density difference stays visible. The VR
+page's float targets (`v2-f16`, `v2-f32`) keep the same unquantised value,
+divided by size², with no floor (the former 0.005 brightened a table from
+about 2.7e7 rows), and take `depth` from the rows they draw (the sample's
+spacing), so a sample of S rows grown to cover the table carries its light
+for any S. `validation/splat_brightness.py` checks it on a Plummer sphere
+from 1e5 to 3e7 particles (`validation/out/splat_brightness_{before,after}.md`):
+the point session and the float rules stay within 1 % of the smallest table and
+the projected profile at 1 % of the central density within 1 % of the analytic
+one. The desktop's local scene still uses the 8-bit steps above; it moves to
+the same pass and fragment code next. The same normalized size is sent to server-side
 rendering. The automatic Gaussian slider value (25) is the splats' own:
 switching to *Point* restores 100 while the user has not moved the slider
 (`ParticleSplatDefaults::automaticSliderValue`).
@@ -315,6 +330,10 @@ with the selection. The
 out-of-core matcher, the point sessions' masks (`LazyColumns.periods`) and the
 DataFrame path use the nearest image for spheres and wrap boxes round the
 faces (`app/periodic.py`). A selection may state its own `period` (0: none).
+The snapshot's description says the outcome: `units.periodic` (a boolean, by
+the rule above) with `box_size`, so a client's "Periodic box" setting starts
+as the backend decides. The ray-traced render's neighbour searches (smoothing
+lengths, velocity dispersion) wrap round the same box (request `period`).
 
 The response includes field and weight units from component metadata, the
 selection expression and explicit bin edges. The desktop carries these into

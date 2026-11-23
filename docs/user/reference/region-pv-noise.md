@@ -118,39 +118,50 @@ Parameters*): *Valid pixels*, *Blanked / NaN*, *Min*, *Max*, *Mean*, *Median*,
 *Std Dev*, measured on the plane the region was drawn on, and on a channel or a
 moment-0 map the flux (see [Region flux and HI mass](#region-flux-and-hi-mass)).
 In the image viewer a *Region Analysis* window shows them and adds σ (MAD)
-(1.4826 × median absolute deviation), the beam-aware integrated flux
-(*Radio (beam-aware)*) with the peak SNR, and per-layer values for a Stokes
+(1.4826 × median absolute deviation), the flux (*Flux*) with the peak
+SNR, and per-layer values for a Stokes
 set. Blank pixels are left out.
 
 ### Region flux and HI mass
 
-On a map in Jy/beam with a beam in the header (`BMAJ`/`BMIN`), *Analyse* gives
-the region's flux, in both viewers:
+*Analyse* gives what the sum of a region means in the map's unit (`BUNIT`,
+or the unit inferred from `TEMPSCAL`/`BTYPE`/`LABEL`), in both viewers:
+
+| Unit | Result |
+|---|---|
+| Jy/beam (with a beam) | *Integrated flux* S = (Σ − N · mean_bg) / Ω, Jy or Jy km/s |
+| Jy/pixel | *Integrated flux* S = Σ − N · mean_bg, Jy or Jy km/s |
+| MJy/sr, Jy/sr | *Integrated flux* S = (Σ − N · mean_bg) · Ω_pix, Jy (SPIRE maps are extended-source calibrated) |
+| K, K km/s | *Mean W* (or *Mean T*) and *Σ W ΔΩ* in K km/s arcsec², with ΔΩ the pixel area. Not converted to Jy: T_A* needs the main-beam efficiency η_mb, and *Flux note* says so |
+| unknown, or Jy/beam with no beam | no flux, and the reason |
 
 | Value | Meaning |
 |---|---|
-| *Integrated flux* | S = (Σ − N · mean_bg) / Ω with its error. Jy on a channel, Jy km/s on a moment-0 map |
+| *Integrated flux* | as above, with its error |
 | *Flux error from* | the background region and its pixel count, mean and σ, or the map noise |
 | *Beam area* | Ω = π · BMAJ · BMIN / (4 ln 2) in pixels, and the beam |
 | *Flux note* | how the unit was read, and when the numbers are approximate |
 | *Flux warning* | the map looks masked or thresholded (see below) |
-| *HI mass* | M_HI = 2.356 × 10⁵ D² S M☉ (D in Mpc, S in Jy km/s), on a moment-0 map |
+| *HI mass* | M_HI = 2.356 × 10⁵ D² S M☉ (D in Mpc, S in Jy km/s), on a moment-0 map in Jy of the 21-cm line: none when the rest frequency is another line's (CO), and a note when there is no rest frequency |
 
 Σ is the sum of the region's N valid pixels. A moment-0 map is in Jy/beam
 times the cube's spectral unit, and a velocity axis in m/s is converted to
 km/s. A frequency axis is converted with the rest frequency (Δv = c Δν / ν₀)
 in the cube viewer, as the backend's HI products do; without a rest frequency,
 and in the image viewer (an exported map has none), it stays in Jy Hz. A peak
-or mean map in Jy/beam gets no flux, nor does a map that is not per beam (K).
-A cube with no `BUNIT` is taken as Jy/beam, and *Flux note* says so.
+or mean map gets no flux. A map whose unit is unknown is never taken as
+Jy/beam: it gets no flux, and the row says the unit is unknown.
 
 *Error*. The pixels within a beam are correlated, so the region holds N / Ω
-independent beams, and with a background region the error of its mean,
-subtracted N times, adds in quadrature:
+independent beams (one, when it is smaller than a beam), and with a
+background region the error of its mean, subtracted N times, adds in
+quadrature. For Jy/beam:
 
-σ_S² = σ² N / Ω + σ² N² / (N_bg Ω)
+σ_S² = σ² N min(N, Ω) / Ω² + σ² N² min(N_bg, Ω) / (N_bg Ω²)
 
-with N_bg the background region's valid pixels. A σ that cannot be measured
+with N_bg the background region's valid pixels. The other units use the same
+count times their own per-pixel factor; without a beam the pixels count as
+independent, and *Flux note* says the error is then a lower limit. A σ that cannot be measured
 (zero, or fewer than two pixels) gives no error.
 
 *Background region*. Right-click a region (on the image or in Session Data)

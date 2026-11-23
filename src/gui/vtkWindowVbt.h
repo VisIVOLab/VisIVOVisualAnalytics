@@ -18,6 +18,7 @@
 #include <vtkPolyDataMapper.h>
 #include <vtkRenderer.h>
 #include <vtkScalarBarActor.h>
+#include <vtkSmartPointer.h>
 #include <vtkTextActor.h>
 
 #include <QFutureWatcher>
@@ -27,6 +28,7 @@
 #include <QPointer>
 
 class AssistantPanel;
+class vtkToneMappingPass;
 class QAction;
 class QCheckBox;
 class QComboBox;
@@ -215,6 +217,9 @@ private:
     vtkNew<vtkPointGaussianMapper> gaussianMapper;
     vtkNew<vtkPiecewiseFunction> gaussianScaleFunction;
     vtkNew<vtkPiecewiseFunction> gaussianOpacityFunction;
+    /// The float target of the splats, on the renderer in ray-casting mode
+    /// only (ParticleSplatVtk, issue #457).
+    vtkSmartPointer<vtkToneMappingPass> m_splatPass;
     vtkNew<vtkActor> actor;
     vtkNew<vtkCubeAxesActor> boxActor;
     vtkNew<vtkScalarBarActor> scalarBar;

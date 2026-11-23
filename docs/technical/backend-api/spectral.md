@@ -126,8 +126,27 @@ serves probes, aperture spectra and any external profile.
 ```json
 { "values": [0.01, 0.02, 0.35, 0.81, 0.33, 0.03],
   "axis":   [1500, 1510, 1520, 1530, 1540, 1550],
-  "with_baseline": true }
+  "with_baseline": true,
+  "x_min": null, "x_max": null }
 ```
+
+`x_min` and `x_max` (axis units, optional, either may be omitted, order free)
+restrict the fit to a window, such as the range shown in the profiler, so an
+edge spike or a second line outside it cannot capture the fit. Omitted, the
+whole spectrum is fitted. A window bound that is not finite is 422.
+
+The fit is started from several centres: the strongest channel of the
+residual (relative to the median when a baseline is fitted) and of its
+boxcar smoothings over 3, 9 and 27 channels, so a broad line is not lost to
+one bright spike. Each centre gets up to three starting widths (near-equal
+ones are merged): the half-maximum width of the feature (at least one
+channel), σ = three channels, and a sixth of the spectrum's span. Of the
+converged solutions, the one with the lowest residual sum of squares that is
+resolved (σ at least half a channel) and centred inside the fitted range is
+kept. When none is, the lowest overall is returned and `fit_warning` says
+the result is unreliable (typically a spike or noise); `fit_warning` is
+empty otherwise. A single span/6 start used to settle in a broad shallow
+minimum on a narrow line over a wide window.
 
 With `with_baseline: true` the model has 5 free parameters and at least 6
 finite samples are needed; with `false` only the 3 Gaussian parameters are
@@ -135,14 +154,15 @@ fitted (the baseline is fixed at zero) and at least 4 are needed. One sample
 more than the parameters keeps a degree of freedom, without which no
 uncertainty can be estimated. A fit that lands on a negative width is
 reported with `|sigma|` and the covariance is converted to match. Fewer
-samples, `values` and `axis` of different length, or a fit that does not
-converge, is 422. Response, in the axis units:
+samples (in the window, when one is given), `values` and `axis` of different
+length, or a fit that does not converge from any start, is 422. Response, in the axis units:
 `peak`, `center`, `sigma`, `fwhm`, `integrated_flux` (amp·σ·√(2π)), each with
 an `_err` companion (`null` when undefined), `continuum` (baseline at the line
 centre; 0 without a baseline), `equivalent_width` (`null` without a baseline
 or with zero continuum), `baseline` (`[a, b]` of `a + b·x`; `[0, 0]` without a
 baseline, which is not fitted), `rms` of the residuals,
-`n_points`, `spectral_correlation_factor` and `spectral_correlation_note`.
+`n_points`, `spectral_correlation_factor`, `spectral_correlation_note` and
+`fit_warning`.
 The errors are inflated by the measured residual autocorrelation factor
 (1.0 for independent channels); the note is non-empty when the factor is
 2.25 or more, warning that the cause may be a poor model rather than

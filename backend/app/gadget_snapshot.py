@@ -760,7 +760,12 @@ class UnitSystem:
                                                       "pc": 1e-3 * KPC_CM}, "cm"),
                 "mass": _unit_name(self.mass_g, {"1e10 Msun": 1e10 * MSUN_G,
                                                  "Msun": MSUN_G}, "g"),
-                "velocity": _unit_name(self.velocity_cm_s, {"km/s": 1e5}, "cm/s")}
+                "velocity": _unit_name(self.velocity_cm_s, {"km/s": 1e5}, "cm/s"),
+                # Whether the box wraps, by Component.periods' rule (stated,
+                # else a comoving run is): with a positive box size, the
+                # selections and neighbour searches wrap round it.
+                "periodic": self.periodic if self.periodic is not None
+                else bool(self.comoving)}
 
 
 def _unit_name(value: float, names: dict, base: str) -> str:

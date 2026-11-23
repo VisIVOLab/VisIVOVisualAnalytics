@@ -314,7 +314,10 @@ async def test_map_math_route_reports_reprojection(client, opened_image, tmp_pat
                              json={"dataset_id": a, "op": "ratio", "dataset_id_b": b})
     body = resp.json()
     assert body["valid"], body["error"]
-    assert body["info"] == {"op": "ratio", "reprojected": True}
+    info = body["info"]
+    assert info["op"] == "ratio" and info["reprojected"] is True
+    assert info["overlap_fraction"] == pytest.approx(30 / 32, abs=0.02)
+    assert "overlap on" in info["warning"]
 
 
 def test_spectral_index_is_nan_unless_both_fluxes_are_positive():
@@ -327,12 +330,52 @@ def test_spectral_index_is_nan_unless_both_fluxes_are_positive():
 
 def test_map_math_spectral_index_of_negative_fluxes_is_nan(tmp_path):
     # −2 and −1 at 2 and 1 GHz used to give a plausible α = 1.
-    a = _write_map(tmp_path / "a.fits", np.full((4, 4), -2.0))
-    b = _write_map(tmp_path / "b.fits", np.full((4, 4), -1.0))
+    fa, fb = np.full((4, 4), -2.0), np.full((4, 4), -1.0)
+    fa[0, 0], fb[0, 0] = 4.0, 1.0
+    a = _write_map(tmp_path / "a.fits", fa)
+    b = _write_map(tmp_path / "b.fits", fb)
     out = tmp_path / "alpha.fits"
     worker_map_math(str(out), path_a=a, op="spectral_index", path_b=b,
                     freq_a=2.0e9, freq_b=1.0e9)
-    assert np.isnan(fits.getdata(out)).all()
+    alpha = fits.getdata(out)
+    assert alpha[0, 0] == pytest.approx(2.0)
+    assert np.isnan(alpha.ravel()[1:]).all()
+
+
+def test_map_math_refuses_an_all_blank_result(tmp_path):
+    a = _write_map(tmp_path / "a.fits", np.full((4, 4), -2.0))
+    b = _write_map(tmp_path / "b.fits", np.full((4, 4), -1.0))
+    out = tmp_path / "alpha.fits"
+    with pytest.raises(ValueError, match="no finite pixel"):
+        worker_map_math(str(out), path_a=a, op="spectral_index", path_b=b,
+                        freq_a=2.0e9, freq_b=1.0e9)
+    assert not out.exists()
+
+
+def test_map_math_refuses_maps_that_do_not_overlap(tmp_path):
+    shape = (32, 32)
+    a = _write_map(tmp_path / "a.fits", np.ones(shape), _sky_header(16.0, 16.0))
+    b = _write_map(tmp_path / "b.fits", np.ones(shape), _sky_header(16.0 + 200.0, 16.0))
+    out = tmp_path / "sum.fits"
+    with pytest.raises(ValueError, match="do not overlap"):
+        worker_map_math(str(out), path_a=a, op="add", path_b=b)
+    assert not out.exists()
+
+
+def test_map_math_reports_partial_overlap(tmp_path):
+    shape = (32, 32)
+    a = _write_map(tmp_path / "a.fits", np.ones(shape), _sky_header(16.0, 16.0))
+    b = _write_map(tmp_path / "b.fits", np.ones(shape), _sky_header(32.0, 16.0))
+    result = worker_map_math(str(tmp_path / "sum.fits"), path_a=a, op="add", path_b=b)
+    assert 0.4 < result["overlap_fraction"] < 0.6
+    assert "% of map A's pixels" in result["warning"]
+
+
+def test_map_math_full_overlap_has_no_warning(tmp_path):
+    a = _write_map(tmp_path / "a.fits", np.ones((8, 8)), _sky_header(4.0, 4.0))
+    result = worker_map_math(str(tmp_path / "sum.fits"), path_a=a, op="add", path_b=a)
+    assert result["overlap_fraction"] == 1.0
+    assert result["warning"] == ""
 
 
 def test_spectral_index_refuses_equal_frequencies(tmp_path):

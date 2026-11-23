@@ -28,6 +28,7 @@
 #include "theme/SegmentedToggle.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
+#include "DatasetBeamControl.h"
 #include "InspectorPanel.h"
 #include "RegionSessionController.h"
 #include "WorkspaceChrome.h"
@@ -3342,11 +3343,34 @@ void vtkWindowImage::markDisplayStateAdjusted(const char *reason)
 
 // ── Beam ellipse indicator ───────────────────────────────────────────────────
 
+void vtkWindowImage::setUnitAndBeamSource(const QString &unitNote, const QString &beamSource)
+{
+    m_intensityUnitNote = unitNote;
+    m_beamSource = beamSource;
+    this->refreshUnitAndBeamRows();
+}
+
+void vtkWindowImage::refreshUnitAndBeamRows()
+{
+    if (m_unitValueLabel) {
+        InspectorPanel::applyValueStyle(
+                m_unitValueLabel,
+                visivo::beam::unitDisplay(this->remoteDatasetBunit, m_intensityUnitNote));
+        if (!m_intensityUnitNote.isEmpty())
+            m_unitValueLabel->setToolTip(m_intensityUnitNote);
+    }
+    if (m_beamControl) {
+        const double pa = std::isfinite(m_beamPaDeg) ? m_beamPaDeg : 0.0;
+        m_beamControl->setBeam(m_beamMajorDeg, m_beamMinorDeg, pa, m_beamSource);
+    }
+}
+
 void vtkWindowImage::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
 {
     m_beamMajorDeg = majorDeg;
     m_beamMinorDeg = minorDeg;
     m_beamPaDeg    = paDeg;
+    this->refreshUnitAndBeamRows();
     if (!std::isfinite(majorDeg) || !std::isfinite(minorDeg)
         || majorDeg <= 0.0 || minorDeg <= 0.0) {
         if (m_beamActor) m_beamActor->VisibilityOff();

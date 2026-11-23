@@ -21,6 +21,7 @@
 #include "RegionSessionController.h"
 #include "WorkspaceChrome.h"
 #include "app/DatasetName.h"
+#include "DatasetBeamControl.h"
 #include "InspectorPanel.h"
 #include "theme/SegmentedToggle.h"
 #include "app/ProductRegistry.h"
@@ -1983,6 +1984,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                         + u"\nAxis 3 semantics: %1\nWCS frame: %2"_s
                                   .arg(this->spectralAxisTitle())
                                   .arg(this->currentWcsFrameLabel());
+                if (!this->m_intensityUnitNote.isEmpty())
+                    this->momentProvenanceState.details +=
+                            u"\nIntensity unit: %1"_s.arg(this->m_intensityUnitNote);
                 this->updateMomentProvenancePanel();
 
                 // Transition card to Ready and update info label with provenance.
@@ -3288,6 +3292,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->lineImgMin->setText(u"-"_s);
     ui->lineImgMax->setText(u"-"_s);
     ui->lineImgMean->setText(u"-"_s);
+    this->m_displayedSliceGrid = { 0, 0, 1 };
+    this->updateSliceStatsCaption();
     ui->lineImgRms->setText(u"-"_s);
     this->setCubeOpenActionsEnabled(false);
     ui->actionIsosurface->setChecked(false);
@@ -4656,11 +4662,44 @@ bool vtkWindowCube::updatePvFromDisplayPosition(int displayX, int displayY)
 
 // ── Beam ellipse indicator ───────────────────────────────────────────────────
 
+void vtkWindowCube::setIntensityUnit(const QString &unit, const QString &note)
+{
+    m_brightnessUnit = unit;
+    m_intensityUnitNote = note;
+    this->refreshUnitAndBeamRows();
+}
+
+void vtkWindowCube::setBeamSource(const QString &source)
+{
+    // A field of a VBT file has no header to keep a beam for; the backend
+    // reports "none" for it but refuses a typed one.
+    m_beamSource = visivo::isFieldReference(this->filepath) ? QString() : source;
+    this->refreshUnitAndBeamRows();
+}
+
+QString vtkWindowCube::intensityAxisLabel() const
+{
+    return visivo::beam::intensityAxisLabel(m_brightnessUnit, m_intensityUnitNote);
+}
+
+void vtkWindowCube::refreshUnitAndBeamRows()
+{
+    if (m_unitValueLabel) {
+        InspectorPanel::applyValueStyle(
+                m_unitValueLabel, visivo::beam::unitDisplay(m_brightnessUnit, m_intensityUnitNote));
+        if (!m_intensityUnitNote.isEmpty())
+            m_unitValueLabel->setToolTip(m_intensityUnitNote);
+    }
+    if (m_beamControl)
+        m_beamControl->setBeam(m_beamMajorDeg, m_beamMinorDeg, m_beamPaDeg, m_beamSource);
+}
+
 void vtkWindowCube::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
 {
     m_beamMajorDeg = majorDeg;
     m_beamMinorDeg = minorDeg;
     m_beamPaDeg    = paDeg;
+    this->refreshUnitAndBeamRows();
 
     if (!std::isfinite(majorDeg) || !std::isfinite(minorDeg)
         || majorDeg <= 0.0 || minorDeg <= 0.0) {
@@ -5493,6 +5532,9 @@ void vtkWindowCube::showSliceHistogramPanel()
                     .arg(vmin, 0, 'g', 6)
                     .arg(vmax, 0, 'g', 6)
                     .arg(values.size()), win);
+    if (this->m_sliceBackdropProductId.isEmpty() && this->m_displayedSliceGrid[2] > 1)
+        info->setText(info->text()
+                      + u"  ·  sampled every %1 px"_s.arg(this->m_displayedSliceGrid[2] * stride));
     layout->addWidget(info);
 
     auto *plot = new QCustomPlot(win);
@@ -6070,6 +6112,17 @@ bool vtkWindowCube::pvPixelFromDisplay(int displayX, int displayY,
     const double x = extent[0] + (world[0] - origin[0]) / spacing[0];
     const double y = extent[2] + (world[1] - origin[1]) / spacing[1];
     // Half a pixel of slack: the edge pixels are clickable all the way to their border.
+    if (imageData == this->remoteSliceDisplaySource->GetOutputDataObject(0)) {
+        // The slice's samples keep the plane's frame (issue #381): a world point is a plane
+        // pixel, and the plane may reach a little past the last sample of a strided channel.
+        const double px = world[0], py = world[1];
+        const double w = std::max(this->m_displayedSliceGrid[0], extent[1] - extent[0] + 1);
+        const double h = std::max(this->m_displayedSliceGrid[1], extent[3] - extent[2] + 1);
+        if (px < -0.5 || px > w - 0.5 || py < -0.5 || py > h - 0.5)
+            return false;
+        pixel = { px, py };
+        return true;
+    }
     if (x < extent[0] - 0.5 || x > extent[1] + 0.5 || y < extent[2] - 0.5 || y > extent[3] + 0.5)
         return false;
     pixel = { x, y };
@@ -7203,6 +7256,7 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
         double mean, rms;
         computeImageStats(result.momentImageData, mean, rms);
         ui->lineImgMean->setText(fmtStat(mean));
+        this->updateSliceStatsCaption();
         ui->lineImgRms->setText(fmtStat(rms));
         this->updateLUTCustomizer();
     }
@@ -9138,6 +9192,11 @@ QList<QPair<QString, QString>> vtkWindowCube::sliceBackdropCandidates() const
     if (auto *slice = vtkImageData::SafeDownCast(
                 this->remoteSliceDisplaySource->GetOutputDataObject(0)))
         slice->GetDimensions(dims);
+    // A wide channel is shown strided (issue #381): compare with the plane, not its samples.
+    if (this->m_sliceBackdropProductId.isEmpty() && this->m_displayedSliceGrid[2] > 1) {
+        dims[0] = this->m_displayedSliceGrid[0];
+        dims[1] = this->m_displayedSliceGrid[1];
+    }
     const QString mirror = channelMirrorId();
     for (auto it = m_products2d.constBegin(); it != m_products2d.constEnd(); ++it) {
         const Product2D &p = it.value();
@@ -9451,6 +9510,7 @@ void vtkWindowCube::setSliceBackdrop(const QString &productId)
         }
         m_sliceBackdropProductId = productId;
         this->m_slice2dLoadingActor->VisibilityOff();
+        this->hideSliceDetail();
         this->remoteSliceDisplaySource->SetOutput(it->imageData);
         this->remoteSliceDisplaySource->Modified();
         this->sliceColors->SetInputData(it->imageData);
@@ -10526,6 +10586,7 @@ void vtkWindowCube::onSliceCameraFrame()
     const bool schedule = this->m_sliceCameraTracker.frame(pose, this->m_applyingLinkedUpdate);
     if (!this->m_sliceCameraTracker.lastFrameMoved())
         return;
+    this->scheduleSliceDetail();
     // Record the new view as the shared one on every frame of the move, not when the send goes
     // out: a slice that arrives in between (a channel scrub) refits the slice and puts the shared
     // view back, and that must be this view, not the one before the zoom.
@@ -11805,7 +11866,7 @@ void vtkWindowCube::startLiveSpectrum()
     m_spectrumLiveId = this->scopedProductId(u"spectrumlive"_s);
     Spectrum1D s;
     s.xLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s : this->spectralAxisTitle();
-    s.yLabel = u"Intensity"_s;
+    s.yLabel = this->intensityAxisLabel();
     s.label = u"Spectrum (live)"_s;
     m_products1d.insert(m_spectrumLiveId, s);
     // No Provenance reveal: this product exists because the user just ARMED a tool
@@ -13072,6 +13133,18 @@ void vtkWindowCube::ensureMomentStats(Product2D &p)
     p.stats = computeMapStats(p.imageData);
 }
 
+void vtkWindowCube::updateSliceStatsCaption()
+{
+    // Statistics of a strided channel come from its samples (issue #381): say so beside them.
+    auto *caption = this->findChild<QLabel *>(u"labelImgStatsCaption"_s);
+    if (!caption)
+        return;
+    const bool sampled = this->viewingSlice() && this->m_sliceBackdropProductId.isEmpty()
+            && this->m_displayedSliceGrid[2] > 1;
+    caption->setText(sampled ? u"2D image · sampled every %1 px"_s.arg(this->m_displayedSliceGrid[2])
+                             : u"2D image"_s);
+}
+
 void vtkWindowCube::updateActiveMapStats()
 {
     if (!m_activeMapStatsSection)
@@ -13112,6 +13185,8 @@ void vtkWindowCube::updateActiveMapStats()
         if (sliceImg) {
             stats = computeMapStats(sliceImg);   // recomputed per scrub only while Slice is active
             label = u"2D SLICE"_s;
+            if (this->m_sliceBackdropProductId.isEmpty() && this->m_displayedSliceGrid[2] > 1)
+                label += u" · SAMPLED EVERY %1 PX"_s.arg(this->m_displayedSliceGrid[2]);
             have = true;   // slice brightness unit not tracked here → left blank
         }
     }
@@ -13225,6 +13300,18 @@ void vtkWindowCube::setupInspector()
     panel->addPropertyRow(u"Backend"_s, this->remoteBackendUrl);
     panel->addPropertyRow(u"Sanity"_s, this->remoteWcsStatus.isEmpty() ? u"-"_s
                                                                        : this->remoteWcsStatus);
+    m_unitValueLabel = new QLabel();
+    panel->addPropertyRow(u"Unit"_s, m_unitValueLabel.data());
+    m_beamControl = new DatasetBeamControl();
+    m_beamControl->setDataset(this->remoteBackendUrl, this->remoteBackendToken,
+                              this->remoteDatasetId);
+    panel->addPropertyRow(u"Beam"_s, m_beamControl.data());
+    connect(m_beamControl, &DatasetBeamControl::beamChanged, this,
+            [this](double majorDeg, double minorDeg, double paDeg, const QString &source) {
+                m_beamSource = source;
+                this->setBeamInfo(majorDeg, minorDeg, paDeg);
+            });
+    this->refreshUnitAndBeamRows();
 
     // Flatten a re-hosted stat widget so it reads as a value, not an input box.
     const QString statCss =
@@ -13446,6 +13533,32 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
     smoothRow->addWidget(m_specInspSmooth, 1);
     col->addLayout(smoothRow);
 
+    auto *fitRangeRow = new QHBoxLayout();
+    fitRangeRow->setSpacing(6);
+    auto *fitRangeLabel = new QLabel(u"Fit:"_s);
+    fitRangeLabel->setStyleSheet(QStringLiteral("color:%1; font-size:11px;").arg(fgMuted));
+    m_specInspFitRange = new QComboBox();
+    ProfileWidget::populateFitRangeCombo(m_specInspFitRange);
+    fitRangeRow->addWidget(fitRangeLabel);
+    fitRangeRow->addWidget(m_specInspFitRange, 1);
+    col->addLayout(fitRangeRow);
+    QObject::connect(m_specInspFitRange, qOverload<int>(&QComboBox::activated), this,
+                     [this](int index) {
+                         QPointer<ProfileWidget> target = m_specInspTarget;
+                         if (!target || !m_specInspFitRange)
+                             return;
+                         const auto mode = static_cast<visivo::linefit::RangeMode>(
+                                 m_specInspFitRange->itemData(index).toInt());
+                         if (mode == visivo::linefit::RangeMode::Typed
+                             && !target->editTypedFitRange()) {
+                             if (target)
+                                 target->setFitRangeMode(target->fitRangeMode());
+                             return;
+                         }
+                         if (target)
+                             target->setFitRangeMode(mode);
+                     });
+
     // Action buttons in a 2-column grid.
     const QString btnCss = VisivoTheme::sidebarToolButtonStyleSheet();
     auto mkBtn = [&](const QString &text, const QString &tip) {
@@ -13571,6 +13684,12 @@ void vtkWindowCube::updateSpectrumInspectorControls()
         if (idx >= 0)
             m_specInspSmooth->setCurrentIndex(idx);
     }
+    if (m_specInspFitRange) {
+        QSignalBlocker b(m_specInspFitRange);
+        const int idx = m_specInspFitRange->findData(static_cast<int>(sp->fitRangeMode()));
+        if (idx >= 0)
+            m_specInspFitRange->setCurrentIndex(idx);
+    }
     const bool haveSpec = sp->hasSpectrum();
     m_specInspFit->setEnabled(haveSpec && sp->canFit());
     m_specInspClearFit->setEnabled(sp->hasFit());
@@ -13583,6 +13702,7 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     m_specInspSavePng->setEnabled(haveSpec);
     const QString stats = sp->statsText();
     m_specInspStats->setText(stats.isEmpty() ? u"-"_s : stats);
+    m_specInspStats->setToolTip(sp->statsToolTip());
 }
 
 void vtkWindowCube::refreshCubeStatRows()
@@ -14252,6 +14372,7 @@ void vtkWindowCube::applyMomentMapResult(const MomentMapApplyResult &result)
         double mean, rms;
         computeImageStats(result.imageData, mean, rms);
         ui->lineImgMean->setText(fmtStat(mean));
+        this->updateSliceStatsCaption();
         ui->lineImgRms->setText(fmtStat(rms));
     }
     qDebug().noquote() << QStringLiteral("[perf][moment] apply total: %1 ms").arg(
@@ -15181,6 +15302,7 @@ void vtkWindowCube::changeImageRenderer()
     double mean, rms;
     computeImageStats(imgForStats, mean, rms);
     ui->lineImgMean->setText(fmtStat(mean));
+    this->updateSliceStatsCaption();
     ui->lineImgRms->setText(fmtStat(rms));
     if (auto *win = this->active2dWin())
         this->coordinate->SetViewport(win->GetRenderers()->GetFirstRenderer());
@@ -15385,7 +15507,7 @@ void vtkWindowCube::applyCopilotActions(const QList<QJsonObject> &actions)
                         u"Copilot Spectrum"_s,
                         QStringLiteral("copilotspec_%1_%2").arg(px).arg(py),
                         QStringLiteral("Spectrum @ (%1, %2)").arg(px).arg(py),
-                        key, values, xLabel, u"Intensity"_s, {});
+                        key, values, xLabel, this->intensityAxisLabel(), {});
                 // fit=true → overlay a Gaussian fit on the pinned profile, reusing
                 // the ProfileWidget's own backend fit machinery (which draws the
                 // model curve). Fit the VISIBLE pane now showing this product —

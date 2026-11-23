@@ -20,6 +20,7 @@
 
 #include <QRegularExpression>
 #include <QString>
+#include <QStringList>
 
 #include <algorithm>
 #include <cmath>
@@ -29,14 +30,24 @@
 
 namespace visivo::flux {
 
-/// What the pixel sum ÷ beam area of a map in @p bunit is.
+/// What a map's pixel values are, as far as the sum over a region goes.
+enum class UnitKind {
+    Unknown,        ///< no unit, or one not read here: nothing to build a flux on
+    PerBeam,        ///< Jy/beam: Σ ÷ beam area is a flux
+    PerPixel,       ///< Jy/pixel: Σ is a flux
+    PerSteradian,   ///< Jy/sr, MJy/sr: Σ × pixel solid angle is a flux
+    Temperature,    ///< K (T_A*, T_mb, T_b): not converted to Jy (η_mb, ν unknown)
+};
+
+/// What the pixel sum of a map in @p bunit is.
 struct FluxUnit
 {
+    UnitKind kind{ UnitKind::Unknown };
     bool perBeam{ false };    ///< the brightness is Jy (or mJy, µJy) per beam
     double scale{ 1.0 };      ///< from the map's unit to `label` (mJy → Jy, m/s → km/s)
-    bool velocity{ false };   ///< the map is integrated over a velocity: Jy km/s
+    bool velocity{ false };   ///< the map is integrated over a velocity: Jy km/s, K km/s
     QString spectral;         ///< the spectral part as given ("m/s", "Hz"), empty for none
-    QString label;            ///< "Jy", "Jy km/s", "Jy Hz"
+    QString label;            ///< "Jy", "Jy km/s", "Jy Hz", "K", "K km/s"
     double frequencyToHz{ 0.0 };   ///< the spectral part is a frequency: its unit in Hz
     bool fromFrequency{ false };   ///< converted to km/s with the rest frequency
 };
@@ -73,57 +84,92 @@ inline double velocityToKms(QString u)
     return m.captured(1).isEmpty() ? 1e-3 : 1.0;
 }
 
+/// "/word", "word-1", "word^-1", "word**-1", case-insensitive.
+inline QRegularExpression perUnit(const QString &words)
+{
+    return QRegularExpression(
+            QStringLiteral("(?:/\\s*(?:%1)(?:\\s*-\\s*1)?|(?:%1)\\s*(?:\\^|\\*\\*)?\\s*-\\s*1)"
+                           "(?![A-Za-z])")
+                    .arg(words),
+            QRegularExpression::CaseInsensitiveOption);
+}
+
+/// The spectral unit left after the brightness, into @p out.
+inline void readSpectralPart(QString rest, const QString &base, FluxUnit &out)
+{
+    // The separators left around it: "Jy/beam.km/s", "Jy km/s/beam".
+    static const QRegularExpression edges(QStringLiteral("^[\\s.*/]+|[\\s.*/]+$"));
+    rest.remove(edges);
+    out.spectral = rest;
+    if (rest.isEmpty()) {
+        out.label = base;
+        return;
+    }
+    const double kms = velocityToKms(rest);
+    if (kms > 0.0) {
+        out.velocity = true;
+        out.scale *= kms;
+        out.label = base + QStringLiteral(" km/s");
+        return;
+    }
+    // A frequency stays in its own unit (Jy Hz) unless withRestFrequency()
+    // converts it. Anything else ("K km/s/beam", "K (T_A*)") is not a unit
+    // read here, and a label built from it would name nothing.
+    out.frequencyToHz = frequencyToHz(rest);
+    if (!(out.frequencyToHz > 0.0)) {
+        out.kind = UnitKind::Unknown;
+        out.perBeam = false;
+        return;
+    }
+    out.label = base + QLatin1Char(' ') + rest;
+}
+
 } // namespace detail
 
 /// Read a brightness unit: "Jy/beam", "JY/BEAM", "Jy beam-1", "mJy/beam",
-/// and a moment-0 unit, the brightness and the spectral unit in any order:
-/// "Jy/beam km/s", "JY/BEAM m.s**-1", "Jy/beam.km/s" (CASA), "Jy km s-1
-/// beam-1", "Jy km/s/beam". The prefix is case-sensitive as in the FITS
-/// standard: mJy is milli, MJy mega. Not per beam ("K", "Jy/pixel", "MJy/sr",
-/// empty) gives perBeam false: a sum ÷ beam area of such a map is not a flux.
+/// "Jy/pixel", "MJy/sr", "K", and a moment-0 unit, the brightness and the
+/// spectral unit in any order: "Jy/beam km/s", "JY/BEAM m.s**-1",
+/// "Jy/beam.km/s" (CASA), "Jy km s-1 beam-1", "Jy km/s/beam", "K km/s". The
+/// prefix is case-sensitive as in the FITS standard: mJy is milli, MJy mega.
+/// Anything else, an empty unit included, is UnitKind::Unknown.
 inline FluxUnit parseFluxUnit(const QString &bunit)
 {
     FluxUnit out;
+    static const QRegularExpression kelvin(QStringLiteral("^\\s*(m?)K(?![A-Za-z])"));
+    if (const auto mk = kelvin.match(bunit); mk.hasMatch()) {
+        out.kind = UnitKind::Temperature;
+        out.scale = mk.captured(1).isEmpty() ? 1.0 : 1e-3;
+        detail::readSpectralPart(bunit.mid(mk.capturedEnd(0)), QStringLiteral("K"), out);
+        return out;
+    }
     // The brightness: Jy with an optional, case-sensitive prefix, first.
     static const QRegularExpression jy(QStringLiteral("^\\s*([muµμMk]?)[Jj][Yy](?![A-Za-z])"));
     const auto mj = jy.match(bunit);
     if (!mj.hasMatch())
         return out;
-    // "per beam", anywhere after it: "/beam", "beam-1", "beam^-1", "beam**-1".
-    static const QRegularExpression beam(
-            QStringLiteral("(?:/\\s*beam(?:\\s*-\\s*1)?|beam\\s*(?:\\^|\\*\\*)?\\s*-\\s*1)(?![A-Za-z])"),
-            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression beam = detail::perUnit(QStringLiteral("beam"));
+    static const QRegularExpression pixel = detail::perUnit(QStringLiteral("pixel|pix"));
+    static const QRegularExpression steradian = detail::perUnit(QStringLiteral("sr"));
     QString rest = bunit.mid(mj.capturedEnd(0));
-    const auto mb = beam.match(rest);
-    if (!mb.hasMatch())
+    QRegularExpressionMatch per = beam.match(rest);
+    if (per.hasMatch()) {
+        out.kind = UnitKind::PerBeam;
+    } else if ((per = pixel.match(rest)).hasMatch()) {
+        out.kind = UnitKind::PerPixel;
+    } else if ((per = steradian.match(rest)).hasMatch()) {
+        out.kind = UnitKind::PerSteradian;
+    } else {
         return out;
-    rest.remove(mb.capturedStart(0), mb.capturedLength(0));
-    out.perBeam = true;
+    }
+    rest.remove(per.capturedStart(0), per.capturedLength(0));
+    out.perBeam = out.kind == UnitKind::PerBeam;
     const QString prefix = mj.captured(1);
     out.scale = prefix.isEmpty()                 ? 1.0
             : prefix == QLatin1String("m")      ? 1e-3
             : prefix == QLatin1String("M")      ? 1e6
             : prefix == QLatin1String("k")      ? 1e3
                                                 : 1e-6;   // u, µ
-    // The separators left around the spectral unit: "Jy/beam.km/s", "Jy km/s/beam".
-    static const QRegularExpression edges(QStringLiteral("^[\\s.*/]+|[\\s.*/]+$"));
-    rest.remove(edges);
-    out.spectral = rest;
-    if (rest.isEmpty()) {
-        out.label = QStringLiteral("Jy");
-        return out;
-    }
-    const double kms = detail::velocityToKms(rest);
-    if (kms > 0.0) {
-        out.velocity = true;
-        out.scale *= kms;
-        out.label = QStringLiteral("Jy km/s");
-        return out;
-    }
-    // A frequency stays in its own unit (Jy Hz) unless withRestFrequency()
-    // converts it; anything else too.
-    out.frequencyToHz = detail::frequencyToHz(rest);
-    out.label = QStringLiteral("Jy ") + rest;
+    detail::readSpectralPart(rest, QStringLiteral("Jy"), out);
     return out;
 }
 
@@ -133,12 +179,14 @@ inline FluxUnit parseFluxUnit(const QString &bunit)
 /// a frequency or @p restHz is not positive.
 inline FluxUnit withRestFrequency(FluxUnit u, double restHz)
 {
-    if (!u.perBeam || !(u.frequencyToHz > 0.0) || !(restHz > 0.0) || !std::isfinite(restHz))
+    if (u.kind == UnitKind::Unknown || !(u.frequencyToHz > 0.0) || !(restHz > 0.0)
+        || !std::isfinite(restHz))
         return u;
     u.scale *= u.frequencyToHz * Catalogue3DParser::detail::kSpeedOfLightKms / restHz;
     u.velocity = true;
     u.fromFrequency = true;
-    u.label = QStringLiteral("Jy km/s");
+    u.label = u.kind == UnitKind::Temperature ? QStringLiteral("K km/s")
+                                              : QStringLiteral("Jy km/s");
     return u;
 }
 
@@ -180,35 +228,144 @@ struct RegionFlux
     QString unit;
 };
 
-/// The flux of @p n valid pixels summing to @p sum on a map in @p unit, with
-/// @p beamAreaPx pixels per beam. @p pixelsPerSample is the full-resolution
-/// pixels each measured pixel stands for (1 at full resolution, the block area
-/// on a reduced map). S = (Σ − N·mean)·A / Ω. Its error is the noise of the
-/// region's N·A/Ω beams, σ·√(N·A/Ω), and with a background, in quadrature,
-/// that of its mean taken over N_bg·A/Ω beams and subtracted N times,
-/// σ·N·A/√(N_bg·A·Ω). A σ that is not positive (a clipped map) gives no error.
+/// The integral of @p n valid pixels summing to @p sum on a map in @p unit.
+/// @p beamAreaPx is the pixels per beam (0 when there is no beam),
+/// @p pixelAreaDeg2 a pixel's solid angle |CDELT1·CDELT2| in deg², and
+/// @p pixelsPerSample the full-resolution pixels each measured pixel stands
+/// for (1 at full resolution, the block area on a reduced map).
+///
+/// The sum is weighted per pixel by what the unit needs (issue #416):
+///   Jy/beam   S = (Σ − N·mean)·A / Ω                    Jy
+///   Jy/pixel  S = (Σ − N·mean)·A                        Jy
+///   Jy/sr     S = (Σ − N·mean)·A·Ω_pix[sr]              Jy
+///   K         Σ W ΔΩ = (Σ − N·mean)·A·Ω_pix[arcsec²]    K arcsec² (K km/s arcsec²)
+/// A temperature is not turned into Jy: that needs η_mb for T_A* and the
+/// frequency, and a wrong η_mb is a silent factor of two.
+///
+/// The error counts the independent samples: σ²·N·min(N, Ω) per-pixel
+/// weights squared for the region (N/Ω beams when the region is larger than a
+/// beam, one beam when smaller), plus, with a background, its mean's error
+/// σ²·min(N_bg, Ω)/N_bg subtracted N times. Without a beam the pixels count
+/// as independent. A σ that is not positive (a clipped map) gives no error.
 inline RegionFlux regionFlux(double sum, long n, double beamAreaPx, const FluxUnit &unit,
-                             const Noise &noise, double pixelsPerSample = 1.0)
+                             const Noise &noise, double pixelsPerSample = 1.0,
+                             double pixelAreaDeg2 = 0.0)
 {
     RegionFlux out;
-    if (!unit.perBeam || !(beamAreaPx > 0.0) || n <= 0 || !std::isfinite(sum)
-        || !(pixelsPerSample > 0.0))
+    if (n <= 0 || !std::isfinite(sum) || !(pixelsPerSample > 0.0))
         return out;
+    const bool haveBeam = beamAreaPx > 0.0 && std::isfinite(beamAreaPx);
+    const bool havePixel = pixelAreaDeg2 > 0.0 && std::isfinite(pixelAreaDeg2);
+    constexpr double kDegToRad = regions::kPi / 180.0;
+    double weight = 0.0;
+    QString label = unit.label;
+    switch (unit.kind) {
+    case UnitKind::PerBeam:
+        if (!haveBeam)
+            return out;
+        weight = unit.scale / beamAreaPx;
+        break;
+    case UnitKind::PerPixel:
+        weight = unit.scale;
+        break;
+    case UnitKind::PerSteradian:
+        if (!havePixel)
+            return out;
+        weight = unit.scale * pixelAreaDeg2 * kDegToRad * kDegToRad;
+        break;
+    case UnitKind::Temperature:
+        if (!havePixel)
+            return out;
+        weight = unit.scale * pixelAreaDeg2 * 3600.0 * 3600.0;
+        label = unit.velocity ? QStringLiteral("K km/s arcsec²")
+                              : unit.label + QStringLiteral(" arcsec²");
+        break;
+    case UnitKind::Unknown:
+        return out;
+    }
     const double a = pixelsPerSample;
     const double mean = noise.subtract ? noise.mean : 0.0;
-    out.flux = (sum - double(n) * mean) * a / beamAreaPx * unit.scale;
+    out.flux = (sum - double(n) * mean) * a * weight;
     if (std::isfinite(noise.sigma) && noise.sigma > 0.0) {
         const double nFull = double(n) * a;
-        double var = noise.sigma * noise.sigma * nFull / beamAreaPx;
+        const double samples = haveBeam ? nFull * std::min(nFull, beamAreaPx) : nFull;
+        double var = samples;
         if (noise.subtract && noise.count > 0) {
             const double bgFull = double(noise.count) * a;
-            var += noise.sigma * noise.sigma * nFull * nFull / (bgFull * beamAreaPx);
+            const double bgCorrelation = haveBeam ? std::min(bgFull, beamAreaPx) : 1.0;
+            var += nFull * nFull * bgCorrelation / bgFull;
         }
-        out.error = std::sqrt(var) * unit.scale;
+        out.error = noise.sigma * std::sqrt(var) * std::abs(weight);
     }
-    out.unit = unit.label;
+    out.unit = label;
     out.valid = std::isfinite(out.flux);
     return out;
+}
+
+/// The HI rest frequency, Hz.
+constexpr double kHiRestHz = 1420405751.768;
+
+/// Whether an HI mass may be computed from a flux in @p unit: a Jy flux
+/// integrated over velocity, of the 21-cm line. A cube whose rest frequency
+/// is another line's (CO, say) gets none; without a rest frequency the mass
+/// is given with @p note set, since then the line is assumed.
+inline bool hiMassApplies(const FluxUnit &unit, double restHz, QString *note = nullptr)
+{
+    const bool jansky = unit.kind == UnitKind::PerBeam || unit.kind == UnitKind::PerPixel
+            || unit.kind == UnitKind::PerSteradian;
+    if (!jansky || !unit.velocity)
+        return false;
+    if (restHz > 0.0 && std::isfinite(restHz))
+        return std::abs(restHz - kHiRestHz) < 1e6;
+    if (note)
+        *note = QStringLiteral("assumes the HI 21-cm line (no rest frequency)");
+    return true;
+}
+
+/// Why a region of a map in @p unit has no flux, or an empty string when it
+/// can have one with what is known. @p rawUnit is the unit as shown.
+inline QString fluxRefusal(const FluxUnit &unit, const QString &rawUnit, double beamAreaPx,
+                           double pixelAreaDeg2)
+{
+    switch (unit.kind) {
+    case UnitKind::Unknown:
+        return rawUnit.trimmed().isEmpty() || rawUnit.contains(QStringLiteral("unknown"))
+                ? QStringLiteral("no flux: the intensity unit is unknown (no BUNIT)")
+                : QStringLiteral("no flux: the unit %1 is not one a flux can be computed from")
+                          .arg(rawUnit.trimmed());
+    case UnitKind::PerBeam:
+        if (beamAreaPx > 0.0)
+            return QString();
+        return pixelAreaDeg2 > 0.0
+                ? QStringLiteral("no flux: the map is per beam and has no beam (BMAJ/BMIN); "
+                                 "set one in Inspector ▸ Beam")
+                : QStringLiteral("no flux: the pixel size is unknown, so the beam area "
+                                 "cannot be computed");
+    case UnitKind::PerPixel:
+        return QString();
+    case UnitKind::PerSteradian:
+    case UnitKind::Temperature:
+        return pixelAreaDeg2 > 0.0 ? QString()
+                                   : QStringLiteral("no flux: the pixel size is unknown");
+    }
+    return QString();
+}
+
+/// The caveat that goes with a measurement in @p unit; empty when none.
+inline QString fluxCaveat(const FluxUnit &unit, bool haveBeam)
+{
+    QStringList parts;
+    if (unit.kind == UnitKind::Temperature)
+        parts << QStringLiteral("a temperature is not converted to Jy: T_A* is not corrected "
+                                "for the main-beam efficiency (T_mb = T_A*/η_mb), and no flux "
+                                "density is given");
+    if (unit.kind == UnitKind::PerSteradian)
+        parts << QStringLiteral("MJy/sr maps such as SPIRE's are calibrated for extended "
+                                "sources; no point-source correction is applied");
+    if (unit.kind != UnitKind::PerBeam && !haveBeam)
+        parts << QStringLiteral("the error assumes independent pixels (no beam): a lower limit "
+                                "on a beam-smoothed map");
+    return parts.join(QStringLiteral("; "));
 }
 
 /// σ from the median absolute deviation (1.4826 × MAD) of the finite values;

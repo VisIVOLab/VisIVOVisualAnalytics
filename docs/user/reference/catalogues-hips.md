@@ -20,6 +20,16 @@ A sky catalogue (RA, Dec) is placed in 3-D from a distance or a redshift; a
 table of X, Y, Z columns is drawn in its own units (*AXIS MAPPING* picks the
 columns).
 
+A large X, Y, Z table with a column only gas particles have (smoothing length,
+density, internal energy or temperature, also as logarithms such as `LogD` or
+`LogT`; a mass alone is also a halo catalogue's), with no RA/Dec and no
+redshift column and at least 500,000 rows, opens as a simulation's particles,
+as a Gadget snapshot or a VBT does. It is drawn as points or Gaussian splats with no object glyphs and
+labelled with its format and row count, and *Compare Quantity…* is
+available. *Tools ▸ Treat Rows as Simulation Particles* switches either way
+for a table the rule got wrong. The choice is remembered for the file, which
+opens again. A table marked as particles has no snapshot timeline.
+
 ### Frame and distance
 
 - *Frame*: FK5 / J2000 (default), Galactic (l, b) or *Supergalactic (SGL,
@@ -53,13 +63,15 @@ from z (comoving, Planck18)*).
 ### Source representation and visual encoding
 
 - *Shape*: *Ellipsoid*, *Sphere*, *Point*, *Cross*, *Gaussian splats*
-  (additive light, for simulation particles; *Scale* sets their size), and the
+  (additive light, for simulation particles; *Scale* sets their size; their
+  brightness does not depend on the number of particles; for numbers use a
+  projected map), and the
   separate *Ray-traced light* check, which draws a simulation for figures on
   the GPU from data prepared by the backend
   ([Ray-traced particles](raytraced-particles.md)).
 - *Size*: *Fixed*, *Major axis* (the catalogue's size), *LLS*, *Flux*.
-- *Color*: *Morphology color* or any numeric column.
-- *Colormap* and *Edit*: the map, and an editor over the column's histogram
+- *Colour by*: *Morphology color* or any numeric column.
+- *Colormap* and *Range and scale…*: the map, and an editor over the column's histogram
   for Min, Max and the scale (Linear, Log, Sqrt, Square, Power). A colour bar
   on the right shows the range and the column.
 
@@ -70,6 +82,8 @@ from z (comoving, Planck18)*).
   the *Catalogue Data* table highlights it. Esc, a click on empty space or
   *View ▸ Clear Selection* deselects.
 - Click a table row to centre the camera on the source.
+- *Camera*: *Front*, *Back*, *Left*, *Right*, *Top*, *Bottom* (Ctrl+1 to
+  Ctrl+6), in the Local, Remote and ray-traced views alike.
 
 ### Filters and loading
 
@@ -83,7 +97,29 @@ from z (comoving, Planck18)*).
   every row there while the loaded rows stay in the window for picking and the
   table; the status bar says which (*Remote · all N rows*, *Local · n of N
   rows*). The backend draws other shapes as points, morphology colour in one
-  colour, and applies only numeric filters.
+  colour, and applies only numeric filters and 3-D regions. If the stream
+  drops (sleep, network, tunnel), the view reconnects by itself and the status
+  bar shows the attempts; after about two minutes it falls back to the loaded
+  rows.
+
+### 3-D regions and selection diagnostics
+
+In a Cartesian table (VBT points, Gadget snapshots, Cartesian catalogues):
+
+- *Select 3-D region…*, under the filter list, adds a named *Box* or *Sphere*
+  with *Inside* or *Outside*, pre-filled from the scene bounds. Names default
+  to *Region 1*, *Region 2* …, and a name already in use is refused. Regions
+  combine with the other filters, act on the whole table on the backend, and
+  last while the window is open.
+- *Tools ▸ Selection Diagnostics…*: an exact histogram and summary
+  statistics of one quantity, optionally weighted, over every row the
+  **applied** filters match (those last sent with *Apply*), not only the
+  loaded ones. It follows a new *Apply* while open. It runs as a backend
+  task: the progress bar shows how far it has gone, and *Cancel* stops the
+  task. It takes one of the session's compute slots, so while a moment map or
+  a ray-traced render holds them the dialog says the backend is busy. *Save CSV…* keeps the numbers with
+  their units and selection, *Save PNG…* the plot. Non-finite values and
+  negative weights are left out and counted.
 
 ## Catalogue overlay on cubes / images
 
