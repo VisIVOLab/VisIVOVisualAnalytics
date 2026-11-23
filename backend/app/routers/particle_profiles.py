@@ -18,7 +18,7 @@ from ..auth import verify_token
 from ..dependencies import (
     _apply_tabular_query, _require_dataset, acquire_task_slot, task_slot_busy_error,
 )
-from ..periodic import separation
+from ..periodic import box_inside, separation
 from ..schemas import (
     ParticleProfileRequest, ParticleProfileResponse, PhaseDiagramRequest,
     PhaseDiagramResponse, ProfileCentre, TaskCreateResponse,
@@ -133,6 +133,9 @@ def _region_limit(filters, pos, centre, periods) -> float | None:
         if item.box is not None:
             for axis, (lo, hi) in enumerate(zip(item.box.min, item.box.max)):
                 p = periods[axis]
+                if not bool(box_inside(np.array([centre[axis]]), lo, hi, p)[0]):
+                    limits.append(0.0)
+                    continue
                 limits.append(min(abs(float(separation(centre[axis], lo, p))),
                                   abs(float(separation(hi, centre[axis], p)))))
         else:
@@ -166,12 +169,24 @@ def _target_position(session: Session, centre: ProfileCentre, pos) -> list[float
     return values
 
 
+def _three_finite(values) -> bool:
+    return len(values) == 3 and all(math.isfinite(v) for v in values)
+
+
+def _check_centre_velocity(centre: ProfileCentre | None, vel) -> None:
+    """Refuse a bad centre velocity before any pass is read."""
+    if centre is not None and centre.velocity is not None:
+        if not _three_finite(centre.velocity):
+            raise ValueError("A centre velocity needs three finite values.")
+        if not vel:
+            raise ValueError("A centre velocity needs the velocity fields.")
+
+
 def _centre(session, entry, filters, centre: ProfileCentre, pos, mass, periods,
             stop, progress) -> dict:
     """The centre the request asks for, with what it was found from."""
     if centre.mode == "point":
-        if centre.point is None or len(centre.point) != 3 \
-                or not all(math.isfinite(v) for v in centre.point):
+        if centre.point is None or not _three_finite(centre.point):
             raise ValueError("A point centre needs three finite coordinates.")
         return {"mode": "point", "centre": [float(v) for v in centre.point]}
     if centre.mode == "target":
@@ -180,9 +195,8 @@ def _centre(session, entry, filters, centre: ProfileCentre, pos, mass, periods,
                 "target_row": int(centre.target_row),
                 "note": "Target position read from the catalogue's position columns, taken "
                         "to be in the particles' coordinate units."}
-    for name, value in (("start", centre.start),):
-        if value is not None and (len(value) != 3 or not all(math.isfinite(v) for v in value)):
-            raise ValueError(f"The shrinking-sphere {name} needs three finite coordinates.")
+    if centre.start is not None and not _three_finite(centre.start):
+        raise ValueError("The shrinking-sphere start needs three finite coordinates.")
     found = pp.shrinking_sphere_centre(
         _selection_chunks(entry, filters, pos + ([mass] if mass else [])), pos, mass, periods,
         start=centre.start, initial_radius=centre.initial_radius,
@@ -254,6 +268,19 @@ def _stages(progress, lo, hi):
     return lambda fraction: progress(lo + (hi - lo) * float(fraction))
 
 
+def _monotonic(progress):
+    """``progress`` that never goes back: the stages of a run report from
+    passes whose count is only known as they go."""
+    if progress is None:
+        return None
+    best = [0.0]
+
+    def report(fraction):
+        best[0] = max(best[0], float(fraction))
+        progress(best[0])
+    return report
+
+
 def _run_profile(session, entry, request: ParticleProfileRequest,
                  progress=None, stop=None) -> ParticleProfileResponse:
     _require_catalogue(entry)
@@ -264,13 +291,11 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
         raise ValueError("radius is the profile's axis, not a profiled column.")
     if "radial_velocity" in columns and not vel:
         raise ValueError("radial_velocity needs the velocity fields.")
+    _check_centre_velocity(request.centre, vel)
     periods = _periods(entry, request, pos)
     searching = request.centre.mode == "shrinking_sphere"
     centre = _centre(session, entry, request.filters, request.centre, pos, mass, periods,
                      stop, _stages(progress, 0.0, 0.4 if searching else 0.0))
-    if request.centre.velocity is not None:
-        if len(request.centre.velocity) != 3 or not vel:
-            raise ValueError("A centre velocity needs three values and the velocity fields.")
     read = pos + vel + ([mass] if mass else []) + [c for c in columns
                                                    if c not in pp.DERIVED_COLUMNS]
     profile = pp.radial_profile(
@@ -296,7 +321,7 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
                     "centre; sigma_1d = sqrt((sigma_r^2 + sigma_theta^2 + sigma_phi^2)/3), "
                     "each about its shell mean; beta = 1 - (sigma_theta^2 + sigma_phi^2) / "
                     "(2 sigma_r^2); sigma_cartesian_with_streaming includes infall and "
-                    "rotation",
+                    "rotation; peculiar velocities, without the Hubble flow",
     }
     return ParticleProfileResponse(valid=True, error="", profile=profile, centre=centre,
                                    units={**units, "physical": physical},
@@ -307,8 +332,10 @@ def _run_phase(session, entry, request: PhaseDiagramRequest,
                progress=None, stop=None) -> PhaseDiagramResponse:
     _require_catalogue(entry)
     axes = (request.x, request.y)
-    derived = [a.field for a in axes if a.field in pp.DERIVED_COLUMNS]
-    plain = [a.field for a in axes if a.field not in pp.DERIVED_COLUMNS]
+    table = _field_names(entry)
+    derived = [a.field for a in axes if a.field in pp.DERIVED_COLUMNS
+               and (request.centre is not None or a.field not in table)]
+    plain = [a.field for a in axes if a.field not in derived]
     _check_numeric(entry, plain + ([request.weight_field] if request.weight_field else []))
     for axis in axes:
         if (axis.min is None) != (axis.max is None):
@@ -320,27 +347,32 @@ def _run_phase(session, entry, request: PhaseDiagramRequest,
         pos, vel, mass = _resolve_fields(entry, request)
         if "radial_velocity" in derived and not vel:
             raise ValueError("radial_velocity needs the velocity fields.")
+        use_vel = "radial_velocity" in derived
+        if use_vel:
+            _check_centre_velocity(request.centre, vel)
         periods = _periods(entry, request, pos)
         searching = request.centre.mode == "shrinking_sphere"
         centre = _centre(session, entry, request.filters, request.centre, pos, mass, periods,
                          stop, _stages(progress, 0.0, 0.4 if searching else 0.0))
-        velocity = request.centre.velocity
-        if "radial_velocity" in derived and velocity is None:
+        velocity = request.centre.velocity if use_vel else None
+        if use_vel and velocity is None:
             probe = pp.default_centre_velocity(
                 _selection_chunks(entry, request.filters, pos + vel + ([mass] if mass else [])),
                 pos, vel, mass, centre["centre"], periods,
                 region_limit=_region_limit(request.filters, pos, centre["centre"], periods),
-                stop=stop)
+                stop=stop, progress=_stages(progress, 0.4 if searching else 0.0, 0.6))
             velocity = probe["velocity"]
             centre["centre_velocity_from"] = probe
-        centre["centre_velocity"] = velocity
-        geometry = pp.Geometry(pos, vel if velocity is not None else [], centre["centre"],
-                               periods, velocity)
+        if use_vel:
+            centre["centre_velocity"] = velocity
+        geometry = pp.Geometry(pos, vel if use_vel else [], centre["centre"], periods,
+                               velocity if use_vel else None)
         derive = geometry.derive
     read = plain + ([request.weight_field] if request.weight_field else [])
     if derived:
         read += pos + (vel if "radial_velocity" in derived else [])
-    start = 0.4 if derived and request.centre.mode == "shrinking_sphere" else 0.0
+    start = (0.6 if derived and "radial_velocity" in derived and request.centre.velocity is None
+             else 0.4 if derived and request.centre.mode == "shrinking_sphere" else 0.0)
     diagram = pp.phase_diagram(
         _selection_chunks(entry, request.filters, read), x=request.x.field, y=request.y.field,
         x_log=request.x.scale == "log", y_log=request.y.scale == "log",
@@ -360,8 +392,12 @@ def _run_phase(session, entry, request: PhaseDiagramRequest,
         "bins": "[lo, hi) except the last, which holds its upper edge",
         "dropped": "non-finite values, or values <= 0 on a log axis",
         "outside": "values outside a given range",
-        "closure": "binned + outside + dropped = selected (rows and weight); rows whose "
-                   "weight is not finite and >= 0 are counted in invalid_weight_rows",
+        "closure": "binned + outside + dropped = selected weight; binned + outside + "
+                   "dropped + invalid_weight = selected rows (invalid_weight_rows: a weight "
+                   "that is not finite and >= 0)",
+        "derived": "radius and radial_velocity (peculiar, without the Hubble flow) are "
+                   "measured from the centre; with a centre they take the place of table "
+                   "columns of the same name",
     }
     return PhaseDiagramResponse(valid=True, error="", diagram=diagram, centre=centre,
                                 units={"x": units["columns"][request.x.field],
@@ -441,7 +477,8 @@ async def create_catalogue_profile_task(
     if not await acquire_task_slot(session):
         raise task_slot_busy_error()
     return _task(session, token, "catalogue_profile",
-                 lambda progress, stop: _run_profile(session, entry, request, progress, stop),
+                 lambda progress, stop: _run_profile(session, entry, request,
+                                                     _monotonic(progress), stop),
                  lambda error: ParticleProfileResponse(valid=False, error=error))
 
 
@@ -476,5 +513,6 @@ async def create_catalogue_phase_diagram_task(
     if not await acquire_task_slot(session):
         raise task_slot_busy_error()
     return _task(session, token, "catalogue_phase_diagram",
-                 lambda progress, stop: _run_phase(session, entry, request, progress, stop),
+                 lambda progress, stop: _run_phase(session, entry, request,
+                                                   _monotonic(progress), stop),
                  lambda error: PhaseDiagramResponse(valid=False, error=error))

@@ -42,7 +42,7 @@ QUANTILES = (0.16, 0.5, 0.84)
 MIN_SELECTION = 100
 #: Particles a shrinking sphere keeps in memory once its nested selection is
 #: this small (positions and mass in float64: 32 bytes a particle).
-CENTRE_MEMORY_ROWS = 8_000_000
+CENTRE_MEMORY_ROWS = 2_000_000
 #: The centre velocity is the mass-weighted mean velocity inside a tenth of
 #: the profile's outer radius, widened until it holds this many particles.
 CENTRE_VELOCITY_PARTICLES = 1000
@@ -137,13 +137,16 @@ def mass_centre(chunks: Chunks, pos_fields, mass_field: str, periods,
     return {"centre": centre, "rows": n, "mass": weight_sum}
 
 
-def _max_distance(passes: _Passes, pos_fields, mass_field, centre, periods) -> tuple[float, float]:
-    """(largest, smallest positive) distance of a usable row from ``centre``."""
-    largest, smallest = 0.0, math.inf
+def _max_distance(passes: _Passes, pos_fields, mass_field, centre,
+                  periods) -> tuple[float, float, int]:
+    """(largest, smallest positive) distance of a usable row from ``centre``,
+    and the number of usable rows."""
+    largest, smallest, n = 0.0, math.inf, 0
     for columns in passes.run():
         keep, _ = _usable(columns, pos_fields, mass_field)
         if not keep.any():
             continue
+        n += int(keep.sum())
         delta = _separations({f: np.asarray(columns[f])[keep] for f in pos_fields},
                              pos_fields, centre, periods)
         d = np.sqrt(delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2)
@@ -151,7 +154,9 @@ def _max_distance(passes: _Passes, pos_fields, mass_field, centre, periods) -> t
         positive = d[d > 0]
         if positive.size:
             smallest = min(smallest, float(positive.min()))
-    return largest, smallest
+    if n == 0:
+        raise ValueError("The selection has no particle with a finite position and mass.")
+    return largest, smallest, n
 
 
 def shrinking_sphere_centre(chunks: Chunks, pos_fields, mass_field: str, periods, *,
@@ -161,17 +166,24 @@ def shrinking_sphere_centre(chunks: Chunks, pos_fields, mass_field: str, periods
                             stop=None, progress=None) -> dict:
     """The shrinking-sphere centre of the selection (see the module text).
 
-    Sphere k is centred on the centre found at step k-1, with radius
-    ``shrink`` times the last, and holds only the particles of sphere k-1
-    (nested). The selection is read out of core until a sphere holds at most
-    ``memory_rows`` particles; those are then kept in memory, which gives the
-    same spheres as reading every step from the table. The result is the
-    centre of the last sphere with at least
+    Step 0 takes the mass-weighted centre of the particles within
+    ``initial_radius`` of ``start``; step k that of the particles of step k-1
+    within ``shrink``**k times the initial radius of the centre of step k-1
+    (nested spheres). Out of core, the members of the current sphere are
+    kept as one bit per row and chunk, so each step reads the table once and
+    tests one sphere; once a sphere holds at most ``memory_rows`` particles
+    they are kept in memory, collected in the same pass, with the same
+    result. The answer is the centre of the last sphere with at least
     ``n_min = min(min_particles, max(100, ceil(1 % of the selection)))``
-    particles."""
+    particles; a start sphere holding fewer is refused."""
     if not 0.5 <= shrink < 1.0:
         raise ValueError("The shrink factor must be in [0.5, 1).")
-    passes = _Passes(chunks, stop)
+
+    def report(fraction):
+        if progress is not None:
+            progress(fraction)
+
+    passes = _Passes(chunks, stop, lambda f: report(0.1 * f), expected=2)
     total = mass_centre(chunks, pos_fields, mass_field, periods, passes)
     if total["rows"] < MIN_SELECTION:
         raise ValueError(f"A shrinking-sphere centre needs at least {MIN_SELECTION} "
@@ -179,37 +191,44 @@ def shrinking_sphere_centre(chunks: Chunks, pos_fields, mass_field: str, periods
     centre = np.asarray(start if start is not None else total["centre"], dtype=np.float64)
     radius = initial_radius
     if radius is None:
-        radius, _ = _max_distance(passes, pos_fields, mass_field, centre, periods)
+        radius = _max_distance(passes, pos_fields, mass_field, centre, periods)[0]
         radius = radius * (1.0 + 1e-12) or 1.0
     if not (math.isfinite(radius) and radius > 0):
         raise ValueError("The initial radius must be positive.")
+    passes.progress = None
     n_min = min(int(min_particles), max(MIN_SELECTION, math.ceil(0.01 * total["rows"])))
-    spheres = [(centre.copy(), float(radius))]
+    start_centre, r0 = centre.copy(), float(radius)
+    masks: list[np.ndarray] | None = None
     members = None
-    steps, n_inside = 0, total["rows"]
+    steps, n_inside, r_used = 0, 0, r0
     log_span = math.log(max(total["rows"], n_min + 1) / n_min)
 
-    def nested(columns, keep):
-        for c, r in spheres:
-            delta = _separations(columns, pos_fields, c, periods)
-            keep &= delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2 <= r * r
-        return keep
-
     while True:
-        r_next = spheres[-1][1] * shrink
-        candidate = (centre.copy(), r_next)
+        r_next = r0 if steps == 0 else r_used * shrink
+        collected = None
         if members is None:
             n, w_sum, s = 0, 0.0, np.zeros(3)
-            for columns in passes.run():
+            new_masks, kept_pos, kept_w = [], [], []
+            for index, columns in enumerate(passes.run()):
                 keep, weight = _usable(columns, pos_fields, mass_field)
-                keep = nested(columns, keep)
+                if masks is not None:
+                    keep &= np.unpackbits(masks[index], count=keep.size).astype(bool)
                 delta = _separations(columns, pos_fields, centre, periods)
                 keep &= delta[0] ** 2 + delta[1] ** 2 + delta[2] ** 2 <= r_next * r_next
+                new_masks.append(np.packbits(keep))
                 if keep.any():
                     n += int(keep.sum())
                     w = weight[keep]
                     w_sum += float(w.sum())
                     s += [float(np.dot(w, d[keep])) for d in delta]
+                    if n <= memory_rows:
+                        kept_pos.append(np.column_stack(
+                            [np.asarray(columns[f], dtype=np.float64)[keep]
+                             for f in pos_fields]))
+                        kept_w.append(w)
+            if n <= memory_rows:
+                collected = (np.concatenate(kept_pos) if kept_pos else np.empty((0, 3)),
+                             np.concatenate(kept_w) if kept_w else np.empty(0))
         else:
             pos, weight = members
             delta = _separations(dict(zip(pos_fields, pos.T)), pos_fields, centre, periods)
@@ -218,33 +237,28 @@ def shrinking_sphere_centre(chunks: Chunks, pos_fields, mass_field: str, periods
             w = weight[keep]
             w_sum = float(w.sum())
             s = np.array([float(np.dot(w, d[keep])) for d in delta])
-            members = (pos[keep], w)
+            collected = (pos[keep], w)
         if stop is not None and stop.is_set():
             raise ProfileCancelled("Cancelled by client.")
         if n < n_min or w_sum <= 0:
+            if steps == 0:
+                raise ValueError(
+                    f"The start sphere (radius {r0:.6g}) holds {n} particles, fewer than "
+                    f"the {n_min} a centre needs: give a larger initial radius.")
             break
         new_centre = centre + s / w_sum
         for axis, period in enumerate(periods):
             if period:
                 new_centre[axis] %= period
-        spheres.append(candidate)
-        centre, n_inside, steps = new_centre, n, steps + 1
-        if progress is not None:
-            progress(min(0.99, 0.1 + 0.89 * (1.0 - math.log(max(n, n_min) / n_min) / log_span)))
-        if members is None and n <= memory_rows:
-            kept_pos, kept_w = [], []
-            for columns in passes.run():
-                keep, weight = _usable(columns, pos_fields, mass_field)
-                keep = nested(columns, keep)
-                if keep.any():
-                    kept_pos.append(np.column_stack(
-                        [np.asarray(columns[f], dtype=np.float64)[keep] for f in pos_fields]))
-                    kept_w.append(weight[keep])
-            members = (np.concatenate(kept_pos) if kept_pos else np.empty((0, 3)),
-                       np.concatenate(kept_w) if kept_w else np.empty(0))
-    return {"centre": [float(v) for v in centre], "radius": float(spheres[-1][1]),
+        centre, n_inside, r_used, steps = new_centre, n, r_next, steps + 1
+        if members is None:
+            masks = new_masks
+        if collected is not None:
+            members, masks = collected, None
+        report(min(0.99, 0.1 + 0.89 * (1.0 - math.log(max(n, n_min) / n_min) / log_span)))
+    return {"centre": [float(v) for v in centre], "radius": float(r_used),
             "particles_inside": int(n_inside), "steps": steps, "n_min": n_min,
-            "start": [float(v) for v in spheres[0][0]], "initial_radius": float(spheres[0][1]),
+            "start": [float(v) for v in start_centre], "initial_radius": r0,
             "shrink_factor": float(shrink), "selected_particles": total["rows"],
             "out_of_core_passes": passes.done}
 
@@ -328,13 +342,14 @@ def centre_velocity(passes: _Passes, geometry: Geometry, mass_field: str,
 
 
 def default_centre_velocity(chunks: Chunks, pos_fields, vel_fields, mass_field: str, centre,
-                            periods, region_limit: float | None = None, stop=None) -> dict:
+                            periods, region_limit: float | None = None, stop=None,
+                            progress=None) -> dict:
     """The centre velocity a radius-velocity diagram uses when none is
     given: as for a profile, with the outer radius the selection's extent
     (bounded by the selected region and half the period)."""
-    passes = _Passes(chunks, stop)
+    passes = _Passes(chunks, stop, progress, expected=2)
     centre = np.asarray(centre, dtype=np.float64)
-    largest, _ = _max_distance(passes, pos_fields, mass_field, centre, periods)
+    largest = _max_distance(passes, pos_fields, mass_field, centre, periods)[0]
     outer = min([largest] + ([region_limit] if region_limit else [])
                 + [0.5 * p for p in periods if p])
     if not outer > 0:
@@ -379,12 +394,13 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
     if not 4 <= bins <= 256:
         raise ValueError("A profile has between 4 and 256 shells.")
     with_velocity = bool(vel_fields)
-    passes = _Passes(chunks, stop, progress, expected=4 + int(with_velocity))
+    passes = _Passes(chunks, stop, progress,
+                     expected=4 + int(with_velocity and centre_velocity_value is None))
     centre = np.asarray(centre, dtype=np.float64)
-    largest, smallest = _max_distance(passes, pos_fields, mass_field, centre, periods)
+    largest, smallest, _ = _max_distance(passes, pos_fields, mass_field, centre, periods)
     if largest <= 0:
         raise ValueError("Every selected particle sits at the centre.")
-    limits = [largest]
+    limits = [largest * (1.0 + 1e-12)]
     if region_limit is not None and region_limit > 0:
         limits.append(region_limit)
     half_periods = [0.5 * p for p in periods if p]
@@ -413,9 +429,6 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
 
     def shells_of(chunk):
         keep, weight = _usable(chunk, pos_fields, mass_field)
-        if with_velocity:
-            for f in vel_fields:
-                keep &= np.isfinite(chunk[f])
         sub = {k: np.asarray(v, dtype=np.float64)[keep] for k, v in chunk.items()}
         derived = geometry.derive(sub)
         if with_velocity:
@@ -435,6 +448,7 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
     col_lo = {c: np.full(bins, np.inf) for c in columns}
     col_hi = {c: np.full(bins, -np.inf) for c in columns}
     vel_sum = {k: np.zeros(bins) for k in vel_keys}
+    vel_w = np.zeros(bins)
     selected = 0
     for chunk in passes.run():
         selected += len(chunk[pos_fields[0]])
@@ -449,8 +463,14 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
         count += np.bincount(s, minlength=bins)
         mass += np.bincount(s, weights=ws, minlength=bins)
         radius_sum += np.bincount(s, weights=ws * d[ok], minlength=bins)
-        for k in vel_keys:
-            vel_sum[k] += np.bincount(s, weights=ws * derived[k][ok], minlength=bins)
+        if with_velocity:
+            moving = np.isfinite(derived["_vx"][ok]) & np.isfinite(derived["_vy"][ok]) \
+                & np.isfinite(derived["_vz"][ok])
+            sv, wv = s[moving], ws[moving]
+            vel_w += np.bincount(sv, weights=wv, minlength=bins)
+            for k in vel_keys:
+                vel_sum[k] += np.bincount(sv, weights=wv * derived[k][ok][moving],
+                                          minlength=bins)
         for c in columns:
             v = derived[c][ok]
             fin = np.isfinite(v)
@@ -463,7 +483,7 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
             np.maximum.at(col_hi[c], sf, vf)
     with np.errstate(invalid="ignore", divide="ignore"):
         col_mean = {c: np.where(col_w[c] > 0, col_sum[c] / col_w[c], np.nan) for c in columns}
-        vel_mean = {k: np.where(mass > 0, vel_sum[k] / mass, np.nan) for k in vel_keys}
+        vel_mean = {k: np.where(vel_w > 0, vel_sum[k] / vel_w, np.nan) for k in vel_keys}
     use_log = {c: _quantile_scale(col_lo[c], col_hi[c]) for c in columns}
     t_lo, t_hi = {}, {}
     for c in columns:
@@ -479,8 +499,10 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
         ok = (shell >= 0) & (shell < bins)
         s, ws = shell[ok], w[ok]
         for k in vel_keys:
-            dev = derived[k][ok] - vel_mean[k][s]
-            vel_dev[k] += np.bincount(s, weights=ws * dev * dev, minlength=bins)
+            moving = np.isfinite(derived[k][ok])
+            dev = derived[k][ok][moving] - vel_mean[k][s[moving]]
+            vel_dev[k] += np.bincount(s[moving], weights=ws[moving] * dev * dev,
+                                      minlength=bins)
         for c in columns:
             v = derived[c][ok]
             fin = np.isfinite(v)
@@ -589,7 +611,7 @@ def radial_profile(chunks: Chunks, *, pos_fields, mass_field: str, vel_fields, c
                 "quantile_axis": ["log" if x else "linear" for x in use_log[c]],
             }
         if with_velocity:
-            var = {k: np.where(mass > 0, vel_dev[k] / mass, np.nan) for k in vel_keys}
+            var = {k: np.where(vel_w > 0, vel_dev[k] / vel_w, np.nan) for k in vel_keys}
             sigma_t2 = var["_v_theta"] + var["_v_phi"]
             result["velocity"] = {
                 "centre_velocity": [float(v) for v in geometry.centre_velocity],
@@ -625,9 +647,10 @@ def phase_diagram(chunks: Chunks, *, x: str, y: str, x_log: bool, y_log: bool,
     Bins are [lo, hi) except the last, which holds its upper edge (as
     numpy's). A row is binned, outside the range (``outside``), or dropped:
     a non-finite value, or a value <= 0 on a log axis. Rows with a weight
-    that is not finite and >= 0 are counted apart and carry no weight. So
-    ``binned + outside + dropped`` equals the selected weight exactly (up to
-    float64 rounding of the sums), and the counts add up the same way."""
+    that is not finite and >= 0 are counted apart (``invalid_weight_rows``)
+    and carry no weight. So ``binned + outside + dropped`` equals the
+    selected weight (up to float64 rounding of the sums), and
+    ``binned + outside + dropped + invalid_weight`` the selected rows."""
     for bins in (x_bins, y_bins):
         if not 4 <= bins <= 512:
             raise ValueError("A phase-diagram axis has between 4 and 512 bins.")
@@ -686,7 +709,7 @@ def phase_diagram(chunks: Chunks, *, x: str, y: str, x_log: bool, y_log: bool,
         xv, yv, w, good_w, placeable = prepare(chunk)
         invalid_weight_rows += int((~good_w).sum())
         w = np.where(good_w, w, 0.0)
-        tally["selected"][0] += int(good_w.sum())
+        tally["selected"][0] += int(good_w.size)
         tally["selected"][1] += float(w.sum())
         drop = good_w & ~placeable
         tally["dropped"][0] += int(drop.sum())

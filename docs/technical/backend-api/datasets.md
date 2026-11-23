@@ -410,10 +410,14 @@ centre search and the passes.
     than min(`min_particles`, max(100, 1 % of the selection)) particles
     remain. The default start is the periodic centre of mass (Bai & Breen
     2008), and the default initial radius is the largest distance from it.
-    A selection with fewer than 100 particles is refused. The search reads
-    the table out of core until the sphere holds at most 8 million
-    particles, then keeps those in memory, with the same result.
-- `centre.velocity`: radial velocities are measured against it. The default
+    Step 0 is the centre of the start sphere itself. A selection with fewer
+    than 100 particles, or a start sphere holding fewer than the minimum,
+    is refused. Out of core, the search keeps one bit per row for the
+    current sphere's members, so each step reads the table once. Once the
+    sphere holds at most 2 million particles, it keeps those in memory,
+    with the same result.
+- `centre.velocity`: radial velocities are measured against it. They are
+  peculiar velocities, without the Hubble flow. The default
   is the mass-weighted mean velocity inside a tenth of `r_max`, widened until
   it holds 1000 particles.
 - `r_max` defaults to the smallest of the largest distance, half the period,
@@ -437,7 +441,8 @@ The response has `profile`, `centre`, `units` and `provenance`.
   histogram per shell, refined once inside the quantile's bin, on log10 when
   the shell's values are positive and span more than a factor 100;
 - with velocities, `velocity`: `centre_velocity`, `centre_velocity_from`,
-  `mean_radial`, `mean_azimuthal`, `sigma_r`, `sigma_theta`, `sigma_phi`,
+  `mean_radial`, `mean_azimuthal` (over the particles with finite
+  velocities; the others still count in the mass and density), `sigma_r`, `sigma_theta`, `sigma_phi`,
   `sigma_1d` = sqrt((σ_r² + σ_θ² + σ_φ²)/3), each about its shell mean so
   that infall and rotation are not counted as dispersion, `beta` = 1 −
   (σ_θ² + σ_φ²)/(2σ_r²), and `sigma_cartesian_with_streaming`.
@@ -476,7 +481,9 @@ route as above.
 ```
 
 An axis `field` is a numeric column, or `radius` or `radial_velocity`, which
-need a `centre` (as for the profile).
+need a `centre` (as for the profile). With a `centre`, these two names take
+the place of table columns with the same name. Without one, a table column
+with that name is used.
 
 `min`/`max` give both ends of an axis range, or neither. Without them the
 range is the extent of the selection's placeable values.
@@ -488,9 +495,12 @@ Bins are [lo, hi), except the last, which holds its upper edge.
 - `counts` and `weights`, indexed [x][y];
 - `selected_rows` and `selected_weight`, `binned_*`, `outside_*` (outside a
   given range) and `dropped_*` (non-finite values, or values ≤ 0 on a log
-  axis). `binned + outside + dropped = selected`, for both rows and weight;
-- `invalid_weight_rows`: rows whose weight is not finite and ≥ 0. They are
-  counted apart and carry no weight.
+  axis);
+- `invalid_weight_rows`: rows whose weight is not finite and ≥ 0. They carry
+  no weight.
+
+The totals close: `binned + outside + dropped` equals the selected weight,
+and `binned + outside + dropped + invalid_weight` equals the selected rows.
 
 `units` gives `x`, `y`, `weight` and `physical`. `centre` and `provenance` are
 as for the profile.

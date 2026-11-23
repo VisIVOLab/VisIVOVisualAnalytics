@@ -220,3 +220,66 @@ async def test_a_target_row_is_a_centre(client, auth_headers, tmp_path):
     assert out["valid"], out["error"]
     assert out["centre"]["centre"] == pytest.approx([1.0, 500.0, 499.0])
     assert out["centre"]["target_row"] == 1
+
+
+@pytest.mark.asyncio
+async def test_radius_axis_with_a_centre_velocity_and_a_centre_outside_a_box(
+        client, auth_headers, tmp_path):
+    pos, vel, mass = _halo(seed=26)
+    vbt = await _open(client, auth_headers, _vbt(tmp_path, pos, vel, mass), "vbt")
+    out = (await client.post("/v1/catalogue/phase_diagram", json={
+        "dataset_id": vbt, "period": BOX, "weight_field": "mass",
+        "x": {"field": "radius", "scale": "log", "bins": 8}, "y": {"field": "mass", "bins": 8},
+        "centre": {"mode": "point", "point": [0.0, 500.0, 500.0], "velocity": [0, 0, 0]}},
+        headers=auth_headers)).json()
+    assert out["valid"], out["error"]
+    box = [{"op": "inside", "box": {"fields": ["x", "y", "z"], "min": [10, 450, 450],
+                                    "max": [60, 550, 550], "period": 0}}]
+    prof = (await client.post("/v1/catalogue/profile", json={
+        "dataset_id": vbt, "period": 0, "filters": box, "bins": 6,
+        "centre": {"mode": "point", "point": [100.0, 500.0, 500.0]}},
+        headers=auth_headers)).json()
+    assert prof["valid"], prof["error"]
+    assert prof["profile"]["complete_radius"] == 0.0
+    assert not any(prof["profile"]["complete"])
+    bad = (await client.post("/v1/catalogue/profile", json={
+        "dataset_id": vbt, "centre": {"mode": "point", "point": [0, 500, 500],
+                                      "velocity": [0, 0]}}, headers=auth_headers)).json()
+    assert not bad["valid"] and "three finite" in bad["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_task_gives_its_slot_back(client, auth_headers, tmp_path, monkeypatch):
+    from app.routers import particle_profiles as routes
+    pos, vel, mass = _halo(seed=27)
+    vbt = await _open(client, auth_headers, _vbt(tmp_path, pos, vel, mass), "vbt")
+    gate, release = threading.Event(), threading.Event()
+    real = routes._selection_chunks
+
+    def slow(entry, filters, columns):
+        chunks = real(entry, filters, columns)
+
+        def gated():
+            for item in chunks():
+                gate.set()
+                release.wait(5)
+                yield item
+        return gated
+    monkeypatch.setattr(routes, "_selection_chunks", slow)
+    first = (await client.post("/v1/tasks/catalogue_profile",
+                               json={"dataset_id": vbt, "period": BOX},
+                               headers=auth_headers)).json()
+    await asyncio.to_thread(gate.wait, 5)
+    await client.delete(f"/v1/tasks/{first['task_id']}", headers=auth_headers)
+    release.set()
+    monkeypatch.setattr(routes, "_selection_chunks", real)
+    for _ in range(100):
+        again = await client.post("/v1/tasks/catalogue_profile",
+                                  json={"dataset_id": vbt, "period": BOX, "bins": 6},
+                                  headers=auth_headers)
+        if again.status_code == 200:
+            break
+        await asyncio.sleep(0.05)
+    assert again.status_code == 200
+    status = await _wait(client, auth_headers, again.json()["task_id"])
+    assert status["status"] == "completed" and status["result"]["valid"]

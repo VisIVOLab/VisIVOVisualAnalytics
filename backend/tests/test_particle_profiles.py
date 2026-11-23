@@ -208,8 +208,8 @@ def test_phase_diagram_conserves_mass_and_reports_what_it_drops():
                             x_log=True, y_log=True, x_bins=32, y_bins=16, weight_field="mass")
         assert out["binned_weight"] + out["outside_weight"] + out["dropped_weight"] == \
             pytest.approx(out["selected_weight"], rel=1e-12)
-        assert out["binned_rows"] + out["outside_rows"] + out["dropped_rows"] == \
-            out["selected_rows"]
+        assert out["binned_rows"] + out["outside_rows"] + out["dropped_rows"] + \
+            out["invalid_weight_rows"] == out["selected_rows"] == len(table["mass"])
         assert out["dropped_rows"] == 3 and out["outside_rows"] == 0
         assert out["invalid_weight_rows"] == 1
         good = np.isfinite(table["mass"])
@@ -232,6 +232,13 @@ def test_phase_diagram_of_radius_and_radial_velocity():
                         derive=geometry.derive)
     assert out["binned_weight"] + out["dropped_weight"] + out["outside_weight"] == \
         pytest.approx(1.0, rel=1e-12)
+    v = np.column_stack([table["vx"], table["vy"], table["vz"]])
+    delta = np.column_stack([table["x"], table["y"], table["z"]]) - 1.0
+    r = np.sqrt(np.sum(delta * delta, axis=1))
+    v_r = np.sum(v * delta, axis=1) / r
+    want, _, _ = np.histogram2d(r, v_r, bins=[out["x_edges"], out["y_edges"]],
+                                weights=table["mass"])
+    np.testing.assert_allclose(out["weights"], want, rtol=1e-9, atol=1e-12)
 
 
 def test_a_profile_can_be_cancelled_between_chunks():
@@ -249,3 +256,53 @@ def test_too_small_a_selection_has_no_centre():
     table, _, _ = _sis(n=50)
     with pytest.raises(ValueError, match="at least 100"):
         shrinking_sphere_centre(_chunks(table), POS, "mass", [None] * 3)
+
+
+def test_a_start_sphere_with_too_few_particles_is_refused():
+    table, _, _ = _sis(n=20_000)
+    with pytest.raises(ValueError, match="start sphere"):
+        shrinking_sphere_centre(_chunks(table), POS, "mass", [None] * 3,
+                                start=(3.0, -2.0, 0.5), initial_radius=0.001)
+
+
+def test_the_first_step_is_the_centre_of_the_start_sphere():
+    rng = np.random.default_rng(15)
+    pos = _directions(rng, 150)
+    table = {"x": pos[:, 0], "y": pos[:, 1], "z": pos[:, 2], "mass": np.ones(150)}
+    found = shrinking_sphere_centre(_chunks(table), POS, "mass", [None] * 3,
+                                    start=(0.5, 0.0, 0.0), initial_radius=1.6, shrink=0.5)
+    assert found["steps"] == 1 and found["particles_inside"] == 150
+    np.testing.assert_allclose(found["centre"], pos.mean(axis=0), atol=1e-12)
+
+
+def test_non_finite_velocities_do_not_change_the_density():
+    table, _, _ = _sis(n=50_000, centre=(0.0, 0.0, 0.0), sigma=1.0, seed=16)
+    common = dict(pos_fields=POS, mass_field="mass", columns=[], centre=(0, 0, 0),
+                  periods=[None] * 3, r_min=0.05, r_max=1.0, bins=6)
+    plain = radial_profile(_chunks(table), vel_fields=[], **common)
+    table["vx"][::7] = np.nan
+    moving = radial_profile(_chunks(table), vel_fields=VEL,
+                            centre_velocity_value=(0.0, 0.0, 0.0), **common)
+    assert moving["count"] == plain["count"]
+    np.testing.assert_allclose(moving["density"], plain["density"], rtol=1e-12)
+    assert all(abs(s - 1.0) < 0.05 for s in moving["velocity"]["sigma_1d"])
+
+
+def test_the_default_r_max_keeps_the_farthest_particle():
+    table, _, _ = _sis(n=5_000, centre=(0.0, 0.0, 0.0))
+    prof = radial_profile(_chunks(table), pos_fields=POS, mass_field="mass", vel_fields=[],
+                          columns=[], centre=(0, 0, 0), periods=[None] * 3, bins=8)
+    assert prof["outside_r_max"]["count"] == 0
+    assert prof["enclosed_mass"][-1] == pytest.approx(1.0, rel=1e-12)
+
+
+def test_the_default_centre_velocity_recovers_a_bulk_motion():
+    table, _, _ = _sis(n=50_000, centre=(0.0, 0.0, 0.0), sigma=1.0, seed=17)
+    for name, bulk in zip(VEL, (30.0, -20.0, 5.0)):
+        table[name] = table[name] + bulk
+    prof = radial_profile(_chunks(table, 9_000), pos_fields=POS, mass_field="mass",
+                          vel_fields=VEL, columns=[], centre=(0, 0, 0), periods=[None] * 3,
+                          r_min=0.05, r_max=1.0, bins=6)
+    found = prof["velocity"]["centre_velocity"]
+    np.testing.assert_allclose(found, [30.0, -20.0, 5.0], atol=5.0 / np.sqrt(1000))
+    assert prof["velocity"]["centre_velocity_from"]["particles"] >= 1000
