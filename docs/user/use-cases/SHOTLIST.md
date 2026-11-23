@@ -131,6 +131,17 @@ Local backend. `volumesnap63.bin` from `DemoData/`; the moment and its FITS expo
 | `11-cosmology-3.png` | Same window after typing 0.02 in *Fit k from* and 0.2 in *to* (Enter after each): the bins below 0.02 and above 0.2 grey, the line through the middle range, the slope line *Slope n = -1.200 ± 0.034 (P ∝ kⁿ) over k 0.02118–0.1848, 26 bins, each weighted by 1/σ² of log P (χ²/dof = 1.36)*. Capture the window only. |
 | `11-cosmology-4.png` | *Tools ▸ Cosmology Calculator…* from the main window, *Model* WMAP9, redshifts `0.1, 0.5, 1, 2, 3`, after *Compute*: five rows, D_C 422.982 at z = 0.1 and 6503.902 at z = 3, D_L and *Proper scale (kpc/arcsec)* filled, the D_A, lookback and age columns empty. Widen the dialog until every column header reads in full. Capture the dialog only. |
 
+## 12-dust-clumps-sed.md
+
+Image viewer on `vlkb-cutout_2023-09-08_04-44-11_833602_continuum-higal_mosaic_mosaic_wgls_m030039_PSW.fits`, local backend with network access (the VLKB catalogue is queried from the desktop). Shots 2 to 4 are the SED window of *HIGAL_FT_39.935089+0.135547*; capture the window only, enlarged to about 1400 × 940 so that the table and the plot both show.
+
+| File | What must be on screen |
+|---|---|
+| `12-dust-clumps-sed-1.png` | Image viewer, 1400 × 1000, the 250 µm cutout after *Tools ▸ Catalogue ▸ Overlay VLKB Compact Sources* and one click on the image: the white band-merged ellipses of the 70 sources, the catalogue table under the image with the *HIGAL_FT_39.935089+0.135547 (Band-merged)* row selected and expanded to its per-band children, the source highlighted on the image, and *Inspector ▸ Parameters* showing the band check boxes (*Band-merged* ticked). |
+| `12-dust-clumps-sed-2.png` | The SED window on the *Photometry* tab, no fit yet: *Fit λ ≥* 160.0 µm, *Scale 350/500 µm to the 250 µm source size* unticked, the table scrolled to its end so that the 70 µm row (unticked) and the four ticked rows 160 (25.53 Jy), 250 (16.89), 350 (7.4) and 500 µm (3.152) show, and the plot with *Log axes* on showing the four filled points and the faint hollow ones. The status line reads *4 band(s) selected, 160–500 µm · no fit yet*. |
+| `12-dust-clumps-sed-3.png` | Same window after typing 11850 in *Distance* (*Fit* tab) and pressing *Fit greybody*, on the *Results* tab: *Mass (M☉)* 652.02, *Temperature (K)* 18.528, β 2, *L, greybody only (L☉)* 2540.2, *L_bol, observed + greybody (L☉)* 4278.1, χ² / χ²ᵣ (dof) 6.8979 / 3.449 (2); the greybody curve through the four points, with the y range following the data. |
+| `12-dust-clumps-sed-4.png` | Same window after ticking *Scale 350/500 µm to the 250 µm source size* (*Photometry* tab) and pressing *Fit greybody* again at 11850 pc, on the *Results* tab: *Mass (M☉)* 476.13, *Temperature (K)* 19.949, *L, greybody only (L☉)* 2890, *L_bol, observed + greybody (L☉)* 4235, χ² / χ²ᵣ (dof) 5.9456 / 2.9728 (2); the log shows *Scaled to the 250 µm size (21.9″ deconvolved): 350 µm × 0.892, 500 µm × 0.811*. |
+
 ## 13-molecular-cloud.md
 
 Local backend with network access. Before the shots, save the `chimps_g40.reg` file of the page in a folder of your own and fetch the C¹⁸O cutout from the *VLKB* tab as in step 2 (the backend downloads it; nothing is written to `DemoData/`). The ¹³CO cube is `vlkb-cutout_2019-04-11_13-06-35_409523_CHIMPS_CHIMPS_13CO_40p00+0p33.fits` from `DemoData/`.
