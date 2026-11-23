@@ -347,25 +347,32 @@ def test_rotation_about_any_axis_is_not_dispersion(axis):
     assert np.all(np.abs(mean_phi - 0.5) <= 5 / np.sqrt(counts))
 
 
-def test_a_moving_halo_in_a_background_keeps_its_own_centre_velocity():
+def test_a_moving_halo_in_a_heavy_surrounding_keeps_its_own_centre_velocity():
+    """A halo moving at +3 sigma inside a shell of 100 times its mass at
+    rest, profiled out to 50: a centre velocity averaged over a tenth of the
+    outer radius (5) would be the shell's, near 0, and every sigma_1d about
+    2; the smallest sphere holding 1000 particles keeps the halo's."""
     rng = np.random.default_rng(19)
-    box = 100.0
-    halo, _, _ = _sis(n=20_000, centre=(50.0, 50.0, 50.0), sigma=1.0, seed=19)
-    for name in VEL:
-        halo[name] = halo[name] + (3.0 if name == "vx" else 0.0)
-    m = 200_000
-    bg = rng.uniform(0.0, box, (m, 3))
+    halo, _, _ = _sis(n=20_000, centre=(0.0, 0.0, 0.0), sigma=1.0, seed=19)
+    halo["mass"] = np.ones(20_000)
+    halo["vx"] = halo["vx"] + 3.0
+    m = 20_000
+    r = np.cbrt(rng.uniform(8.0, 216.0, m))
+    shell = r[:, None] * _directions(rng, m)
     bv = rng.normal(0.0, 1.0, (m, 3))
     table = {k: np.concatenate([halo[k], col]) for k, col in
-             (("x", bg[:, 0]), ("y", bg[:, 1]), ("z", bg[:, 2]), ("vx", bv[:, 0]),
-              ("vy", bv[:, 1]), ("vz", bv[:, 2]), ("mass", np.full(m, 1.0 / 20_000)))}
-    prof = radial_profile(_chunks(table, 50_000), pos_fields=POS, mass_field="mass",
-                          vel_fields=VEL, columns=[], centre=(50.0, 50.0, 50.0),
-                          periods=[box] * 3, r_min=0.05, r_max=1.0, bins=6)
+             (("x", shell[:, 0]), ("y", shell[:, 1]), ("z", shell[:, 2]), ("vx", bv[:, 0]),
+              ("vy", bv[:, 1]), ("vz", bv[:, 2]), ("mass", np.full(m, 100.0 * 20_000 / m)))}
+    prof = radial_profile(_chunks(table, 7_000), pos_fields=POS, mass_field="mass",
+                          vel_fields=VEL, columns=[], centre=(0.0, 0.0, 0.0),
+                          periods=[None] * 3, r_min=0.05, r_max=50.0, bins=16)
     vel = prof["velocity"]
     assert vel["centre_velocity"][0] == pytest.approx(3.0, abs=5 / np.sqrt(1000))
-    counts = np.array(prof["count"])
-    assert np.all(np.abs(np.array(vel["sigma_1d"]) - 1.0) <= 5 / np.sqrt(6 * counts))
+    inner = np.array(prof["r_hi"]) <= 1.0
+    counts = np.array(prof["count"])[inner]
+    sigma = np.array(vel["sigma_1d"], dtype=float)[inner]
+    assert inner.sum() >= 3
+    assert np.all(np.abs(sigma - 1.0) <= 5 / np.sqrt(6 * counts))
 
 
 def test_a_nan_velocity_component_leaves_the_dispersions_unbiased():
