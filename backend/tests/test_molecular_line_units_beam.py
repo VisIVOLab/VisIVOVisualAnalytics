@@ -214,3 +214,36 @@ async def test_map_math_route_refuses_disjoint_maps(client, auth_headers, tmp_pa
         "dataset_id": oa["dataset_id"], "op": "add", "dataset_id_b": ob["dataset_id"]})).json()
     assert not body["valid"] and "do not overlap" in body["error"]
     assert set(get_exports_dir().iterdir()) == before
+
+
+def test_data_without_sky_axes_has_no_beam_to_set(tmp_path):
+    data = np.zeros((4, 4, 4), np.float32)
+    h = fits.Header()
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "X", "Y", "Z"
+    path = tmp_path / "field.fits"
+    fits.PrimaryHDU(data, header=h).writeto(path)
+    assert ScientificFitsDataset(str(path)).beam_source == "not_applicable"
+    bare = tmp_path / "nowcs.fits"
+    fits.PrimaryHDU(data).writeto(bare)
+    assert ScientificFitsDataset(str(bare)).beam_source == "not_applicable"
+    sky = _cube(tmp_path / "sky.fits")
+    assert ScientificFitsDataset(sky).beam_source == "none"
+    h["CTYPE1"], h["CTYPE2"] = "RA", "DEC"
+    plain = tmp_path / "plain.fits"
+    fits.PrimaryHDU(data, header=h).writeto(plain)
+    assert ScientificFitsDataset(str(plain)).beam_source == "none"
+
+
+@pytest.mark.asyncio
+async def test_beam_route_refuses_non_sky_data(client, auth_headers, tmp_path):
+    h = fits.Header()
+    h["CTYPE1"], h["CTYPE2"], h["CTYPE3"] = "X", "Y", "Z"
+    path = tmp_path / "field.fits"
+    fits.PrimaryHDU(np.zeros((4, 4, 4), np.float32), header=h).writeto(path)
+    opened = await _open(client, auth_headers, path)
+    assert opened["beam_source"] == "not_applicable"
+    headers = {**auth_headers, "X-Visivo-Session": opened["session_id"]}
+    body = (await client.post("/v1/datasets/beam", headers=headers, json={
+        "dataset_id": opened["dataset_id"], "major_arcsec": 15.0})).json()
+    assert not body["valid"] and "no celestial axes" in body["error"]
+    assert body["beam_source"] == "not_applicable"

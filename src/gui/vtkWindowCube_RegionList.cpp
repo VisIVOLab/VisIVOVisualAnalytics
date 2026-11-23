@@ -209,7 +209,9 @@ vtkWindowCube::regionPlacement(vtkRenderWindow *win) const
         image = m_paneViews[slot]->imageData();
         if (it->hasRegionOrigin)
             crop = std::array<int, 2>{ it->regionOrigin.x(), it->regionOrigin.y() };
-        skyMap = true;
+        // The channels pane holds the slice's own image, on the plane's frame even when a wide
+        // channel is strided (issue #381).
+        skyMap = m_slots[slot].view.productId != channelMirrorId();
     }
     if (!image)
         return std::nullopt;

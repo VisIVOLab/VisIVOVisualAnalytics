@@ -29,4 +29,14 @@ private slots:
     void drawnRadiiAreNeverReadAsAnAngularSize();
     void aWavelengthUnitSuffixIsConvertedNotIgnored();
     void theRepresentativeSizeIsTheMedianOfTheUsedBands();
+    void wiseAndTwoMassColumnsAreReadAtTheirRealWavelengths();
+    void aVlkbGroupTakesItsCounterpartFluxesFromTheirOwnBand();
+    void msxErrorsArePercentOfTheFlux();
+    void theDefaultFitStartsAt160Micron();
+    void theDefaultFitFallsBackToEveryBandWhenTooFewAreLeft();
+    void theCatalogueDistanceIsReadButInParsecs();
+    void scalingTo250ReproducesTheCatalogueFluxes();
+    void scalingTo250NeedsA250Size();
+    void scalingTo250NeverMixesDeconvolvedAndObservedSizes();
+    void observedPlusGreybodyLuminosityFollowsTheCatalogueRecipe();
 };

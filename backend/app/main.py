@@ -56,6 +56,7 @@ from .routers import (
     sed,
     simulations,
     particle_render,
+    particle_profiles,
     volume_render,
     vr_layers,
     share,
@@ -464,6 +465,7 @@ app.include_router(assistant.router, dependencies=[_auth])
 app.include_router(sed.router, dependencies=[_auth])
 app.include_router(simulations.router, dependencies=[_auth])
 app.include_router(particle_render.router, dependencies=[_auth])
+app.include_router(particle_profiles.router, dependencies=[_auth])
 app.include_router(volume_render.router, dependencies=[_auth])
 app.include_router(vr_layers.router, dependencies=[_auth])
 # Isosurfaces of a cube's field, for the headset and for export (issue #370).

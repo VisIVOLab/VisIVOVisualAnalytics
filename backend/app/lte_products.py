@@ -207,7 +207,8 @@ def read_cube(path: str, v_min: float, v_max: float, rms_chan: float | None,
     if unit and unit.upper() != "K":
         raise ValueError(f"{path!r} is in {unit}, not K: LTE needs brightness temperatures.")
     wcs, _ = _celestial_header(header)
-    notes = [f"integrated over channels {c0}-{c1} ({vel[c0]:g} to {vel[c1]:g} km/s, "
+    notes = [f"integrated over channels {c0 + 1}-{c1 + 1} of {depth} "
+             f"({vel[c0]:g} to {vel[c1]:g} km/s, "
              f"{axis['convention']})"]
     if need_noise:
         notes.append("noise: user rms per channel, channels independent" if rms_chan is not None
@@ -280,6 +281,26 @@ def _pixel_scales_deg(wcs: WCS) -> tuple[float, float] | None:
     return float(s[0]), float(s[1])
 
 
+def _pixels_on(own_wcs: WCS, ref_wcs: WCS, xs: np.ndarray, ys: np.ndarray
+               ) -> tuple[np.ndarray, np.ndarray]:
+    """Nearest pixels (x, y) of ``own_wcs`` at the sky positions of the
+    reference pixels (xs, ys). The positions go through SkyCoord, never through
+    raw world values: the two grids may order their celestial axes differently
+    (a cutout with GLAT on axis 1 and GLON on axis 2), and may be in different
+    frames (Galactic and ICRS), which astropy converts. Positions that fall
+    off the sky of ``own_wcs`` are dropped."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sky = ref_wcs.pixel_to_world(np.asarray(xs, dtype=float), np.asarray(ys, dtype=float))
+            px, py = own_wcs.world_to_pixel(sky)
+    except Exception as exc:  # noqa: BLE001 — incompatible frames, bad WCS
+        raise ValueError(f"The region cannot be placed on the cube's own sky grid: {exc}.") from None
+    px, py = np.asarray(px, dtype=np.float64), np.asarray(py, dtype=np.float64)
+    keep = np.isfinite(px) & np.isfinite(py)
+    return np.rint(px[keep]).astype(int), np.rint(py[keep]).astype(int)
+
+
 def _region_peak(line: _Line2D, ref_wcs: WCS, ys: np.ndarray, xs: np.ndarray) -> float:
     """Peak T_A* of the region's mean spectrum (a cube), or the mean of a peak
     map. The region's pixels (on the reference grid) are found on the cube's
@@ -293,11 +314,7 @@ def _region_peak(line: _Line2D, ref_wcs: WCS, ys: np.ndarray, xs: np.ndarray) ->
     if line.own_wcs is ref_wcs or not (ref_wcs.has_celestial and line.own_wcs.has_celestial):
         oy, ox = ys, xs
     else:
-        world = ref_wcs.pixel_to_world_values(xs.astype(float), ys.astype(float))
-        px, py = (np.asarray(v, dtype=np.float64) for v in
-                  line.own_wcs.world_to_pixel_values(*world))
-        keep = np.isfinite(px) & np.isfinite(py)
-        ox, oy = np.rint(px[keep]).astype(int), np.rint(py[keep]).astype(int)
+        ox, oy = _pixels_on(line.own_wcs, ref_wcs, xs, ys)
     ds = ScientificFitsDataset(line.path)
     hdul, raw = ds.open_memmap()
     try:
@@ -433,7 +450,11 @@ def compute_lte(req: dict[str, Any], *, path13: str | None = None, path18: str |
 
     d13 = load(path13, kinds.get("13co"), req.get("rms_13co"), "integrated")
     d18 = load(path18, kinds.get("c18o"), req.get("rms_c18o"), "integrated")
-    d12 = load(path12, kinds.get("12co"), None, "peak", need_noise=False) if path12 else None
+    unused12 = bool(path12) and req.get("t_ex_k") is not None
+    d12 = (load(path12, kinds.get("12co"), None, "peak", need_noise=False)
+           if path12 and not unused12 else None)
+    if unused12:
+        warnings_out.append("12CO was given but not used: T_ex was typed.")
     d18, moved18 = _align(d18, d13)
     if moved18:
         warnings_out.append("C18O was reprojected onto the 13CO grid (bilinear).")
@@ -449,10 +470,6 @@ def compute_lte(req: dict[str, Any], *, path13: str | None = None, path18: str |
     eta13, src13 = eta_mb_for(d13.header, req.get("eta_mb_13co"), "13CO")
     eta18, src18 = eta_mb_for(d18.header, req.get("eta_mb_c18o"), "C18O")
     assumptions["eta_mb"] = {"13CO": [eta13, src13], "C18O": [eta18, src18]}
-    eta12 = None
-    if d12 is not None:
-        eta12, src12 = eta_mb_for(d12.header, req.get("eta_mb_12co"), "12CO")
-        assumptions["eta_mb"]["12CO"] = [eta12, src12]
     w13, s13 = d13.w / eta13, d13.sigma_w / eta13
     w18, s18 = d18.w / eta18, d18.sigma_w / eta18
     assumptions["inputs"] = {"13CO": d13.notes, "C18O": d18.notes}
@@ -467,6 +484,12 @@ def compute_lte(req: dict[str, Any], *, path13: str | None = None, path18: str |
     assumptions["x_ratio"] = [x, x_src]
 
     tex_mode = _tex_mode(req, d12, d13, d18)
+    # η_mb of 12CO only when its peak gives T_ex: a 12CO dataset that is not
+    # used (T_ex typed) needs no efficiency.
+    eta12 = None
+    if tex_mode == "12co":
+        eta12, src12 = eta_mb_for(d12.header, req.get("eta_mb_12co"), "12CO")
+        assumptions["eta_mb"]["12CO"] = [eta12, src12]
     if tex_mode == "user":
         t_user = _user_tex(req)
         tex = np.full(shape, t_user)

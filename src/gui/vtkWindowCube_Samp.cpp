@@ -18,6 +18,7 @@
 #include "app/SampSkyPosition.h"
 
 #include <QAction>
+#include <algorithm>
 #include <QMenu>
 #include <QPointer>
 #include <QStatusBar>
@@ -146,10 +147,20 @@ void vtkWindowCube::sampReleaseIn(vtkRenderWindow *win, vtkImageData *imageData)
     imageData->GetSpacing(spacing);
     const double voxelX = extent[0] + (world[0] - origin[0]) / spacing[0];
     const double voxelY = extent[2] + (world[1] - origin[1]) / spacing[1];
-    if (std::lround(voxelX) < extent[0] || std::lround(voxelX) > extent[1]
-        || std::lround(voxelY) < extent[2] || std::lround(voxelY) > extent[3])
-        return;   // off the map
-    this->m_sampClickPixel = { voxelX, voxelY };
+    // On the slice the samples keep the plane's frame (issue #381): the world point is the pixel,
+    // and a strided channel's plane reaches up to stride - 1 pixels past its last sample.
+    if (imageData == this->remoteSliceDisplaySource->GetOutputDataObject(0)) {
+        const double w = std::max(this->m_displayedSliceGrid[0], extent[1] - extent[0] + 1);
+        const double h = std::max(this->m_displayedSliceGrid[1], extent[3] - extent[2] + 1);
+        if (world[0] < -0.5 || world[0] > w - 0.5 || world[1] < -0.5 || world[1] > h - 0.5)
+            return;   // off the map
+        this->m_sampClickPixel = { world[0], world[1] };
+    } else {
+        if (std::lround(voxelX) < extent[0] || std::lround(voxelX) > extent[1]
+            || std::lround(voxelY) < extent[2] || std::lround(voxelY) > extent[3])
+            return;   // off the map
+        this->m_sampClickPixel = { voxelX, voxelY };
+    }
     this->m_sampClickChannel = this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
     this->m_sampHasClick = true;
     if (this->m_sampBroadcastClicks)
