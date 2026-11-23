@@ -663,6 +663,94 @@ class CatalogueDiagnosticsResponse(BaseModel):
     selection: list[str] = []
 
 
+class ProfileCentre(BaseModel):
+    """Where a radial profile or a radius axis is measured from (issue #426).
+
+    ``point``: the three coordinates in ``point``. ``target``: the position
+    columns of row ``target_row`` of another open catalogue (a SubFind group
+    or subhalo; same coordinate units as the particles). ``shrinking_sphere``:
+    the mass-weighted shrinking-sphere centre of the selection (Power et al.
+    2003), from ``start`` (default: the selection's periodic centre of mass)
+    and ``initial_radius`` (default: its largest distance from the start),
+    each sphere ``shrink_factor`` times the last, stopping before fewer than
+    min(``min_particles``, max(100, 1 % of the selection)) particles remain.
+    ``velocity``: the centre velocity radial velocities are taken against;
+    by default the mass-weighted mean velocity of the particles within a
+    tenth of the outer radius (at least 1000 of them)."""
+    mode: Literal["point", "target", "shrinking_sphere"] = "shrinking_sphere"
+    point: list[float] | None = None
+    target_dataset_id: str = ""
+    target_row: int | None = None
+    start: list[float] | None = None
+    initial_radius: float | None = None
+    shrink_factor: float = Field(default=0.975, ge=0.5, lt=1.0)
+    min_particles: int = Field(default=1000, ge=10)
+    velocity: list[float] | None = None
+
+
+class ParticleProfileRequest(BaseModel):
+    dataset_id: str
+    filters: list[TabularFilter] = []
+    position_fields: list[str] = ["x", "y", "z"]
+    #: None: vx, vy, vz when the table has them; []: no velocities.
+    velocity_fields: list[str] | None = None
+    #: None: "mass" when the table has it; "": every particle weighs 1.
+    mass_field: str | None = None
+    #: Numeric columns profiled per shell, and "radial_velocity".
+    columns: list[str] = []
+    centre: ProfileCentre = ProfileCentre()
+    r_min: float | None = None
+    r_max: float | None = None
+    bins: int = Field(default=32, ge=4, le=256)
+    #: Polar axis of the polar and azimuthal velocity components; None: the
+    #: angular momentum of the particles the centre velocity is taken from.
+    axis: list[float] | None = None
+    #: None: the dataset's own box (a periodic Gadget snapshot); 0: no
+    #: wrapping; a length: that period on the three position fields.
+    period: float | None = None
+
+
+class ParticleProfileResponse(BaseModel):
+    valid: bool
+    error: str
+    profile: dict[str, Any] = {}
+    centre: dict[str, Any] = {}
+    units: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+
+
+class PhaseAxis(BaseModel):
+    #: A numeric column, or "radius" / "radial_velocity" (needs a centre).
+    field: str
+    scale: Literal["linear", "log"] = "linear"
+    bins: int = Field(default=64, ge=4, le=512)
+    min: float | None = None
+    max: float | None = None
+
+
+class PhaseDiagramRequest(BaseModel):
+    dataset_id: str
+    filters: list[TabularFilter] = []
+    x: PhaseAxis
+    y: PhaseAxis
+    #: "": every row weighs 1 (a count histogram).
+    weight_field: str = ""
+    position_fields: list[str] = ["x", "y", "z"]
+    velocity_fields: list[str] | None = None
+    mass_field: str | None = None
+    centre: ProfileCentre | None = None
+    period: float | None = None
+
+
+class PhaseDiagramResponse(BaseModel):
+    valid: bool
+    error: str
+    diagram: dict[str, Any] = {}
+    centre: dict[str, Any] = {}
+    units: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+
+
 class VbtOpenRequest(BaseModel):
     path: str
     format: str = ""
