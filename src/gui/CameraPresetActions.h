@@ -69,8 +69,22 @@ inline QMenu *installCameraPresetMenu(
         QObject::connect(action, &QAction::triggered, window,
                          [apply, preset]() { apply(preset.azimuth, preset.elevation); });
     }
-    QAction *before = window->menuBar()->actions().isEmpty()
-            ? nullptr : window->menuBar()->actions().first();
+    // Right after View (the camera is a way of viewing), else before Window or
+    // Help, else last: never ahead of File, where the platform expects it.
+    const QList<QAction *> bar = window->menuBar()->actions();
+    const auto title = [](const QAction *action) {
+        return action->text().remove(QLatin1Char('&')).trimmed();
+    };
+    QAction *before = nullptr;
+    for (qsizetype i = 0; i < bar.size(); ++i) {
+        if (title(bar[i]) == QLatin1String("View")) {
+            before = i + 1 < bar.size() ? bar[i + 1] : nullptr;
+            break;
+        }
+        if (!before && (title(bar[i]) == QLatin1String("Window")
+                        || title(bar[i]) == QLatin1String("Help")))
+            before = bar[i];
+    }
     window->menuBar()->insertMenu(before, menu);
     return menu;
 }
