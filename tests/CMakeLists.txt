@@ -154,6 +154,8 @@ add_executable(VisIVOTests
     test_ray_voxel_pick.cpp
     TestSedBuilder.h
     test_sed_builder.cpp
+    TestSedPlotStyle.h
+    test_sed_plot_style.cpp
     TestMolecularLineClient.h
     test_molecular_line_client.cpp
     TestLteCoRequest.h

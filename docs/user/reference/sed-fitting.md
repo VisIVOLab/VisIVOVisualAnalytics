@@ -84,12 +84,19 @@ Under the plot:
   catalogue flux and the scale factor beside it), the model flux at each band
   and the fit parameters.
 
-On the plot, filled points are in the fit, hollow ones are not; a click fits
-that point alone at its wavelength, ⌘/Ctrl-click adds a point. The plot and
-the *Photometry* table always agree.
+On the plot, each survey has its own colour (2MASS, WISE, MSX, Spitzer IRAC
+and MIPS, Herschel PACS and SPIRE, other), named in the legend. Filled points
+with error bars are in the fit; hollow, fainter ones are not. A thin line joins
+the bands in the fit, skipping a band where two counterparts are both ticked.
+A click fits that point alone at its wavelength, ⌘/Ctrl-click adds a point. The
+plot and the *Photometry* table always agree.
 
-Upper limits (*UL*) are drawn as downward triangles. They are not in the χ²,
-but any model brighter than a limit is rejected.
+The axes cover the photometry: the flux axis runs from a decade below the
+faintest band to half a decade above the brightest, and the fitted curves are
+cut at the frame rather than stretching it.
+
+Upper limits (*UL*) are drawn as a bar with an arrow pointing down. They are
+not in the χ², but any model brighter than a limit is rejected.
 
 ## Optically thin model
 
