@@ -51,6 +51,13 @@ Hi-GAL catalogue of clump properties.
    dust. To try another limit, type it in *Fit λ ≥* and press *Tick these
    bands*; 0 ticks every band. A flux or error can be edited by double-click.
 
+   ```{figure} img/12-dust-clumps-sed-2.png
+   :alt: The SED window on the Photometry tab: every band in the plot, the four filled points at 160, 250, 350 and 500 micron, and the table scrolled to its last rows.
+   :width: 100%
+
+   The *Photometry* tab before any fit: four bands ticked, the others shown as hollow points.
+   ```
+
 5. In the *Fit* tab keep *Optically thin*, *κ(λ_ref)* 0.1 cm²/g at *λ_ref*
    300 µm (gas and dust, as in the catalogue), β fixed at 2 and *Apply PACS
    colour corrections*. Set *Distance* to 11850 pc; the window always starts
@@ -61,6 +68,13 @@ Hi-GAL catalogue of clump properties.
    The *L_bol* row adds the observed fluxes from 20 to 160 µm to the greybody
    beyond 160 µm, as Elia et al. (2017) do for a clump with a 70 µm detection.
    It appears only for sources that have one.
+
+   ```{figure} img/12-dust-clumps-sed-3.png
+   :alt: The SED window after the greybody fit at 11850 pc: the Results tab with mass, temperature and luminosities, and the fitted curve through the four filled points.
+   :width: 100%
+
+   The greybody fit of the first clump at 11850 pc, with the unscaled fluxes.
+   ```
 
 6. Repeat for the other two clumps with their distances.
 
@@ -88,6 +102,13 @@ of the *Photometry* tab, then press *Fit greybody* again at the same
 distance. The log under the results gives the factors: for the first clump,
 350 µm × 0.892 and 500 µm × 0.811 at a 250 µm size of 21.9″.
 
+```{figure} img/12-dust-clumps-sed-4.png
+:alt: The SED window after scaling the 350 and 500 micron fluxes to the 250 micron size: the Results tab with the new mass and temperature, and the log with the two scale factors.
+:width: 100%
+
+The same fit after ticking *Scale 350/500 µm to the 250 µm source size*.
+```
+
 | Clump | T (K) | M (M☉) | L (L☉) | χ²/dof |
 |---|---|---|---|---|
 | HIGALBM39.9345+0.1325 | 19.9 ± 0.1 | 476 ± 10 | 4235 | 3.0 |
@@ -97,9 +118,6 @@ distance. The log under the results gives the factors: for the first clump,
 Temperatures now agree with the catalogue within 0.2 K and masses within 4 %.
 The luminosities are within 1 % of the catalogue.
 
-<!-- Screenshot pending (see SHOTLIST.md): img/12-dust-clumps-sed-2.png -->
-<!-- Screenshot pending (see SHOTLIST.md): img/12-dust-clumps-sed-3.png -->
-<!-- Screenshot pending (see SHOTLIST.md): img/12-dust-clumps-sed-4.png -->
 
 ## Caveats
 
