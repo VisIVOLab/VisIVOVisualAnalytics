@@ -395,8 +395,10 @@ range). `DELETE /v1/tasks/{task_id}` stops it between two chunks (status
 
 For out-of-core particle tables the calculation is a bounded-memory two-pass
 scan over the full component. It is independent of the point-render sample and
-render budget. Non-finite field values are excluded; weighted calculations also
-exclude non-finite and negative weights. An unknown field, invalid range or
+render budget. Non-finite field values are excluded. A row whose weight is non-finite
+or negative weighs zero in the weighted mean, weight sum and histogram, and
+stays in the unweighted count, range, mean and standard deviation, which do
+not depend on the weight field. An unknown field, invalid range or
 population with no finite values returns `valid: false`.
 
 ### `POST /v1/catalogue/profile` and `POST /v1/tasks/catalogue_profile`
