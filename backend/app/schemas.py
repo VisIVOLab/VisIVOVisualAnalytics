@@ -134,6 +134,13 @@ class OpenDatasetResponse(BaseModel):
     beam_minor: float | None = None
     beam_pa: float | None = None
     beam_per_channel: bool = False   # a BEAMS table: one beam per channel (issue #401)
+    # "header", "user" (typed with /v1/datasets/beam, issue #416) or "none".
+    beam_source: str = ""
+    # The values' unit when BUNIT is missing (TEMPSCAL/BTYPE/LABEL); equals
+    # bunit when it is present, "" when nothing says. The note says where it
+    # came from.
+    intensity_unit: str = ""
+    intensity_unit_note: str = ""
     # Size-aware loading policy. Clients use ``recommended_load_mode``
     # to decide whether to auto-load full resolution or default to
     # preview-only. Threshold is configurable via

@@ -164,8 +164,18 @@ and `spectral_index`, and a `HISTORY` card names the operation (and a second
 one the reprojection, when there was one). The default
 file name is `<A stem>_<op>.fits`. Response (`ProductFitsResponse`):
 `valid`, `error`, `output_path`, `workspace_filename`, `width`, `height`,
-`range_min`, `range_max`, `info` (`{op, reprojected}`; `reprojected` is
-`true` when B was resampled onto A's grid).
+`range_min`, `range_max`, `info` (`{op, reprojected, overlap_fraction,
+warning}`; `reprojected` is `true` when B was resampled onto A's grid).
+
+**Overlap.** For a two-map operation, `overlap_fraction` is the fraction of
+A's finite pixels where B, on A's grid, is finite too (`null` for a one-map
+operation). Maps that do not overlap at all are refused (`valid: false`,
+"Maps A and B do not overlap…") and no file is written. A partial overlap is
+computed, and `warning` says how much of A is covered ("Maps A and B overlap
+on 42.0% of map A's pixels (…); the result is blank elsewhere."); it is empty
+otherwise. Any result with no finite pixel at all (for example a spectral
+index of two maps with no positive pixel in common) is refused the same way
+rather than written as a blank map.
 
 ### `POST /v1/products/mosaic`
 Reproject two or more images onto a common optimal celestial WCS and co-add
