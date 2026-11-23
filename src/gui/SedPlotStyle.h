@@ -2,8 +2,8 @@
 
 // SedPlotStyle.h
 // How the SED window draws the photometry: which survey a band belongs to,
-// the colour each survey gets in the light and dark themes, the axis ranges
-// and the line joining the bands in the fit.
+// the colour each survey gets in the light and dark themes, the axis ranges,
+// the links of the band-merged tree and the error bars on a log axis.
 //
 // No widgets and no QtGui, so it can be tested.
 
@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -33,7 +35,7 @@ inline constexpr Rgb kLightSurface{ 0xFF, 0xFF, 0xFF };
 inline constexpr Rgb kDarkSurface{ 0x09, 0x0F, 0x14 };
 
 /// Opacity of a band left out of the fit: still read, but behind the ones in it.
-inline constexpr double kUnusedAlpha = 0.55;
+inline constexpr double kUnusedAlpha = 0.8;
 
 enum class Family { TwoMass, Wise, Msx, SpitzerIrac, SpitzerMips, Pacs, Spire, Other };
 
@@ -234,32 +236,122 @@ inline AxisRange fluxRange(const std::vector<SedPoint> &points, bool logScale)
     return detail::padded(lo, hi, logScale, 10.0, std::sqrt(10.0), 0.08);
 }
 
-/// The line through the bands in the fit, in wavelength order. A band with two
-/// ticked counterparts has no single flux, so the line passes it by rather than
-/// jumping up and down between them; the markers still show both.
-inline std::vector<std::pair<double, double>> fitLine(const std::vector<SedPoint> &points)
+namespace detail {
+
+inline bool sameBand(double a, double b)
 {
-    std::vector<std::pair<double, double>> used;
-    for (const SedPoint &point : points) {
-        if (point.use && !point.upperLimit && std::isfinite(point.wavelengthUm)
-            && std::isfinite(point.fluxJy))
-            used.emplace_back(point.wavelengthUm, point.fluxJy);
+    return std::abs(a - b) <= 1e-3 * std::max(std::abs(a), std::abs(b));
+}
+
+}   // namespace detail
+
+/// A link of the band-merged tree, as indices into the points: from the
+/// shorter wavelength to the longer.
+struct Edge
+{
+    int from{ -1 };
+    int to{ -1 };
+    bool operator<(const Edge &other) const
+    {
+        return from != other.from ? from < other.from : to < other.to;
     }
-    std::stable_sort(used.begin(), used.end(),
-                     [](const auto &a, const auto &b) { return a.first < b.first; });
-    const auto sameBand = [](double a, double b) {
-        return std::abs(a - b) <= 1e-3 * std::max(std::abs(a), std::abs(b));
-    };
-    std::vector<std::pair<double, double>> line;
-    for (std::size_t i = 0; i < used.size();) {
+    bool operator==(const Edge &other) const { return from == other.from && to == other.to; }
+};
+
+/// The links of the band-merged tree. Each branch (a row of the VLKB SED view)
+/// carries one counterpart per band, and the legacy client chained them in
+/// wavelength order and drew every link once, however many rows shared it.
+/// So: per branch, the points on it in wavelength order, each joined to the
+/// next; a link shared by several branches appears once. Two points of one
+/// branch at the same wavelength are not joined (that would be a vertical jump
+/// between two measurements, not a link). Empty when no point carries a branch.
+inline std::vector<Edge> treeEdges(const std::vector<SedPoint> &points)
+{
+    std::map<int, std::vector<int>> members;
+    for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+        const SedPoint &point = points[static_cast<std::size_t>(i)];
+        if (!std::isfinite(point.wavelengthUm) || !std::isfinite(point.fluxJy))
+            continue;
+        for (int branch : point.branches) {
+            std::vector<int> &list = members[branch];
+            if (list.empty() || list.back() != i)
+                list.push_back(i);
+        }
+    }
+    std::set<Edge> edges;
+    for (auto &[branch, list] : members) {
+        std::stable_sort(list.begin(), list.end(), [&points](int a, int b) {
+            return points[static_cast<std::size_t>(a)].wavelengthUm
+                    < points[static_cast<std::size_t>(b)].wavelengthUm;
+        });
+        for (std::size_t k = 1; k < list.size(); ++k) {
+            const SedPoint &a = points[static_cast<std::size_t>(list[k - 1])];
+            const SedPoint &b = points[static_cast<std::size_t>(list[k])];
+            if (detail::sameBand(a.wavelengthUm, b.wavelengthUm))
+                continue;
+            edges.insert({ list[k - 1], list[k] });
+        }
+    }
+    return { edges.begin(), edges.end() };
+}
+
+/// One line through the SED, one point per band: the detection in the fit
+/// there, the brightest if several are, or the brightest of the band if none
+/// is. Used when the branches are collapsed, and when the catalogue gives no
+/// tree. Returns indices into the points, in wavelength order.
+inline std::vector<int> singleLine(const std::vector<SedPoint> &points)
+{
+    std::vector<int> order;
+    for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+        const SedPoint &point = points[static_cast<std::size_t>(i)];
+        if (!point.upperLimit && std::isfinite(point.wavelengthUm) && std::isfinite(point.fluxJy))
+            order.push_back(i);
+    }
+    std::stable_sort(order.begin(), order.end(), [&points](int a, int b) {
+        return points[static_cast<std::size_t>(a)].wavelengthUm
+                < points[static_cast<std::size_t>(b)].wavelengthUm;
+    });
+    std::vector<int> line;
+    for (std::size_t i = 0; i < order.size();) {
         std::size_t j = i + 1;
-        while (j < used.size() && sameBand(used[j].first, used[i].first))
+        while (j < order.size()
+               && detail::sameBand(points[static_cast<std::size_t>(order[j])].wavelengthUm,
+                                   points[static_cast<std::size_t>(order[i])].wavelengthUm))
             ++j;
-        if (j - i == 1)
-            line.push_back(used[i]);
+        int best = -1;
+        for (std::size_t k = i; k < j; ++k) {
+            const SedPoint &candidate = points[static_cast<std::size_t>(order[k])];
+            if (best < 0) {
+                best = order[k];
+                continue;
+            }
+            const SedPoint &current = points[static_cast<std::size_t>(best)];
+            if (candidate.use != current.use ? candidate.use
+                                             : candidate.fluxJy > current.fluxJy)
+                best = order[k];
+        }
+        line.push_back(best);
         i = j;
     }
     return line;
+}
+
+/// The lower arm of an error bar. On a log axis flux − σ can be zero or
+/// negative, which has no place on the axis: the arm then stops at `floor` (the
+/// bottom of the plot) and is flagged, so the plot can mark it as cut.
+struct LowerArm
+{
+    double length{ 0.0 };
+    bool clipped{ false };
+};
+
+inline LowerArm lowerErrorArm(double flux, double error, bool logScale, double floor)
+{
+    if (!(error > 0.0) || !std::isfinite(error))
+        return {};
+    if (!logScale || flux - error > floor)
+        return { error, false };
+    return { std::max(0.0, flux - floor), true };
 }
 
 }   // namespace visivo::SedPlot

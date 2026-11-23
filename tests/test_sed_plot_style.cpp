@@ -62,7 +62,7 @@ void TestSedPlotStyle::paletteReadsOnBothThemes()
             // A band out of the fit is drawn faded; it must still be seen.
             const double faded =
                     sp::contrastRatio(sp::blend(colour, sp::kUnusedAlpha, surface), surface);
-            QVERIFY2(faded >= 1.8, qPrintable(u"%1 %2 faded: %3"_s
+            QVERIFY2(faded >= 2.5, qPrintable(u"%1 %2 faded: %3"_s
                                                       .arg(sp::familyName(family), theme)
                                                       .arg(faded)));
         }
@@ -129,17 +129,105 @@ void TestSedPlotStyle::wavelengthRangeCoversTheBands()
     QVERIFY(log.upper > 500.0 && log.upper < 1000.0);
 }
 
-void TestSedPlotStyle::fitLineSkipsDuplicatedBands()
+void TestSedPlotStyle::treeLinksFollowTheBranches()
 {
-    // Two ticked counterparts at 250 µm: the line goes from 160 to 350 µm
-    // instead of running up and down between them. Unticked bands and upper
-    // limits are not on it.
+    // One source, two branches (two rows of the SED view): the 160 and 350 µm
+    // detections are on both, the 250 µm band has a counterpart on each. The
+    // tree forks at 160 µm and joins again at 350 µm; the two 250 µm points are
+    // not joined to each other.
+    SedPoint p160 = band(160.0, 30.0);
+    p160.branches = { 7, 8 };
+    SedPoint p250a = band(250.0, 25.0);
+    p250a.branches = { 7 };
+    SedPoint p250b = band(250.0, 9.0, 0.0, false, /*use=*/false);
+    p250b.branches = { 8 };
+    SedPoint p350 = band(350.0, 12.0);
+    p350.branches = { 7, 8 };
+    const std::vector<SedPoint> points{ p160, p250a, p250b, p350 };
+
+    const std::vector<sp::Edge> edges = sp::treeEdges(points);
+    const std::vector<sp::Edge> expected{ { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 3 } };
+    QCOMPARE(edges.size(), expected.size());
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        QVERIFY(edges[i] == expected[i]);
+
+    // A branch missing a band links over it; points with no branch have no links.
+    SedPoint p500 = band(500.0, 4.0);
+    p500.branches = { 8 };
+    const std::vector<SedPoint> skipping{ p160, p250a, p350, p500 };
+    const std::vector<sp::Edge> skip = sp::treeEdges(skipping);
+    const std::vector<sp::Edge> skipExpected{ { 0, 1 }, { 0, 2 }, { 1, 2 }, { 2, 3 } };
+    QCOMPARE(skip.size(), skipExpected.size());
+    for (std::size_t i = 0; i < skipExpected.size(); ++i)
+        QVERIFY(skip[i] == skipExpected[i]);
+    QVERIFY(sp::treeEdges({ band(160.0, 1.0), band(250.0, 2.0) }).empty());
+}
+
+void TestSedPlotStyle::collapsedSedIsOneLine()
+{
+    // One point per band: the ticked counterpart at 250 µm, not the brighter
+    // unticked one; upper limits are not on the line.
     const std::vector<SedPoint> points{
-        band(350.0, 5.0), band(250.0, 9.0), band(160.0, 12.0), band(250.0, 3.0),
-        band(500.0, 2.0, 0.0, false, /*use=*/false), band(70.0, 0.4, 0.0, /*upperLimit=*/true)
+        band(160.0, 30.0), band(250.0, 25.0), band(250.0, 40.0, 0.0, false, /*use=*/false),
+        band(350.0, 12.0), band(500.0, 6.0, 0.0, /*upperLimit=*/true)
     };
-    const auto line = sp::fitLine(points);
-    QCOMPARE(line.size(), std::size_t(2));
-    QCOMPARE(line[0].first, 160.0);
-    QCOMPARE(line[1].first, 350.0);
+    QCOMPARE(sp::singleLine(points), std::vector<int>({ 0, 1, 3 }));
+    // With no band ticked the brightest stands for it.
+    const std::vector<SedPoint> none{ band(250.0, 5.0, 0.0, false, false),
+                                      band(250.0, 8.0, 0.0, false, false) };
+    QCOMPARE(sp::singleLine(none), std::vector<int>({ 1 }));
+}
+
+void TestSedPlotStyle::logErrorBarsStopAtTheFloor()
+{
+    // A 4 ± 1 Jy point keeps its arm; a 4 ± 6 Jy point would reach below zero
+    // and stops at the floor, flagged as cut. Linear axes never cut.
+    const sp::LowerArm kept = sp::lowerErrorArm(4.0, 1.0, /*logScale=*/true, 0.1);
+    QCOMPARE(kept.length, 1.0);
+    QVERIFY(!kept.clipped);
+    const sp::LowerArm cut = sp::lowerErrorArm(4.0, 6.0, true, 0.1);
+    QVERIFY(cut.clipped);
+    QVERIFY(qFuzzyCompare(cut.length, 3.9));
+    const sp::LowerArm linear = sp::lowerErrorArm(4.0, 6.0, false, -3.0);
+    QCOMPARE(linear.length, 6.0);
+    QVERIFY(!linear.clipped);
+    QCOMPARE(sp::lowerErrorArm(4.0, 0.0, true, 0.1).length, 0.0);
+}
+
+void TestSedPlotStyle::theTreeIsRebuiltFromTheViewRows()
+{
+    // The VLKB SED view returns one row per branch. Rows 3 and 4 share the
+    // 350 µm detection and the 22 µm one (with its WISE photometry); each has
+    // its own 250 µm counterpart. Built into a SED, the 250 µm band forks.
+    const auto entry = [](const QString &band, std::vector<int> rows,
+                          const QList<QPair<QString, QString>> &fields) {
+        CatalogueOverlayEntry e;
+        e.band = band;
+        e.groupKey = QStringLiteral("HIGALBM042");
+        e.extra = fields;
+        e.sedRows = std::move(rows);
+        return e;
+    };
+    const std::vector<CatalogueOverlayEntry> entries{
+        entry(u"22"_s, { 3, 4 }, { { u"flux22"_s, u"0.8"_s }, { u"flux12"_s, u"0.3"_s } }),
+        entry(u"250"_s, { 3 }, { { u"flux250"_s, u"20.0"_s } }),
+        entry(u"250"_s, { 4 }, { { u"flux250"_s, u"7.0"_s } }),
+        entry(u"350"_s, { 3, 4 }, { { u"flux350"_s, u"9.0"_s } }),
+    };
+    const visivo::SedBuildResult sed =
+            visivo::SedBuilder::buildSed(entries, { 0, 1, 2, 3 });
+    QVERIFY2(sed.valid, qPrintable(sed.errorMessage));
+    // 12 (WISE W3, riding on the 22 µm entry), 22, 250 bright, 250 faint, 350.
+    QCOMPARE(sed.points.size(), std::size_t(5));
+    QCOMPARE(sed.points[0].wavelengthUm, 12.0);
+    QCOMPARE(sed.points[0].branches, std::vector<int>({ 3, 4 }));
+
+    const std::vector<sp::Edge> edges = sp::treeEdges(sed.points);
+    const std::vector<sp::Edge> expected{ { 0, 1 }, { 1, 2 }, { 1, 3 }, { 2, 4 }, { 3, 4 } };
+    QCOMPARE(edges.size(), expected.size());
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        QVERIFY(edges[i] == expected[i]);
+
+    // Collapsed into one point per band it is a single line again.
+    QCOMPARE(sp::singleLine(sed.points), std::vector<int>({ 0, 1, 2, 4 }));
 }

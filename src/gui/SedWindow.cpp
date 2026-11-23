@@ -1350,25 +1350,76 @@ void SedWindow::plotObservedPoints()
 
     namespace sp = visivo::SedPlot;
     const bool dark = VisivoTheme::isDark();
-    const QColor ink(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
+    const bool logAxes = m_logAxes && m_logAxes->isChecked();
+    const QColor neutral(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
+    const QColor ink(QString::fromLatin1(VisivoTheme::kOnSurface()));
     const auto toColour = [](sp::Rgb rgb, double alpha = 1.0) {
         return QColor::fromRgbF(rgb.r / 255.0, rgb.g / 255.0, rgb.b / 255.0, alpha);
     };
+    const auto withAlpha = [](QColor colour, int alpha) {
+        colour.setAlpha(alpha);
+        return colour;
+    };
+    const sp::AxisRange yRange = sp::fluxRange(m_sed.points, logAxes);
+    const double floor = yRange.valid ? yRange.lower : 0.0;
 
-    // EVERY point is plotted, in the fit or not. The ones left out are the
-    // alternative counterparts of a band — the branches of the band-merged
-    // tree — and a SED that silently dropped them would hide the fact that
-    // there was a choice to make at all. In the fit: filled, with its error
-    // bar. Out of it: hollow, smaller and faded, in the same colour, so the
-    // survey still reads.
+    // ── The links between the bands, behind the markers ──────────────────────
     //
-    // The colour is the survey. Two counterparts in one band are told apart
-    // by being filled or hollow, and a band from another survey at a nearby
-    // wavelength (WISE 12 µm next to MSX 12.13 µm) by its hue.
+    // Expanded, the band-merged tree as the legacy client drew it: every
+    // counterpart joined to the one it was matched with in the next band, so
+    // where a band has two counterparts the SED forks. A link between two bands
+    // in the fit is drawn stronger: it is the spectrum being fitted. Collapsed,
+    // there is one point per band and one line through them.
+    //
+    // QCustomPlot draws a layer in creation order, so these go first.
+    const auto addSegment = [this](const QVector<double> &sx, const QVector<double> &sy,
+                                   const QPen &pen) {
+        auto *segment = m_plot->addGraph();
+        segment->setData(sx, sy, /*alreadySorted=*/true);
+        segment->setPen(pen);
+        segment->setScatterStyle(QCPScatterStyle::ssNone);
+        segment->setSelectable(QCP::stNone);
+        segment->removeFromLegend();
+    };
+    const std::vector<sp::Edge> edges =
+            m_branchesCollapsed ? std::vector<sp::Edge>() : sp::treeEdges(m_sed.points);
+    if (!edges.empty()) {
+        for (const sp::Edge &edge : edges) {
+            const visivo::SedPoint &a = m_sed.points[static_cast<std::size_t>(edge.from)];
+            const visivo::SedPoint &b = m_sed.points[static_cast<std::size_t>(edge.to)];
+            const bool fitted = a.use && b.use && !a.upperLimit && !b.upperLimit;
+            addSegment({ a.wavelengthUm, b.wavelengthUm }, { a.fluxJy, b.fluxJy },
+                       fitted ? QPen(withAlpha(ink, 200), 1.6) : QPen(withAlpha(neutral, 150), 1.0));
+        }
+    } else {
+        QVector<double> lineX;
+        QVector<double> lineY;
+        for (int index : sp::singleLine(m_sed.points)) {
+            lineX.append(m_sed.points[static_cast<std::size_t>(index)].wavelengthUm);
+            lineY.append(m_sed.points[static_cast<std::size_t>(index)].fluxJy);
+        }
+        if (lineX.size() >= 2)
+            addSegment(lineX, lineY, QPen(withAlpha(ink, 190), 1.4));
+    }
+
+    // ── The bands, coloured by survey ────────────────────────────────────────
+    //
+    // EVERY point is plotted, in the fit or not, each with its error bar. The
+    // ones left out are the alternative counterparts of a band, and a SED that
+    // dropped them would hide that there was a choice to make. In the fit:
+    // filled. Out of it: hollow and a little faded, in the same colour.
+    struct Marker
+    {
+        double x;
+        double y;
+        double below;
+        double above;
+        bool clipped;
+    };
     struct FamilyPoints
     {
-        QVector<double> usedX, usedY, usedErr;
-        QVector<double> unusedX, unusedY;
+        std::vector<Marker> used;
+        std::vector<Marker> unused;
     };
     std::map<sp::Family, FamilyPoints> families;
     QVector<double> x;
@@ -1377,8 +1428,7 @@ void SedWindow::plotObservedPoints()
     QVector<double> ulY;
     for (int row = 0; row < static_cast<int>(m_sed.points.size()); ++row) {
         const visivo::SedPoint &point = m_sed.points[static_cast<std::size_t>(row)];
-        const sp::Family family = sp::bandFamily(point.band, point.wavelengthUm);
-        FamilyPoints &bucket = families[family];
+        FamilyPoints &bucket = families[sp::bandFamily(point.band, point.wavelengthUm)];
         if (point.upperLimit) {
             ulX.append(point.wavelengthUm);
             ulY.append(point.fluxJy);
@@ -1389,62 +1439,57 @@ void SedWindow::plotObservedPoints()
         y.append(point.fluxJy);
         m_dataRows.push_back(row);
         const double error = point.errorJy > 0.0 ? point.errorJy : 0.0;
-        if (point.use) {
-            bucket.usedX.append(point.wavelengthUm);
-            bucket.usedY.append(point.fluxJy);
-            bucket.usedErr.append(error);
-        } else {
-            bucket.unusedX.append(point.wavelengthUm);
-            bucket.unusedY.append(point.fluxJy);
-        }
+        const sp::LowerArm arm = sp::lowerErrorArm(point.fluxJy, error, logAxes, floor);
+        (point.use ? bucket.used : bucket.unused)
+                .push_back({ point.wavelengthUm, point.fluxJy, arm.length, error, arm.clipped });
     }
 
-    // A thin line through the bands in the fit, behind the markers (QCustomPlot
-    // draws a layer in creation order). Only those: joining every counterpart
-    // in wavelength order ran up and down between duplicates of one band and
-    // read as structure in the source.
-    const auto line = sp::fitLine(m_sed.points);
-    if (line.size() >= 2) {
-        QVector<double> lineX;
-        QVector<double> lineY;
-        for (const auto &[wavelength, flux] : line) {
-            lineX.append(wavelength);
-            lineY.append(flux);
-        }
-        auto *guide = m_plot->addGraph();
-        guide->setData(lineX, lineY, /*alreadySorted=*/true);
-        guide->setPen(QPen(QColor(ink.red(), ink.green(), ink.blue(), 150), 1.0));
-        guide->setScatterStyle(QCPScatterStyle::ssNone);
-        guide->setSelectable(QCP::stNone);
-        guide->removeFromLegend();
-    }
-
-    const auto addMarkers = [this](const QVector<double> &px, const QVector<double> &py,
-                                   const QVector<double> &perr, const QCPScatterStyle &style,
+    const auto addMarkers = [this](std::vector<Marker> markers, const QCPScatterStyle &style,
                                    const QColor &colour) {
-        if (px.isEmpty())
+        if (markers.empty())
             return;
         // Error bars are matched to the graph's points by index, and QCustomPlot
-        // keeps its points sorted by key: sort the three together first.
-        QVector<int> order(px.size());
-        std::iota(order.begin(), order.end(), 0);
-        std::stable_sort(order.begin(), order.end(), [&px](int a, int b) { return px[a] < px[b]; });
-        QVector<double> sx, sy, serr;
-        for (int i : order) {
-            sx.append(px[i]);
-            sy.append(py[i]);
-            serr.append(perr[i]);
+        // keeps its points sorted by key: sort them first.
+        std::stable_sort(markers.begin(), markers.end(),
+                         [](const Marker &a, const Marker &b) { return a.x < b.x; });
+        // QCPErrorBars skips a NaN arm. A point with no error gets none (a zero
+        // arm still draws its whisker across the marker), and a lower arm cut
+        // by the bottom of a log axis is drawn below as an arrow instead.
+        const double none = std::numeric_limits<double>::quiet_NaN();
+        QVector<double> mx, my, below, above;
+        for (const Marker &marker : markers) {
+            mx.append(marker.x);
+            my.append(marker.y);
+            below.append(marker.above > 0.0 && !marker.clipped ? marker.below : none);
+            above.append(marker.above > 0.0 ? marker.above : none);
         }
+
+        // The arrow runs from the point to the bottom of the plot, wherever the
+        // user zooms or pans: a fixed end would read as a measured lower bound
+        // once the floor moved. Created before the markers so they paint over it.
+        for (const Marker &marker : markers) {
+            if (!marker.clipped)
+                continue;
+            auto *cut = new QCPItemLine(m_plot);
+            cut->start->setCoords(marker.x, marker.y);
+            cut->end->setTypeX(QCPItemPosition::ptPlotCoords);
+            cut->end->setTypeY(QCPItemPosition::ptAxisRectRatio);
+            cut->end->setCoords(marker.x, 1.0);
+            cut->setPen(QPen(colour, 1.2));
+            cut->setHead(QCPLineEnding(QCPLineEnding::esSpikeArrow, 7, 9));
+            cut->setSelectable(false);
+        }
+
         auto *graph = m_plot->addGraph();
-        graph->setData(sx, sy, /*alreadySorted=*/true);
+        graph->setData(mx, my, /*alreadySorted=*/true);
         graph->setLineStyle(QCPGraph::lsNone);
         graph->setScatterStyle(style);
         graph->setSelectable(QCP::stNone);
         graph->removeFromLegend();
-        if (std::any_of(serr.cbegin(), serr.cend(), [](double e) { return e > 0.0; })) {
+        if (std::any_of(above.cbegin(), above.cend(), [](double e) { return e > 0.0; })) {
             auto *bars = new QCPErrorBars(m_plot->xAxis, m_plot->yAxis);
             bars->setDataPlottable(graph);
-            bars->setData(serr);
+            bars->setData(below, above);
             bars->setPen(QPen(colour, 1.2));
             bars->setWhiskerWidth(6);
             bars->setSelectable(QCP::stNone);
@@ -1452,45 +1497,59 @@ void SedWindow::plotObservedPoints()
         }
     };
 
-    for (sp::Family family : sp::familyOrder()) {
-        const auto found = families.find(family);
-        if (found == families.end())
-            continue;
-        const FamilyPoints &bucket = found->second;
-        const sp::Rgb rgb = sp::familyColour(family, dark);
-        const QColor solid = toColour(rgb);
-        const QColor faded = toColour(rgb, sp::kUnusedAlpha);
-        addMarkers(bucket.unusedX, bucket.unusedY, QVector<double>(bucket.unusedX.size(), 0.0),
-                   QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(faded, 1.7), Qt::NoBrush, 7.5),
-                   faded);
-        addMarkers(bucket.usedX, bucket.usedY, bucket.usedErr,
-                   QCPScatterStyle(QCPScatterStyle::ssDisc, solid, solid, 9), solid);
-
-        // The legend says which survey a colour is, once, with an empty graph
-        // standing in: the marker graphs above are split by in/out of the fit.
-        auto *entry = m_plot->addGraph();
-        entry->setName(sp::familyName(family));
-        entry->setLineStyle(QCPGraph::lsNone);
-        entry->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, solid, solid, 7));
-        entry->setSelectable(QCP::stNone);
-    }
-
     // An upper limit is not a measurement, so it is drawn as one: a bar at the
     // limit and an arrow down from it, a fixed length on screen whatever the
-    // axis. Out of the fit it fades like the detections.
+    // axis. Drawn before the detections (a layer paints in creation order), so
+    // a marker at a nearby wavelength stays on top and is not hidden by it.
     for (int i = 0; i < ulX.size(); ++i) {
         const visivo::SedPoint &point = m_sed.points[static_cast<std::size_t>(m_ulRows[i])];
         const sp::Rgb rgb = sp::familyColour(sp::bandFamily(point.band, point.wavelengthUm), dark);
-        const QColor colour = toColour(rgb, point.use ? 1.0 : sp::kUnusedAlpha);
         auto *arrow = new QCPItemLine(m_plot);
         arrow->start->setCoords(ulX[i], ulY[i]);
         arrow->end->setType(QCPItemPosition::ptAbsolute);
         arrow->end->setParentAnchor(arrow->start);
-        arrow->end->setCoords(0, 22);
-        arrow->setPen(QPen(colour, point.use ? 1.8 : 1.4));
-        arrow->setHead(QCPLineEnding(QCPLineEnding::esSpikeArrow, 8, 10));
-        arrow->setTail(QCPLineEnding(QCPLineEnding::esBar, 10));
+        arrow->end->setCoords(0, 34);
+        arrow->setPen(QPen(toColour(rgb, point.use ? 1.0 : sp::kUnusedAlpha), 2.2));
+        arrow->setHead(QCPLineEnding(QCPLineEnding::esSpikeArrow, 11, 13));
+        arrow->setTail(QCPLineEnding(QCPLineEnding::esBar, 14));
         arrow->setSelectable(false);
+    }
+
+    std::vector<sp::Family> present;
+    for (sp::Family family : sp::familyOrder()) {
+        const auto found = families.find(family);
+        if (found == families.end())
+            continue;
+        present.push_back(family);
+        const sp::Rgb rgb = sp::familyColour(family, dark);
+        const QColor solid = toColour(rgb);
+        const QColor faded = toColour(rgb, sp::kUnusedAlpha);
+        addMarkers(found->second.unused,
+                   QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(faded, 1.7), Qt::NoBrush, 7.5),
+                   faded);
+        addMarkers(found->second.used, QCPScatterStyle(QCPScatterStyle::ssDisc, solid, solid, 9),
+                   solid);
+    }
+
+    // The legend: which survey a colour is, then what filled and hollow mean.
+    // Empty graphs stand in, since the marker graphs are split in and out of
+    // the fit.
+    const auto legendEntry = [this](const QString &name, const QCPScatterStyle &style) {
+        auto *entry = m_plot->addGraph();
+        entry->setName(name);
+        entry->setLineStyle(QCPGraph::lsNone);
+        entry->setScatterStyle(style);
+        entry->setSelectable(QCP::stNone);
+    };
+    for (sp::Family family : present) {
+        const QColor solid = toColour(sp::familyColour(family, dark));
+        legendEntry(sp::familyName(family),
+                    QCPScatterStyle(QCPScatterStyle::ssDisc, solid, solid, 7));
+    }
+    if (!x.isEmpty()) {
+        legendEntry(u"In the fit"_s, QCPScatterStyle(QCPScatterStyle::ssDisc, ink, ink, 7));
+        legendEntry(u"Not in the fit"_s,
+                    QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(ink, 1.5), Qt::NoBrush, 7));
     }
 
     // What the user clicks and hovers: one invisible graph for the detections
@@ -1503,8 +1562,8 @@ void SedWindow::plotObservedPoints()
         graph->setPen(Qt::NoPen);
         // A shape painted with no pen and no brush: QCPGraph's hit test ignores
         // a graph that has neither a line nor a scatter shape.
-        graph->setScatterStyle(
-                QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(Qt::NoPen), QBrush(Qt::NoBrush), 9));
+        graph->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(Qt::NoPen),
+                                               QBrush(Qt::NoBrush), 9));
         graph->setSelectable(QCP::stMultipleDataRanges);
         graph->selectionDecorator()->setPen(Qt::NoPen);
         graph->selectionDecorator()->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssNone),

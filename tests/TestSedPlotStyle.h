@@ -1,7 +1,8 @@
 #pragma once
 // TestSedPlotStyle.h
 // QTest class for how the SED window draws its photometry (SedPlotStyle.h):
-// band to survey, the palette's contrast, the axis ranges and the fit line.
+// band to survey, the palette's contrast, the axis ranges, the links of the
+// band-merged tree and the error bars on a log axis.
 // Header-only logic; no window.
 
 #include <QObject>
@@ -18,5 +19,8 @@ private slots:
     void singleBandHasARange();
     void upperLimitsAndErrorsWidenTheRange();
     void wavelengthRangeCoversTheBands();
-    void fitLineSkipsDuplicatedBands();
+    void treeLinksFollowTheBranches();
+    void collapsedSedIsOneLine();
+    void theTreeIsRebuiltFromTheViewRows();
+    void logErrorBarsStopAtTheFloor();
 };
