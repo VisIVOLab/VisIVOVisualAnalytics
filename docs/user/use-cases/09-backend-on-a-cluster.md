@@ -78,7 +78,9 @@ changes while you work.
    ```
 
 6. Work as on your own machine. Moment maps, PV diagrams, SoFiA-2, the lasso
-   and the exports run on the node, next to the data.
+   and the exports run on the node, next to the data. If the laptop sleeps or
+   the tunnel drops, the Remote view reconnects by itself once the tunnel is
+   back, with the same colours and camera.
 
 7. When you are done, close the window, or press *Disconnect from NAME* in
    its Data Hub. Both close the tunnel and cancel the SLURM job, so the node

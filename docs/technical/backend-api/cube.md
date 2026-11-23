@@ -22,14 +22,34 @@ Returns `valid`, `error`, `scalar_type`, `width`, `height`, `depth`, `range_min`
 Which preview it is: `source` (`strided` or `pyramid`), `factors` (`[s, s, s]`, x y z), and for `pyramid` the `level` read, the pyramid's `levels` and `level_factors` (cube voxels per level voxel, x y z; the level is the coarsest whose factor is at most `downsample`, and a stride that is not a power of two weights each level voxel by the cube voxels it shares with the cell). `voxel_offset` places the grid: preview voxel `i` stands for cube voxel `i * s + voxel_offset`, `0` for `strided` and `(s - 1) / 2`, the centre of a whole cell, for `pyramid`.
 
 ## `POST /v1/cube/slice`
-Single 2-D slice.
+Single 2-D slice, or the part of it a view needs.
 ```json
-{ "dataset_id": "...", "axis": "z", "index": 42 }
+{ "dataset_id": "...", "axis": "z", "index": 42,
+  "max_longest_side": 2048, "x0": 1000, "x1": 2999, "y0": 500, "y1": 1499 }
 ```
 Only `axis: "z"` is supported (422 otherwise); an `index` outside the cube is
-`valid: false`. Returns `valid`, `error`, `width`, `height`, `scalar_type`,
-`range_min`, `range_max`, `compression` (`qt-zlib`) and `data_base64`, as for
-the preview. The slice takes no per-session compute slot.
+`valid: false`.
+
+- `max_longest_side` (optional, default `0`): the plane, or the region, is read
+  every `stride` pixels, the smallest integer stride that keeps both sides
+  within it. `0` answers every pixel. A 7233 x 7233 channel is 209 MB of
+  float32 whole and about 13 MB at 2048 (issue #381).
+- `x0`, `x1`, `y0`, `y1` (optional, all four or none, 422 otherwise): the
+  region to read, inclusive plane pixels, clamped to the plane; one wholly
+  outside is `valid: false`. The stride is chosen on the region's size.
+
+Returns `valid`, `error`, `width`, `height`, `scalar_type`, `range_min`,
+`range_max` (of the samples returned), `compression` (`qt-zlib`) and
+`data_base64`, as for the preview, and where the samples sit: sample `(i, j)`
+is plane pixel `(x0 + i * stride, y0 + j * stride)` of a `full_width` x
+`full_height` plane. Each sample is a pixel of the cube; nothing is averaged.
+A request with neither field gets every pixel, as before. The slice takes no
+per-session compute slot.
+
+The desktop asks every channel at `max_longest_side` 2048 and, when the 2-D
+view is zoomed in so that the part on screen fits that budget at a finer
+stride, asks for that part again and draws it over the channel
+(`src/gui/SliceDetailPlan.h`).
 
 ## `POST /v1/cube/subvolume`
 Spatial + spectral sub-region.

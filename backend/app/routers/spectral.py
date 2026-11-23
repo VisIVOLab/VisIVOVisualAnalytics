@@ -755,6 +755,8 @@ class LineFitRequest(BaseModel):
     values: list[float]
     axis: list[float]
     with_baseline: bool = True
+    x_min: float | None = None
+    x_max: float | None = None
 
 
 @router.post("/v1/spectral/linefit", tags=["spectral"])
@@ -765,14 +767,16 @@ async def spectral_linefit(request: LineFitRequest, _: None = _auth):
     from the spectral profiler), so the same fit serves cube probes, aperture
     spectra, or any externally-extracted profile. Returns peak/center/σ/FWHM in
     the axis units, integrated flux, baseline, continuum, equivalent width and
-    residual RMS.
+    residual RMS. Optional ``x_min``/``x_max`` (axis units) restrict the fit to
+    a window, e.g. the range visible in the profiler.
     """
     if len(request.values) != len(request.axis):
         raise HTTPException(422, "values and axis must have the same length.")
     from ..compute import worker_line_fit  # noqa: PLC0415
     try:
         result = await asyncio.to_thread(
-            worker_line_fit, request.values, request.axis, request.with_baseline)
+            worker_line_fit, request.values, request.axis, request.with_baseline,
+            request.x_min, request.x_max)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

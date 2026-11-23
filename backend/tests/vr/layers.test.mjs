@@ -76,6 +76,19 @@ test('splats are sized by the desktop rule and grow for a sample', () => {
   for (const [depth, k] of [[12.966, 30], [6.4286, 59], [6.3223, 61], [6.0236, 64]])
     assert.equal(PT.splatOpacity(depth, 35), k / 255);
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e3, 8, 35).sampleRadius, 10, 1e-9);
+  // A float target's opacity has no floor (#457): 1.5 / 1000 at a depth of 1000.
+  close(PT.splatOpacity(1000, 35, false), 0.0015, 1e-15);
+  close(PT.splatOpacity(3, 35, false), PT.FLOAT_OPACITY_MAX, 1e-15);
+  // The sample's depth (#457): an eighth of the rows, splats twice as wide
+  // and twice as opaque, so the sample carries the table's light; v1 keeps
+  // the table's depth, as a page from before drew it.
+  const box = [0, 1000, 0, 1000, 0, 1000];
+  const all = PT.splatStyle(box, 8e6, 8e6, 1, 35, 'v2-f32');
+  const eighth = PT.splatStyle(box, 8e6, 1e6, 1, 35, 'v2-f32');
+  close(eighth.sampleRadius, 2 * all.sampleRadius, 1e-9);
+  close(eighth.opacity, 2 * all.opacity, 1e-15);
+  close(1e6 * eighth.opacity * eighth.sampleRadius ** 2, 8e6 * all.opacity * all.sampleRadius ** 2, 1e-6);
+  assert.equal(PT.splatStyle(box, 8e6, 1e6, 1, 35, 'v1').opacity, PT.splatStyle(box, 8e6, 8e6, 1, 35, 'v1').opacity);
 });
 
 test('splat look (#263): tone curve, default colour column, axis units', () => {

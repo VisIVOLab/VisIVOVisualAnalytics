@@ -263,7 +263,7 @@ void MomentMapController::dispatch(const Config &config)
         const QString details =
                 u"Moment type: %1\n"
                 u"Unit: %2\n"
-                u"BUNIT: %3\n"
+                u"Intensity unit: %3\n"
                 u"Spectral axis: %4 [%5]\n"
                 u"Channel range: %6\n"
                 u"Mask: %7\n"

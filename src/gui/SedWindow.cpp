@@ -18,6 +18,8 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLocale>
+#include <QSignalBlocker>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSaveFile>
@@ -31,6 +33,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace Qt::Literals::StringLiterals;
@@ -64,7 +67,7 @@ QString parameterLabel(const QString &key)
         { u"lambda0_um"_s, u"λ₀ (µm)"_s },
         { u"size_arcsec"_s, u"Size (arcsec)"_s },
         { u"scale"_s, u"Size scale"_s },
-        { u"luminosity_lsun"_s, u"L_bol (L☉)"_s },
+        { u"luminosity_lsun"_s, u"L, greybody only (L☉)"_s },
         { u"l_over_m"_s, u"L/M (L☉/M☉)"_s },
     };
     return kNames.value(key, key);
@@ -176,6 +179,8 @@ SedWindow::SedWindow(const visivo::SedBuildResult &sed, const QString &backendUr
                                                : u"SED — %1"_s.arg(m_sed.sourceLabel));
     resize(1080, 680);
 
+    const bool rangeApplied = visivo::SedBuilder::applyDefaultFitRange(
+            m_sed.points, visivo::SedBuilder::kDefaultFitMinWavelengthUm);
     m_rawPoints = m_sed.points;
     resetRowBranches();
     buildUi();
@@ -223,6 +228,24 @@ SedWindow::SedWindow(const visivo::SedBuildResult &sed, const QString &backendUr
     if (!m_sed.skippedBands.isEmpty()) {
         m_log->append(u"Bands without a usable flux, left out of the SED: %1"_s
                               .arg(m_sed.skippedBands.join(u", "_s)));
+    }
+    const bool anyBelowRange = std::any_of(
+            m_rawPoints.cbegin(), m_rawPoints.cend(), [](const visivo::SedPoint &point) {
+                return point.wavelengthUm < visivo::SedBuilder::kDefaultFitMinWavelengthUm;
+            });
+    if (anyBelowRange && rangeApplied) {
+        m_log->append(u"Bands below 160 µm are unticked: a single cold greybody describes "
+                      u"λ ≥ 160 µm only (Elia et al. 2017, 2021). Change the range in the "
+                      u"Photometry tab."_s);
+    } else if (anyBelowRange) {
+        m_log->append(u"Fewer than two bands at λ ≥ 160 µm: every band is ticked."_s);
+    }
+    if (m_sed.catalogueDistancePc > 0.0) {
+        m_log->append(u"The catalogue gives a distance of %1 kpc (column '%2'). The fit uses "
+                      u"the Distance field in the Fit tab; press <i>Use catalogue</i> there "
+                      u"to take it."_s
+                              .arg(QString::number(m_sed.catalogueDistancePc / 1e3, 'g', 4),
+                                   m_sed.catalogueDistanceColumn.toHtmlEscaped()));
     }
     updateIdleStatus();
     replot();
@@ -288,10 +311,44 @@ void SedWindow::buildUi()
     auto *bandsHint = new QLabel(
             u"<b>Use</b> — include the band in the fit.   "
             u"<b>UL</b> — treat its flux as an upper limit: it constrains the fit "
-            u"without entering the χ²."_s,
+            u"without entering the χ².   Double-click a flux or σ to edit it."_s,
             bandsPage);
     bandsHint->setWordWrap(true);
     bandsLayout->addWidget(bandsHint);
+
+    auto *rangeRow = new QWidget(bandsPage);
+    auto *rangeLayout = new QHBoxLayout(rangeRow);
+    rangeLayout->setContentsMargins(0, 0, 0, 0);
+    const QString rangeWhy =
+            u"Emission at 70 µm and shorter comes from warm, internally heated dust and "
+            u"departs from a single cold greybody, so the cold-dust fit uses only "
+            u"λ ≥ 160 µm (Elia et al. 2017, 2021)."_s;
+    auto *rangeLabel = new QLabel(u"Fit λ ≥"_s, rangeRow);
+    rangeLabel->setToolTip(rangeWhy);
+    rangeLayout->addWidget(rangeLabel);
+    m_fitMinWavelength = new QDoubleSpinBox(rangeRow);
+    m_fitMinWavelength->setRange(0.0, 5000.0);
+    m_fitMinWavelength->setDecimals(1);
+    m_fitMinWavelength->setValue(visivo::SedBuilder::kDefaultFitMinWavelengthUm);
+    m_fitMinWavelength->setSuffix(u" µm"_s);
+    m_fitMinWavelength->setToolTip(rangeWhy);
+    rangeLayout->addWidget(m_fitMinWavelength);
+    auto *rangeButton = new QPushButton(u"Tick these bands"_s, rangeRow);
+    rangeButton->setToolTip(u"Tick one branch of every band from this wavelength up and "
+                            u"untick the rest. 0 ticks every band."_s);
+    connect(rangeButton, &QPushButton::clicked, this, &SedWindow::applyFitRange);
+    rangeLayout->addWidget(rangeButton);
+    rangeLayout->addStretch(1);
+    bandsLayout->addWidget(rangeRow);
+
+    m_scaleTo250 = new QCheckBox(u"Scale 350/500 µm to the 250 µm source size"_s, bandsPage);
+    m_scaleTo250->setToolTip(
+            u"Multiply the 350 and 500 µm fluxes by θ₂₅₀/θ_λ, the ratio of the deconvolved "
+            u"source sizes (beams 17.8, 25.0 and 35.7″), so that every band measures the same "
+            u"gas. This is how the Hi-GAL clump catalogue (Elia et al. 2017, 2021) builds its "
+            u"SEDs; the VLKB rows carry the unscaled fluxes."_s);
+    connect(m_scaleTo250, &QCheckBox::toggled, this, &SedWindow::setScaledTo250);
+    bandsLayout->addWidget(m_scaleTo250);
     m_bandTable = new QTableWidget(bandsPage);
     m_bandTable->setColumnCount(BandColumnCount);
     m_bandTable->setHorizontalHeaderLabels(
@@ -490,7 +547,30 @@ void SedWindow::buildParameterPanel(QWidget *page)
     m_distance->setDecimals(1);
     m_distance->setValue(1000.0);
     m_distance->setSuffix(u" pc"_s);
-    commonForm->addRow(u"Distance"_s, m_distance);
+    if (m_sed.catalogueDistancePc > 0.0) {
+        auto *distanceRow = new QWidget(common);
+        auto *distanceLayout = new QHBoxLayout(distanceRow);
+        distanceLayout->setContentsMargins(0, 0, 0, 0);
+        distanceLayout->addWidget(m_distance, 1);
+        auto *useCatalogue = new QPushButton(
+                u"Use catalogue (%1 kpc)"_s.arg(
+                        QString::number(m_sed.catalogueDistancePc / 1e3, 'g', 4)),
+                distanceRow);
+        useCatalogue->setToolTip(
+                u"The distance in the catalogue row (column '%1'). The VLKB distances are an "
+                u"older set than those the Hi-GAL clump catalogue uses (Mège et al. 2021), "
+                u"so check it before fitting."_s
+                        .arg(m_sed.catalogueDistanceColumn));
+        const double catalogueDistance = m_sed.catalogueDistancePc;
+        connect(useCatalogue, &QPushButton::clicked, this, [this, catalogueDistance]() {
+            if (m_distance)
+                m_distance->setValue(catalogueDistance);
+        });
+        distanceLayout->addWidget(useCatalogue);
+        commonForm->addRow(u"Distance"_s, distanceRow);
+    } else {
+        commonForm->addRow(u"Distance"_s, m_distance);
+    }
 
     m_kappaRef = new QDoubleSpinBox(common);
     m_kappaRef->setRange(1e-4, 100.0);
@@ -626,10 +706,34 @@ void SedWindow::refreshBandTable()
         }
         m_bandTable->setItem(row, ColBand, band);
 
-        m_bandTable->setItem(row, ColFlux, numericItem(formatQuantity(point.fluxJy)));
-        m_bandTable->setItem(row, ColError,
-                             numericItem(point.errorJy > 0.0 ? formatQuantity(point.errorJy)
-                                                             : u"—"_s));
+        QTableWidgetItem *flux = numericItem(formatQuantity(point.fluxJy));
+        QTableWidgetItem *error = numericItem(point.errorJy > 0.0 ? formatQuantity(point.errorJy)
+                                                                  : u"—"_s);
+        // A summed row stands for several branches, and a typed total could
+        // not be split back into them.
+        if (!m_branchesCollapsed) {
+            flux->setFlags(flux->flags() | Qt::ItemIsEditable);
+            error->setFlags(error->flags() | Qt::ItemIsEditable);
+        }
+        if (point.fluxJy != point.catalogueFluxJy || point.errorJy != point.catalogueErrorJy) {
+            QString why;
+            if (std::isnan(point.sizeScale))
+                why = u"Branches scaled to the 250 µm source size by different factors."_s;
+            else if (point.sizeScale != 1.0)
+                why = u"Scaled by %1 to the 250 µm source size."_s.arg(point.sizeScale, 0, 'f', 3);
+            else
+                why = u"Edited."_s;
+            why += u" Catalogue: %1 ± %2 Jy."_s.arg(formatQuantity(point.catalogueFluxJy),
+                                                     formatQuantity(point.catalogueErrorJy));
+            flux->setToolTip(why);
+            error->setToolTip(why);
+            QFont italic = flux->font();
+            italic.setItalic(true);
+            flux->setFont(italic);
+            error->setFont(italic);
+        }
+        m_bandTable->setItem(row, ColFlux, flux);
+        m_bandTable->setItem(row, ColError, error);
         m_bandTable->setItem(row, ColSize,
                              numericItem(point.sizeArcsec > 0.0
                                                  ? QString::number(point.sizeArcsec, 'f', 1)
@@ -653,10 +757,89 @@ void SedWindow::setBranchesCollapsed(bool collapsed)
     if (collapsed == m_branchesCollapsed)
         return;
     propagateEditsToRawPoints();
+    m_branchesCollapsed = collapsed;
+    rebuildDisplayedPoints();
+    photometryChanged();
+}
 
-    if (!collapsed) {
+void SedWindow::applyFitRange()
+{
+    if (!m_fitMinWavelength)
+        return;
+    propagateEditsToRawPoints();
+    const double minimum = m_fitMinWavelength->value();
+    if (visivo::SedBuilder::applyDefaultFitRange(m_rawPoints, minimum)) {
+        m_log->append(u"Ticked the bands at λ ≥ %1 µm."_s.arg(minimum));
+    } else {
+        m_log->append(u"Fewer than two bands at λ ≥ %1 µm: every band is ticked."_s
+                              .arg(minimum));
+    }
+    rebuildDisplayedPoints();
+    photometryChanged();
+}
+
+void SedWindow::setScaledTo250(bool scaled)
+{
+    propagateEditsToRawPoints();
+    if (scaled) {
+        const visivo::SedBuilder::SizeScaling scaling =
+                visivo::SedBuilder::sizeScalingTo250(m_rawPoints);
+        if (!scaling.valid) {
+            m_log->append(u"Not scaled: %1"_s.arg(scaling.errorMessage.toHtmlEscaped()));
+            const QSignalBlocker blocker(m_scaleTo250);
+            m_scaleTo250->setChecked(false);
+            return;
+        }
+        QStringList applied;
+        for (std::size_t i = 0; i < m_rawPoints.size(); ++i) {
+            const double factor = scaling.factors[i];
+            visivo::SedPoint &point = m_rawPoints[i];
+            if (factor == 1.0 || point.edited)
+                continue;
+            point.fluxJy *= factor;
+            point.errorJy *= factor;
+            point.sizeScale = factor;
+            applied.append(u"%1 µm × %2"_s.arg(point.wavelengthUm).arg(factor, 0, 'f', 3));
+        }
+        QString message = u"Scaled to the 250 µm size (%1″ deconvolved): %2."_s
+                                  .arg(scaling.referenceSizeArcsec, 0, 'f', 1)
+                                  .arg(applied.join(u", "_s));
+        if (!scaling.observedSizeUsed.isEmpty()) {
+            message += u" Observed size used at %1 µm, where the source is not larger than "
+                       u"the beam."_s.arg(scaling.observedSizeUsed.join(u", "_s));
+        }
+        m_log->append(message);
+    } else {
+        for (visivo::SedPoint &point : m_rawPoints) {
+            if (point.sizeScale == 1.0 || point.sizeScale <= 0.0)
+                continue;
+            point.fluxJy /= point.sizeScale;
+            point.errorJy /= point.sizeScale;
+            point.sizeScale = 1.0;
+        }
+        m_log->append(u"350/500 µm fluxes back to their catalogue scale."_s);
+    }
+    rebuildDisplayedPoints();
+    photometryChanged();
+}
+
+void SedWindow::photometryChanged()
+{
+    refreshBandTable();
+    if (m_sizeArcsec) {
+        const double size = visivo::SedBuilder::representativeSizeArcsec(m_sed.points);
+        if (size > 0.0)
+            m_sizeArcsec->setValue(size);
+    }
+    markResultsStale();
+    updateIdleStatus();
+    replot();
+}
+
+void SedWindow::rebuildDisplayedPoints()
+{
+    if (!m_branchesCollapsed) {
         m_sed.points = m_rawPoints;
-        m_branchesCollapsed = false;
         resetRowBranches();
     } else {
         std::vector<visivo::SedPoint> summed;
@@ -701,6 +884,9 @@ void SedWindow::setBranchesCollapsed(bool collapsed)
             for (std::size_t i = first + 1; i <= last; ++i) {
                 const visivo::SedPoint &branch = m_rawPoints[i];
                 total.fluxJy += branch.fluxJy;
+                total.catalogueFluxJy += branch.catalogueFluxJy;
+                total.catalogueErrorJy = std::hypot(total.catalogueErrorJy,
+                                                    branch.catalogueErrorJy);
                 // In quadrature, not the legacy's linear sum: the branches are
                 // independent measurements, and adding their errors linearly
                 // overstates the uncertainty of the total.
@@ -708,6 +894,8 @@ void SedWindow::setBranchesCollapsed(bool collapsed)
                                           + branch.errorJy * branch.errorJy);
                 // The summed source is at least as large as its largest part.
                 total.sizeArcsec = std::max(total.sizeArcsec, branch.sizeArcsec);
+                if (branch.sizeScale != total.sizeScale)
+                    total.sizeScale = std::numeric_limits<double>::quiet_NaN();
                 // The aggregate is in the fit if any of its branches was: a band
                 // the user had excluded outright stays excluded.
                 total.use = total.use || branch.use;
@@ -730,18 +918,7 @@ void SedWindow::setBranchesCollapsed(bool collapsed)
         m_sed.points = std::move(summed);
         m_rowBranches = std::move(groups);
         m_displayedBaseline = m_sed.points;
-        m_branchesCollapsed = true;
     }
-
-    refreshBandTable();
-    if (m_sizeArcsec) {
-        const double size = visivo::SedBuilder::representativeSizeArcsec(m_sed.points);
-        if (size > 0.0)
-            m_sizeArcsec->setValue(size);
-    }
-    markResultsStale();
-    updateIdleStatus();
-    replot();
 }
 
 void SedWindow::applyDefaults(const BackendSedDefaults &defaults)
@@ -775,6 +952,66 @@ void SedWindow::onBandTableChanged(int row, int column)
     if (m_updatingTable || row < 0 || static_cast<std::size_t>(row) >= m_sed.points.size())
         return;
     visivo::SedPoint &point = m_sed.points[static_cast<std::size_t>(row)];
+    if (column == ColFlux || column == ColError) {
+        QTableWidgetItem *item = m_bandTable->item(row, column);
+        if (!item || m_branchesCollapsed)
+            return;
+        const QString text = item->text().trimmed();
+        double &target = column == ColFlux ? point.fluxJy : point.errorJy;
+        // The cell shows a rounded value; committing it unchanged must not
+        // overwrite the full-precision number behind it.
+        const QString shown = column == ColError && target <= 0.0 ? u"—"_s
+                                                                   : formatQuantity(target);
+        if (text == shown) {
+            QTimer::singleShot(0, this, [this]() { refreshBandTable(); });
+            return;
+        }
+        // The table writes numbers in the C locale, so that is tried first: in
+        // a locale whose group separator is "." the system parse would read a
+        // shown 1.234 Jy back as 1234 Jy.
+        bool ok = false;
+        double value = text.toDouble(&ok);
+        if (!ok) {
+            QLocale locale;
+            locale.setNumberOptions(QLocale::RejectGroupSeparator);
+            value = locale.toDouble(text, &ok);
+        }
+        const bool valid = ok && std::isfinite(value)
+                && (column == ColFlux ? value > 0.0 : value >= 0.0);
+        if (!valid) {
+            m_log->append(u"Not a valid %1: “%2”. A flux must be a positive number of Jy, "
+                          u"an error zero or more."_s
+                                  .arg(column == ColFlux ? u"flux"_s : u"error"_s,
+                                       text.toHtmlEscaped()));
+            QTimer::singleShot(0, this, [this]() { refreshBandTable(); });
+            return;
+        }
+        target = value;
+        // A typed value is the user's own number: switching the 250 µm scaling
+        // off later must not divide it by a factor it never had. The other
+        // quantity of the row keeps its scaled value, now as typed in.
+        point.sizeScale = 1.0;
+        point.edited = true;
+        if (row < static_cast<int>(m_rowBranches.size())
+            && m_rowBranches[static_cast<std::size_t>(row)].size() == 1) {
+            const int member = m_rowBranches[static_cast<std::size_t>(row)].front();
+            if (member >= 0 && static_cast<std::size_t>(member) < m_rawPoints.size()) {
+                visivo::SedPoint &raw = m_rawPoints[static_cast<std::size_t>(member)];
+                (column == ColFlux ? raw.fluxJy : raw.errorJy) = value;
+                raw.sizeScale = 1.0;
+                raw.edited = true;
+            }
+        }
+        // Deferred: rebuilding the items inside their own cellChanged would
+        // delete the item Qt is still editing.
+        QTimer::singleShot(0, this, [this]() {
+            refreshBandTable();
+            replot();
+        });
+        markResultsStale();
+        updateIdleStatus();
+        return;
+    }
     if (column == ColUse)
         point.use = m_bandTable->item(row, ColUse)->checkState() == Qt::Checked;
     else if (column == ColUpperLimit)
@@ -887,6 +1124,7 @@ void SedWindow::runGreybodyFit()
                                request.kappaRef,
                                request.lambdaRefUm, request.sizeArcsec,
                                request.colourCorrection, request.model, m_inputRevision };
+    m_pending.observedForLuminosity = visivo::SedBuilder::observedLuminosityPoints(m_sed.points);
 
     setBusy(true, u"Fitting…"_s);
     const QString url = m_backendUrl;
@@ -1470,6 +1708,30 @@ void SedWindow::showFitResults()
                     uncertainty = u"> %1"_s.arg(uncertainty);
             }
             m_resultTable->setItem(row, 3, readOnlyItem(uncertainty));
+            if (key == u"luminosity_lsun"_s) {
+                m_resultTable->item(row, 1)->setToolTip(
+                        u"The fitted greybody integrated over 5–2000 µm. For a protostellar "
+                        u"clump this leaves out the warm dust seen at 70 µm and shorter."_s);
+            }
+        }
+        const double observedPlusGreybody =
+                visivo::SedBuilder::observedPlusGreybodyLuminosityLsun(
+                        m_provenance.observedForLuminosity,
+                        std::vector<double>(fit.modelWavelengthUm.cbegin(),
+                                            fit.modelWavelengthUm.cend()),
+                        std::vector<double>(fit.modelFluxJy.cbegin(), fit.modelFluxJy.cend()),
+                        m_provenance.distancePc);
+        if (observedPlusGreybody > 0.0) {
+            const int lumRow = m_resultTable->rowCount();
+            m_resultTable->insertRow(lumRow);
+            m_resultTable->setItem(lumRow, 0, readOnlyItem(modelName));
+            m_resultTable->setItem(lumRow, 1, readOnlyItem(u"L_bol, observed + greybody (L☉)"_s));
+            m_resultTable->item(lumRow, 1)->setToolTip(
+                    u"Elia et al. (2017) recipe for a clump with a 70 µm detection: the observed "
+                    u"fluxes from 20 to 160 µm joined by a trapezoid in F_ν, plus the greybody "
+                    u"beyond 160 µm."_s);
+            m_resultTable->setItem(lumRow, 2, readOnlyItem(formatValue(observedPlusGreybody)));
+            m_resultTable->setItem(lumRow, 3, readOnlyItem(u"—"_s));
         }
         const int row = m_resultTable->rowCount();
         m_resultTable->insertRow(row);
@@ -1643,7 +1905,8 @@ void SedWindow::exportSed()
                    "fitted_* columns describe the selection recorded in fit_* instead.\n";
         }
     }
-    out << "wavelength_um,flux_jy,error_jy,upper_limit,used,size_arcsec,designation";
+    out << "wavelength_um,flux_jy,error_jy,upper_limit,used,size_arcsec,designation,"
+           "catalogue_flux_jy,catalogue_error_jy,size_scale";
     if (!m_fits.isEmpty())
         out << ",fit_flux_jy,fit_error_jy,fit_upper_limit";
     for (const BackendSedFit &fit : m_fits)
@@ -1655,7 +1918,10 @@ void SedWindow::exportSed()
         out << point.wavelengthUm << ',' << point.fluxJy << ',' << point.errorJy << ','
             << (point.upperLimit ? 1 : 0) << ',' << (point.use ? 1 : 0) << ','
             << point.sizeArcsec << ',' << '"' << QString(point.label).replace(u'"', u"\"\""_s)
-            << '"';
+            << '"' << ',' << point.catalogueFluxJy << ',' << point.catalogueErrorJy << ',';
+        // Empty when summed branches were scaled by different factors.
+        if (!std::isnan(point.sizeScale))
+            out << point.sizeScale;
         // fitted_flux_jy is aligned with the bands that were SENT when the fit
         // ran. Row indices cannot carry that across: collapsing the branches
         // renumbers the rows, so row 2 can be 160 µm before the fit and 250 µm

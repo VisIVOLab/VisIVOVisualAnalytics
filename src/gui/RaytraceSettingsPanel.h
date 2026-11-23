@@ -43,6 +43,10 @@ public:
     /// new particles to fetch (a projected map's colours are drawn here).
     static QString particlesKey(const QJsonObject &request);
 
+    /// The table's box is periodic and known (a Gadget snapshot's BoxSize):
+    /// the "Periodic box" choice shows, on by default; off sends ``period: 0``.
+    void setPeriodicBoxKnown(bool known);
+
     /// All of it, to start another panel from this one.
     QJsonObject settings() const;
     void setSettings(const QJsonObject &settings);
@@ -67,6 +71,8 @@ private:
     QComboBox *m_size{ nullptr };
     QSpinBox *m_neighbours{ nullptr };
     QDoubleSpinBox *m_sizeScale{ nullptr };
+    QCheckBox *m_periodic{ nullptr };
+    bool m_periodicKnown{ false };
     QComboBox *m_light{ nullptr };
     QCheckBox *m_lightLog{ nullptr };
     QDoubleSpinBox *m_contrast{ nullptr };

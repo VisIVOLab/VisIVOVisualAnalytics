@@ -4,6 +4,7 @@
 
 #include "ColormapIcon.h"
 #include "SolidSplats.h"
+#include "ParticleSplatVtk.h"
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "DiagnosticsWindow.h"
@@ -1276,14 +1277,11 @@ void vtkWindowVbt::setupRenderer()
     // mapped scalars, else the mapper skips the opacity function below and
     // every intensity draws the same picture (issue #263).
     SolidSplats::configureTable(this->solidSplatLut.Get());
-    //
-    // Per-splat opacity is controlled via the documented VTK API:
-    //   SetOpacityArray("VbtScalar") → use the scalar array as the lookup key
-    //   SetScalarOpacityFunction     → piecewise function mapping key → per-splat opacity
-    // The function is a flat constant configured density-adaptively in updateRenderMode().
-    // Using this API path is more reliable than actor->GetProperty()->SetOpacity() which
-    // vtkPointGaussianMapper may not honour consistently across VTK builds.
+    // The opacity function is 1: a splat's opacity is the gain in its
+    // fragment code (ParticleSplatVtk::setSplatGain, issue #457), never the
+    // colour's 8-bit alpha.
     this->gaussianMapper->SetOpacityArray("VbtScalar");
+    ParticleSplatVtk::setUnitOpacity(this->gaussianOpacityFunction.Get());
     this->gaussianMapper->SetScalarOpacityFunction(this->gaussianOpacityFunction.Get());
 
     // Loading placeholder — visible until buildPointCloud() completes.
@@ -1389,93 +1387,45 @@ void vtkWindowVbt::updateRenderMode()
     if (this->m_labelRayIntensity) this->m_labelRayIntensity->setVisible(rayCasting);
     if (this->sliderRayIntensity)  this->sliderRayIntensity->setVisible(rayCasting);
     if (rayCasting) {
-        // ── Density-adaptive splat sizing ─────────────────────────────────────
-        // Goal: every particle contributes to the rendered image at every depth
-        // (depth writes are disabled in emissive mode), so the full cloud volume
-        // and its filamentary structure are preserved.
-        //
-        // Radius derivation:
-        //   spacing  = maxDim / cbrtN  ← mean inter-particle distance along longest axis
-        //   radius   = spacing * sliderVal / 12
-        //
-        // At default sliderVal=3: radius = spacing/4.
-        // Two adjacent filament points separated by spacing/2 (denser-than-average
-        // filament) have their splat centres 2×radius apart → Gaussian value at
-        // midpoint = exp(-0.5*(d/σ)²) = exp(-0.5*(2)²) = exp(-2) ≈ 0.135 of peak.
-        // With additive blending both splats contribute → midpoint = 0.27 of peak,
-        // so filaments at ½ global spacing appear as connected structures.
-        // At sliderVal=12: radius = spacing → very wide splats that merge clusters;
-        // useful for inspecting large-scale density only.
-        //
+        // As the catalogue viewer and the backend's point session draw them
+        // (ParticleSplatDefaults::splatStyle, issue #457): radius = spacing x
+        // size / 8 with spacing the cube root of volume / points, and a peak
+        // opacity of 1.5 x intensity / (35 x depth), unquantised and with no
+        // floor, added into a float target, so the light of the cloud does
+        // not change with the number of points. The intensity slider is the
+        // point session's, 35 its standard.
         double bounds[6] = {0., 0., 0., 0., 0., 0.};
         this->polyData->GetBounds(bounds);
-        const double dimX = bounds[1] - bounds[0];
-        const double dimY = bounds[3] - bounds[2];
-        const double dimZ = bounds[5] - bounds[4];
-        const double maxDim = std::max({dimX, dimY, dimZ, 1.0e-6});
         const vtkIdType npts = this->polyData->GetNumberOfPoints();
-        const double cbrtN = npts > 0 ? std::cbrt(static_cast<double>(npts)) : 1.0;
-        const double spacing = maxDim / cbrtN;
         const int sliderVal = this->sliderPointSize ? this->sliderPointSize->value() : 3;
-        // slider 1–12: radius = 12%–150% of mean spacing
-        // (was /12 → /8: 1.5× larger so adjacent filament points at ≤ 0.75×spacing connect)
-        const double radius = spacing * sliderVal / 8.0;
-
-        // ── Per-splat opacity ─────────────────────────────────────────────────
-        // Design target: a single isolated particle must be clearly visible, i.e.
-        //   1 × perSplatOpacity ≥ 0.15  (15% brightness on the dark background).
-        //
-        // Previous formula (3.0/cbrtN) was calibrated for the AVERAGE sightline density
-        // (N_sightline ≈ 0.375×cbrtN), so perSplatOpacity ≈ 8/cbrtN.  For N=100k
-        // (cbrtN=46.4) at default intensity=35%: perSplatOpacity ≈ 0.022.
-        // In a filamentary cloud, SPARSE sightlines have 1–3 particles → brightness
-        // 0.02–0.07, invisible against the 6% background → "faint central spot".
-        //
-        // Fix: use baseOpacity = min(0.9, 20.0/cbrtN), which gives perSplatOpacity ≈ 0.15
-        // for a single particle at default intensity=35% across the expected dataset range.
-        //
-        //   N=10k  (cbrtN=21.5): baseOpacity = min(0.9, 0.93) = 0.90; at 35% → 0.315
-        //   N=100k (cbrtN=46.4): baseOpacity = min(0.9, 0.43) = 0.43; at 35% → 0.151
-        //   N=1M   (cbrtN=100):  baseOpacity = min(0.9, 0.20) = 0.20; at 35% → 0.070
-        //
-        // Dense cores (N_sightline ≫ 1) saturate at default settings — this is the
-        // expected and desirable behaviour for a density/emission renderer.  The intensity
-        // slider reduces perSplatOpacity to trade core contrast for cloud-edge brightness.
-        //
-        // Clamp: lower bound 0.05 ensures sparse pixels always show something;
-        //        upper bound 0.9 allows sparse small datasets to render visibly.
-        const double intensity = (this->sliderRayIntensity ? this->sliderRayIntensity->value() : 35) / 100.0;
-        const double baseOpacity = std::min(0.9, 20.0 / cbrtN);
-        const double perSplatOpacity = std::clamp(baseOpacity * intensity, 0.05, 0.9);
-
-        // Flat opacity function: same opacity for every scalar value so that the
-        // rendering is uniform across solid-colour mode (VbtScalar=0) and scalar-
-        // colour modes (VbtScalar in [min,max]).  Range [-1e15, 1e15] covers any value.
-        this->gaussianOpacityFunction->RemoveAllPoints();
-        this->gaussianOpacityFunction->AddPoint(-1.0e15, perSplatOpacity);
-        this->gaussianOpacityFunction->AddPoint( 1.0e15, perSplatOpacity);
-
-        this->gaussianMapper->SetScaleFactor(radius);
+        const double intensity = this->sliderRayIntensity ? this->sliderRayIntensity->value()
+                                                          : ParticleSplatDefaults::kIntensity;
+        const ParticleSplatDefaults::SplatStyle style = ParticleSplatDefaults::splatStyle(
+                bounds, static_cast<double>(npts), sliderVal, intensity);
+        this->gaussianMapper->SetScaleFactor(style.radius);
+        ParticleSplatVtk::setSplatGain(this->gaussianMapper.Get(), style.gain);
+        if (!this->m_splatPass)
+            this->m_splatPass = ParticleSplatVtk::floatTargetPass();
+        this->renderer->SetPass(this->m_splatPass);
         qDebug().noquote()
-                << QStringLiteral(
-                           "[VBT] rayCasting: npts=%1 cbrtN=%2 spacing=%3 radius=%4 "
-                           "sliderVal=%5 intensity=%6 perSplatOpacity=%7 "
-                           "emissive=%8 scalarVis=%9 boundScale=%10")
+                << QStringLiteral("[VBT] rayCasting: npts=%1 depth=%2 radius=%3 sliderVal=%4 "
+                                  "intensity=%5 gain=%6")
                            .arg(npts)
-                           .arg(cbrtN, 0, 'f', 1)
-                           .arg(spacing, 0, 'g', 4)
-                           .arg(radius, 0, 'g', 4)
+                           .arg(style.depth, 0, 'f', 1)
+                           .arg(style.radius, 0, 'g', 4)
                            .arg(sliderVal)
-                           .arg(intensity, 0, 'f', 2)
-                           .arg(perSplatOpacity, 0, 'f', 4)
-                           .arg(this->gaussianMapper->GetEmissive())
-                           .arg(this->gaussianMapper->GetScalarVisibility())
-                           .arg(this->gaussianMapper->GetBoundScale());
+                           .arg(intensity, 0, 'f', 0)
+                           .arg(style.gain, 0, 'g', 4);
         this->actor->SetMapper(this->gaussianMapper.Get());
-        // Actor property opacity = 1.0: VTK treats the actor as opaque for render-pass
-        // selection.  Individual splat opacity is driven entirely by gaussianOpacityFunction.
         this->actor->GetProperty()->SetOpacity(1.0);
     } else {
+        if (this->m_splatPass && this->renderer->GetPass() == this->m_splatPass) {
+            // Its float framebuffer stays on the GPU unless released here,
+            // with the window's context current.
+            this->renderWindow->MakeCurrent();
+            this->m_splatPass->ReleaseGraphicsResources(this->renderWindow);
+            this->renderer->SetPass(nullptr);
+        }
         this->actor->SetMapper(this->mapper.Get());
         this->actor->GetProperty()->SetOpacity(1.0);
         this->actor->GetProperty()->SetPointSize(this->sliderPointSize ? this->sliderPointSize->value() : 3);

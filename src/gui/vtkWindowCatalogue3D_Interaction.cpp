@@ -1,6 +1,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "CameraPresetActions.h"
 #include "RemoteCameraPreset.h"
+#include "RemotePointStyle.h"
 #include "RemotePointView.h"
 #include "RemoteRenderWidget.h"
 #include "RaytraceViewport.h"
@@ -552,14 +553,16 @@ void vtkWindowCatalogue3D::scaleChanged(int value)
 {
     // Moved by the user (or a linked view): a change of shape keeps it.
     this->m_sliderAutomatic = false;
-    if (entries.empty())
-        return;
     Q_UNUSED(value);
-    this->updateGlyphScales();
-    if (this->geometryMode == GeometryMode::Gaussian)
-        this->updateGaussianSplats();
-    renderWindow->Render();
-    this->pushRemoteState();
+    visivo::remote::SizeSliderTargets targets;
+    targets.restyleLocal = [this]() {
+        this->updateGlyphScales();
+        if (this->geometryMode == GeometryMode::Gaussian)
+            this->updateGaussianSplats();
+        renderWindow->Render();
+    };
+    targets.updateServerViews = [this]() { this->pushRemoteState(); };
+    visivo::remote::applySizeSlider(!entries.empty(), targets);
 }
 
 void vtkWindowCatalogue3D::resetCamera()
@@ -882,6 +885,56 @@ double vtkWindowCatalogue3D::framingRadius(int idx, QString *field) const
     return 0.0;
 }
 
+std::optional<std::array<double, 3>> vtkWindowCatalogue3D::selectedPosition() const
+{
+    const int idx = this->selectedIndex;
+    if (idx < 0 || idx >= static_cast<int>(this->entries.size()))
+        return std::nullopt;
+    const Catalogue3DEntry &entry = this->entries[static_cast<std::size_t>(idx)];
+    std::array<double, 3> position{};
+    const QString names[] = { u"x"_s, u"y"_s, u"z"_s };
+    for (int axis = 0; axis < 3; ++axis) {
+        bool ok = false;
+        position[axis] =
+                Catalogue3DParser::detail::fieldDouble(entry, this->schema, names[axis], &ok);
+        if (!ok || !std::isfinite(position[axis]))
+            return std::nullopt;
+    }
+    return position;
+}
+
+std::optional<visivo::profiles::CentreChoice> vtkWindowCatalogue3D::subfindTargetInSession() const
+{
+    // The target must be open in the same backend session: the profile
+    // route looks its row up there.
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+        const auto *window = qobject_cast<const vtkWindowCatalogue3D *>(widget);
+        if (!window || window->backendUrl != this->backendUrl
+            || window->remoteSessionId != this->remoteSessionId
+            || window->remoteDatasetId.isEmpty()
+            || window->m_componentMetadata.value(u"catalogue_kind"_s).toString() != u"subfind"_s)
+            continue;
+        const int idx = window->selectedIndex;
+        if (idx < 0 || idx >= static_cast<int>(window->entries.size()))
+            continue;
+        const Catalogue3DEntry &entry = window->entries[static_cast<std::size_t>(idx)];
+        if (entry.sourceRow < 0)
+            continue;
+        visivo::profiles::CentreChoice target;
+        target.mode = visivo::profiles::CentreMode::Target;
+        target.targetDatasetId = window->remoteDatasetId;
+        target.targetRow = entry.sourceRow;
+        namespace cp = Catalogue3DParser::detail;
+        const QString name = cp::fieldString(entry, window->schema,
+                                             cp::detectedNameField(window->schema));
+        target.label = u"%1 (row %2 of %3)"_s.arg(name.isEmpty() ? u"target"_s : name)
+                               .arg(entry.sourceRow)
+                               .arg(window->shownName());
+        return target;
+    }
+    return std::nullopt;
+}
+
 void vtkWindowCatalogue3D::centerOnSource(int idx, double zoomFactor)
 {
     if (idx < 0 || idx >= static_cast<int>(this->entries.size())
@@ -934,8 +987,13 @@ void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &
                                            .toString();
         const QString name = Catalogue3DParser::detail::entryDisplayName(
                 this->entries[static_cast<std::size_t>(idx)], this->schema);
-        this->showSelectionStatus(
-                visivo::framing::framingStatus(name, radiusField, definition, radius));
+        const visivo::framing::FramingOutputs outputs{
+            [this](const QString &text) { this->showSelectionStatus(text); },
+            [this](const QString &text, int timeoutMs) {
+                this->statusBar()->showMessage(text, timeoutMs);
+            }
+        };
+        visivo::framing::reportFraming(outputs, name, radiusField, definition, radius);
     };
     const bool raytraced = this->m_rtView && this->m_renderStack
             && this->m_renderStack->currentWidget() == this->m_rtView;

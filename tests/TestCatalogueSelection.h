@@ -24,5 +24,7 @@ private slots:
     void anUnmovedViewIsTheSameView();
     void theSizedRadiusIsPreferred();
     void radiiSayWhatTheyAreDefinedAgainst();
+    void theFramingLineGoesToTheInspectorAndTheStatusBar();
     void cameraJsonRoundTrips();
+    void aOneClickConditionJoinsTheAppliedFiltersOnly();
 };

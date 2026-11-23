@@ -8,6 +8,18 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Backend and VR: splat brightness independent of the particle count
+  (#457).** The point session's Gaussian splats (the *Remote* 3-D view and
+  comparison panes) are added into a float target at an exposure set by the
+  intensity alone, without the floor of eight 8-bit steps that made a table of
+  10 million rows 4.5 times brighter than the same field from 100,000. The VR
+  page's float targets lose their opacity floor (it brightened tables from
+  about 27 million rows) and size their opacity for the rows they draw, so the
+  preview no longer dims while the governor draws a smaller sample. On a
+  Plummer sphere from 1e5 to 3e7 particles the mean brightness stays within
+  1 % and the projected profile within 1 % of the analytic one
+  (`validation/splat_brightness.py`). The desktop's local view follows.
+
 ## 1.2.0 (2026-11-17)
 
 - **Desktop: SKAVA Discovery described as our prototype.** The Data Hub

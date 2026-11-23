@@ -569,7 +569,7 @@ class TestMomentUnitHelper:
 
     def test_m0_no_bunit(self):
         from app.compute import _moment_unit
-        assert _moment_unit(0, "", "Hz") == "Hz"
+        assert _moment_unit(0, "", "Hz") == "(unknown) × Hz"
 
     def test_m1(self):
         from app.compute import _moment_unit
