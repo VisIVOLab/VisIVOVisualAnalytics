@@ -751,6 +751,36 @@ async def spectral_aperture(
         raise HTTPException(400, str(exc)) from exc
 
 
+class SpectralAxisRequest(BaseModel):
+    dataset_id: str
+    #: native (the file's), frequency (Hz), vrad or vopt (km/s).
+    quantity: str = "native"
+    #: native, or a FITS SPECSYS name: BARYCENT, LSRK, LSRD, GEOCENTR, GALACTOC, TOPOCENT.
+    frame: str = "native"
+    #: Replaces the header's rest frequency for the velocities.
+    rest_freq_hz: float | None = None
+
+
+@router.post("/v1/spectral/axis", tags=["spectral"])
+async def spectral_axis_values(
+    request: SpectralAxisRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """The cube's spectral axis, one value per channel, in another quantity
+    (frequency, radio or optical velocity) and reference frame (issue #496)."""
+    entry = _require_dataset(session, request.dataset_id)
+    if entry["kind"] != "cube":
+        raise HTTPException(422, "A spectral axis needs a spectral cube dataset.")
+    from ..spectral_axis import spectral_axis  # noqa: PLC0415
+    try:
+        result = await asyncio.to_thread(spectral_axis, entry["path"], request.quantity,
+                                         request.frame, request.rest_freq_hz)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"valid": True, "error": "", **result}
+
+
 class LineFitRequest(BaseModel):
     values: list[float]
     axis: list[float]

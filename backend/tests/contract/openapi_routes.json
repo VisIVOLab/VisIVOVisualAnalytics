@@ -212,6 +212,7 @@
     "POST /v1/sofia2/suggest/{dataset_id}",
     "POST /v1/sourcefind/{dataset_id}",
     "POST /v1/spectral/aperture",
+    "POST /v1/spectral/axis",
     "POST /v1/spectral/baseline/{session_id}/{dataset_id}",
     "POST /v1/spectral/linefit",
     "POST /v1/spectral/linewidth",

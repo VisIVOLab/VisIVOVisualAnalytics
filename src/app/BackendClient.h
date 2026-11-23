@@ -1511,6 +1511,21 @@ struct BackendSpectrumResult
     QString spectralType;           ///< CTYPE3, e.g. "FREQ", "VRAD"
 };
 
+/// The spectral axis in another quantity / frame (POST /v1/spectral/axis, #496).
+struct BackendSpectralAxisResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<double> values;   ///< one per channel
+    QString unit;             ///< "Hz", "km/s", or the file's unit
+    QString ctype;            ///< FREQ, VRAD, VOPT, or the file's
+    QString frame;            ///< the frame the values are in (SPECSYS name)
+    QString nativeFrame;      ///< the file's SPECSYS, empty when it has none
+    double restFreqHz{ 0.0 };
+    double headerRestFreqHz{ 0.0 };
+    QString note;
+};
+
 // ── A-01: Aperture photometry ─────────────────────────────────────────────────
 
 struct BackendAperturePhotometryResult
@@ -3262,6 +3277,12 @@ public:
 
     /** POST /v1/spectral/aperture — mean spectrum over a circular aperture
      *  (radius in pixels), computed on the node. */
+    /** POST /v1/spectral/axis: the cube's spectral axis, one value per channel,
+     *  as @p quantity ("native", "frequency", "vrad", "vopt") in @p frame
+     *  ("native" or a SPECSYS name); @p restFreqHz > 0 replaces the header's.
+     *  Blocks: call it on a worker. */
+    BackendSpectralAxisResult spectralAxisTable(const QString &datasetId, const QString &quantity,
+                                                const QString &frame, double restFreqHz) const;
     BackendSpectrumResult spectralAperture(const QString &datasetId,
                                             double x, double y,
                                             double radiusPixels = 3.0) const;
