@@ -30,6 +30,11 @@
 // Build: cmake --build build --target splat_brightness
 // Run:   build/splat_brightness [--sizes 1e5,1e6,3.66e6,1e7,3e7] [--budget 1000000]
 //                               [--before] [--vbt] [--csv out.csv]
+//        build/splat_brightness --pair first.xyz,second.xyz [--budget N] [--before]
+//
+// --pair compares two tables (raw little-endian float32 x, y, z per row) of
+// the same field at two resolutions, as two comparison panes show them, and
+// reports the median pixel ratio over the pixels lit and below white in both.
 
 #include "ParticleSplatDefaults.h"
 #include "ParticleSplatVtk.h"
@@ -259,6 +264,123 @@ struct Scene {
     }
 };
 
+// The splats of ``n`` rows filling ``bounds``, every ``stride``-th drawn, as
+// the viewer draws them at ``intensity``: the rule since issue #457, or with
+// ``before`` the one until then.
+void applyRule(Scene &scene, bool before, bool vbt, const double bounds[6], long long n,
+               long long stride, long long budget, double size, double intensity)
+{
+        if (before && vbt) {
+            const double longest = std::max({ bounds[1] - bounds[0], bounds[3] - bounds[2],
+                                              bounds[5] - bounds[4], 1.0e-6 });
+            const double cbrtN = std::cbrt(double(n));
+            const double value = std::clamp(std::min(0.9, 20.0 / cbrtN) * intensity / 100.0,
+                                            0.05, 0.9);
+            scene.opacity->RemoveAllPoints();
+            scene.opacity->AddPoint(-1.0e15, value);
+            scene.opacity->AddPoint(1.0e15, value);
+            scene.mapper->SetScaleFactor(longest / cbrtN * size / 8.0);
+        } else if (before) {
+            // The rule until issue #457: the level of detail counted as
+            // min(rows, budget), the opacity a whole 8-bit step, at least
+            // eight, stored as the colour's alpha a quarter step up.
+            const double counted = double(budget > 0 ? std::min(n, budget) : n);
+            const auto style = ParticleSplatDefaults::splatStyle(bounds, counted, size);
+            const double steps = ParticleSplatDefaults::alphaStepsForDepth(style.depth, intensity);
+            const double value = (steps + 0.25) / 255.0;
+            scene.opacity->RemoveAllPoints();
+            scene.opacity->AddPoint(-1.0e15, value);
+            scene.opacity->AddPoint(1.0e15, value);
+            scene.mapper->SetScaleFactor(style.radius);
+        } else {
+            const auto style = ParticleSplatDefaults::splatStyle(
+                    bounds, double(n) / double(stride), size, intensity);
+            scene.mapper->SetScaleFactor(style.radius);
+            ParticleSplatVtk::setSplatGain(scene.mapper, style.gain);
+        }
+}
+
+// Median of b / a over the pixels where both are lit and below white.
+double medianRatio(const Picture &a, const Picture &b, double &share)
+{
+    std::vector<double> ratios;
+    for (std::size_t i = 0; i < a.light.size(); ++i) {
+        const double x = a.light[i], y = b.light[i];
+        if (x >= 8.0 / 255.0 && y >= 8.0 / 255.0 && x < 1.0 && y < 1.0)
+            ratios.push_back(y / x);
+    }
+    share = double(ratios.size()) / double(a.light.size());
+    if (ratios.empty())
+        return 0.0;
+    std::nth_element(ratios.begin(), ratios.begin() + ratios.size() / 2, ratios.end());
+    return ratios[ratios.size() / 2];
+}
+
+std::vector<float> readTable(const std::string &path)
+{
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    const std::streamsize bytes = in.tellg();
+    in.seekg(0);
+    std::vector<float> xyz(std::size_t(bytes / sizeof(float)) / 3 * 3);
+    in.read(reinterpret_cast<char *>(xyz.data()), std::streamsize(xyz.size() * sizeof(float)));
+    return xyz;
+}
+
+// Two tables of the same field at different resolutions, as two comparison
+// panes show them: the same face-on camera over the box of the first, each
+// sized on its own rows (issue #457, criterion 2).
+int comparePair(const std::string &first, const std::string &second, long long budget,
+                bool before, double size)
+{
+    const std::vector<float> tables[2] = { readTable(first), readTable(second) };
+    Scene scene(before);
+    double frame[6];
+    {
+        const long long n = (long long)(tables[0].size() / 3);
+        scene.load(tables[0], n, 1);
+        scene.cloud->GetBounds(frame);
+    }
+    vtkCamera *camera = scene.renderer->GetActiveCamera();
+    const double cx = 0.5 * (frame[0] + frame[1]), cy = 0.5 * (frame[2] + frame[3]);
+    const double cz = 0.5 * (frame[4] + frame[5]);
+    const double depth = frame[5] - frame[4];
+    camera->SetFocalPoint(cx, cy, cz);
+    camera->SetPosition(cx, cy, cz + 2.0 * depth + 1.0);
+    camera->SetParallelScale(0.5 * std::max(frame[1] - frame[0], frame[3] - frame[2]));
+    camera->SetClippingRange(0.5 * depth, 4.0 * depth + 2.0);
+    std::printf("# Two resolutions of one field (issue #457, criterion 2)%s\n\n"
+                "%s and %s, face on at %d px, splat size %.2f, render budget %lld.\n\n",
+                before ? " - before" : "", first.c_str(), second.c_str(), kPixels, size, budget);
+    std::printf("| intensity | rows | stride | median pixel ratio second / first | "
+                "pixels compared | mean ratio second / first | white pixels first / second |\n"
+                "|---:|---|---|---:|---:|---:|---|\n");
+    for (double intensity : { 1.0, 4.0, 8.0, ParticleSplatDefaults::kIntensity }) {
+        Picture pictures[2];
+        long long rows[2], strides[2];
+        for (int k = 0; k < 2; ++k) {
+            rows[k] = (long long)(tables[k].size() / 3);
+            strides[k] = ParticleSplatDefaults::renderStride(rows[k], budget);
+            scene.load(tables[k], rows[k], strides[k]);
+            double bounds[6];
+            scene.cloud->GetBounds(bounds);
+            applyRule(scene, before, false, bounds, rows[k], strides[k], budget, size, intensity);
+            scene.window->Render();
+            pictures[k] = readBack(scene.window);
+        }
+        double share = 0.0;
+        const double ratio = medianRatio(pictures[0], pictures[1], share);
+        long long white[2] = { 0, 0 };
+        for (int k = 0; k < 2; ++k)
+            for (double v : pictures[k].light)
+                white[k] += v >= 1.0;
+        const double means = mean(pictures[1].light) / std::max(mean(pictures[0].light), 1.0e-30);
+        std::printf("| %g | %lld / %lld | %lld / %lld | %.3f | %.1f %% | %.3f | %lld / %lld |\n",
+                    intensity, rows[0], rows[1], strides[0], strides[1], ratio, 100.0 * share,
+                    means, white[0], white[1]);
+    }
+    return 0;
+}
+
 struct Row {
     long long n = 0;
     long long stride = 1;
@@ -287,6 +409,7 @@ int main(int argc, char **argv)
     bool before = false;
     bool vbt = false;
     std::string csvPath;
+    std::string pair;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--sizes" && i + 1 < argc)
@@ -299,11 +422,20 @@ int main(int argc, char **argv)
             vbt = true;
         else if (arg == "--csv" && i + 1 < argc)
             csvPath = argv[++i];
+        else if (arg == "--pair" && i + 1 < argc)
+            pair = argv[++i];
         else {
-            std::fprintf(stderr, "usage: %s [--sizes a,b,...] [--budget N] [--before] [--vbt] [--csv path]\n",
+            std::fprintf(stderr, "usage: %s [--sizes a,b,...] [--budget N] [--before] [--vbt] [--csv path] [--pair a.xyz,b.xyz]\n",
                          argv[0]);
             return 2;
         }
+    }
+    if (!pair.empty()) {
+        const auto comma = pair.find(',');
+        if (comma == std::string::npos)
+            return 2;
+        return comparePair(pair.substr(0, comma), pair.substr(comma + 1), budget, before,
+                           3.0 * ParticleSplatDefaults::initialSliderValue() / 100.0);
     }
     long long largest = 0;
     for (long long n : sizes)
@@ -329,34 +461,7 @@ int main(int argc, char **argv)
         // white only at a sixteenth of the lowest intensity its slider has.
         const double low = vbt ? 1.0 / 16.0 : 1.0;
         for (double intensity : { low, 100.0 * low, ParticleSplatDefaults::kIntensity }) {
-            if (before && vbt) {
-                const double longest = std::max({ bounds[1] - bounds[0], bounds[3] - bounds[2],
-                                                  bounds[5] - bounds[4], 1.0e-6 });
-                const double cbrtN = std::cbrt(double(n));
-                const double value = std::clamp(std::min(0.9, 20.0 / cbrtN) * intensity / 100.0,
-                                                0.05, 0.9);
-                scene.opacity->RemoveAllPoints();
-                scene.opacity->AddPoint(-1.0e15, value);
-                scene.opacity->AddPoint(1.0e15, value);
-                scene.mapper->SetScaleFactor(longest / cbrtN * size / 8.0);
-            } else if (before) {
-                // The rule until issue #457: the level of detail counted as
-                // min(rows, budget), the opacity a whole 8-bit step, at least
-                // eight, stored as the colour's alpha a quarter step up.
-                const double counted = double(budget > 0 ? std::min(n, budget) : n);
-                const auto style = ParticleSplatDefaults::splatStyle(bounds, counted, size);
-                const double steps = ParticleSplatDefaults::alphaStepsForDepth(style.depth, intensity);
-                const double value = (steps + 0.25) / 255.0;
-                scene.opacity->RemoveAllPoints();
-                scene.opacity->AddPoint(-1.0e15, value);
-                scene.opacity->AddPoint(1.0e15, value);
-                scene.mapper->SetScaleFactor(style.radius);
-            } else {
-                const auto style = ParticleSplatDefaults::splatStyle(
-                        bounds, double(n) / double(stride), size, intensity);
-                scene.mapper->SetScaleFactor(style.radius);
-                ParticleSplatVtk::setSplatGain(scene.mapper, style.gain);
-            }
+            applyRule(scene, before, vbt, bounds, n, stride, budget, size, intensity);
             scene.window->Render();
             pictures.push_back(readBack(scene.window));
         }
