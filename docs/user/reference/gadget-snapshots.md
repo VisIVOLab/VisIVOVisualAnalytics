@@ -107,8 +107,11 @@ particles in a cube the picture comes out brighter than nominal (about twice
 at a million particles, four and a half times at 10 million), so splat
 brightness is not comparable between tables of different size; use a
 [projected map](raytraced-particles.md) for that. Lower **Splat size** if
-dense regions saturate. Switching the shape to *Point* restores the default
-size, as long as you have not moved the slider.
+dense regions saturate. The whole slider changes the size, in the Local and
+Remote views alike: splats from 0.25 to 12 on the scale of the 0.75 above
+(3 at the slider's default), points from 1 to 16 pixels. Switching the shape
+to *Point* restores the default size, as long as you have not moved the
+slider.
 
 ## Rendering and analysis
 

@@ -1117,17 +1117,9 @@ void vtkWindowCatalogue3D::updateGlyphScales()
             << "visual range:" << minVisual << maxVisual;
 }
 
-int vtkWindowCatalogue3D::pointSizeFromScale() const
+double vtkWindowCatalogue3D::pointSizeFromScale() const
 {
-    return static_cast<int>(std::lround(std::clamp(4.0 * (ui->sliderScale->value() / 100.0),
-                                                   3.0, 12.0)));
-}
-
-double vtkWindowCatalogue3D::splatSizeFromScale() const
-{
-    // The former VBT viewer's size step, 3 at the slider's default (100 %),
-    // and continuous: the whole slider reaches below and above it.
-    return std::clamp(3.0 * ui->sliderScale->value() / 100.0, 0.25, 12.0);
+    return ParticleSplatDefaults::pointSizeForSlider(ui->sliderScale->value());
 }
 
 void vtkWindowCatalogue3D::updateGaussianSplats()
@@ -1155,7 +1147,8 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     for (const double d : dims)
         volume *= std::max(d, longest * 1.0e-3);
     const double spacing = std::cbrt(volume / std::max<double>(1.0, static_cast<double>(n)));
-    const double radius = spacing * this->splatSizeFromScale() / 8.0;
+    const double radius =
+            ParticleSplatDefaults::splatRadiusForSlider(spacing, ui->sliderScale->value());
     // Splats along the longest sightline: ∛N for a cube (the former viewer's
     // rule), and unchanged by a filter that cuts a slab.
     const double depth = std::max(longest / spacing, 1.0);

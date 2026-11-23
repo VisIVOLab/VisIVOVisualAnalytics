@@ -1,6 +1,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "CameraPresetActions.h"
 #include "RemoteCameraPreset.h"
+#include "RemotePointStyle.h"
 #include "RemotePointView.h"
 #include "RemoteRenderWidget.h"
 #include "RaytraceViewport.h"
@@ -552,14 +553,16 @@ void vtkWindowCatalogue3D::scaleChanged(int value)
 {
     // Moved by the user (or a linked view): a change of shape keeps it.
     this->m_sliderAutomatic = false;
-    if (entries.empty())
-        return;
     Q_UNUSED(value);
-    this->updateGlyphScales();
-    if (this->geometryMode == GeometryMode::Gaussian)
-        this->updateGaussianSplats();
-    renderWindow->Render();
-    this->pushRemoteState();
+    visivo::remote::SizeSliderTargets targets;
+    targets.restyleLocal = [this]() {
+        this->updateGlyphScales();
+        if (this->geometryMode == GeometryMode::Gaussian)
+            this->updateGaussianSplats();
+        renderWindow->Render();
+    };
+    targets.updateServerViews = [this]() { this->pushRemoteState(); };
+    visivo::remote::applySizeSlider(!entries.empty(), targets);
 }
 
 void vtkWindowCatalogue3D::resetCamera()
