@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <optional>
 
@@ -185,6 +186,35 @@ inline QString framingStatus(const QString &target, const QString &field,
             .arg(kRadiusMargin)
             .arg(radiusWithDefinition(field, definition))
             .arg(radius, 0, 'g', 6);
+}
+
+/// The framing line stays in the status bar as long as the window's other
+/// notices about the view do.
+inline constexpr int kFramingStatusBarMs = 8000;
+
+/// Where the framing line is written: the Inspector keeps it as the
+/// description of the current view, and the status bar shows it also when the
+/// Inspector is hidden, collapsed or scrolled away (issue #455).
+struct FramingOutputs
+{
+    std::function<void(const QString &)> inspector;
+    std::function<void(const QString &, int)> statusBar;
+};
+
+/// Writes the framing line of a SubFind target to both @p outputs. A target
+/// without a radius was only recentred, so nothing is written and false is
+/// returned.
+inline bool reportFraming(const FramingOutputs &outputs, const QString &target,
+                          const QString &field, const QString &definition, double radius)
+{
+    if (!(radius > 0.0) || !std::isfinite(radius))
+        return false;
+    const QString text = framingStatus(target, field, definition, radius);
+    if (outputs.inspector)
+        outputs.inspector(text);
+    if (outputs.statusBar)
+        outputs.statusBar(text, kFramingStatusBarMs);
+    return true;
 }
 
 } // namespace visivo::framing

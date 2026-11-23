@@ -37,9 +37,11 @@ def page_style(bounds, total_rows, sample_rows, size, intensity, rule="v1"):
         volume *= max(d, longest * 1e-3)
     spacing = (volume / max(1, total_rows)) ** (1 / 3)
     radius = spacing * size / 8
-    depth = max(longest / spacing, 1)
-    if rule in ("v2-f16", "v2-f32"):   # a float target: unquantised
-        opacity = min(max(1.5 * intensity / (35 * depth), 0.005), 0.25)
+    grow = max(1, total_rows / max(1, sample_rows)) ** (1 / 3)
+    # The rows drawn set the depth (#457); a page from before took the table's.
+    depth = max(longest / (spacing if rule == "v1" else spacing * grow), 1)
+    if rule in ("v2-f16", "v2-f32"):   # a float target: unquantised, no floor
+        opacity = min(1.5 * intensity / (35 * depth), 0.25)
     else:                              # 8-bit: whole steps, at least 8 (#447)
         steps = math.floor(1.5 * intensity / (35 * depth) * 255 + 0.5)
         opacity = min(max(steps, 8), 64) / 255
@@ -47,7 +49,6 @@ def page_style(bounds, total_rows, sample_rows, size, intensity, rule="v1"):
         opacity /= size * size
     elif rule == "v2-f16":
         opacity = max(opacity / (size * size), 1 / 512)
-    grow = max(1, total_rows / max(1, sample_rows)) ** (1 / 3)
     return radius, opacity, radius * grow
 
 
@@ -284,16 +285,28 @@ def test_the_pages_splat_style_is_the_desktops_plus_the_samples_growth():
         for rule in ("v1", "v2-8bit", "v2-f16", "v2-f32"):
             assert splat_style(bounds, total, sample, 3, 35, rule) == pytest.approx(
                 page_style(bounds, total, sample, 3, 35, rule))
-    r, op = gaussian_splat(bounds, 1000, 3, 35)
-    assert splat_style(bounds, 1000, 1000, 3, 35) == pytest.approx((r, op, r))
-    # A float target has no 8-bit store: 1.5 / depth unquantised (#447),
-    # over size².
+    # The session's own splats go into a float target (#457): 1.5 / depth
+    # unquantised, as the page's float rules at size 1; the page's 8-bit
+    # rules keep whole steps (#447).
     depth = 100 / (100 * 50 * 10 / 1000) ** (1 / 3)
-    assert splat_style(bounds, 1000, 1000, 3, 35, "v2-f32") == pytest.approx(
-        (r, 1.5 / depth / 9, r))
-    assert op != pytest.approx(1.5 / depth)   # the 8-bit one is a whole step
+    r, op = gaussian_splat(bounds, 1000, 3, 35)
+    assert op == pytest.approx(1.5 / depth)
+    assert splat_style(bounds, 1000, 1000, 3, 35) == pytest.approx(
+        (r, round(1.5 / depth * 255) / 255, r))
+    assert splat_style(bounds, 1000, 1000, 3, 35, "v2-f32") == pytest.approx((r, op / 9, r))
     r, op = gaussian_splat(bounds, 1000, 1, 35)
-    assert splat_style(bounds, 1000, 1000, 1, 35) == pytest.approx((r, op, r))
+    assert splat_style(bounds, 1000, 1000, 1, 35, "v2-f32") == pytest.approx((r, op, r))
+    # A sample of an eighth: splats twice as wide, half as deep, so the
+    # sample carries the table's light (#457); v1 kept the table's depth.
+    big = (0, 1000, 0, 1000, 0, 1000)
+    full = splat_style(big, 8_000_000, 8_000_000, 1, 35, "v2-f32")
+    eighth = splat_style(big, 8_000_000, 1_000_000, 1, 35, "v2-f32")
+    assert eighth[2] == pytest.approx(2 * full[2])
+    assert eighth[1] == pytest.approx(2 * full[1])
+    assert 1_000_000 * eighth[1] * eighth[2] ** 2 == pytest.approx(
+        8_000_000 * full[1] * full[2] ** 2)
+    assert splat_style(big, 8_000_000, 1_000_000, 1, 35, "v1")[1] == splat_style(
+        big, 8_000_000, 8_000_000, 1, 35, "v1")[1]
     # The sample's radius is the radius for the sampled rows alone.
     assert splat_style(bounds, 8000, 1000, 2, 35)[2] == pytest.approx(
         gaussian_splat(bounds, 1000, 2, 35)[0])
