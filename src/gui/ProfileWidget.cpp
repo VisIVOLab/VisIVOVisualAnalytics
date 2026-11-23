@@ -779,6 +779,11 @@ void ProfileWidget::clearLines()            { this->clearLineIdOverlay(); }
 void ProfileWidget::saveSpectrumCsvNow()    { this->saveSpectrumCsv(); }
 void ProfileWidget::saveSpectrumPngNow()    { this->savePlot1Png(); }
 
+QString ProfileWidget::spectrumXAxisLabel() const
+{
+    return ui->plot1 ? ui->plot1->xAxis->label() : QString();
+}
+
 QString ProfileWidget::statsText() const
 {
     return m_specStatsLabel ? m_specStatsLabel->text() : QString();

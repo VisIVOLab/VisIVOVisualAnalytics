@@ -1812,6 +1812,10 @@ protected:
     QPointer<QMenu> m_menuAnimationSpeed;
     QPointer<QMenu> m_menuAnimationMode;
     QPointer<QAction> m_actSourceFind;
+    /// LTE analysis of CO isotopologues (issue #416, vtkWindowCube_Lte.cpp).
+    QPointer<QAction> m_actLteCo;
+    void openLteCoDialog();
+    int m_lteRuns{ 0 };
     QPointer<QAction> m_actKinematicLasso;
     int m_lassoLastSeed[3]{ -1, -1, -1 };         ///< primary picked full-res seed (z,y,x)
     bool m_lassoHasSeed{ false };

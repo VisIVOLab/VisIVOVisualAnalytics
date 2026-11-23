@@ -49,6 +49,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient_Tasks.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_VrPair.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_CubeLod.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient_Products.cpp
     ${VISIVO_ROOT}/src/thirdparty/qrcodegen/qrcodegen.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
@@ -155,6 +156,8 @@ add_executable(VisIVOTests
     test_sed_builder.cpp
     TestMolecularLineClient.h
     test_molecular_line_client.cpp
+    TestLteCoRequest.h
+    test_lte_co_request.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h

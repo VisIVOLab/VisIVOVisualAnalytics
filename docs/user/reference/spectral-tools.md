@@ -2,9 +2,10 @@
 
 Tools that work along the spectral axis of a cube in the
 [cube viewer](cube-viewer.md). Two act on a spectrum already in a pane (line
-identification, Gaussian fit), from *Inspector ▸ Analysis ▸ SPECTRUM*. Three
+identification, Gaussian fit), from *Inspector ▸ Analysis ▸ SPECTRUM*. Four
 compute over the cube, from *Tools ▸ Spectral*: line-width map, baseline
-subtraction and stacking. Their dialogs do not block the window.
+subtraction, stacking and the LTE analysis of CO isotopologues. Their dialogs
+do not block the window.
 
 How to get a spectrum (probe, 3-D pick, region) is on the
 [Cube viewer](cube-viewer.md) page; a walk-through is in
@@ -135,3 +136,64 @@ spectral axis (channels, width, frame). Nothing warns you if they do not.
 
 Details: [Spectral tools: methods](../../technical/methods/spectral-tools.md),
 [Spectral API](../../technical/backend-api/spectral.md).
+
+## CO isotopologues (LTE)
+
+*Tools ▸ Spectral ▸ CO Isotopologues (LTE)…*, in a cube window or a 2-D map
+window, takes ¹³CO and C¹⁸O, and optionally ¹²CO, in J = 1–0 or 3–2. It gives
+the optical depth from the ¹³CO/C¹⁸O ratio, the excitation temperature, the
+opacity-corrected column densities, N(H₂) and the mass, assuming LTE.
+
+- *¹³CO*, *C¹⁸O*, *¹²CO (optional)*: any cube or 2-D map open in the session.
+  They are guessed from the file names and the window's rest frequency.
+  A cube is integrated over the *Velocity window*. A 2-D map is read as an
+  integrated intensity in K km/s, except a ¹²CO map, which is read as a peak
+  temperature in K. Maps are on the T_A* scale unless η_mb is 1. C¹⁸O and
+  ¹²CO are reprojected onto the ¹³CO grid when their grids differ; beams are
+  not matched, so smooth the data to a common resolution first.
+- *Velocity window* (km/s): taken from the spectrum's fit range when one is
+  active, else from the channels of the moment map (padded by half a channel
+  at each end). The channels outside the window give each pixel's noise, so
+  at least 10 must remain outside it.
+- *η_mb*: leave it empty to read it from the header. A header with TEMPSCAL,
+  BUNIT or BTYPE naming T_mb gives 1; otherwise BEAMEFF/FORWEFF or ETAMB is
+  used. ETAL is never used. A typed value overrides the header (for CHIMPS,
+  whose data are T_A*, Rigby et al. 2016 adopt 0.72). When the header has
+  none, the run stops and the field is marked as required. After a run, the value used and its source are
+  shown under the fields.
+- *Distance*, *R_GC*, *X(¹³CO)/X(C¹⁸O)*: X comes from the galactocentric
+  gradients at R_GC, and R_GC comes from the distance and the map centre. Type
+  either to override it; one of the three is required. The distance is also
+  needed for the mass.
+  *¹²C/¹³C gradient*: Milam et al. 2005 (the default) or Wilson & Rood 1994.
+  *N(H₂) from*: C¹⁸O (the default) or ¹³CO. *X(¹²CO)*: 8.5 × 10⁻⁵ unless
+  typed.
+- *Fixed T_ex*: leave it empty to measure T_ex. It then comes from the ¹²CO
+  peak (assumed optically thick), or, without ¹²CO, from the ¹³CO peak with τ
+  at the peak, which needs ¹³CO and C¹⁸O as cubes. A typed value is recorded
+  as an assumption.
+- *S/N threshold*: default 3σ. Pixels below it in either line are not solved.
+- *Regions*: the window's regions, one table row each. They are used only
+  when ¹³CO is the window's own dataset, because regions are measured on the
+  ¹³CO grid.
+
+*Run* fills the *Results* tab with three parts:
+
+- a table per region: W_mb of each line [K km/s], R, τ(¹³CO) and its range at
+  R ± σ_R (an open end, such as "≥ 1.1", means no upper bound), τ(C¹⁸O),
+  T_ex [K], N(¹³CO), N(C¹⁸O), N(H₂) [cm⁻²] and the mass [M☉]. Values are on
+  the T_mb scale, and "–" marks a value that cannot be computed;
+- the maps written: ratio, τ(¹³CO), τ(C¹⁸O), T_ex, N(¹³CO), N(C¹⁸O), N(H₂)
+  and a flag map (0 ok, 1 optically thin, 2 no LTE solution, 3 below S/N).
+  Double-click a map, or select it and click *Open Map*, to open it in a viewer.
+  Each map's FITS header records the assumptions;
+- the assumptions, with where each number came from, the pixel counts per
+  flag, and any warnings.
+
+*Save CSV…* writes the table at full precision, with the values and their σ
+in separate columns. The header lines (starting with `#`) record the input
+files, the request and the assumptions. Each run is also recorded as an `LTE`
+row in Session Data.
+
+Details: [Products API](../../technical/backend-api/products.md)
+(`POST /v1/products/lte_co`).

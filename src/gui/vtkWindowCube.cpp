@@ -2918,6 +2918,12 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actSourceFind, &QAction::triggered, this,
                      [this]() { emit this->sourceFinderRequested(); });
 
+    m_actLteCo = ui->menuTools->addAction(u"CO Isotopologues (LTE)…"_s);
+    m_actLteCo->setToolTip(
+            u"Optical depth, T_ex, column densities, N(H₂) and mass from ¹³CO and C¹⁸O "
+            u"(optionally ¹²CO) open in this session, per region and as maps."_s);
+    QObject::connect(m_actLteCo, &QAction::triggered, this, &vtkWindowCube::openLteCoDialog);
+
     m_actKinematicLasso = ui->menuTools->addAction(u"Kinematic Lasso (click to select)"_s);
     m_actKinematicLasso->setCheckable(true);
     m_actKinematicLasso->setToolTip(
@@ -8061,6 +8067,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Spectral"_s, ui->actionLinewidthMap);
     add(u"Spectral"_s, ui->actionBaselineSubtract);
     add(u"Spectral"_s, ui->actionStackCubes);
+    add(u"Spectral"_s, self->m_actLteCo);
 
     add(u"Maps"_s, ui->actionComputeMoment);
     add(u"Maps"_s, self->m_actChannelMaps);
@@ -14437,6 +14444,8 @@ void vtkWindowCube::setMomentActionsEnabled(bool enabled)
     ui->actionLinewidthMap->setEnabled(spectralEnabled);
     ui->actionBaselineSubtract->setEnabled(spectralEnabled);
     ui->actionStackCubes->setEnabled(available);   // stacking is never "busy"
+    if (this->m_actLteCo)
+        this->m_actLteCo->setEnabled(available);
     // Source finding runs entirely on the backend over this window's cube, so
     // it follows the same rule. (In the Data Hub it was gated on "a dataset was
     // opened at some point", which is not the same question.)
@@ -14985,7 +14994,8 @@ void vtkWindowCube::applyMomentToolGate()
     };
     showTools({ ui->actionLinewidthMap, ui->actionBaselineSubtract, ui->actionStackCubes,
                 m_actLoadStokesCompanions.data(), m_actPolarisedIntensity.data(),
-                m_actRmSynthesis.data(), m_actSourceFind.data(), m_actKinematicModel.data() },
+                m_actRmSynthesis.data(), m_actSourceFind.data(), m_actKinematicModel.data(),
+                m_actLteCo.data() },
               d.spectralTools);
     showTools({ actionLoadCatalogueOverlay.data(), actionShowCatalogueOverlay.data(),
                 actionShowCatalogueLabels.data(), actionClearCatalogueOverlay.data() },
