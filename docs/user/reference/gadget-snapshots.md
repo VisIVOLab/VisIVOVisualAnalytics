@@ -86,6 +86,8 @@ set them on the backend with `VISIVO_GADGET_UNITS`
 (see [Configuration](../../technical/configuration.md)).
 
 In a SubFind catalogue, subhalo velocities are taken as peculiar km/s and Vmax as physical km/s, as Gadget-4 and Arepo write them; an HDF5 catalogue's group velocity is converted with 1/a. The convention of the P-Gadget3 SubFind writer (binary `sub_…` files) is not public and is unconfirmed: `svel=snapshot` or `svel=canonical` (and `srad=` for the subhalo radii) in `VISIVO_GADGET_UNITS` state another one.
+For a Gadget-4 catalogue with its snapshot beside it, ask the copilot to check the velocity convention: it compares the stored velocity of the most massive subhalos with that of their particles and names the convention.
+A folder holding both a snapshot and its group catalogue opens the snapshot; the file browser names the catalogue, which you open as its own file. Gadget-4 lightcone catalogues (`lc_fof_…`) keep their velocities as written (already peculiar), and their positions, centred on the observer, never wrap round the box.
 
 Without a parameter file, the header decides whether the run is
 cosmological. A run with a matter density and a redshift that matches its
