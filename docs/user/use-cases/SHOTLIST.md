@@ -133,14 +133,14 @@ Local backend. `volumesnap63.bin` from `DemoData/`; the moment and its FITS expo
 
 ## 12-dust-clumps-sed.md
 
-Image viewer on `vlkb-cutout_2023-09-08_04-44-11_833602_continuum-higal_mosaic_mosaic_wgls_m030039_PSW.fits`, local backend with network access (the VLKB catalogue is queried from the desktop). Save the `clumps_scaled.csv` of the page in a folder of your own for shot 4.
+Image viewer on `vlkb-cutout_2023-09-08_04-44-11_833602_continuum-higal_mosaic_mosaic_wgls_m030039_PSW.fits`, local backend with network access (the VLKB catalogue is queried from the desktop). Shots 2 to 4 are the SED window of *HIGAL_FT_39.935089+0.135547*; capture the window only, enlarged to about 1400 × 940 so that the table and the plot both show.
 
 | File | What must be on screen |
 |---|---|
 | `12-dust-clumps-sed-1.png` | Image viewer, 1400 × 1000, the 250 µm cutout after *Tools ▸ Catalogue ▸ Overlay VLKB Compact Sources* and one click on the image: the white band-merged ellipses of the 70 sources, the catalogue table under the image with the *HIGAL_FT_39.935089+0.135547 (Band-merged)* row selected and expanded to its per-band children, the source highlighted on the image, and *Inspector ▸ Parameters* showing the band check boxes (*Band-merged* ticked). |
-| `12-dust-clumps-sed-2.png` | The SED window of *HIGAL_FT_39.935089+0.135547* on the *Photometry* tab, at its default size: rows 12, 22 (with the two greyed alternatives), 24, 34, 46, 70, 160, 250, 350 and 500 µm, *Use* unticked on every row below 160 µm, and the plot with *Log axes* on showing the four filled points at 160 to 500 µm and the hollow ones below. No fit yet. Capture the window only. |
-| `12-dust-clumps-sed-3.png` | Same window after *Fit greybody* with *Distance* 11850 pc in the *Fit* tab, on the *Results* tab: *Mass (M☉)* about 652, *Temperature (K)* about 18.5, β 2, *L_bol (L☉)* about 2540, χ² 6.9 with 2 degrees of freedom; the greybody curve through the four points on the plot. Capture the window only. |
-| `12-dust-clumps-sed-4.png` | The SED window of *HIGALBM39.9345+0.1325* opened from `clumps_scaled.csv` (*Tools ▸ Catalogue ▸ Load Catalogue Overlay…*, right-click ▸ *Fit SED of this source…*), after *Fit greybody* at 11850 pc, on the *Results* tab: *Temperature (K)* about 19.95, *Mass (M☉)* about 475, *L_bol (L☉)* about 2890; the four points and the curve on the plot. Capture the window only. |
+| `12-dust-clumps-sed-2.png` | The SED window on the *Photometry* tab, no fit yet: *Fit λ ≥* 160.0 µm, *Scale 350/500 µm to the 250 µm source size* unticked, the table scrolled to its end so that the 70 µm row (unticked) and the four ticked rows 160 (25.53 Jy), 250 (16.89), 350 (7.4) and 500 µm (3.152) show, and the plot with *Log axes* on showing the four filled points and the faint hollow ones. The status line reads *4 band(s) selected, 160–500 µm · no fit yet*. |
+| `12-dust-clumps-sed-3.png` | Same window after typing 11850 in *Distance* (*Fit* tab) and pressing *Fit greybody*, on the *Results* tab: *Mass (M☉)* 652.02, *Temperature (K)* 18.528, β 2, *L, greybody only (L☉)* 2540.2, *L_bol, observed + greybody (L☉)* 4278.1, χ² / χ²ᵣ (dof) 6.8979 / 3.449 (2); the greybody curve through the four points, with the y range following the data. |
+| `12-dust-clumps-sed-4.png` | Same window after ticking *Scale 350/500 µm to the 250 µm source size* (*Photometry* tab) and pressing *Fit greybody* again at 11850 pc, on the *Results* tab: *Mass (M☉)* 476.13, *Temperature (K)* 19.949, *L, greybody only (L☉)* 2890, *L_bol, observed + greybody (L☉)* 4235, χ² / χ²ᵣ (dof) 5.9456 / 2.9728 (2); the log shows *Scaled to the 250 µm size (21.9″ deconvolved): 350 µm × 0.892, 500 µm × 0.811*. |
 
 ## 13-molecular-cloud.md
 
