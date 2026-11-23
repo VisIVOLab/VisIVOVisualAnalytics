@@ -466,6 +466,8 @@ set(PROJECT_SOURCES
         src/app/VrSpectatorFeed.h
         src/app/VrHeadsetFollow.h
         src/app/SofiaSuggest.h
+        src/app/DatasetBeam.h
+        src/app/LineFitRequest.h
         src/app/FinderTaskRun.h
         src/app/RenderTaskHandle.h
         src/app/ThumbnailCache.cpp
@@ -723,6 +725,8 @@ set(PROJECT_SOURCES
         src/gui/McutoutJobDialog.cpp
         src/gui/McutoutJobDialog.h
         src/gui/ArepoExtractDialog.h
+        src/gui/DatasetBeamControl.cpp
+        src/gui/DatasetBeamControl.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h
         src/gui/SedBuilder.h

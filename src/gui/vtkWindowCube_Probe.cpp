@@ -629,8 +629,7 @@ void vtkWindowCube::applyProbeSpectrum(const QVector<double> &spectral,
     this->m_lastProbeSpectrumProduct.clear();
     this->m_lastProbeXLabel = this->spectralAxisTitle().isEmpty() ? u"Spectral axis"_s
                                                                   : this->spectralAxisTitle();
-    this->m_lastProbeYLabel = m_brightnessUnit.trimmed().isEmpty()
-            ? u"Intensity"_s : u"Intensity (%1)"_s.arg(m_brightnessUnit.trimmed());
+    this->m_lastProbeYLabel = this->intensityAxisLabel();
     this->m_lastProbeContext = wcsLabel;
     this->m_lastProbeVoxel = voxel;
 

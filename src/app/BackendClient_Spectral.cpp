@@ -1,6 +1,7 @@
 #include "BackendClient.h"
 #include "BackendHeaders.h"
 #include "DiagnosticsManager.h"
+#include "LineFitRequest.h"
 
 #include <QByteArray>
 #include <QDataStream>
@@ -365,54 +366,22 @@ BackendSpectrumResult BackendClient::spectralAperture(const QString &datasetId,
 
 BackendLineFitResult BackendClient::fitSpectralLine(const QVector<double> &values,
                                                     const QVector<double> &axis,
-                                                    bool withBaseline) const
+                                                    bool withBaseline, double xMin,
+                                                    double xMax) const
 {
-    BackendLineFitResult result;
-    QJsonArray valArr, axArr;
-    for (double v : values) valArr.append(v);
-    for (double a : axis)   axArr.append(a);
-    const QJsonObject bodyObj{
-        { QStringLiteral("values"), valArr },
-        { QStringLiteral("axis"), axArr },
-        { QStringLiteral("with_baseline"), withBaseline },
-    };
+    visivo::linefit::FitWindow window;
+    window.active = std::isfinite(xMin) && std::isfinite(xMax);
+    window.xMin = xMin;
+    window.xMax = xMax;
     QString error;
     const QByteArray payload = performPost(
-            QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linefit")), QJsonDocument(bodyObj), error);
-    if (!error.isEmpty()) { result.error = error; return result; }
-    const QJsonObject obj = QJsonDocument::fromJson(payload).object();
-    result.valid          = obj.value(QStringLiteral("valid")).toBool();
-    result.error          = obj.value(QStringLiteral("error")).toString();
-    result.peak           = obj.value(QStringLiteral("peak")).toDouble();
-    result.center         = obj.value(QStringLiteral("center")).toDouble();
-    result.sigma          = obj.value(QStringLiteral("sigma")).toDouble();
-    result.fwhm           = obj.value(QStringLiteral("fwhm")).toDouble();
-    result.integratedFlux = obj.value(QStringLiteral("integrated_flux")).toDouble();
-    result.continuum      = obj.value(QStringLiteral("continuum")).toDouble();
-    result.rms            = obj.value(QStringLiteral("rms")).toDouble();
-    // Errors are null when the covariance was undefined; keep the -1 sentinel so
-    // the caller can tell "no uncertainty available" from "uncertainty of zero".
-    const auto err = [&obj](const char *key) -> double {
-        const QJsonValue v = obj.value(QLatin1String(key));
-        return v.isDouble() ? v.toDouble() : -1.0;
-    };
-    result.peakErr           = err("peak_err");
-    result.centerErr         = err("center_err");
-    result.sigmaErr          = err("sigma_err");
-    result.fwhmErr           = err("fwhm_err");
-    result.integratedFluxErr = err("integrated_flux_err");
-    // 0 = the field is ABSENT (a backend older than this correction), which is not
-    // the same as 1 = "measured, and the channels are independent". The caller
-    // needs to tell those apart: in the first case the errors it received are
-    // uncorrected and it cannot know by how much.
-    result.spectralCorrelationFactor =
-            obj.value(QStringLiteral("spectral_correlation_factor")).toDouble(0.0);
-    result.spectralCorrelationNote =
-            obj.value(QStringLiteral("spectral_correlation_note")).toString();
-    const QJsonArray baseline = obj.value(QStringLiteral("baseline")).toArray();
-    if (baseline.size() >= 2) {
-        result.baselineIntercept = baseline.at(0).toDouble();
-        result.baselineSlope     = baseline.at(1).toDouble();
+            QUrl(m_baseUrl + QStringLiteral("/v1/spectral/linefit")),
+            QJsonDocument(visivo::linefit::requestBody(values, axis, withBaseline, window)),
+            error);
+    if (!error.isEmpty()) {
+        BackendLineFitResult result;
+        result.error = error;
+        return result;
     }
-    return result;
+    return visivo::linefit::parseResponse(QJsonDocument::fromJson(payload).object());
 }

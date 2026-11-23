@@ -29,6 +29,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QScopeGuard>
+#include <QSignalBlocker>
 #include <QSet>
 #include <QTimer>
 #include <QStandardPaths>
@@ -447,7 +448,9 @@ void ProfileWidget::buildSpectrumHeader()
     m_btnFit->setToolTip(
             u"Fit a single Gaussian (+ linear baseline) to the current spectrum\n"
             u"via the backend; overlays the fitted curve and reports peak, centre,\n"
-            u"FWHM and integrated flux in the axis units. Enabled once connected."_s);
+            u"FWHM and integrated flux in the axis units. Only the range chosen\n"
+            u"beside it is fitted: by default the part of the spectrum on screen,\n"
+            u"so zoom on the line first. Enabled once connected."_s);
     m_btnFit->setEnabled(!m_backendUrl.isEmpty());
     // Pin / Clear-pins: overlay several regions' spectra for comparison.
     // "Compare", NOT "Pin Spectrum": the cube viewer's Tools list has a Pin
@@ -469,6 +472,19 @@ void ProfileWidget::buildSpectrumHeader()
     toolRow->addWidget(loadLinesBtn);
     toolRow->addWidget(clearLinesBtn);
     toolRow->addWidget(m_btnFit);
+    m_fitRangeCombo = new QComboBox();
+    populateFitRangeCombo(m_fitRangeCombo);
+    toolRow->addWidget(m_fitRangeCombo);
+    QObject::connect(m_fitRangeCombo, qOverload<int>(&QComboBox::activated), this,
+                     [this](int index) {
+                         const auto mode = static_cast<visivo::linefit::RangeMode>(
+                                 m_fitRangeCombo->itemData(index).toInt());
+                         if (mode == visivo::linefit::RangeMode::Typed && !editTypedFitRange()) {
+                             this->setFitRangeMode(m_fitRangeMode);
+                             return;
+                         }
+                         this->setFitRangeMode(mode);
+                     });
     auto *clearFitBtn = new QPushButton(u"Clear Fit"_s);
     clearFitBtn->setStyleSheet(pillCss);
     clearFitBtn->setCursor(Qt::PointingHandCursor);
@@ -768,6 +784,11 @@ QString ProfileWidget::statsText() const
     return m_specStatsLabel ? m_specStatsLabel->text() : QString();
 }
 
+QString ProfileWidget::statsToolTip() const
+{
+    return m_specStatsLabel ? m_specStatsLabel->toolTip() : QString();
+}
+
 void ProfileWidget::refreshSpectrumStats(const QVector<double> &spectralKey,
                                          const QVector<double> &values)
 {
@@ -914,9 +935,106 @@ void ProfileWidget::setBackend(const QString &url, const QString &token)
 
 void ProfileWidget::clearFitOverlay()
 {
+    // The warning and caveats of a fit belong to that fit, not to the next
+    // spectrum's stats.
+    if (m_specStatsLabel) m_specStatsLabel->setToolTip(QString());
     if (!ui->plot1) return;
     if (m_fitGraph) { ui->plot1->removeGraph(m_fitGraph); m_fitGraph = nullptr; }
     if (m_fitLabel) { ui->plot1->removeItem(m_fitLabel);  m_fitLabel = nullptr; }
+}
+
+void ProfileWidget::populateFitRangeCombo(QComboBox *combo)
+{
+    if (!combo)
+        return;
+    combo->clear();
+    combo->addItem(u"Fit visible range"_s, static_cast<int>(visivo::linefit::RangeMode::Visible));
+    combo->addItem(u"Fit typed range…"_s, static_cast<int>(visivo::linefit::RangeMode::Typed));
+    combo->addItem(u"Fit whole spectrum"_s, static_cast<int>(visivo::linefit::RangeMode::Whole));
+    combo->setToolTip(
+            u"Which channels the Gaussian fit sees. Visible: the x-range on screen (zoom on "
+            u"the line). Typed: a range you enter. Whole: every channel, which can lock onto "
+            u"an edge spike or a baseline dip instead of the line."_s);
+}
+
+void ProfileWidget::setFitRangeMode(visivo::linefit::RangeMode mode)
+{
+    m_fitRangeMode = mode;
+    if (m_fitRangeCombo) {
+        const int index = m_fitRangeCombo->findData(static_cast<int>(mode));
+        if (index >= 0 && index != m_fitRangeCombo->currentIndex()) {
+            const QSignalBlocker blocker(m_fitRangeCombo);
+            m_fitRangeCombo->setCurrentIndex(index);
+        }
+    }
+    emit spectrumChanged();
+}
+
+bool ProfileWidget::editTypedFitRange()
+{
+    double lower = m_fitTypedMin;
+    double upper = m_fitTypedMax;
+    const bool typedOnThisAxis = m_fitTypedAxisLabel == m_lastSpectrumXLabel;
+    if ((!typedOnThisAxis || !std::isfinite(lower) || !std::isfinite(upper)) && ui->plot1) {
+        lower = ui->plot1->xAxis->range().lower;
+        upper = ui->plot1->xAxis->range().upper;
+    }
+    // On the heap and watched: the window can close while the dialog's own
+    // event loop runs, and a stack dialog owned by it would be deleted twice.
+    QPointer<ProfileWidget> self(this);
+    QPointer<QDialog> dialog = new QDialog(this);
+    dialog->setWindowTitle(u"Fit range"_s);
+    auto *form = new QFormLayout(dialog);
+    auto *hint = new QLabel(u"Fit only the channels between these two values (%1)."_s
+                                    .arg(m_lastSpectrumXLabel),
+                            dialog);
+    hint->setWordWrap(true);
+    form->addRow(hint);
+    auto *validator = new QDoubleValidator(dialog);
+    validator->setLocale(QLocale::c());
+    auto *fromEdit = new QLineEdit(QString::number(lower, 'g', 10), dialog);
+    auto *toEdit = new QLineEdit(QString::number(upper, 'g', 10), dialog);
+    fromEdit->setValidator(validator);
+    toEdit->setValidator(validator);
+    form->addRow(u"From"_s, fromEdit);
+    form->addRow(u"To"_s, toEdit);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    form->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    const int answer = dialog->exec();
+    if (!self || !dialog)
+        return false;
+    const QString fromText = fromEdit->text().trimmed();
+    const QString toText = toEdit->text().trimmed();
+    delete dialog;
+    if (answer != QDialog::Accepted)
+        return false;
+    bool okFrom = false;
+    bool okTo = false;
+    const double from = fromText.toDouble(&okFrom);
+    const double to = toText.toDouble(&okTo);
+    if (!okFrom || !okTo || !std::isfinite(from) || !std::isfinite(to) || from == to) {
+        QMessageBox::information(this, u"Fit range"_s,
+                                 u"Type two different numbers for the fit range."_s);
+        return false;
+    }
+    m_fitTypedMin = std::min(from, to);
+    m_fitTypedMax = std::max(from, to);
+    m_fitTypedAxisLabel = m_lastSpectrumXLabel;
+    return true;
+}
+
+visivo::linefit::FitWindow ProfileWidget::currentFitWindow() const
+{
+    using visivo::linefit::RangeMode;
+    if (m_fitRangeMode == RangeMode::Typed)
+        return visivo::linefit::windowFromRange(m_fitTypedMin, m_fitTypedMax, m_lastSpectrumKey);
+    if (m_fitRangeMode == RangeMode::Visible && ui->plot1)
+        return visivo::linefit::windowFromRange(ui->plot1->xAxis->range().lower,
+                                                ui->plot1->xAxis->range().upper,
+                                                m_lastSpectrumKey);
+    return {};
 }
 
 void ProfileWidget::requestLineFit()
@@ -940,12 +1058,27 @@ void ProfileWidget::requestLineFit()
     // centre, width, offset, slope), and the backend wants one channel more
     // than parameters so the residual has a degree of freedom.
     constexpr int kMinFitChannels = 6;
-    if (key.size() < kMinFitChannels) {
+    // A typed range is in the units of the axis it was typed on. After a
+    // switch between velocity, frequency and channel it means nothing, and
+    // fitting through it would quietly fit the wrong channels or all of them.
+    if (m_fitRangeMode == visivo::linefit::RangeMode::Typed
+        && m_fitTypedAxisLabel != m_lastSpectrumXLabel) {
+        m_fitTypedMin = m_fitTypedMax = std::numeric_limits<double>::quiet_NaN();
+        this->setFitRangeMode(visivo::linefit::RangeMode::Visible);
         QMessageBox::information(this, u"Line Fit"_s,
-                u"Need at least %1 finite spectral channels to fit a Gaussian with a baseline."_s
+                u"The spectral axis changed since the fit range was typed, so the fit is "
+                u"back to the visible range. Fit again, or type a new range."_s);
+        return;
+    }
+    const visivo::linefit::FitWindow window = this->currentFitWindow();
+    if (visivo::linefit::channelsInWindow(key, values, window) < kMinFitChannels) {
+        QMessageBox::information(this, u"Line Fit"_s,
+                u"Need at least %1 finite spectral channels in the fit range to fit a Gaussian "
+                u"with a baseline. Widen the range."_s
                         .arg(kMinFitChannels));
         return;
     }
+    const bool emission = visivo::linefit::looksLikeEmission(key, values, window);
     const QString url = m_backendUrl, token = m_backendToken;
     const int gen = m_spectrumGeneration;
     m_fitInProgress = true;
@@ -953,7 +1086,8 @@ void ProfileWidget::requestLineFit()
     emit spectrumChanged();   // Inspector disables its Fit button while the fit runs
     QPointer<ProfileWidget> self(this);
     auto *watcher = new QFutureWatcher<BackendLineFitResult>(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendLineFitResult>::finished, this, [self, watcher, gen]() {
+    QObject::connect(watcher, &QFutureWatcher<BackendLineFitResult>::finished, this,
+                     [self, watcher, gen, window, emission]() {
         const BackendLineFitResult fit = watcher->result();
         watcher->deleteLater();
         if (!self) return;
@@ -965,15 +1099,18 @@ void ProfileWidget::requestLineFit()
             QMessageBox::warning(self, u"Line Fit"_s, u"Fit failed:\n%1"_s.arg(fit.error));
             return;
         }
-        self->overlayLineFit(fit);
+        self->overlayLineFit(fit, visivo::linefit::warningText(fit, emission), window);
     });
-    watcher->setFuture(QtConcurrent::run([url, token, key, values]() -> BackendLineFitResult {
+    const double xMin = window.active ? window.xMin : std::numeric_limits<double>::quiet_NaN();
+    const double xMax = window.active ? window.xMax : std::numeric_limits<double>::quiet_NaN();
+    watcher->setFuture(QtConcurrent::run([url, token, key, values, xMin, xMax]() -> BackendLineFitResult {
         BackendClient c(url, token);
-        return c.fitSpectralLine(values, key, /*withBaseline=*/true);
+        return c.fitSpectralLine(values, key, /*withBaseline=*/true, xMin, xMax);
     }));
 }
 
-void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
+void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit, const QString &warning,
+                                   const visivo::linefit::FitWindow &window)
 {
     if (!ui->plot1 || m_lastSpectrumKey.isEmpty()) return;
     this->clearFitOverlay();
@@ -985,6 +1122,11 @@ void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
         if (!std::isfinite(k)) continue;
         xmin = std::min(xmin, k);
         xmax = std::max(xmax, k);
+    }
+    // The model means nothing outside the channels it was fitted to.
+    if (window.active) {
+        xmin = std::max(xmin, window.xMin);
+        xmax = std::min(xmax, window.xMax);
     }
     if (!std::isfinite(xmin) || !std::isfinite(xmax) || xmax <= xmin) return;
     const int n = 300;
@@ -1032,6 +1174,15 @@ void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
                  u"the uncertainties are not corrected for correlated channels and "
                  u"may be optimistic on spectrally smoothed data."_s;
     }
+    if (window.active) {
+        summary += u" · fitted %1 to %2"_s.arg(window.xMin, 0, 'g', 6).arg(window.xMax, 0, 'g', 6);
+    }
+    // A warning leads the line, where it is read before the numbers it
+    // qualifies; the full text is also the tooltip.
+    if (!warning.isEmpty()) {
+        summary = u"⚠ CHECK THE FIT: %1 · %2"_s.arg(warning.section(u'\n', 0, 0), summary);
+        caveat = caveat.isEmpty() ? warning : warning + u"\n\n"_s + caveat;
+    }
     if (m_specStatsLabel) {
         m_specStatsLabel->setText(summary);
         // The caveat is long and only sometimes present — a tooltip keeps it out
@@ -1048,6 +1199,11 @@ void ProfileWidget::overlayLineFit(const BackendLineFitResult &fit)
     m_fitLabel->setText(u"FWHM %1\ncentre %2"_s
                                 .arg(pm(fit.fwhm, fit.fwhmErr, 4))
                                 .arg(pm(fit.center, fit.centerErr, 6)));
+    if (!warning.isEmpty()) {
+        m_fitLabel->setColor(QColor(230, 70, 60));
+        m_fitLabel->setText(u"⚠ check the fit (peak %1)\n"_s.arg(fit.peak, 0, 'g', 3)
+                            + m_fitLabel->text());
+    }
 
     ui->plot1->replot();
     emit spectrumChanged();   // push the fit summary into the Inspector's stats readout

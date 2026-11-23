@@ -27,6 +27,7 @@
 #include "WorkspaceChrome.h"
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
+#include "DatasetBeamControl.h"
 #include "InspectorPanel.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
@@ -1003,6 +1004,20 @@ void vtkWindowImage::setupInspector()
             { u"Session"_s, this->remoteSessionId },
             { u"Backend"_s, this->remoteBackendUrl },
     });
+    m_unitValueLabel = new QLabel();
+    panel->addPropertyRow(u"Unit"_s, m_unitValueLabel.data());
+    m_beamControl = new DatasetBeamControl();
+    m_beamControl->setDataset(this->remoteBackendUrl, this->remoteBackendToken,
+                              this->remoteDatasetId);
+    panel->addPropertyRow(u"Beam"_s, m_beamControl.data());
+    connect(m_beamControl, &DatasetBeamControl::beamChanged, this,
+            [this](double majorDeg, double minorDeg, double paDeg, const QString &source) {
+                m_beamSource = source;
+                this->setBeamInfo(majorDeg, minorDeg, paDeg);
+                if (ui->vtk && ui->vtk->renderWindow())
+                    ui->vtk->renderWindow()->Render();
+            });
+    this->refreshUnitAndBeamRows();
     // Migrate the former rail pages (layers, catalogue, info/stats) here.
     // Design #1d: layer/catalogue (view) controls live in the LEFT column's
     // LAYERS block; only info/stats stays in the Inspector Properties.

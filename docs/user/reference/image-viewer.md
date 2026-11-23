@@ -66,6 +66,19 @@ the WCS the edited header describes.
 When the header has `BMAJ` and `BMIN` (and optionally `BPA`), the beam is drawn
 as an ellipse in the bottom-left corner.
 
+*Inspector ▸ Properties* shows the *Unit* and the *Beam* (the same rows exist in
+the cube viewer):
+
+- *Unit*: `BUNIT`, or, when the header has none, the unit read from `TEMPSCAL`,
+  `BTYPE` or `LABEL` marked *(no BUNIT)*; the tooltip says which keyword it
+  came from. Spectrum axes say the same (*Intensity (K, no BUNIT)*).
+- *Beam*: the size and where it came from, *(header)* or *(set by user)*.
+  When the header has no complete beam, *Set beam…* asks for the major axis,
+  the minor axis (same as major if left at zero) and the position angle, in
+  arcsec and degrees. The beam is kept with the file, so per-beam quantities
+  and their errors use it in every later session; *Edit…* changes it and
+  *Clear* forgets it. A beam in the header cannot be overridden.
+
 ## View menu
 
 - *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges.
