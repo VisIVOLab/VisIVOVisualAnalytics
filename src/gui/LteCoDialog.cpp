@@ -306,6 +306,7 @@ void LteCoDialog::refreshHostContext(const Context &context)
                                       .arg(context.windowSource));
     }
     refreshRegionsEnabled();
+    listDatasets();
 }
 
 void LteCoDialog::listDatasets()
@@ -373,8 +374,15 @@ void LteCoDialog::fillDatasetCombos(const QVector<DatasetChoice> &datasets)
     // The rest frequency of the window's own data outranks a file name: a
     // moment map named "…13co…" listed first must not take the host's place,
     // or the host's regions would be disabled.
-    if (hostIndex >= 0 && !hostLine.species.isEmpty())
+    if (hostIndex >= 0 && !hostLine.species.isEmpty()) {
+        for (auto it = guessed.begin(); it != guessed.end();)
+            it = it.value() == hostIndex ? guessed.erase(it) : std::next(it);
         guessed.insert(hostLine.species, hostIndex);
+    }
+    const QString kept13 = m_ds13->currentData().toString();
+    const QString kept18 = m_ds18->currentData().toString();
+    const QString kept12 = m_ds12->currentData().toString();
+    const bool refill = m_runBtn->isEnabled();
     const auto fill = [&](QComboBox *combo, const QString &species, bool optional) {
         QSignalBlocker block(combo);
         combo->clear();
@@ -398,6 +406,17 @@ void LteCoDialog::fillDatasetCombos(const QVector<DatasetChoice> &datasets)
             hostTaken = hostTaken || c->currentData().toString() == m_ctx.hostDatasetId;
         if (host >= 0 && !hostTaken)
             m_ds13->setCurrentIndex(host);
+    }
+    // A second listing (the dialog raised again) keeps what the user chose.
+    if (refill) {
+        for (auto [combo, id] : { std::pair{ m_ds13, kept13 }, std::pair{ m_ds18, kept18 },
+                                  std::pair{ m_ds12, kept12 } }) {
+            const int at = combo->findData(id);
+            if (at >= 0) {
+                QSignalBlocker block(combo);
+                combo->setCurrentIndex(at);
+            }
+        }
     }
     m_datasetNote->setText(
             datasets.isEmpty()

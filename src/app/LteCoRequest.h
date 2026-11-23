@@ -105,7 +105,8 @@ inline QString validate(const Inputs &in, const QString &kind13, const QString &
     const auto badEta = [](const std::optional<double> &e) {
         return e && !(*e > 0.0 && *e <= 1.0);
     };
-    if (badEta(in.eta13co) || badEta(in.etaC18o) || badEta(in.eta12co))
+    if (badEta(in.eta13co) || badEta(in.etaC18o)
+        || (!in.dataset12co.isEmpty() && badEta(in.eta12co)))
         return QStringLiteral("η_mb must be above 0 and at most 1.");
     if (!in.xRatio && !in.rGcKpc && !in.distanceKpc)
         return QStringLiteral("Give X(¹³CO)/X(C¹⁸O), R_GC or the distance: X comes from the "
