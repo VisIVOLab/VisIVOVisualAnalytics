@@ -22,6 +22,7 @@
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
 #include "SnapshotTimelineSteps.h"
+#include "app/ParticleTableRule.h"
 #include "SimulationDiagnosticsDialog.h"
 #include "theme/VisivoTheme.h"
 
@@ -86,6 +87,7 @@
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QUuid>
+#include <QMetaMethod>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableView>
@@ -687,6 +689,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_cartesian = comparisonSource->m_cartesian;
         this->m_skyCoordinates = comparisonSource->m_skyCoordinates;
         this->m_pointTable = comparisonSource->m_pointTable;
+        this->m_particlesByRule = comparisonSource->m_particlesByRule;
         this->m_tableFormat = comparisonSource->m_tableFormat;
         this->m_snapshotMetadata = comparisonSource->m_snapshotMetadata;
         this->m_componentMetadata = comparisonSource->m_componentMetadata;
@@ -757,6 +760,20 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         // type, issue #31), as the backend read them; an older backend says
         // nothing and the name decides.
         this->m_pointTable = opened.particles || catalogueFormatForPath(filepath) == u"vbt"_s;
+        // A plain table of positions holding particles (an IPAC or CSV export
+        // of a snapshot, issue #414): by its columns and size, or as the user
+        // marked the file.
+        this->m_particleChoiceOffered = !this->m_pointTable && this->m_cartesian;
+        if (this->m_particleChoiceOffered) {
+            QStringList columns;
+            for (const auto &field : opened.fields)
+                columns << field.name;
+            QSettings settings;
+            this->m_pointTable = visivo::particles::treatAsParticles(
+                    visivo::particles::rememberedChoice(settings, filepath), columns,
+                    opened.numRows);
+            this->m_particlesByRule = this->m_pointTable;
+        }
         this->m_tableFormat = opened.format.isEmpty() ? catFormat : opened.format;
         // A snapshot opened by a file of it is known by its particle type's
         // reference: Session Data, Recent and the headset reopen that.
@@ -1137,6 +1154,21 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 dialog->raise();
                 dialog->activateWindow();
             });
+            auto *actionParticles = toolsMenu->addAction(u"Treat Rows as Simulation Particles"_s);
+            actionParticles->setCheckable(true);
+            actionParticles->setChecked(this->m_pointTable);
+            // Only where something opens the table again (File ▸ Open's
+            // windows), not a timeline step's or a SKAVA result's.
+            actionParticles->setEnabled(
+                    this->m_particleChoiceOffered
+                    && this->isSignalConnected(
+                            QMetaMethod::fromSignal(&vtkWindowCatalogue3D::reopenRequested)));
+            actionParticles->setToolTip(
+                    u"Particles get the particle defaults (splats or points, no object "
+                    u"glyphs); off, the rows are a catalogue of objects. Remembered for this "
+                    u"file; the table opens again."_s);
+            QObject::connect(actionParticles, &QAction::toggled, this,
+                             &vtkWindowCatalogue3D::setParticleChoice);
             // The sources with no distance, left out of the scene (issue #265).
             this->m_actionUnplaced = toolsMenu->addAction(u"Unplaced Sources…"_s);
             this->m_actionUnplaced->setToolTip(
@@ -1311,6 +1343,30 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleShells);
     this->setupComparisonLink(comparisonSource);
     this->setupSnapshotTimeline(comparisonSource);
+}
+
+void vtkWindowCatalogue3D::setParticleChoice(bool particles)
+{
+    if (!this->m_particleChoiceOffered || particles == this->m_pointTable)
+        return;
+    // The layout, the shapes on offer and the first load all follow the
+    // kind of table: it opens again as the other kind, once this window has
+    // let its dataset go. A window that cannot close yet (a scene still being
+    // built) keeps its kind and the choice is not stored.
+    const QString path = this->filepath;
+    const QStringList paths = this->m_cataloguePaths;
+    if (!this->close()) {
+        if (auto *action = qobject_cast<QAction *>(this->sender())) {
+            const QSignalBlocker block(action);
+            action->setChecked(this->m_pointTable);
+        }
+        return;
+    }
+    QSettings settings;
+    visivo::particles::rememberChoice(settings, path,
+                                      particles ? visivo::particles::Choice::Particles
+                                                : visivo::particles::Choice::Objects);
+    emit reopenRequested(path, paths);
 }
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()

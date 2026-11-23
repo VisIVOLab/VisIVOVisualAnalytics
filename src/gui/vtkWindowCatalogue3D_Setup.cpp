@@ -1,4 +1,5 @@
 #include "vtkWindowCatalogue3D.h"
+#include "CatalogueFormat.h"
 #include "app/DatasetName.h"
 #include "ColormapIcon.h"
 #include "ui_vtkWindowCatalogue3D.h"
@@ -1036,7 +1037,7 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
         return;
 
     chrome->installSessionDock(this->filepath, this->shownName(),
-                               this->m_pointTable ? u"vbt"_s : u"catalogue"_s);
+                               this->m_pointTable && !this->m_particlesByRule ? u"vbt"_s : u"catalogue"_s);
     // Design #1d: what is drawn and how it is drawn lives in the LEFT column,
     // under the dataset it belongs to.
     if (this->m_pageViz) {
@@ -1182,9 +1183,12 @@ QString vtkWindowCatalogue3D::shownName() const
 
 QString vtkWindowCatalogue3D::particleTag() const
 {
-    // The format of a simulation's particles, for the command bar: VBT, GADGET.
-    return this->m_tableFormat.isEmpty() || this->m_tableFormat == u"csv"_s
-            ? u"VBT"_s : this->m_tableFormat.toUpper();
+    // The format of a simulation's particles, for the command bar: VBT,
+    // GADGET, or a table's own (IPAC, CSV) when its rows are particles.
+    if (this->m_tableFormat.isEmpty()
+        || visivo::catalogueFormatForPath(this->filepath) == u"vbt"_s)
+        return u"VBT"_s;
+    return this->m_tableFormat.toUpper();
 }
 
 void vtkWindowCatalogue3D::updateLoadMoreButtons()
