@@ -134,21 +134,69 @@ def test_many_particles_of_every_size_hold_their_mass(kernel):
 
 
 @pytest.mark.parametrize("kernel", SPH)
+@pytest.mark.parametrize("h_px", [2.0, 3.0, 5.0, 7.5])
+def test_a_small_particle_puts_in_each_pixel_its_integral_over_it(kernel, h_px):
+    """Between 2 and 8 pixels a pixel holds F integrated over its area (here
+    by 40 × 40 sub-pixels) within 1.5 % where F is not near 0."""
+    size, offset = 32, (0.0, 0.0)
+    sigma = _one(kernel, h_px, offset, size, mass=1.0)
+    table = projected_kernel(kernel)
+    s = np.linspace(0.0, 1.0, table.size)
+    fine = (np.arange(size * 40) + 0.5) / 40.0 - size / 2.0
+    dx, dy = np.meshgrid(fine, -fine)
+    q2 = (dx * dx + dy * dy) / h_px ** 2
+    f = np.where(q2 < 1.0, np.interp(np.minimum(q2, 1.0), s, table), 0.0) / h_px ** 2
+    truth = f.reshape(size, 40, size, 40).mean(axis=(1, 3))
+    truth /= truth.sum()
+    strong = truth > 0.2 * truth.max()
+    assert np.abs(sigma[strong] / truth[strong] - 1.0).max() < 0.015
+
+
+@pytest.mark.parametrize("kernel", SPH)
 def test_the_mean_is_weighted_by_the_mass_the_kernel_puts_in_a_pixel(kernel):
-    rng = np.random.default_rng(3)
-    n = 50_000
-    pos = rng.normal(0.0, 1.0, (n, 3)).astype(np.float32)
-    mass = rng.lognormal(0.0, 1.0, n).astype(np.float32)
-    t0 = np.float32(1.23e7)
-    temperature = np.full(n, t0, np.float32)
-    temperature[::10] = np.nan
-    maps = projected_maps(pos, np.full(n, 0.2), mass, temperature, _top(4.0), 256, 256,
-                          kernel=kernel)
-    lit = maps[..., 0] > 0
-    valued = np.isfinite(maps[..., 1])
-    assert lit.sum() > 10_000 and valued.sum() > 0.98 * lit.sum()
-    assert np.allclose(maps[..., 1][valued], t0, rtol=2e-5)
-    assert not valued[~lit].any()
+    """Two overlapping particles at 10 and 50: each pixel's mean is weighted
+    by the mass each one puts there, as each draws alone."""
+    cam = _top(32.0)
+    pos = np.array([[0.0, 0.0, 0.0], [4.3, -2.1, 1.0]], np.float32)
+    h = np.array([9.0, 6.5])
+    mass = np.array([1.0, 3.0], np.float32)
+    t = np.array([10.0, 50.0], np.float32)
+    both = projected_maps(pos, h, mass, t, cam, 64, 64, kernel=kernel)
+    one = [projected_maps(pos[i:i + 1], h[i:i + 1], mass[i:i + 1], None, cam, 64, 64,
+                          kernel=kernel)[..., 0] for i in range(2)]
+    overlap = (one[0] > 0) & (one[1] > 0)
+    assert overlap.sum() > 50
+    a, b = one[0][overlap], one[1][overlap]
+    assert np.allclose(both[..., 1][overlap], (10.0 * a + 50.0 * b) / (a + b), rtol=1e-5)
+    assert np.allclose(both[..., 0], one[0] + one[1], rtol=1e-5, atol=1e-9)
+    # A NaN is no value: left out of the mean, its mass still in the density.
+    nan = projected_maps(pos, h, mass, np.array([np.nan, 50.0], np.float32), cam, 64, 64,
+                         kernel=kernel)
+    assert np.allclose(nan[..., 1][overlap], 50.0, rtol=1e-6)
+    assert np.isnan(nan[..., 1][(one[0] > 0) & (one[1] == 0)]).all()
+
+
+@pytest.mark.parametrize("kernel", SPH)
+def test_extreme_supports_neither_crash_nor_lose_the_others(kernel):
+    """An H of 1e25 pixels spreads its mass over the whole sky (about none
+    in view); an H of 0, or 1e-30, puts it all in its pixel."""
+    cam = _top(32.0)
+    pos = np.array([[0.2, 0.3, 0.0], [5.0, 5.0, 0.0], [-7.5, 3.3, 0.0], [9.0, -9.0, 0.0]],
+                   np.float32)
+    h = np.array([1e25, 0.0, 1e-30, 3.0])
+    maps = projected_maps(pos, h, np.ones(4, np.float32), None, cam, 64, 64, kernel=kernel)
+    assert np.isfinite(maps[..., 0]).all()
+    assert maps[..., 0].sum(dtype=np.float64) == pytest.approx(3.0, rel=1e-5)
+    assert maps[32 - 5, 32 + 5, 0] == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("kernel", SPH)
+def test_millions_on_one_pixel_keep_their_mass(kernel):
+    n = 2_000_000
+    pos = np.zeros((n, 3), np.float32) + np.float32(0.3)
+    maps = projected_maps(pos, np.full(n, 1.5), np.ones(n, np.float32), None, _top(8.0), 16,
+                          16, kernel=kernel)
+    assert maps[..., 0].sum(dtype=np.float64) == pytest.approx(n, rel=1e-5)
 
 
 def test_an_unknown_kernel_is_refused():
@@ -211,3 +259,34 @@ def test_a_smoothing_length_column_is_drawn_with_the_cubic_spline(tmp_path, monk
         assert hdul[0].header["KERNEL"] == "M4" and hdul["MEAN"].header["KERNEL"] == "M4"
         assert hdul[0].header["HSMLDEF"] == "support"
         assert hdul[0].header["HSMLSRC"] == "column hsml"
+    assert spline["map_units"]["smoothing"] == "distance to neighbour 32"
+
+
+def test_the_gpu_rows_carry_the_gaussian_of_the_kernels_width(tmp_path, monkeypatch):
+    """The GPU view draws Gaussians: an SPH map's rows are as wide as the
+    kernel's projected second moment (σ = 0.274 H for M4), sampled or not."""
+    import asyncio
+
+    from app import gadget_snapshot as gs
+    from app.particle_raytrace import gaussian_width
+    from app.routers import particle_render as router
+    monkeypatch.delenv(gs.UNITS_ENV, raising=False)
+    monkeypatch.setattr(router, "_PREPARED", router.OrderedDict())
+    assert gaussian_width("m4") == pytest.approx(0.27386 * math.sqrt(2.0), rel=1e-4)
+    assert gaussian_width("wendland_c4") == pytest.approx(0.22646 * math.sqrt(2.0), rel=1e-4)
+    assert gaussian_width("gauss") == 1.0
+
+    class _Session:
+        datasets = {"g": _gas(tmp_path)}
+
+    for limit in (50_000_000, 1000):
+        req = router.ParticleDataRequest(dataset_id="g", mode="projected", radius_field="hsml",
+                                         max_particles=limit)
+        reply = asyncio.run(router.particle_render_particles(req, token="tok",
+                                                             session=_Session()))
+        assert reply.headers["X-Visivo-Projected-Kernel"] == "m4"
+        rows = np.frombuffer(reply.body, dtype="<f4").reshape(-1, 6)
+        prepared = router._prepare(_Session.datasets["g"], req)
+        step = int(reply.headers["X-Visivo-Particle-Step"])
+        assert np.allclose(rows[:, 3], prepared["radius"][::step] * gaussian_width("m4"),
+                           rtol=1e-6)

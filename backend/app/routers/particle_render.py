@@ -299,7 +299,8 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
             log10=bool(req.intensity_field and req.intensity_log10),
             radius_scale=req.radius_scale,
             smoothing=(f"column {req.radius_field}" if req.radius_field
-                       else f"{req.neighbours} neighbours"),
+                       else f"{req.neighbours} neighbours" if support == 1.0
+                       else f"distance to neighbour {req.neighbours}"),
             colour_by=req.colour_by, value_field=req.colour.field,
             velocity=req.velocity or _velocity_columns(table.columns))
     if req.mode == "light":
@@ -697,7 +698,7 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
     emission_weights) and colour (RGB, or its scalar when ``colour_values``);
     a projected map's: position, size, mass at the peak and the quantity its
     hue averages (0 without one)."""
-    from ..particle_raytrace import emission_weights  # noqa: PLC0415
+    from ..particle_raytrace import emission_weights, gaussian_width  # noqa: PLC0415
     entry = _require_dataset(session, request.dataset_id)
     from .render import point_table_spec  # noqa: PLC0415
     if point_table_spec(entry) is None:
@@ -712,6 +713,11 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
         particles = _sampled(_prepared(entry, request, token), request.max_particles)
         step = -(-n_all // request.max_particles) if n_all > request.max_particles else 1
         pos, radius = particles["positions"], particles["radius"]
+        kernel = particles.get("kernel", "gauss")
+        if kernel != "gauss":
+            # The GPU draws Gaussians: an SPH map's as wide as its kernel's
+            # projected second moment, not of width H.
+            radius = (radius * np.float32(gaussian_width(kernel))).astype(np.float32)
         origin, scale = particles.get("frame", ((0.0, 0.0, 0.0), 1.0))
         origin, scale = np.asarray(origin, dtype=np.float64), float(scale)
         if not request.local_frame:

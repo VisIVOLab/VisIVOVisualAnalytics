@@ -104,8 +104,12 @@ if njit is not None:
         """The tiles a kernel at (x, y) of width r, drawn out to cutoff r,
         touches: tx0, tx1, ty0, ty1."""
         reach = cutoff * r
-        return (max(0, int((x - reach) // _TILE)), min(tiles_x - 1, int((x + reach) // _TILE)),
-                max(0, int((y - reach) // _TILE)), min(tiles_y - 1, int((y + reach) // _TILE)))
+        # Clamped before int(): a reach of 1e19 pixels would overflow it.
+        right, bottom = float(tiles_x * _TILE), float(tiles_y * _TILE)
+        return (int(min(max(x - reach, 0.0), right) // _TILE),
+                min(tiles_x - 1, int(min(max(x + reach, -1.0), right) // _TILE)),
+                int(min(max(y - reach, 0.0), bottom) // _TILE),
+                min(tiles_y - 1, int(min(max(y + reach, -1.0), bottom) // _TILE)))
 
     @njit(parallel=True, cache=True, nogil=True)
     def _bin(sx, sy, sr, order, cutoff, width, height, tiles_x, tiles_y):
@@ -363,8 +367,8 @@ def composite(sx, sy, radius, weight, emission, absorption, order, width: int, h
 def smoothing_lengths(positions: np.ndarray, neighbours: int = 32, *,
                       boxsize=None, region=None) -> np.ndarray:
     """Smoothing lengths where a snapshot has none: half the distance to the
-    ``neighbours``-th nearest particle, the support an SPH kernel would have
-    with that many neighbours.
+    ``neighbours``-th nearest particle: SPLASH's h, the Gaussian's width. An
+    SPH kernel with that many neighbours has twice it as its support H.
 
     ``boxsize``: the period of each axis (0: none), so a periodic box's
     particles find their neighbours across its faces (positions wrapped into
@@ -741,15 +745,16 @@ def in_slab(positions: np.ndarray, camera: Camera, thickness: float | None) -> n
 # F(0) = 2.918 / H², σ = 0.226 H). A snapshot does not say which one its
 # code used: M4 unless told. Each particle's mass is spread over the pixels
 # in proportion to F at them and divided by their sum over the whole pixel
-# grid, so the map holds it exactly however small the particle is; one
-# smaller than two pixels has F averaged over sub-pixels (Petkova, Laibe &
-# Bonnell 2018 integrate it over the pixel), one that misses every sub-pixel
-# goes to the pixel it lies in.
+# grid, so the map holds the mass in view however small the particle is,
+# up to float rounding. One smaller than eight pixels has F averaged over
+# sub-pixels, within about 1 % of its integral over the pixel (which Petkova,
+# Laibe & Bonnell 2018 compute exactly); one that misses every sub-pixel, or
+# has no support, goes to the pixel it lies in.
 
 KERNELS = ("gauss", "m4", "wendland_c4")
 SPH_KERNELS = ("m4", "wendland_c4")
 _TABLE_STEPS = 4096          # F tabulated at q² = k / 4096, k = 0 … 4096
-_SUBSAMPLED_PX = 2.0         # below this support (pixels), F is averaged over sub-pixels
+_SUBSAMPLED_PX = 8.0         # below this support (pixels), F is averaged over sub-pixels
 _MAX_SUBSAMPLES = 6          # per pixel side
 _GRID_SUM_PX = 8.0           # below this support the share is summed on the grid;
                              # above, its integral (within 3e-6 of the sum)
@@ -793,15 +798,32 @@ def projected_kernel(kernel: str) -> np.ndarray:
     return _TABLES[kernel]
 
 
+def gaussian_width(kernel: str) -> float:
+    """The width h, in units of the support H, of the Gaussian exp(-d²/h²)
+    with ``kernel``'s projected second moment (σ = h/√2): 0.387 for M4, 0.320
+    for Wendland C4, 1 for the Gaussian itself. The GPU view, which draws
+    Gaussians, draws an SPH map's particles that wide."""
+    if kernel == "gauss":
+        return 1.0
+    f = projected_kernel(kernel)
+    r2 = np.linspace(0.0, 1.0, f.size)
+    # <R²> = ∫ 2πR · R² F dR = π ∫ R² F d(R²); σ² = <R²> / 2 per axis.
+    mean_r2 = math.pi * float(np.trapezoid(r2 * f, r2))
+    return math.sqrt(mean_r2)
+
+
 if njit is not None:
     @njit(cache=True, nogil=True)
     def _subsamples(h):
-        """Sub-pixels per side for a kernel of support ``h`` pixels: their
-        spacing at most h / 2, so that its disc holds some, down to h of
-        1 / _MAX_SUBSAMPLES."""
+        """Sub-pixels per side for a kernel of support ``h`` pixels, so that
+        its mean over a pixel is within about 1 % of the pixel's integral:
+        ceil(_SUBSAMPLED_PX / h), at most _MAX_SUBSAMPLES (a spacing at most
+        h / 2 down to h = 1/3 pixel, so that its disc holds some)."""
         if h >= _SUBSAMPLED_PX:
             return 1
-        return min(_MAX_SUBSAMPLES, int(math.ceil(2.0 / h)))
+        if h * _MAX_SUBSAMPLES <= _SUBSAMPLED_PX:
+            return _MAX_SUBSAMPLES
+        return int(math.ceil(_SUBSAMPLED_PX / h))
 
     @njit(cache=True, nogil=True, fastmath=True)
     def _share(px, py, cx, cy, inv_h2, sub, table):
@@ -831,6 +853,8 @@ if njit is not None:
         for j in prange(order.size):
             i = order[j]
             h = np.float64(sh[i])
+            if not h > 0.0:
+                continue
             if h >= grid_sum_px:
                 out[i] = 1.0 / (h * h)
                 continue
@@ -848,7 +872,8 @@ if njit is not None:
     def _stamp(sx, sy, sh, amount, norm, table, counts, items, width, height,
                tiles_x, tiles_y):
         """(height, width, 3): each particle's ``amount`` (N, 3) spread over
-        the pixels by its shares times ``norm``, tile by tile."""
+        the pixels by its shares times ``norm``, tile by tile, summed in
+        float64 (millions of particles on a few pixels lose mass in float32)."""
         image = np.zeros((height, width, 3), dtype=np.float32)
         n_tiles = tiles_x * tiles_y
         stride = np.int64(7919) if n_tiles % 7919 != 0 else np.int64(1)
@@ -857,6 +882,7 @@ if njit is not None:
             ty, tx = t // tiles_x, t % tiles_x
             x0, y0 = tx * _TILE, ty * _TILE
             x1, y1 = min(width, x0 + _TILE), min(height, y0 + _TILE)
+            acc = np.zeros((_TILE, _TILE, 3), dtype=np.float64)
             for k in range(counts[t], counts[t + 1]):
                 i = items[k]
                 cx, cy = np.float64(sx[i]), np.float64(sy[i])
@@ -865,22 +891,30 @@ if njit is not None:
                 if c == 0.0:
                     px, py = int(math.floor(cx)), int(math.floor(cy))
                     if x0 <= px < x1 and y0 <= py < y1:
-                        image[py, px, 0] += a0
-                        image[py, px, 1] += a1
-                        image[py, px, 2] += a2
+                        acc[py - y0, px - x0, 0] += a0
+                        acc[py - y0, px - x0, 1] += a1
+                        acc[py - y0, px - x0, 2] += a2
                     continue
                 h = np.float64(sh[i])
                 inv_h2 = 1.0 / (h * h)
                 sub = _subsamples(h)
-                for py in range(max(y0, int(math.floor(cy - h))),
-                                min(y1, int(math.floor(cy + h)) + 1)):
-                    for px in range(max(x0, int(math.floor(cx - h))),
-                                    min(x1, int(math.floor(cx + h)) + 1)):
+                # Clamped to the tile before int(): an H of 1e19 pixels
+                # would overflow it.
+                qy0 = int(math.floor(max(cy - h, y0 - 1.0)))
+                qy1 = int(math.floor(min(cy + h, y1 + 1.0))) + 1
+                qx0 = int(math.floor(max(cx - h, x0 - 1.0)))
+                qx1 = int(math.floor(min(cx + h, x1 + 1.0))) + 1
+                for py in range(max(y0, qy0), min(y1, qy1)):
+                    for px in range(max(x0, qx0), min(x1, qx1)):
                         f = _share(px, py, cx, cy, inv_h2, sub, table) * c
                         if f > 0.0:
-                            image[py, px, 0] += a0 * f
-                            image[py, px, 1] += a1 * f
-                            image[py, px, 2] += a2 * f
+                            acc[py - y0, px - x0, 0] += a0 * f
+                            acc[py - y0, px - x0, 1] += a1 * f
+                            acc[py - y0, px - x0, 2] += a2 * f
+            for py in range(y0, y1):
+                for px in range(x0, x1):
+                    for ch in range(3):
+                        image[py, px, ch] = acc[py - y0, px - x0, ch]
         return image
 
 
@@ -890,7 +924,8 @@ def sph_project(positions: np.ndarray, support: np.ndarray, amount: np.ndarray,
     spread over the pixels by its SPH ``kernel`` of ``support`` radius H (in
     the positions' units) integrated along the line of sight, its shares of
     the unbounded pixel grid summing to 1 (see above). ``camera`` parallel;
-    particles behind it, or with no positive support, are left out."""
+    particles behind it, or of infinite support, are left out; one of no
+    positive support goes whole to the pixel it lies in."""
     if njit is None:   # pragma: no cover
         raise RuntimeError("Projected particle maps need numba.")
     table = projected_kernel(kernel)
@@ -899,7 +934,8 @@ def sph_project(positions: np.ndarray, support: np.ndarray, amount: np.ndarray,
     sx, sy, sh, depth = project(positions, np.asarray(support, dtype=np.float64), camera,
                                 width, height)
     amount = np.ascontiguousarray(amount, dtype=np.float32)
-    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & np.isfinite(sh) & (sh > 0) \
+    sh = np.where(sh > 0, sh, np.float32(0.0))
+    keep = (depth > 0) & np.isfinite(sx) & np.isfinite(sy) & np.isfinite(sh) \
         & np.isfinite(amount).all(axis=1)
     keep &= (sx + sh >= 0) & (sx - sh < width) & (sy + sh >= 0) & (sy - sh < height)
     order = np.flatnonzero(keep).astype(np.int64)
