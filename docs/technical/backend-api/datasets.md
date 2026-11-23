@@ -368,6 +368,133 @@ render budget. Non-finite field values are excluded; weighted calculations also
 exclude non-finite and negative weights. An unknown field, invalid range or
 population with no finite values returns `valid: false`.
 
+### `POST /v1/catalogue/profile` and `POST /v1/tasks/catalogue_profile`
+
+Radial profile of the selected particles of a catalogue (a Gadget particle
+type read out of core, a VBT or another loaded table), in log-spaced shells
+around a centre. The task route takes the same body and is polled and
+cancelled like `/v1/tasks/catalogue_diagnostics`, reporting progress over the
+centre search and the passes.
+
+```json
+{
+  "dataset_id": "...",
+  "filters": [],
+  "position_fields": ["x", "y", "z"],
+  "velocity_fields": null,
+  "mass_field": null,
+  "columns": ["temperature", "radial_velocity"],
+  "centre": { "mode": "shrinking_sphere", "start": null, "initial_radius": null,
+              "shrink_factor": 0.975, "min_particles": 1000, "velocity": null },
+  "r_min": null, "r_max": null, "bins": 32,
+  "period": null
+}
+```
+
+- `velocity_fields`: `null` uses `vx, vy, vz` when present, `[]` none.
+  `mass_field`: `null` uses `mass` when present, `""` gives every particle
+  weight 1 (densities are then number densities).
+- `columns`: numeric columns profiled per shell, plus the derived
+  `radial_velocity`.
+- `period`: `null` is the dataset's own box (a periodic Gadget snapshot), `0`
+  turns wrapping off, a length sets it on the three position fields.
+  Distances use the minimum image.
+- `centre.mode`:
+  - `point` with `point: [x, y, z]`;
+  - `target` with `target_dataset_id` and `target_row`, the position columns
+    of a row of another open catalogue, such as a SubFind group or subhalo.
+    It is taken to be in the particles' coordinate units;
+  - `shrinking_sphere`. The nested shrinking spheres of Power et al. (2003),
+    mass-weighted. Each sphere is `shrink_factor` times the last and holds
+    only the particles of the previous one. The search stops before fewer
+    than min(`min_particles`, max(100, 1 % of the selection)) particles
+    remain. The default start is the periodic centre of mass (Bai & Breen
+    2008), and the default initial radius is the largest distance from it.
+    A selection with fewer than 100 particles is refused. The search reads
+    the table out of core until the sphere holds at most 8 million
+    particles, then keeps those in memory, with the same result.
+- `centre.velocity`: radial velocities are measured against it. The default
+  is the mass-weighted mean velocity inside a tenth of `r_max`, widened until
+  it holds 1000 particles.
+- `r_max` defaults to the smallest of the largest distance, half the period,
+  and the distance to the nearest face of an `inside` box or sphere selection
+  on the position fields. `r_min` defaults to the larger of the smallest
+  positive distance and `r_max`/1000.
+
+The response has `profile`, `centre`, `units` and `provenance`.
+
+`profile`:
+- `r_lo`, `r_hi`, `r_mid` (geometric) and `r_mean` (mass-weighted);
+- `complete`: true while the shell is inside the selected region and within
+  half the period;
+- `count`, `mass`, `density` (shell mass over shell volume);
+- `enclosed_mass`: every particle closer than `r_hi`, those inside `r_min`
+  included;
+- `inside_r_min`, `outside_r_max`, `selected_rows`, `r_min`, `r_max`,
+  `complete_radius`;
+- `columns.<name>`: `mean`, `std`, `p16`, `median`, `p84` (mass-weighted),
+  `weight`, and `quantile_axis`. The quantiles are read from a 1024-bin
+  histogram per shell, refined once inside the quantile's bin, on log10 when
+  the shell's values are positive and span more than a factor 100;
+- with velocities, `velocity`: `centre_velocity`, `centre_velocity_from`,
+  `mean_radial`, `mean_azimuthal`, `sigma_r`, `sigma_theta`, `sigma_phi`,
+  `sigma_1d` = sqrt((σ_r² + σ_θ² + σ_φ²)/3), each about its shell mean so
+  that infall and rotation are not counted as dispersion, `beta` = 1 −
+  (σ_θ² + σ_φ²)/(2σ_r²), and `sigma_cartesian_with_streaming`.
+
+Empty shells give `null`.
+
+`centre`: the mode and the centre. For `shrinking_sphere` it also has
+`radius`, `particles_inside`, `steps`, `n_min`, `start`, `initial_radius`,
+`shrink_factor`, `selected_particles` and `out_of_core_passes`.
+
+`units`: the units the table states (a Gadget snapshot's code units: comoving
+and /h where the run uses them, velocities as v/√a) for `radius`, `mass`,
+`density`, `velocity` and each column. `units.physical` gives the reader's
+factor and unit to physical kpc, M☉ and km/s, and M☉/kpc³ for the density.
+
+`provenance`: the dataset, the selection, the position and velocity fields,
+the weights, the frame (periods and minimum image), the binning, the
+definitions of every quantity, and the snapshot's redshift, time, h and box.
+
+### `POST /v1/catalogue/phase_diagram` and `POST /v1/tasks/catalogue_phase_diagram`
+
+2-D histogram of two columns of the selected rows, weighted or not; the task
+route as above.
+
+```json
+{
+  "dataset_id": "...",
+  "filters": [],
+  "x": { "field": "rho", "scale": "log", "bins": 64, "min": null, "max": null },
+  "y": { "field": "temperature", "scale": "log", "bins": 64 },
+  "weight_field": "mass",
+  "centre": null,
+  "position_fields": ["x", "y", "z"], "velocity_fields": null, "mass_field": null,
+  "period": null
+}
+```
+
+An axis `field` is a numeric column, or `radius` or `radial_velocity`, which
+need a `centre` (as for the profile).
+
+`min`/`max` give both ends of an axis range, or neither. Without them the
+range is the extent of the selection's placeable values.
+
+Bins are [lo, hi), except the last, which holds its upper edge.
+
+`diagram` has:
+- `x_edges`, `y_edges`;
+- `counts` and `weights`, indexed [x][y];
+- `selected_rows` and `selected_weight`, `binned_*`, `outside_*` (outside a
+  given range) and `dropped_*` (non-finite values, or values ≤ 0 on a log
+  axis). `binned + outside + dropped = selected`, for both rows and weight;
+- `invalid_weight_rows`: rows whose weight is not finite and ≥ 0. They are
+  counted apart and carry no weight.
+
+`units` gives `x`, `y`, `weight` and `physical`. `centre` and `provenance` are
+as for the profile.
+
 ---
 
 ## VBT
