@@ -98,7 +98,7 @@ The SODA routes follow SODA 1.0, with UWS 1.1 for asynchronous jobs and VOSI for
 
 ### Authentication and ownership
 
-All `/soda/sync` and `/soda/async` routes require the `X-Visivo-Token` header; a missing or wrong token gives 401 with a JSON body (`{"detail": "Missing or invalid X-Visivo-Token header."}`). `/soda/capabilities` and `/soda/availability` are open.
+All `/soda/sync`, `/soda/async` and `/soda/links` routes require the node's token, sent either as the `X-Visivo-Token` header or as an RFC 6750 bearer token (`Authorization: Bearer <token>`), which is what a VO client sends under the IVOA SSO `BearerToken` method. A missing or wrong token gives 401 with a JSON body (`{"detail": "Missing or invalid token (X-Visivo-Token or Authorization: Bearer)."}`) and the challenge `WWW-Authenticate: Bearer realm="VisIVO SODA", ApiKey realm="X-Visivo-Token"`. `/soda/capabilities` and `/soda/availability` are open; the capabilities document declares the `ivo://ivoa.net/sso#BearerToken` security method on the SODA sync, SODA async and DataLink interfaces, and none on the VOSI ones.
 
 An asynchronous job belongs to the token that created it. The job list shows only the caller's jobs, and every job route answers 404 for a job owned by another token, exactly as for a job that does not exist. A job with no owner is reachable by any token only on a single-token backend.
 

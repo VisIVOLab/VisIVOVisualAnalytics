@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QXmlStreamReader>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -489,6 +490,20 @@ SkavaClient::OidcEndpoints SkavaClient::fetchOidcEndpoints(const QString &wellKn
 
 QString SkavaClient::parseErrorEnvelope(const QByteArray &body)
 {
+    // A VO error document (DALI): a VOTable whose QUERY_STATUS is ERROR, as
+    // the TAP service answers a query it refuses.
+    if (body.trimmed().startsWith('<')) {
+        QXmlStreamReader r(body);
+        while (!r.atEnd()) {
+            if (r.readNext() == QXmlStreamReader::StartElement && r.name() == "INFO"_L1
+                && r.attributes().value("name"_L1) == "QUERY_STATUS"_L1
+                && r.attributes().value("value"_L1).compare("ERROR"_L1, Qt::CaseInsensitive) == 0) {
+                const QString text = r.readElementText(QXmlStreamReader::IncludeChildElements).trimmed();
+                return text.isEmpty() ? u"The service reported an error."_s : text;
+            }
+        }
+        return {};
+    }
     const QJsonDocument doc = QJsonDocument::fromJson(body);
     if (!doc.isObject())
         return {};

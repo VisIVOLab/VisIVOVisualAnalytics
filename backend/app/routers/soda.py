@@ -45,7 +45,8 @@ from typing import Any
 from urllib.parse import parse_qsl, quote
 from xml.sax.saxutils import escape, quoteattr
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 
 from ..auth import verify_token
@@ -60,7 +61,31 @@ from .tasks import _owned_task
 
 router = APIRouter(tags=["soda"])
 logger = logging.getLogger("visivo.backend")
-_auth = Depends(verify_token)
+_visivo_token_header = APIKeyHeader(name="X-Visivo-Token", auto_error=False)
+_bearer = HTTPBearer(auto_error=False)
+# SSO 2.0: what the capabilities declare for the SODA interfaces, and the
+# challenge a refused request gets.
+_BEARER_STANDARD = "ivo://ivoa.net/sso#BearerToken"
+_CHALLENGE = 'Bearer realm="VisIVO SODA", ApiKey realm="X-Visivo-Token"'
+
+
+async def _soda_token(x_visivo_token: str | None = Security(_visivo_token_header),
+                      bearer: HTTPAuthorizationCredentials | None = Security(_bearer)) -> str:
+    """The node's token, as the backend's own header or as an RFC 6750 bearer
+    token (``Authorization: Bearer``), which is what a VO client sends under
+    the IVOA SSO BearerToken method. The token is the same either way."""
+    for presented in (x_visivo_token, bearer.credentials if bearer else None):
+        if presented is None:
+            continue
+        try:
+            return await verify_token(presented)
+        except HTTPException:
+            continue
+    raise HTTPException(status_code=401, detail="Missing or invalid token (X-Visivo-Token or Authorization: Bearer).",
+                        headers={"WWW-Authenticate": _CHALLENGE})
+
+
+_auth = Depends(_soda_token)
 
 _UWS = "http://www.ivoa.net/xml/UWS/v1.0"
 _XLINK = "http://www.w3.org/1999/xlink"
@@ -866,13 +891,16 @@ async def soda_capabilities(request: Request) -> Response:
     """VOSI capabilities: the sync and async SODA interfaces of this node."""
     base = str(request.base_url).rstrip("/")
 
-    def capability(standard: str, path: str) -> str:
+    def capability(standard: str, path: str, secured: bool = False) -> str:
+        # The data interfaces need the node's token (SSO BearerToken); the
+        # VOSI ones are open, so they declare no securityMethod (anonymous).
+        security = f'<securityMethod standardID="{_BEARER_STANDARD}"/>' if secured else ""
         return (f'<capability standardID="{standard}"><interface xsi:type="vs:ParamHTTP" role="std">'
-                f'<accessURL use="full">{escape(base + path)}</accessURL></interface></capability>')
+                f'<accessURL use="full">{escape(base + path)}</accessURL>{security}</interface></capability>')
 
-    body = (capability("ivo://ivoa.net/std/SODA#sync-1.0", "/soda/sync")
-            + capability("ivo://ivoa.net/std/SODA#async-1.0", "/soda/async")
-            + capability("ivo://ivoa.net/std/DataLink#links-1.1", "/soda/links")
+    body = (capability("ivo://ivoa.net/std/SODA#sync-1.0", "/soda/sync", secured=True)
+            + capability("ivo://ivoa.net/std/SODA#async-1.0", "/soda/async", secured=True)
+            + capability("ivo://ivoa.net/std/DataLink#links-1.1", "/soda/links", secured=True)
             + capability("ivo://ivoa.net/std/VOSI#capabilities", "/soda/capabilities")
             + capability("ivo://ivoa.net/std/VOSI#availability", "/soda/availability"))
     return Response(content=(f'<?xml version="1.0" encoding="UTF-8"?>\n'
