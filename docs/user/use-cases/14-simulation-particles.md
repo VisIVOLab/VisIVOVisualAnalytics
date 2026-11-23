@@ -30,46 +30,72 @@ particles.
 
 1. Choose *File ▸ Open…* (or *Data ▸ Open 3D Catalogue (CSV)…*) and select
    `snap_p50n576_z0.tbl`. The 3-D catalogue viewer loads a random sample:
-   *Loaded 100000 of 3931546 sources.*
+   *Loaded 100000 of 3931546 sources.* The toolbar shows an *IPAC · 3931546
+   rows* tag, and the table opens with the particle defaults: *Gaussian
+   splats*, coloured by `LogMass`.
 
 2. Keep the gas. In the Inspector's *Analysis* tab, under *FILTERS*, press
-   *Add…*, choose *Field* `LogT`, *Operator* `>`, *Value* `0`, press *OK*,
+   *Add field filter…*, choose *Field* `LogT`, *Operator* `>`, *Value* `0`, press *OK*,
    then *Apply*: *1 filter(s) active, 50000 of 3392027 sources.*
 
-3. In *VISUAL ENCODING* set *Color* to `LogT`. Under *SOURCE REPRESENTATION*
+3. In *VISUAL ENCODING* set *Colour by* to `raw:LogT`. Under *SOURCE REPRESENTATION*
    tick *Ray-traced light*. In the *RAY-TRACED* card set *Mode* to *Projected
    map*, *Colour by* to *View's colours* and *Light* to `LogMass` with *log*
-   ticked. Under *More settings* keep *Size* on *From neighbours* (N = 32)
-   and *Measures* on *Per particle*. A pixel's brightness is the projected
-   gas mass, its colour the mass-weighted mean `LogT` along the line of
-   sight.
+   ticked. Under *More settings* keep *Size* on *From neighbours* (N = 32).
+   A pixel's brightness is the projected gas mass, its colour the
+   mass-weighted mean `LogT` along the line of sight. The brightness of a
+   particle no longer depends on how many particles the table holds. If some
+   rows have no usable light, the status line at the bottom says how many were
+   dropped or clipped.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/14-simulation-particles-1.png -->
+   ```{figure} img/14-simulation-particles-1.png
+   :alt: The 3-D catalogue window with the gas of the simulation box as a projected map, coloured by temperature, with the Ray-traced settings open in the left dock and a colour bar for LogT.
+   :width: 100%
+
+   The gas of the box as a projected map, coloured by temperature.
+   ```
 
 ### A cluster
 
 4. Open `snap_comaII_z0.tbl` and add the same filter (3,147,829 gas
    particles). With *Ray-traced light* cleared, click a particle in the
-   bright knot at the centre: *SOURCE INFO*, on the Inspector's *Properties*
-   tab, shows its row. The mass-weighted centre is at x = 348.63,
-   y = 346.62, z = 350.83 Mpc.
+   bright knot at the centre (double-click): *SOURCE INFO*, on the
+   Inspector's *Properties* tab, shows its row number and its distance from
+   the origin, 603.7 Mpc for the core. It does not list the table's columns.
+   The mass-weighted centre is at x = 348.63, y = 346.62, z = 350.83 Mpc.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/14-simulation-particles-2.png -->
+   ```{figure} img/14-simulation-particles-2.png
+   :alt: The 3-D catalogue window with the gas of the cluster simulation as Gaussian splats coloured by temperature, zoomed on the central cluster, with the Source Info section of the Inspector showing a selected row.
+   :width: 100%
 
-5. Add six filters for a box 4 Mpc wide: `x >= 346.6`, `x <= 350.6`,
-   `y >= 344.6`, `y <= 348.6`, `z >= 348.8`, `z <= 352.8`. *Apply* gives
-   *7 filter(s) active, 50000 of 90721 sources.* Press *Load all*.
+   The cluster at the centre of the second table.
+   ```
 
-6. Press *Range and scale…*: the editor draws the histogram of `LogT` over
-   the rows loaded.
+5. Press *Select 3-D region…*, keep *Shape* *Box* and *Keep* *Inside*, and
+   type *X min / max* 346.6 and 350.6, *Y* 344.6 and 348.6, *Z* 348.8 and
+   352.8 (a box 4 Mpc wide). Press *OK* and *Apply*: *2 filter(s) active,
+   50000 of 90721 sources.* Press *Load all*.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/14-simulation-particles-3.png -->
+6. Press *Range and scale…*: the editor (*LUT Customizer*) draws the
+   histogram of `LogT` over the rows loaded.
+
+   ```{figure} img/14-simulation-particles-3.png
+   :alt: The 3-D catalogue window with the Range and scale editor open over it, showing the histogram of LogT with a single peak between 7.5 and 7.8, and the two active filters listed in the Inspector.
+   :width: 100%
+
+   The `LogT` histogram of the cluster box.
+   ```
 
 7. Tick *Ray-traced light* again and set *Colour by* to *Velocity
    dispersion*: the spread of the velocities of each particle's 32 nearest
    neighbours, averaged along the ray.
 
-   <!-- Screenshot pending (see SHOTLIST.md): img/14-simulation-particles-4.png -->
+   ```{figure} img/14-simulation-particles-4.png
+   :alt: The cluster box as a projected map of ray-traced particles coloured by velocity dispersion in the Viridis map, with a colour bar from 68 to 252 km/s.
+   :width: 100%
+
+   The velocity dispersion of the cluster's gas.
+   ```
 
 ## What you get
 
@@ -114,7 +140,6 @@ fractions and star dispersion were computed separately with numpy.
   face the sizes grow by 13 %.
 - Filter `LogT > 0` before using `LogD` as *Light*. Otherwise, in the cluster
   run, 1,018 star rows with `LogD` near −8.3 take all the light.
-- A box takes six filters; the desktop has no box selection.
 - The histogram covers the loaded rows (50,000 after a filter until *Load
   all*) and shows no median or percentiles.
 - Filters and views do not wrap across a periodic box. The most massive knot
