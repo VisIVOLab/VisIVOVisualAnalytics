@@ -102,14 +102,11 @@ cosmology, the units of each column, and the factor that converts each one
 to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
 
 A large particle table starts as Gaussian splats 0.75 mean particle spacings
-wide, with an opacity that falls as the cloud gets deeper. In the local 3-D
-view, above about 100,000 particles in a cube the picture comes out brighter
-than nominal (about twice at a million particles, four and a half times at 10
-million), so the local view's splat brightness is not comparable between
-tables of different size; use a [projected map](raytraced-particles.md) for
-that. The server-rendered (*Remote*) view, and a headset that has a float
-target at the default splat size, have no such floor: there the same field
-looks the same from 100,000 or 30 million particles at one intensity. Lower
+wide, with an opacity that falls as the cloud gets deeper, so the same field
+looks equally bright from 100,000 or 30 million particles at one intensity:
+in the Local and *Remote* views and in a headset with a float target. A
+headset without one still brightens large tables. For quantitative
+comparisons use a [projected map](raytraced-particles.md). Lower
 **Splat size** if dense regions saturate. The whole slider changes the size,
 in the Local and Remote views alike: splats from 0.25 to 12 on the scale of
 the 0.75 above (3 at the slider's default), points from 1 to 16 pixels.
