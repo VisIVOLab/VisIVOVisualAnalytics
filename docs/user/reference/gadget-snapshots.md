@@ -15,7 +15,7 @@ header.
 | One file (`snap_010`) | the file |
 | Several files (`snapdir_010/snap_010.0` … `.N`) | any one of the files, or the `snapdir_010` folder; all the files are read together |
 | HDF5 (`snap_010.hdf5`, `snap_010.0.hdf5` …) | as above |
-| SubFind (`groups_010/sub_010.0` …) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
+| SubFind (`groups_010/sub_010.0` …, or the HDF5 `fof_subhalo_tab_010.hdf5` of Gadget-4 and Arepo) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
 
 Binary format 1 (no block names) and format 2 (named blocks) are both read,
 in either byte order. If a file of a multi-file snapshot is missing, or the
@@ -85,6 +85,8 @@ values are used instead (a run in Mpc/h, for example). An administrator can
 set them on the backend with `VISIVO_GADGET_UNITS`
 (see [Configuration](../../technical/configuration.md)).
 
+In a SubFind catalogue, subhalo velocities are taken as peculiar km/s and Vmax as physical km/s, as Gadget-4 and Arepo write them; an HDF5 catalogue's group velocity is converted with 1/a. The convention of the P-Gadget3 SubFind writer (binary `sub_…` files) is not public and is unconfirmed: `svel=snapshot` or `svel=canonical` (and `srad=` for the subhalo radii) in `VISIVO_GADGET_UNITS` state another one.
+
 Without a parameter file, the header decides whether the run is
 cosmological. A run with a matter density and a redshift that matches its
 scale factor is comoving. Any other run, an isolated galaxy for example, is
@@ -98,7 +100,7 @@ file browser list it and say why; the other blocks open as usual.
 
 The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
-to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
+to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a for particles; × 1 for SubFind subhalos).
 
 For a large particle table, the initial Gaussian-splat size is derived from
 the mean particle spacing and starts at 0.75 times that spacing. Opacity is

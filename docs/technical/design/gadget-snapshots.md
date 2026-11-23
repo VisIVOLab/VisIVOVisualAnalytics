@@ -179,6 +179,11 @@ response):
 |---|---|---|
 | `x`, `y`, `z`, `hsml` | L/h, comoving | × L/kpc · a/h → kpc |
 | `vx`, `vy`, `vz` | V, with Gadget's internal √a | × V/(km/s) · √a → km/s, peculiar |
+| subhalo `vx`, `vy`, `vz` (`SVEL`, `SubhaloVel`) | V, peculiar | × V/(km/s) → km/s (`svel=snapshot`: × √a; `svel=canonical`, alias `comoving`: × 1/a) |
+| group `vx`, `vy`, `vz` (HDF5 `GroupVel`) | V, internal a²ẋ | × V/(km/s) / a → km/s, peculiar |
+| `vmax` | V, physical | × V/(km/s) → km/s |
+| subhalo `half_mass_radius`, `rmax`, `subhalohalfmassradtype_k` | L/h, comoving (Gadget-4 HDF5 stores them physical; they are read × 1/a so they size markers like the comoving positions) | × L/kpc · a/h → kpc; `srad=` states the stored frame |
+| HDF5 `spin_*`, `subhaloveldisp` | (L/h)·V and V, physical | × L/kpc / h · V/(km/s); × V/(km/s) |
 | `mass`, `bh_mass` | M/h | × M/M☉ / h → M☉ |
 | `rho` | (M/h)/(L/h)³, comoving | × M/L³ · h²/a³ → g/cm³ |
 | `u` | V² | × V² → erg/g |
@@ -356,6 +361,18 @@ therefore exposed as **FoF groups** and **subhalos**, rather than the ordinary
 particle-type names. The declared schemas cover the group positions, masses,
 overdensity radii, gas/star properties and contamination counters, and the
 subhalo positions, velocities, masses, radii, spin and parent identifiers.
+
+Gadget-4 and Arepo HDF5 catalogues (`fof_subhalo_tab_NNN[.k].hdf5`) open the same way: the
+`Group` and `Subhalo` datasets are types 0 and 1, counted by `Ngroups_*` and `Nsubhalos_*`
+(Arepo: `Nsubgroups_*`), and mapped to the binary blocks (`SUBFIND_HDF5_BLOCKS`):
+`Group_R_TopHat200` (Δ_c(z) of Bryan & Norman 1998 times the critical density) is `rvir`, `Group_R_Crit500` is `r500`, `SubhaloHalfmassRad` is
+`half_mass_radius`; other datasets keep their own names.
+The velocity conventions follow the public writers: Gadget-4 `subfind_properties.cc`
+(subhalo velocity × 1/a of the internal a²ẋ, i.e. peculiar; Vmax = √(GM/r) with r
+physical; half-mass radius physical), `fof.cc` (GroupVel the mass-weighted internal velocity)
+and Arepo `subfind_properties.c` (peculiar subhalo velocity, comoving radii).
+P-Gadget3's writer is not public: the binary catalogues default to the same
+velocity convention and comoving radii, and `svel=` / `srad=` change it.
 
 The catalogue metadata carries `catalogue_kind: subfind`, the object kind and
 the radius definitions. Length, mass and velocity fields use the same stored
