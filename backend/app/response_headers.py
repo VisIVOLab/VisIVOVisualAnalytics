@@ -76,6 +76,14 @@ X_PARTICLE_STEP = "X-Visivo-Particle-Step"
 # The rows' frame: table = origin + scale * row position (issue #208).
 X_PARTICLE_ORIGIN = "X-Visivo-Particle-Origin"
 X_PARTICLE_SCALE = "X-Visivo-Particle-Scale"
+# Rows left out for their intensity (not finite, not positive, or a light that
+# is 0 in float32) and rows whose light was capped (issue #414).
+X_PARTICLE_DROPPED = "X-Visivo-Particle-Dropped"
+X_PARTICLE_CLIPPED = "X-Visivo-Particle-Clipped"
+# A projected map's units: its surface density and the mean it is coloured
+# by ("relative" when the table states none) (issue #393).
+X_PROJECTED_UNIT = "X-Visivo-Projected-Unit"
+X_PROJECTED_VALUE_UNIT = "X-Visivo-Projected-Value-Unit"
 
 # ── Ray-traced volume grid (issue #106) ─────────────────────────────────────
 X_VOLUME_SHAPE = "X-Visivo-Volume-Shape"

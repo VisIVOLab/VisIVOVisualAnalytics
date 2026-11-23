@@ -31,9 +31,10 @@ from pydantic import BaseModel, Field
 from ..auth import verify_token
 from ..dependencies import _require_dataset, get_exports_dir
 from ..product_cache import dataset_identity
-from ..response_headers import (X_EXPOSURE, X_PARTICLE_COUNT, X_PARTICLE_FIELDS,
-                                X_PARTICLE_ORIGIN, X_PARTICLE_SCALE, X_PARTICLE_STEP,
-                                X_RENDER_MS)
+from ..response_headers import (X_EXPOSURE, X_PARTICLE_CLIPPED, X_PARTICLE_COUNT,
+                                X_PARTICLE_DROPPED, X_PARTICLE_FIELDS, X_PARTICLE_ORIGIN,
+                                X_PARTICLE_SCALE, X_PARTICLE_STEP, X_PROJECTED_UNIT,
+                                X_PROJECTED_VALUE_UNIT, X_RENDER_MS)
 from ..schemas import TaskCreateResponse
 from ..sessions import Session, get_session
 from ..tasks import TASKS
@@ -93,6 +94,10 @@ class ParticleRenderRequest(BaseModel):
     radius_field: str | None = None
     radius_scale: float = Field(1.0, gt=0.0, le=1.0e3)
     neighbours: int = Field(32, ge=1, le=512)
+    # The period of the three position axes, for the neighbours of a periodic
+    # box found across its faces: None the table's own (a periodic Gadget
+    # snapshot's BoxSize), 0 none.
+    period: float | None = Field(None, ge=0.0)
     # Its light: a column (``intensity_log10``: the column holds log10 of
     # it), or the same for every particle; a ``density`` or an amount
     # ``per_particle`` (app/particle_raytrace.py).
@@ -182,7 +187,7 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
     ``columns``, those of them the table has, of the same rows (``"columns"``,
     float64), for a caller that weighs the particles itself
     (app/routers/particle_layers.py)."""
-    from ..particle_raytrace import smoothing_lengths  # noqa: PLC0415
+    from ..particle_raytrace import normalised_light, smoothing_lengths  # noqa: PLC0415
     from ..point_sample import place_rows  # noqa: PLC0415
     from ..point_table import filter_mask, open_point_table, sky_arguments  # noqa: PLC0415
     from .render import point_table_spec  # noqa: PLC0415
@@ -196,9 +201,15 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
     for name in axes:
         if name not in table.columns:
             raise ValueError(f"Unknown position field: {name!r}")
-    rows = np.arange(table.num_rows, dtype=np.int64)
-    if req.filters:
-        rows = rows[filter_mask(table.columns, req.filters, rows)]
+    # The population drawn (by every filter but those on the position: in a
+    # catalogue mixing gas and stars, the only way to choose a species) and
+    # the cut of it the position filters make: the smoothing lengths of a
+    # cut's particles take their neighbours from the whole population.
+    spatial, other = _split_filters(req.filters, axes)
+    population = np.arange(table.num_rows, dtype=np.int64)
+    if other:
+        population = population[filter_mask(table.columns, other, population)]
+    rows = population[filter_mask(table.columns, spatial, population)] if spatial else population
     # Float32 coordinates local to the rows and their map back to the
     # table's, in float64 (point_sample.place_rows, as the remote point
     # session and the VR page read them): a float32 cast of the positions
@@ -212,23 +223,18 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
     rows, pos = placed.rows, placed.xyz
     origin, scale = placed.origin.copy(), float(placed.scale[0])
     del placed
-    if req.intensity_field:
-        if req.intensity_field not in table.columns:
-            raise ValueError(f"Unknown intensity field: {req.intensity_field!r}")
-        light = np.asarray(table.columns[req.intensity_field][rows], dtype=np.float64)
-        if req.intensity_log10:
-            with np.errstate(over="ignore"):
-                light = 10.0 ** (light - np.nanmax(light[np.isfinite(light)], initial=0.0))
-    else:
-        light = np.ones(len(rows))
-    keep = np.isfinite(light) & (light > 0)
-    rows, pos, light = rows[keep], pos[keep], light[keep]
+    periods = _axis_periods(table.columns, axes, req.period)
+    boxsize = [p / scale if p else 0.0 for p in periods]
+    if req.intensity_field and req.intensity_field not in table.columns:
+        raise ValueError(f"Unknown intensity field: {req.intensity_field!r}")
+    component = _snapshot_component(spec)
+    # A snapshot's projected map weighs its particles by their mass unless
+    # told otherwise: a surface density, in Msun/kpc^2 (issue #393).
+    weight = req.intensity_field or (
+        "mass" if req.mode == "projected" and component is not None
+        and "mass" in table.columns else None)
     if not len(rows):
         raise ValueError("No particle to draw: no row has a position and a positive intensity.")
-    light = light / np.percentile(light, 99.0)
-    if req.intensity_power != 1.0:
-        light = light ** req.intensity_power
-    light = light.astype(np.float32)
     if req.radius_field:
         if req.radius_field not in table.columns:
             raise ValueError(f"Unknown radius field: {req.radius_field!r}")
@@ -242,13 +248,52 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
             # would be inf in float32 and turn every radius into 0.
             radius = (radius.astype(np.float64) / float(scale)).astype(np.float32)
     else:
-        radius = smoothing_lengths(pos, req.neighbours)
+        # Before the light leaves rows out: a particle's neighbours are its
+        # population's, whatever their intensity (a zero SFR, a blank).
+        radius = smoothing_lengths(pos, req.neighbours, boxsize=boxsize,
+                                   region=_region(table.columns, axes, population, origin,
+                                                  scale, periods) if spatial else None)
+    sigma = None
+    if req.mode == "projected" and req.colour_by == "velocity_dispersion":
+        from ..particle_raytrace import velocity_dispersion  # noqa: PLC0415
+        names = req.velocity or _velocity_columns(table.columns)
+        if names is None or any(n not in table.columns for n in names):
+            raise ValueError("No velocity columns (VX, VY, VZ) for the velocity dispersion.")
+        vel = np.stack([np.asarray(table.columns[n][rows], dtype=np.float32) for n in names],
+                       axis=1)
+        sigma = velocity_dispersion(
+            pos, np.nan_to_num(vel), req.neighbours, boxsize=boxsize,
+            region=_region(table.columns, axes, population, origin, scale, periods,
+                           names) if spatial else None)
+    if weight:
+        light, keep, stats = normalised_light(table.columns[weight][rows],
+                                              bool(req.intensity_field and req.intensity_log10),
+                                              req.intensity_power)
+        rows, pos, radius = rows[keep], pos[keep], radius[keep]
+        sigma = sigma[keep] if sigma is not None else None
+    else:
+        light = np.ones(len(rows), dtype=np.float32)
+        stats = {"dropped_rows": 0, "clipped_rows": 0, "light_span_decades": 0.0}
+    light_unit = stats.pop("light_unit", 1.0)
+    if not len(rows):
+        raise ValueError("No particle to draw: no row has a position and a positive intensity.")
     radius = (radius * req.radius_scale).astype(np.float32)
     # Positions and sizes in the local frame; ``frame`` (origin, scale) maps
     # it to the table's coordinates, table = origin + scale * local, and
     # _local_camera moves the camera into it.
     particles = {"positions": pos, "radius": radius, "intensity": light,
-                 "frame": (origin, scale)}
+                 "frame": (origin, scale), "stats": stats}
+    if req.mode == "projected":
+        from ..projected_units import map_units  # noqa: PLC0415
+        particles["map_units"] = map_units(
+            component, axes=axes, weight=weight, power=req.intensity_power,
+            clipped=stats["clipped_rows"], light_unit=light_unit,
+            log10=bool(req.intensity_field and req.intensity_log10),
+            radius_scale=req.radius_scale,
+            smoothing=(f"column {req.radius_field}" if req.radius_field
+                       else f"{req.neighbours} neighbours"),
+            colour_by=req.colour_by, value_field=req.colour.field,
+            velocity=req.velocity or _velocity_columns(table.columns))
     if req.mode == "light":
         # The interactive GPU view can apply the point viewer's LUT itself.
         # Keep the scalar instead of baking RGB: changing its range, scale or
@@ -265,18 +310,74 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
         if req.colour.field not in table.columns:
             raise ValueError(f"Unknown colour field: {req.colour.field!r}")
         particles["value"] = np.asarray(table.columns[req.colour.field][rows], dtype=np.float32)
-    elif req.colour_by == "velocity_dispersion":
-        from ..particle_raytrace import velocity_dispersion  # noqa: PLC0415
-        names = req.velocity or _velocity_columns(table.columns)
-        if names is None or any(n not in table.columns for n in names):
-            raise ValueError("No velocity columns (VX, VY, VZ) for the velocity dispersion.")
-        vel = np.stack([np.asarray(table.columns[n][rows], dtype=np.float32) for n in names],
-                       axis=1)
-        particles["value"] = velocity_dispersion(pos, np.nan_to_num(vel), req.neighbours)
+    elif sigma is not None:
+        particles["value"] = sigma
     if columns:
         particles["columns"] = {name: np.asarray(table.columns[name][rows], dtype=np.float64)
                                 for name in columns if name in table.columns}
     return particles
+
+
+def _snapshot_component(spec: str):
+    """The Gadget particle type a table of points reads (None for any other
+    table): what states its units."""
+    from ..point_table import component_format  # noqa: PLC0415
+    if str(spec).startswith("{") or component_format(spec) != "gadget":
+        return None
+    from .. import gadget_snapshot  # noqa: PLC0415
+    return gadget_snapshot.resolve(spec)
+
+
+def _region(columns, axes, population: np.ndarray, origin, scale: float, periods,
+            extra=()):
+    """``region(lo, hi)`` for particle_raytrace's neighbour searches: the
+    population's positions within [lo, hi] in the particles' local frame,
+    then the ``extra`` columns (NaN as 0)."""
+    from ..point_table import positions_within  # noqa: PLC0415
+
+    def region(lo, hi):
+        out = positions_within(columns, axes, population,
+                               origin + scale * np.asarray(lo, dtype=np.float64),
+                               origin + scale * np.asarray(hi, dtype=np.float64),
+                               periods, extra)
+        out[:, :3] = (out[:, :3] - origin) / scale
+        return np.nan_to_num(out) if extra else out
+
+    return region
+
+
+def _split_filters(filters: list[dict], axes) -> tuple[list[dict], list[dict]]:
+    """``(position, other)``: the filters that cut the drawn positions (a box
+    or a sphere on position columns, a comparison of one) and the rest. An
+    inside box over position and other columns is split into its two parts;
+    an outside one, or a sphere on any other column, stays among the rest."""
+    position, other = [], []
+    for f in filters:
+        shape = f.get("box") if isinstance(f.get("box"), dict) else f.get("sphere")
+        fields = (shape.get("fields") or []) if isinstance(shape, dict) else [f.get("field")]
+        on = [name in axes for name in fields]
+        if fields and all(on):
+            position.append(f)
+        elif (any(on) and isinstance(f.get("box"), dict) and f.get("op", "inside") == "inside"
+              and len(fields) == len(f["box"].get("min") or []) == len(f["box"].get("max") or [])):
+            box = f["box"]
+            parts = [{**f, "box": {**box, **{key: [v for v, p in zip(box.get(key) or [], on)
+                                                    if p == side]
+                                             for key in ("fields", "min", "max")}}}
+                     for side in (True, False)]
+            position.append(parts[0])
+            other.append(parts[1])
+        else:
+            other.append(f)
+    return position, other
+
+
+def _axis_periods(columns, axes, explicit: float | None) -> list[float | None]:
+    """The period of each position axis (app/periodic.py): ``explicit`` (0:
+    none) on all three, else the table's own (a periodic snapshot's box)."""
+    from ..periodic import selection_period  # noqa: PLC0415
+    periods = getattr(columns, "column_periods", None)
+    return [selection_period(explicit, name, periods) for name in axes]
 
 
 def _velocity_columns(columns) -> tuple[str, str, str] | None:
@@ -373,7 +474,9 @@ def _run(task_id: str, entry: dict, req: ParticleRenderRequest, stop: threading.
         task_id, req, stop, lambda: _prepare(entry, req),
         lambda particles, cam, exposure: _frame(particles, req, cam, req.width, req.height,
                                                 req.tone, exposure),
-        lambda particles: {"particles": int(len(particles["positions"]))})
+        lambda particles: {"particles": int(len(particles["positions"])),
+                           **particles.get("stats", {}),
+                           **{k: particles[k] for k in ("map_units",) if k in particles}})
 
 
 def run_frames(task_id: str, req, stop: threading.Event, prepare, frame, summary) -> dict:
@@ -436,7 +539,7 @@ _PREPARED_KEEP = 2
 _PREVIEW_LOCK = asyncio.Lock()
 _PREVIEW_WORK = threading.Lock()
 _PARTICLE_FIELDS = ("dataset_id", "x", "y", "z", "sky", "filters", "colour", "radius_field",
-                    "radius_scale", "neighbours", "intensity_field", "intensity_log10",
+                    "radius_scale", "neighbours", "period", "intensity_field", "intensity_log10",
                     "intensity_power", "mode", "colour_by", "velocity", "colour_values")
 
 
@@ -476,13 +579,16 @@ class ParticlePreviewRequest(ParticleRenderRequest):
     max_particles: int | None = Field(None, ge=1000)
 
 
+#: What describes the prepared particles, not one value a particle.
+_PER_TABLE = ("frame", "stats", "map_units")
+
+
 def _sampled(particles: dict, limit: int | None) -> dict:
     n = len(particles["positions"])
     if not limit or n <= limit:
         return particles
     step = -(-n // limit)
-    # ``frame`` is the particles' coordinate frame, not one value a particle.
-    out = {k: v if k == "frame" else v[::step] for k, v in particles.items()}
+    out = {k: v if k in _PER_TABLE else v[::step] for k, v in particles.items()}
     out["intensity"] = out["intensity"] * np.float32(step)
     return out
 
@@ -498,11 +604,11 @@ async def particle_render_preview(request: ParticlePreviewRequest, token: str = 
     if point_table_spec(entry) is None:
         raise HTTPException(422, "Ray-traced rendering needs a table of points.")
 
-    def frame() -> tuple[bytes, float, float]:
+    def frame() -> tuple[bytes, float, float, dict]:
         with _PREVIEW_WORK:
             return draw()
 
-    def draw() -> tuple[bytes, float, float]:
+    def draw() -> tuple[bytes, float, float, dict]:
         t0 = time.time()
         particles = _sampled(_prepared(entry, request, token), request.max_particles)
         rgb, _, exposure = _frame(particles, request, request.cameras[0], request.width,
@@ -510,17 +616,31 @@ async def particle_render_preview(request: ParticlePreviewRequest, token: str = 
         from PIL import Image  # noqa: PLC0415
         buf = io.BytesIO()
         Image.fromarray(rgb).save(buf, format="JPEG", quality=88)
-        return buf.getvalue(), exposure, (time.time() - t0) * 1000.0
+        return buf.getvalue(), exposure, (time.time() - t0) * 1000.0, particles
 
     # One at a time: a client sends its next frame when this one is back, and
     # two clients would only slow each other down.
     async with _PREVIEW_LOCK:
         try:
-            jpeg, exposure, ms = await asyncio.to_thread(frame)
+            jpeg, exposure, ms, particles = await asyncio.to_thread(frame)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     return Response(jpeg, media_type="image/jpeg",
-                    headers={X_EXPOSURE: repr(float(exposure)), X_RENDER_MS: f"{ms:.0f}"})
+                    headers={X_EXPOSURE: repr(float(exposure)), X_RENDER_MS: f"{ms:.0f}",
+                             **_light_headers(particles)})
+
+
+def _light_headers(particles: dict) -> dict[str, str]:
+    """The rows the light left out and capped (normalised_light), and a
+    projected map's units (projected_units.map_units), as headers."""
+    stats = particles.get("stats", {})
+    out = {X_PARTICLE_DROPPED: str(int(stats.get("dropped_rows", 0))),
+           X_PARTICLE_CLIPPED: str(int(stats.get("clipped_rows", 0)))}
+    units = particles.get("map_units")
+    if units:
+        out[X_PROJECTED_UNIT] = units["density_unit"]
+        out[X_PROJECTED_VALUE_UNIT] = units["value_unit"]
+    return out
 
 
 class ParticleDataRequest(ParticleRenderRequest):
@@ -556,11 +676,11 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
     if point_table_spec(entry) is None:
         raise HTTPException(422, "Ray-traced rendering needs a table of points.")
 
-    def pack() -> tuple[bytes, int, str, int, np.ndarray, float]:
+    def pack() -> tuple[bytes, int, str, int, np.ndarray, float, dict]:
         with _PREVIEW_WORK:
             return packed()
 
-    def packed() -> tuple[bytes, int, str, int, np.ndarray, float]:
+    def packed() -> tuple[bytes, int, str, int, np.ndarray, float, dict]:
         n_all = len(_prepared(entry, request, token)["positions"])
         particles = _sampled(_prepared(entry, request, token), request.max_particles)
         step = -(-n_all // request.max_particles) if n_all > request.max_particles else 1
@@ -573,8 +693,9 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
         if request.mode == "projected":
             weight = emission_weights(particles["intensity"], radius, "per_particle")
             value = particles.get("value")
-            # As projected_maps reads it: a NaN would blank, on the GPU, every
-            # pixel the particle covers.
+            # A NaN would blank, on the GPU, every pixel the particle covers;
+            # as 0 it still counts in the GPU's mean, which projected_maps
+            # leaves it out of (the stills).
             value = (np.zeros(len(pos)) if value is None
                      else np.nan_to_num(np.asarray(value, dtype=np.float32)))
             columns = [pos, radius[:, None], weight[:, None], value[:, None]]
@@ -591,18 +712,20 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
             columns = [pos, radius[:, None], weight[:, None], particles["colour"]]
             names = "x,y,z,r,e,red,green,blue"
         rows = np.hstack([np.asarray(c, dtype="<f4") for c in columns])
-        return np.ascontiguousarray(rows).tobytes(), len(rows), names, step, origin, scale
+        return (np.ascontiguousarray(rows).tobytes(), len(rows), names, step, origin, scale,
+                particles)
 
     async with _PREVIEW_LOCK:
         try:
-            body, count, names, step, origin, scale = await asyncio.to_thread(pack)
+            body, count, names, step, origin, scale, particles = await asyncio.to_thread(pack)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
     return Response(body, media_type="application/octet-stream",
                     headers={X_PARTICLE_COUNT: str(count), X_PARTICLE_FIELDS: names,
                              X_PARTICLE_STEP: str(step),
                              X_PARTICLE_ORIGIN: ",".join(repr(float(v)) for v in origin),
-                             X_PARTICLE_SCALE: repr(float(scale))})
+                             X_PARTICLE_SCALE: repr(float(scale)),
+                             **_light_headers(particles)})
 
 
 def _table_coordinates(pos: np.ndarray, radius: np.ndarray, origin: np.ndarray,
@@ -731,9 +854,21 @@ def _png(rgb: np.ndarray) -> bytes:
 @router.get("/v1/particle_render/{task_id}/light.fits")
 async def particle_render_light_fits(task_id: str, token: str = _auth) -> Response:
     """The still's light before the tone curve: a float32 FITS cube, its
-    three planes red, green and blue, rows bottom up as FITS shows them."""
+    three planes red, green and blue, rows bottom up as FITS shows them; a
+    projected map of particles as its density and mean, each in its unit
+    (projected_units.projected_fits)."""
     from astropy.io import fits  # noqa: PLC0415
     light = _light(task_id, token)
+    from .tasks import _owned_task  # noqa: PLC0415
+    task = _owned_task(task_id, token)
+    units = (task.result or {}).get("map_units") if task.operation == "particle_render" else None
+    if units and light.shape[-1] == 2:
+        # A projected map of particles: its planes in their units (issue #393).
+        from ..projected_units import projected_fits  # noqa: PLC0415
+        req = ParticleRenderRequest.model_validate_json(
+            (_owned_render(task_id, token) / "request.json").read_text())
+        return Response(projected_fits(light, units, req.cameras[0], req.width, req.height,
+                                       req.slab), media_type="application/fits")
     cube = np.ascontiguousarray(np.moveaxis(light, -1, 0)[:, ::-1, :])
     hdu = fits.PrimaryHDU(cube.astype(np.float32))
     if cube.shape[0] == 2:   # a projected map
