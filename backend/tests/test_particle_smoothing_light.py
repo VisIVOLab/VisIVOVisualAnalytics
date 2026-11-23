@@ -430,3 +430,26 @@ def test_the_dropped_rows_reach_the_client(tmp_path, monkeypatch):
         loop.run_until_complete(router.delete_particle_render(task.task_id, token="tok"))
     finally:
         loop.close()
+
+
+# ── The client's "Periodic box": the snapshot states it as the backend decides ─
+
+def test_the_snapshot_units_state_whether_the_box_wraps(tmp_path, monkeypatch):
+    """``units.periodic`` in a snapshot's description follows the rule its
+    selections and neighbour searches use (Component.periods)."""
+    import sys
+
+    from app import gadget_snapshot as gs
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_selection_review_448 import _hdf5_box, _snapshot
+    monkeypatch.delenv(gs.UNITS_ENV, raising=False)
+    for name, periodic, comoving in (("a", True, False), ("b", False, True),
+                                     ("c", None, True), ("d", None, False)):
+        component = _hdf5_box(tmp_path / f"{name}.hdf5", periodic=periodic, comoving=comoving)
+        described = component.snapshot.describe()
+        assert described["units"]["periodic"] is bool(component.periods()), name
+        assert described["box_size"] == 50.0
+    files, _ = _snapshot(tmp_path / "binary")
+    assert gs.open_snapshot(files[0]).describe()["units"]["periodic"] is True
+    monkeypatch.setenv(gs.UNITS_ENV, "periodic=0")
+    assert gs.open_snapshot(files[0]).describe()["units"]["periodic"] is False
