@@ -1,5 +1,6 @@
 #include "WorkspaceChrome.h"
 #include "Settings.h"
+#include "StatusMessageRoom.h"
 
 #include "MainWindow.h"
 #include "DiagnosticsWindow.h"
@@ -263,6 +264,10 @@ void WorkspaceChrome::installStatusRail()
     QStatusBar *sb = m_window->statusBar();
     if (!sb)
         return;
+
+    // Every window with a rail also has a cursor readout and a row of labels
+    // that can leave a temporary message no room (issue #508).
+    visivo::StatusMessageRoom::attach(sb);
 
     // Fixed slots are appended to the RIGHT of the existing permanent widgets
     // (cursor readout, WCS/sanity labels) — additive, nothing removed.

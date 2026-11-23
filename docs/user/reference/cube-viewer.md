@@ -29,6 +29,9 @@ for regions, [Regions](../use-cases/04-regions.md).
   the active pane it also says how that product was made, for example
   *Moment 0 · channels 1–512 · mask off*; hover it for the full recipe
   (*Inspector ▸ Parameters* has the same).
+  A message the window posts (for example *spectrum recomputed at full
+  resolution*) takes the room it needs on the left; the readouts that are
+  in its way fold away until it goes.
 
 ⌘W (Ctrl+W on Linux and Windows) closes the window.
 

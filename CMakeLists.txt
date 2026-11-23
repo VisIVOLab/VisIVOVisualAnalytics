@@ -543,6 +543,8 @@ set(PROJECT_SOURCES
         src/gui/BusyStatus.cpp
         src/gui/BusyStatus.h
         src/gui/BusyTracker.h
+        src/gui/StatusMessageRoom.cpp
+        src/gui/StatusMessageRoom.h
         src/gui/SelectionMarkerSize.h
         src/app/FilePreview.h
         src/app/MissingRoute.h
