@@ -242,7 +242,9 @@ client. For full-Stokes cubes use the cube viewer
   pixels with a flux ≤ 0 are skipped. For maps on different grids use
   *Combine ▸ Pixel Math / Spectral Index…* in the Data Hub, which reprojects
   the second map (beams are not matched: smooth both to a common resolution
-  first).
+  first). Two maps that do not overlap on the sky are refused; a partial
+  overlap is computed and the result reports how much of the first map it
+  covers.
 - *Compute Faraday RM…*: fits PA = PA₀ + RM·λ² to three or more (Q, U, ν GHz)
   layer triplets; RM in rad m⁻². PA is not unwrapped, so the result is only
   right while |RM·Δλ²| < π/2 between consecutive frequencies; for larger RM

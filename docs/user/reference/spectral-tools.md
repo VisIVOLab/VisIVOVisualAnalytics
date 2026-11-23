@@ -47,6 +47,11 @@ dashed curve. The stats bar shows peak, centre and FWHM with 1σ errors, the
 integral and the residual rms. *Clear Fit* removes it.
 
 - At least 6 finite channels are needed.
+- The fit tries several starting positions and widths and keeps the best
+  resolved solution, so a narrow line on a wide spectrum is found as long as
+  it stands out. A strong edge spike or a brighter noise peak can still
+  capture the fit; the result then carries a warning that it is unreliable.
+  The profiler does not yet restrict the fit to the visible range.
 - When channels are correlated (instrumental or display smoothing) the
   summary says by how much the errors were scaled (*errors ×1.4 for
   correlated channels*) or that they are uncorrected.

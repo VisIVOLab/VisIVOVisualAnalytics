@@ -194,7 +194,7 @@ def worker_cube_subvolume_raw(
         "range_max": float(range_max),
         "spectral_axis_type": spectral_axis_type,
         "spectral_axis_unit": spectral_axis_unit,
-        "bunit": dataset.bunit or "",
+        "bunit": dataset.intensity_unit or "",
         "raw_bytes": raw_bytes,
     }
 
@@ -288,7 +288,7 @@ def worker_cube_subvolume(
         "range_max": float(range_max),
         "spectral_axis_type": spectral_axis_type,
         "spectral_axis_unit": spectral_axis_unit,
-        "bunit": dataset.bunit or "",
+        "bunit": dataset.intensity_unit or "",
         "compression": compression,
         "data_base64": data_b64,
     }
@@ -1232,7 +1232,11 @@ def worker_save_map_2d(
         if key in src_header:
             value = src_header[key]
             out_header[key] = _fits_ascii(value) if isinstance(value, str) else value
-    if bunit:
+    from ..fits_dataset import UNKNOWN_INTENSITY_UNIT  # noqa: PLC0415
+    if bunit.startswith(UNKNOWN_INTENSITY_UNIT):
+        out_header.add_comment(_fits_ascii(
+            f"No BUNIT: the source intensity unit is unknown, so this map is in {bunit}."))
+    elif bunit:
         out_header["BUNIT"] = _fits_ascii(bunit)
     elif "BUNIT" in src_header:
         out_header["BUNIT"] = _fits_ascii(str(src_header["BUNIT"]))

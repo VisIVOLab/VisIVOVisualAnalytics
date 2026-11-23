@@ -321,7 +321,7 @@ def worker_aperture_photometry(
     flux_jy: float | None = (
         (flux_summed / beam_area_px)
         if (flux_summed is not None and per_beam and beam_area_px) else None)
-    flux_unit = f"{dataset.bunit}*pixel" if dataset.bunit else "pixel_sum"
+    flux_unit = f"{dataset.intensity_unit}*pixel" if dataset.intensity_unit else "pixel_sum"
 
     # R-09: correlated-noise uncertainty. Pixels within a beam are not
     # independent (n_beam pixels per beam). The error on the raw summed
@@ -351,7 +351,7 @@ def worker_aperture_photometry(
         "beam_area_pix": beam_area_px,
         "background_per_pix": bkg_per_pix,
         "background_rms_per_pix": bkg_rms,
-        "bunit": dataset.bunit,
+        "bunit": dataset.intensity_unit,
         "n_pix_aperture": n_pix,
         # The fractional overlap area actually used for the background
         # subtraction; n_pix_aperture is its truncated whole-pixel count.
@@ -793,7 +793,7 @@ def worker_gauss_fit_2d(
     per_beam = is_per_beam_bunit(dataset.bunit)
     # ``integrated_flux`` is ALWAYS the raw Gaussian integral in
     # ``integrated_unit`` (BUNIT·pixel²); only ``integrated_flux_jy`` is Jy.
-    integrated_unit = f"{dataset.bunit}*pixel^2" if dataset.bunit else "amplitude*pixel^2"
+    integrated_unit = f"{dataset.intensity_unit}*pixel^2" if dataset.intensity_unit else "amplitude*pixel^2"
     if per_beam and beam_area_px:
         integrated_flux_jy: float | None = integrated_raw / beam_area_px
         integrated_flux_err_jy = (
@@ -838,7 +838,7 @@ def worker_gauss_fit_2d(
         "integrated_flux_err": integrated_raw_err,
         "integrated_flux_unit": integrated_unit,
         "beam_area_pix": beam_area_px,
-        "bunit": dataset.bunit,
+        "bunit": dataset.intensity_unit,
         "major_arcsec": major_arcsec,
         "minor_arcsec": minor_arcsec,
         "major_err_arcsec": major_err_arcsec,

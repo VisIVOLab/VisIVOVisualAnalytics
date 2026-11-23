@@ -32,6 +32,9 @@ os.environ["VISIVO_TOKEN"] = _TEST_TOKEN
 # starts, so no test reads or writes the user's own workspace store.
 os.environ["VISIVO_VBT_BYTE_ORDERS"] = os.path.join(
     __import__("tempfile").mkdtemp(prefix="visivo-vbt-orders-"), "orders.json")
+# Beams typed for headers without one (issue #416): same reason.
+os.environ["VISIVO_BEAM_OVERRIDES"] = os.path.join(
+    __import__("tempfile").mkdtemp(prefix="visivo-beams-"), "beams.json")
 
 
 @pytest.fixture(autouse=True)

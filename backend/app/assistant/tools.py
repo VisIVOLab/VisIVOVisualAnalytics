@@ -529,7 +529,7 @@ def _noise_estimate(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
     sigma = sigma[np.isfinite(sigma)]
     mad = mad[np.isfinite(mad)]
     return {
-        "bunit": ds.bunit,
+        "bunit": ds.intensity_unit,
         "channel_start": res.get("channel_start"),
         "channel_end": res.get("channel_end"),
         "num_channels": res.get("num_channels"),
@@ -698,7 +698,7 @@ def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
         "n_channels": len(spec["values"]),
         "spectral_unit": spec.get("spectral_unit"),
         "spectral_type": spec.get("spectral_type"),
-        "bunit": ds.bunit,
+        "bunit": ds.intensity_unit,
         **fit,
     }
 
