@@ -87,8 +87,8 @@ Under the plot:
 On the plot, each survey has its own colour (2MASS, WISE, MSX, Spitzer IRAC
 and MIPS, Herschel PACS and SPIRE, other), named in the legend. Filled points
 are in the fit; hollow, fainter ones are not. Every point has its error bar. On
-log axes an error bar that would reach zero or below ends in an arrow at the
-bottom of the plot.
+log axes an error bar that would reach zero or below runs to the bottom of the
+plot, with no arrowhead: arrows mark only upper limits.
 
 Thin lines join each counterpart to the one it was matched with in the next
 band, so where a band has several counterparts the SED forks (the band-merged
@@ -104,7 +104,8 @@ The axes cover the photometry: the flux axis runs from a decade below the
 faintest band to half a decade above the brightest, and the fitted curves are
 cut at the frame rather than stretching it.
 
-Upper limits (*UL*) are drawn as a bar with an arrow pointing down. They are
+Upper limits (*UL*) are drawn as a short bar with an arrow pointing down
+(*Upper limit* in the legend). They are
 not in the χ², but any model brighter than a limit is rejected.
 
 ## Optically thin model

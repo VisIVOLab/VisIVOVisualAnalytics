@@ -1454,7 +1454,7 @@ void SedWindow::plotObservedPoints()
                          [](const Marker &a, const Marker &b) { return a.x < b.x; });
         // QCPErrorBars skips a NaN arm. A point with no error gets none (a zero
         // arm still draws its whisker across the marker), and a lower arm cut
-        // by the bottom of a log axis is drawn below as an arrow instead.
+        // by the bottom of a log axis is drawn below as a plain line instead.
         const double none = std::numeric_limits<double>::quiet_NaN();
         QVector<double> mx, my, below, above;
         for (const Marker &marker : markers) {
@@ -1464,9 +1464,9 @@ void SedWindow::plotObservedPoints()
             above.append(marker.above > 0.0 ? marker.above : none);
         }
 
-        // The arrow runs from the point to the bottom of the plot, wherever the
-        // user zooms or pans: a fixed end would read as a measured lower bound
-        // once the floor moved. Created before the markers so they paint over it.
+        // The cut arm runs from the point to the bottom of the plot, wherever the
+        // user zooms or pans, with no head: an arrow would read as an upper
+        // limit. Created before the markers so they paint over it.
         for (const Marker &marker : markers) {
             if (!marker.clipped)
                 continue;
@@ -1476,7 +1476,6 @@ void SedWindow::plotObservedPoints()
             cut->end->setTypeY(QCPItemPosition::ptAxisRectRatio);
             cut->end->setCoords(marker.x, 1.0);
             cut->setPen(QPen(colour, 1.2));
-            cut->setHead(QCPLineEnding(QCPLineEnding::esSpikeArrow, 7, 9));
             cut->setSelectable(false);
         }
 
@@ -1508,10 +1507,10 @@ void SedWindow::plotObservedPoints()
         arrow->start->setCoords(ulX[i], ulY[i]);
         arrow->end->setType(QCPItemPosition::ptAbsolute);
         arrow->end->setParentAnchor(arrow->start);
-        arrow->end->setCoords(0, 34);
-        arrow->setPen(QPen(toColour(rgb, point.use ? 1.0 : sp::kUnusedAlpha), 2.2));
-        arrow->setHead(QCPLineEnding(QCPLineEnding::esSpikeArrow, 11, 13));
-        arrow->setTail(QCPLineEnding(QCPLineEnding::esBar, 14));
+        arrow->end->setCoords(0, 22);
+        arrow->setPen(QPen(toColour(rgb, point.use ? 1.0 : sp::kUnusedAlpha), 1.4));
+        arrow->setHead(QCPLineEnding(QCPLineEnding::esSpikeArrow, 7, 9));
+        arrow->setTail(QCPLineEnding(QCPLineEnding::esBar, 8));
         arrow->setSelectable(false);
     }
 
@@ -1551,6 +1550,9 @@ void SedWindow::plotObservedPoints()
         legendEntry(u"Not in the fit"_s,
                     QCPScatterStyle(QCPScatterStyle::ssCircle, QPen(ink, 1.5), Qt::NoBrush, 7));
     }
+    if (!ulX.isEmpty())
+        legendEntry(u"Upper limit"_s,
+                    QCPScatterStyle(QCPScatterStyle::ssTriangleInverted, ink, ink, 7));
 
     // What the user clicks and hovers: one invisible graph for the detections
     // and one for the limits, whose data indices map back to table rows through
