@@ -82,6 +82,13 @@ void TestSkavaClient::parsesErrorEnvelope()
     QVERIFY(msg.contains(u"does-not-exist"_s));
     QVERIFY(SkavaClient::parseErrorEnvelope("<html>502 Bad Gateway</html>").isEmpty());
     QVERIFY(SkavaClient::parseErrorEnvelope(R"({"detail":"x"})").isEmpty());
+    // The TAP service's DALI error document.
+    const QByteArray dali = R"(<?xml version="1.0"?><VOTABLE version="1.4" xmlns="http://www.ivoa.net/xml/VOTable/v1.3">)"
+                            R"(<RESOURCE type="results"><INFO name="QUERY_STATUS" value="ERROR">Unknown column 'foo')"
+                            R"( in ivoa.ObsCore</INFO></RESOURCE></VOTABLE>)";
+    QCOMPARE(SkavaClient::parseErrorEnvelope(dali), u"Unknown column 'foo' in ivoa.ObsCore"_s);
+    const QByteArray ok = R"(<VOTABLE><RESOURCE><INFO name="QUERY_STATUS" value="OK"/></RESOURCE></VOTABLE>)";
+    QVERIFY(SkavaClient::parseErrorEnvelope(ok).isEmpty());
 }
 
 void TestSkavaClient::explainsAnUnreachableNode()

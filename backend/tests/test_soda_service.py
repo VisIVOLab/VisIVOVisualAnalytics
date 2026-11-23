@@ -538,3 +538,42 @@ def test_uws_timestamps_keep_milliseconds():
     stamp = datetime(2026, 10, 28, 15, 4, 5, 678900, tzinfo=timezone.utc)
     assert _utc(stamp) == "2026-10-28T15:04:05.678Z"
     assert _as_utc("2026-10-28T15:04:05.678900") == "2026-10-28T15:04:05.678Z"
+
+
+@pytest.mark.asyncio
+async def test_the_node_token_is_accepted_as_a_bearer_token(client, auth_headers, synthetic_fits_cube):
+    # IVOA SSO BearerToken: a VO client sends the same token as Authorization: Bearer.
+    bearer = {"Authorization": f"Bearer {auth_headers['X-Visivo-Token']}"}
+    resp = await client.get("/soda/sync", params={"ID": _id(synthetic_fits_cube), "POS": POS}, headers=bearer)
+    assert resp.status_code == 200, resp.text
+    resp = await client.get("/soda/async", headers=bearer)
+    assert resp.status_code == 200, resp.text
+    resp = await client.get("/soda/links", params={"ID": _id(synthetic_fits_cube)}, headers=bearer)
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers", [{}, {"Authorization": "Bearer wrong"}, {"X-Visivo-Token": "wrong"},
+                                     {"Authorization": "Basic d3Jvbmc6d3Jvbmc="}])
+async def test_a_refused_request_gets_the_bearer_challenge(client, synthetic_fits_cube, headers):
+    resp = await client.get("/soda/sync", params={"ID": _id(synthetic_fits_cube), "POS": POS}, headers=headers)
+    assert resp.status_code == 401
+    assert resp.headers["www-authenticate"].startswith("Bearer ")
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_header_does_not_hide_a_right_bearer(client, auth_headers, synthetic_fits_cube):
+    headers = {"X-Visivo-Token": "wrong", "Authorization": f"Bearer {auth_headers['X-Visivo-Token']}"}
+    resp = await client.get("/soda/sync", params={"ID": _id(synthetic_fits_cube), "POS": POS}, headers=headers)
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_capabilities_declare_the_bearer_method_on_the_data_interfaces_only(client):
+    root = ET.fromstring((await client.get("/soda/capabilities")).content)
+    for capability in root.iter("capability"):
+        methods = [m.get("standardID") for m in capability.iter("securityMethod")]
+        if capability.get("standardID").startswith("ivo://ivoa.net/std/VOSI#"):
+            assert methods == []
+        else:
+            assert methods == ["ivo://ivoa.net/sso#BearerToken"]
