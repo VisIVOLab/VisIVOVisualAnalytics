@@ -145,14 +145,24 @@ detect the filament (Moment 0 mean 0.74 K km/s, about 2σ).
 ## The LTE tool
 
 *Tools ▸ Spectral ▸ CO Isotopologues (LTE)…* (also in *Inspector ▸
-Analysis*) does the same sum map-wide. Run it from the ¹³CO window: pick the
-C¹⁸O cutout, leave the velocity window at 70 to 95 km/s (taken from the
-spectrum's fit range), set η_mb to 0.72 for both lines (CHIMPS, Rigby et al.
-2016) and X(¹³CO)/X(C¹⁸O) to 7.4. For the clump it reports W_mb of 8.52 ± 0.5
-and 1.73 ± 0.52 K km/s, R = 4.92 ± 1.5 and τ(¹³CO) = 1.04 (0.33 to 2.25). These
-are not the hand numbers above: it sums the channels of the window on the
-T_mb scale instead of fitting a Gaussian, and takes T_ex from the ¹³CO
-peak. The filament gives no detection.
+Analysis*) does the same computation, per region and as maps. Run it from the
+¹³CO window: pick the C¹⁸O cutout, set η_mb to 0.72 for both lines (CHIMPS,
+Rigby et al. 2016) and X(¹³CO)/X(C¹⁸O) to 7.4. The tool sums every channel
+of the velocity window without a baseline, so narrow the window to the line,
+81 to 86.5 km/s: the default taken from the fit range (70 to 95 km/s) also
+sums a wing at 80 to 82 km/s and a low plateau around the line.
+
+| Clump, LTE tool, 81 to 86.5 km/s | Value |
+|---|---|
+| W_mb(¹³CO), W_mb(C¹⁸O) (K km/s) | 7.12 ± 0.24, 1.58 ± 0.25 |
+| R | 4.5 ± 0.7 |
+| τ(¹³CO), τ(C¹⁸O) | 1.30 (0.87 to 1.87), 0.18 |
+| T_ex, from the ¹³CO peak | 8.6 K |
+| N(¹³CO), N(C¹⁸O) (cm⁻²) | 2.6 × 10¹⁶, 3.4 × 10¹⁵ |
+
+R agrees with the fit's 3.9 ± 0.7 within 1σ. N(H₂) and the mass need a
+distance or a galactocentric radius, which this page does not set. The
+filament gives no detection.
 
 ## Caveats
 
@@ -162,9 +172,9 @@ peak. The filament gives no detection.
   labels Moment 0 *K km/s* (*Unit* in *Inspector ▸ Parameters*).
 - The masked Moment 2 (0.59 km/s) is below the fitted σ (1.10 km/s) because
   the 3σ mask drops the line wings. Take widths from the fit.
-- *Fit Gaussian* fits the whole 200 km/s spectrum; on the filament in C¹⁸O it
-  lands on a noise spike at 149 km/s. Keep a fit only if its centre is on the
-  line.
+- *Fit Gaussian* fits the visible range of the spectrum. Zoom onto the line
+  first: over the whole 200 km/s it can land on a noise spike (149 km/s on the
+  filament in C¹⁸O). Keep a fit only if its centre is on the line.
 - *Combine ▸ Pixel Math / Spectral Index…* (*ratio*) reprojects the C¹⁸O map
   onto the ¹³CO grid, but the ratio map is noise wherever C¹⁸O is faint. With
   the demo C¹⁸O cube it returns an empty map and no warning.
