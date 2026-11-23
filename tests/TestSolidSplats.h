@@ -11,7 +11,12 @@ private slots:
     void staleNaNScalarsAreClearedWhenGoingSolid();
     void theTableMapsEverythingNaNIncludedToTheSolidColour();
     void gaussianDefaultsAvoidImmediateSaturation();
-    void gaussianOpacityAdaptsToSightlineDepth();
+    void theVr8BitRuleKeepsItsSteps();
+    void gaussianOpacityIsUnquantisedWithNoFloor();
+    void theSplatShaderMatchesThePointSession();
+    void theRenderStrideKeepsTheBudget();
+    void splatLightDoesNotDependOnTheRows();
+    void splatSizeDefaultDoesNotCarryOverToPoints();
 };
 
 #endif

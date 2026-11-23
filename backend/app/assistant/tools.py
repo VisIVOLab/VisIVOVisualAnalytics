@@ -202,6 +202,14 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
     if context is not None:
         frame = context.get("dataframe")
         fmt = context.get("format")
+    from ..point_table import component_format, is_particle_format  # noqa: PLC0415
+    if frame is None and path and component_format(path) == "gadget":
+        # A snapshot's particle type is opened out of core (no frame): its
+        # statistics are streamed from the shards, a slice of rows at a time.
+        out = _particle_catalogue_summary(path, params, context or {})
+        if _wants_subfind_check(params):
+            out["subfind_velocity_check"] = _subfind_velocity_check(path, params)
+        return out
     if frame is None:
         if not path:
             raise ValueError("catalogue_summary requires a loaded catalogue dataset.")
@@ -240,29 +248,124 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
         "columns": columns,
         "columns_truncated": len(meta["fields"]) > max_cols,
     }
-    # A simulation's particles (a VBT of points, a snapshot's particle type,
-    # issue #31): cartesian as opened, whatever the column names suggest; a
-    # snapshot also states its time, cosmology, units and physical
-    # conversions, which the copilot needs to quote values in physical units.
-    from ..point_table import is_particle_format  # noqa: PLC0415
     if context is not None and is_particle_format(context.get("format")):
-        out["particles"] = True
-        out["coordinate_fields"] = context.get("coordinate_fields", out["coordinate_fields"])
-        units = (getattr(frame, "attrs", None) or {}).get("units") or {}
-        if units:
-            out["units"] = dict(units)
-        if context.get("snapshot"):
-            snap = context["snapshot"]
-            out["snapshot"] = {k: snap.get(k) for k in (
-                "format", "files", "scale_factor", "redshift", "box_size", "omega0",
-                "omega_lambda", "hubble_param", "units", "skipped_blocks")}
-        comp = context.get("component") or {}
-        if comp:
-            out["component"] = {k: comp.get(k) for k in (
-                "type", "name", "physical", "derived", "mass_from_table")}
-        if context.get("components"):
-            out["other_components"] = list(context["components"])
+        _describe_particles(out, context, (getattr(frame, "attrs", None) or {}).get("units"))
+    if _wants_subfind_check(params):
+        out["subfind_velocity_check"] = (
+            _subfind_velocity_check(path, params)
+            if path and component_format(path) == "gadget"
+            else {"error": "the loaded catalogue is not a Gadget-4 SubFind catalogue"})
     return out
+
+
+#: Rows a particle summary reads at a time (8 MB of float64 per column).
+PARTICLE_SUMMARY_CHUNK = 1_000_000
+#: Rows a particle summary reads per column at most: a larger component is
+#: summarised on an evenly spaced sample of this many rows, and says so
+#: (the copilot answers in seconds, not in a scan of 10^9 particles).
+PARTICLE_SUMMARY_MAX_ROWS = 2_000_000
+
+
+def _particle_catalogue_summary(path: str, params: dict[str, Any],
+                                context: dict[str, Any]) -> dict[str, Any]:
+    """catalogue_summary of an out-of-core snapshot component: the same
+    statistics, each column read through ``take`` a chunk of rows at a time
+    (bounded memory; a compressed HDF5 shard is decompressed once, see
+    gadget_snapshot.PIECE_CACHE). Beyond PARTICLE_SUMMARY_MAX_ROWS rows they
+    come from an evenly spaced sample, stated in ``sample``: min and max are
+    then those of the sample, not necessarily of the component."""
+    from .. import gadget_snapshot as gs  # noqa: PLC0415
+    from ..point_table import particle_catalogue_metadata  # noqa: PLC0415
+    component = gs.resolve(path)
+    meta = context if context.get("fields") else {**particle_catalogue_metadata(path), **context}
+    fields = list(meta.get("fields") or [])
+    max_cols = max(1, int(params.get("max_columns", 40)))
+    n = int(component.num_rows)
+    step = max(1, -(-n // PARTICLE_SUMMARY_MAX_ROWS))
+    rows_read = np.arange(0, n, step, dtype=np.int64)
+    columns: list[dict[str, Any]] = []
+    for info in fields[:max_cols]:
+        name = info["name"]
+        entry: dict[str, Any] = {"name": name, "type": info["type"]}
+        if info["type"] in ("int", "float"):
+            count, lo, hi, total = 0, np.inf, -np.inf, 0.0
+            for start in range(0, rows_read.size, PARTICLE_SUMMARY_CHUNK):
+                rows = rows_read[start:start + PARTICLE_SUMMARY_CHUNK]
+                col = np.asarray(component.take(name, rows), dtype=np.float64)
+                fin = col[np.isfinite(col)]
+                if fin.size:
+                    count += int(fin.size)
+                    lo, hi = min(lo, float(fin.min())), max(hi, float(fin.max()))
+                    total += float(fin.sum())
+            # finite_count always, as for a loaded catalogue (see above).
+            entry["finite_count"] = count
+            entry["min"] = lo if count else None
+            entry["max"] = hi if count else None
+            entry["mean"] = total / count if count else None
+        columns.append(entry)
+    out = {
+        "kind": "catalogue",
+        "format": "gadget",
+        "num_rows": int(component.num_rows),
+        "num_columns": len(fields),
+        "coordinate_fields": meta.get("coordinate_fields") or {},
+        "columns": columns,
+        "columns_truncated": len(fields) > max_cols,
+        "sample": ({"rows": int(rows_read.size), "of": n, "every": step,
+                    "note": f"statistics of every {step}th row; finite_count counts "
+                            "the sample, min/max are the sample's"}
+                   if step > 1 else {"rows": n, "of": n, "every": 1, "note": "every row"}),
+    }
+    _describe_particles(out, meta, component.units())
+    return out
+
+
+def _wants_subfind_check(params: dict[str, Any]) -> bool:
+    """Whether ``subfind_velocity_check`` asks for the check: absent, null
+    and false do not (0 does, and is refused as no subhalos)."""
+    value = params.get("subfind_velocity_check")
+    return value is not None and value is not False
+
+
+def _subfind_velocity_check(path: str, params: dict[str, Any]) -> dict[str, Any]:
+    """The SubFind velocity-convention check (app/subfind_check.py) of a
+    loaded Gadget-4 group catalogue, or why it cannot be made: the copilot
+    reports that instead of a failed summary. ``subfind_velocity_check`` is
+    the number of subhalos (true: the default number). The snapshot it finds
+    must pass the backend's own path rule, as one the user opens would."""
+    from ..dependencies import _within_data_roots  # noqa: PLC0415
+    from ..subfind_check import DEFAULT_SUBHALOS, subfind_velocity_check  # noqa: PLC0415
+    try:
+        value = params["subfind_velocity_check"]
+        subhalos = DEFAULT_SUBHALOS if value is True else _int_param(
+            params, "subfind_velocity_check")
+        if subhalos < 1:
+            raise ValueError("subfind_velocity_check must be a positive number of subhalos.")
+        return subfind_velocity_check(path, subhalos=subhalos, allowed=_within_data_roots)
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        return {"error": str(exc)}
+
+
+def _describe_particles(out: dict[str, Any], context: dict[str, Any], units) -> None:
+    """A simulation's particles (a VBT of points, a snapshot's particle type,
+    issue #31): cartesian as opened, whatever the column names suggest; a
+    snapshot also states its time, cosmology, units and physical
+    conversions, which the copilot needs to quote values in physical units."""
+    out["particles"] = True
+    out["coordinate_fields"] = context.get("coordinate_fields", out["coordinate_fields"])
+    if units:
+        out["units"] = dict(units)
+    if context.get("snapshot"):
+        snap = context["snapshot"]
+        out["snapshot"] = {k: snap.get(k) for k in (
+            "format", "files", "scale_factor", "redshift", "box_size", "omega0",
+            "omega_lambda", "hubble_param", "units", "skipped_blocks", "skipped_reasons")}
+    comp = context.get("component") or {}
+    if comp:
+        out["component"] = {k: comp.get(k) for k in (
+            "type", "name", "physical", "derived", "mass_from_table")}
+    if context.get("components"):
+        out["other_components"] = list(context["components"])
 
 
 def _vbt_summary(_path: str | None, params: dict[str, Any],
@@ -460,7 +563,7 @@ def _noise_estimate(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
     sigma = sigma[np.isfinite(sigma)]
     mad = mad[np.isfinite(mad)]
     return {
-        "bunit": ds.bunit,
+        "bunit": ds.intensity_unit,
         "channel_start": res.get("channel_start"),
         "channel_end": res.get("channel_end"),
         "num_channels": res.get("num_channels"),
@@ -629,7 +732,7 @@ def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
         "n_channels": len(spec["values"]),
         "spectral_unit": spec.get("spectral_unit"),
         "spectral_type": spec.get("spectral_type"),
-        "bunit": ds.bunit,
+        "bunit": ds.intensity_unit,
         **fit,
     }
 
@@ -1086,12 +1189,17 @@ TOOLS: dict[str, AssistantTool] = {
                 "column min/max/mean/finite-count. Use this to know what a "
                 "redshift / position catalogue contains before reasoning about it. "
                 "Combine a redshift column's range with cosmology_distance to "
-                "convert to distances."
+                "convert to distances. For a Gadget-4 SubFind catalogue, "
+                "subfind_velocity_check=N also compares the N most massive "
+                "subhalos' stored velocity with their member particles' in the "
+                "snapshot beside it, and says which velocity convention "
+                "(svel=) the catalogue uses."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "max_columns": {"type": "integer"},
+                    "subfind_velocity_check": {"type": "integer"},
                 },
                 "additionalProperties": False,
             },

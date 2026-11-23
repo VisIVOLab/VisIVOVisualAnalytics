@@ -120,7 +120,7 @@ def worker_linewidth(
         if z0 > z1:
             raise ValueError("Invalid channel range.")
         spectral = dataset.spectral_axis_metadata(z0, z1)
-        bunit = dataset.bunit
+        bunit = dataset.intensity_unit
         # Subset only the rows we need to keep memory pressure down when the
         # chunk is small. Spectral axis is always loaded in full.
         row_lo = 0 if iy_start is None else max(0, min(int(iy_start), ny))
@@ -1033,7 +1033,7 @@ def worker_spectrum_table(path: str, output_path: str, x: float, y: float,
     axis = np.asarray(spec["spectral_axis"], dtype=np.float64)
     values = np.asarray([np.nan if v is None else v for v in spec["values"]], dtype=np.float64)
     unit, ctype = str(spec.get("spectral_unit", "")), str(spec.get("spectral_type", ""))
-    bunit = ScientificFitsDataset(path).bunit
+    bunit = ScientificFitsDataset(path).intensity_unit
     name = Path(path).name
     xs, ys = spec["x"], spec["y"]
     n_pix = int(spec.get("n_pix", 1))
@@ -1074,10 +1074,72 @@ def worker_spectrum_table(path: str, output_path: str, x: float, y: float,
     }
 
 
+def _half_max_sigma(x: np.ndarray, resid: np.ndarray, i_peak: int, dx: float) -> float:
+    """Gaussian sigma implied by the half-maximum width of the feature at
+    ``i_peak`` (``x`` sorted ascending), never narrower than one channel.
+
+    Starting the width from the data rather than from the axis span keeps a
+    narrow line on a wide spectrum from settling into a broad shallow minimum
+    (issue #416: a 1.9 km/s C18O line on a 200 km/s window fitted as a negative
+    8 km/s dip when started at span/6)."""
+    half = 0.5 * abs(float(resid[i_peak]))
+    sign = 1.0 if resid[i_peak] >= 0 else -1.0
+    lo = hi = i_peak
+    while lo > 0 and sign * resid[lo - 1] >= half:
+        lo -= 1
+    while hi < resid.size - 1 and sign * resid[hi + 1] >= half:
+        hi += 1
+    width = max(float(x[hi] - x[lo]) + dx, dx)
+    return width / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+
+
+#: Evaluations allowed to each start of the line fit; the chosen start is then
+#: refined with the full budget, so a dozen starts do not cost a dozen full fits.
+_START_MAXFEV = 3000
+
+
+def _channel_width(x: np.ndarray) -> float:
+    """Median channel spacing of an ascending axis (1 when it has none)."""
+    steps = np.diff(x)
+    steps = steps[steps > 0]
+    return float(np.median(steps)) if steps.size else 1.0
+
+
+def _starting_centres(resid: np.ndarray) -> list[tuple[int, float]]:
+    """``(index, amplitude)`` starts for the line centre: the strongest
+    channel of the residual and of its boxcar smoothings over 3, 9 and 27
+    channels. A single spike outshines a broad line channel by channel but
+    not once both are smoothed, so the broad line also gets a start."""
+    out: list[tuple[int, float]] = []
+    for k in (1, 3, 9, 27):
+        if k > resid.size:
+            break
+        sm = resid if k == 1 else np.convolve(resid, np.ones(k) / k, mode="same")
+        i = int(np.argmax(np.abs(sm)))
+        if all(abs(i - j) > max(1, k // 2) for j, _ in out):
+            out.append((i, float(sm[i])))
+    return out
+
+
+def _starting_sigmas(x: np.ndarray, resid: np.ndarray, i_peak: int) -> list[float]:
+    """Starting widths tried by the line fit: the half-maximum estimate, a few
+    channels and span/6. Which local minimum a single start finds can flip
+    with a one-pixel shift of the region, so the lowest chi-square wins."""
+    dx = _channel_width(x)
+    span = float(x[-1] - x[0]) or 1.0
+    out: list[float] = []
+    for s in (_half_max_sigma(x, resid, i_peak, dx), 3.0 * dx, span / 6.0):
+        if s > 0 and np.isfinite(s) and all(abs(s - t) > 0.05 * t for t in out):
+            out.append(float(s))
+    return out
+
+
 def worker_line_fit(
     values: list[float],
     axis: list[float],
     with_baseline: bool = True,
+    x_min: float | None = None,
+    x_max: float | None = None,
 ) -> dict[str, Any]:
     """Fit a single Gaussian (+ optional linear baseline) to a 1-D spectrum.
 
@@ -1086,6 +1148,16 @@ def worker_line_fit(
     the continuum level under the line, an equivalent width when a continuum is
     present, and the residual RMS. Works for emission (positive amp) and
     absorption (negative amp) lines.
+
+    Every start (strongest channel of the residual and of its 3/9/27-channel
+    smoothings, times the starting widths of :func:`_starting_sigmas`) is
+    fitted; the lowest-chi-square solution that is resolved (sigma at least
+    half a channel) and centred inside the data wins, the lowest overall
+    with ``fit_warning`` set when none is.
+
+    ``x_min``/``x_max`` (axis units, either may be omitted, order free) restrict
+    the fit to a window, e.g. the range shown in the profiler, so an edge spike
+    or a second line outside it cannot capture the fit.
     """
     try:
         from scipy.optimize import curve_fit  # noqa: PLC0415
@@ -1094,8 +1166,21 @@ def worker_line_fit(
 
     x = np.asarray(axis, dtype=np.float64)
     y = np.asarray(values, dtype=np.float64)
+    if x.shape != y.shape:
+        raise ValueError("values and axis must have the same length.")
     good = np.isfinite(x) & np.isfinite(y)
-    x, y = x[good], y[good]
+    if x_min is not None or x_max is not None:
+        bounds = [b for b in (x_min, x_max) if b is not None]
+        if not all(np.isfinite(b) for b in bounds):
+            raise ValueError("The fit window bounds must be finite numbers.")
+        lo = min(bounds) if x_min is not None and x_max is not None else x_min
+        hi = max(bounds) if x_min is not None and x_max is not None else x_max
+        if lo is not None:
+            good &= x >= lo
+        if hi is not None:
+            good &= x <= hi
+    order = np.argsort(x[good], kind="stable")
+    x, y = x[good][order], y[good][order]
     # Without a baseline only the 3 Gaussian parameters are free. Keeping the
     # two baseline terms in the model while ignoring them (as this used to) left
     # two zero Jacobian columns: 4 samples could not be fitted at all and any
@@ -1108,15 +1193,13 @@ def worker_line_fit(
     if x.size < min_samples:
         raise ValueError(
             f"Need at least {min_samples} finite samples to fit a Gaussian line"
-            + (" with a linear baseline." if with_baseline else "."))
+            + (" with a linear baseline" if with_baseline else "")
+            + (" inside the fit window." if (x_min is not None or x_max is not None)
+               else "."))
 
     base0 = float(np.median(y)) if with_baseline else 0.0
     resid0 = y - base0
-    i_peak = int(np.argmax(np.abs(resid0)))
-    amp0 = float(resid0[i_peak])
-    mu0 = float(x[i_peak])
-    span = float(x.max() - x.min()) or 1.0
-    sigma0 = span / 6.0
+    dx = _channel_width(x)
 
     def gaussian(xx, amp, mu, sigma):
         return amp * np.exp(-((xx - mu) ** 2) / (2.0 * sigma * sigma))
@@ -1125,11 +1208,41 @@ def worker_line_fit(
         return a + b * xx + gaussian(xx, amp, mu, sigma)
 
     fit_model = model if with_baseline else gaussian
-    p0 = [amp0, mu0, sigma0, base0, 0.0][:n_params]
+    best = None
+    best_resolved = None
+    last_exc: Exception | None = None
+    for i_peak, amp0 in _starting_centres(resid0):
+        for sigma0 in _starting_sigmas(x, resid0, i_peak):
+            p0 = [amp0 or float(resid0[i_peak]), float(x[i_peak]), sigma0, base0, 0.0][:n_params]
+            try:
+                popt_i, pcov_i = curve_fit(fit_model, x, y, p0=p0, maxfev=_START_MAXFEV)
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                continue
+            chi2 = float(np.sum((y - fit_model(x, *popt_i)) ** 2))
+            if not np.isfinite(chi2):
+                continue
+            if best is None or chi2 < best[0]:
+                best = (chi2, popt_i, pcov_i)
+            resolved = (abs(float(popt_i[2])) >= 0.5 * dx
+                        and x[0] <= float(popt_i[1]) <= x[-1])
+            if resolved and (best_resolved is None or chi2 < best_resolved[0]):
+                best_resolved = (chi2, popt_i, pcov_i)
+    if best is None:
+        raise ValueError(
+            f"Gaussian line fit did not converge: {last_exc}") from last_exc
+    fit_warning = ""
+    if best_resolved is None:
+        fit_warning = (
+            "No start converged to a resolved line inside the fitted range: the "
+            "best solution is narrower than half a channel or centred outside the "
+            "data, so its peak, width and integral are unreliable (a spike or "
+            "noise). Restrict the fit window to the line.")
+    _, popt, pcov = best_resolved or best
     try:
-        popt, pcov = curve_fit(fit_model, x, y, p0=p0, maxfev=20000)
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Gaussian line fit did not converge: {exc}") from exc
+        popt, pcov = curve_fit(fit_model, x, y, p0=list(popt), maxfev=20000)
+    except Exception:  # noqa: BLE001
+        pass
 
     if with_baseline:
         amp, mu, sigma, a, b = (float(v) for v in popt)
@@ -1187,7 +1300,7 @@ def worker_line_fit(
         perr = np.sqrt(np.diag(pcov))
     perr = [float(e) if np.isfinite(e) else None for e in perr]
     amp_err, mu_err, sigma_err = perr[:3]
-    fwhm_err = (sigma_err * fwhm_factor) if sigma_err is not None else None
+    fwhm_err = float(sigma_err * fwhm_factor) if sigma_err is not None else None
     # I = amp·σ·√(2π): full-covariance propagation over params [amp, mu, sigma,
     # a, b]. dI/dA = I/amp, dI/dσ = I/σ. Keeps the amp–σ covariance.
     integrated_err = (
@@ -1219,4 +1332,5 @@ def worker_line_fit(
         # them: 1.0 means the channels looked independent.
         "spectral_correlation_factor": float(corr_factor),
         "spectral_correlation_note": corr_note,
+        "fit_warning": fit_warning,
     }

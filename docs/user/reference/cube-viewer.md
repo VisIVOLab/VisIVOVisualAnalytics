@@ -87,6 +87,14 @@ from a sample, so Min and Max may lie inside the true range.
 
 - *Channel bar*: under the 2-D Slice and under the 3-D view. Shows the channel
   number and its spectral value; both bars move together.
+- Wide channels: a channel wider than 2048 pixels arrives as every second,
+  third… pixel, so it shows in a second or two even from a cluster. Zoom in and
+  the part on screen fills in at full resolution once it is 2048 pixels or
+  fewer across. The probe always shows the exact value of the pixel under the
+  cursor: between samples it is read from the backend, and the readout shows
+  "…" for the moment it takes. Statistics, the pixel histogram and region
+  measurements on the slice use the samples, and say "sampled every N px"
+  (a region's flux notes it as approximate).
 - *Cutting plane*: the current channel drawn in the 3-D view. *View ▸ Cutting
   Plane Opacity*, or *Opacity* under *Cutting plane* in *LAYERS*, sets how much
   of the volume shows through.
@@ -137,6 +145,12 @@ Rendering*:
 
 The *Camera* presets (Front, Back, Left, Right, Top, Bottom) turn the Remote
 view too.
+
+If the Remote view loses its stream (the computer slept, the network or the
+SSH tunnel dropped, the backend closed the view), it reconnects by itself: the
+banner shows the attempt and the wait before the next one, and the view comes
+back with its colours, threshold, plane, regions and camera. After about two
+minutes without success it stops and offers *Reconnect*; ✕ goes back to Local.
 
 Remote rendering pays off when the backend is on another machine, since only
 frames travel. Details: [Server-side rendering](../../technical/backend-api/render.md).

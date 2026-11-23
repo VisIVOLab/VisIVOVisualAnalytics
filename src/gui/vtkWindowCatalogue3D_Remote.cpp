@@ -9,8 +9,10 @@
 
 #include "BackendLocality.h"
 #include "RaytraceOutput.h"
+#include "ParticleLightReport.h"
 #include "RaytraceSettingsPanel.h"
 #include "RaytraceViewport.h"
+#include "RemotePointStyle.h"
 #include "RemotePointView.h"
 #include "RemoteRenderWidget.h"
 #include "LUTCustomizerDialog.h"
@@ -28,6 +30,7 @@
 #include <QSlider>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -68,6 +71,8 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     this->m_renderStack->addWidget(ui->vtk);
     this->m_remoteWidget = new RemoteRenderWidget(this->m_renderStack);
     this->m_renderStack->addWidget(this->m_remoteWidget);
+    // A double-click on a marker selects it there too (eventFilter).
+    this->m_remoteWidget->installEventFilter(this);
 
     // The colour bar of the cube viewer's 3-D view, over whichever view shows.
     this->m_colorbar = new VolumeColorbar(this);
@@ -218,6 +223,17 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
                          [this](const QString &status) {
                              this->statusBar()->showMessage(status);
                          });
+        // The stream dropped (issue #411): the status bar says which attempt
+        // until it is live again, or failed() falls back to the loaded rows.
+        QObject::connect(this->m_remoteView, &RemotePointView::reconnecting, this,
+                         [this](const QString &status) {
+                             this->statusBar()->showMessage(status);
+                         });
+        QObject::connect(this->m_remoteView, &RemotePointView::liveChanged, this,
+                         [this](bool live) {
+                             if (live)
+                                 this->statusBar()->clearMessage();
+                         });
         QObject::connect(this->m_remoteView, &RemotePointView::started, this, [this]() {
             this->statusBar()->clearMessage();
             if (this->m_renderStack)
@@ -227,6 +243,10 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
             this->updateRenderBadge();
         });
         this->pushRemoteState();
+        // Switched to the backend in a linked comparison: it starts on the
+        // group's camera (this window's VTK camera follows the group).
+        if (this->linkedWithPeers())
+            this->followCameraInShownView(this->localCameraJson());
         this->m_remoteView->start();
     }
     this->updateRenderBadge();
@@ -234,6 +254,9 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
 
 void vtkWindowCatalogue3D::updateRenderBadge()
 {
+    // The comparison card says what camera linking does while the view is
+    // drawn on the backend; it follows every change of where it is drawn.
+    this->updateComparisonUi();
     if (!this->m_renderBadge)
         return;
     if (!this->m_serverSideRendering) {
@@ -301,7 +324,7 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
     static const QStringList numericOps{ u"="_s, u"!="_s, u">"_s, u">="_s, u"<"_s, u"<="_s };
     QVariantList filters;
     bool skipped = false;
-    for (const BackendTabularFilter &f : this->activeFilters) {
+    for (const BackendTabularFilter &f : this->m_appliedFilters.filters()) {
         if (f.shape == u"box"_s) {
             filters << QVariantMap{
                     { u"name"_s, f.name }, { u"op"_s, f.op },
@@ -371,16 +394,9 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
     }
     add(color);
 
-    const bool gaussian = this->geometryMode == GeometryMode::Gaussian;
-    add({ { u"type"_s, u"set_point_style"_s },
-          { u"mode"_s, gaussian ? u"gaussian"_s : u"points"_s },
-          // Points in pixels: the backend draws in physical ones.
-          // Splats: the same continuous size step as here.
-          { u"size"_s, gaussian ? QVariant(this->splatSizeFromScale())
-                                : QVariant(static_cast<int>(std::lround(
-                                          this->pointSizeFromScale()
-                                          * this->devicePixelRatioF()))) },
-          { u"intensity"_s, 35 } });
+    add(visivo::remote::pointStyleCommand(this->geometryMode == GeometryMode::Gaussian,
+                                          ui->sliderScale->value(),
+                                          this->devicePixelRatioF()));
     add({ { u"type"_s, u"set_show_outline"_s },
           { u"visible"_s,
             !this->chkShowBoundingBox || this->chkShowBoundingBox->isChecked() } });
@@ -515,8 +531,11 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
             // This applies only to the automatic Gaussian default; explicit
             // user choices and every other representation keep their value.
             if (this->comboGeometry->currentText() == u"Gaussian splats"_s
-                && ui->sliderScale->value() == 100)
+                && ui->sliderScale->value() == ParticleSplatDefaults::kDefaultSliderValue) {
                 ui->sliderScale->setValue(ParticleSplatDefaults::initialSliderValue());
+                // After setValue: scaleChanged takes any change for the user's.
+                this->m_sliderAutomatic = true;
+            }
         }
         // Called before the combo's signal is connected: applied here, or the
         // combo would read splats while points are drawn.
@@ -688,6 +707,64 @@ QJsonObject vtkWindowCatalogue3D::raytraceViewState() const
     return state;
 }
 
+QJsonObject vtkWindowCatalogue3D::localCameraJson() const
+{
+    vtkCamera *cam = this->renderer->GetActiveCamera();
+    const double *p = cam->GetPosition(), *f = cam->GetFocalPoint(), *u = cam->GetViewUp();
+    return QJsonObject{ { u"position"_s, QJsonArray{ p[0], p[1], p[2] } },
+                        { u"focal_point"_s, QJsonArray{ f[0], f[1], f[2] } },
+                        { u"view_up"_s, QJsonArray{ u[0], u[1], u[2] } },
+                        { u"view_angle"_s, cam->GetViewAngle() },
+                        { u"parallel"_s, cam->GetParallelProjection() != 0 },
+                        { u"parallel_scale"_s, cam->GetParallelScale() } };
+}
+
+bool vtkWindowCatalogue3D::drawnOnBackend() const
+{
+    return this->m_renderStack && this->m_remoteView && this->m_remoteView->isActive()
+            && this->m_renderStack->currentWidget() == this->m_remoteWidget;
+}
+
+void vtkWindowCatalogue3D::followCameraInShownView(const QJsonObject &camera)
+{
+    if (camera.isEmpty())
+        return;
+    // The ray-traced view draws from its own camera: a peer's move in a point
+    // view reached only this window's hidden VTK camera (issue #446).
+    if (this->m_rtView && this->m_renderStack
+        && this->m_renderStack->currentWidget() == this->m_rtView
+        && !this->m_rtView->camera().isEmpty()) {
+        this->m_rtView->setCamera(camera);
+        return;
+    }
+    // Drawn on the backend: its view turns there, by the same command the
+    // ray-traced view's camera is handed back with. Kept as state, so a
+    // stream not live yet (or reconnecting) gets it when it is; at most
+    // every 50 ms, the rest of a drag's poses joining the next send.
+    if (!this->m_remoteView)
+        return;
+    this->m_remoteCameraPending = camera;
+    if (!this->m_remoteCameraThrottle) {
+        this->m_remoteCameraThrottle = new QTimer(this);
+        this->m_remoteCameraThrottle->setSingleShot(true);
+        this->m_remoteCameraThrottle->setInterval(50);
+        QObject::connect(this->m_remoteCameraThrottle, &QTimer::timeout, this, [this]() {
+            if (this->m_remoteCameraPending.isEmpty() || !this->m_remoteView)
+                return;
+            QVariantMap command = std::exchange(this->m_remoteCameraPending, {}).toVariantMap();
+            command.insert(u"type"_s, u"set_camera"_s);
+            this->m_remoteView->setState(command);
+            this->m_remoteCameraThrottle->start();
+        });
+    }
+    if (!this->m_remoteCameraThrottle->isActive()) {
+        QVariantMap command = std::exchange(this->m_remoteCameraPending, {}).toVariantMap();
+        command.insert(u"type"_s, u"set_camera"_s);
+        this->m_remoteView->setState(command);
+        this->m_remoteCameraThrottle->start();
+    }
+}
+
 void vtkWindowCatalogue3D::viewCamera(
         std::function<void(const QJsonObject &, const QString &)> done)
 {
@@ -703,15 +780,7 @@ void vtkWindowCatalogue3D::viewCamera(
             && this->m_renderStack->currentWidget() == this->m_remoteWidget
             && !this->m_remoteView->renderSessionId().isEmpty();
     if (!remote) {
-        vtkCamera *cam = this->renderer->GetActiveCamera();
-        const double *p = cam->GetPosition(), *f = cam->GetFocalPoint(), *u = cam->GetViewUp();
-        done(QJsonObject{ { u"position"_s, QJsonArray{ p[0], p[1], p[2] } },
-                          { u"focal_point"_s, QJsonArray{ f[0], f[1], f[2] } },
-                          { u"view_up"_s, QJsonArray{ u[0], u[1], u[2] } },
-                          { u"view_angle"_s, cam->GetViewAngle() },
-                          { u"parallel"_s, cam->GetParallelProjection() != 0 },
-                          { u"parallel_scale"_s, cam->GetParallelScale() } },
-             QString());
+        done(this->localCameraJson(), QString());
         return;
     }
     auto *nam = this->findChild<QNetworkAccessManager *>(u"raytraceCamera"_s);
@@ -781,6 +850,8 @@ void vtkWindowCatalogue3D::leaveRaytraced(const QString &why)
 void vtkWindowCatalogue3D::setRaytraced(bool on)
 {
     this->enablePointOnlyControls(!on);
+    if (on)
+        this->updateSplatPass();   // nothing local is drawn meanwhile
     if (!on) {
         if (this->m_rtCard)
             this->m_rtCard->hide();
@@ -833,6 +904,8 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
     }
     if (!this->m_rtPanel) {
         this->m_rtPanel = new RaytraceSettingsPanel(this->numericColumns());
+        // A periodic snapshot's box: its neighbours may wrap round it.
+        this->m_rtPanel->setPeriodicBoxKnown(visivo::periodicBoxKnown(this->m_snapshotMetadata));
         // Where the view's own encoding is: below the shape, in the sidebar.
         this->m_rtCard = new QFrame;
         this->m_rtCard->setObjectName(u"raytraceCard"_s);
@@ -889,10 +962,20 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
         source.toneJson = [self](double base) {
             return self ? self->m_rtPanel->tone(base) : QJsonObject();
         };
+        source.typeColumn = visivo::particleTypeColumn(this->numericColumns());
         this->m_rtView = new RaytraceViewport(source, this->m_renderStack);
+        QObject::connect(this->m_rtView, &RaytraceViewport::typeFilterRequested, this,
+                         &vtkWindowCatalogue3D::addAndApplyFilter);
         QObject::connect(this->m_rtView, &RaytraceViewport::cameraChanged, this,
                          &vtkWindowCatalogue3D::broadcastComparisonRaytraceCamera);
         this->m_renderStack->addWidget(this->m_rtView);
+        // Its pages (the GPU view, or the backend's frames) take the mouse:
+        // a double-click on a marker selects it there too (eventFilter). Not
+        // the loading overlay over them, which has nothing to pick.
+        for (QWidget *page : this->m_rtView->findChildren<QWidget *>(
+                     QString(), Qt::FindDirectChildrenOnly))
+            if (page->inherits("ParticleGLView") || page->inherits("QLabel"))
+                page->installEventFilter(this);
         const auto overlayShown = [self, boxCheck, barCheck]() {
             if (self && self->m_rtView)
                 self->m_rtView->setOverlayShown(boxCheck->isChecked(), barCheck->isChecked());

@@ -9,6 +9,8 @@
 // (drag: turn; Shift-drag or right button: move; wheel: zoom).
 
 #include "ParticleGLView.h"
+#include "ParticleLightReport.h"
+#include "RaytraceLoadingState.h"
 
 #include <QImage>
 #include <QJsonObject>
@@ -24,6 +26,7 @@ class QLabel;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QProgressBar;
+class QPushButton;
 class QResizeEvent;
 class QStackedLayout;
 class QTimer;
@@ -54,6 +57,9 @@ public:
         QString previewPath = QStringLiteral("/v1/particle_render/preview");
         /// What in a request shapes the data: a new key, a new fetch.
         std::function<QString(const QJsonObject &)> key;
+        /// A column that tells particle types apart (empty: none): where the
+        /// view offers to show the gas only when stars swamp the light.
+        QString typeColumn;
     };
 
     explicit RaytraceViewport(Source source, QWidget *parent = nullptr);
@@ -96,6 +102,8 @@ signals:
     /// The user turned, panned or zoomed this view. Programmatic setCamera()
     /// deliberately does not emit it, which prevents linked views echoing.
     void cameraChanged(const QJsonObject &camera);
+    /// "Show gas only": the window adds the filter ``field = value``.
+    void typeFilterRequested(const QString &field, const QString &value);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -103,9 +111,19 @@ protected:
 
 private:
     void fetch(const QString &key, const QJsonObject &request);
-    void beginLoading(const QString &what);
+    /// A fetch started: ``what`` a short title, ``detail`` a sentence under it
+    /// (empty: the view appears when its first frame is ready).
+    void beginLoading(const QString &what, const QString &detail = QString());
+    /// The fetch was superseded by the data already on screen.
     void finishLoading();
+    /// A frame is on screen (the GPU view's, the backend's, or a still).
+    void frameShown();
     void loadingError(const QString &detail);
+    /// The cover or the corner badge, as m_loading says.
+    void showLoadingState();
+    /// What the last particles left out of the light, in a corner note.
+    void showLightReport(const visivo::ParticleLightReport &report);
+    void placeLightNote();
     void redraw(bool settle);
     void showImage(const QImage &image);
     void showGl();
@@ -117,6 +135,8 @@ private:
     /// A reply of a backend without the route: says so (unavailable) and
     /// returns true.
     bool routeMissing(QNetworkReply *reply, const QByteArray &body);
+    /// Why a reply failed: the backend's detail, else Qt's error.
+    static QString replyError(QNetworkReply *reply, const QByteArray &body);
     /// A grid's box and colours from a backend frame's headers, read with the
     /// settings the frame was asked with.
     void takeFallbackGrid(QNetworkReply *reply, bool projected,
@@ -141,6 +161,13 @@ private:
     QLabel *m_loadingLabel{ nullptr };     ///< short preparation/error title
     QLabel *m_loadingDetail{ nullptr };    ///< wrapping explanation below it
     QProgressBar *m_loadingProgress{ nullptr };
+    QWidget *m_loadingBadge{ nullptr };    ///< over a frame already drawn
+    QLabel *m_badgeLabel{ nullptr };
+    QProgressBar *m_badgeProgress{ nullptr };
+    visivo::RaytraceLoadingState m_loading;
+    QWidget *m_lightNote{ nullptr };       ///< rows dropped or clipped, top left
+    QLabel *m_lightLabel{ nullptr };
+    QPushButton *m_gasOnly{ nullptr };
     bool m_showingStill{ false };
     QImage m_shown;
     QPointer<QNetworkReply> m_fallbackReply;

@@ -93,7 +93,7 @@ bool vtkWindowCatalogue3D::highlightSampRow(qint64 row, const QString &from)
             why = u"the backend does not report row numbers; update it to link rows"_s;
         else if (this->hasMoreRows())
             why = u"it is not loaded yet, or is filtered out: Load more or Load all may bring it"_s;
-        else if (!this->activeFilters.empty())
+        else if (!this->m_appliedFilters.filters().empty())
             why = u"it is filtered out"_s;
         else
             why = u"the table has no such row"_s;
@@ -113,7 +113,7 @@ bool vtkWindowCatalogue3D::highlightSampRow(qint64 row, const QString &from)
     this->setSelectedSource(idx);
     // Recentre at the same distance: a zoom on every highlight would dive
     // further in with each row the other tool steps through.
-    this->centerOnSource(idx, 1.0);
+    this->recentreLocalView(idx);
     this->showSelectionStatus(u"%1 highlighted row %2."_s.arg(from).arg(row + 1)
                               + this->sampLocalViewNote());
     return true;
@@ -241,7 +241,7 @@ QList<qint64> vtkWindowCatalogue3D::sampShownRows()
 
 bool vtkWindowCatalogue3D::sampShowsFewerRows() const
 {
-    return !this->activeFilters.empty() || this->hasMoreRows()
+    return !this->m_appliedFilters.filters().empty() || this->hasMoreRows()
            || static_cast<qint64>(this->entries.size()) < this->tableRowCount();
 }
 

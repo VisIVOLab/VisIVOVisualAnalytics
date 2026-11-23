@@ -204,11 +204,42 @@ def test_gaussian_splats_follow_the_desktop_rules():
     # Half the points in half the box (a filter's slab): the same splats.
     assert gaussian_splat((0, 5, 0, 10, 0, 10), 500, 3, 35)[0] == pytest.approx(3 / 8)
     depth = 100 / (100 * 50 * 10 / 1000) ** (1 / 3)
-    assert opacity == pytest.approx(max(0.005, min(0.25, 1.5 / depth)))
+    # 1.5 / depth unquantised: the splats are added in a float target (#457).
+    assert opacity == pytest.approx(1.5 / depth)
     # A cube: 1.5 / ∛N, and a filter's slab of it keeps the opacity.
+    assert gaussian_splat((0, 16, 0, 16, 0, 16), 16 ** 3, 3, 35)[1] == pytest.approx(1.5 / 16)
+    assert gaussian_splat((0, 8, 0, 16, 0, 16), 16 ** 3 // 2, 3, 35)[1] == pytest.approx(1.5 / 16)
+    # No floor: the light of N splats is the same for any N (8-bit steps,
+    # at least 8, made a 10 M row table 4.5 times too bright).
     assert gaussian_splat((0, 64, 0, 64, 0, 64), 64 ** 3, 3, 35)[1] == pytest.approx(1.5 / 64)
-    assert gaussian_splat((0, 32, 0, 64, 0, 64), 64 ** 3 // 2, 3, 35)[1] == pytest.approx(1.5 / 64)
-    assert gaussian_splat((0, 1, 0, 1, 0, 1), 10 ** 9, 1, 1)[1] == 0.005
+    assert gaussian_splat((0, 1, 0, 1, 0, 1), 10 ** 9, 1, 1)[1] == pytest.approx(1.5 / 35 / 1000)
+    assert gaussian_splat((0, 1, 0, 1, 0, 1), 1, 1, 35)[1] == 0.25
+
+
+def test_splat_opacity_is_a_whole_8bit_step_vtk_keeps():
+    """VTK keeps the opacity as an 8-bit alpha, truncating: every step, nudged
+    as the session gives it, is stored as that step (also through float32,
+    its opacity table's type), and none is below eight (#447)."""
+    from app.point_splat import ALPHA_STEPS_MAX, ALPHA_STEPS_MIN, VTK_ALPHA_NUDGE, splat_opacity
+    for k in range(ALPHA_STEPS_MIN, ALPHA_STEPS_MAX + 1):
+        value = k / 255 + VTK_ALPHA_NUDGE
+        assert int(value * 255) == k
+        assert int(float(np.float32(value)) * 255) == k
+        assert round(value * 255) == k
+    for depth in np.geomspace(1, 1e6, 200):
+        for intensity in (1, 35, 200):
+            op = splat_opacity(float(depth), intensity)
+            assert ALPHA_STEPS_MIN / 255 <= op <= ALPHA_STEPS_MAX / 255
+            assert op * 255 == pytest.approx(round(op * 255))
+    assert splat_opacity(float("nan")) == ALPHA_STEPS_MAX / 255
+    # Depths a hair from a step's boundary: the desktop (test_solid_splats.cpp)
+    # and the page (layers.test.mjs) assert the same steps.
+    for depth, k in ((12.966, 30), (6.4286, 59), (6.3223, 61), (6.0236, 64)):
+        assert splat_opacity(depth) == k / 255
+    # A float target's: unquantised, with no floor (#457).
+    assert splat_opacity(100.0, 35, steps=False) == pytest.approx(0.015)
+    assert splat_opacity(1000.0, 35, steps=False) == pytest.approx(0.0015)
+    assert splat_opacity(3.0, 35, steps=False) == 0.25
 
 
 def test_the_render_route_starts_a_point_session(tmp_path, monkeypatch):
@@ -835,3 +866,97 @@ def test_splats_are_coloured_by_their_codes(tmp_path, can_render):
     finally:
         run(s.close())
         loop.close()
+
+
+@pytest.mark.parametrize("azimuth, elevation, direction", [
+    (0.0, 0.0, (0, 0, 1)), (90.0, 0.0, (1, 0, 0)), (0.0, 90.0, (0, 1, 0))])
+def test_a_camera_preset_turns_the_point_session_camera(tmp_path, azimuth, elevation,
+                                                        direction):
+    """The desktop's Camera menu on a Remote catalogue or snapshot view (#448):
+    the point session turns its own camera, as a volume session does. Checked
+    on a renderer without a window, so no GPU is needed."""
+    import vtk
+    s = PointRenderSession("p" * 32, _table(tmp_path))
+    s._renderer = vtk.vtkRenderer()
+    cube = vtk.vtkCubeSource()
+    cube.SetBounds(-10, 10, -2, 2, -2, 2)
+    mapper = vtk.vtkPolyDataMapper()
+    mapper.SetInputConnection(cube.GetOutputPort())
+    actor = vtk.vtkActor()
+    actor.SetMapper(mapper)
+    s._renderer.AddActor(actor)
+    s._renderer.ResetCamera()
+    s._renderer.GetActiveCamera().Azimuth(33)
+    s._apply_command_on_thread({"type": "camera_preset", "azimuth": azimuth,
+                                "elevation": elevation})
+    cam = s._renderer.GetActiveCamera()
+    sight = np.subtract(cam.GetPosition(), cam.GetFocalPoint())
+    assert np.allclose(sight / np.linalg.norm(sight), direction, atol=1e-9)
+    before = cam.GetPosition()
+    s._apply_command_on_thread({"type": "camera_preset", "azimuth": "nan"})
+    assert cam.GetPosition() == before          # refused, camera unchanged
+
+
+def _uniform_cube(tmp_path, n, name):
+    """``n`` rows uniform in a cube of side 20, its corners pinned (the box
+    the splats are sized by)."""
+    rng = np.random.default_rng(457)
+    xyz = rng.uniform(-10, 10, (n, 3)).astype("<f4")
+    xyz[:8] = [[sx, sy, sz] for sx in (-10, 10) for sy in (-10, 10) for sz in (-10, 10)]
+    binary = tmp_path / f"{name}.bin"
+    np.ascontiguousarray(xyz.T).tofile(binary)
+    (tmp_path / f"{name}.bin.head").write_text(f"float\n3\n{n}\nlittle\nX\nY\nZ\n")
+    return str(tmp_path / f"{name}.bin.head")
+
+
+def test_splat_brightness_does_not_grow_with_the_rows(tmp_path, can_render):
+    """Issue #457: the splats add up in a float target at an exposure set by
+    the intensity alone, so eight times the rows of the same field give the
+    same light. In 8-bit steps of at least 8 the larger table came out about
+    twice as bright, and at a low intensity both lost most of their light."""
+    means = []
+    for n, name in ((20_000, "small"), (160_000, "large")):
+        s, run, loop = _session(_uniform_cube(tmp_path, n, name))
+        try:
+            for cmd in ({"type": "set_show_outline", "visible": False},
+                        {"type": "set_show_axes", "visible": False},
+                        {"type": "set_camera", "position": [0, 0, 100], "focal_point": [0, 0, 0],
+                         "view_up": [0, 1, 0], "parallel": True, "parallel_scale": 5},
+                        {"type": "set_point_style", "mode": "gaussian", "size": 3,
+                         "intensity": 2}):
+                run(s.apply_command(cmd))
+            rgba, _ = run(s.render_rgb_frame())
+            means.append(rgba[..., 0].astype(float).mean() - round(0.06 * 255))
+        finally:
+            run(s.close())
+            loop.close()
+    assert means[0] > 5
+    assert means[1] == pytest.approx(means[0], rel=0.05)
+
+
+def test_a_drags_sample_carries_the_strides_light(tmp_path, monkeypatch):
+    """The drag draws every stride-th row with the table's splats: each
+    carries stride times the light, so the view keeps its brightness."""
+    from app.point_splat import vtk_splat_shader
+    monkeypatch.setattr(points, "LOD_POINTS", 1000)
+    s, run, loop = _session(_table(tmp_path))
+    try:
+        run(s.apply_command({"type": "set_point_style", "mode": "gaussian", "size": 3,
+                             "intensity": 35}))
+        assert s._lod_stride == 4
+        _, gain = gaussian_splat(*s._splat_basis, 3, 35)
+        assert s._mappers[("gaussian", False)].GetSplatShaderCode() == vtk_splat_shader(gain)
+        assert s._mappers[("gaussian", True)].GetSplatShaderCode() == vtk_splat_shader(4 * gain)
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_the_splat_shader_carries_the_unquantised_gain():
+    from app.point_splat import vtk_splat_shader
+    code = vtk_splat_shader(1.5 / 35 / 1000)
+    assert code.startswith("//VTK::Color::Impl\n")
+    assert "exp(-0.5 * dist2) * 4.285714286e-05;" in code
+    for bad in (-1e-3, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            vtk_splat_shader(bad)

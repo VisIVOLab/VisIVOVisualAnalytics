@@ -665,13 +665,18 @@ def gadget_halo_particles(rng, n_gas=2000, n_dm=4000, n_star=500, n_bh=2,
     return out
 
 
-def write_subfind(path: Path, centre, rvir: float, mvir: float, endian: str = "<") -> Path:
+def write_subfind(path: Path, centre, rvir: float, mvir: float, endian: str = "<", *,
+                  time: float = 0.5, vmax: float | None = None) -> Path:
     """A SubFind-like group file in format 2 (issue #392): the header counts
     one group as "type" 0 and one subhalo as "type" 1, including the fields
-    needed to frame and inspect both objects."""
+    needed to frame and inspect both objects. ``time`` is the scale factor;
+    ``vmax`` adds a VMAX block."""
     e, f4, u4 = endian, endian + "f4", endian + "u4"
     npart = [1, 1, 0, 0, 0, 0]
-    head = _gadget_header(npart, [0.0] * 6, 0.5, 1.0, npart, 1, 1000.0, 0.3, 0.7, 0.7, e)
+    head = _gadget_header(npart, [0.0] * 6, time, 1.0 / time - 1.0, npart, 1, 1000.0, 0.3,
+                          0.7, 0.7, e)
+    extra = b"" if vmax is None else _gadget_block(
+        "VMAX", np.array([vmax], dtype=f4).tobytes(), e)
     body = (_gadget_block("HEAD", head, e)
             + _gadget_block("GPOS", np.array([centre], dtype=f4).tobytes(), e)
             + _gadget_block("MVIR", np.array([mvir], dtype=f4).tobytes(), e)
@@ -684,7 +689,8 @@ def write_subfind(path: Path, centre, rvir: float, mvir: float, endian: str = "<
             + _gadget_block("SVEL", np.array([[120.0, -30.0, 8.0]], dtype=f4).tobytes(), e)
             + _gadget_block("MSUB", np.array([0.25 * mvir], dtype=f4).tobytes(), e)
             + _gadget_block("RHMS", np.array([0.1 * rvir], dtype=f4).tobytes(), e)
-            + _gadget_block("GRNR", np.array([0], dtype=u4).tobytes(), e))
+            + _gadget_block("GRNR", np.array([0], dtype=u4).tobytes(), e)
+            + extra)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
     return path

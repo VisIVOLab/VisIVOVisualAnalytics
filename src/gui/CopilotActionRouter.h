@@ -30,15 +30,26 @@ public:
 
     /// Register (or replace) the target for @p datasetId. @p owner drives the
     /// lifetime: when it is destroyed the target is dropped automatically.
+    /// @p routeKey (optional) registers the view under a key of its own, for
+    /// views that share a dataset id (a quantity comparison's views): its
+    /// panel dispatches with that key, and a directive naming the dataset id
+    /// reaches the view of that dataset registered last.
     void registerTarget(const QString &datasetId, QObject *owner,
-                        ApplyFn apply, UndoFn undo);
+                        ApplyFn apply, UndoFn undo, const QString &routeKey = QString());
     void unregisterTarget(const QString &datasetId);
 
     /// Route @p actions to their target views. Each directive's ``target`` field
     /// selects the view; a directive without one uses @p defaultTarget (the panel
     /// that produced the answer). Directives whose target isn't open are dropped.
-    /// Returns the set of dataset ids that actually received a directive.
+    /// Returns the set of targets (keys as given) that actually received a directive.
     QStringList dispatch(const QList<QJsonObject> &actions, const QString &defaultTarget);
+
+    /// @p actions with every ``target`` that names @p datasetId (the backend
+    /// tags each directive with the asking panel's dataset) replaced by
+    /// @p routeKey: the panel's own view, not the view of that dataset
+    /// registered last. Unchanged when @p routeKey is empty.
+    static QList<QJsonObject> retarget(QList<QJsonObject> actions, const QString &datasetId,
+                                       const QString &routeKey);
 
     /// Undo the most recent dispatch (every view it touched).
     void undoLast();
@@ -49,10 +60,16 @@ private:
     struct Target
     {
         QObject *owner{ nullptr };
+        QString datasetId;
         ApplyFn apply;
         UndoFn undo;
+        quint64 order{ 0 };   ///< registration order: the latest wins a dataset id
     };
+    /// The target @p key names: a route key, a dataset id registered under
+    /// itself, else the latest view registered for that dataset id.
+    QHash<QString, Target>::const_iterator find(const QString &key) const;
     QHash<QString, Target> m_targets;
+    quint64 m_registrations{ 0 };
     QStringList m_lastTargets;   ///< views touched by the last dispatch (for Undo)
 };
 

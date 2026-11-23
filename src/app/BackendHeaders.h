@@ -61,6 +61,7 @@ inline constexpr const char *FULL_SPEED_MIN = "X-Visivo-Full-Speed-Min";
 inline constexpr const char *GLYPH_CELL = "X-Visivo-Glyph-Cell";
 inline constexpr const char *HEIGHT = "X-Visivo-Height";
 inline constexpr const char *INSTANCE = "X-Visivo-Instance";
+inline constexpr const char *LAYER_WINDOWS = "X-Visivo-Layer-Windows";
 inline constexpr const char *LEVEL = "X-Visivo-Level";
 inline constexpr const char *LEVEL_ORIGIN = "X-Visivo-Level-Origin";
 inline constexpr const char *LINE_POINTS = "X-Visivo-Line-Points";
@@ -69,13 +70,18 @@ inline constexpr const char *LOG_RANGE = "X-Visivo-Log-Range";
 inline constexpr const char *N_BASINS = "X-Visivo-N-Basins";
 inline constexpr const char *NONPOSITIVE_VOXELS = "X-Visivo-Nonpositive-Voxels";
 inline constexpr const char *ORIGIN = "X-Visivo-Origin";
+inline constexpr const char *PARTICLE_CLIPPED = "X-Visivo-Particle-Clipped";
 inline constexpr const char *PARTICLE_COUNT = "X-Visivo-Particle-Count";
+inline constexpr const char *PARTICLE_DROPPED = "X-Visivo-Particle-Dropped";
 inline constexpr const char *PARTICLE_FIELDS = "X-Visivo-Particle-Fields";
 inline constexpr const char *PARTICLE_ORIGIN = "X-Visivo-Particle-Origin";
 inline constexpr const char *PARTICLE_SCALE = "X-Visivo-Particle-Scale";
 inline constexpr const char *PARTICLE_STEP = "X-Visivo-Particle-Step";
 inline constexpr const char *PEAK = "X-Visivo-Peak";
 inline constexpr const char *PLACED_ROWS = "X-Visivo-Placed-Rows";
+inline constexpr const char *PROJECTED_KERNEL = "X-Visivo-Projected-Kernel";
+inline constexpr const char *PROJECTED_UNIT = "X-Visivo-Projected-Unit";
+inline constexpr const char *PROJECTED_VALUE_UNIT = "X-Visivo-Projected-Value-Unit";
 inline constexpr const char *PYRAMID_LEVEL = "X-Visivo-Pyramid-Level";
 inline constexpr const char *RANGE_MAX = "X-Visivo-Range-Max";
 inline constexpr const char *RANGE_MIN = "X-Visivo-Range-Min";
@@ -117,7 +123,7 @@ inline constexpr const char *WARNINGS = "X-Visivo-Warnings";
 inline constexpr const char *WIDTH = "X-Visivo-Width";
 
 // Every declared header name, for the contract test to diff against the manifest.
-inline constexpr std::array<const char *, 103> kAll = {
+inline constexpr std::array<const char *, 109> kAll = {
     EW_UNIT,
     FWHM_UNIT,
     MAP_UNIT,
@@ -167,6 +173,7 @@ inline constexpr std::array<const char *, 103> kAll = {
     GLYPH_CELL,
     HEIGHT,
     INSTANCE,
+    LAYER_WINDOWS,
     LEVEL,
     LEVEL_ORIGIN,
     LINE_POINTS,
@@ -175,13 +182,18 @@ inline constexpr std::array<const char *, 103> kAll = {
     N_BASINS,
     NONPOSITIVE_VOXELS,
     ORIGIN,
+    PARTICLE_CLIPPED,
     PARTICLE_COUNT,
+    PARTICLE_DROPPED,
     PARTICLE_FIELDS,
     PARTICLE_ORIGIN,
     PARTICLE_SCALE,
     PARTICLE_STEP,
     PEAK,
     PLACED_ROWS,
+    PROJECTED_KERNEL,
+    PROJECTED_UNIT,
+    PROJECTED_VALUE_UNIT,
     PYRAMID_LEVEL,
     RANGE_MAX,
     RANGE_MIN,

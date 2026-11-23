@@ -35,6 +35,14 @@ constexpr int    kPushMaxFps        = 30;
 // Well inside the backend's default idle limit (300 s), so one lost or
 // delayed keepalive does not end a session someone is still looking at.
 constexpr int    kKeepaliveMs       = 60 * 1000;
+// Silence after which a stream is taken for lost: pings unanswered on the
+// WebSocket, no frame on WebRTC (whose frames come continuously). Well above a
+// slow frame of a large cube; the WebRTC peer's own checks take about as long.
+constexpr qint64 kStallMs           = 20 * 1000;
+// A WebRTC stream is Live when its peer connects, before its first frame,
+// which a large cube can take a while to render: the silence counts from
+// this much later. A Live stream that never sends a frame is still caught.
+constexpr qint64 kFirstFrameGraceMs = 60 * 1000;
 } // namespace
 
 RemoteRenderWidget::RemoteRenderWidget(QWidget *parent)
@@ -53,6 +61,10 @@ RemoteRenderWidget::RemoteRenderWidget(QWidget *parent)
     m_keepaliveTimer = new QTimer(this);
     m_keepaliveTimer->setInterval(kKeepaliveMs);
     connect(m_keepaliveTimer, &QTimer::timeout, this, &RemoteRenderWidget::sendKeepalive);
+    m_watchdogTimer = new QTimer(this);
+    m_watchdogTimer->setInterval(int(visivo::StreamWatchdog::kCheckMs));
+    connect(m_watchdogTimer, &QTimer::timeout, this, &RemoteRenderWidget::checkStream);
+    m_clock.start();
 }
 
 RemoteRenderWidget::~RemoteRenderWidget()
@@ -112,6 +124,10 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             if (!m_live) {
                 m_live = true;
             }
+            // Frames come continuously: their silence is a stream that stopped.
+            if (!m_watchdog.running())
+                startWatchdog();
+            sawTraffic();
             update();
         });
         connect(m_webrtc, &RemoteRenderWebRTCClient::framesPerSecondChanged,
@@ -121,8 +137,12 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             m_status = state;
             // How this stream ended, read by the viewer on the state below.
             m_close.webrtcState(state, m_live);
-            if (visivo::StreamCloseRecorder::isTerminal(state))
+            if (visivo::StreamCloseRecorder::isTerminal(state)) {
                 m_live = false;
+                // Ended, and said so: not a stall to report a second time.
+                m_watchdogTimer->stop();
+                m_watchdog.stop();
+            }
             // Flip ``m_live`` here, BEFORE emitting connectionStateChanged.
             // vtkWindowCube hooks the same signal and runs the bootstrap
             // (LUT / threshold / blend / cutting-plane) when it sees
@@ -134,6 +154,9 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             if (state == QLatin1String("Live")) {
                 m_live = true;
                 m_keepaliveTimer->start();
+                // From Live on, a stream that sends no frame is caught too.
+                if (!m_watchdog.running())
+                    startWatchdog(kFirstFrameGraceMs);
             } else {
                 // Any other state is not a channel a keepalive could cross;
                 // commands posted now would only queue up for a channel that
@@ -221,6 +244,14 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
             this, &RemoteRenderWidget::onTextMessageReceived);
     connect(m_ws, &QWebSocket::binaryMessageReceived,
             this, &RemoteRenderWidget::onBinaryMessageReceived);
+    // The server answers pings by itself (the WebSocket protocol), while the
+    // view is still too: the watchdog's sign of life.
+    connect(m_ws, &QWebSocket::pong, this,
+            [this](quint64, const QByteArray &) { sawTraffic(); });
+    // A large JPEG over a slow tunnel arrives in many frames: its progress is
+    // a sign of life before it is whole.
+    connect(m_ws, &QWebSocket::binaryFrameReceived, this,
+            [this](const QByteArray &, bool) { sawTraffic(); });
     // Qt6 unified error signal:
     connect(m_ws, &QWebSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {
         const QString msg = m_ws ? m_ws->errorString() : QStringLiteral("(no socket)");
@@ -237,12 +268,22 @@ void RemoteRenderWidget::connectToSession(const QString &baseUrl,
 
 void RemoteRenderWidget::disconnectFromSession()
 {
+    teardownTransports();
+    m_close.connecting();   // a teardown asked for, not a stream that dropped
+    m_status = QStringLiteral("Disconnected");
+    emit connectionStateChanged(m_status);
+}
+
+void RemoteRenderWidget::teardownTransports()
+{
     m_keepaliveTimer->stop();
+    m_watchdogTimer->stop();
+    m_watchdog.stop();
     if (m_ws) {
         // Nothing more from this socket: its own disconnected (or an error)
         // can arrive after close() returns, once a new connection is already
         // under way, and would be taken for that connection's state. The
-        // Disconnected below says it once.
+        // caller says Disconnected once.
         QObject::disconnect(m_ws, nullptr, this, nullptr);
         m_ws->close();
         m_ws->deleteLater();
@@ -265,9 +306,44 @@ void RemoteRenderWidget::disconnectFromSession()
     m_push = false;
     m_frameInFlight = false;
     m_frameRequestPending = false;
-    m_close.connecting();   // a teardown asked for, not a stream that dropped
+}
+
+void RemoteRenderWidget::startWatchdog(qint64 firstTrafficGraceMs)
+{
+    m_watchdog.start(m_clock.elapsed(), firstTrafficGraceMs);
+    m_watchdogTimer->start();
+}
+
+void RemoteRenderWidget::sawTraffic()
+{
+    m_watchdog.traffic(m_clock.elapsed());
+    m_close.markTraffic();   // a drop's live time ends at the last sign of life
+}
+
+void RemoteRenderWidget::checkStream()
+{
+    const auto verdict = m_watchdog.check(m_clock.elapsed(), kStallMs);
+    if (verdict == visivo::StreamWatchdog::Verdict::Off) {
+        m_watchdogTimer->stop();
+        return;
+    }
+    if (verdict == visivo::StreamWatchdog::Verdict::Fine) {
+        if (m_ws && m_ws->state() == QAbstractSocket::ConnectedState)
+            m_ws->ping();
+        return;
+    }
+    // Nothing from the backend for kStallMs: the stream is over, whatever its
+    // transport still says. Ended here, as a drop without a close reason, so
+    // the viewer asks the backend about the session and reconnects.
+    qWarning().noquote() << QStringLiteral(
+            "[remote-render] no sign of life from the stream for %1 s: taken for lost")
+            .arg(kStallMs / 1000);
+    const bool wasLive = m_live;
+    teardownTransports();
+    m_close.closed(wasLive, QString());
     m_status = QStringLiteral("Disconnected");
     emit connectionStateChanged(m_status);
+    update();
 }
 
 void RemoteRenderWidget::showStatus(const QString &text)
@@ -334,6 +410,7 @@ void RemoteRenderWidget::sendKeepalive()
 void RemoteRenderWidget::onWebSocketConnected()
 {
     m_keepaliveTimer->start();
+    startWatchdog();
     m_status = QStringLiteral("Connected, awaiting first frame…");
     emit connectionStateChanged(m_status);
     // Tell the server our REAL render size (physical pixels) BEFORE we
@@ -362,6 +439,8 @@ void RemoteRenderWidget::onWebSocketConnected()
 void RemoteRenderWidget::onWebSocketDisconnected()
 {
     m_keepaliveTimer->stop();
+    m_watchdogTimer->stop();
+    m_watchdog.stop();
     // Read before the state below is reset: the viewer decides from them
     // whether to ask for a new session (RemoteSessionRecovery.h).
     m_close.closed(m_live, m_ws ? m_ws->closeReason() : QString());
@@ -379,6 +458,7 @@ void RemoteRenderWidget::onTextMessageReceived(const QString &message)
     // Diagnostic JSON from the server (e.g. {"error": "…"}). We don't
     // expose it to the UI directly yet; future commit can wire it.
     qDebug().noquote() << "[remote-render] server text:" << message;
+    sawTraffic();
     // The server's answer to ``stream``: from here on it sends the frames.
     // It comes before any pushed frame, so every frame after it is acked.
     const QJsonObject obj = QJsonDocument::fromJson(message.toUtf8()).object();
@@ -391,6 +471,7 @@ void RemoteRenderWidget::onTextMessageReceived(const QString &message)
 
 void RemoteRenderWidget::onBinaryMessageReceived(const QByteArray &bytes)
 {
+    sawTraffic();
     // Acknowledged at once, before decoding: the server sends the next frame
     // as soon as the ack frees a slot in its window.
     if (m_push && m_ws && m_ws->state() == QAbstractSocket::ConnectedState)
@@ -609,6 +690,7 @@ void RemoteRenderWidget::mouseReleaseEvent(QMouseEvent *event)
         // The JPEG transport renders only on request: without one the last
         // frame on screen stays the wireframe of the drag.
         requestFrame();
+        emit viewTurnedByUser();
     }
     event->accept();
 }
@@ -660,6 +742,7 @@ void RemoteRenderWidget::wheelEvent(QWheelEvent *event)
             lodOff[QStringLiteral("type")]  = QStringLiteral("set_interactive");
             lodOff[QStringLiteral("value")] = false;
             sendCommand(QJsonDocument(lodOff).toJson(QJsonDocument::Compact));
+            emit viewTurnedByUser();
         });
     }
 

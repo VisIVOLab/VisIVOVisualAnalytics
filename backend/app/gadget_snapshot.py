@@ -57,9 +57,12 @@ the entropy K = kT / n_e^(2/3) in keV cm^2.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import struct
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -157,6 +160,11 @@ class FileLayout:
     fmt: int                        # 1 | 2 (0 for HDF5)
     header: Header
     blocks: tuple[RawBlock, ...]
+    #: The code that wrote an HDF5 group catalogue ("gadget4", "arepo"),
+    #: "" for a snapshot or a binary file.
+    producer: str = ""
+    #: A Gadget-4 lightcone group catalogue (see _is_lightcone_catalogue).
+    lightcone: bool = False
 
 
 def detect(path: str | Path) -> tuple[int, str] | None:
@@ -193,7 +201,10 @@ def _is_hdf5_snapshot(path) -> bool:
     try:
         import h5py  # noqa: PLC0415
         with h5py.File(path, "r") as f:
-            return "Header" in f and "NumPart_ThisFile" in f["Header"].attrs
+            if "Header" not in f:
+                return False
+            attrs = f["Header"].attrs
+            return "NumPart_ThisFile" in attrs or "Ngroups_ThisFile" in attrs
     except Exception:   # noqa: BLE001 - not readable as one: not a snapshot
         return False
 
@@ -414,6 +425,9 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "MCON": ((0,), 1, ("contaminating_mass",)),
     "SPOS": ((1,), 3, ("x", "y", "z")),
     "SVEL": ((1,), 3, ("vx", "vy", "vz")),
+    # A group's mass-weighted velocity: in the HDF5 catalogues only, under
+    # its HDF5 name (no binary block name has 8 letters).
+    "GroupVel": ((0,), 3, ("vx", "vy", "vz")),
     "SCM": ((1,), 3, ("centre_of_mass_x", "centre_of_mass_y", "centre_of_mass_z")),
     "SPIN": ((1,), 3, ("spin_x", "spin_y", "spin_z")),
     "MSUB": ((1,), 1, ("subhalo_mass",)),
@@ -435,6 +449,9 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "MBID": ((1,), 1, ("most_bound_id",)),
     "GRNR": ((1,), 1, ("group_number",)),
 }
+#: Columns that are positions in the box: periodic in a cosmological run.
+PERIODIC_COLUMNS = frozenset({"x", "y", "z", "centre_of_mass_x", "centre_of_mass_y",
+                              "centre_of_mass_z"})
 #: Blocks of integers (read as unsigned of 4 or 8 bytes).
 INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB",
               "NCON", "MBID", "GRNR"}
@@ -569,10 +586,30 @@ class H5Block:
     offset: int | None              # in the file, when memory-mappable
 
 
+#: The groups of a FoF/SubFind HDF5 catalogue (``fof_subhalo_tab_NNN.hdf5``
+#: of Gadget-4 and Arepo) -> the "type" the binary catalogues give them.
+SUBFIND_HDF5_GROUPS = {"Group": 0, "Subhalo": 1}
+#: Their datasets -> the binary SubFind block they are, so both kinds of
+#: catalogue have the same columns (and the same framing radii, #441).
+#: Any other dataset is a column of its own name.
+SUBFIND_HDF5_BLOCKS = {
+    "GroupPos": "GPOS", "GroupMass": "MTOT", "GroupLen": "GLEN",
+    "GroupNsubs": "NSUB", "GroupFirstSub": "FSUB",
+    "Group_M_TopHat200": "MVIR", "Group_R_TopHat200": "RVIR",
+    "Group_M_Crit500": "M500", "Group_R_Crit500": "R500",
+    "SubhaloPos": "SPOS", "SubhaloVel": "SVEL", "SubhaloCM": "SCM", "SubhaloSpin": "SPIN",
+    "SubhaloMass": "MSUB", "SubhaloVmax": "VMAX", "SubhaloVmaxRad": "RMAX",
+    "SubhaloHalfmassRad": "RHMS", "SubhaloLen": "SLEN", "SubhaloGroupNr": "GRNR",
+    "SubhaloGrNr": "GRNR", "SubhaloIDMostbound": "MBID",
+}
+
+
 def _scan_hdf5(path: str) -> FileLayout:
     import h5py  # noqa: PLC0415
     with h5py.File(path, "r") as f:
         a = f["Header"].attrs
+        if "NumPart_ThisFile" not in a and "Ngroups_ThisFile" in a:
+            return _scan_hdf5_catalogue(path, f)
 
         def get(key, default=0):
             return a[key] if key in a else default
@@ -608,12 +645,80 @@ def _scan_hdf5(path: str) -> FileLayout:
     return FileLayout(path, "hdf5", "", 0, header, tuple(blocks))
 
 
+def _scan_hdf5_catalogue(path: str, f) -> FileLayout:
+    """A FoF/SubFind HDF5 catalogue file: groups as type 0 and subhalos as
+    type 1, counted by ``Ngroups_*`` and ``Nsubhalos_*`` (Gadget-4) or
+    ``Nsubgroups_*`` (Arepo). Gadget-4 keeps the cosmology in
+    ``Parameters``, Arepo in the header."""
+    import h5py  # noqa: PLC0415
+    a = f["Header"].attrs
+    params = f["Parameters"].attrs if "Parameters" in f else {}
+
+    def get(key, default=0):
+        for attrs in (a, params):
+            if key in attrs:
+                return np.asarray(attrs[key]).reshape(-1)[0]
+        return default
+    # Gadget-4 writes Nsubhalos_* (neither count in a FoF-only fof_tab),
+    # Arepo Nsubgroups_* and its cosmology in the header.
+    gadget4 = "Nsubhalos_ThisFile" in a or (
+        "Nsubgroups_ThisFile" not in a and "HubbleParam" not in a)
+    sub = "Nsubhalos" if gadget4 else "Nsubgroups"
+    npart = (int(get("Ngroups_ThisFile")), int(get(f"{sub}_ThisFile")), 0, 0, 0, 0)
+    total = (int(get("Ngroups_Total")), int(get(f"{sub}_Total")), 0, 0, 0, 0)
+    time = float(get("Time", 0.0))
+    header = Header(npart, (0.0,) * NTYPES, time, float(get("Redshift", 0.0)), 0, 0, total, 0,
+                    max(1, int(get("NumFiles", get("NumFilesPerSnapshot", 1)))),
+                    float(get("BoxSize", 0.0)), float(get("Omega0", 0.0)),
+                    float(get("OmegaLambda", 0.0)), float(get("HubbleParam", 1.0)))
+    blocks = []
+    for gname, t in SUBFIND_HDF5_GROUPS.items():
+        group = f.get(gname)
+        if group is None:
+            continue
+        for dname, dset in group.items():
+            if not isinstance(dset, h5py.Dataset) or dset.ndim not in (1, 2):
+                continue
+            offset = None
+            if dset.chunks is None and dset.compression is None:
+                offset = dset.id.get_offset()
+            blocks.append(H5Block(SUBFIND_HDF5_BLOCKS.get(dname, dname), t, dset.name,
+                                  tuple(dset.shape), dset.dtype.str, offset))
+    return FileLayout(path, "hdf5", "", 0, header, tuple(blocks),
+                      "gadget4" if gadget4 else "arepo",
+                      gadget4 and _is_lightcone_catalogue(path, f))
+
+
+def _is_lightcone_catalogue(path: str, f) -> bool:
+    """Whether a Gadget-4 group catalogue was found on the lightcone: its
+    header says nothing of it, but Gadget-4 names those ``lc_fof_...`` in
+    ``lc_groups_NNN`` (run.cc), and a run that wrote them was compiled with
+    LIGHTCONE_PARTICLES_GROUPS (its ``Config``, when written). There the
+    particle velocities are already peculiar (subfind_properties.cc,
+    fof<lcparticles>) and the positions are around the observer, not in
+    the periodic box (fof.cc)."""
+    p = Path(path)
+    named = p.name.startswith("lc_") or p.parent.name.startswith("lc_groups")
+    config = f.get("Config")
+    return named and (config is None or "LIGHTCONE_PARTICLES_GROUPS" in config.attrs)
+
+
 # ── Units ────────────────────────────────────────────────────────────────────
 
 #: ``key=value,...`` with any of length_cm, mass_g, velocity_cm_s, comoving
-#: (0/1), hubble_units (0/1): overrides the snapshot's units, for runs whose
-#: parameter file is not beside them.
+#: (0/1), hubble_units (0/1), periodic (0/1), svel and srad (SubFind
+#: conventions, see UnitSystem): overrides the snapshot's units, for runs
+#: whose parameter file is not beside them.
 UNITS_ENV = "VISIVO_GADGET_UNITS"
+#: The SubFind subhalo velocity conventions: the power of a that makes the
+#: stored value peculiar, and how the stored value is described.
+SUBFIND_VEL_FACTORS = {"peculiar": (0.0, "peculiar (SubFind convention)"),
+                       "snapshot": (0.5, "internal, x sqrt(a)"),
+                       "canonical": (-1.0, "a^2 dx/dt, x 1/a"),
+                       "comoving": (-1.0, "a^2 dx/dt, x 1/a")}
+#: Blocks of SubFind subhalo radii, whose frame (comoving or physical)
+#: depends on the writer (Component._subhalo_radii_physical).
+SUBHALO_RADIUS_BLOCKS = frozenset({"RHMS", "RMAX", "SubhaloHalfmassRadType"})
 _PARAM_FILES = ("parameters-usedvalues", "parameters-usedValues", "param.txt-usedvalues",
                 "params.txt-usedvalues", "parameters.txt-usedvalues")
 
@@ -631,16 +736,36 @@ class UnitSystem:
     #: Lengths and masses in units of 1/h.
     hubble_units: bool = True
     source: str = "Gadget defaults"
+    #: The box is periodic: a Gadget-4 HDF5 file's ``Config/PERIODIC``, or
+    #: ``periodic=`` in VISIVO_GADGET_UNITS; None when nothing states it
+    #: (then a comoving run is taken as periodic, see Component.periods).
+    periodic: bool | None = None
+    #: How a SubFind catalogue stores subhalo velocities (SVEL, SubhaloVel):
+    #: "peculiar" (x 1; what Gadget-4 and Arepo write, and the default for
+    #: P-Gadget3 files, whose writer is not public), "snapshot" (with the
+    #: particles' internal sqrt(a)) or "comoving" (a^2 dx/dt, x 1/a).
+    #: ``svel=`` in VISIVO_GADGET_UNITS.
+    subfind_vel: str = "peculiar"
+    #: Whether subhalo half-mass and Vmax radii are "comoving" or "physical";
+    #: None: as their writer stores them (physical for Gadget-4 HDF5,
+    #: comoving for Arepo and the binary catalogues). ``srad=``.
+    subfind_radii: str | None = None
 
     def describe(self) -> dict:
         return {"length_cm": self.length_cm, "mass_g": self.mass_g,
                 "velocity_cm_s": self.velocity_cm_s, "comoving": self.comoving,
                 "hubble_units": self.hubble_units, "source": self.source,
+                "subfind_vel": self.subfind_vel, "subfind_radii": self.subfind_radii,
                 "length": _unit_name(self.length_cm, {"kpc": KPC_CM, "Mpc": 1e3 * KPC_CM,
                                                       "pc": 1e-3 * KPC_CM}, "cm"),
                 "mass": _unit_name(self.mass_g, {"1e10 Msun": 1e10 * MSUN_G,
                                                  "Msun": MSUN_G}, "g"),
-                "velocity": _unit_name(self.velocity_cm_s, {"km/s": 1e5}, "cm/s")}
+                "velocity": _unit_name(self.velocity_cm_s, {"km/s": 1e5}, "cm/s"),
+                # Whether the box wraps, by Component.periods' rule (stated,
+                # else a comoving run is): with a positive box size, the
+                # selections and neighbour searches wrap round it.
+                "periodic": self.periodic if self.periodic is not None
+                else bool(self.comoving)}
 
 
 def _unit_name(value: float, names: dict, base: str) -> str:
@@ -650,9 +775,9 @@ def _unit_name(value: float, names: dict, base: str) -> str:
     return f"{value:.6g} {base}"
 
 
-def parameter_file(first_file: str | Path) -> Path | None:
-    """The run's parameter file Gadget writes (``parameters-usedvalues`` ...)
-    beside the snapshot or one folder up, or None."""
+def _parameter_candidate(first_file: str | Path) -> Path | None:
+    """The first parameter file beside the snapshot or one folder up,
+    wherever it lies."""
     folder = Path(first_file).parent
     for where in (folder, folder.parent):
         for name in _PARAM_FILES:
@@ -660,6 +785,34 @@ def parameter_file(first_file: str | Path) -> Path | None:
             if p.is_file():
                 return p
     return None
+
+
+def _within_env_roots(path: Path) -> bool:
+    """Whether ``path`` (resolved, so a symbolic link counts where it leads)
+    lies in VISIVO_DATA_ROOTS; True when no roots are set. The same rule as
+    the backend's own path check, without importing it (render and pyramid
+    processes read snapshots without the rest of the backend)."""
+    raw = os.environ.get("VISIVO_DATA_ROOTS", "").strip()
+    roots = [Path(part).expanduser().resolve() for part in raw.split(os.pathsep)
+             if part.strip()]
+    if not roots:
+        return True
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def parameter_file(first_file: str | Path) -> Path | None:
+    """The run's parameter file Gadget writes (``parameters-usedvalues`` ...)
+    beside the snapshot or one folder up, or None. One outside the data
+    roots (the folder above a root, a symbolic link out of it) counts as
+    absent: the snapshot opens with the default units and says so
+    (:func:`units_for`), rather than being refused for a file it only
+    reads units from."""
+    p = _parameter_candidate(first_file)
+    return p if p is not None and _within_env_roots(p) else None
 
 
 def looks_comoving(header: Header) -> bool:
@@ -682,6 +835,9 @@ def units_for(first_file: str | Path, hdf5_units: dict | None = None,
     params = parameter_file(first_file)
     if params is not None:
         units = _from_params(params, units)
+    elif _parameter_candidate(first_file) is not None:
+        units = replace(units, source=units.source + " (the run's parameter file lies "
+                        "outside the folders this backend may read and was not used)")
     if hdf5_units:
         units = replace(units, source="the HDF5 file's units", **hdf5_units)
     env = os.environ.get(UNITS_ENV, "").strip()
@@ -725,8 +881,17 @@ def _from_env(text: str, units: UnitSystem) -> UnitSystem:
         key, value = key.strip(), value.strip()
         if key in ("length_cm", "mass_g", "velocity_cm_s"):
             kw[key] = float(value)
-        elif key in ("comoving", "hubble_units"):
+        elif key in ("comoving", "hubble_units", "periodic"):
             kw[key] = value.lower() not in ("0", "false", "no", "")
+        elif key == "svel":
+            if value.lower() not in SUBFIND_VEL_FACTORS:
+                raise ValueError(f"{UNITS_ENV}: svel={value!r}: one of "
+                                 + ", ".join(SUBFIND_VEL_FACTORS))
+            kw["subfind_vel"] = value.lower()
+        elif key == "srad":
+            if value.lower() not in ("comoving", "physical"):
+                raise ValueError(f"{UNITS_ENV}: srad={value!r}: comoving or physical")
+            kw["subfind_radii"] = value.lower()
         elif key:
             raise ValueError(f"{UNITS_ENV}: unknown key {key!r}")
     return replace(units, source=f"{UNITS_ENV}", **kw)
@@ -755,6 +920,140 @@ class Piece:
         with h5py.File(self.path, "r") as f:
             return np.asarray(f[self.dataset][()]).reshape(self.rows, self.dims)
 
+    @property
+    def nbytes(self) -> int:
+        return self.rows * self.dims * np.dtype(self.dtype).itemsize
+
+
+# ── Selected rows of a chunked or compressed HDF5 dataset ────────────────────
+#
+# Such a dataset cannot be memory-mapped: any read decompresses whole HDF5
+# chunks. Component.take is called a slice of rows at a time (a filter walks
+# the table in chunks, a sample reads x, y and z in pieces), so reading the
+# whole dataset per call decompressed a shard dozens of times (issue #445).
+# A dataset up to the cache budget is decompressed once and kept, shared by
+# every component and bounded in bytes; a larger one is read in windows of
+# whole HDF5 chunks spanning only the rows asked for.
+
+#: Megabytes of decompressed HDF5 pieces kept for row reads (0: none).
+PIECE_CACHE_ENV = "VISIVO_GADGET_CACHE_MB"
+PIECE_CACHE_DEFAULT_MB = 512
+#: At most this many bytes are decompressed into one window of a dataset
+#: larger than the cache budget (rounded to whole HDF5 chunks).
+WINDOW_BYTES = 64 << 20
+
+
+def piece_cache_bytes() -> int:
+    """The cache budget, from the environment when it is a finite number of
+    megabytes (0 or more); the default otherwise (nan, inf, text)."""
+    try:
+        mb = float(os.environ.get(PIECE_CACHE_ENV, PIECE_CACHE_DEFAULT_MB))
+        if not math.isfinite(mb) or mb < 0:
+            raise ValueError(mb)
+        return int(mb * (1 << 20))
+    except (ValueError, OverflowError):
+        return int(PIECE_CACHE_DEFAULT_MB * (1 << 20))
+
+
+class _PieceCache:
+    """Least recently used decompressed pieces, at most the budget in bytes,
+    keyed by the file's identity (a rewritten file is not served stale).
+
+    Concurrent misses on one piece decompress it once: the first reader
+    holds that key's lock while it reads, the others wait on it and then
+    find the entry (other pieces are read meanwhile)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._items: OrderedDict = OrderedDict()
+        self._bytes = 0
+        self._loading: dict = {}            # key -> (lock, waiters)
+
+    def get(self, piece: Piece) -> np.ndarray | None:
+        """The piece's (rows, dims) values, or None when it exceeds the budget."""
+        budget = piece_cache_bytes()
+        if piece.nbytes > budget:
+            return None
+        st = os.stat(piece.path)
+        key = (piece.path, piece.dataset, st.st_size, st.st_mtime_ns)
+        with self._lock:
+            hit = self._items.get(key)
+            if hit is not None:
+                self._items.move_to_end(key)
+                return hit
+            entry = self._loading.setdefault(key, [threading.Lock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:                  # one reader per piece at a time
+                with self._lock:
+                    hit = self._items.get(key)
+                    if hit is not None:     # read by the reader before us
+                        self._items.move_to_end(key)
+                        return hit
+                values = piece.array()      # outside the cache lock: seconds
+                with self._lock:
+                    self._items[key] = values
+                    self._bytes += values.nbytes
+                    while self._bytes > budget and len(self._items) > 1:
+                        _, old = self._items.popitem(last=False)
+                        self._bytes -= old.nbytes
+                return values
+        finally:
+            with self._lock:
+                entry[1] -= 1
+                if entry[1] == 0:
+                    self._loading.pop(key, None)
+
+    def drop(self, paths) -> int:
+        """Forget the pieces read from ``paths`` (a closed dataset's files);
+        the number dropped."""
+        wanted = {str(p) for p in paths}
+        with self._lock:
+            keys = [k for k in self._items if k[0] in wanted]
+            for k in keys:
+                self._bytes -= self._items.pop(k).nbytes
+        return len(keys)
+
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+            self._bytes = 0
+
+
+PIECE_CACHE = _PieceCache()
+
+
+def _read_window(dataset, start: int, stop: int, column: int) -> np.ndarray:
+    """Rows ``start:stop`` of one column of an HDF5 dataset (1-D or 2-D)."""
+    if dataset.ndim == 1:
+        return dataset[start:stop]
+    return dataset[start:stop, column]
+
+
+def _read_rows_windowed(piece: Piece, local: np.ndarray, column: int) -> np.ndarray:
+    """``column`` at rows ``local`` of an HDF5 piece too large for the cache:
+    the rows asked for, sorted, are read window by window (whole HDF5 chunks,
+    at most WINDOW_BYTES), each window from its first to its last row asked
+    for, so a contiguous slice reads only its own chunks and memory stays at
+    one window."""
+    import h5py  # noqa: PLC0415
+    unique, inverse = np.unique(local, return_inverse=True)
+    out = np.empty(unique.size, dtype=np.dtype(piece.dtype))
+    with h5py.File(piece.path, "r") as f:
+        dataset = f[piece.dataset]
+        chunk = dataset.chunks[0] if dataset.chunks else 1
+        per_row = np.dtype(piece.dtype).itemsize * (piece.dims if dataset.ndim > 1 else 1)
+        window = max(chunk, (WINDOW_BYTES // max(1, per_row)) // chunk * chunk)
+        i = 0
+        while i < unique.size:
+            first = int(unique[i])
+            end = min(piece.rows, (first // window + 1) * window)
+            j = int(np.searchsorted(unique, end, side="left"))
+            last = int(unique[j - 1]) + 1
+            out[i:j] = _read_window(dataset, first, last, column)[unique[i:j] - first]
+            i = j
+    return out[inverse]
+
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -769,6 +1068,11 @@ class Snapshot:
     # HDF5 permits the same dataset name to have a different shape or dtype in
     # different PartType groups. Binary files have one spec for every type.
     component_specs: dict = field(default_factory=dict)  # (name, type) -> BlockSpec
+    #: The code that wrote an HDF5 group catalogue ("gadget4", "arepo"), "".
+    producer: str = ""
+    #: A Gadget-4 lightcone group catalogue: velocities already peculiar,
+    #: each object at its own scale factor.
+    lightcone: bool = False
 
     @property
     def path(self) -> str:
@@ -797,6 +1101,7 @@ class Snapshot:
         h = self.header
         return {"format": self.fmt, "files": len(self.files),
                 "catalogue_kind": "subfind" if self.is_subfind else "particles",
+                **({"lightcone": True} if self.lightcone else {}),
                 "time": h.time, "scale_factor": self.scale_factor,
                 "redshift": h.redshift, "box_size": h.box_size, "omega0": h.omega0,
                 "omega_lambda": h.omega_lambda, "hubble_param": h.hubble,
@@ -816,7 +1121,7 @@ class Snapshot:
     @property
     def is_subfind(self) -> bool:
         """Whether this Gadget-family file is a FoF/SubFind group catalogue."""
-        return "GPOS" in self.blocks or "SPOS" in self.blocks
+        return bool(self.producer) or "GPOS" in self.blocks or "SPOS" in self.blocks
 
 
 def snapshot_files(path: str | Path) -> list[Path]:
@@ -834,7 +1139,7 @@ def snapshot_files(path: str | Path) -> list[Path]:
             if cand.is_file():
                 p = cand
                 break
-    header = scan_file(p).header
+    header = read_header(p)
     if header.num_files <= 1:
         return [p]
     m = re.match(r"^(?P<base>.*)\.(?P<k>\d+)(?P<ext>\.hdf5|\.h5)?$", p.name)
@@ -854,10 +1159,54 @@ def snapshot_files(path: str | Path) -> list[Path]:
 MAX_PROBES = 64
 
 
-def first_in_dir(folder: Path, allowed=None) -> Path | None:
-    """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
-    (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
-    that is one. Only names are listed; at most MAX_PROBES files are read."""
+#: Names probed in a folder, in this order: the first file of a multi-file
+#: snapshot or catalogue, a snapshot, a single-file group catalogue
+#: (``fof_subhalo_tab_NNN.hdf5``, ``fof_tab_NNN``, ``lc_fof_...``, ``sub_NNN``).
+_CATALOGUE_NAME = r"^(lc_)?fof_|^sub_|^subhalo_tab|^group_tab"
+_DIR_PATTERNS = (r"\.0(\.hdf5|\.h5)?$", r"^snap", _CATALOGUE_NAME)
+#: A later file of a multi-file set (``.1``, ``.7.hdf5``): its ``.0`` file
+#: stands for it when the folder holds that.
+_LATER_FILE = re.compile(r"\.[1-9]\d*(\.hdf5|\.h5)?$")
+#: The output number of a snapshot or catalogue name (``snapshot_004.hdf5``,
+#: ``fof_subhalo_tab_004.0.hdf5``, ``sub_002.0``).
+_OUTPUT_NUMBER = re.compile(r"_(\d{3,})(\.\d+)?(\.hdf5|\.h5)?$")
+
+
+def is_companion_name(name: str) -> bool:
+    """Whether a file is the most-bound-only companion Gadget-4 writes
+    beside a snapshot with SUBFIND_ORPHAN_TREATMENT
+    (``<base>-prevmostboundonly_NNN``, snap_io.cc): not the snapshot."""
+    return "-prevmostboundonly" in name
+
+
+def _later_file(name: str, names) -> bool:
+    """Whether ``name`` is a later file of a set whose ``.0`` the folder
+    holds (a single-file ``snapshot.100`` is not)."""
+    m = _LATER_FILE.search(name)
+    return m is not None and f"{name[:m.start()]}.0{m.group(1) or ''}" in names
+
+
+def is_group_catalogue(path: str | Path, found=False) -> bool:
+    """Whether a Gadget-family file is a FoF/SubFind group catalogue: an HDF5
+    file counting groups (``Ngroups_ThisFile``), a binary one with GPOS or
+    SPOS blocks. Only the header (binary: the block markers) is read.
+    ``found``: :func:`detect`'s answer when the caller has it."""
+    found = detect(path) if found is False else found
+    if found is None:
+        return False
+    try:
+        if found[0] == 0:
+            import h5py  # noqa: PLC0415
+            with h5py.File(path, "r") as f:
+                return "Ngroups_ThisFile" in f["Header"].attrs
+        return any(b.name in ("GPOS", "SPOS") for b in scan_file(path).blocks)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def _gadget_files_in_dir(folder: Path, allowed=None):
+    """The Gadget files of a folder (see _DIR_PATTERNS), each once, with
+    whether it is a group catalogue; at most MAX_PROBES files are read."""
     try:
         with os.scandir(folder) as it:
             # Do not follow a directory child's symlink before the caller's
@@ -865,20 +1214,66 @@ def first_in_dir(folder: Path, allowed=None) -> Path | None:
             names = sorted(e.name for e in it
                            if e.is_file(follow_symlinks=False) or e.is_symlink())
     except OSError:
-        return None
-    probes = 0
-    for pattern in (r"\.0(\.hdf5|\.h5)?$", r"^snap"):
+        return
+    probes, seen, present = 0, set(), set(names)
+    for pattern in _DIR_PATTERNS:
         for name in names:
-            if not re.search(pattern, name):
+            if (name in seen or not re.search(pattern, name) or is_companion_name(name)
+                    or _later_file(name, present)):
                 continue
+            seen.add(name)
             probes += 1
             if probes > MAX_PROBES:
-                return None
+                return
             candidate = folder / name
             if allowed is not None and not allowed(str(candidate)):
                 continue
-            if is_gadget(candidate):
-                return candidate
+            found = detect(candidate) if candidate.is_file() else None
+            if found is not None:
+                yield candidate, is_group_catalogue(candidate, found)
+
+
+def first_in_dir(folder: Path, allowed=None) -> Path | None:
+    """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
+    (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
+    that is one, else a single-file group catalogue. Particles come first:
+    a folder holding a snapshot and its group catalogue opens the snapshot
+    (:func:`catalogue_in_dir` names the catalogue). Only names are listed;
+    at most MAX_PROBES files are read."""
+    catalogue = None
+    for candidate, is_catalogue in _gadget_files_in_dir(folder, allowed):
+        if not is_catalogue:
+            return candidate
+        catalogue = catalogue or candidate
+    return catalogue
+
+
+def catalogue_in_dir(folder: Path, snapshot: str | Path, allowed=None) -> Path | None:
+    """The group catalogue of the same output as ``snapshot`` (a particle
+    snapshot file) in ``folder``, or None. Only names of that output number
+    are probed."""
+    if is_group_catalogue(snapshot):
+        return None
+    m = _OUTPUT_NUMBER.search(Path(snapshot).name)
+    if m is None:
+        return None
+    try:
+        with os.scandir(folder) as it:
+            names = sorted(e.name for e in it
+                           if e.is_file(follow_symlinks=False) or e.is_symlink())
+    except OSError:
+        return None
+    present = set(names)
+    for name in names:
+        number = _OUTPUT_NUMBER.search(name)
+        if (number is None or number.group(1) != m.group(1)
+                or not re.search(_CATALOGUE_NAME, name) or _later_file(name, present)):
+            continue
+        candidate = folder / name
+        if allowed is not None and not allowed(str(candidate)):
+            continue
+        if is_gadget(candidate) and is_group_catalogue(candidate):
+            return candidate
     return None
 
 
@@ -924,10 +1319,13 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
             break
     if fsize not in (4, 8):
         raise ValueError(f"POS holds {fsize} bytes per coordinate: not float or double")
-    info_schemas = [_format2_info(f, fsize) for f in layouts]
-    declared = {}
+    info_schemas = [_format2_info(f) for f in layouts]
+    declared, info_skips = {}, {}
     for schema in info_schemas:
         for name, candidate in schema.items():
+            if isinstance(candidate, str):
+                info_skips.setdefault(name, candidate)
+                continue
             previous = declared.get(name)
             if previous is not None and (candidate.dtype, candidate.dims) != (
                     previous.dtype, previous.dims):
@@ -950,16 +1348,10 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
             blk = [b for b in f.blocks if b.name == name]
             lengths.append((f.header.npart, sum(b.nbytes for b in blk)))
         spec = declared.get(name)
-        why = ""
+        why = info_skips.get(name, "")
         if spec is not None:
-            itemsize = np.dtype(spec.dtype).itemsize * spec.dims
-            for npart, length in lengths:
-                expected = sum(npart[t] for t in spec.types) * itemsize
-                if length != expected:
-                    raise ValueError(
-                        f"{name}: INFO declares {spec.dtype} × {spec.dims} for types "
-                        f"{list(spec.types)}, requiring {expected} bytes; the block has {length}")
-        else:
+            spec, why = _info_block(spec, lengths, fsize)
+        elif not why:
             spec, why = infer_block(name, lengths, first.mass, fsize)
         if spec is None:
             skipped.append((name, why))
@@ -982,8 +1374,23 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
                     tuple(n for n, _ in skipped), fmt, tuple(skipped))
 
 
-def _format2_info(layout: FileLayout, float_size: int) -> dict[str, BlockSpec]:
-    """Read the optional format-2 INFO schema without touching block data."""
+#: INFO value types -> numpy kind and, when the type fixes it, the bytes per
+#: value. FLOAT/FLOATN leave the size open: OpenGadget3 and P-Gadget3 write
+#: "FLOAT" for a block of the run's MyFloat, single even when the positions
+#: are double (DOUBLEN), so the block's own length decides.
+_INFO_TYPES = {"FLOAT": ("f", None), "FLOATN": ("f", None),
+               "DOUBLE": ("f", 8), "DOUBLEN": ("f", 8),
+               "LLONG": ("u", 8), "ULONG64": ("u", 8),
+               "LONG": ("u", 4), "ULONG": ("u", 4), "INT": ("u", 4), "UINT": ("u", 4)}
+
+
+def _format2_info(layout: FileLayout) -> dict[str, BlockSpec | str]:
+    """Read the optional format-2 INFO schema without touching block data.
+
+    Each entry is a BlockSpec, or the reason its block is left out (a value
+    type this reader does not know, no particle types, a width beyond
+    MAX_DIMS): one odd entry costs its block, not the snapshot. A FLOAT
+    entry's dtype is ``"f"``, its size settled by :func:`_info_block`."""
     info = next((block for block in layout.blocks if block.name == "INFO"), None)
     if info is None:
         return {}
@@ -992,33 +1399,60 @@ def _format2_info(layout: FileLayout, float_size: int) -> dict[str, BlockSpec]:
     with open(layout.path, "rb") as handle:
         handle.seek(info.offset)
         raw = handle.read(info.nbytes)
-    out = {}
+    out: dict[str, BlockSpec | str] = {}
     for offset in range(0, len(raw), 40):
         entry = raw[offset:offset + 40]
         name = entry[:4].decode("ascii", "replace").rstrip(" \0")
         value_type = entry[4:12].decode("ascii", "replace").rstrip(" \0").upper()
         dims, *flags = struct.unpack(f"{layout.endian}i6i", entry[12:])
-        if not name or not 1 <= dims <= MAX_DIMS:
-            raise ValueError(f"{Path(layout.path).name}: invalid INFO entry {name!r}")
-        if value_type in ("FLOAT", "FLOATN"):
-            dtype = f"f{float_size}"
-        elif value_type in ("DOUBLE", "DOUBLEN"):
-            dtype = "f8"
-        elif value_type in ("LLONG", "ULONG64"):
-            dtype = "u8"
-        elif value_type in ("LONG", "ULONG", "INT", "UINT"):
-            dtype = "u4"
-        else:
-            raise ValueError(f"{Path(layout.path).name}: INFO type {value_type!r} is unsupported")
+        if not name:
+            raise ValueError(f"{Path(layout.path).name}: INFO entry without a block name")
+        kind = _INFO_TYPES.get(value_type)
+        if kind is None:
+            out[name] = f"INFO declares value type {value_type!r}, which this reader does not know"
+            continue
+        if not 1 <= dims <= MAX_DIMS:
+            out[name] = f"INFO declares {dims} values per particle (1..{MAX_DIMS} supported)"
+            continue
         types = tuple(index for index, active in enumerate(flags) if active)
         if name == "MASS":
             types = tuple(index for index in types if layout.header.mass[index] == 0)
             if not types:
                 continue
         if not types:
-            raise ValueError(f"{Path(layout.path).name}: INFO block {name} has no particle types")
+            out[name] = "INFO declares no particle types for it"
+            continue
+        dtype = f"{kind[0]}{kind[1]}" if kind[1] else kind[0]
         out[name] = BlockSpec(name, types, dtype, dims, False)
     return out
+
+
+def _info_block(spec: BlockSpec, lengths, fsize: int) -> tuple[BlockSpec | None, str]:
+    """``(spec, why not)`` of a block INFO declares, checked against its
+    length in every file. A FLOAT block takes 4 or 8 bytes a value from the
+    length (the same in every file; the positions' size when no file holds
+    its particles); a declared size the length contradicts leaves the block
+    out with the reason, rather than read it with the wrong stride."""
+    counts = [(sum(npart[t] for t in spec.types) * spec.dims, length)
+              for npart, length in lengths]
+    dtype = spec.dtype
+    if dtype == "f":
+        sizes = {length // values for values, length in counts
+                 if values and length % values == 0}
+        if not any(values for values, _ in counts):
+            sizes = {fsize}
+        if len(sizes) != 1 or next(iter(sizes)) not in (4, 8):
+            found = ", ".join(f"{length} bytes for {values} values"
+                              for values, length in counts if values)
+            return None, (f"INFO declares FLOAT x {spec.dims} for types {list(spec.types)}; "
+                          f"the block has {found}: neither float nor double")
+        dtype = f"f{next(iter(sizes))}"
+    itemsize = np.dtype(dtype).itemsize
+    for values, length in counts:
+        if length != values * itemsize:
+            return None, (f"INFO declares {dtype} x {spec.dims} for types {list(spec.types)}, "
+                          f"requiring {values * itemsize} bytes; the block has {length}")
+    return replace(spec, dtype=dtype), ""
 
 
 def _assemble_hdf5(layouts, header: Header) -> Snapshot:
@@ -1062,9 +1496,16 @@ def _assemble_hdf5(layouts, header: Header) -> Snapshot:
                 raise ValueError(f"{Path(f.path).name}: PartType{ptype} is missing {name}, "
                                  "which is present for that particle type in another file")
     pieces = {k: tuple(v) for k, v in pieces.items()}
+    producer = layouts[0].producer
+    if any(f.producer != producer for f in layouts):
+        raise ValueError("The files mix particle snapshots and group catalogues")
+    lightcone = layouts[0].lightcone
+    fmt = {"gadget4": "Gadget-4 SubFind HDF5", "arepo": "Arepo SubFind HDF5"}.get(
+        producer, "Gadget HDF5") + (", lightcone" if lightcone else "")
     return Snapshot(layouts, header, specs, pieces,
                     units_for(layouts[0].path, _hdf5_units(layouts[0].path), header), (),
-                    "Gadget HDF5", component_specs=component_specs)
+                    fmt, component_specs=component_specs, producer=producer,
+                    lightcone=lightcone)
 
 
 def _hdf5_units(path: str) -> dict:
@@ -1083,6 +1524,10 @@ def _hdf5_units(path: str) -> dict:
                         out[attr] = float(a[key])
                 if "ComovingIntegrationOn" in a and "comoving" not in out:
                     out["comoving"] = bool(int(a["ComovingIntegrationOn"]))
+            # Gadget-4 lists its compile-time options as attributes of
+            # Config: PERIODIC among them or not says whether the box is.
+            if "Config" in f:
+                out["periodic"] = "PERIODIC" in f["Config"].attrs
     except Exception:   # noqa: BLE001 - units are optional
         return {}
     return out
@@ -1144,7 +1589,9 @@ class Component:
                 arrays = self._arrays[block] = [
                     p.array() for p in self.snapshot.pieces[(block, self.ptype)]]
             parts = [a[:, k] for a in arrays]
-            return parts[0] if len(parts) == 1 else np.concatenate(parts)
+            out = parts[0] if len(parts) == 1 else np.concatenate(parts)
+            scale = self._read_scale(name)
+            return out if scale == 1.0 else (out * scale).astype(out.dtype)
         if name == "mass" and self._mass_from_table:
             spec = self.snapshot.blocks.get("POS")
             dtype = spec.dtype if spec is not None else "f4"
@@ -1186,7 +1633,8 @@ class Component:
             for index in np.unique(which):
                 selected = which == index
                 start = 0 if index == 0 else ends[index - 1]
-                out[selected] = pieces[index].array()[rows[selected] - start, column]
+                out[selected] = self._piece_rows(block, int(index), rows[selected] - start,
+                                                 column)
         elif name == "mass" and self._mass_from_table:
             out = np.full(rows.size, self.snapshot.header.mass[self.ptype],
                           dtype=self.column_dtype(name))
@@ -1205,7 +1653,26 @@ class Component:
                    / electrons ** (2.0 / 3.0)).astype(np.float32)
         else:
             raise KeyError(name)
+        scale = self._read_scale(name)
+        if scale != 1.0:
+            out = (out * scale).astype(out.dtype)
         return out[0] if scalar else out
+
+    def _piece_rows(self, block: str, index: int, local: np.ndarray, column: int) -> np.ndarray:
+        """``column`` of piece ``index`` of ``block`` at its rows ``local``:
+        from the memory map, from the arrays column() already read, from the
+        shared cache of decompressed HDF5 pieces, or window by window for an
+        HDF5 piece larger than that cache."""
+        piece = self.snapshot.pieces[(block, self.ptype)][index]
+        if piece.offset is not None or piece.rows == 0:
+            return piece.array()[local, column]
+        arrays = self._arrays.get(block)
+        if arrays is not None:
+            return arrays[index][local, column]
+        values = PIECE_CACHE.get(piece)
+        if values is not None:
+            return values[local, column]
+        return _read_rows_windowed(piece, local, column)
 
     def _temperature_rows(self, rows: np.ndarray) -> np.ndarray:
         u = np.asarray(self.take("u", rows), dtype=np.float64)
@@ -1230,6 +1697,24 @@ class Component:
 
     def columns(self) -> "LazyColumns":
         return LazyColumns(self)
+
+    def periods(self) -> dict[str, float]:
+        """The period of each coordinate column: the BoxSize (positive) of a
+        periodic run, {} for any other. Periodic is what the run states (a
+        Gadget-4 HDF5 ``Config/PERIODIC``, ``periodic=`` in
+        VISIVO_GADGET_UNITS); when nothing states it, a comoving run is taken
+        as periodic and any other as not. That guess is wrong for a
+        non-periodic cosmological zoom and for an isolated run integrated in
+        comoving coordinates: state ``periodic=0`` for those (or send
+        ``period: 0`` with a selection). Box and sphere selections wrap on
+        these columns (app/periodic.py). A lightcone catalogue's positions
+        are around the observer: they never wrap."""
+        units = self.snapshot.units
+        periodic = units.periodic if units.periodic is not None else bool(units.comoving)
+        box = float(self.snapshot.header.box_size)
+        if not (periodic and math.isfinite(box) and box > 0) or self.snapshot.lightcone:
+            return {}
+        return {name: box for name in self.names if name in PERIODIC_COLUMNS}
 
     # ── physics ──
     def _u_cgs(self) -> np.ndarray:
@@ -1276,24 +1761,85 @@ class Component:
         kt_kev = BOLTZMANN_ERG_K * self.temperature() / KEV_ERG
         return kt_kev / self.electron_density() ** (2.0 / 3.0)
 
+    def _velocity_convention(self, name: str) -> tuple[float, str] | None:
+        """For a velocity column, the power of a that makes it peculiar and
+        what the stored value is: a particle's carries Gadget's internal
+        sqrt(a); a SubFind subhalo's is written peculiar by Gadget-4
+        (subfind_properties.cc) and Arepo (subfind_properties.c), unless
+        ``svel=`` says otherwise; an HDF5 catalogue's GroupVel is the
+        members' mass-weighted internal a^2 dx/dt (fof.cc), so 1/a. On the
+        lightcone both are peculiar already, whatever ``svel=`` says
+        (fac_vel_to_phys = 1). None for any other column."""
+        source = self._sources.get(name)
+        if source is None or name not in ("vx", "vy", "vz"):
+            return None
+        block = source[0]
+        if self.snapshot.lightcone and block in ("SVEL", "GroupVel"):
+            return 0.0, "peculiar (lightcone)"
+        if block == "SVEL":
+            return SUBFIND_VEL_FACTORS[self.snapshot.units.subfind_vel]
+        if block == "GroupVel":
+            return -1.0, "a^2 dx/dt, x 1/a"
+        return 0.5, "internal, x sqrt(a)"
+
+    def _subhalo_radii_physical(self) -> bool:
+        """Whether this SubFind component's half-mass and Vmax radii are
+        stored physical: Gadget-4 measures them in physical distances
+        (subfind_properties.cc, fac_comov_to_phys); Arepo and the binary
+        catalogues keep them comoving. ``srad=`` overrides."""
+        stated = self.snapshot.units.subfind_radii
+        if stated is not None:
+            return stated == "physical"
+        return self.snapshot.producer == "gadget4"
+
+    def _is_subhalo_radius(self, name: str) -> bool:
+        source = self._sources.get(name)
+        return (self.snapshot.is_subfind and source is not None
+                and source[0] in SUBHALO_RADIUS_BLOCKS)
+
+    def _read_scale(self, name: str) -> float:
+        """The factor a column is multiplied by when read: 1/a for subhalo
+        radii stored physical, so that they are comoving like the positions
+        whose markers and framing they size (#441); 1 for any other. On the
+        lightcone Gadget-4 makes them physical with the group's GroupAscale,
+        which it sets to the time the groups were found, the header's
+        (fof.cc), so the header's a undoes it there too."""
+        if self._is_subhalo_radius(name) and self._subhalo_radii_physical():
+            return 1.0 / self.snapshot.scale_factor
+        return 1.0
+
+    def _hdf5_catalogue_extras(self, length_phys, vel) -> dict:
+        """Columns of the Gadget-4 and Arepo HDF5 catalogues whose units their
+        writers state: SubhaloVelDisp in physical km/s (Hubble flow
+        included), SubhaloSpin in physical (L/h)(V) (subfind_properties.cc,
+        subfind_properties.c). A binary catalogue's SPIN stays undeclared."""
+        if not self.snapshot.producer:
+            return {}
+        return {"subhaloveldisp": vel, "spin_x": length_phys, "spin_y": length_phys,
+                "spin_z": length_phys}
+
     def units(self) -> dict[str, str]:
         """Each column's unit as stored (code units, stated)."""
         u = self.snapshot.units.describe()
         h = "/h" if self.snapshot.units.hubble_units else ""
-        com = " comoving" if self.snapshot.units.comoving else ""
+        comoving = bool(self.snapshot.units.comoving)
+        com = " comoving" if comoving else ""
         length = f"{u['length']}{h}{com}"
         mass = f"{u['mass']}{h}"
-        vel = f"{u['velocity']} (internal, x sqrt(a))" if self.snapshot.units.comoving \
-            else u["velocity"]
+        vel = u["velocity"]
+        sub_radius = (f"{length} (stored physical, x 1/a on read)"
+                      if comoving and self._subhalo_radii_physical() else length)
         table = {"x": length, "y": length, "z": length, "hsml": length,
                  "hsml_stars": length, "bh_accretion_radius": length,
                  "rvir": length, "r500": length, "r2500": length,
-                 "rmax": length, "half_mass_radius": length,
+                 "rmax": sub_radius, "half_mass_radius": sub_radius,
+                 "group_r_mean200": length, "group_r_crit200": length,
                  "centre_of_mass_x": length, "centre_of_mass_y": length,
                  "centre_of_mass_z": length,
-                 "vx": vel, "vy": vel, "vz": vel, "mass": mass, "bh_mass": mass,
-                 "initial_mass": mass,
+                 "vmax": f"{vel} physical",
+                 "mass": mass, "bh_mass": mass, "initial_mass": mass,
                  "group_mass": mass, "mvir": mass, "m500": mass, "m2500": mass,
+                 "group_m_mean200": mass, "group_m_crit200": mass,
                  "gas_mass": mass, "stellar_mass": mass, "subhalo_mass": mass,
                  "contaminating_mass": mass,
                  "rho": f"{mass} / ({length})^3", "u": f"({u['velocity']})^2",
@@ -1306,19 +1852,28 @@ class Component:
                  "num_subhalos": "count", "first_subhalo": "subhalo index",
                  "num_contaminated": "particle count", "subhalo_length": "particle count",
                  "subhalo_offset": "particle index", "subhalo_parent": "subhalo index",
-                 "group_number": "group index", "metallicity": "dimensionless"}
+                 "group_number": "group index"}
+        table.update(self._hdf5_catalogue_extras(f"{u['length']}{h} {vel} physical",
+                                                 f"{vel} physical"))
+        for n in self.names:
+            if self._is_subhalo_radius(n):
+                table[n] = sub_radius
+        for n in ("vx", "vy", "vz"):
+            convention = self._velocity_convention(n)
+            if convention is not None:
+                table[n] = f"{vel} ({convention[1]})" if comoving else vel
         return {n: table.get(n, "code units (physical conversion not declared)")
                 for n in self.names}
 
     def physical(self) -> dict[str, dict]:
         """Per column, the factor that makes it physical and the unit then:
         lengths in kpc (x a / h), masses in Msun (/ h), velocities in km/s
-        peculiar (x sqrt(a)), density in g/cm^3."""
+        peculiar (see _velocity_convention), density in g/cm^3."""
         units, hh = self.snapshot.units, self.snapshot.hubble
         a = self.snapshot.scale_factor          # never 0: 1 when not comoving
         length = units.length_cm / KPC_CM * a / hh
         mass = units.mass_g / MSUN_G / hh
-        vel = units.velocity_cm_s / 1e5 * (np.sqrt(a) if units.comoving else 1.0)
+        kms = units.velocity_cm_s / 1e5
         rho = units.mass_g / units.length_cm ** 3 * hh ** 2 / a ** 3
         table = {"x": (length, "kpc"), "y": (length, "kpc"), "z": (length, "kpc"),
                  "hsml": (length, "kpc"), "hsml_stars": (length, "kpc"),
@@ -1326,13 +1881,15 @@ class Component:
                  "rvir": (length, "kpc"), "r500": (length, "kpc"),
                  "r2500": (length, "kpc"), "rmax": (length, "kpc"),
                  "half_mass_radius": (length, "kpc"),
+                 "group_r_mean200": (length, "kpc"), "group_r_crit200": (length, "kpc"),
                  "centre_of_mass_x": (length, "kpc"),
                  "centre_of_mass_y": (length, "kpc"),
                  "centre_of_mass_z": (length, "kpc"),
-                 "vx": (vel, "km/s"), "vy": (vel, "km/s"),
-                 "vz": (vel, "km/s"), "mass": (mass, "Msun"), "bh_mass": (mass, "Msun"),
+                 "vmax": (kms, "km/s"),
+                 "mass": (mass, "Msun"), "bh_mass": (mass, "Msun"),
                  "initial_mass": (mass, "Msun"),
                  "group_mass": (mass, "Msun"), "mvir": (mass, "Msun"),
+                 "group_m_mean200": (mass, "Msun"), "group_m_crit200": (mass, "Msun"),
                  "m500": (mass, "Msun"), "m2500": (mass, "Msun"),
                  "gas_mass": (mass, "Msun"), "stellar_mass": (mass, "Msun"),
                  "subhalo_mass": (mass, "Msun"), "contaminating_mass": (mass, "Msun"),
@@ -1340,17 +1897,38 @@ class Component:
                  "ne": (1.0, "dimensionless"), "nh": (1.0, "dimensionless"),
                  "metallicity": (1.0, "dimensionless"),
                  "cold_fraction": (1.0, "dimensionless")}
+        table.update(self._hdf5_catalogue_extras(
+            (units.length_cm / KPC_CM / hh * kms, "kpc km/s"), (kms, "km/s")))
+        for n in self.names:
+            if self._is_subhalo_radius(n):
+                table[n] = (length, "kpc")
+        for n in ("vx", "vy", "vz"):
+            convention = self._velocity_convention(n)
+            if convention is not None:
+                table[n] = (kms * a ** convention[0], "km/s")
         return {n: {"factor": float(table[n][0]), "unit": table[n][1]}
                 for n in self.names if n in table}
+
+    def _radius_definitions(self) -> dict[str, str]:
+        """What each SubFind overdensity radius encloses. An HDF5 catalogue
+        maps Group_R_TopHat200 to rvir and Group_R_Crit500 to r500
+        (SUBFIND_HDF5_BLOCKS), as Gadget-4 and Arepo define them
+        (subfind_so.cc)."""
+        if self.snapshot.producer:
+            return {"rvir": "Bryan & Norman (1998) virial overdensity Delta_c(z) "
+                            "times critical density",
+                    "r500": "500 times critical density",
+                    "group_r_mean200": "200 times mean background density",
+                    "group_r_crit200": "200 times critical density"}
+        return {"rvir": "mean background density",
+                "r500": "500 times mean background density",
+                "r2500": "2500 times mean background density"}
 
     def describe(self) -> dict:
         return {"type": self.ptype, "name": self.name, "num_rows": self.num_rows,
                 "catalogue_kind": "subfind" if self.snapshot.is_subfind else "particles",
                 **({"object_kind": "group" if self.ptype == 0 else "subhalo",
-                    "radius_definitions": {
-                        "rvir": "mean background density",
-                        "r500": "500 times mean background density",
-                        "r2500": "2500 times mean background density"}}
+                    "radius_definitions": self._radius_definitions()}
                    if self.snapshot.is_subfind and self.ptype in (0, 1) else {}),
                 "columns": list(self.names), "units": self.units(),
                 "physical": self.physical(), "derived": dict(self.derived),
@@ -1366,6 +1944,9 @@ class LazyColumns(Mapping):
     def __init__(self, component: Component):
         self._component = component
         self._kept = {}
+        # Read by the point sessions' box and sphere filters; a name no
+        # column takes (a mapping's keys are its columns).
+        self.column_periods = component.periods()
 
     def __getitem__(self, name: str):
         if name not in self._kept:
@@ -1398,9 +1979,32 @@ class SegmentedColumn:
         return self.shape[0]
 
     def __getitem__(self, rows):
+        """Rows by a slice, an integer (negative from the end), an integer
+        array, or a boolean mask of the column's length, as numpy indexes;
+        anything else (floats, a mask of another length) raises IndexError
+        rather than being read as row numbers."""
+        n = len(self)
         if isinstance(rows, slice):
-            rows = np.arange(*rows.indices(len(self)), dtype=np.int64)
-        return self.component.take(self.name, rows)
+            return self.component.take(self.name, np.arange(*rows.indices(n), dtype=np.int64))
+        if isinstance(rows, (int, np.integer)) and not isinstance(rows, (bool, np.bool_)):
+            row = int(rows)
+            if not -n <= row < n:
+                raise IndexError(f"row {row} outside a column of {n}")
+            return self.component.take(self.name, row % n)
+        index = np.asarray(rows)
+        if index.size == 0 and index.ndim == 1 and index.dtype != bool:
+            index = index.astype(np.int64)      # [] is float64 to numpy
+        if index.dtype == bool:
+            if index.shape != (n,):
+                raise IndexError(f"boolean index of shape {index.shape} for a column of {n}")
+            return self.component.take(self.name, np.flatnonzero(index))
+        if index.dtype.kind not in "iu" or index.ndim > 1:
+            raise IndexError("a particle column is indexed by a slice, integers or a "
+                             f"boolean mask, not {index.dtype} of {index.ndim} dimensions")
+        index = index.astype(np.int64, copy=False)
+        if index.size and (index.min() < -n or index.max() >= n):
+            raise IndexError(f"row outside a column of {n}")
+        return self.component.take(self.name, np.where(index < 0, index + n, index))
 
     def __array__(self, dtype=None, copy=None) -> np.ndarray:
         values = self.component.take(self.name, np.arange(len(self), dtype=np.int64))
@@ -1412,6 +2016,17 @@ class SegmentedColumn:
 
 
 # ── References ───────────────────────────────────────────────────────────────
+
+def release(path: str | Path) -> int:
+    """Drop what is kept in memory for the snapshot ``path`` (a component
+    reference or a file of it) once no dataset reads it: its decompressed
+    HDF5 pieces. The number of pieces dropped; 0 for anything else."""
+    try:
+        snap = open_snapshot(split_ref(path)[0])
+    except (OSError, ValueError):
+        return 0
+    return PIECE_CACHE.drop(f.path for f in snap.files)
+
 
 def gadget_ref(first_file: str | Path, ptype: int) -> str:
     return f"{first_file}{REF_SEP}{int(ptype)}"
@@ -1432,14 +2047,69 @@ def resolve(path: str | Path) -> Component:
     return open_snapshot(base).component(ptype)
 
 
+def read_header(path: str | Path) -> Header:
+    """The header of one snapshot file, read alone (no block is scanned)."""
+    found = detect(path)
+    if found is None:
+        raise ValueError(f"{path} is not a Gadget snapshot file.")
+    fmt, e = found
+    if fmt == 0:
+        return _scan_hdf5(str(path)).header
+    with open(path, "rb") as fh:
+        # Format 1: the header record first; format 2: after its 8-byte
+        # "HEAD" name record (16 bytes with its markers).
+        fh.seek(4 if fmt == 1 else 20)
+        return parse_header(fh.read(HEADER_BYTES), e)
+
+
+def has_type(path: str | Path, ptype: int) -> bool:
+    """Whether the snapshot ``path`` names (a file of it, its base name or
+    its folder) has particles of type ``ptype``, from its headers: an early
+    output without stars, or one that cannot be read (a file missing, not a
+    snapshot), has none. Only headers and the files' names are read, and
+    the answer is kept while the first file is unchanged, so a whole series
+    can be checked at every open."""
+    try:
+        files = snapshot_files(path)
+        size, mtime = _stat(files[0])
+        return _has_type(tuple(str(f) for f in files), int(ptype), size, mtime)
+    except (OSError, ValueError):
+        return False
+
+
+@lru_cache(maxsize=4096)
+def _has_type(files: tuple[str, ...], ptype: int, _size: int, _mtime: int) -> bool:
+    try:
+        header = read_header(files[0])
+        if not 0 <= ptype < len(header.npart_total):
+            return False
+        if any(header.npart_total):
+            return header.npart_total[ptype] > 0
+        # Some writers leave the totals at zero: the files' own counts.
+        return any(read_header(f).npart[ptype] > 0 for f in files)
+    except (OSError, ValueError):
+        return False
+
+
+def _offered(snapshot: Snapshot, ptype: int) -> bool:
+    """Whether type ``ptype`` opens as points: it has particles, and in a
+    SubFind catalogue positions too (its ID list and large-group table have
+    none, issue #448)."""
+    if not snapshot.counts()[ptype]:
+        return False
+    return not snapshot.is_subfind or {"x", "y", "z"} <= set(snapshot.component(ptype).names)
+
+
 def default_type(snapshot: Snapshot) -> int | None:
-    """The type a snapshot opens on: the first with particles (gas first)."""
-    return next((t for t, n in enumerate(snapshot.counts()) if n), None)
+    """The type a snapshot opens on: the first offered (gas first)."""
+    return next((t for t in range(NTYPES) if _offered(snapshot, t)), None)
 
 
 def gadget_components(path: str | Path) -> list[dict]:
-    """Every particle type with particles: ``{name, path, num_rows}``."""
+    """Every particle type with particles: ``{name, path, num_rows}``. Of a
+    SubFind catalogue, only the types with positions (groups, subhalos):
+    its ID list and large-group table are no points to draw (issue #448)."""
     snap = open_snapshot(split_ref(path)[0])
     names = SUBFIND_TYPE_NAMES if snap.is_subfind else TYPE_NAMES
     return [{"name": names[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
-            for t, n in enumerate(snap.counts()) if n]
+            for t, n in enumerate(snap.counts()) if _offered(snap, t)]

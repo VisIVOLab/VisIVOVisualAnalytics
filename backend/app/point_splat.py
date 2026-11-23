@@ -75,6 +75,31 @@ SPLAT_RULES = ("v1", "v2-8bit", "v2-f16", "v2-f32")
 #: half float's step is 2^-10, and additions below half of it are dropped;
 #: 1/512 keeps a splat's core above that up to a light of about 4.
 F16_OPACITY_FLOOR = 1.0 / 512.0
+#: A splat's opacity in an 8-bit target counts in steps of its channel (issue
+#: #447): VTK keeps it as the 8-bit alpha of the splat's colour and adds the
+#: splats into an 8-bit framebuffer, where an opacity of 1/255 was stored 22 %
+#: low, a step more or less moved the brightness by a quarter, and the dark
+#: end of a colour map or a kernel's wings added nothing. So there it is a
+#: whole number of steps, at least ALPHA_STEPS_MIN, and a cloud deeper than
+#: about 48 splats along its longest sightline comes out brighter than the
+#: nominal 1.5 (about 2.1x at a million rows, 3.2x at 3.66 M, 4.5x at 10 M):
+#: the VR page's 8-bit targets (points.js splatOpacity) still draw so. A
+#: float target has no such store and takes 1.5 / depth unquantised, at most
+#: FLOAT_OPACITY_MAX and with no floor (issue #457: the former floor of 0.005
+#: brightened a table from about 2.7e7 rows): the VR page's float targets,
+#: and VTK's Gaussian splats drawn by :func:`vtk_splat_shader` into a float
+#: target (the point session; the desktop's VTK scene is to follow). The cap
+#: dims only clouds a few splats deep (below about 200 rows in a cube at the
+#: standard intensity).
+ALPHA_STEPS_MIN = 8
+ALPHA_STEPS_MAX = 64
+FLOAT_OPACITY_MAX = 0.25
+#: The splat rules that add into a float target (no 8-bit store).
+FLOAT_RULES = ("v2-f16", "v2-f32")
+#: Added to an opacity given to VTK's opacity function: VTK truncates to its
+#: 8-bit step, and k / 255 × 255 can come out a hair below k; a quarter step
+#: above lands on k whether it truncates or rounds.
+VTK_ALPHA_NUDGE = 0.25 / 255.0
 #: Rec. 709 luminance (points.js LUMA).
 _LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 #: The page's floor on a sub-pixel splat's light (points.js FS, max(vSplat, 0.25)).
@@ -97,6 +122,23 @@ def rule_tone(rule: str) -> str:
     return "exposure" if rule in ("v2-f16", "v2-f32") else "none"
 
 
+def splat_opacity(depth: float, intensity: float = 35.0, steps: bool = True) -> float:
+    """The per-splat opacity for ``depth`` splats along the longest sightline:
+    1.5 / depth at the standard intensity (35), in whole 8-bit steps (half
+    up) from ALPHA_STEPS_MIN to ALPHA_STEPS_MAX, in the same operations as
+    the desktop's and the page's copies so the three agree to the bit. With
+    ``steps`` false (a float target, which has no 8-bit store) it is not
+    quantised, only kept at most FLOAT_OPACITY_MAX: the light of N splats
+    then stays the same for any N, at an exposure that is the intensity
+    alone (1.5 x intensity / 35), so two views at one intensity compare."""
+    if not (math.isfinite(depth) and depth > 0.0):
+        return ALPHA_STEPS_MAX / 255.0 if steps else FLOAT_OPACITY_MAX
+    if not steps:
+        return min(1.5 * float(intensity) / (35.0 * depth), FLOAT_OPACITY_MAX)
+    k = math.floor(1.5 * float(intensity) / (35.0 * depth) * 255.0 + 0.5)
+    return min(max(k, ALPHA_STEPS_MIN), ALPHA_STEPS_MAX) / 255.0
+
+
 def rule_opacity(opacity: float, size: float, rule: str) -> float:
     """The desktop's splat opacity as a splat rule (SPLAT_RULES) draws it:
     over size² in a float target (the size step changes the size, not the
@@ -115,23 +157,44 @@ def splat_style(bounds, total_rows: int, sample_rows: int, size: float,
     """``(radius, opacity, sample_radius)`` in table units, as the VR page's
     ``splatStyle`` (static/vr/js/points.js) works them out: spacing ∛(volume /
     total rows) of the box the points fill (a flat axis counted as a
-    thousandth of the longest), radius = spacing × size / 8, opacity =
-    1.5 / D at the standard intensity in [0.005, 0.25] with D the longest side
-    over the spacing, as the splat ``rule`` draws it (:func:`rule_opacity`:
-    over size² in a float target, issue #263), and the sample's radius larger
-    by ∛(total / sample rows). It is
-    :func:`app.render_session.points.gaussian_splat` (the desktop's rule)
-    plus the sample's growth, and the same at size 1 or in an 8-bit target."""
+    thousandth of the longest), radius = spacing × size / 8, the sample's
+    radius larger by ∛(total / sample rows), and opacity = 1.5 / D at the
+    standard intensity (:func:`splat_opacity`: whole 8-bit steps, at least 8,
+    in an 8-bit target; unquantised in a float one), as the splat ``rule``
+    draws it (:func:`rule_opacity`: over size² in a float target, issue
+    #263). D is the longest side over the spacing of the rows drawn: the
+    sample's for a v2 rule (issue #457), so S splats of the sample's radius
+    carry the light of the whole table whatever S is (from the table's rows,
+    the sample showed (S / N)^(1/3) of it: a third for a million rows of 30
+    million); the table's for v1, as a page from before draws it. With every
+    row sampled, in an 8-bit target, it is
+    :func:`app.render_session.points.gaussian_splat`'s radius with its
+    opacity in 8-bit steps."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     volume = math.prod(max(d, longest * 1.0e-3) for d in dims)
     spacing = math.cbrt(volume / max(1, int(total_rows)))
     radius = spacing * float(size) / 8.0
-    depth = max(longest / spacing, 1.0)
-    opacity = rule_opacity(
-        min(max(1.5 / depth * float(intensity) / 35.0, 0.005), 0.25), size, rule)
     grow = math.cbrt(max(1.0, total_rows / max(1, int(sample_rows))))
+    depth = max(longest / (spacing if rule == "v1" else spacing * grow), 1.0)
+    opacity = rule_opacity(splat_opacity(depth, intensity, rule not in FLOAT_RULES), size, rule)
     return radius, opacity, radius * grow
+
+
+def vtk_splat_shader(gain: float) -> str:
+    """The fragment code (vtkPointGaussianMapper::SetSplatShaderCode) of a
+    VTK Gaussian splat of peak opacity ``gain`` (:func:`splat_opacity` with
+    ``steps`` false), for a mapper whose opacity function is 1 and whose
+    renderer adds the splats into a float target (vtkToneMappingPass,
+    clamped): VTK's own code takes the opacity from the colour's 8-bit
+    alpha, which cannot hold 1.5 / depth (issue #457). Written for the point
+    session and for the desktop's VTK scene to share; VTK 9.3 has both."""
+    g = float(gain)
+    if not (math.isfinite(g) and g >= 0.0):
+        raise ValueError("A splat's gain must be a finite number, at least 0.")
+    return ("//VTK::Color::Impl\n"
+            "  float dist2 = dot(offsetVCVSOutput.xy, offsetVCVSOutput.xy);\n"
+            f"  opacity = opacity * exp(-0.5 * dist2) * {g:.9e};\n")
 
 
 if njit is not None:

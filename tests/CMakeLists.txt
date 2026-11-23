@@ -49,6 +49,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient_Tasks.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_VrPair.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_CubeLod.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient_Products.cpp
     ${VISIVO_ROOT}/src/thirdparty/qrcodegen/qrcodegen.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
@@ -76,6 +77,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/gui/OrbitPath.cpp
     ${VISIVO_ROOT}/src/gui/ParticleFrame.cpp
     ${VISIVO_ROOT}/src/gui/CopilotStatus.cpp
+    ${VISIVO_ROOT}/src/gui/CopilotActionRouter.cpp
 )
 set_target_properties(visivo_test_support PROPERTIES AUTOMOC ON)
 target_include_directories(visivo_test_support
@@ -110,10 +112,14 @@ add_executable(VisIVOTests
     test_backend_contract.cpp
     TestRemoteSliceCache.h
     test_remote_slice_cache.cpp
+    TestSliceDetailPlan.h
+    test_slice_detail_plan.cpp
     TestLinkedWindowRegistry.h
     test_linked_window_registry.cpp
     TestLinkedCameraSync.h
     test_linked_camera_sync.cpp
+    TestSnapshotTimelineSteps.h
+    test_snapshot_timeline_steps.cpp
     TestSpectralUnitConvert.h
     test_spectral_unit_convert.cpp
     TestCubeRegionGeom.h
@@ -148,6 +154,10 @@ add_executable(VisIVOTests
     test_ray_voxel_pick.cpp
     TestSedBuilder.h
     test_sed_builder.cpp
+    TestMolecularLineClient.h
+    test_molecular_line_client.cpp
+    TestLteCoRequest.h
+    test_lte_co_request.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h
@@ -162,6 +172,8 @@ add_executable(VisIVOTests
     test_remote_levels.cpp
     TestRemoteCameraPreset.h
     test_remote_camera_preset.cpp
+    TestCatalogueSelection.h
+    test_catalogue_selection.cpp
     TestRemoteRenderQueue.h
     test_remote_render_queue.cpp
     TestRenderSessionCalls.h
@@ -215,6 +227,14 @@ add_executable(VisIVOTests
     TestCosmologyTools.h
     test_cosmology_tools.cpp
     test_backend_task_follow.cpp
+    TestParticleLightReport.h
+    test_particle_light_report.cpp
+    TestDiagnosticsTask.h
+    test_diagnostics_task.cpp
+    TestParticleProfiles.h
+    test_particle_profiles.cpp
+    TestParticleTableRule.h
+    test_particle_table_rule.cpp
     TestSamp.h
     test_samp.cpp
     ${VISIVO_ROOT}/src/app/SampCallbackServer.cpp
@@ -234,6 +254,8 @@ add_executable(VisIVOTests
     test_velocity_lod_geometry.cpp
     TestSolidSplats.h
     test_solid_splats.cpp
+    TestRaytraceViewRules.h
+    test_raytrace_view_rules.cpp
     TestSystemQuitRedirect.h
     test_system_quit_redirect.cpp
     TestSupportedFormats.h
@@ -314,3 +336,26 @@ set_tests_properties(VisIVOQuitExitRenderSessions PROPERTIES SKIP_RETURN_CODE 77
 add_test(NAME VisIVOQuitExitRenderSessionsAboutToQuit
          COMMAND VisIVOQuitExitTest --render-sessions-about-to-quit)
 set_tests_properties(VisIVOQuitExitRenderSessionsAboutToQuit PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+
+# ── Widget tests ─────────────────────────────────────────────────────────────
+# A process of its own that links QtWidgets (VisIVOTests deliberately does
+# not): a window's real form, built by uic with its VTK view stubbed, driven
+# with QTest's mouse. Only the base Qt is needed, as for the suite above.
+find_package(Qt6 COMPONENTS Widgets)
+if (TARGET Qt6::Widgets)
+    qt_wrap_ui(VISIVO_WIDGET_TEST_FORMS ${VISIVO_ROOT}/ui/vtkWindowCatalogue3D.ui)
+    add_executable(VisIVOSizeSliderDragTest
+        test_size_slider_drag.cpp
+        ${VISIVO_WIDGET_TEST_FORMS}
+    )
+    set_target_properties(VisIVOSizeSliderDragTest PROPERTIES AUTOMOC ON)
+    target_include_directories(VisIVOSizeSliderDragTest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/widget_stubs
+        ${VISIVO_ROOT}/src/gui
+        ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    target_link_libraries(VisIVOSizeSliderDragTest PRIVATE Qt::Widgets Qt::Test)
+    add_test(NAME VisIVOSizeSliderDrag COMMAND VisIVOSizeSliderDragTest)
+    set_tests_properties(VisIVOSizeSliderDrag PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+endif()

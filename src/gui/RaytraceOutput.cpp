@@ -1,5 +1,7 @@
 #include "RaytraceOutput.h"
 
+#include "ParticleLightReport.h"
+
 #include "BackendLocality.h"
 #include "OrbitPath.h"
 #include "app/BackendClient.h"
@@ -399,13 +401,17 @@ void RaytraceOutput::finished(const QJsonObject &result)
 {
     // A volume's render counts its voxels, a table's its particles.
     const bool volume = result.contains(u"voxels"_s);
-    const QString summary = (volume ? u"%1 voxels, %2 × %3, in %4 s"_s
-                                    : u"%1 particles, %2 × %3, in %4 s"_s)
-                                    .arg(QLocale().toString(result.value(
-                                            volume ? u"voxels"_s : u"particles"_s).toInteger()))
-                                    .arg(result.value(u"width"_s).toInt())
-                                    .arg(result.value(u"height"_s).toInt())
-                                    .arg(result.value(u"seconds"_s).toDouble());
+    QString summary = (volume ? u"%1 voxels, %2 × %3, in %4 s"_s
+                              : u"%1 particles, %2 × %3, in %4 s"_s)
+                              .arg(QLocale().toString(result.value(
+                                      volume ? u"voxels"_s : u"particles"_s).toInteger()))
+                              .arg(result.value(u"width"_s).toInt())
+                              .arg(result.value(u"height"_s).toInt())
+                              .arg(result.value(u"seconds"_s).toDouble());
+    // What the light left out (issue #414): said, not lost silently.
+    const QString left = visivo::lightReportText(visivo::lightReportFromResult(result));
+    if (!volume && !left.isEmpty())
+        summary += u" (%1)"_s.arg(left);
     if (m_taskIsMovie) {
         m_frames = result.value(u"frames"_s).toInt();
         delete m_frameDir;

@@ -118,3 +118,22 @@ On the desktop, remote slice changes are debounced by 300 ms
 (`remoteSliceDebounceDelayMs`), and the neighbouring slices are prefetched
 only 500 ms after the last change (`idlePrefetchDelayMs`), so a fast scroll
 sends no prefetches and the link stays free for the slice being looked at.
+
+## Wide channels
+
+A channel is asked for at most 2048 samples a side
+(`visivo::kRemoteSliceLongestSide`, `max_longest_side` on the route): a
+7233 x 7233 x 16 cube's channel is 209 MB of float32, and answered whole it
+spent seconds in zlib and the rest moving 259 MB of base64 text, past the
+client's 30 s timeout on a cluster (issue #381). At 2048 it is read every 4
+pixels, about 16 MB on the wire. The samples keep the plane's pixel frame
+(origin the first sample, spacing the stride), so regions, the probe, WCS and
+linked cameras need no conversion. Zoomed in, the part of the channel on screen
+is asked again (`x0..y1`) at the stride that fits the same budget, full
+resolution once it is 2048 pixels or fewer, and drawn as the top layer of the
+slice's image stack through the same colour table. Statistics and regions keep
+reading the channel under it, labelled "sampled every N px". The probe never
+shows a neighbouring sample: a pixel on the channel's or the detail's grid is
+read there, any other is asked of the backend as a one-pixel region (debounced
+120 ms, the last value kept), with "…" in the readout meanwhile
+(`probeValueSource` in `SliceDetailPlan.h`).

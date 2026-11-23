@@ -9,6 +9,8 @@
 //
 // Header-only, no widgets, so it can be tested.
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QString>
 #include <QVariantMap>
 
@@ -21,6 +23,36 @@ inline QVariantMap cameraPresetCommand(double azimuth, double elevation)
     return QVariantMap{ { QStringLiteral("type"), QStringLiteral("camera_preset") },
                         { QStringLiteral("azimuth"), azimuth },
                         { QStringLiteral("elevation"), elevation } };
+}
+
+/// The ``set_camera`` command that puts a session's camera where @p camera
+/// (an answer of GET /v1/render/{id}/camera) says: a session that replaces a
+/// lost one starts from the view the user had (issue #411). Empty when
+/// @p camera lacks a position, a focal point or a view up of three numbers.
+inline QVariantMap setCameraCommand(const QJsonObject &camera)
+{
+    static const char *const vectors[] = { "position", "focal_point", "view_up" };
+    QVariantMap command{ { QStringLiteral("type"), QStringLiteral("set_camera") } };
+    for (const char *key : vectors) {
+        const QJsonArray v = camera.value(QLatin1String(key)).toArray();
+        if (v.size() != 3)
+            return {};
+        for (const QJsonValue &x : v)
+            if (!x.isDouble())
+                return {};
+        command.insert(QLatin1String(key), v.toVariantList());
+    }
+    // Optional, and passed on only as the backend takes them.
+    const QJsonValue angle = camera.value(QLatin1String("view_angle"));
+    if (angle.isDouble())
+        command.insert(QStringLiteral("view_angle"), angle.toDouble());
+    const QJsonValue parallel = camera.value(QLatin1String("parallel"));
+    if (parallel.isBool())
+        command.insert(QStringLiteral("parallel"), parallel.toBool());
+    const QJsonValue scale = camera.value(QLatin1String("parallel_scale"));
+    if (scale.isDouble())
+        command.insert(QStringLiteral("parallel_scale"), scale.toDouble());
+    return command;
 }
 
 } // namespace visivo::remote

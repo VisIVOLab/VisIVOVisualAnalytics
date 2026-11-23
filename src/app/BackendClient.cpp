@@ -939,6 +939,9 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
+    result.beamSource = object.value(QStringLiteral("beam_source")).toString();
+    result.intensityUnit = object.value(QStringLiteral("intensity_unit")).toString();
+    result.intensityUnitNote = object.value(QStringLiteral("intensity_unit_note")).toString();
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1181,6 +1184,9 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
+    result.beamSource = object.value(QStringLiteral("beam_source")).toString();
+    result.intensityUnit = object.value(QStringLiteral("intensity_unit")).toString();
+    result.intensityUnitNote = object.value(QStringLiteral("intensity_unit_note")).toString();
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1302,6 +1308,20 @@ BackendPointSeriesResult BackendClient::parsePointSeries(const QJsonObject &obje
         }
         result.paths.append(path);
         result.numbers.append(numbers.at(i).toInt());
+    }
+    const QJsonValue available = object.value(QStringLiteral("available"));
+    if (available.isArray()) {
+        const QJsonArray flags = available.toArray();
+        if (flags.size() != paths.size()) {
+            result.valid = false;
+            result.error = QStringLiteral("The backend returned an invalid snapshot series.");
+            result.paths.clear();
+            result.numbers.clear();
+            return result;
+        }
+        result.available.reserve(flags.size());
+        for (const QJsonValue &flag : flags)
+            result.available.append(flag.toBool(true));
     }
     result.index = object.value(QStringLiteral("index")).toInt(-1);
     result.count = object.value(QStringLiteral("count")).toInt(result.paths.size());
@@ -1440,6 +1460,26 @@ BackendPixelSkyResult BackendClient::pixelToSky(const QString &datasetId, double
     return result;
 }
 
+visivo::beam::BeamResult BackendClient::setDatasetBeam(
+        const visivo::beam::BeamRequest &request) const
+{
+    QString error;
+    int status = 0;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/beam")),
+                        QJsonDocument(visivo::beam::requestBody(request)), error, nullptr,
+                        &status);
+    if (!error.isEmpty()) {
+        visivo::beam::BeamResult result;
+        const QString why = status >= 400 ? visivo::replyErrorText(payload) : QString();
+        result.error = visivo::isMissingRouteReply(status, payload)
+                ? QStringLiteral("This backend cannot keep a typed beam; update it.")
+                : (why.isEmpty() ? error : why);
+        return result;
+    }
+    return visivo::beam::parseResponse(QJsonDocument::fromJson(payload).object());
+}
+
 BackendSampImportResult BackendClient::importSampUrl(const QString &url,
                                                      const QString &filename) const
 {
@@ -1544,13 +1584,23 @@ BackendCubePreviewResult BackendClient::requestPreview(const QString &datasetId,
 }
 
 BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, const QString &axis,
-                                                   int index) const
+                                                   int index, int maxLongestSide,
+                                                   const std::optional<QRect> &region) const
 {
     BackendCubeSliceResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("axis"), axis },
-                                          { QStringLiteral("index"), index } });
+    QJsonObject request{ { QStringLiteral("dataset_id"), datasetId },
+                         { QStringLiteral("axis"), axis },
+                         { QStringLiteral("index"), index } };
+    if (maxLongestSide > 0)
+        request.insert(QStringLiteral("max_longest_side"), maxLongestSide);
+    if (region && region->isValid()) {
+        request.insert(QStringLiteral("x0"), region->left());
+        request.insert(QStringLiteral("x1"), region->right());
+        request.insert(QStringLiteral("y0"), region->top());
+        request.insert(QStringLiteral("y1"), region->bottom());
+    }
+    const QJsonDocument body(request);
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/slice")), body, error);
     if (!error.isEmpty()) {
@@ -1565,6 +1615,11 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
     result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
     result.rangeMin = object.value(QStringLiteral("range_min")).toDouble();
     result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
+    result.fullWidth = object.value(QStringLiteral("full_width")).toInt(result.width);
+    result.fullHeight = object.value(QStringLiteral("full_height")).toInt(result.height);
+    result.x0 = object.value(QStringLiteral("x0")).toInt(0);
+    result.y0 = object.value(QStringLiteral("y0")).toInt(0);
+    result.stride = std::max(1, object.value(QStringLiteral("stride")).toInt(1));
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {
@@ -3059,10 +3114,10 @@ BackendTabularQueryResponse BackendClient::queryTabularCatalogue(
     return result;
 }
 
-BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
-        const BackendCatalogueDiagnosticsRequest &req) const
+namespace {
+
+QJsonObject catalogueDiagnosticsBody(const BackendCatalogueDiagnosticsRequest &req)
 {
-    BackendCatalogueDiagnosticsResponse result;
     BackendTabularQueryRequest query;
     query.datasetId = req.datasetId;
     query.filters = req.filters;
@@ -3072,15 +3127,170 @@ BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
     body.insert(QStringLiteral("field"), req.field);
     body.insert(QStringLiteral("weight_field"), req.weightField);
     body.insert(QStringLiteral("bins"), std::clamp(req.bins, 4, 512));
+    return body;
+}
+
+}   // namespace
+
+BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
+        const BackendCatalogueDiagnosticsRequest &req, const std::atomic_bool *abort) const
+{
+    BackendCatalogueDiagnosticsResponse result;
+    const QJsonObject body = catalogueDiagnosticsBody(req);
     QString error;
     const QByteArray payload = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/diagnostics")),
-            QJsonDocument(body), error);
+            QJsonDocument(body), error, nullptr, nullptr, true, abort);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parseCatalogueDiagnostics(QJsonDocument::fromJson(payload).object());
+}
+
+BackendTaskCreateResult BackendClient::createCatalogueDiagnosticsTask(
+        const BackendCatalogueDiagnosticsRequest &req) const
+{
+    BackendTaskCreateResult result;
+    // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
+    const QJsonObject body = catalogueDiagnosticsBody(req);
+    QString error;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/catalogue_diagnostics")),
+                        QJsonDocument(body), error, nullptr, &result.httpStatus);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
     }
     const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.taskId = object.value(QStringLiteral("task_id")).toString();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false) && !result.taskId.isEmpty();
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.status = object.value(QStringLiteral("status")).toString();
+    return result;
+}
+
+BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnosticsFollowingTask(
+        const BackendCatalogueDiagnosticsRequest &req, visivo::BackendTaskControl *control) const
+{
+    const BackendTaskCreateResult created = createCatalogueDiagnosticsTask(req);
+    // The task counts its passes over the chunks: a measure of the work.
+    visivo::TaskPollPolicy policy;
+    policy.progressIsMeasured = true;
+    const visivo::TaskFollowResult followed = visivo::followBackendTask(
+            *this, created, QStringLiteral("[catalogue_diagnostics][task]"), control, policy);
+    if (followed.outcome == visivo::TaskOutcome::Completed)
+        return parseCatalogueDiagnostics(followed.status.resultObject);
+    if (followed.fallBackToSync()) {
+        if (control)
+            control->setPhase(visivo::TaskPhase::Synchronous);
+        DiagnosticsManager::instance()->publish(
+                DiagnosticsLevel::Warning, DiagnosticsCategory::Task,
+                QStringLiteral("BackendClient"),
+                QStringLiteral("This backend has no /v1/tasks/catalogue_diagnostics route; "
+                               "computing with the synchronous request (no progress, limited "
+                               "by the request timeout)."),
+                req.datasetId, m_sessionId, QString());
+        return catalogueDiagnostics(req, control ? &control->abortRequested : nullptr);
+    }
+    BackendCatalogueDiagnosticsResponse result;
+    result.error = followed.error;
+    result.cancelled = followed.stoppedByUser();
+    return result;
+}
+
+BackendTaskCreateResult BackendClient::createCatalogueTask(const QString &route,
+                                                         const QJsonObject &body) const
+{
+    BackendTaskCreateResult result;
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
+    QString error;
+    const QByteArray payload = performPost(QUrl(m_baseUrl + route), QJsonDocument(body), error,
+                                           nullptr, &result.httpStatus);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.taskId = object.value(QStringLiteral("task_id")).toString();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false) && !result.taskId.isEmpty();
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.status = object.value(QStringLiteral("status")).toString();
+    return result;
+}
+
+namespace {
+
+QJsonObject selectionBody(const QString &datasetId,
+                          const std::vector<BackendTabularFilter> &filters)
+{
+    BackendTabularQueryRequest query;
+    query.datasetId = datasetId;
+    query.filters = filters;
+    return buildTabularQueryBody(query);
+}
+
+/// A profile or phase-diagram task followed to its end. These routes came
+/// with their task routes, so there is no synchronous fallback: a backend
+/// without them is told to be updated.
+template <typename Result, typename Parse>
+Result followCatalogueTask(const BackendClient &client, const BackendTaskCreateResult &created,
+                           const QString &operation, visivo::BackendTaskControl *control,
+                           Parse parse)
+{
+    visivo::TaskPollPolicy policy;
+    policy.progressIsMeasured = true;
+    const visivo::TaskFollowResult followed = visivo::followBackendTask(
+            client, created, QStringLiteral("[%1][task]").arg(operation), control, policy);
+    if (followed.outcome == visivo::TaskOutcome::Completed)
+        return parse(followed.status.resultObject);
+    Result result;
+    if (followed.fallBackToSync()) {
+        result.error = QStringLiteral("This backend has no %1 route; update it.").arg(operation);
+        return result;
+    }
+    result.error = followed.error;
+    result.cancelled = followed.stoppedByUser();
+    return result;
+}
+
+}   // namespace
+
+visivo::profiles::ProfileResult BackendClient::catalogueProfileFollowingTask(
+        const visivo::profiles::ProfileRequest &req,
+        const std::vector<BackendTabularFilter> &filters,
+        visivo::BackendTaskControl *control) const
+{
+    QJsonObject body = selectionBody(req.datasetId, filters);
+    visivo::profiles::addProfileFields(body, req);
+    const BackendTaskCreateResult created =
+            createCatalogueTask(QStringLiteral("/v1/tasks/catalogue_profile"), body);
+    return followCatalogueTask<visivo::profiles::ProfileResult>(
+            *this, created, QStringLiteral("catalogue_profile"), control,
+            [](const QJsonObject &o) { return visivo::profiles::parseProfile(o); });
+}
+
+visivo::profiles::PhaseResult BackendClient::cataloguePhaseDiagramFollowingTask(
+        const visivo::profiles::PhaseRequest &req,
+        const std::vector<BackendTabularFilter> &filters,
+        visivo::BackendTaskControl *control) const
+{
+    QJsonObject body = selectionBody(req.datasetId, filters);
+    visivo::profiles::addPhaseFields(body, req);
+    const BackendTaskCreateResult created =
+            createCatalogueTask(QStringLiteral("/v1/tasks/catalogue_phase_diagram"), body);
+    return followCatalogueTask<visivo::profiles::PhaseResult>(
+            *this, created, QStringLiteral("catalogue_phase_diagram"), control,
+            [](const QJsonObject &o) { return visivo::profiles::parsePhase(o); });
+}
+
+BackendCatalogueDiagnosticsResponse BackendClient::parseCatalogueDiagnostics(
+        const QJsonObject &object)
+{
+    BackendCatalogueDiagnosticsResponse result;
     result.valid = object.value(QStringLiteral("valid")).toBool(false);
     result.error = object.value(QStringLiteral("error")).toString();
     result.field = object.value(QStringLiteral("field")).toString();
@@ -3490,6 +3700,12 @@ const QStringList &heavyComputePaths()
         // A second on a laptop, but it runs under _run_heavy_with_limit: on
         // slow storage the server's ceiling, not 120 s, is the one to honour.
         QStringLiteral("/sofia2/suggest"),
+        // Selection Diagnostics: two exact passes over every particle of the
+        // selection, minutes on a large snapshot read out of core (#448).
+        QStringLiteral("/catalogue/diagnostics"),
+        // Reads two or three whole cubes, reprojects and solves per pixel,
+        // with no ceiling of its own on the server (issue #416).
+        QStringLiteral("/products/lte_co"),
     };
     return paths;
 }
@@ -4132,7 +4348,8 @@ QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error,
                                       QMap<QString, QString> *responseHeaders,
-                                      int *statusOut, bool announceStart) const
+                                      int *statusOut, bool announceStart,
+                                      const std::atomic_bool *abort) const
 {
     // Counted while it runs (RAII), so the status bar can say "N running" for a
     // synchronous compute — and announced when it STARTS, not only when it ends:
@@ -4210,6 +4427,19 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
             loop.quit();
         });
         timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
+        // A caller that may be cancelled (a long compute the user gave up on)
+        // must not hold this worker thread for the whole timeout.
+        QTimer abortWatch;
+        if (abort) {
+            QObject::connect(&abortWatch, &QTimer::timeout, &loop, [&]() {
+                if (!abort->load())
+                    return;
+                attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+                reply->abort();
+                loop.quit();
+            });
+            abortWatch.start(100);
+        }
         QTimer quitWatch;
         bool abandoned = false;
         abandonWhenQuitting(quitWatch, loop, reply, abandoned);
@@ -4218,9 +4448,14 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         // grace (the watch).
         if (visivo::TaskQuitDrain::instance().quitting())
             abandoned = true;
-        else
+        else if (!(abort && abort->load()))
             loop.exec();
+        else {
+            attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+            reply->abort();
+        }
         quitWatch.stop();
+        abortWatch.stop();
         timeoutTimer.stop();
         // On the application thread, exit() ends this loop at once, before the
         // watch has fired: an unanswered reply is then no empty success (and
@@ -4255,7 +4490,7 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
 
         // No second token while quitting: the exit waits for this worker.
         if (status == 401 && attempt + 1 < tokenCandidates.size()
-            && !visivo::TaskQuitDrain::instance().quitting()) {
+            && !visivo::TaskQuitDrain::instance().quitting() && !(abort && abort->load())) {
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
                     QStringLiteral("BackendClient"),

@@ -10,8 +10,10 @@
 #include "TestAnalysisParamStore.h"
 #include "TestBackendContract.h"
 #include "TestRemoteSliceCache.h"
+#include "TestSliceDetailPlan.h"
 #include "TestLinkedWindowRegistry.h"
 #include "TestLinkedCameraSync.h"
+#include "TestSnapshotTimelineSteps.h"
 #include "TestSpectralUnitConvert.h"
 #include "TestCubeRegionGeom.h"
 #include "TestCubeToolGate.h"
@@ -29,6 +31,8 @@
 #include "TestKinematicLevelField.h"
 #include "TestRayVoxelPick.h"
 #include "TestSedBuilder.h"
+#include "TestMolecularLineClient.h"
+#include "TestLteCoRequest.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
 #include "TestCatalogueCosmology.h"
@@ -36,6 +40,7 @@
 #include "TestViewerModeState.h"
 #include "TestRemoteLevels.h"
 #include "TestRemoteCameraPreset.h"
+#include "TestCatalogueSelection.h"
 #include "TestRemoteRenderQueue.h"
 #include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
@@ -51,6 +56,7 @@
 #include "TestTaskQuitDrain.h"
 #include "TestVelocityLodGeometry.h"
 #include "TestSolidSplats.h"
+#include "TestRaytraceViewRules.h"
 #include "TestSystemQuitRedirect.h"
 #include "TestSupportedFormats.h"
 #include "TestFilePreview.h"
@@ -82,6 +88,10 @@
 #include "TestUpdateCheck.h"
 #include "TestSourceTable.h"
 #include "TestBackendTaskFollow.h"
+#include "TestParticleLightReport.h"
+#include "TestDiagnosticsTask.h"
+#include "TestParticleProfiles.h"
+#include "TestParticleTableRule.h"
 #include "TestSamp.h"
 #include "TestCosmologyTools.h"
 #include "TestCopilotStatus.h"
@@ -102,8 +112,10 @@ int main(int argc, char *argv[])
     { TestAnalysisParamStore t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendContract  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSliceDetailPlan  t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedCameraSync     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSnapshotTimelineSteps t; status |= QTest::qExec(&t, argc, argv); }
     { TestSpectralUnitConvert t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeRegionGeom   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeToolGate     t; status |= QTest::qExec(&t, argc, argv); }
@@ -121,6 +133,8 @@ int main(int argc, char *argv[])
     { TestKinematicLevelField t; status |= QTest::qExec(&t, argc, argv); }
     { TestRayVoxelPick     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSedBuilder       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestMolecularLineClient t; status |= QTest::qExec(&t, argc, argv); }
+    { TestLteCoRequest t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
     { TestCatalogueCosmology       t; status |= QTest::qExec(&t, argc, argv); }
@@ -128,6 +142,7 @@ int main(int argc, char *argv[])
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteLevels     t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteCameraPreset t; status |= QTest::qExec(&t, argc, argv); }
+    { TestCatalogueSelection t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteRenderQueue t; status |= QTest::qExec(&t, argc, argv); }
     { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
@@ -172,11 +187,16 @@ int main(int argc, char *argv[])
     { TestUpdateCheck      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSourceTable      t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendTaskFollow t; status |= QTest::qExec(&t, argc, argv); }
+    { TestParticleLightReport t; status |= QTest::qExec(&t, argc, argv); }
+    { TestDiagnosticsTask t; status |= QTest::qExec(&t, argc, argv); }
+    { TestParticleProfiles t; status |= QTest::qExec(&t, argc, argv); }
+    { TestParticleTableRule t; status |= QTest::qExec(&t, argc, argv); }
     { TestSamp             t; status |= QTest::qExec(&t, argc, argv); }
     { TestCosmologyTools   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCopilotStatus    t; status |= QTest::qExec(&t, argc, argv); }
     { TestCopilotChoice    t; status |= QTest::qExec(&t, argc, argv); }
     { TestVelocityLodGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestSolidSplats      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRaytraceViewRules t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

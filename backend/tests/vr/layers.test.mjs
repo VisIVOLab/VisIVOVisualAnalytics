@@ -59,11 +59,36 @@ test('the colours sent to the point session are the page map on data values', ()
 test('splats are sized by the desktop rule and grow for a sample', () => {
   const s = PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35);
   close(s.radius, 1, 1e-9);                      // spacing 1, size 8 -> 1
-  close(s.opacity, 1.5 / 100, 1e-12);   // the desktop's depth-normalized opacity
-  // In a float32 target over size² (#263): the size changes the size, not the light.
+  // The desktop's depth-normalized opacity, 1.5 / 100 = 3.8 steps of 255,
+  // kept at the floor of eight (#447).
+  close(s.opacity, 8 / 255, 1e-12);
+  // In a float32 target over size² (#263): the size changes the size, not the
+  // light; unquantised there, with no 8-bit store to round it (#447).
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 8, 35, 'v2-f32').opacity, 0.015 / 64, 1e-12);
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e6, 1, 35, 'v2-f32').opacity, 0.015, 1e-12);
+  // Whole 8-bit steps, half up, between 8 and 64.
+  close(PT.splatOpacity(30, 35), 13 / 255, 1e-12);
+  close(PT.splatOpacity(1, 35), 64 / 255, 1e-12);
+  close(PT.splatOpacity(1000, 35), 8 / 255, 1e-12);
+  close(PT.splatOpacity(0, 35), 64 / 255, 1e-12);
+  // A hair from a step's boundary: the same steps as the desktop
+  // (test_solid_splats.cpp) and the point session (test_point_render.py).
+  for (const [depth, k] of [[12.966, 30], [6.4286, 59], [6.3223, 61], [6.0236, 64]])
+    assert.equal(PT.splatOpacity(depth, 35), k / 255);
   close(PT.splatStyle([0, 100, 0, 100, 0, 100], 1e6, 1e3, 8, 35).sampleRadius, 10, 1e-9);
+  // A float target's opacity has no floor (#457): 1.5 / 1000 at a depth of 1000.
+  close(PT.splatOpacity(1000, 35, false), 0.0015, 1e-15);
+  close(PT.splatOpacity(3, 35, false), PT.FLOAT_OPACITY_MAX, 1e-15);
+  // The sample's depth (#457): an eighth of the rows, splats twice as wide
+  // and twice as opaque, so the sample carries the table's light; v1 keeps
+  // the table's depth, as a page from before drew it.
+  const box = [0, 1000, 0, 1000, 0, 1000];
+  const all = PT.splatStyle(box, 8e6, 8e6, 1, 35, 'v2-f32');
+  const eighth = PT.splatStyle(box, 8e6, 1e6, 1, 35, 'v2-f32');
+  close(eighth.sampleRadius, 2 * all.sampleRadius, 1e-9);
+  close(eighth.opacity, 2 * all.opacity, 1e-15);
+  close(1e6 * eighth.opacity * eighth.sampleRadius ** 2, 8e6 * all.opacity * all.sampleRadius ** 2, 1e-6);
+  assert.equal(PT.splatStyle(box, 8e6, 1e6, 1, 35, 'v1').opacity, PT.splatStyle(box, 8e6, 8e6, 1, 35, 'v1').opacity);
 });
 
 test('splat look (#263): tone curve, default colour column, axis units', () => {

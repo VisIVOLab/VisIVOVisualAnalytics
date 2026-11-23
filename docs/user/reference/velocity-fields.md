@@ -32,6 +32,9 @@ boundaries depend on smoothing: check a boundary at two resolutions before
 assigning a galaxy to a supercluster. Near the edge of the volume the flow is
 constrained from one side only.
 
+The *Camera* menu turns the view to *Front*, *Back*, *Left*, *Right*, *Top*
+or *Bottom* (Ctrl+1 to Ctrl+6), as in the cube viewer.
+
 ## Region of interest
 
 The viewer opens a large grid at reduced resolution.

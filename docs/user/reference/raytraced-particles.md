@@ -20,7 +20,18 @@ scene card are greyed out until the check is cleared.
 - The camera starts from the 3-D view's, and the 3-D view takes it back when
   the check is cleared.
 - The *VISUAL ENCODING* colour column and map, and the *FILTERS*, set the
-  particles' colours and which rows are drawn.
+  particles' colours and which rows are drawn. A colour value that is blank
+  (NaN) is drawn in the map's NaN colour, dark red, as on saved stills. The
+  light of overlapping particles adds up, and dark red is faint, so blank
+  particles mixed in among coloured ones only tint the picture; a region of
+  blank particles alone shows dark red.
+  Changing the map, range or scale recolours the particles already on the GPU
+  without loading them again.
+- While the particles are prepared for the first time, a panel covers the
+  view. Later changes that need new particles (size, filters, light) keep the
+  current picture on screen and turnable, with a small badge in the top-right
+  corner until the new particles arrive. If preparing fails, the panel or the
+  badge says why.
 - Above 8 million rows an even sample is sent to the desktop, each particle
   carrying the light of those it stands for. With a distant backend and a
   large table, *View ▸ Rendering ▸ Remote (GPU on backend)* is the better
@@ -37,15 +48,19 @@ The card shows the main settings; *More settings* opens the rest.
 | Setting | What it does |
 |---|---|
 | *Mode* | *3-D light*: particles emit (and optionally absorb) light, in perspective. *Projected map*: the column of density along each line of sight, without perspective, as cosmological simulations are usually shown. |
-| *Light* | The column a particle's brightness comes from; *log* when the column holds a logarithm (LogMass, LogD). *Same for all*: every particle alike. |
+| *Light* | The column a particle's brightness comes from; *log* when the column holds a logarithm (LogMass, LogD). *Same for all*: every particle alike. Rows with no usable value (blank, zero or negative, or a logarithm of −∞) are not drawn. When the column holds two populations tens of decades apart, as gas and stars in one table, the larger one sets the brightness and the other is capped at its brightest; filter by type to see either one on its own. The view says how many rows were dropped or clipped, in a note at its bottom left (hover it for why), and in the status bar and a still's summary. When the table has a type column (`type`, `ptype`, `PartType`) and the clipped rows come from two populations, the note offers *Show type 0 only* (gas, in Gadget's numbering). It adds type = 0 to the filters the view is drawn with, in place of any other condition on that column; edits to the filter list not yet applied stay there, with the new condition, for their own *Apply*. |
 | *Contrast* | The light raised to this power. Above 1, diffuse particles fade and dense structure stands out; try 1.5 when a gas looks foggy. |
 | *Exposure* | Stops over the automatic exposure (the 99.5th percentile of the lit pixels); +1 doubles the light. |
 | *Colour by*, *Map* | A projected map's colour: *Density*, *View's colours* (the colour column averaged along each ray) or *Velocity dispersion* (needs VX, VY, VZ columns). |
-| *Size* | Each particle's width: a smoothing-length column, or *From neighbours*, half the distance to its N-th nearest particle (N = 32 by default); *×* scales it. |
+| *Size* | Each particle's width: a smoothing-length column, or *From neighbours*, half the distance to its N-th nearest particle (N = 32 by default); *×* scales it. The neighbours come from the whole table, beyond the faces of a box, sphere or coordinate filter, and across the faces of a periodic simulation box (a cosmological Gadget snapshot's), so the particles at a cut's edge are not drawn larger than the others. A filter on any other column chooses which particles count as neighbours. *Periodic box* (under *More settings*, for a snapshot whose box is periodic, on by default) lets the neighbour search wrap across the box's faces; off, the faces are edges. |
 | *Measures* | *Per particle* (a mass, a luminosity): a particle sends the same total light however wide it is. *Density*: a ray sees the column it crosses. A density read as *Per particle* often gives the clearer picture, because large particles in voids stay dim. |
 | *Absorption* | Grey absorption, as the optical depth reached where the light is brightest. 0 is emission only; 1 or more lets dense regions hide what is behind them. Only in stills and movies; the GPU view shows emission only. |
-| *Slab*, *Range* | A projected map's thickness around the focal plane, in the table's units (*Everything* by default), and the decades of density its brightness spans (*Automatic* by default). |
+| *Slab*, *Range* | A projected map's thickness around the focal plane, in the table's units (*Everything* by default), and the decades of density its brightness spans (*Automatic* by default). A projected still whose *Size* is an SPH smoothing length (a Gadget gas's HSML) draws each particle with the cubic spline integrated along the line of sight, as SPH codes do. Its support is the smoothing length. Other sizes keep the Gaussian of the 3-D view. |
 | *Curve*, *Stretch*, *Gamma*, *Saturation* | The tone curve of a 3-D render. *Asinh* and *Logarithmic* lift faint light (more with a higher stretch), *Exponential* compresses the bright, *Linear* does neither. |
+
+The analysis view's Gaussian splats keep the same brightness whatever the
+number of particles, but they are a picture, not a measurement: use a
+*Projected map* for numbers.
 
 *Box* draws the data's bounding box and *Colour bar* the colour scale (the
 colour column in a 3-D render; the relative column density, or the hue's
@@ -64,8 +79,14 @@ settings, box and colour bar.
   regrade it without rendering again.
 - *Save Image…*: the still as graded, as PNG.
 - *Save Light…*: the light before the tone curve, as a floating-point FITS
-  (red, green and blue planes; for a projected map, the density and its
-  weighted mean).
+  (red, green and blue planes). A projected map is saved as its density and
+  its weighted mean. For a Gadget snapshot they are in physical units: the
+  surface density in M☉/kpc² (the particles' mass, unless *Light* names
+  another column), the mean in its own unit (K for the temperature, keV cm²
+  for the entropy, km/s for a velocity dispersion), and the pixels in
+  physical kpc. The header also gives the comoving pixel size, the redshift,
+  h, a, the line of sight and the slab's depth. Other tables have no stated
+  units, so their maps are relative.
 - *Movie…*: an orbit about the view's up axis (*Turn*, *Length*, *Rate*), with
   the still's exposure so frames do not flicker. Encoded as MP4 (H.264) when
   `ffmpeg` is installed, otherwise saved as numbered PNG frames.

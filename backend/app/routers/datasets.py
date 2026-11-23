@@ -90,6 +90,9 @@ def _build_open_response(dataset_id: str, session_id: str, kind: str,
         beam_minor=geometry.get("beam_minor"),
         beam_pa=geometry.get("beam_pa"),
         beam_per_channel=bool(geometry.get("beam_per_channel", False)),
+        beam_source=str(geometry.get("beam_source", "")),
+        intensity_unit=str(geometry.get("intensity_unit", "")),
+        intensity_unit_note=str(geometry.get("intensity_unit_note", "")),
         file_size_bytes=int(geometry.get("file_size_bytes", 0)),
         full_res_threshold_bytes=int(
             geometry.get("full_res_threshold_bytes", 4 * 1024 ** 3)
@@ -122,6 +125,8 @@ async def close_dataset(
     if entry is not None:
         logger.info("[close] session=%s dataset_id=%s kind=%s",
                     session.session_id[:8] + "…", dataset_id, entry.get("kind", ""))
+        # A snapshot's decompressed HDF5 pieces go with its last dataset.
+        await asyncio.to_thread(session.release_particle_cache, entry)
     return {"valid": True, "error": "", "closed": entry is not None}
 
 
@@ -269,6 +274,85 @@ async def pixel_to_sky(
                                        request.z)
     except Exception as exc:
         return PixelToSkyResponse(valid=False, error=str(exc))
+
+
+# ── Typed beam for a header without one (issue #416) ────────────────────────
+
+class DatasetBeamRequest(BaseModel):
+    dataset_id: str
+    major_arcsec: float | None = None
+    minor_arcsec: float | None = None   # default: major_arcsec (circular beam)
+    pa_deg: float | None = None         # default: 0
+    clear: bool = False
+
+
+class DatasetBeamResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    beam_major: float | None = None     # degrees, as in the open response
+    beam_minor: float | None = None
+    beam_pa: float | None = None
+    beam_source: str = ""
+    note: str = ""
+
+
+def _set_dataset_beam(path: str, request: DatasetBeamRequest, by: str) -> DatasetBeamResponse:
+    from .. import beam_override_store  # noqa: PLC0415
+    current = ScientificFitsDataset(path)
+    if current.beam_source == "not_applicable":
+        return DatasetBeamResponse(
+            valid=False, error="This dataset has no celestial axes (a simulation field or "
+            "other non-sky data): a restoring beam does not apply to it.",
+            beam_source="not_applicable")
+    if current.beam_source == "header":
+        return DatasetBeamResponse(
+            valid=False, error="The header already has a beam (BMAJ/BMIN or a BEAMS "
+            "table); a typed beam is only used when it has none.",
+            beam_major=current.beam.major, beam_minor=current.beam.minor,
+            beam_pa=current.beam.pa, beam_source="header")
+    if request.clear:
+        beam_override_store.set_beam(path, None, by)
+    else:
+        if request.major_arcsec is None:
+            return DatasetBeamResponse(valid=False, error="major_arcsec is required.")
+        beam = beam_override_store.validate(
+            request.major_arcsec, request.minor_arcsec, request.pa_deg)
+        beam_override_store.set_beam(path, beam, by)
+    after = ScientificFitsDataset(path)
+    note = ""
+    if after.beam_header_partial and after.beam_source == "user":
+        note = ("The header has an incomplete beam (BMAJ or BMIN missing, zero or "
+                "not finite); the typed beam replaces it.")
+    return DatasetBeamResponse(valid=True, beam_major=after.beam.major,
+                               beam_minor=after.beam.minor, beam_pa=after.beam.pa,
+                               beam_source=after.beam_source, note=note)
+
+
+@router.post("/v1/datasets/beam", response_model=DatasetBeamResponse, tags=["datasets"])
+async def set_dataset_beam(
+    request: DatasetBeamRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> DatasetBeamResponse:
+    """Type the restoring beam of an image or cube whose header has none
+    (``major_arcsec``, ``minor_arcsec``, ``pa_deg``), or forget it with
+    ``clear``. The beam is kept with the file (``app.beam_override_store``),
+    so every later request on it, in any session, uses it for per-beam
+    quantities and errors as if the header had BMAJ/BMIN/BPA; reopening the
+    file reports it with ``beam_source = "user"``. A complete header beam
+    is never overridden; an incomplete one is, and ``note`` says so. The beam
+    is tied to the file as it is: rewriting the file (a header edit included)
+    retires it."""
+    from ..volume_source import is_field_ref  # noqa: PLC0415
+    entry = _require_dataset(session, request.dataset_id)
+    if entry.get("kind") not in ("image", "cube") or is_field_ref(entry["path"]):
+        return DatasetBeamResponse(valid=False,
+                                   error="A beam can be set only on a FITS image or cube.")
+    try:
+        return await asyncio.to_thread(_set_dataset_beam, entry["path"], request,
+                                       f"session {session.session_id[:8]}")
+    except (ValueError, OSError, FitsTruncatedError) as exc:
+        return DatasetBeamResponse(valid=False, error=str(exc))
 
 
 # ── Open from URL (SKAVA discovery → access) ────────────────────────────────

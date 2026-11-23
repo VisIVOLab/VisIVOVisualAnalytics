@@ -55,6 +55,7 @@
 #include <vtkImageProperty.h>
 #include <vtkImageSlice.h>
 #include <vtkImageSliceMapper.h>
+#include <vtkImageStack.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkInteractorStyleUser.h>
 #include <vtkCubeSource.h>
@@ -906,9 +907,10 @@ void vtkWindowCube::setupWorkspaceDocks()
     bannerLayout->addWidget(this->m_remoteRenderBannerLabel, 1);
     // Shown only after a stream dropped for good (offerRemoteRetry).
     this->m_remoteRenderBannerRetry = new QToolButton(banner);
-    this->m_remoteRenderBannerRetry->setText(u"Retry"_s);
+    this->m_remoteRenderBannerRetry->setText(u"Reconnect"_s);
     this->m_remoteRenderBannerRetry->setToolTip(
-            u"Ask the backend for a new remote view of this cube"_s);
+            u"Connect to the backend's view of this cube again, or ask for a new one "
+            u"if it is gone"_s);
     this->m_remoteRenderBannerRetry->hide();
     bannerLayout->addWidget(this->m_remoteRenderBannerRetry);
     this->m_remoteRenderBannerClose = new QToolButton(banner);
@@ -1145,8 +1147,7 @@ void vtkWindowCube::setupRenderModeUi()
 
     if (this->m_remoteRenderBannerRetry) {
         QObject::connect(this->m_remoteRenderBannerRetry, &QToolButton::clicked, this, [this]() {
-            this->m_remoteRecovery.userRetried();
-            this->replaceRemoteRenderSession();
+            this->runRemoteReconnectStep(this->m_remoteReconnect.userReconnect());
         });
     }
 
@@ -1166,6 +1167,9 @@ void vtkWindowCube::setupRenderModeUi()
         QObject::connect(this->m_remoteRenderWidget,
                          &RemoteRenderWidget::connectionStateChanged,
                          this, &vtkWindowCube::onRemoteRenderConnectionStateChanged);
+        // The session's camera, kept for a session that replaces a lost one.
+        QObject::connect(this->m_remoteRenderWidget, &RemoteRenderWidget::viewTurnedByUser,
+                         this, &vtkWindowCube::scheduleRemoteCameraSnapshot);
     }
 
     this->refreshRemoteRecommendBanner();
@@ -1440,7 +1444,31 @@ void vtkWindowCube::setupSliceRenderer()
     vtkNew<vtkImageSlice> sliceActor;
     sliceActor->SetMapper(sliceMapper);
     sliceActor->GetProperty()->SetInterpolationTypeToNearest();
-    ren->AddViewProp(sliceActor);
+    // The channel and, over it, the finer detail of the part on screen (issue #381): coplanar,
+    // so they are layers of one stack rather than two props fighting for the same depth.
+    this->m_sliceDetailColors->SetLookupTable(this->lutSlice);
+    this->m_sliceDetailColors->SetInputData(createPlaceholderImageData());
+    vtkNew<vtkImageSliceMapper> sliceDetailMapper;
+    sliceDetailMapper->SetInputConnection(this->m_sliceDetailColors->GetOutputPort());
+    sliceDetailMapper->BorderOn();
+    this->m_sliceDetailActor->SetMapper(sliceDetailMapper);
+    this->m_sliceDetailActor->GetProperty()->SetInterpolationTypeToNearest();
+    this->m_sliceDetailActor->GetProperty()->SetLayerNumber(1);
+    this->m_sliceDetailActor->PickableOff();
+    this->m_sliceDetailActor->VisibilityOff();
+    vtkNew<vtkImageStack> sliceStack;
+    sliceStack->AddImage(sliceActor);
+    sliceStack->AddImage(this->m_sliceDetailActor);
+    sliceStack->SetActiveLayer(0);
+    ren->AddViewProp(sliceStack);
+    this->m_sliceDetailTimer.setSingleShot(true);
+    this->m_sliceDetailTimer.setInterval(300);
+    connect(&this->m_sliceDetailTimer, &QTimer::timeout, this, &vtkWindowCube::refreshSliceDetail,
+            Qt::UniqueConnection);
+    this->m_probeExactTimer.setSingleShot(true);
+    this->m_probeExactTimer.setInterval(120);
+    connect(&this->m_probeExactTimer, &QTimer::timeout, this,
+            &vtkWindowCube::fetchExactProbeValue, Qt::UniqueConnection);
 
     // Color bar — parked in the right gutter, laid out by layout2dPane().
     this->m_sliceColorbar->SetLookupTable(this->lutSlice);
@@ -1932,6 +1960,8 @@ void vtkWindowCube::sendCameraPresetToRemote(double azimuth, double elevation)
     // window's does not drive (issue #390): the preset is named, and the
     // backend turns its own camera to it. Dropped when the view is local.
     this->sendRemoteRenderStateCommand(visivo::remote::cameraPresetCommand(azimuth, elevation));
+    if (this->m_effectiveRenderMode == RenderMode::Remote)
+        this->scheduleRemoteCameraSnapshot();
 }
 
 void vtkWindowCube::resetCameraFront()

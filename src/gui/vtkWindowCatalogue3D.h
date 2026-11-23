@@ -3,7 +3,10 @@
 
 #include "Catalogue3DParser.h"
 #include "CataloguePlacement.h"
+#include "CatalogueSelectionKey.h"
+#include "CatalogueSelectionState.h"
 #include "LinkedCameraSync.h"
+#include "SnapshotTimelineSteps.h"
 
 #include "app/BackendClient.h"
 #include "app/SampProtocol.h"
@@ -31,6 +34,7 @@ class WorkspaceChrome;
 // VTK forward declarations
 class vtkActor;
 class vtkBillboardTextActor3D;
+class vtkCamera;
 class vtkCubeAxesActor;
 class vtkCubeSource;
 class vtkGenericOpenGLRenderWindow;
@@ -79,6 +83,7 @@ class QFormLayout;
 class QVBoxLayout;
 class RemoteRenderWidget;
 class vtkPointGaussianMapper;
+class vtkToneMappingPass;
 class vtkPiecewiseFunction;
 class AssistantPanel;
 QT_BEGIN_NAMESPACE
@@ -216,6 +221,10 @@ signals:
     /// Emitted when a session-expiry error is detected and the user requests
     /// that the dataset be reopened.  Connect to MainWindow::doOpenCataloguePath.
     void reopenRequested(const QString &filepath, const QStringList &paths = QStringList());
+    /// The filters the rows were last queried with changed (Apply, or a
+    /// failed query that put the previous ones back): Selection Diagnostics
+    /// follows these, not the list being edited.
+    void appliedFiltersChanged(const std::vector<BackendTabularFilter> &filters);
 
 protected:
     // Refuse to close (and self-delete via WA_DeleteOnClose) while a large scene
@@ -305,6 +314,13 @@ private:
     QPointer<QLabel> m_placementStatus;
     QPointer<QPushButton> m_unplacedButton;
     QPointer<QAction> m_actionUnplaced;
+    /// A plain table of points may be marked as particles or as objects
+    /// (ParticleTableRule.h); a snapshot or a VBT is not asked.
+    bool m_particleChoiceOffered{ false };
+    /// Particles by the rule or the user's choice, not by the file's format:
+    /// no snapshot timeline (its files are not known to be a run's outputs).
+    bool m_particlesByRule{ false };
+    void setParticleChoice(bool particles);
     void refreshPlacementStatus();
     /// The "Unplaced sources" table: Name, RA, Dec, cz [km/s], Reason.
     void showUnplacedSources();
@@ -335,13 +351,26 @@ private:
 
     // ── Setup ──────────────────────────────────────────────────────────────
     void setupRenderer();
+    /// Apply: the edited filter list becomes the applied one, then the rows
+    /// are queried with it.
     void applyFilter();
-    void buildScene();
+    /// Adds ``field = value`` to the filters and applies them (the
+    /// ray-traced view's "Show gas only").
+    void addAndApplyFilter(const QString &field, const QString &value);
+    /// The rows queried again with the applied filters (Load all, attribute
+    /// hydration): edits not yet applied stay unapplied.
+    void queryAppliedFilters();
+    /// @p why decides whether the camera is kept (rebuildKeepsCamera).
+    void buildScene(SnapshotTimelineSteps::Rebuild why = SnapshotTimelineSteps::Rebuild::NewRows);
+    /// Linked, and another window of the group is still open.
+    bool linkedWithPeers() const;
     void buildLabels();
     void buildShells();
     void updateGlyphPipeline();
     void updateGlyphScales();
-    void updatePointPositions();
+    /// ``newSplatBasis``: the points moved, so the splats' box and number of
+    /// points are taken again; false keeps those of the table with no filter.
+    void updatePointPositions(bool newSplatBasis = true);
     void updateColorMapping();
     void ensureCatalogueDock();
     void refreshCatalogueTable();
@@ -365,9 +394,36 @@ private:
     // Projects all source points to display space; returns index of nearest
     // within hoverThresholdPx, or -1.
     int pickNearestSource(int displayX, int displayY) const;
+    /// The same over a view of @p width x @p height pixels seen by @p camera
+    /// (the Remote or ray-traced view's, not this window's renderer).
+    int pickNearestSource(vtkCamera *camera, double width, double height, int displayX,
+                          int displayY) const;
     void setHoveredSource(int idx);
     void setSelectedSource(int idx);
+    /// Brings source @p idx to the middle of the view on screen (local,
+    /// Remote or ray-traced). @p frame: a SubFind target is framed by its
+    /// radius; otherwise the distance is divided by @p zoomFactor. A SAMP
+    /// highlight only recentres (recentreLocalView) and never reframes.
     void centerOnSource(int idx, double zoomFactor = 3.0);
+    /// SAMP: the local view looks at source @p idx from where it is.
+    void recentreLocalView(int idx);
+    /// The radius a SubFind target is framed by, and its column; 0 when the
+    /// table is not a SubFind catalogue or the row has none.
+    double framingRadius(int idx, QString *field = nullptr) const;
+    /// The x, y, z columns of the selected row, as a profile centre
+    /// (issue #426); none without a selection or those columns.
+    std::optional<std::array<double, 3>> selectedPosition() const;
+    /// The SubFind group or subhalo selected in a catalogue window of the
+    /// same backend session, as a profile centre; none when there is none.
+    std::optional<visivo::profiles::CentreChoice> subfindTargetInSession() const;
+    /// A double-click on the Remote or ray-traced view (they have no VTK
+    /// picker): picks the nearest marker with that view's camera and frames it.
+    void frameSourceAtViewPoint(QWidget *view, const QPoint &pos);
+    /// centerOnSource once the shown view's @p camera is known (@p error:
+    /// why there is none).
+    void frameSourceWithCamera(const CatalogueSelection::Key &key, double zoomFactor,
+                               const QJsonObject &camera, const QString &error);
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     // ── UI helpers ──────────────────────────────────────────────────────────
     void updateInfoPanel();
@@ -442,6 +498,33 @@ private:
     void applyComparisonCamera(const LinkedCameraSync::Pose &pose);
     void applyComparisonRaytraceCamera(const QJsonObject &camera);
     LinkedCameraSync::Pose comparisonCameraPose() const;
+    /// The camera of this window's VTK view in the ray-traced/remote views' terms.
+    QJsonObject localCameraJson() const;
+    /// Show the VTK camera just set in the view actually on screen: the
+    /// ray-traced view, or the backend's when the points are drawn there.
+    void followCameraInShownView(const QJsonObject &camera);
+    /// The points are drawn on the backend and streamed (Remote, or Auto with
+    /// more rows than loaded): their camera turns there, not in this window.
+    bool drawnOnBackend() const;
+    /// A window of the comparison group (or this one) is busy with something a
+    /// step would cut short: its scene, a query, its rows' other columns.
+    QString timelineBusyReason() const;
+    /// Stop Play in every view of the group.
+    void stopSnapshotPlayback();
+    /// Ask the backend for the rest of the first rows' columns (particles open
+    /// with positions and one quantity first).
+    void startAttributeHydration();
+    /// What the views sharing this dataset and still waiting for the rows'
+    /// other columns do when this window's wait ends: take the rows from
+    /// here (they arrived), keep the rows they have (they will not come), or
+    /// ask for them themselves (this window's rows changed meanwhile).
+    enum class HydrationShare { Rows, StopWaiting, LoadOwn };
+    void shareHydratedRows(HydrationShare how);
+    /// Take @p source's rows, now with every column: same rows, same camera.
+    void adoptHydratedRows(const vtkWindowCatalogue3D &source);
+    /// Release this window's hold on its backend dataset, closing it there
+    /// when no other window holds it (closeEvent, a step that failed).
+    void releaseDataset();
     void openInVrHeadset();   // issue #190: vtkWindowCatalogue3D_VrHeadset.cpp
     QPointer<VrHeadsetDialog> m_vrHeadsetDialog;
     /// The applied frame, distance mode and cosmology the headset places a
@@ -486,6 +569,29 @@ private:
     QFutureWatcher<BackendPointSeriesResult> m_snapshotSeriesWatcher;
     bool m_snapshotSwitching{ false };
     bool m_snapshotPlaying{ false };
+    /// The scene was framed once: later rebuilds may keep the camera
+    /// (SnapshotTimelineSteps::rebuildKeepsCamera).
+    bool m_sceneFramed{ false };
+    /// The loaded rows lack columns that a background query (this window's,
+    /// or the window this comparison view was made from) is bringing.
+    bool m_awaitingHydration{ false };
+    /// That query is this window's and in flight (also while its rows rebuild).
+    bool m_hydratingAttributes{ false };
+    /// Opened by a timeline step: a failed open is reported by the step, not
+    /// by a modal box per output (Play would stack them), and the step hands
+    /// it the series instead of the backend listing it again.
+    bool m_openedByStep{ false };
+    /// Why the open failed, for the step's message.
+    QString m_openError;
+    /// Set around the construction of a step's windows (see m_openedByStep).
+    static bool s_openingStep;
+    /// The group's camera for the view drawn on the backend, at most every
+    /// 50 ms during a drag (followCameraInShownView).
+    QPointer<QTimer> m_remoteCameraThrottle;
+    QJsonObject m_remoteCameraPending;
+    /// The copilot's actions reach this window by this key: comparison views
+    /// share their dataset id, so it cannot be the key.
+    QString m_copilotRouteKey;
     std::vector<Catalogue3DEntry> entries;
     /// Rows with no distance (issue #265), never in entries: not drawn.
     std::vector<Catalogue3DEntry> unplacedEntries;
@@ -535,6 +641,7 @@ private:
     vtkNew<vtkMaskPoints> renderDecimator;
     int m_renderBudget{ 1000000 };
     bool m_renderDecimated{ false };
+    long long m_renderStride{ 1 };   ///< every m_renderStride-th point is drawn
     void applyRenderBudget();
     /// Status text when the GPU point budget is thinning the cloud (empty when
     /// the full cloud is drawn). Reassures that picking/stats use every source.
@@ -551,14 +658,23 @@ private:
     vtkNew<vtkPointGaussianMapper> gaussianMapper;
     vtkNew<vtkPiecewiseFunction> gaussianOpacity;
     vtkNew<vtkActor> gaussianActor;
+    /// The renderer's pass in Gaussian mode only (ParticleSplatVtk).
+    vtkSmartPointer<vtkToneMappingPass> m_splatPass;
+    void updateSplatPass();
     void updateGaussianSplats();
-    /// Point size of the Point shape, and the splats' size step (1..12).
-    int pointSizeFromScale() const;
-    double splatSizeFromScale() const;   ///< the splats' size step (former VBT viewer's)
-    /// Bounds and count of the points with no filter: the splats are sized on
-    /// them, so that a filter removes points without restyling the others.
+    /// Point size of the Point shape, in pixels (1..16).
+    double pointSizeFromScale() const;
+    /// Bounds and number of the points with no filter: the splats are sized on
+    /// them (over the render budget's stride), so that a filter removes points
+    /// without restyling the others.
     double m_splatBounds[6]{ 0, 0, 0, 0, 0, 0 };
     vtkIdType m_splatCount{ 0 };
+    QString m_splatBasisKey;   ///< the table m_splatBounds/m_splatCount belong to
+    void captureSplatBasis();
+    /// The size slider holds a value the viewer chose (the Gaussian default
+    /// for a large table), not the user: a change of shape may change it
+    /// (ParticleSplatDefaults::automaticSliderValue).
+    bool m_sliderAutomatic{ false };
 
     // Hover highlight (wireframe, yellow)
     vtkNew<vtkSphereSource> hoverSphere;
@@ -623,7 +739,14 @@ private:
     QPointer<QPushButton> btnFilterClearAll;
     QPointer<QPushButton> btnFilterApply;
     QPointer<QLabel> filterStatusLabel;
+    /// The filter list as edited; Apply copies it into m_appliedFilters.
     std::vector<BackendTabularFilter> activeFilters;
+    /// What the rows on screen, the next page, the Remote view and Selection
+    /// Diagnostics are filtered by.
+    visivo::selection::AppliedFilters m_appliedFilters;
+    /// Bumped by every framing request: a backend camera that arrives after a
+    /// newer one was asked for is dropped.
+    quint64 m_frameRequest{ 0 };
     bool filterBusy{ false };
     QFutureWatcher<Catalogue3DFilterTaskResult> filterWatcher;
     // ── Pagination ────────────────────────────────────────────────────────────

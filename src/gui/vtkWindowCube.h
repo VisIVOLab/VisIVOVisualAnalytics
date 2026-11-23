@@ -54,6 +54,7 @@ class vtkCallbackCommand;
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
 #include "RegionPanePlacement.h"
+#include "SliceDetailPlan.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkWeakPointer.h>
@@ -65,6 +66,7 @@ class vtkCallbackCommand;
 #include <QCloseEvent>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QJsonObject>
 #include <QPoint>
 #include <QRect>
 #include <QMainWindow>
@@ -94,6 +96,7 @@ class CatalogueTableModel;
 class QDockWidget;
 class QFrame;
 class QLabel;
+class DatasetBeamControl;
 class QPushButton;
 class QSlider;
 class QSplitter;
@@ -139,6 +142,7 @@ namespace visivo::samp {
 struct SkyPosition;
 }
 class vtkImageMapToColors;
+class vtkImageSlice;
 class vtkLegendScaleActorWCS;
 class vtkLineSource;
 class vtkLookupTable;
@@ -200,7 +204,17 @@ struct RemoteCubeSliceResult
     vtkSmartPointer<vtkImageData> imageData;
     std::array<double, 2> imageRange{ 0., 0. };
     int index{ 0 };
+    /// Issue #381: the channel read every @p stride pixels of a fullWidth x
+    /// fullHeight plane; @p region is set only for a detail of part of it.
+    int fullWidth{ 0 };
+    int fullHeight{ 0 };
+    int stride{ 1 };
+    QRect region;
 };
+
+/// A /v1/cube/slice answer as an image on the plane's pixel frame (origin the
+/// first sample, spacing the stride); null when the payload does not match.
+vtkSmartPointer<vtkImageData> decodeRemoteSlice(const BackendCubeSliceResult &response);
 
 struct RemoteCubeSubvolumeResult
 {
@@ -312,6 +326,13 @@ public:
     /// Raw BUNIT (brightness value unit, e.g. "Jy/beam") from the FITS header.
     /// Set once by MainWindow after construction; shown in the cursor readout.
     void setBrightnessUnit(const QString &unit) { m_brightnessUnit = unit; }
+    /// The values' unit and, when it did not come from BUNIT, how it was
+    /// inferred (issue #416). Shown in the Inspector and on spectrum axes.
+    void setIntensityUnit(const QString &unit, const QString &note);
+    /// Where the beam came from: "header", "user" or "none" (issue #416).
+    void setBeamSource(const QString &source);
+    /// The y-axis title of this cube's spectra.
+    QString intensityAxisLabel() const;
 
     /// The cube's rest frequency in Hz (header RESTFRQ/RESTFREQ; 0 when absent),
     /// handed to every spectrum plot so a REST-frame line list can be placed on
@@ -581,6 +602,7 @@ private:
     QLabel        *m_specInspTitle     { nullptr };
     QLabel        *m_specInspStats     { nullptr };
     QComboBox     *m_specInspSmooth    { nullptr };
+    QComboBox     *m_specInspFitRange  { nullptr };
     QPushButton   *m_specInspFit       { nullptr };
     QPushButton   *m_specInspClearFit  { nullptr };   ///< remove the fitted-curve overlay
     QPushButton   *m_specInspLoadLines { nullptr };
@@ -1790,6 +1812,10 @@ protected:
     QPointer<QMenu> m_menuAnimationSpeed;
     QPointer<QMenu> m_menuAnimationMode;
     QPointer<QAction> m_actSourceFind;
+    /// LTE analysis of CO isotopologues (issue #416, vtkWindowCube_Lte.cpp).
+    QPointer<QAction> m_actLteCo;
+    void openLteCoDialog();
+    int m_lteRuns{ 0 };
     QPointer<QAction> m_actKinematicLasso;
     int m_lassoLastSeed[3]{ -1, -1, -1 };         ///< primary picked full-res seed (z,y,x)
     bool m_lassoHasSeed{ false };
@@ -2998,6 +3024,60 @@ protected:
     void startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int requestId = 0);
     void prefetchNeighborRemoteSlices(int sliceIndex);
 
+    // Issue #381: a wide channel is shown every few pixels (SliceDetailPlan.h). Zoomed in, the
+    // part on screen is asked again at a finer stride and drawn over it, through the same colour
+    // table, as the top layer of the slice's image stack. Only pixels on screen: the channel
+    // under it stays what statistics, regions and the probe read.
+    vtkNew<vtkImageMapToColors> m_sliceDetailColors;
+    vtkNew<vtkImageSlice> m_sliceDetailActor;
+    QTimer m_sliceDetailTimer;
+    /// The channel on screen as the backend sampled it: plane size and stride.
+    std::array<int, 3> m_displayedSliceGrid{ 0, 0, 1 };
+    /// The detail drawn (or being fetched): dataset, channel and window.
+    struct SliceDetailState
+    {
+        QString datasetId;
+        int index{ -1 };
+        visivo::SliceDetailWindow window;
+    };
+    std::optional<SliceDetailState> m_sliceDetailShown;
+    std::optional<SliceDetailState> m_sliceDetailPending;
+    int m_sliceDetailSeq{ 0 };
+    /// Set while a channel movie is captured: a detail landing mid-movie would
+    /// change the resolution between frames.
+    bool m_sliceDetailSuspended{ false };
+    /// The plane pixel of sample (i, j) of a 2-D image, and the sample of a
+    /// plane pixel (false off the image). The slice's samples sit on the plane
+    /// every stride pixels (issue #381); any other image is indexed as it is.
+    std::array<int, 2> probePixelOfSample(vtkImageData *image, int i, int j) const;
+    bool probeSampleOfPixel(vtkImageData *image, int x, int y, int &i, int &j) const;
+    void scheduleSliceDetail();
+    void refreshSliceDetail();
+    void hideSliceDetail();
+
+    // The probe's value on a strided channel (issue #381): a pixel between the samples is read
+    // from the detail when it holds it, else asked of the backend as a one-pixel region. The
+    // readout shows "…" meanwhile, never the neighbouring sample's value.
+    struct ExactProbe
+    {
+        enum State { NotNeeded, Loading, Ready, Failed } state{ NotNeeded };
+        float value{ 0.f };
+    };
+    struct ExactProbeValue
+    {
+        QString datasetId;
+        std::array<int, 3> voxel{ 0, 0, 0 };
+        bool valid{ false };
+        float value{ 0.f };
+    };
+    std::optional<ExactProbeValue> m_probeExact;
+    std::optional<ExactProbeValue> m_probeExactPending;
+    QTimer m_probeExactTimer;
+    int m_probeExactSeq{ 0 };
+    void updateSliceStatsCaption();   ///< "sampled every N px" beside a strided channel's stats
+    ExactProbe exactSliceProbeValue(vtkImageData *image);
+    void fetchExactProbeValue();
+
     // Contours
     int level;
     vtkNew<vtkFlyingEdges2D> contours;
@@ -3087,6 +3167,11 @@ protected:
     double m_slice2dFitBottom{ -1. };   ///< gutter.bottom of that fit (the channel bar's room)
     double m_moment2dFitBottom{ -1. };
     QString m_brightnessUnit;   ///< raw BUNIT for the cursor readout (may be empty)
+    QString m_intensityUnitNote;   ///< how the unit was inferred without BUNIT, or empty
+    QString m_beamSource;          ///< "header", "user", "none", or empty (older backend)
+    QPointer<QLabel> m_unitValueLabel;
+    QPointer<DatasetBeamControl> m_beamControl;
+    void refreshUnitAndBeamRows();
 
     /// Aspect-preserving gutter fit + colorbar placement for the currently-visible
     /// 2-D pane. Cheap and idempotent: returns immediately unless the viewport
@@ -3217,9 +3302,26 @@ protected:
     /// Reconnecting to the session kept across a switch to Local: a failure
     /// before Live may mean the backend closed it meanwhile.
     bool                  m_remoteReconnectingKept{ false };
-    // Whether a live stream that dropped gets a new session or Retry
-    // (RemoteSessionRecovery.h).
-    visivo::RemoteRecovery m_remoteRecovery;
+    // A live stream that dropped is reconnected by itself: the same session
+    // if it is still there, else a new one, with bounded retries and back-off,
+    // then Reconnect (RemoteSessionRecovery.h, issue #411).
+    visivo::RemoteReconnect m_remoteReconnect;
+    /// The wait before the next attempt, or the time the same session's
+    /// stream has to come back (m_remoteReconnectingSame).
+    QTimer               *m_remoteReconnectTimer{ nullptr };
+    /// The stream is being connected again to the same session: a failure
+    /// before Live is a failed attempt, not a failed switch.
+    bool                  m_remoteReconnectingSame{ false };
+    /// Answers of an earlier check (GET .../levels) are not this one's.
+    quint64               m_remoteReconnectSerial{ 0 };
+    /// Why the last attempt failed, for the banner when the view gives up.
+    QString               m_remoteReconnectWhy;
+    /// The session's camera as of the user's last turn of the view
+    /// (GET .../camera), given to a session that replaces a lost one so the
+    /// view comes back as it was rather than from the default camera.
+    QJsonObject           m_remoteCamera;
+    QTimer               *m_remoteCameraTimer{ nullptr };
+    bool                  m_remoteCameraRestore{ false };
     // The session asked for now replaces one that dropped (automatically or
     // by Retry): its failure is a failed replacement, answered with Retry on
     // the remote page, not a fall back to Local.
@@ -3277,14 +3379,24 @@ protected:
     /// The live session ended (or the user asked to retry): give it back and
     /// ask for a new one, the remote page staying meanwhile.
     void replaceRemoteRenderSession();
-    /// The stream dropped and is not coming back by itself: say why, offer Retry.
+    /// The stream dropped and is not coming back by itself: say why, offer Reconnect.
     void offerRemoteRetry(const QString &why);
-    /// A live stream dropped: act on m_remoteRecovery's answer. Without a close
-    /// reason (WebRTC, a backend gone without a close frame) asks the backend
-    /// first whether the session is still there.
-    void handleRemoteDrop(visivo::RemoteDrop drop, bool askBackend);
+    /// A live stream dropped: reconnect (m_remoteReconnect).
+    void handleRemoteDrop(const visivo::RemoteDrop &drop);
+    /// Carry out one step of the reconnection.
+    void runRemoteReconnectStep(visivo::ReconnectStep step);
+    /// Ask the backend whether the session is still there (GET .../levels).
+    void checkRemoteSessionForReconnect();
+    /// The wait is over, or the same session's stream did not come back in time.
+    void onRemoteReconnectTimer();
+    /// The banner and the view while reconnecting; @p waitMs before the next attempt.
+    void showRemoteReconnecting(int waitMs);
+    /// The user went to Local, or the window let its session go.
+    void cancelRemoteReconnect();
+    /// Keep the session's camera a moment after the user turned the view.
+    void scheduleRemoteCameraSnapshot();
     /// The replacement's create failed: stay in Remote, on the remote page,
-    /// with Retry and @p why.
+    /// and try again or offer Reconnect with @p why.
     void failRemoteReplacement(const QString &why);
     /// The Auto / Local / Remote choice shown (menu and segmented toggle) set
     /// to @p mode without applying it.
