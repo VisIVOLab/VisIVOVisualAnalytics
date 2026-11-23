@@ -6,19 +6,72 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.3.0 (2026-11-23)
 
-- **Backend and VR: splat brightness independent of the particle count
-  (#457).** The point session's Gaussian splats (the *Remote* 3-D view and
-  comparison panes) are added into a float target at an exposure set by the
-  intensity alone, without the floor of eight 8-bit steps that made a table of
-  10 million rows 4.5 times brighter than the same field from 100,000. The VR
-  page's float targets lose their opacity floor (it brightened tables from
-  about 27 million rows) and size their opacity for the rows they draw, so the
-  preview no longer dims while the governor draws a smaller sample. On a
-  Plummer sphere from 1e5 to 3e7 particles the mean brightness stays within
-  1 % and the projected profile within 1 % of the analytic one
-  (`validation/splat_brightness.py`). The desktop's local view follows.
+- **Gadget and SubFind simulations (#31, #392, #398).** Gadget snapshots
+  (formats 1, 2 and HDF5, single or multi-file) open in place as particle
+  tables, one per particle type, out of core for large runs, with comoving and
+  h units, derived temperature and entropy, and periodic boxes. SubFind and
+  FoF catalogues (binary and Gadget-4/Arepo HDF5) open as halo targets: a
+  double-click frames a group or subhalo at 1.25 × its radius, and the line
+  that says so appears in the status bar and the Inspector. Subhalo
+  velocities are read as peculiar km/s and Vmax as physical km/s; the
+  convention can be changed with `svel=` in `VISIVO_GADGET_UNITS`, and the
+  copilot can check it on Gadget-4 data against the member particles.
+- **Simulation analysis (#425, #426, #438, #442, #414).** Named 3-D regions
+  (box, sphere) act on the whole table on the backend, in the local and Remote
+  views, and wrap across periodic boxes. *Selection Diagnostics* gives exact
+  histograms and statistics over every selected row, radial profiles (with a
+  shrinking-sphere centre or a SubFind target, minimum-image distances,
+  dispersions and β) and phase diagrams, all as cancellable backend tasks
+  with progress. Camera presets (Ctrl+1 to 6) are shared by the 3-D viewers.
+  IPAC and CSV tables that hold particles open with the particle defaults.
+- **Comparison views and snapshot timeline (#427, #429, #430, #433).**
+  Several quantities of one simulation side by side, linked in camera,
+  selection and representation, and a timeline that steps through snapshots
+  keeping the camera.
+- **Particle rendering (#434, #436, #447, #455, #456, #457, #469, #476, #477,
+  #479).** Gaussian splat brightness no longer depends on the number of
+  particles, in the local, Remote and VR views (within 1 % from 100,000 to
+  30 million particles). The *Splat size* slider works over its whole range.
+  Smoothing lengths are computed past the faces of a cut and across periodic
+  boxes; the light is normalised at a percentile and the ray-traced view says
+  how many rows were dropped or clipped. Projected maps carry physical units
+  (M☉/kpc², K, keV cm², physical kpc) and draw each particle with its SPH
+  kernel (cubic spline by default, Wendland C4 optional) integrated along the
+  line of sight, mass conserved per particle. The backend can compose several
+  particle components (gas, dark matter, stars, black holes) in one picture,
+  each with its own colour map; the desktop controls follow.
+- **Molecular-line cubes (#416).** Intensities without `BUNIT` take their unit
+  from `TEMPSCAL`/`BTYPE` (K for CHIMPS), so a moment 0 reads K km/s. Pixel
+  Math refuses maps that do not overlap. The Gaussian fit starts from the data
+  and fits the visible part of the spectrum by default, warning when the
+  result is suspect. A beam can be typed when the header has none. Region
+  flux follows the intensity unit (Jy/beam, Jy/pixel, MJy/sr, K) and HI mass
+  is given only for the 21 cm line. A new *CO Isotopologues (LTE)…* tool
+  gives optical depth, excitation temperature, column densities, N(H₂) and
+  mass from ¹³CO and C¹⁸O (optionally ¹²CO), per region and as maps.
+- **SED fitting (#444, #482).** WISE and 2MASS bands sit at their wavelengths,
+  MSX reaches the SED, the default fit uses 160 to 500 µm, fluxes can be
+  edited and 350/500 µm scaled to the 250 µm source size, and an
+  observed + greybody L_bol is reported. The plot draws the band-merged tree
+  of counterparts (or one line with *Collapse branches*), colours bands by
+  survey with error bars on every point, and sets its axes from the data.
+- **Regions and products (#389, #401, #405, #406).** Regions are listed in
+  Session Data (show, select, rename, delete). Region flux on moment-0 maps in
+  Jy km/s with its error, a background region and HI mass. Product panes have
+  Linear, Log and Sqrt scales; the power-spectrum fit reports χ²/dof.
+- **Remote and large data (#381, #390, #411).** A wide cube channel arrives at
+  the resolution of the view, with full resolution on zoom and the exact
+  pixel value under the probe (0.3 s instead of a 30 s timeout on a
+  7233 × 7233 channel). Remote sessions reconnect by themselves after
+  transient backend errors. The Remote 3-D view refits its clipping range
+  every frame and applies camera presets.
+- **VR (#383, #386).** VisIVO VR opens, scans the QR code and lands in the
+  cube; the app is prepared for the Meta Horizon Store.
+- **Documentation.** Use cases 10 to 14 (HI in a galaxy group, cosmology, the
+  SED of dust clumps, a molecular cloud in CO isotopologues, the particles of
+  a cosmological simulation) and a reference synced with the viewers.
 
 ## 1.2.0 (2026-11-17)
 
