@@ -28,12 +28,44 @@ from ._common import (  # noqa: F401
 )
 
 
-def worker_cube_slice(path: str, z_index: int) -> dict[str, Any]:
-    """
-    Extract a single Z-axis slice from a FITS cube.
+def plane_view(
+    width: int, height: int, max_longest_side: int = 0,
+    region: tuple[int, int, int, int] | None = None,
+) -> tuple[int, int, int, int, int]:
+    """``(x0, x1, y0, y1, stride)`` of the samples a slice request is answered
+    with (issue #381): the region, inclusive and clamped to the plane (the
+    whole plane without one), read every ``stride`` pixels, the smallest
+    integer stride that keeps both sides within ``max_longest_side``.
 
-    With memmap=True astropy reads only the bytes for the requested plane
-    from disk – O(width * height * 4 bytes) I/O regardless of cube depth.
+    An integer stride rather than a resampled grid: each sample is a source
+    pixel, so the values are the cube's own and the client places them with an
+    origin and a spacing, no interpolation of the frame. ``max_longest_side``
+    0 keeps every pixel.
+    """
+    if region is None:
+        x0, x1, y0, y1 = 0, width - 1, 0, height - 1
+    else:
+        x0, x1, y0, y1 = (int(v) for v in region)
+        x0, x1 = max(0, x0), min(x1, width - 1)
+        y0, y1 = max(0, y0), min(y1, height - 1)
+        if x0 > x1 or y0 > y1:
+            raise ValueError("The slice region lies outside the plane.")
+    longest = max(x1 - x0 + 1, y1 - y0 + 1)
+    stride = 1 if max_longest_side <= 0 else max(1, -(-longest // int(max_longest_side)))
+    return x0, x1, y0, y1, stride
+
+
+def worker_cube_slice(
+    path: str, z_index: int, max_longest_side: int = 0,
+    region: tuple[int, int, int, int] | None = None,
+) -> dict[str, Any]:
+    """One Z plane of a cube, or the strided part of it a view needs.
+
+    With memmap=True astropy reads only the bytes of the samples asked for: a
+    stride skips whole rows, so a view-sized answer of a wide channel reads a
+    fraction of the plane and encodes a few MB instead of hundreds (issue
+    #381: a 7233 x 7233 channel took over the client's 30 s, most of it zlib
+    on 209 MB of noise and the transfer of the base64 text).
     """
     import time as _time
     t0 = _time.perf_counter()
@@ -45,19 +77,23 @@ def worker_cube_slice(path: str, z_index: int) -> dict[str, Any]:
             raise ValueError("Slice endpoint requires a 3D cube.")
         if z_index < 0 or z_index >= data.shape[0]:
             raise ValueError(f"Slice index {z_index} out of range [0, {data.shape[0] - 1}].")
-        # Materialise ONLY this plane – memmap ensures disk read is minimal.
-        plane = np.asarray(data[z_index, :, :], dtype=np.float32)
+        full_h, full_w = int(data.shape[1]), int(data.shape[2])
+        x0, x1, y0, y1, stride = plane_view(full_w, full_h, max_longest_side, region)
+        plane = np.asarray(data[z_index, y0:y1 + 1:stride, x0:x1 + 1:stride],
+                           dtype=np.float32)
         t_read = _time.perf_counter()
     finally:
         hdul.close()
 
     range_min, range_max = _finite_range(plane)
-    compression, data_b64 = _b64f32_compressed(plane)
+    # Level 1: on float32 noise level 6 saves under 1 % more and costs 10 %
+    # more time; neither saves much, so the payload is kept small by the stride.
+    compression, data_b64 = _b64f32_compressed(plane, level=1)
     t_encode = _time.perf_counter()
     print(
-        "[slice-timing] z={} shape=({},{}) raw_kB={:.0f} wire_kB={:.0f} "
+        "[slice-timing] z={} shape=({},{}) stride={} raw_kB={:.0f} wire_kB={:.0f} "
         "stages_s: read={:.3f} encode={:.3f} total={:.3f}".format(
-            z_index, int(plane.shape[0]), int(plane.shape[1]),
+            z_index, int(plane.shape[0]), int(plane.shape[1]), stride,
             plane.nbytes / 1024.0, len(data_b64) / 1024.0,
             t_read - t0, t_encode - t_read, t_encode - t0,
         ),
@@ -71,6 +107,11 @@ def worker_cube_slice(path: str, z_index: int) -> dict[str, Any]:
         "range_max": range_max,
         "compression": compression,
         "data_base64": data_b64,
+        "full_width": full_w,
+        "full_height": full_h,
+        "x0": x0,
+        "y0": y0,
+        "stride": stride,
     }
 
 

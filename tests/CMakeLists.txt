@@ -111,6 +111,8 @@ add_executable(VisIVOTests
     test_backend_contract.cpp
     TestRemoteSliceCache.h
     test_remote_slice_cache.cpp
+    TestSliceDetailPlan.h
+    test_slice_detail_plan.cpp
     TestLinkedWindowRegistry.h
     test_linked_window_registry.cpp
     TestLinkedCameraSync.h

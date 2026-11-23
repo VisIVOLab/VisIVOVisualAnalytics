@@ -55,6 +55,7 @@
 #include <vtkImageProperty.h>
 #include <vtkImageSlice.h>
 #include <vtkImageSliceMapper.h>
+#include <vtkImageStack.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkInteractorStyleUser.h>
 #include <vtkCubeSource.h>
@@ -1443,7 +1444,27 @@ void vtkWindowCube::setupSliceRenderer()
     vtkNew<vtkImageSlice> sliceActor;
     sliceActor->SetMapper(sliceMapper);
     sliceActor->GetProperty()->SetInterpolationTypeToNearest();
-    ren->AddViewProp(sliceActor);
+    // The channel and, over it, the finer detail of the part on screen (issue #381): coplanar,
+    // so they are layers of one stack rather than two props fighting for the same depth.
+    this->m_sliceDetailColors->SetLookupTable(this->lutSlice);
+    this->m_sliceDetailColors->SetInputData(createPlaceholderImageData());
+    vtkNew<vtkImageSliceMapper> sliceDetailMapper;
+    sliceDetailMapper->SetInputConnection(this->m_sliceDetailColors->GetOutputPort());
+    sliceDetailMapper->BorderOn();
+    this->m_sliceDetailActor->SetMapper(sliceDetailMapper);
+    this->m_sliceDetailActor->GetProperty()->SetInterpolationTypeToNearest();
+    this->m_sliceDetailActor->GetProperty()->SetLayerNumber(1);
+    this->m_sliceDetailActor->PickableOff();
+    this->m_sliceDetailActor->VisibilityOff();
+    vtkNew<vtkImageStack> sliceStack;
+    sliceStack->AddImage(sliceActor);
+    sliceStack->AddImage(this->m_sliceDetailActor);
+    sliceStack->SetActiveLayer(0);
+    ren->AddViewProp(sliceStack);
+    this->m_sliceDetailTimer.setSingleShot(true);
+    this->m_sliceDetailTimer.setInterval(300);
+    connect(&this->m_sliceDetailTimer, &QTimer::timeout, this, &vtkWindowCube::refreshSliceDetail,
+            Qt::UniqueConnection);
 
     // Color bar — parked in the right gutter, laid out by layout2dPane().
     this->m_sliceColorbar->SetLookupTable(this->lutSlice);

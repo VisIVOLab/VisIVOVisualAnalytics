@@ -4,6 +4,7 @@
 #include "ui_vtkWindowCube.h"
 #include "CubeViewportGeometry.h"
 #include "CubeStatsUtil.h"
+#include "SliceDetailPlan.h"
 
 #include <QByteArray>  // decodeRemoteSlice / fetchRemoteSlice operate on raw bytes
 #include <QScopedValueRollback>
@@ -166,12 +167,10 @@ using namespace CubeStats;
 // the backend, LRU cache, neighbour prefetch, and drag feedback.
 
 namespace {
-vtkSmartPointer<vtkImageData> decodeRemoteSlice(const QByteArray &data, int width, int height)
-;
 void refitParallelSliceCamera(vtkRenderer *renderer, vtkImageData *sliceImage, vtkRenderWindow *win);
 RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString &datasetId,
                                        int index, const QString &sessionId,
-                                       const QString &backendToken);
+                                       const QString &backendToken, std::optional<QRect> region);
 
 void refitParallelSliceCamera(vtkRenderer *renderer, vtkImageData *sliceImage, vtkRenderWindow *win)
 {
@@ -210,14 +209,15 @@ void refitParallelSliceCamera(vtkRenderer *renderer, vtkImageData *sliceImage, v
 
 RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString &datasetId,
                                        int index, const QString &sessionId,
-                                       const QString &backendToken)
+                                       const QString &backendToken, std::optional<QRect> region)
 {
     RemoteCubeSliceResult result;
     result.index = index;
 
     BackendClient client(backendUrl, backendToken);
     client.setSessionId(sessionId);
-    const auto response = client.requestSlice(datasetId, QStringLiteral("z"), index);
+    const auto response = client.requestSlice(datasetId, QStringLiteral("z"), index,
+                                              visivo::kRemoteSliceLongestSide, region);
     if (!response.valid) {
         result.errorMessage = response.error.isEmpty() ? u"Remote slice request failed."_s
                                                        : response.error;
@@ -229,7 +229,7 @@ RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString 
         return result;
     }
 
-    result.imageData = decodeRemoteSlice(response.data, response.width, response.height);
+    result.imageData = decodeRemoteSlice(response);
     if (!result.imageData) {
         result.errorMessage = u"Invalid remote slice payload."_s;
         return result;
@@ -237,27 +237,39 @@ RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString 
 
     result.valid = true;
     result.imageRange = { response.rangeMin, response.rangeMax };
+    result.fullWidth = response.fullWidth;
+    result.fullHeight = response.fullHeight;
+    result.stride = response.stride;
+    if (region)
+        result.region = QRect(response.x0, response.y0,
+                              (response.width - 1) * response.stride + 1,
+                              (response.height - 1) * response.stride + 1);
     return result;
 }
 
-vtkSmartPointer<vtkImageData> decodeRemoteSlice(const QByteArray &data, int width, int height)
+}  // namespace
+
+// The samples sit on the plane's own pixel frame (origin x0/y0, spacing the
+// stride), so a reduced channel lies where the full one would and everything
+// placed in plane pixels (regions, probe, WCS, linked cameras) still lands.
+vtkSmartPointer<vtkImageData> decodeRemoteSlice(const BackendCubeSliceResult &response)
 {
-    const qsizetype expectedBytes =
-            static_cast<qsizetype>(width) * height * static_cast<qsizetype>(sizeof(float));
-    if (width <= 0 || height <= 0 || data.size() != expectedBytes) {
+    const qsizetype expectedBytes = static_cast<qsizetype>(response.width) * response.height
+            * static_cast<qsizetype>(sizeof(float));
+    if (response.width <= 0 || response.height <= 0 || response.data.size() != expectedBytes) {
         return nullptr;
     }
 
     vtkSmartPointer<vtkImageData> image = vtkSmartPointer<vtkImageData>::New();
-    image->SetExtent(0, width - 1, 0, height - 1, 0, 0);
-    image->SetOrigin(0., 0., 0.);
-    image->SetSpacing(1., 1., 1.);
+    image->SetExtent(0, response.width - 1, 0, response.height - 1, 0, 0);
+    image->SetOrigin(response.x0, response.y0, 0.);
+    const double stride = std::max(1, response.stride);
+    image->SetSpacing(stride, stride, 1.);
     image->AllocateScalars(VTK_FLOAT, 1);
-    std::memcpy(image->GetScalarPointer(), data.constData(), static_cast<std::size_t>(expectedBytes));
+    std::memcpy(image->GetScalarPointer(), response.data.constData(),
+                static_cast<std::size_t>(expectedBytes));
     return image;
 }
-
-}  // namespace
 
 void vtkWindowCube::requestRemoteSlice(int sliceIndex)
 {
@@ -361,6 +373,16 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     const bool backdrop = !this->m_sliceBackdropProductId.isEmpty();
     vtkImageData *img = nullptr;
     if (!backdrop) {
+        const int stride = std::max(1, result.stride);
+        int dims[3] = { 0, 0, 0 };
+        result.imageData->GetDimensions(dims);
+        this->m_displayedSliceGrid = { result.fullWidth > 0 ? result.fullWidth : dims[0] * stride,
+                                       result.fullHeight > 0 ? result.fullHeight : dims[1] * stride,
+                                       stride };
+        if (this->m_sliceDetailShown
+            && (this->m_sliceDetailShown->index != result.index
+                || this->m_sliceDetailShown->datasetId != this->remoteDatasetId))
+            this->hideSliceDetail();
         this->remoteSliceDisplaySource->SetOutput(result.imageData);
         this->remoteSliceDisplaySource->Modified();
         img = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
@@ -482,6 +504,7 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     this->updateKinematic2dContour(/*render=*/false);
     this->updateLassoMaskOverlay(/*render=*/false);
     this->sliceWin->Render();
+    this->scheduleSliceDetail();
     // Smart prefetch: schedule ±1 neighbour fetch ``idlePrefetchDelayMs``
     // from now, only when this slice was the user's explicit request
     // (prefetchAllowedForNextResult) — not a prefetched neighbour itself
@@ -636,7 +659,7 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                      });
     watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
                                          this->remoteDatasetId, sliceIndex, this->remoteSessionId,
-                                         this->remoteBackendToken));
+                                         this->remoteBackendToken, std::optional<QRect>()));
 }
 
 void vtkWindowCube::prefetchNeighborRemoteSlices(int sliceIndex)
@@ -653,4 +676,96 @@ void vtkWindowCube::prefetchNeighborRemoteSlices(int sliceIndex)
 
         this->startRemoteSliceFetch(neighbor, true);
     }
+}
+
+void vtkWindowCube::scheduleSliceDetail()
+{
+    if (this->m_sliceDetailSuspended)
+        return;
+    if (this->m_displayedSliceGrid[2] <= 1 && !this->m_sliceDetailShown)
+        return;
+    this->m_sliceDetailTimer.start();
+}
+
+void vtkWindowCube::hideSliceDetail()
+{
+    ++this->m_sliceDetailSeq;
+    this->m_sliceDetailTimer.stop();
+    this->m_sliceDetailPending.reset();
+    this->m_sliceDetailShown.reset();
+    this->m_sliceDetailActor->VisibilityOff();
+}
+
+void vtkWindowCube::refreshSliceDetail()
+{
+    auto *renderer = this->sliceWin ? this->sliceWin->GetRenderers()->GetFirstRenderer() : nullptr;
+    const int stride = this->m_displayedSliceGrid[2];
+    if (!renderer || this->m_sliceDetailSuspended || !this->m_sliceBackdropProductId.isEmpty()
+        || this->m_displayedSliceIndex < 0 || this->remoteDatasetId.isEmpty() || stride <= 1) {
+        if (this->m_sliceDetailShown || this->m_sliceDetailPending) {
+            this->hideSliceDetail();
+            if (this->sliceWin)
+                this->sliceWin->Render();
+        }
+        return;
+    }
+    vtkNew<vtkCoordinate> corner;
+    corner->SetCoordinateSystemToNormalizedViewport();
+    corner->SetValue(0., 0., 0.);
+    const double *lo = corner->GetComputedWorldValue(renderer);
+    const double lx = lo[0], ly = lo[1];
+    corner->SetValue(1., 1., 0.);
+    const double *hi = corner->GetComputedWorldValue(renderer);
+    const QRect visible = visivo::visiblePlanePixels(lx, hi[0], ly, hi[1],
+                                                     this->m_displayedSliceGrid[0],
+                                                     this->m_displayedSliceGrid[1]);
+    const auto want = visivo::sliceDetailFor(visible, this->m_displayedSliceGrid[0],
+                                             this->m_displayedSliceGrid[1], stride);
+    if (!want) {
+        if (this->m_sliceDetailShown || this->m_sliceDetailPending) {
+            this->hideSliceDetail();
+            this->sliceWin->Render();
+        }
+        return;
+    }
+    const auto sameChannel = [this](const std::optional<SliceDetailState> &s) {
+        return s && s->index == this->m_displayedSliceIndex
+                && s->datasetId == this->remoteDatasetId;
+    };
+    if (sameChannel(this->m_sliceDetailShown)
+        && visivo::sliceDetailCovers(this->m_sliceDetailShown->window, visible, *want))
+        return;
+    if (sameChannel(this->m_sliceDetailPending)
+        && visivo::sliceDetailCovers(this->m_sliceDetailPending->window, visible, *want))
+        return;
+
+    const int seq = ++this->m_sliceDetailSeq;
+    this->m_sliceDetailPending = SliceDetailState{ this->remoteDatasetId,
+                                                   this->m_displayedSliceIndex, *want };
+    auto *watcher = new QFutureWatcher<RemoteCubeSliceResult>(this);
+    QObject::connect(watcher, &QFutureWatcher<RemoteCubeSliceResult>::finished, this,
+                     [this, watcher, seq]() {
+                         watcher->deleteLater();
+                         if (seq != this->m_sliceDetailSeq || !this->m_sliceDetailPending)
+                             return;
+                         const SliceDetailState asked = *this->m_sliceDetailPending;
+                         this->m_sliceDetailPending.reset();
+                         const RemoteCubeSliceResult result = watcher->result();
+                         if (!result.valid || !result.imageData || !result.region.isValid()
+                             || asked.index != this->m_displayedSliceIndex
+                             || asked.datasetId != this->remoteDatasetId
+                             || !this->m_sliceBackdropProductId.isEmpty()
+                             || this->m_sliceDetailSuspended)
+                             return;
+                         this->m_sliceDetailColors->SetInputData(result.imageData);
+                         this->m_sliceDetailActor->VisibilityOn();
+                         this->m_sliceDetailShown = SliceDetailState{
+                             asked.datasetId, asked.index,
+                             visivo::SliceDetailWindow{ asked.window.region, result.stride } };
+                         this->sliceWin->Render();
+                     });
+    watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
+                                         this->remoteDatasetId, this->m_displayedSliceIndex,
+                                         this->remoteSessionId, this->remoteBackendToken,
+                                         std::optional<QRect>(want->region)));
 }

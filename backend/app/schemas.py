@@ -294,6 +294,17 @@ class CubeSliceRequest(BaseModel):
     dataset_id: str
     axis: str
     index: int
+    #: The longest side of the answer, in samples: the plane (or the region
+    #: below) is read every ``stride`` pixels so that neither side exceeds it.
+    #: 0 is the whole resolution, what clients before issue #381 get: a
+    #: 7233 x 7233 channel is 209 MB of float32 at full resolution.
+    max_longest_side: int = Field(0, ge=0)
+    #: The region to read, inclusive source pixels, all four or none: the part
+    #: of the plane a zoomed view shows. Clamped to the plane.
+    x0: int | None = None
+    x1: int | None = None
+    y0: int | None = None
+    y1: int | None = None
 
 
 class CubeSliceResponse(BaseModel):
@@ -306,6 +317,13 @@ class CubeSliceResponse(BaseModel):
     range_max: float = 0.0
     compression: str = ""
     data_base64: str = ""
+    #: Where the samples sit on the plane: sample (i, j) is source pixel
+    #: (x0 + i * stride, y0 + j * stride) of a full_width x full_height plane.
+    full_width: int = 0
+    full_height: int = 0
+    x0: int = 0
+    y0: int = 0
+    stride: int = 1
 
 
 class CubeSubvolumeRequest(BaseModel):

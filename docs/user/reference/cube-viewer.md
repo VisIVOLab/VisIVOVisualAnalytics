@@ -87,6 +87,11 @@ from a sample, so Min and Max may lie inside the true range.
 
 - *Channel bar*: under the 2-D Slice and under the 3-D view. Shows the channel
   number and its spectral value; both bars move together.
+- Wide channels: a channel wider than 2048 pixels arrives as every second,
+  third… pixel, so it shows in a second or two even from a cluster. Zoom in and
+  the part on screen fills in at full resolution once it is 2048 pixels or
+  fewer across. Statistics, region measurements and the probe on the slice use
+  the samples of the channel as it first arrived; a region's flux says so.
 - *Cutting plane*: the current channel drawn in the 3-D view. *View ▸ Cutting
   Plane Opacity*, or *Opacity* under *Cutting plane* in *LAYERS*, sets how much
   of the volume shows through.

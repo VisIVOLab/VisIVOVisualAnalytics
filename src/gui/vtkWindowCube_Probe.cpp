@@ -336,10 +336,22 @@ bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
     double spacing[3];
     imageData->GetOrigin(origin);
     imageData->GetSpacing(spacing);
-    const int voxelX = std::lround(extent[0] + (worldCoord[0] - origin[0]) / spacing[0]);
-    const int voxelY = std::lround(extent[2] + (worldCoord[1] - origin[1]) / spacing[1]);
+    const int sampleX = std::lround(extent[0] + (worldCoord[0] - origin[0]) / spacing[0]);
+    const int sampleY = std::lround(extent[2] + (worldCoord[1] - origin[1]) / spacing[1]);
     const int voxelZ = this->clampRemoteSliceIndex(ui->spinSlice->value() - 1);
-    if (voxelX < extent[0] || voxelX > extent[1] || voxelY < extent[2] || voxelY > extent[3]) {
+    int voxelX = sampleX, voxelY = sampleY;
+    bool onImage = sampleX >= extent[0] && sampleX <= extent[1] && sampleY >= extent[2]
+            && sampleY <= extent[3];
+    if (imageData == this->remoteSliceDisplaySource->GetOutputDataObject(0)) {
+        // The plane's own pixel (issue #381): a strided channel's plane reaches up to
+        // stride - 1 pixels past its last sample.
+        voxelX = int(std::lround(worldCoord[0]));
+        voxelY = int(std::lround(worldCoord[1]));
+        const int w = std::max(this->m_displayedSliceGrid[0], extent[1] - extent[0] + 1);
+        const int h = std::max(this->m_displayedSliceGrid[1], extent[3] - extent[2] + 1);
+        onImage = voxelX >= 0 && voxelX < w && voxelY >= 0 && voxelY < h;
+    }
+    if (!onImage) {
         if (!this->probeFrozen) {
             this->clearProbe();
         }
@@ -360,6 +372,44 @@ bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
         this->active2dWin()->Render();
     }
     return true;
+}
+
+std::array<int, 2> vtkWindowCube::probePixelOfSample(vtkImageData *image, int i, int j) const
+{
+    if (!image || image != this->remoteSliceDisplaySource->GetOutputDataObject(0))
+        return { i, j };
+    int extent[6];
+    double origin[3], spacing[3];
+    image->GetExtent(extent);
+    image->GetOrigin(origin);
+    image->GetSpacing(spacing);
+    return { int(std::lround(origin[0] + (i - extent[0]) * spacing[0])),
+             int(std::lround(origin[1] + (j - extent[2]) * spacing[1])) };
+}
+
+bool vtkWindowCube::probeSampleOfPixel(vtkImageData *image, int x, int y, int &i, int &j) const
+{
+    if (!image)
+        return false;
+    int extent[6];
+    image->GetExtent(extent);
+    i = x;
+    j = y;
+    if (image == this->remoteSliceDisplaySource->GetOutputDataObject(0)) {
+        double origin[3], spacing[3];
+        image->GetOrigin(origin);
+        image->GetSpacing(spacing);
+        if (spacing[0] == 0.0 || spacing[1] == 0.0)
+            return false;
+        i = std::clamp(int(std::lround(extent[0] + (x - origin[0]) / spacing[0])), extent[0],
+                       extent[1]);
+        j = std::clamp(int(std::lround(extent[2] + (y - origin[1]) / spacing[1])), extent[2],
+                       extent[3]);
+        const int w = std::max(this->m_displayedSliceGrid[0], extent[1] - extent[0] + 1);
+        const int h = std::max(this->m_displayedSliceGrid[1], extent[3] - extent[2] + 1);
+        return x >= 0 && x < w && y >= 0 && y < h;
+    }
+    return i >= extent[0] && i <= extent[1] && j >= extent[2] && j <= extent[3];
 }
 
 void vtkWindowCube::refreshProbeOverlay()
@@ -409,7 +459,11 @@ void vtkWindowCube::updateProbeReadout(vtkImageData *imageData)
         return;
     }
 
-    const float value = imageData->GetScalarComponentAsFloat(this->probeVoxel[0], this->probeVoxel[1], 0, 0);
+    int sampleX = 0, sampleY = 0;
+    const float value = this->probeSampleOfPixel(imageData, this->probeVoxel[0],
+                                                 this->probeVoxel[1], sampleX, sampleY)
+            ? imageData->GetScalarComponentAsFloat(sampleX, sampleY, 0, 0)
+            : std::numeric_limits<float>::quiet_NaN();
     // Value in scientific notation (spec §1.1) — the exact figure is in Inspector ›
     // Properties › STATISTICS; this readout is for a quick glance, not to quote.
     QString valueText = std::isfinite(value) ? QString::number(value, 'e', 2) : u"NaN"_s;
@@ -720,8 +774,9 @@ void vtkWindowCube::setProbeModeActive(bool active)
             int extent[6];
             imageData->GetExtent(extent);
             this->probeValid = true;
-            this->probeVoxel = { (extent[0] + extent[1]) / 2, (extent[2] + extent[3]) / 2,
-                                 this->clampRemoteSliceIndex(ui->spinSlice->value() - 1) };
+            const auto [cx, cy] = this->probePixelOfSample(imageData, (extent[0] + extent[1]) / 2,
+                                                           (extent[2] + extent[3]) / 2);
+            this->probeVoxel = { cx, cy, this->clampRemoteSliceIndex(ui->spinSlice->value() - 1) };
         }
     }
 

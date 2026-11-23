@@ -10,6 +10,7 @@
 #include "TestAnalysisParamStore.h"
 #include "TestBackendContract.h"
 #include "TestRemoteSliceCache.h"
+#include "TestSliceDetailPlan.h"
 #include "TestLinkedWindowRegistry.h"
 #include "TestLinkedCameraSync.h"
 #include "TestSnapshotTimelineSteps.h"
@@ -105,6 +106,7 @@ int main(int argc, char *argv[])
     { TestAnalysisParamStore t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendContract  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSliceDetailPlan  t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedCameraSync     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSnapshotTimelineSteps t; status |= QTest::qExec(&t, argc, argv); }
