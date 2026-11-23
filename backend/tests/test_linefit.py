@@ -85,6 +85,28 @@ class TestLineFit(unittest.TestCase):
         r = self._fit([1.0, 2.0], [0.0, 1.0])
         self.assertEqual(r.status_code, 422)
 
+    def test_fit_window_excludes_edge_spike(self):
+        x = np.linspace(0.0, 150.0, 301)
+        y = _gaussian(x, amp=1.0, mu=40.0, sigma=1.5)
+        y[x > 148.0] += 5.0
+        r = self.client.post("/v1/spectral/linefit",
+                             json={"values": list(y), "axis": list(x),
+                                   "x_min": 20.0, "x_max": 60.0},
+                             headers=self._auth)
+        self.assertEqual(r.status_code, 200, r.text)
+        d = r.json()
+        self.assertAlmostEqual(d["center"], 40.0, delta=0.05)
+        self.assertEqual(d["n_points"], 81)
+
+    def test_fit_window_with_too_few_points_422(self):
+        x = np.linspace(0.0, 10.0, 21)
+        r = self.client.post("/v1/spectral/linefit",
+                             json={"values": list(_gaussian(x, 1.0, 5.0, 1.0)),
+                                   "axis": list(x), "x_min": 4.9, "x_max": 5.6},
+                             headers=self._auth)
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("fit window", r.text)
+
 
 if __name__ == "__main__":
     unittest.main()

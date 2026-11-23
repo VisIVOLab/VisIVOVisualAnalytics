@@ -1144,12 +1144,15 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
                                         : opened.degenerateAxesSummary);
         auto *imgWin = new vtkWindowImage(path, client.baseUrl(), opened.datasetId,
                                  opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                 opened.cdelt, opened.bunit, opened.degenerateAxesSummary,
+                                 opened.cdelt,
+                                 visivo::beam::intensityUnit(opened.bunit, opened.intensityUnit),
+                                 opened.degenerateAxesSummary,
                                  opened.wcsStatus, opened.wcsWarningMessage,
                                  client.sessionId(), client.token(), this);
         if (!isDynspec) {
             imgWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
                                 opened.beamPaDeg);
+            imgWin->setUnitAndBeamSource(opened.intensityUnitNote, opened.beamSource);
         }
         imgWin->setDynamicSpectrumMode(isDynspec);
         this->wireImageViewerProducts(imgWin, client.baseUrl(), client.token(),
@@ -1181,7 +1184,9 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
         cubeWin->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg,
                              opened.beamPaDeg);
         cubeWin->setBeamPerChannel(opened.beamPerChannel);
-        cubeWin->setBrightnessUnit(opened.bunit);
+        cubeWin->setBeamSource(opened.beamSource);
+        cubeWin->setIntensityUnit(visivo::beam::intensityUnit(opened.bunit, opened.intensityUnit),
+                                  opened.intensityUnitNote);
         cubeWin->setRestFrequency(opened.restFreqHz);
         cubeWin->setServerSideRenderingAvailable(opened.serverSideRenderingAvailable);
         // The other fields of a VBT volume, each a cube of its own.
@@ -1324,9 +1329,13 @@ vtkWindowImage *MainWindow::openVlkbImageViewer(const QString &backendPath,
 
     auto *win = new vtkWindowImage(backendPath, client.baseUrl(), opened.datasetId,
                                     opened.ctype, opened.cunit, opened.crval, opened.crpix,
-                                    opened.cdelt, opened.bunit, opened.degenerateAxesSummary,
+                                    opened.cdelt,
+                                    visivo::beam::intensityUnit(opened.bunit, opened.intensityUnit),
+                                    opened.degenerateAxesSummary,
                                     opened.wcsStatus, opened.wcsWarningMessage,
                                     client.sessionId(), client.token(), this);
+    win->setBeamInfo(opened.beamMajorDeg, opened.beamMinorDeg, opened.beamPaDeg);
+    win->setUnitAndBeamSource(opened.intensityUnitNote, opened.beamSource);
     this->wireImageViewerProducts(win, client.baseUrl(), client.token(),
                                   client.sessionId(), opened.datasetId);
     // …and adopt the session, so the Data Hub's Combine entries see the datasets

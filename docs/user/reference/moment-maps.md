@@ -45,7 +45,7 @@ are left out. Where M₀ or σ is zero the pixel is NaN.
 
 | Order | Name in the dialog | Definition | Unit |
 |---|---|---|---|
-| 0 | *Moment 0: Integrated intensity (M0)* | M₀ = Σ Iᵢ Δvᵢ | `BUNIT` × spectral unit |
+| 0 | *Moment 0: Integrated intensity (M0)* | M₀ = Σ Iᵢ Δvᵢ | `BUNIT` × spectral unit (see below) |
 | 1 | *Moment 1: Intensity-weighted coordinate (M1)* | Σ Iᵢ vᵢ Δvᵢ / M₀, the line centroid | spectral unit |
 | 2 | *Moment 2: Spectral dispersion σ (M2)* | √(Σ Iᵢ (vᵢ − M₁)² Δvᵢ / M₀), a standard deviation, not a FWHM | spectral unit |
 | 3 | *Moment 3: Skewness (M3)* | μ₃ / σ³; positive means a tail on the high-velocity side | none |
@@ -54,6 +54,17 @@ are left out. Where M₀ or σ is zero the pixel is NaN.
 | 6 | *Moment 6: RMS (M6)* | √(Σ Iᵢ² Δvᵢ / Σ Δvᵢ) | `BUNIT` |
 | 8 | *Moment 8: Maximum (M8)* | max(I), the peak map | `BUNIT` |
 | 10 | *Moment 10: Minimum (M10)* | min(I), for absorption | `BUNIT` |
+
+When the cube has no `BUNIT`, the intensity unit is taken from a `TEMPSCAL`
+that names a temperature scale (K; JCMT cubes such as CHIMPS write
+`TEMPSCAL = 'TA*'`, the corrected antenna temperature T_A*, not the
+main-beam temperature T_mb: values are not converted, which needs the
+main-beam efficiency), or from a `BTYPE` or `LABEL` that names a temperature
+(*Brightness Temperature*, *Tb*, *Tmb*, …; K). With none of these the moment-0 unit reads *(unknown) × km/s*, and a
+saved FITS map has no `BUNIT` but a `COMMENT` saying the unit is unknown; it
+is never labelled km/s. Where the unit was inferred, the saved map carries a
+`COMMENT` naming the keyword it came from, and `TEMPSCAL` (and `ETAL`) are
+copied from the cube; PV diagrams saved as FITS do the same.
 
 For a FWHM or equivalent width per pixel use the line-width map
 ([Spectral analysis tools](spectral-tools.md)).

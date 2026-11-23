@@ -344,3 +344,138 @@ void TestRegionFlux::fluxAndMassText()
     QCOMPARE(formatHiMass(4.89e8, std::nan("")), u"4.89 × 10^8 M☉"_s);
     QCOMPARE(formatHiMass(-1e7, 1e7), u"-1e+07 M☉"_s);
 }
+
+void TestRegionFlux::everyUnitKindIsRecognised()
+{
+    QVERIFY(parseFluxUnit(u"Jy/beam"_s).kind == UnitKind::PerBeam);
+    const FluxUnit pixel = parseFluxUnit(u"Jy/pixel"_s);
+    QVERIFY(pixel.kind == UnitKind::PerPixel);
+    QCOMPARE(pixel.label, u"Jy"_s);
+    QVERIFY(parseFluxUnit(u"JY/PIX"_s).kind == UnitKind::PerPixel);
+    const FluxUnit sr = parseFluxUnit(u"MJy/sr"_s);
+    QVERIFY(sr.kind == UnitKind::PerSteradian);
+    QCOMPARE(sr.scale, 1e6);
+    const FluxUnit k = parseFluxUnit(u"K"_s);
+    QVERIFY(k.kind == UnitKind::Temperature);
+    QCOMPARE(k.label, u"K"_s);
+    const FluxUnit w = parseFluxUnit(u"K km/s"_s);   // a CHIMPS moment 0 (#416)
+    QVERIFY(w.kind == UnitKind::Temperature);
+    QVERIFY(w.velocity);
+    QCOMPARE(w.label, u"K km/s"_s);
+    QVERIFY(parseFluxUnit(u"mK"_s).scale == 1e-3);
+    QVERIFY(parseFluxUnit(QString()).kind == UnitKind::Unknown);
+    QVERIFY(parseFluxUnit(u"(unknown) × km/s"_s).kind == UnitKind::Unknown);
+    QVERIFY(parseFluxUnit(u"km/s"_s).kind == UnitKind::Unknown);
+    QVERIFY(parseFluxUnit(u"ADU"_s).kind == UnitKind::Unknown);
+}
+
+void TestRegionFlux::aJyPerPixelMapSumsWithoutTheBeam()
+{
+    const FluxUnit u = parseFluxUnit(u"Jy/pixel"_s);
+    Noise n;
+    n.sigma = 0.5;
+    // No beam: the pixels count as independent, σ√N.
+    const RegionFlux free = regionFlux(120.0, 100, 0.0, u, n);
+    QVERIFY(free.valid);
+    QCOMPARE(free.flux, 120.0);
+    QVERIFY(std::abs(free.error - 0.5 * 10.0) < 1e-12);
+    QCOMPARE(free.unit, u"Jy"_s);
+    // With a beam of 10 pixels: N·Ω correlated samples, σ√(N·Ω).
+    const RegionFlux beamed = regionFlux(120.0, 100, 10.0, u, n);
+    QCOMPARE(beamed.flux, 120.0);
+    QVERIFY(std::abs(beamed.error - 0.5 * std::sqrt(1000.0)) < 1e-12);
+    QVERIFY(fluxCaveat(u, false).contains(u"independent pixels"_s));
+}
+
+void TestRegionFlux::aSurfaceBrightnessMapIsMultipliedByThePixelSolidAngle()
+{
+    // MJy/sr on 6″ pixels: Ω_pix = (6/206265)² sr.
+    const double cdelt = 6.0 / 3600.0;
+    const double pixelSr = std::pow(6.0 / 206264.80624709636, 2.0);
+    const RegionFlux f =
+            regionFlux(50.0, 10, 0.0, parseFluxUnit(u"MJy/sr"_s), Noise{}, 1.0, cdelt * cdelt);
+    QVERIFY(f.valid);
+    QVERIFY(std::abs(f.flux / (50.0 * 1e6 * pixelSr) - 1.0) < 1e-9);
+    QCOMPARE(f.unit, u"Jy"_s);
+    // Without a pixel size there is nothing to multiply by.
+    QVERIFY(!regionFlux(50.0, 10, 0.0, parseFluxUnit(u"MJy/sr"_s), Noise{}).valid);
+}
+
+void TestRegionFlux::aTemperatureMapGivesBrightnessTimesAreaNotJy()
+{
+    // CHIMPS-like moment 0 on 7.32″ pixels: Σ W ΔΩ in K km/s arcsec².
+    const double cdelt = 7.32 / 3600.0;
+    const FluxUnit u = parseFluxUnit(u"K km/s"_s);
+    Noise n;
+    n.sigma = 0.2;
+    const RegionFlux f = regionFlux(40.0, 20, 0.0, u, n, 1.0, cdelt * cdelt);
+    QVERIFY(f.valid);
+    QVERIFY(std::abs(f.flux - 40.0 * 7.32 * 7.32) < 1e-9);
+    QCOMPARE(f.unit, u"K km/s arcsec²"_s);
+    QVERIFY(std::abs(f.error - 0.2 * std::sqrt(20.0) * 7.32 * 7.32) < 1e-9);
+    QVERIFY(fluxCaveat(u, false).contains(u"not converted to Jy"_s));
+    QVERIFY(!hiMassApplies(u, 0.0));
+}
+
+void TestRegionFlux::aRegionSmallerThanTheBeamIsOneSample()
+{
+    // 5 pixels in a 25-pixel beam: fully correlated, error Nσ/Ω, not σ√(N/Ω).
+    Noise n;
+    n.sigma = 1.0;
+    const RegionFlux f = regionFlux(10.0, 5, 25.0, parseFluxUnit(u"Jy/beam"_s), n);
+    QVERIFY(std::abs(f.error - 5.0 / 25.0) < 1e-12);
+}
+
+void TestRegionFlux::unitsWithUnreadTailsAreUnknown()
+{
+    QVERIFY(parseFluxUnit(u"K km/s/beam"_s).kind == UnitKind::Unknown);
+    QVERIFY(parseFluxUnit(u"K (T_A*)"_s).kind == UnitKind::Unknown);
+    QVERIFY(parseFluxUnit(u"KM/S"_s).kind == UnitKind::Unknown);
+    QVERIFY(parseFluxUnit(u"JY/BEAM KM/S"_s).kind == UnitKind::PerBeam);
+    // A frequency-integrated Jy/pixel or K map goes to km/s like a Jy/beam one.
+    const FluxUnit pixelHz = withRestFrequency(parseFluxUnit(u"Jy/pixel Hz"_s), kHiRestHz);
+    QVERIFY(pixelHz.velocity);
+    QCOMPARE(pixelHz.label, u"Jy km/s"_s);
+    QVERIFY(hiMassApplies(pixelHz, kHiRestHz));
+    const FluxUnit kelvinHz = withRestFrequency(parseFluxUnit(u"K MHz"_s), 345.796e9);
+    QCOMPARE(kelvinHz.label, u"K km/s"_s);
+    // A reduced map counts blocks for the non-beam kinds as well.
+    Noise n;
+    n.sigma = 1.0;
+    const FluxUnit u = parseFluxUnit(u"Jy/pixel"_s);
+    const RegionFlux full = regionFlux(400.0, 400, 0.0, u, n);
+    const RegionFlux reduced = regionFlux(100.0, 100, 0.0, u, n, 4.0);
+    QVERIFY(std::abs(full.flux - reduced.flux) < 1e-12);
+    QVERIFY(std::abs(full.error - reduced.error) < 1e-12);
+}
+
+void TestRegionFlux::aFluxIsRefusedWithTheReason()
+{
+    QVERIFY(fluxRefusal(parseFluxUnit(u"Jy/beam"_s), u"Jy/beam"_s, 0.0, 0.0)
+                    .contains(u"pixel size"_s));
+    QVERIFY(fluxRefusal(parseFluxUnit(QString()), QString(), 25.0, 1e-6)
+                    .contains(u"unknown"_s));
+    QVERIFY(fluxRefusal(parseFluxUnit(u"(unknown) × km/s"_s), u"(unknown) × km/s"_s, 25.0, 1e-6)
+                    .contains(u"unknown"_s));
+    QVERIFY(fluxRefusal(parseFluxUnit(u"ADU"_s), u"ADU"_s, 25.0, 1e-6).contains(u"ADU"_s));
+    QVERIFY(fluxRefusal(parseFluxUnit(u"Jy/beam"_s), u"Jy/beam"_s, 0.0, 1e-6)
+                    .contains(u"no beam"_s));
+    QVERIFY(fluxRefusal(parseFluxUnit(u"K"_s), u"K"_s, 0.0, 0.0).contains(u"pixel size"_s));
+    QVERIFY(fluxRefusal(parseFluxUnit(u"Jy/beam"_s), u"Jy/beam"_s, 25.0, 1e-6).isEmpty());
+    QVERIFY(fluxRefusal(parseFluxUnit(u"Jy/pixel"_s), u"Jy/pixel"_s, 0.0, 0.0).isEmpty());
+    QVERIFY(fluxRefusal(parseFluxUnit(u"K km/s"_s), u"K km/s"_s, 0.0, 1e-6).isEmpty());
+}
+
+void TestRegionFlux::anHiMassOnlyForTheTwentyOneCentimetreLine()
+{
+    const FluxUnit jyKms = parseFluxUnit(u"Jy/beam km/s"_s);
+    QString note;
+    QVERIFY(hiMassApplies(jyKms, 1420405751.768, &note));
+    QVERIFY(note.isEmpty());
+    QVERIFY(!hiMassApplies(jyKms, 230.538e9));   // a CO 2-1 moment 0
+    QVERIFY(hiMassApplies(jyKms, 0.0, &note));   // no rest frequency: assumed, and said
+    QVERIFY(note.contains(u"21-cm"_s));
+    QVERIFY(hiMassApplies(parseFluxUnit(u"Jy/pixel km/s"_s), 1420405751.768));
+    QVERIFY(!hiMassApplies(parseFluxUnit(u"Jy/beam"_s), 1420405751.768));
+    QVERIFY(!hiMassApplies(parseFluxUnit(u"K km/s"_s), 1420405751.768));
+}
