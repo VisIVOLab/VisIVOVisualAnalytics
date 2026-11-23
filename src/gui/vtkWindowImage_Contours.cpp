@@ -48,7 +48,6 @@
 #include <vtkPoints.h>
 #include <vtkCellArray.h>
 #include <vtkPolyData.h>
-#include "vtkFITSReader.h"
 #include <vtkContourFilter.h>
 #include <vtkFlyingEdges2D.h>
 #include <vtkPolyDataMapper.h>
@@ -75,7 +74,6 @@
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QDoubleValidator>
 #include <QFormLayout>
