@@ -118,8 +118,9 @@ In a Cartesian table (VBT points, Gadget snapshots, Cartesian catalogues):
   task: the progress bar shows how far it has gone, and *Cancel* stops the
   task. It takes one of the session's compute slots, so while a moment map or
   a ray-traced render holds them the dialog says the backend is busy. *Save CSV…* keeps the numbers with
-  their units and selection, *Save PNG…* the plot. Non-finite values and
-  negative weights are left out and counted. The dialog has two more tabs,
+  their units and selection, *Save PNG…* the plot. Non-finite values are
+  left out and counted; a negative or non-finite weight counts as zero, so
+  choosing a weight never changes the unweighted statistics. The dialog has two more tabs,
   computed the same way (one run at a time, with progress and *Cancel*):
   - *Radial profile*: density (log-log), enclosed mass, and the
     mass-weighted median and 16–84th percentiles of the quantities ticked,

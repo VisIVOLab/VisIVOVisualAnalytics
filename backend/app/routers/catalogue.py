@@ -350,7 +350,12 @@ def _diagnostic_accumulate(chunks, field_range, bins: int, weighted: bool,
     The variance combines each chunk's count, mean and squared deviations
     (Chan et al.'s pairwise update), not sum(x^2)/n - mean^2, which loses
     every digit when the spread is small beside the mean (positions far from
-    the origin, masses around 1e10)."""
+    the origin, masses around 1e10).
+
+    The unweighted statistics (finite_rows, minimum, maximum, mean, stddev)
+    cover every finite value and do not depend on the weight field; a row
+    whose weight is not finite or is negative counts with weight zero in the
+    weighted mean, weight sum and histogram."""
     passes = 1 if field_range is not None else 2
 
     def chunks_of(index):
@@ -366,8 +371,11 @@ def _diagnostic_accumulate(chunks, field_range, bins: int, weighted: bool,
         values = np.asarray(values, dtype=np.float64)
         keep = np.isfinite(values)
         if weighted:
+            # A row with an unusable weight stays in the unweighted numbers
+            # (count, range, mean, stddev) and weighs nothing in the weighted
+            # ones, so choosing a weight field never changes the former.
             weights = np.asarray(weights, dtype=np.float64)
-            keep &= np.isfinite(weights) & (weights >= 0.0)
+            weights = np.where(np.isfinite(weights) & (weights >= 0.0), weights, 0.0)
             return values[keep], weights[keep], values.size
         return values[keep], None, values.size
 

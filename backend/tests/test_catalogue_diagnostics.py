@@ -39,9 +39,23 @@ def test_weighted_histogram_and_mean_state_the_actual_weight_sum():
 def test_nonfinite_values_and_invalid_weights_are_excluded_consistently():
     result = _calculate([1, np.nan, 3, 4], [2, 9, -1, np.inf], bins=2)
     assert result["selected_rows"] == 4
-    assert result["finite_rows"] == 1
-    assert result["minimum"] == result["maximum"] == 1
+    # The unweighted numbers cover every finite value, whatever the weights.
+    assert result["finite_rows"] == 3
+    assert result["minimum"] == 1 and result["maximum"] == 4
+    assert result["mean"] == pytest.approx(8.0 / 3.0)
+    # Unusable weights weigh nothing in the weighted ones.
+    assert result["weight_sum"] == pytest.approx(2.0)
+    assert result["weighted_mean"] == pytest.approx(1.0)
     assert sum(result["counts"]) == pytest.approx(2.0)
+
+
+def test_unweighted_statistics_do_not_depend_on_the_weight_choice():
+    values = [1.0, 2.0, 3.0, 10.0, np.nan]
+    plain = _calculate(values, bins=4, field_range=(0, 12))
+    weighted = _calculate(values, [0.0, -1.0, np.nan, 5.0, 1.0], bins=4,
+                          field_range=(0, 12))
+    for key in ("selected_rows", "finite_rows", "minimum", "maximum", "mean", "stddev"):
+        assert weighted[key] == plain[key], key
 
 
 def test_empty_finite_population_has_an_actionable_error():

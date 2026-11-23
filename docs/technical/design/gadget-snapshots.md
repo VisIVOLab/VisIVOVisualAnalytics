@@ -306,9 +306,9 @@ memory-mapped particle table in bounded chunks. A first pass determines exact
 finite-population counts, extrema and moments; a second pass fills the bins.
 The route therefore does not retain the selected population in memory and its
 memory use is independent of the snapshot size. Ordinary catalogue dataframes
-use the same accumulator after applying their complete query filters. Weighted
-results reject non-finite and negative weights, while unweighted results reject
-only non-finite field values.
+use the same accumulator after applying their complete query filters. Non-finite
+field values are rejected; a non-finite or negative weight counts as zero in
+the weighted results, so the unweighted ones never change with the weight.
 
 Both passes read one chunk at a time, through the matcher for a component or
 a million rows of the loaded table at a time (only the columns needed), and
