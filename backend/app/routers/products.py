@@ -533,3 +533,153 @@ async def image_quality(
         logger.warning("[image_quality] failed dataset_id=%s error=%s", request.dataset_id, exc)
         return ImageQualityResponse(valid=False, error=str(exc))
     return ImageQualityResponse(valid=True, metrics=metrics)
+
+
+# ── LTE analysis of CO isotopologues (issue #416, item 4) ────────────────────
+# Optical depth from the 13CO/C18O ratio, T_ex, LTE column densities, N(H2)
+# and mass, as maps and per region. Physics in app/lte_co.py, data handling
+# and provenance in app/lte_products.py.
+
+class LteMeasurements(BaseModel):
+    """The integrals of one region measured elsewhere (e.g. Gaussian fits of
+    its mean spectra), in K km/s on the scale ``scale``, with 1-sigma errors."""
+    w_13co: float
+    sigma_13co: float = Field(ge=0)
+    w_c18o: float
+    sigma_c18o: float = Field(ge=0)
+    scale: Literal["ta*", "tmb"] = "ta*"
+    #: Peak temperatures (K, same scale) for T_ex: 12CO taken as optically thick,
+    #: or 13CO with the optical depth at the peak from the ratio of the peaks.
+    peak_13co: float | None = None
+    peak_c18o: float | None = None
+    peak_12co: float | None = None
+    #: For R_GC from a distance, and for the mass.
+    glon_deg: float | None = None
+    glat_deg: float | None = None
+    n_pixels: int | None = Field(None, ge=1)
+    pixel_arcsec: float | None = Field(None, gt=0)
+
+
+class LteCoRequest(BaseModel):
+    transition: Literal["1-0", "3-2"]
+    dataset_id_13co: str = ""
+    dataset_id_c18o: str = ""
+    dataset_id_12co: str = ""
+    measurements: LteMeasurements | None = None
+    #: The line's velocity window (km/s) when a dataset is a cube.
+    v_min_kms: float | None = None
+    v_max_kms: float | None = None
+    #: Noise: K per channel for a cube, K km/s for an integrated map; measured
+    #: from the data when absent.
+    rms_13co: float | None = Field(None, gt=0)
+    rms_c18o: float | None = Field(None, gt=0)
+    snr_min: float = Field(3.0, ge=0)
+    #: Main-beam efficiencies; from the header when it names one, else required.
+    eta_mb_13co: float | None = None
+    eta_mb_c18o: float | None = None
+    eta_mb_12co: float | None = None
+    #: X(13CO)/X(C18O); else from the galactocentric gradients at R_GC.
+    x_ratio: float | None = None
+    r_gc_kpc: float | None = Field(None, ge=0)
+    distance_kpc: float | None = Field(None, gt=0)
+    carbon_gradient: Literal["milam2005", "wilson_rood1994"] = "milam2005"
+    #: Fixed T_ex (K); else from 12CO, else from the 13CO peak and its optical depth.
+    t_ex_k: float | None = None
+    h2_from: Literal["c18o", "13co"] = "c18o"
+    x12co: float = Field(8.5e-5, gt=0)
+    abundance_c18o: float | None = Field(None, gt=0)
+    abundance_13co: float | None = Field(None, gt=0)
+    mu_h2: float = Field(2.8, gt=0)
+    #: Canonical image-frame regions (0-based pixels) on the 13CO grid.
+    regions: list[dict[str, Any]] = Field(default_factory=list)
+    write_maps: bool = True
+    output_basename: str = ""
+
+
+class LteMapResult(BaseModel):
+    quantity: str
+    output_path: str
+    workspace_filename: str
+    bunit: str
+    range_min: float
+    range_max: float
+
+
+class LteCoResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    width: int = 0
+    height: int = 0
+    assumptions: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    regions: list[dict[str, Any]] = Field(default_factory=list)
+    maps: list[LteMapResult] = Field(default_factory=list)
+    pixel_flags: dict[str, int] = Field(default_factory=dict)
+
+
+@router.post("/v1/products/lte_co", response_model=LteCoResponse, tags=["products"])
+async def lte_co(
+    request: LteCoRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> LteCoResponse:
+    """LTE analysis of 13CO and C18O (optionally 12CO): optical depth from the
+    line ratio, T_ex, opacity-corrected column densities, N(H2) and mass, per
+    region and as FITS maps whose headers record every assumption."""
+    from ..lte_products import MAP_QUANTITIES, _remove_files, run_lte_job  # noqa: PLC0415
+    paths: dict[str, str | None] = {"13co": None, "c18o": None, "12co": None}
+    kinds: dict[str, str] = {}
+    if request.measurements is None:
+        for key, ds_id in (("13co", request.dataset_id_13co), ("c18o", request.dataset_id_c18o),
+                           ("12co", request.dataset_id_12co)):
+            if not ds_id:
+                continue
+            entry = _require_dataset(session, ds_id)
+            if entry["kind"] not in ("cube", "image"):
+                raise HTTPException(422, f"The {key} dataset must be a cube or a 2-D map.")
+            paths[key], kinds[key] = entry["path"], entry["kind"]
+        if not paths["13co"] or not paths["c18o"]:
+            raise HTTPException(422, "Give dataset_id_13co and dataset_id_c18o, or measurements.")
+    if not await acquire_task_slot(session):
+        raise task_slot_busy_error()
+    reserved: list[Path] = []
+    try:
+        outputs: dict[str, str] = {}
+        if request.measurements is None and request.write_maps:
+            stem = request.output_basename.strip() or f"{_fits_stem(paths['13co'])}_lte"
+            stem = _fits_stem(stem)
+            for q in MAP_QUANTITIES:
+                p = make_workspace_path(f"{stem}_{q}.fits", reserve=True)
+                reserved.append(p)
+                outputs[q] = str(p)
+    except Exception as exc:
+        session.release_task_slot()
+        _remove_files([str(p) for p in reserved])
+        return LteCoResponse(valid=False, error=str(exc))
+    try:
+        # The job owns its files from here: run in a thread, it finishes (and
+        # cleans up) even when the request is cancelled.
+        result = await asyncio.to_thread(
+            run_lte_job, request.model_dump(mode="json"),
+            path13=paths["13co"], path18=paths["c18o"], path12=paths["12co"],
+            kinds=kinds, output_paths=outputs)
+    except Exception as exc:
+        logger.warning("[lte_co] failed error=%s", exc)
+        return LteCoResponse(valid=False, error=str(exc))
+    finally:
+        session.release_task_slot()
+    maps = [LteMapResult(workspace_filename=Path(m["output_path"]).name, **m)
+            for m in result["maps"]]
+    return LteCoResponse(valid=True, width=result["width"], height=result["height"],
+                         assumptions=result["assumptions"], warnings=result["warnings"],
+                         regions=result["regions"], maps=maps,
+                         pixel_flags=result["pixel_flags"])
+
+
+def _fits_stem(name: str) -> str:
+    """The name without .fits, .fit or .fits.gz (``Path.stem`` keeps ".fits" of ".fits.gz")."""
+    base = Path(name).name
+    for ext in (".fits.gz", ".fits", ".fit", ".fts"):
+        if base.lower().endswith(ext):
+            return base[: -len(ext)]
+    return base

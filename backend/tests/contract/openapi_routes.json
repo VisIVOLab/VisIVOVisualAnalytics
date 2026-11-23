@@ -167,6 +167,7 @@
     "POST /v1/polarisation/rmsynthesis/{dataset_id}/binary",
     "POST /v1/products/image_quality",
     "POST /v1/products/isosurface",
+    "POST /v1/products/lte_co",
     "POST /v1/products/map_math",
     "POST /v1/products/moment",
     "POST /v1/products/moment_fits",
