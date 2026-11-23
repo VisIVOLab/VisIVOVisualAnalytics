@@ -119,7 +119,27 @@ In a Cartesian table (VBT points, Gadget snapshots, Cartesian catalogues):
   task. It takes one of the session's compute slots, so while a moment map or
   a ray-traced render holds them the dialog says the backend is busy. *Save CSV…* keeps the numbers with
   their units and selection, *Save PNG…* the plot. Non-finite values and
-  negative weights are left out and counted.
+  negative weights are left out and counted. The dialog has two more tabs,
+  computed the same way (one run at a time, with progress and *Cancel*):
+  - *Radial profile*: density (log-log), enclosed mass, and the
+    mass-weighted median and 16–84th percentiles of the quantities ticked,
+    in log-spaced shells around a centre. The centre is the shrinking-sphere
+    centre (Power et al. 2003) by default, a typed point or the particle
+    selected in the window, or the SubFind group or subhalo selected in a
+    SubFind window of the same session. With velocities, σ_r, σ_θ, σ_φ and
+    β follow, about the *Polar axis* (the central particles' angular
+    momentum by default, or x, y, z). Velocities are peculiar, relative to
+    the centre's. Shells reaching past the selected region or half the box
+    are drawn hollow.
+  - *Phase diagram*: a 2-D histogram of two quantities (linear or log, bins
+    per axis), counted or weighted, drawn as log10 with a colour bar; radius
+    and radial_velocity use the profile tab's centre. The line under it
+    gives the selected, binned, outside and dropped rows (and weights), which
+    add up.
+
+  Values are in the table's units as it states them (comoving and /h where
+  the run uses them); the CSV gives the provenance and the factors to
+  physical units.
 
 ## Catalogue overlay on cubes / images
 

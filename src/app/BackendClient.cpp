@@ -3201,6 +3201,92 @@ BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnosticsFollowing
     return result;
 }
 
+BackendTaskCreateResult BackendClient::createCatalogueTask(const QString &route,
+                                                         const QJsonObject &body) const
+{
+    BackendTaskCreateResult result;
+    if (visivo::refuseTaskWhileQuitting(result.error))
+        return result;
+    QString error;
+    const QByteArray payload = performPost(QUrl(m_baseUrl + route), QJsonDocument(body), error,
+                                           nullptr, &result.httpStatus);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.taskId = object.value(QStringLiteral("task_id")).toString();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false) && !result.taskId.isEmpty();
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.status = object.value(QStringLiteral("status")).toString();
+    return result;
+}
+
+namespace {
+
+QJsonObject selectionBody(const QString &datasetId,
+                          const std::vector<BackendTabularFilter> &filters)
+{
+    BackendTabularQueryRequest query;
+    query.datasetId = datasetId;
+    query.filters = filters;
+    return buildTabularQueryBody(query);
+}
+
+/// A profile or phase-diagram task followed to its end. These routes came
+/// with their task routes, so there is no synchronous fallback: a backend
+/// without them is told to be updated.
+template <typename Result, typename Parse>
+Result followCatalogueTask(const BackendClient &client, const BackendTaskCreateResult &created,
+                           const QString &operation, visivo::BackendTaskControl *control,
+                           Parse parse)
+{
+    visivo::TaskPollPolicy policy;
+    policy.progressIsMeasured = true;
+    const visivo::TaskFollowResult followed = visivo::followBackendTask(
+            client, created, QStringLiteral("[%1][task]").arg(operation), control, policy);
+    if (followed.outcome == visivo::TaskOutcome::Completed)
+        return parse(followed.status.resultObject);
+    Result result;
+    if (followed.fallBackToSync()) {
+        result.error = QStringLiteral("This backend has no %1 route; update it.").arg(operation);
+        return result;
+    }
+    result.error = followed.error;
+    result.cancelled = followed.stoppedByUser();
+    return result;
+}
+
+}   // namespace
+
+visivo::profiles::ProfileResult BackendClient::catalogueProfileFollowingTask(
+        const visivo::profiles::ProfileRequest &req,
+        const std::vector<BackendTabularFilter> &filters,
+        visivo::BackendTaskControl *control) const
+{
+    QJsonObject body = selectionBody(req.datasetId, filters);
+    visivo::profiles::addProfileFields(body, req);
+    const BackendTaskCreateResult created =
+            createCatalogueTask(QStringLiteral("/v1/tasks/catalogue_profile"), body);
+    return followCatalogueTask<visivo::profiles::ProfileResult>(
+            *this, created, QStringLiteral("catalogue_profile"), control,
+            [](const QJsonObject &o) { return visivo::profiles::parseProfile(o); });
+}
+
+visivo::profiles::PhaseResult BackendClient::cataloguePhaseDiagramFollowingTask(
+        const visivo::profiles::PhaseRequest &req,
+        const std::vector<BackendTabularFilter> &filters,
+        visivo::BackendTaskControl *control) const
+{
+    QJsonObject body = selectionBody(req.datasetId, filters);
+    visivo::profiles::addPhaseFields(body, req);
+    const BackendTaskCreateResult created =
+            createCatalogueTask(QStringLiteral("/v1/tasks/catalogue_phase_diagram"), body);
+    return followCatalogueTask<visivo::profiles::PhaseResult>(
+            *this, created, QStringLiteral("catalogue_phase_diagram"), control,
+            [](const QJsonObject &o) { return visivo::profiles::parsePhase(o); });
+}
+
 BackendCatalogueDiagnosticsResponse BackendClient::parseCatalogueDiagnostics(
         const QJsonObject &object)
 {

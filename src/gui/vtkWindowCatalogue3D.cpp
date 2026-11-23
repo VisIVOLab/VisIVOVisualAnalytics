@@ -1155,6 +1155,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                         this->m_appliedFilters.filters(), this);
                 QObject::connect(this, &vtkWindowCatalogue3D::appliedFiltersChanged, dialog,
                                  &SimulationDiagnosticsDialog::setFilters);
+                const QPointer<vtkWindowCatalogue3D> self(this);
+                dialog->setCentreSources(
+                        [self]() -> std::optional<std::array<double, 3>> {
+                            return self ? self->selectedPosition() : std::nullopt;
+                        },
+                        [self]() -> std::optional<visivo::profiles::CentreChoice> {
+                            return self ? self->subfindTargetInSession() : std::nullopt;
+                        });
                 dialog->show();
                 dialog->raise();
                 dialog->activateWindow();

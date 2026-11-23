@@ -231,6 +231,8 @@ add_executable(VisIVOTests
     test_particle_light_report.cpp
     TestDiagnosticsTask.h
     test_diagnostics_task.cpp
+    TestParticleProfiles.h
+    test_particle_profiles.cpp
     TestParticleTableRule.h
     test_particle_table_rule.cpp
     TestSamp.h

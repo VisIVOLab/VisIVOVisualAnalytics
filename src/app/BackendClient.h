@@ -3,6 +3,7 @@
 
 #include "DatasetBeam.h"
 #include "FilePreview.h"
+#include "ParticleProfiles.h"
 #include "VbtByteOrder.h"
 
 #include <QByteArray>
@@ -2568,6 +2569,22 @@ public:
     /// A diagnostics response from its JSON (the route's answer or the
     /// task's result).
     static BackendCatalogueDiagnosticsResponse parseCatalogueDiagnostics(const QJsonObject &object);
+    /** POST @p route (a /v1/tasks/... path) with @p body: the task it started. */
+    BackendTaskCreateResult createCatalogueTask(const QString &route,
+                                                const QJsonObject &body) const;
+    /** The radial profile of the particles matching @p filters (issue #426),
+     *  through /v1/tasks/catalogue_profile, followed to its end like
+     *  catalogueDiagnosticsFollowingTask(). Blocks: call it on a worker. */
+    visivo::profiles::ProfileResult catalogueProfileFollowingTask(
+            const visivo::profiles::ProfileRequest &req,
+            const std::vector<BackendTabularFilter> &filters,
+            visivo::BackendTaskControl *control) const;
+    /** The phase diagram of the particles matching @p filters, through
+     *  /v1/tasks/catalogue_phase_diagram. Blocks: call it on a worker. */
+    visivo::profiles::PhaseResult cataloguePhaseDiagramFollowingTask(
+            const visivo::profiles::PhaseRequest &req,
+            const std::vector<BackendTabularFilter> &filters,
+            visivo::BackendTaskControl *control) const;
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
