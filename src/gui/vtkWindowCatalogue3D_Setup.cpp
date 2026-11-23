@@ -11,6 +11,7 @@
 #include "Catalogue3DTableModel.h"
 #include "Catalogue3DParser.h"
 #include "CataloguePlacement.h"
+#include "SubfindTargetFraming.h"
 #include "theme/VisivoTheme.h"
 #include "WorkspaceChrome.h"
 #include "InspectorPanel.h"
@@ -78,6 +79,7 @@
 #include <QSlider>
 #include <QTableView>
 #include <QTextEdit>
+#include <QTimer>
 #include <QVBoxLayout>
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
@@ -95,6 +97,29 @@
 #include "CatalogueWcsUtil.h"
 
 using namespace Qt::StringLiterals;
+
+static QString particleUnitsSummary(const QJsonObject &units)
+{
+    QStringList values;
+    for (auto it = units.constBegin(); it != units.constEnd(); ++it)
+        values << u"%1: %2"_s.arg(it.key(), it.value().toString());
+    return values.join(u"; "_s);
+}
+
+static QString particlePhysicalSummary(const QJsonObject &physical)
+{
+    QStringList values;
+    for (auto it = physical.constBegin(); it != physical.constEnd(); ++it) {
+        const QJsonObject conversion = it.value().toObject();
+        if (conversion.isEmpty())
+            continue;
+        values << u"%1: ×%2 → %3"_s.arg(
+                it.key(),
+                QString::number(conversion.value(u"factor"_s).toDouble(), 'g', 6),
+                conversion.value(u"unit"_s).toString());
+    }
+    return values.join(u"; "_s);
+}
 
 // ── Setup ──
 // Extracted verbatim from vtkWindowCatalogue3D.cpp.
@@ -126,6 +151,92 @@ void vtkWindowCatalogue3D::buildControlPages()
         auto *vizHdr = new QLabel(u"VISUALIZATION"_s, pageViz);
         vizHdr->setStyleSheet(hdrStyle);
         pageLayout->addWidget(vizHdr);
+
+        // A comparison used to be visible only as a suffix in the window title.
+        // Keep its meaning beside the controls the user is actually changing.
+        this->m_comparisonCard = new QFrame(pageViz);
+        this->m_comparisonCard->setObjectName(u"comparisonCard"_s);
+        this->m_comparisonCard->setStyleSheet(
+                cardStyle
+                + u"QFrame#comparisonCard { border: 1px solid #0099cc; }"_s);
+        auto *comparisonLayout = new QVBoxLayout(this->m_comparisonCard);
+        comparisonLayout->setContentsMargins(8, 8, 8, 8);
+        comparisonLayout->setSpacing(6);
+        this->m_comparisonSummary = new QLabel(this->m_comparisonCard);
+        this->m_comparisonSummary->setWordWrap(true);
+        this->m_comparisonSummary->setTextFormat(Qt::RichText);
+        comparisonLayout->addWidget(this->m_comparisonSummary);
+        auto *comparisonButtons = new QHBoxLayout;
+        this->m_comparisonLinkToggle = new QPushButton(u"Linked"_s,
+                                                       this->m_comparisonCard);
+        this->m_comparisonLinkToggle->setCheckable(true);
+        this->m_comparisonLinkToggle->setChecked(true);
+        this->m_comparisonLinkToggle->setToolTip(
+                u"Link camera and source selection to the comparison group. "
+                 "Rendering follows only while Match rendering is enabled."_s);
+        comparisonButtons->addWidget(this->m_comparisonLinkToggle);
+        this->m_comparisonRepresentationToggle = new QCheckBox(
+                u"Match rendering"_s, this->m_comparisonCard);
+        this->m_comparisonRepresentationToggle->setChecked(true);
+        this->m_comparisonRepresentationToggle->setToolTip(
+                u"Keep shape, size, render budget and ray-traced-light mode equal while linked. "
+                 "Turn this off only to compare intentional rendering alternatives."_s);
+        comparisonLayout->addWidget(this->m_comparisonRepresentationToggle);
+        auto *addQuantity = new QPushButton(u"Add another quantity…"_s,
+                                            this->m_comparisonCard);
+        addQuantity->setToolTip(
+                u"Open another view of these same particles. Camera and source selection "
+                 "will stay linked; its physical quantity and colour settings stay independent."_s);
+        comparisonButtons->addWidget(addQuantity);
+        comparisonLayout->addLayout(comparisonButtons);
+        QObject::connect(this->m_comparisonLinkToggle, &QPushButton::toggled, this,
+                         &vtkWindowCatalogue3D::setComparisonLinked);
+        QObject::connect(this->m_comparisonRepresentationToggle, &QCheckBox::toggled, this,
+                         &vtkWindowCatalogue3D::setComparisonRepresentationLinked);
+        QObject::connect(addQuantity, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::openQuantityComparison);
+        this->m_comparisonCard->hide();
+        pageLayout->addWidget(this->m_comparisonCard);
+
+        this->m_timelineCard = new QFrame(pageViz);
+        this->m_timelineCard->setStyleSheet(cardStyle);
+        auto *timelineLayout = new QVBoxLayout(this->m_timelineCard);
+        timelineLayout->setContentsMargins(8, 8, 8, 8);
+        timelineLayout->setSpacing(6);
+        auto *timelineHeader = new QLabel(u"SNAPSHOT TIMELINE"_s, this->m_timelineCard);
+        timelineHeader->setStyleSheet(subHdrStyle);
+        timelineLayout->addWidget(timelineHeader);
+        this->m_timelineSummary = new QLabel(this->m_timelineCard);
+        this->m_timelineSummary->setWordWrap(true);
+        timelineLayout->addWidget(this->m_timelineSummary);
+        this->m_timelineSlider = new QSlider(Qt::Horizontal, this->m_timelineCard);
+        this->m_timelineSlider->setTracking(false);
+        this->m_timelineSlider->setToolTip(
+                u"Open another output of this simulation. Linked quantity views move together; "
+                 "source selections are cleared because identity across outputs is not assumed."_s);
+        timelineLayout->addWidget(this->m_timelineSlider);
+        auto *timelineButtons = new QHBoxLayout;
+        this->m_timelinePrevious = new QPushButton(u"Previous"_s, this->m_timelineCard);
+        this->m_timelinePlay = new QPushButton(u"Play"_s, this->m_timelineCard);
+        this->m_timelineNext = new QPushButton(u"Next"_s, this->m_timelineCard);
+        timelineButtons->addWidget(this->m_timelinePrevious);
+        timelineButtons->addWidget(this->m_timelinePlay);
+        timelineButtons->addWidget(this->m_timelineNext);
+        timelineLayout->addLayout(timelineButtons);
+        this->m_timelineTimer = new QTimer(this->m_timelineCard);
+        this->m_timelineTimer->setInterval(1500);
+        QObject::connect(this->m_timelinePrevious, &QPushButton::clicked, this,
+                         [this]() { this->stepSnapshot(-1); });
+        QObject::connect(this->m_timelineNext, &QPushButton::clicked, this,
+                         [this]() { this->stepSnapshot(1); });
+        QObject::connect(this->m_timelinePlay, &QPushButton::clicked, this,
+                         &vtkWindowCatalogue3D::toggleSnapshotPlayback);
+        QObject::connect(this->m_timelineSlider, &QSlider::valueChanged, this,
+                         &vtkWindowCatalogue3D::switchSnapshotIndex);
+        QObject::connect(this->m_timelineTimer, &QTimer::timeout, this,
+                         [this]() { this->stepSnapshot(1); });
+        this->m_timelineCard->hide();
+        pageLayout->addWidget(this->m_timelineCard);
 
         // Query and scene preparation can take time before the source count changes.
         this->m_loadIndicator = new QWidget(pageViz);
@@ -232,9 +343,14 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->comboSizeMode = new QComboBox(encCard);
         this->comboMapSize  = this->comboSizeMode;
         this->comboMapColor = new QComboBox(encCard);
+        this->comboMapColor->setToolTip(
+                u"Choose the data quantity encoded by colour. This changes the values being "
+                 "visualized; Colormap below changes only their palette."_s);
         // The generated ramp this viewer always had, or a named map (the ones
         // the image and cube viewers offer).
         this->comboColormap = new QComboBox(encCard);
+        this->comboColormap->setToolTip(
+                u"Choose the colour palette. This does not change the physical quantity."_s);
         // Named maps only, so that the LUT editor shows and keeps the one in
         // use; Rainbow, this viewer's ramp, first. MinMax is a range mode.
         // Each with its gradient, as the image viewer's list shows them.
@@ -261,7 +377,7 @@ void vtkWindowCatalogue3D::buildControlPages()
         auto *encForm = new QFormLayout;
         encForm->setContentsMargins(0, 0, 0, 0);
         encForm->addRow(u"Size"_s,  this->comboSizeMode);
-        encForm->addRow(u"Color"_s, this->comboMapColor);
+        encForm->addRow(u"Colour by"_s, this->comboMapColor);
         // The colour map, and Edit: its scale and Min..Max, in the LUT editor
         // the cube viewer uses (the scale is chosen there, not in this panel).
         // The map on a row of its own: its gradient and its name both show.
@@ -492,11 +608,15 @@ void vtkWindowCatalogue3D::buildControlPages()
         actionsCardLayout->setContentsMargins(8, 8, 8, 8);
         actionsCardLayout->setSpacing(4);
 
-        this->btnFilterAdd      = new QPushButton(u"Add…"_s,      actionsCard);
+        this->btnFilterAdd      = new QPushButton(u"Add field filter…"_s, actionsCard);
+        this->btnFilterAddSpatial = new QPushButton(u"Select 3-D region…"_s, actionsCard);
+        this->btnFilterAddSpatial->setToolTip(
+                u"Create a named box or spherical selection over the full dataset."_s);
         this->btnFilterRemove   = new QPushButton(u"Remove"_s,    actionsCard);
         this->btnFilterClearAll = new QPushButton(u"Clear All"_s, actionsCard);
         this->btnFilterApply    = new QPushButton(u"Apply"_s,     actionsCard);
         actionsCardLayout->addWidget(this->btnFilterAdd);
+        actionsCardLayout->addWidget(this->btnFilterAddSpatial);
         actionsCardLayout->addWidget(this->btnFilterRemove);
         actionsCardLayout->addWidget(this->btnFilterClearAll);
         actionsCardLayout->addWidget(this->btnFilterApply);
@@ -709,6 +829,8 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
         }
         this->m_defaultScaleChosen = false;
         this->updateColorMapping();
+        this->updateWindowTitle();
+        this->updateComparisonUi();
         this->renderWindow->Render();
         // An open editor shows the new column (its histogram and range), or
         // its next Apply would set the old range on it.
@@ -787,14 +909,29 @@ void vtkWindowCatalogue3D::populateMappingControls()
     fillAxisCombo(this->comboMapY, this->mapYKey, QStringLiteral("computed:y"));
     fillAxisCombo(this->comboMapZ, this->mapZKey, QStringLiteral("computed:z"));
 
+    const QJsonObject radiusDefinitions =
+            this->m_componentMetadata.value(u"radius_definitions"_s).toObject();
     this->comboMapSize->clear();
     this->comboMapSize->addItem(u"Fixed"_s, QStringLiteral("builtin:fixed"));
     this->comboMapSize->addItem(u"Major axis"_s, QStringLiteral("builtin:major"));
     this->comboMapSize->addItem(u"LLS"_s, QStringLiteral("builtin:lls"));
     this->comboMapSize->addItem(u"Flux"_s, QStringLiteral("builtin:flux"));
     for (const int index : this->numericRawFieldIndices) {
-        this->comboMapSize->addItem(QStringLiteral("raw:%1").arg(this->rawHeaders.value(index)),
-                                    QStringLiteral("raw:%1").arg(index));
+        const QString header = this->rawHeaders.value(index);
+        // A SubFind radius (R_vir, R500, R2500) is defined against the mean
+        // background density, not the critical one most catalogues use: said
+        // next to the choice, in the backend's words.
+        const QString definition = radiusDefinitions.value(header.toLower()).toString();
+        this->comboMapSize->addItem(
+                QStringLiteral("raw:%1").arg(visivo::framing::radiusWithDefinition(header,
+                                                                                   definition)),
+                QStringLiteral("raw:%1").arg(index));
+        if (!definition.isEmpty())
+            this->comboMapSize->setItemData(
+                    this->comboMapSize->count() - 1,
+                    u"SubFind radius %1."_s.arg(
+                            visivo::framing::radiusWithDefinition(header, definition)),
+                    Qt::ToolTipRole);
     }
     int sizeIndex = this->comboMapSize->findData(this->mapSizeKey);
     this->comboMapSize->setCurrentIndex(sizeIndex >= 0 ? sizeIndex : 0);
@@ -923,10 +1060,27 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
     };
     panel->clearProperties();
     panel->addPropertyRow(u"Dataset"_s, this->shownName());
-    panel->addPropertyRow(u"Type"_s, u"CATALOGUE"_s);
+    const bool subfind = this->m_componentMetadata.value(u"catalogue_kind"_s).toString()
+            == u"subfind"_s;
+    panel->addPropertyRow(u"Type"_s, subfind ? u"SUBFIND CATALOGUE"_s : u"CATALOGUE"_s);
     this->m_propSources = valueLabel(QString::number(this->entries.size()));
     panel->addPropertyRow(u"Sources"_s, this->m_propSources);
     panel->addPropertyRow(u"Columns"_s, QString::number(this->schema.fields.size()));
+    if (!this->m_componentMetadata.isEmpty()) {
+        panel->addPropertyRow(subfind ? u"Objects"_s : u"Particle type"_s,
+                              this->m_componentMetadata.value(u"name"_s).toString());
+        if (subfind)
+            panel->addPropertyRow(u"Target interaction"_s,
+                                  u"Select to inspect; double-click to frame its radius"_s);
+        const QString stored = particleUnitsSummary(
+                this->m_componentMetadata.value(u"units"_s).toObject());
+        if (!stored.isEmpty())
+            panel->addPropertyRow(u"Stored units"_s, stored);
+        const QString physical = particlePhysicalSummary(
+                this->m_componentMetadata.value(u"physical"_s).toObject());
+        if (!physical.isEmpty())
+            panel->addPropertyRow(u"Physical conversion"_s, physical);
+    }
     if (this->m_label.temporaryCopy) {
         // The staged copy's hashed name says nothing, and the file goes away
         // with the backend's clean-up: say what it is, the path on hover.
@@ -958,10 +1112,13 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
                     u"What columns does this catalogue have?"_s,
                     u"What's the redshift range?"_s,
                     u"Comoving distance at redshift 0.1?"_s });
+            // By this window's own key: comparison views share the dataset id,
+            // and the last one registered took every view's actions (#446).
+            this->m_copilot->setActionTarget(this->m_copilotRouteKey);
             CopilotActionRouter::instance()->registerTarget(
                     this->remoteDatasetId, this,
                     [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
-                    [this]() { this->undoCopilotActions(); });
+                    [this]() { this->undoCopilotActions(); }, this->m_copilotRouteKey);
         }
     }
 
@@ -999,7 +1156,13 @@ void vtkWindowCatalogue3D::updateWindowTitle()
 {
     const QString name = this->shownName();
     if (this->m_pointTable) {
-        this->setWindowTitle(u"3D Points, %1  (%L2 rows)"_s.arg(name).arg(this->m_tableRows));
+        const QString quantity = !this->m_comparisonGroup.isEmpty() && this->comboMapColor
+                ? u" · %1 · %2"_s.arg(
+                          this->comboMapColor->currentText().remove(u"raw:"_s),
+                          this->m_comparisonLinked ? u"LINKED"_s : u"UNLINKED"_s)
+                : QString();
+        this->setWindowTitle(
+                u"3D Points, %1%2  (%L3 rows)"_s.arg(name, quantity).arg(this->m_tableRows));
         return;
     }
     const int loaded = static_cast<int>(this->entries.size());
@@ -1027,14 +1190,37 @@ QString vtkWindowCatalogue3D::particleTag() const
 void vtkWindowCatalogue3D::updateLoadMoreButtons()
 {
     const bool hasMore = this->hasMoreRows();
-    if (this->btnLoadAll)
+    if (this->btnLoadAll) {
+        const bool canLoadAll = this->canLoadAllLocally();
         this->btnLoadAll->setVisible(hasMore);
+        this->btnLoadAll->setEnabled(canLoadAll);
+        this->btnLoadAll->setText(canLoadAll ? u"Load all"_s : u"Load all (too large)"_s);
+        this->btnLoadAll->setToolTip(
+                canLoadAll
+                        ? u"Load every remaining source at once (no paging). May use "
+                          u"significant memory for large catalogues."_s
+                        : u"A complete local copy would use excessive memory. The full "
+                          u"dataset remains available to backend queries; use Load more "
+                          u"to refine the representative sample."_s);
+    }
     if (this->btnLoadMore) {
         this->btnLoadMore->setVisible(hasMore);
         this->btnLoadMore->setEnabled(true);
         this->btnLoadMore->setText(QStringLiteral("Load more (%1 remaining)")
                                            .arg(this->m_totalCount - this->m_currentOffset));
     }
+}
+
+bool vtkWindowCatalogue3D::canLoadAllLocally() const
+{
+    // QVariant-backed rows have substantially more overhead than their raw
+    // numeric payload.  Fifty million values already represent a sizeable
+    // desktop allocation, while still allowing the 2.3 M x 9 catalogue used by
+    // the progressive-loading workflow to be materialised on demand.
+    constexpr qint64 localCellBudget = 50000000;
+    const qint64 rows = std::max<qint64>(0, this->m_totalCount);
+    const qint64 columns = std::max<qint64>(1, this->schema.headers.size());
+    return rows == 0 || rows <= localCellBudget / columns;
 }
 
 void vtkWindowCatalogue3D::refreshViewerChrome()

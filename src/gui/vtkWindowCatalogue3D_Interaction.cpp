@@ -1,5 +1,12 @@
 #include "vtkWindowCatalogue3D.h"
+#include "CameraPresetActions.h"
+#include "RemoteCameraPreset.h"
+#include "RemotePointStyle.h"
 #include "RemotePointView.h"
+#include "RemoteRenderWidget.h"
+#include "RaytraceViewport.h"
+#include "SubfindTargetFraming.h"
+#include "RaytraceSettingsPanel.h"
 #include <vtkPointGaussianMapper.h>
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -28,6 +35,7 @@
 #include <vtkIntArray.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkLookupTable.h>
+#include <vtkMath.h>
 #include <vtkMatrix4x4.h>
 #include <vtkOrientationMarkerWidget.h>
 #include <vtkPointData.h>
@@ -47,6 +55,7 @@
 #include <QCheckBox>
 #include <QKeySequence>
 #include <QMetaObject>
+#include <QMouseEvent>
 #include <QComboBox>
 #include <QDebug>
 #include <QDialog>
@@ -65,6 +74,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStatusBar>
@@ -101,10 +111,16 @@ void vtkWindowCatalogue3D::onMouseEvent(unsigned long eid)
         if (idx >= 0) {
             // The gesture's first click has already selected (or deselected)
             // it; the double-click selects it, not toggle it a second time.
-            qInfo() << "[catalogue3d] double-click selection index:" << idx
-                    << "(no zoom action executed)";
             if (idx != selectedIndex)
                 setSelectedSource(idx);
+            // A SubFind target is framed by its radius, as Source Info says;
+            // any other source stays where it is (a double-click used to dive
+            // in, which lost the view on dense catalogues).
+            const bool frame = this->framingRadius(idx) > 0.0;
+            qInfo() << "[catalogue3d] double-click selection index:" << idx
+                    << (frame ? "(framing the target)" : "(no zoom action executed)");
+            if (frame)
+                this->centerOnSource(idx);
         } else {
             qInfo() << "[catalogue3d] double-click miss; clearing selection"
                     << "(no zoom action executed)";
@@ -184,6 +200,16 @@ void vtkWindowCatalogue3D::onMouseEvent(unsigned long eid)
 
 int vtkWindowCatalogue3D::pickNearestSource(int displayX, int displayY) const
 {
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (!camera)
+        return -1;
+    const int *size = this->renderer->GetSize();
+    return this->pickNearestSource(camera, size[0], size[1], displayX, displayY);
+}
+
+int vtkWindowCatalogue3D::pickNearestSource(vtkCamera *camera, double w, double h,
+                                            int displayX, int displayY) const
+{
     // Nearest source whose screen projection is within hoverThresholdPx of the
     // click. Rather than a vtkCoordinate world→display transform per entry
     // (millions of virtual calls per click on large catalogues), fetch the
@@ -191,13 +217,8 @@ int vtkWindowCatalogue3D::pickNearestSource(int displayX, int displayY) const
     // (verified to ≤1 px, the vtkCoordinate int-rounding, against VTK 9.6.2),
     // ~10–50× faster. Picking still scans every entry, so it stays exact and
     // independent of the render-budget LOD (which only thins the GPU-fed cloud).
-    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
     if (!camera || this->mappedPositions.empty())
         return -1;
-
-    const int *size = this->renderer->GetSize();
-    const double w = size[0];
-    const double h = size[1];
     if (w <= 0.0 || h <= 0.0)
         return -1;
 
@@ -403,6 +424,38 @@ void vtkWindowCatalogue3D::updateInfoPanel()
 
     const Catalogue3DEntry &e = entries[selectedIndex];
     const QString displayName = Catalogue3DParser::detail::entryDisplayName(e, this->schema);
+    if (this->m_componentMetadata.value(u"catalogue_kind"_s).toString() == u"subfind"_s) {
+        const QString kind = this->m_componentMetadata.value(u"object_kind"_s).toString();
+        QString html = u"<b>%1 %2</b>"_s.arg(
+                kind == u"group"_s ? u"FoF group"_s : u"Subhalo"_s,
+                QString::number(e.sourceRow >= 0 ? e.sourceRow : selectedIndex));
+        html += u"<br>Position: %1, %2, %3"_s
+                        .arg(e.sceneX, 0, 'g', 7).arg(e.sceneY, 0, 'g', 7)
+                        .arg(e.sceneZ, 0, 'g', 7);
+        const QStringList priority = kind == u"group"_s
+                ? QStringList{u"mvir"_s, u"rvir"_s, u"m500"_s, u"r500"_s,
+                              u"m2500"_s, u"r2500"_s, u"num_subhalos"_s,
+                              u"num_contaminated"_s}
+                : QStringList{u"subhalo_mass"_s, u"half_mass_radius"_s, u"vmax"_s,
+                              u"rmax"_s, u"group_number"_s};
+        const QJsonObject radiusDefinitions =
+                this->m_componentMetadata.value(u"radius_definitions"_s).toObject();
+        for (const QString &field : priority) {
+            const int column = this->schema.indexOf(field);
+            if (column < 0 || column >= e.fields.size())
+                continue;
+            const QString value = e.fields.at(column).toString().trimmed();
+            // R_vir, R500, R2500 with what they are defined against.
+            const QString label = visivo::framing::radiusWithDefinition(
+                    field, radiusDefinitions.value(field).toString());
+            if (!value.isEmpty())
+                html += u"<br>%1: %2"_s.arg(label.toHtmlEscaped(), value.toHtmlEscaped());
+        }
+        html += u"<br><br><span style='color:#b0b8c8'>Double-click this target to frame its physical radius.</span>"_s;
+        ui->labelInfo->setText(html);
+        qInfo() << "[catalogue3d] SubFind target details updated:" << selectedIndex;
+        return;
+    }
     const QString morphology = Catalogue3DParser::detail::entryMorphology(e, this->schema);
     const QStringList distanceLines = this->pickDistanceLines(e);
     const double redshift =
@@ -498,14 +551,18 @@ void vtkWindowCatalogue3D::toggleMorphColors(bool checked)
 
 void vtkWindowCatalogue3D::scaleChanged(int value)
 {
-    if (entries.empty())
-        return;
+    // Moved by the user (or a linked view): a change of shape keeps it.
+    this->m_sliderAutomatic = false;
     Q_UNUSED(value);
-    this->updateGlyphScales();
-    if (this->geometryMode == GeometryMode::Gaussian)
-        this->updateGaussianSplats();
-    renderWindow->Render();
-    this->pushRemoteState();
+    visivo::remote::SizeSliderTargets targets;
+    targets.restyleLocal = [this]() {
+        this->updateGlyphScales();
+        if (this->geometryMode == GeometryMode::Gaussian)
+            this->updateGaussianSplats();
+        renderWindow->Render();
+    };
+    targets.updateServerViews = [this]() { this->pushRemoteState(); };
+    visivo::remote::applySizeSlider(!entries.empty(), targets);
 }
 
 void vtkWindowCatalogue3D::resetCamera()
@@ -514,6 +571,35 @@ void vtkWindowCatalogue3D::resetCamera()
     renderWindow->Render();
     if (this->m_remoteView)
         this->m_remoteView->send({ { u"type"_s, u"reset"_s } });
+}
+
+void vtkWindowCatalogue3D::applyCameraPreset(double azimuth, double elevation)
+{
+    const bool raytraced = this->m_rtView && this->m_renderStack
+            && this->m_renderStack->currentWidget() == this->m_rtView;
+    if (raytraced) {
+        // The hidden VTK camera follows, but is not sent: its pose may be
+        // older than the ray-traced one and would override the peers after
+        // the preset below. The preset's cameraChanged reaches them.
+        {
+            const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
+            visivo::applyCameraPreset(this->renderer, azimuth, elevation);
+            this->m_comparisonCameraTracker.refit(this->comparisonCameraPose());
+            if (this->renderWindow)
+                this->renderWindow->Render();
+        }
+        this->m_rtView->setCameraPreset(azimuth, elevation);
+        return;
+    }
+    visivo::applyCameraPreset(this->renderer, azimuth, elevation);
+    if (this->renderWindow)
+        this->renderWindow->Render();
+    const bool remote = this->m_remoteView && this->m_renderStack
+            && this->m_remoteWidget
+            && this->m_renderStack->currentWidget() == this->m_remoteWidget;
+    if (remote)
+        this->m_remoteView->send(visivo::remote::cameraPresetCommand(azimuth, elevation));
+    this->onComparisonCameraFrame();
 }
 
 // Match a copilot field name against a comboMapColor item. Its item texts are
@@ -775,27 +861,237 @@ void vtkWindowCatalogue3D::syncTableSelection(int index)
     this->syncingTableSelection = false;
 }
 
+double vtkWindowCatalogue3D::framingRadius(int idx, QString *field) const
+{
+    if (idx < 0 || idx >= static_cast<int>(this->entries.size())
+        || this->m_componentMetadata.value(u"catalogue_kind"_s).toString() != u"subfind"_s)
+        return 0.0;
+    // The column the markers are sized by first, so the frame matches the
+    // sphere drawn around the target; then the usual order.
+    QString sizedBy;
+    if (this->mapSizeKey.startsWith(u"raw:"_s))
+        sizedBy = this->rawHeaders.value(this->mapSizeKey.mid(4).toInt()).toLower();
+    const Catalogue3DEntry &entry = this->entries[static_cast<std::size_t>(idx)];
+    for (const QString &candidate : visivo::framing::radiusFieldOrder(sizedBy)) {
+        bool ok = false;
+        const double radius =
+                Catalogue3DParser::detail::fieldDouble(entry, this->schema, candidate, &ok);
+        if (ok && radius > 0.0 && std::isfinite(radius)) {
+            if (field)
+                *field = candidate;
+            return radius;
+        }
+    }
+    return 0.0;
+}
+
 void vtkWindowCatalogue3D::centerOnSource(int idx, double zoomFactor)
 {
-    if (idx < 0 || idx >= static_cast<int>(this->entries.size())) {
+    if (idx < 0 || idx >= static_cast<int>(this->entries.size())
+        || static_cast<std::size_t>(idx) >= this->mappedPositions.size())
+        return;
+    // The camera of the view on screen: the backend's for a Remote view (it
+    // is asked for), so the target is framed from where the user looks. The
+    // target by its key: a filter may replace the rows meanwhile.
+    const CatalogueSelection::Key key = CatalogueSelection::keyOf(this->entries, this->schema, idx);
+    const quint64 request = ++this->m_frameRequest;
+    this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this), request, key,
+                      zoomFactor](const QJsonObject &camera, const QString &error) {
+        if (!self || request != self->m_frameRequest)
+            return;   // closed, turned meanwhile, or another target asked for
+        self->frameSourceWithCamera(key, zoomFactor, camera, error);
+    });
+}
+
+void vtkWindowCatalogue3D::frameSourceWithCamera(const CatalogueSelection::Key &key,
+                                                 double zoomFactor, const QJsonObject &camera,
+                                                 const QString &error)
+{
+    // The rows may have been replaced while a backend camera was on its way:
+    // the target where it is now, if it is still loaded.
+    const int idx = CatalogueSelection::indexOf(this->entries, this->schema, key);
+    if (idx < 0 || idx >= static_cast<int>(this->entries.size())
+        || static_cast<std::size_t>(idx) >= this->mappedPositions.size())
+        return;
+    const std::optional<visivo::framing::Camera> current =
+            visivo::framing::cameraFromJson(camera);
+    if (!current) {
+        if (!error.isEmpty())
+            this->showSelectionStatus(u"The view was not moved: %1"_s.arg(error));
         return;
     }
-    const auto &targetPosition = this->mappedPositions[static_cast<std::size_t>(idx)];
-    auto *camera = this->renderer->GetActiveCamera();
-    if (!camera) {
+    const auto &p = this->mappedPositions[static_cast<std::size_t>(idx)];
+    QString radiusField;
+    const double radius = this->framingRadius(idx, &radiusField);
+    const visivo::framing::Camera framed =
+            visivo::framing::frameTarget(*current, { p[0], p[1], p[2] }, radius, zoomFactor);
+    // A SubFind target says what it is framed by, after the selection line
+    // the gesture's clicks wrote, also when the view was already there (a
+    // second double-click): the line then still describes the view.
+    const auto reportFraming = [this, idx, radius, &radiusField]() {
+        if (!(radius > 0.0))
+            return;
+        const QString definition = this->m_componentMetadata.value(u"radius_definitions"_s)
+                                           .toObject()
+                                           .value(radiusField)
+                                           .toString();
+        const QString name = Catalogue3DParser::detail::entryDisplayName(
+                this->entries[static_cast<std::size_t>(idx)], this->schema);
+        const visivo::framing::FramingOutputs outputs{
+            [this](const QString &text) { this->showSelectionStatus(text); },
+            [this](const QString &text, int timeoutMs) {
+                this->statusBar()->showMessage(text, timeoutMs);
+            }
+        };
+        visivo::framing::reportFraming(outputs, name, radiusField, definition, radius);
+    };
+    const bool raytraced = this->m_rtView && this->m_renderStack
+            && this->m_renderStack->currentWidget() == this->m_rtView;
+    const bool remote = !raytraced && this->m_remoteView && this->m_remoteWidget
+            && this->m_renderStack
+            && this->m_renderStack->currentWidget() == this->m_remoteWidget;
+    if (visivo::framing::sameView(*current, framed)) {
+        qInfo() << "[catalogue3d] framing: the view is already on source" << idx;
+        reportFraming();
         return;
     }
-    double focal[3];
-    double cameraPosition[3];
+    qInfo() << "[catalogue3d] framing source" << idx << "in the"
+            << (raytraced ? "ray-traced" : remote ? "Remote" : "local") << "view";
+    const QJsonObject framedJson = visivo::framing::cameraToJson(framed);
+
+    // This window's camera always follows, so the local view shows the same
+    // target when it is shown again.
+    vtkCamera *local = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (local) {
+        local->SetPosition(framed.position.data());
+        local->SetFocalPoint(framed.focal.data());
+        local->SetViewUp(framed.viewUp.data());
+        local->SetViewAngle(framed.viewAngle);
+        local->SetParallelProjection(framed.parallel ? 1 : 0);
+        if (framed.parallel)
+            local->SetParallelScale(framed.parallelScale);
+        local->OrthogonalizeViewUp();
+        this->renderer->ResetCameraClippingRange();
+        if (this->renderWindow)
+            this->renderWindow->Render();
+    }
+    if (raytraced) {
+        this->m_rtView->setCamera(framedJson);
+        this->m_rtView->refresh();
+        this->broadcastComparisonRaytraceCamera(framedJson);
+    } else {
+        if (remote) {
+            QVariantMap command = framedJson.toVariantMap();
+            command.insert(u"type"_s, u"set_camera"_s);
+            this->m_remoteView->send(command);
+        }
+        this->onComparisonCameraFrame();
+    }
+    reportFraming();
+}
+
+void vtkWindowCatalogue3D::recentreLocalView(int idx)
+{
+    if (idx < 0 || static_cast<std::size_t>(idx) >= this->mappedPositions.size())
+        return;
+    vtkCamera *camera = this->renderer ? this->renderer->GetActiveCamera() : nullptr;
+    if (!camera)
+        return;
+    // Same distance, same direction: only the focal point moves.
+    const auto &target = this->mappedPositions[static_cast<std::size_t>(idx)];
+    double focal[3], position[3];
     camera->GetFocalPoint(focal);
-    camera->GetPosition(cameraPosition);
-    const double dx = cameraPosition[0] - focal[0];
-    const double dy = cameraPosition[1] - focal[1];
-    const double dz = cameraPosition[2] - focal[2];
-    camera->SetFocalPoint(targetPosition[0], targetPosition[1], targetPosition[2]);
-    camera->SetPosition(targetPosition[0] + dx / zoomFactor,
-                        targetPosition[1] + dy / zoomFactor,
-                        targetPosition[2] + dz / zoomFactor);
+    camera->GetPosition(position);
+    camera->SetFocalPoint(target[0], target[1], target[2]);
+    camera->SetPosition(target[0] + position[0] - focal[0], target[1] + position[1] - focal[1],
+                        target[2] + position[2] - focal[2]);
     this->renderer->ResetCameraClippingRange();
-    this->renderWindow->Render();
+    if (this->renderWindow)
+        this->renderWindow->Render();
+}
+
+void vtkWindowCatalogue3D::frameSourceAtViewPoint(QWidget *view, const QPoint &pos)
+{
+    if (!view || this->entries.empty())
+        return;
+    // The picture the camera drew: the backend's frame is fitted into the
+    // Remote widget with bars on two sides, at its own aspect.
+    QRect picture = view->rect();
+    if (view == this->m_remoteWidget)
+        picture = this->m_remoteWidget->frameRect();
+    if (!picture.contains(pos) || picture.width() <= 0 || picture.height() <= 0)
+        return;   // on a bar: no marker there
+    const double w = picture.width();
+    const double h = picture.height();
+    // Qt counts y down from the top, the projection up from the bottom.
+    const int x = pos.x() - picture.left();
+    const int y = static_cast<int>(h) - 1 - (pos.y() - picture.top());
+    // A projected map is drawn without perspective, as wide as the camera's
+    // angle at its distance (ParticleGLView::paintGL).
+    const bool projected = view->parentWidget() == this->m_rtView && this->m_rtPanel
+            && this->m_rtPanel->projected();
+    const quint64 request = ++this->m_frameRequest;
+    this->viewCamera([self = QPointer<vtkWindowCatalogue3D>(this), request, w, h, x, y,
+                      projected](const QJsonObject &json, const QString &error) {
+        if (!self || request != self->m_frameRequest)
+            return;
+        const std::optional<visivo::framing::Camera> cam = visivo::framing::cameraFromJson(json);
+        if (!cam) {
+            if (!error.isEmpty())
+                self->showSelectionStatus(u"Nothing picked: %1"_s.arg(error));
+            return;
+        }
+        vtkNew<vtkCamera> camera;
+        camera->SetPosition(cam->position.data());
+        camera->SetFocalPoint(cam->focal.data());
+        camera->SetViewUp(cam->viewUp.data());
+        camera->SetViewAngle(cam->viewAngle);
+        camera->SetParallelProjection(cam->parallel ? 1 : 0);
+        camera->SetParallelScale(cam->parallelScale);
+        if (projected && !cam->parallel) {
+            const double dx = cam->position[0] - cam->focal[0];
+            const double dy = cam->position[1] - cam->focal[1];
+            const double dz = cam->position[2] - cam->focal[2];
+            const double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+            camera->SetParallelProjection(1);
+            camera->SetParallelScale(
+                    dist * std::tan(vtkMath::RadiansFromDegrees(cam->viewAngle * 0.5)));
+        }
+        const int idx = self->pickNearestSource(camera, w, h, x, y);
+        qInfo() << "[catalogue3d] double-click on the streamed view, picked source:" << idx;
+        if (idx < 0) {
+            self->setSelectedSource(-1);
+            return;
+        }
+        if (idx != self->selectedIndex)
+            self->setSelectedSource(idx);
+        if (self->framingRadius(idx) > 0.0)
+            self->frameSourceWithCamera(
+                    CatalogueSelection::keyOf(self->entries, self->schema, idx), 3.0, json, error);
+    });
+}
+
+bool vtkWindowCatalogue3D::eventFilter(QObject *watched, QEvent *event)
+{
+    // The Remote and ray-traced views draw the markers but have no picker of
+    // their own: a double-click there selects (and frames a SubFind target)
+    // as one in the local view does. Not consumed, so the views' own mouse
+    // handling sees the gesture as before.
+    // Turned or zoomed by hand after a framing request went out: the camera
+    // that comes back for it is older than the view, so it is dropped.
+    if ((event->type() == QEvent::MouseButtonPress || event->type() == QEvent::Wheel)
+        && this->m_remoteWidget && watched == this->m_remoteWidget)
+        ++this->m_frameRequest;
+    if (event->type() == QEvent::MouseButtonDblClick) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        auto *widget = qobject_cast<QWidget *>(watched);
+        const bool streamed = widget && this->m_renderStack
+                && ((this->m_remoteWidget && widget == this->m_remoteWidget
+                     && this->m_renderStack->currentWidget() == this->m_remoteWidget)
+                    || (this->m_rtView && widget->parentWidget() == this->m_rtView
+                        && this->m_renderStack->currentWidget() == this->m_rtView));
+        if (streamed && mouse->button() == Qt::LeftButton)
+            this->frameSourceAtViewPoint(widget, mouse->position().toPoint());
+    }
+    return QMainWindow::eventFilter(watched, event);
 }

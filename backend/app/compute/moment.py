@@ -1456,6 +1456,7 @@ def worker_moment_save_fits(
         valid 2-D header (spectral axis dropped),
       * sets ``BUNIT`` to the derived moment unit (e.g. ``K m/s`` for M0
         of a K cube in velocity, ``m/s`` for M1, ``(m/s)^2`` for M2…),
+      * carries the restoring beam (``BMAJ``/``BMIN``/``BPA``),
       * adds HISTORY cards recording the source file, order, channel
         range, and masking parameters so the artefact is self-documenting.
 
@@ -1474,6 +1475,38 @@ def worker_moment_save_fits(
                              stop_file)
 
 
+def _moment_beam_cards(src_path: str, channel_start: int, channel_end: int
+                       ) -> tuple[dict[str, float], str | None]:
+    """BMAJ/BMIN/BPA (degrees) for a moment map of ``src_path``, and a note.
+
+    A moment map keeps the resolution of the channels it integrates, so it
+    carries their restoring beam: without it the image viewer cannot turn a
+    Jy/beam·km/s map into Jy·km/s (issue #401), as for a reprojected image
+    (``astrometry._carry_flux_keys``). With one beam per channel (a CASA
+    BEAMS table) no single beam is exact: the beam of the central channel of
+    the range is written and the note says so. Empty when the cube has no beam.
+    """
+    try:
+        dataset = ScientificFitsDataset(src_path)
+    except Exception as exc:  # noqa: BLE001 - a map without a beam is still a map
+        logger.warning("[moment_save_fits] beam not read from %s (%s)", src_path, exc)
+        return {}, None
+    note = None
+    beam = dataset.beam
+    if dataset.has_per_channel_beam:
+        mid = (int(channel_start) + int(channel_end)) // 2
+        beam = dataset.beam_for_channel(mid)
+        note = (f"Beam of channel {mid}: the cube has one beam per channel "
+                f"(BEAMS table), the moment map of channels "
+                f"{int(channel_start)}..{int(channel_end)} has no single beam.")
+    major, minor = beam.major, beam.minor
+    if not (major and minor and np.isfinite(major) and np.isfinite(minor)
+            and major > 0 and minor > 0):
+        return {}, None
+    pa = float(beam.pa) if beam.pa is not None and np.isfinite(beam.pa) else 0.0
+    return {"BMAJ": float(major), "BMIN": float(minor), "BPA": pa}, note
+
+
 def write_moment_fits(
     src_path: str,
     output_path: str,
@@ -1488,9 +1521,10 @@ def write_moment_fits(
 ) -> dict[str, Any]:
     """Write a computed moment ``payload`` (the dict of ``worker_moment``,
     ``_moment_map_dask`` or the product cache) as a 2-D FITS file at
-    ``output_path``: the source's celestial WCS, the moment's ``BUNIT`` and
-    HISTORY cards (see ``worker_moment_save_fits``). The pixels are the
-    payload's, bit for bit (issue #119)."""
+    ``output_path``: the source's celestial WCS, the moment's ``BUNIT``, the
+    restoring beam (``BMAJ``/``BMIN``/``BPA``, issue #401) and HISTORY cards
+    (see ``worker_moment_save_fits``). The pixels are the payload's, bit for
+    bit (issue #119)."""
     from astropy.io import fits as _fits  # noqa: PLC0415
     from astropy.wcs import WCS as _WCS   # noqa: PLC0415
 
@@ -1526,6 +1560,11 @@ def write_moment_fits(
     if moment_unit:
         out_header["BUNIT"] = moment_unit
     out_header["OBJECT"] = src_header.get("OBJECT", out_header.get("OBJECT", ""))
+    beam_cards, beam_note = _moment_beam_cards(src_path, channel_start, channel_end)
+    for key, value in beam_cards.items():
+        out_header[key] = value
+    if beam_note:
+        out_header.add_comment(beam_note)
     threshold_used = payload.get("threshold_used", float(threshold_value))
     mask_desc = "off"
     if mask_enabled:

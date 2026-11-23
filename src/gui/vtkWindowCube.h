@@ -65,6 +65,7 @@ class vtkCallbackCommand;
 #include <QCloseEvent>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QJsonObject>
 #include <QPoint>
 #include <QRect>
 #include <QMainWindow>
@@ -334,6 +335,9 @@ public:
     /// Call after construction; the beam ellipse is drawn in the 2D slice
     /// renderer's bottom-left corner. Pass NaN major to hide the indicator.
     void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
+    /// The cube has one beam per channel (a BEAMS table): a region flux says
+    /// it uses the header beam (issue #401).
+    void setBeamPerChannel(bool perChannel) { m_beamPerChannel = perChannel; }
 
     // ── Server-side rendering (SSR, Phase 2) ──────────────────────────────────
     // The 3D viewport can either run locally (the existing
@@ -1674,6 +1678,7 @@ protected:
     double m_beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamPaDeg{ 0.0 };
+    bool m_beamPerChannel{ false };
     vtkSmartPointer<vtkActor> m_beamActor;
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionShowCatalogueOverlay;
@@ -2265,6 +2270,18 @@ protected:
     /// the mean spectrum over the cube of region @p id (the selected one by
     /// default).
     void analyzeRegion(int id = -1, vtkRenderWindow *win = nullptr);
+    /// The beam-aware flux of @p region on the map @p image (issue #401):
+    /// integrated flux in Jy (a channel) or Jy km/s (a moment 0), its error
+    /// from the nearest background region or the map noise, the beam area,
+    /// and the HI mass at the distance set. Nothing when the map is not per
+    /// beam or the beam is unknown.
+    void insertRegionFluxParams(QVariantMap &params, vtkImageData *image,
+                                const visivo::DisplayGrid &grid,
+                                const visivo::regions::Region &region, double sum,
+                                long validCount, const QString &paneProduct,
+                                bool onChannels) const;
+    /// Tools ▸ Regions ▸ "HI Mass Distance…" (issue #401).
+    QPointer<QAction> m_actHiDistance;
 public:
     /// {x0, x1, y0, y1} cube pixels of the selected region's bounds, clamped
     /// to the cube; empty with no region selected. Seeds the box tools (noise,
@@ -3201,9 +3218,26 @@ protected:
     /// Reconnecting to the session kept across a switch to Local: a failure
     /// before Live may mean the backend closed it meanwhile.
     bool                  m_remoteReconnectingKept{ false };
-    // Whether a live stream that dropped gets a new session or Retry
-    // (RemoteSessionRecovery.h).
-    visivo::RemoteRecovery m_remoteRecovery;
+    // A live stream that dropped is reconnected by itself: the same session
+    // if it is still there, else a new one, with bounded retries and back-off,
+    // then Reconnect (RemoteSessionRecovery.h, issue #411).
+    visivo::RemoteReconnect m_remoteReconnect;
+    /// The wait before the next attempt, or the time the same session's
+    /// stream has to come back (m_remoteReconnectingSame).
+    QTimer               *m_remoteReconnectTimer{ nullptr };
+    /// The stream is being connected again to the same session: a failure
+    /// before Live is a failed attempt, not a failed switch.
+    bool                  m_remoteReconnectingSame{ false };
+    /// Answers of an earlier check (GET .../levels) are not this one's.
+    quint64               m_remoteReconnectSerial{ 0 };
+    /// Why the last attempt failed, for the banner when the view gives up.
+    QString               m_remoteReconnectWhy;
+    /// The session's camera as of the user's last turn of the view
+    /// (GET .../camera), given to a session that replaces a lost one so the
+    /// view comes back as it was rather than from the default camera.
+    QJsonObject           m_remoteCamera;
+    QTimer               *m_remoteCameraTimer{ nullptr };
+    bool                  m_remoteCameraRestore{ false };
     // The session asked for now replaces one that dropped (automatically or
     // by Retry): its failure is a failed replacement, answered with Retry on
     // the remote page, not a fall back to Local.
@@ -3261,14 +3295,24 @@ protected:
     /// The live session ended (or the user asked to retry): give it back and
     /// ask for a new one, the remote page staying meanwhile.
     void replaceRemoteRenderSession();
-    /// The stream dropped and is not coming back by itself: say why, offer Retry.
+    /// The stream dropped and is not coming back by itself: say why, offer Reconnect.
     void offerRemoteRetry(const QString &why);
-    /// A live stream dropped: act on m_remoteRecovery's answer. Without a close
-    /// reason (WebRTC, a backend gone without a close frame) asks the backend
-    /// first whether the session is still there.
-    void handleRemoteDrop(visivo::RemoteDrop drop, bool askBackend);
+    /// A live stream dropped: reconnect (m_remoteReconnect).
+    void handleRemoteDrop(const visivo::RemoteDrop &drop);
+    /// Carry out one step of the reconnection.
+    void runRemoteReconnectStep(visivo::ReconnectStep step);
+    /// Ask the backend whether the session is still there (GET .../levels).
+    void checkRemoteSessionForReconnect();
+    /// The wait is over, or the same session's stream did not come back in time.
+    void onRemoteReconnectTimer();
+    /// The banner and the view while reconnecting; @p waitMs before the next attempt.
+    void showRemoteReconnecting(int waitMs);
+    /// The user went to Local, or the window let its session go.
+    void cancelRemoteReconnect();
+    /// Keep the session's camera a moment after the user turned the view.
+    void scheduleRemoteCameraSnapshot();
     /// The replacement's create failed: stay in Remote, on the remote page,
-    /// with Retry and @p why.
+    /// and try again or offer Reconnect with @p why.
     void failRemoteReplacement(const QString &why);
     /// The Auto / Local / Remote choice shown (menu and segmented toggle) set
     /// to @p mode without applying it.

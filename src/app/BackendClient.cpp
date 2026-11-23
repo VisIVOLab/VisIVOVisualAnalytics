@@ -938,6 +938,7 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+    result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1179,6 +1180,7 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     if (!bmaj.isNull()) result.beamMajorDeg = bmaj.toDouble();
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
+    result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1258,6 +1260,8 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
             : format == QLatin1String("vbt");
     result.path = object.value(QStringLiteral("path")).toString();
     result.components = visivo::parseParticleComponents(object.value(QStringLiteral("components")));
+    result.snapshot = object.value(QStringLiteral("snapshot")).toObject();
+    result.component = object.value(QStringLiteral("component")).toObject();
     if (result.valid)
         visivo::noteVbtReadOrder(result.sessionId, paths.value(0), result.byteOrder,
                                  result.byteOrderDeclared);
@@ -1269,6 +1273,78 @@ BackendCatalogueInfo BackendClient::openCatalogue(const QStringList &paths, cons
                                   field.value(QStringLiteral("type")).toString() });
     }
     return result;
+}
+
+BackendPointSeriesResult BackendClient::parsePointSeries(const QJsonObject &object)
+{
+    BackendPointSeriesResult result;
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    const QJsonArray paths = object.value(QStringLiteral("paths")).toArray();
+    const QJsonArray numbers = object.value(QStringLiteral("numbers")).toArray();
+    if (!result.valid)
+        return result;
+    if (paths.isEmpty() || paths.size() != numbers.size()) {
+        result.valid = false;
+        result.error = QStringLiteral("The backend returned an invalid snapshot series.");
+        return result;
+    }
+    result.paths.reserve(paths.size());
+    result.numbers.reserve(numbers.size());
+    for (int i = 0; i < paths.size(); ++i) {
+        const QString path = paths.at(i).toString();
+        if (path.isEmpty() || !numbers.at(i).isDouble()) {
+            result.valid = false;
+            result.error = QStringLiteral("The backend returned an invalid snapshot series.");
+            result.paths.clear();
+            result.numbers.clear();
+            return result;
+        }
+        result.paths.append(path);
+        result.numbers.append(numbers.at(i).toInt());
+    }
+    const QJsonValue available = object.value(QStringLiteral("available"));
+    if (available.isArray()) {
+        const QJsonArray flags = available.toArray();
+        if (flags.size() != paths.size()) {
+            result.valid = false;
+            result.error = QStringLiteral("The backend returned an invalid snapshot series.");
+            result.paths.clear();
+            result.numbers.clear();
+            return result;
+        }
+        result.available.reserve(flags.size());
+        for (const QJsonValue &flag : flags)
+            result.available.append(flag.toBool(true));
+    }
+    result.index = object.value(QStringLiteral("index")).toInt(-1);
+    result.count = object.value(QStringLiteral("count")).toInt(result.paths.size());
+    if (result.index < 0 || result.index >= result.paths.size()
+        || result.count != result.paths.size()) {
+        result.valid = false;
+        result.error = QStringLiteral("The backend returned an invalid snapshot position.");
+    }
+    return result;
+}
+
+BackendPointSeriesResult BackendClient::requestPointSeries(const QString &datasetId) const
+{
+    BackendPointSeriesResult result;
+    if (datasetId.isEmpty()) {
+        result.error = QStringLiteral("No point dataset is open.");
+        return result;
+    }
+    QString error;
+    const QJsonDocument body(QJsonObject{
+            { QStringLiteral("dataset_id"), datasetId },
+    });
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/points/series")), body, error);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    return parsePointSeries(QJsonDocument::fromJson(payload).object());
 }
 
 namespace {
@@ -2911,13 +2987,41 @@ static QJsonObject buildTabularQueryBody(const BackendTabularQueryRequest &req)
         { QStringLiteral("limit"), req.limit },
         { QStringLiteral("offset"), req.offset },
     };
+    if (!req.fields.isEmpty()) {
+        QJsonArray fields;
+        for (const QString &field : req.fields)
+            fields.append(field);
+        body.insert(QStringLiteral("fields"), fields);
+    }
     QJsonArray filters;
     for (const auto &f : req.filters) {
-        filters.append(QJsonObject{
-            { QStringLiteral("field"), f.field },
-            { QStringLiteral("op"), f.op },
-            { QStringLiteral("value"), f.value },
-        });
+        QJsonObject item{ { QStringLiteral("op"), f.op } };
+        if (f.shape == QStringLiteral("box")) {
+            item.insert(QStringLiteral("name"), f.name);
+            item.insert(QStringLiteral("box"),
+                        QJsonObject{
+                                { QStringLiteral("fields"),
+                                  QJsonArray::fromStringList(f.fields) },
+                                { QStringLiteral("min"),
+                                  QJsonArray{ f.minimum[0], f.minimum[1], f.minimum[2] } },
+                                { QStringLiteral("max"),
+                                  QJsonArray{ f.maximum[0], f.maximum[1], f.maximum[2] } },
+                        });
+        } else if (f.shape == QStringLiteral("sphere")) {
+            item.insert(QStringLiteral("name"), f.name);
+            item.insert(QStringLiteral("sphere"),
+                        QJsonObject{
+                                { QStringLiteral("fields"),
+                                  QJsonArray::fromStringList(f.fields) },
+                                { QStringLiteral("center"),
+                                  QJsonArray{ f.centre[0], f.centre[1], f.centre[2] } },
+                                { QStringLiteral("radius"), f.radius },
+                        });
+        } else {
+            item.insert(QStringLiteral("field"), f.field);
+            item.insert(QStringLiteral("value"), f.value);
+        }
+        filters.append(item);
     }
     body.insert(QStringLiteral("filters"), filters);
     if (req.randomSample)
@@ -2966,6 +3070,56 @@ BackendTabularQueryResponse BackendClient::queryTabularCatalogue(
         for (const QJsonValue &v : rowIndex)
             result.rowIndex.append(static_cast<qint64>(v.toDouble(-1)));
     }
+    return result;
+}
+
+BackendCatalogueDiagnosticsResponse BackendClient::catalogueDiagnostics(
+        const BackendCatalogueDiagnosticsRequest &req, const std::atomic_bool *abort) const
+{
+    BackendCatalogueDiagnosticsResponse result;
+    BackendTabularQueryRequest query;
+    query.datasetId = req.datasetId;
+    query.filters = req.filters;
+    QJsonObject body = buildTabularQueryBody(query);
+    body.remove(QStringLiteral("limit"));
+    body.remove(QStringLiteral("offset"));
+    body.insert(QStringLiteral("field"), req.field);
+    body.insert(QStringLiteral("weight_field"), req.weightField);
+    body.insert(QStringLiteral("bins"), std::clamp(req.bins, 4, 512));
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/catalogue/diagnostics")),
+            QJsonDocument(body), error, nullptr, nullptr, true, abort);
+    if (!error.isEmpty()) {
+        result.error = error;
+        return result;
+    }
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    result.valid = object.value(QStringLiteral("valid")).toBool(false);
+    result.error = object.value(QStringLiteral("error")).toString();
+    result.field = object.value(QStringLiteral("field")).toString();
+    result.fieldUnit = object.value(QStringLiteral("field_unit")).toString();
+    result.weightField = object.value(QStringLiteral("weight_field")).toString();
+    result.weightUnit = object.value(QStringLiteral("weight_unit")).toString();
+    result.weighting = object.value(QStringLiteral("weighting")).toString();
+    result.selectedRows = static_cast<qint64>(
+            object.value(QStringLiteral("selected_rows")).toDouble());
+    result.finiteRows = static_cast<qint64>(
+            object.value(QStringLiteral("finite_rows")).toDouble());
+    result.minimum = object.value(QStringLiteral("minimum")).toDouble();
+    result.maximum = object.value(QStringLiteral("maximum")).toDouble();
+    result.mean = object.value(QStringLiteral("mean")).toDouble();
+    result.stddev = object.value(QStringLiteral("stddev")).toDouble();
+    if (!object.value(QStringLiteral("weighted_mean")).isNull())
+        result.weightedMean = object.value(QStringLiteral("weighted_mean")).toDouble();
+    if (!object.value(QStringLiteral("weight_sum")).isNull())
+        result.weightSum = object.value(QStringLiteral("weight_sum")).toDouble();
+    for (const QJsonValue &value : object.value(QStringLiteral("selection")).toArray())
+        result.selection.append(value.toString());
+    for (const QJsonValue &value : object.value(QStringLiteral("bin_edges")).toArray())
+        result.binEdges.append(value.toDouble());
+    for (const QJsonValue &value : object.value(QStringLiteral("counts")).toArray())
+        result.counts.append(value.toDouble());
     return result;
 }
 
@@ -3350,6 +3504,9 @@ const QStringList &heavyComputePaths()
         // A second on a laptop, but it runs under _run_heavy_with_limit: on
         // slow storage the server's ceiling, not 120 s, is the one to honour.
         QStringLiteral("/sofia2/suggest"),
+        // Selection Diagnostics: two exact passes over every particle of the
+        // selection, minutes on a large snapshot read out of core (#448).
+        QStringLiteral("/catalogue/diagnostics"),
     };
     return paths;
 }
@@ -3992,7 +4149,8 @@ QByteArray BackendClient::performPostRetryingBackpressure(const QUrl &url,
 QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body,
                                       QString &error,
                                       QMap<QString, QString> *responseHeaders,
-                                      int *statusOut, bool announceStart) const
+                                      int *statusOut, bool announceStart,
+                                      const std::atomic_bool *abort) const
 {
     // Counted while it runs (RAII), so the status bar can say "N running" for a
     // synchronous compute — and announced when it STARTS, not only when it ends:
@@ -4070,6 +4228,19 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
             loop.quit();
         });
         timeoutTimer.start(static_cast<int>(this->requestTimeoutFor(url).count()));
+        // A caller that may be cancelled (a long compute the user gave up on)
+        // must not hold this worker thread for the whole timeout.
+        QTimer abortWatch;
+        if (abort) {
+            QObject::connect(&abortWatch, &QTimer::timeout, &loop, [&]() {
+                if (!abort->load())
+                    return;
+                attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+                reply->abort();
+                loop.quit();
+            });
+            abortWatch.start(100);
+        }
         QTimer quitWatch;
         bool abandoned = false;
         abandonWhenQuitting(quitWatch, loop, reply, abandoned);
@@ -4078,9 +4249,14 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
         // grace (the watch).
         if (visivo::TaskQuitDrain::instance().quitting())
             abandoned = true;
-        else
+        else if (!(abort && abort->load()))
             loop.exec();
+        else {
+            attemptError = QStringLiteral("Request abandoned: cancelled by the user.");
+            reply->abort();
+        }
         quitWatch.stop();
+        abortWatch.stop();
         timeoutTimer.stop();
         // On the application thread, exit() ends this loop at once, before the
         // watch has fired: an unanswered reply is then no empty success (and
@@ -4115,7 +4291,7 @@ QByteArray BackendClient::performPost(const QUrl &url, const QJsonDocument &body
 
         // No second token while quitting: the exit waits for this worker.
         if (status == 401 && attempt + 1 < tokenCandidates.size()
-            && !visivo::TaskQuitDrain::instance().quitting()) {
+            && !visivo::TaskQuitDrain::instance().quitting() && !(abort && abort->load())) {
             DiagnosticsManager::instance()->publish(
                     DiagnosticsLevel::Warning, DiagnosticsCategory::Backend,
                     QStringLiteral("BackendClient"),

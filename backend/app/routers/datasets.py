@@ -89,6 +89,7 @@ def _build_open_response(dataset_id: str, session_id: str, kind: str,
         beam_major=geometry.get("beam_major"),
         beam_minor=geometry.get("beam_minor"),
         beam_pa=geometry.get("beam_pa"),
+        beam_per_channel=bool(geometry.get("beam_per_channel", False)),
         file_size_bytes=int(geometry.get("file_size_bytes", 0)),
         full_res_threshold_bytes=int(
             geometry.get("full_res_threshold_bytes", 4 * 1024 ** 3)
@@ -121,6 +122,8 @@ async def close_dataset(
     if entry is not None:
         logger.info("[close] session=%s dataset_id=%s kind=%s",
                     session.session_id[:8] + "…", dataset_id, entry.get("kind", ""))
+        # A snapshot's decompressed HDF5 pieces go with its last dataset.
+        await asyncio.to_thread(session.release_particle_cache, entry)
     return {"valid": True, "error": "", "closed": entry is not None}
 
 

@@ -20,7 +20,18 @@ scene card are greyed out until the check is cleared.
 - The camera starts from the 3-D view's, and the 3-D view takes it back when
   the check is cleared.
 - The *VISUAL ENCODING* colour column and map, and the *FILTERS*, set the
-  particles' colours and which rows are drawn.
+  particles' colours and which rows are drawn. A colour value that is blank
+  (NaN) is drawn in the map's NaN colour, dark red, as on saved stills. The
+  light of overlapping particles adds up, and dark red is faint, so blank
+  particles mixed in among coloured ones only tint the picture; a region of
+  blank particles alone shows dark red.
+  Changing the map, range or scale recolours the particles already on the GPU
+  without loading them again.
+- While the particles are prepared for the first time, a panel covers the
+  view. Later changes that need new particles (size, filters, light) keep the
+  current picture on screen and turnable, with a small badge in the top-right
+  corner until the new particles arrive. If preparing fails, the panel or the
+  badge says why.
 - Above 8 million rows an even sample is sent to the desktop, each particle
   carrying the light of those it stands for. With a distant backend and a
   large table, *View ▸ Rendering ▸ Remote (GPU on backend)* is the better
@@ -46,6 +57,10 @@ The card shows the main settings; *More settings* opens the rest.
 | *Absorption* | Grey absorption, as the optical depth reached where the light is brightest. 0 is emission only; 1 or more lets dense regions hide what is behind them. Only in stills and movies; the GPU view shows emission only. |
 | *Slab*, *Range* | A projected map's thickness around the focal plane, in the table's units (*Everything* by default), and the decades of density its brightness spans (*Automatic* by default). |
 | *Curve*, *Stretch*, *Gamma*, *Saturation* | The tone curve of a 3-D render. *Asinh* and *Logarithmic* lift faint light (more with a higher stretch), *Exponential* compresses the bright, *Linear* does neither. |
+
+The analysis view's Gaussian splats get brighter as a table grows, so their
+brightness is not comparable between tables of different size; use a
+*Projected map* for that.
 
 *Box* draws the data's bounding box and *Colour bar* the colour scale (the
 colour column in a 3-D render; the relative column density, or the hue's

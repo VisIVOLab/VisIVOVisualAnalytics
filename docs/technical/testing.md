@@ -72,7 +72,8 @@ tests/
   test_recent_reopen.cpp           #  9 — reopening a Recent Datasets entry whose file has gone
   test_shared_selection.cpp        # 21 — a selection shared between the headset and the cube viewer
   test_shared_selection_link.cpp   #  5 — the selection hub against a live backend (skipped without one)
-  test_solid_splats.cpp            #  4 — splats in a solid colour, NaN scalars included
+  test_solid_splats.cpp            #  6 — splats in a solid colour, NaN scalars included; splat opacity in 8-bit steps
+  test_raytrace_view_rules.cpp     #  9 — the ray-traced GPU view: colour values (NaN, cgs ranges), the loading overlay
   test_supported_formats.cpp       # 13 — the file types the file browser offers
   test_vbt_byte_order.cpp          # 10 — a VBT whose header declares the wrong byte order
   test_velocity_lod_geometry.cpp   # 13 — reduced velocity-field grids drawn where the backend put them
@@ -83,6 +84,8 @@ tests/
   test_vr_spectator.cpp            # 14 — the headset's view on the desktop
   test_workspace_exports_view.cpp  #  6 — the Workspace Exports list: unchanged listings, the row cap
   test_quit_exit_main.cpp          # separate executable VisIVOQuitExitTest (see below)
+  test_size_slider_drag.cpp        # separate executable VisIVOSizeSliderDragTest (see below)
+  widget_stubs/                    # stand-ins for VTK widgets named in the real forms
 ```
 
 Total: **1277 tests** in 80 classes in the `VisIVOTests` binary at 1.2.0, as
@@ -99,6 +102,21 @@ the event loops of every later class in `VisIVOTests`. It checks that a backend
 task created, or followed, on the application thread while the application
 quits is still cancelled on the backend: exactly one `DELETE` must reach a
 loopback stand-in backend (exit code 77, skipped, when there is no loopback).
+
+`VisIVOSizeSliderDrag` runs `VisIVOSizeSliderDragTest`, the one executable that
+links Qt::Widgets. It builds a window's real form with uic
+(`ui/vtkWindowCatalogue3D.ui`, its `QVTKOpenGLNativeWidget` replaced by the
+plain widget in `tests/widget_stubs/`) and drags the Splat size slider's handle
+with QTest's mouse (issue #456): every step of the drag must emit
+`valueChanged`, the signal the window's `scaleChanged` follows, and each step
+must give a new size to the local splats and to the Remote view's
+`set_point_style` command (through the functions the window calls), from the
+slider's first value to its last, for splats and points alike (the Remote
+view's points are whole pixels, so they never shrink, though not every step
+grows them). The window
+itself needs VTK and is not built there. It needs only the base
+Qt and runs offscreen (`QT_QPA_PLATFORM=offscreen` is set by CTest). It is
+built only when Qt6::Widgets is found.
 
 What belongs here: pure logic lifted out of the GUI classes so it can be
 checked without a display — parsers, geometry, unit conversions, and decision

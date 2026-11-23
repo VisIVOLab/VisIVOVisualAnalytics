@@ -561,6 +561,8 @@ set(PROJECT_SOURCES
         src/app/VrAppLauncher.h
         src/gui/Catalogue3DTableModel.cpp
         src/gui/Catalogue3DTableModel.h
+        src/gui/SimulationDiagnosticsDialog.cpp
+        src/gui/SimulationDiagnosticsDialog.h
         src/gui/DecompressBeforeOpen.cpp
         src/gui/DecompressBeforeOpen.h
         src/gui/DiagnosticsWindow.cpp
@@ -626,6 +628,8 @@ set(PROJECT_SOURCES
         src/gui/NoiseRegionDialog.h
         src/gui/RegionPropertiesDialog.cpp
         src/gui/RegionPropertiesDialog.h
+        src/gui/RegionFlux.h
+        src/gui/RegionFluxUi.h
         src/gui/RegionModel.h
         src/gui/RegionFrameText.h
         src/gui/RegionListOverlay.cpp
@@ -656,6 +660,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCatalogue3D_Scene.cpp
         src/gui/vtkWindowCatalogue3D_Remote.cpp
         src/gui/vtkWindowCatalogue3D_Interaction.cpp
+        src/gui/vtkWindowCatalogue3D_Compare.cpp
         src/gui/vtkWindowCatalogue3D_Samp.cpp
         src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h

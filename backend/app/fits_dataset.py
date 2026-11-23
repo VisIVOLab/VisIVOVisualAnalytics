@@ -705,6 +705,9 @@ class ScientificFitsDataset:
             "beam_major": self.beam.major,
             "beam_minor": self.beam.minor,
             "beam_pa": self.beam.pa,
+            # One beam per channel (a CASA BEAMS table): the beam above is the
+            # header's, and the viewers say a flux uses it (issue #401).
+            "beam_per_channel": self.has_per_channel_beam,
             # File-size aware loading policy (added for Pattern B / SDC2).
             # Client reads ``recommended_load_mode`` to decide whether to
             # auto-fetch full-resolution data or stay in preview-only mode

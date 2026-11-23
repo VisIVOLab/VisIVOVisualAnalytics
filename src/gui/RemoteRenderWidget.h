@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QImage>
 #include <QPointer>
 #include <QSize>
@@ -69,6 +70,18 @@ public:
     void setTransport(Transport t) { m_transport = t; }
     Transport transport() const { return m_transport; }
 
+    /// Where the last frame is drawn in this widget: scaled to fit and
+    /// centred (paintEvent), so a click can be mapped into the backend's
+    /// picture. The whole widget before the first frame.
+    QRect frameRect() const
+    {
+        if (m_currentFrame.isNull())
+            return rect();
+        const QSize fitted = m_currentFrame.size().scaled(size(), Qt::KeepAspectRatio);
+        return QRect(QPoint((width() - fitted.width()) / 2, (height() - fitted.height()) / 2),
+                     fitted);
+    }
+
     /// Open a session channel. The branch — JPEG-WS vs H.264-WebRTC
     /// — is chosen by the current :c:`transport` setting at the time
     /// of this call. Both branches share the same paint pipeline so
@@ -131,6 +144,11 @@ signals:
     /// Emitted on connection state changes (connecting, connected,
     /// error, closed). String is human-readable; mapped to a UI badge.
     void connectionStateChanged(const QString &state);
+
+    /// The user finished turning or zooming the view (a drag released, a
+    /// wheel gesture over): the viewer keeps the session's camera then, to
+    /// give it back to a new session if this one is lost (issue #411).
+    void viewTurnedByUser();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -230,4 +248,21 @@ private:
     // a keepalive goes out on this timer while a transport is connected.
     QTimer *m_keepaliveTimer{ nullptr };
     void sendKeepalive();
+
+    // A stream whose peer vanished without closing it (a laptop that slept,
+    // a tunnel that died, a session closed under its WebRTC peer) never ends
+    // by itself (issue #411). The WebSocket is pinged and the WebRTC stream
+    // pushes frames continuously: silence for kStallMs ends the stream here,
+    // as a drop, so the viewer reconnects.
+    QTimer *m_watchdogTimer{ nullptr };
+    visivo::StreamWatchdog m_watchdog;
+    QElapsedTimer m_clock;
+    void startWatchdog(qint64 firstTrafficGraceMs = 0);
+    /// A sign of life from the backend: a frame (or part of one), a pong, a text.
+    void sawTraffic();
+    void checkStream();
+    /// Closes the transports and forgets the stream's state, without saying
+    /// why: disconnectFromSession() (asked for) and checkStream() (a stall)
+    /// say it each in their own way.
+    void teardownTransports();
 };

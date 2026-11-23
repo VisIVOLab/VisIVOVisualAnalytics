@@ -1,4 +1,6 @@
 #include "vtkWindowCatalogue3D.h"
+#include "ParticleSplatDefaults.h"
+#include "SnapshotTimelineSteps.h"
 #include "app/DatasetUsers.h"
 #include "app/TaskQuitDrain.h"
 #include "ui_vtkWindowCatalogue3D.h"
@@ -74,6 +76,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableView>
@@ -177,6 +180,21 @@ void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
         event->ignore();   // closing now would delete the window mid-buildScene()
         return;
     }
+    this->releaseDataset();
+    // Out of the comparison now, not when deleted: the views left must not
+    // count this one (the last one leaves the group).
+    this->teardownComparisonLink();
+    QMainWindow::closeEvent(event);
+}
+
+void vtkWindowCatalogue3D::releaseDataset()
+{
+    if (this->remoteDatasetId.isEmpty())
+        return;
+    // Comparison views waiting for the columns this window's query (or the
+    // one it waits on) is bringing could wait for ever: they ask themselves.
+    if (this->m_hydratingAttributes || this->m_awaitingHydration)
+        this->shareHydratedRows(HydrationShare::LoadOwn);
     // The last window on the dataset closes it on the backend: its table (a
     // VBT's memory map) is not kept for a window that is gone. Fire and
     // forget, and never once the application quits (TaskQuitDrain.h).
@@ -193,7 +211,6 @@ void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
         });
     }
     this->remoteDatasetId.clear();
-    QMainWindow::closeEvent(event);
 }
 
 void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
@@ -210,7 +227,7 @@ void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
-void vtkWindowCatalogue3D::buildScene()
+void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
 {
     // For very large catalogues, build with the glyph/points actors hidden and
     // pump the event loop in the O(N) loops, so the multi-second construction
@@ -450,8 +467,21 @@ void vtkWindowCatalogue3D::buildScene()
     this->updateColorMapping();
     this->updateGlyphPipeline();   // re-shows the glyph/points actor + renders
 
-    renderer->ResetCamera();
-    renderWindow->Render();
+    // Framed once; then kept while the same rows gain their other columns and
+    // in a linked comparison, where one view's reframe moved every view and
+    // undid the camera a timeline step had given back (issue #446).
+    if (SnapshotTimelineSteps::rebuildKeepsCamera(this->m_sceneFramed, why,
+                                                  this->linkedWithPeers())) {
+        renderer->ResetCameraClippingRange();
+        renderWindow->Render();
+    } else {
+        // The view's own reframe, not a user's move: never sent to peers.
+        const QScopedValueRollback<bool> applying(this->m_applyingComparisonUpdate, true);
+        renderer->ResetCamera();
+        this->m_comparisonCameraTracker.refit(this->comparisonCameraPose());
+        renderWindow->Render();
+    }
+    this->m_sceneFramed = true;
 
     if (this->m_sceneBuilding) {
         this->m_sceneBuilding = false;
@@ -1087,17 +1117,9 @@ void vtkWindowCatalogue3D::updateGlyphScales()
             << "visual range:" << minVisual << maxVisual;
 }
 
-int vtkWindowCatalogue3D::pointSizeFromScale() const
+double vtkWindowCatalogue3D::pointSizeFromScale() const
 {
-    return static_cast<int>(std::lround(std::clamp(4.0 * (ui->sliderScale->value() / 100.0),
-                                                   3.0, 12.0)));
-}
-
-double vtkWindowCatalogue3D::splatSizeFromScale() const
-{
-    // The former VBT viewer's size step, 3 at the slider's default (100 %),
-    // and continuous: the whole slider reaches below and above it.
-    return std::clamp(3.0 * ui->sliderScale->value() / 100.0, 0.25, 12.0);
+    return ParticleSplatDefaults::pointSizeForSlider(ui->sliderScale->value());
 }
 
 void vtkWindowCatalogue3D::updateGaussianSplats()
@@ -1105,14 +1127,15 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     // Sized to the mean spacing of the points drawn and faded by their number,
     // as the former VBT point viewer (and the backend's point session,
     // app/render_session/points.py gaussian_splat) do: radius = spacing ×
-    // size / 8, opacity = min(0.9, 20 / ∛N) × 35 %, within 0.05..0.9.
+    // size / 8. Opacity is normalized by the estimated sightline depth so a
+    // typical column does not start several times past full brightness.
     // The spacing is ∛(volume / N) of the box the points fill: a filter that
     // cuts a slab keeps it, as it keeps the density (a flat axis counts as a
     // thousandth of the longest).
     vtkIdType n = static_cast<vtkIdType>(this->entries.size());
     if (this->m_renderDecimated && this->m_renderBudget > 0)
         n = std::min<vtkIdType>(n, this->m_renderBudget);
-    if (this->activeFilters.empty() || this->m_splatCount <= 0) {
+    if (this->m_appliedFilters.filters().empty() || this->m_splatCount <= 0) {
         this->sourcePoints->GetBounds(this->m_splatBounds);
         this->m_splatCount = n;
     }
@@ -1124,11 +1147,15 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     for (const double d : dims)
         volume *= std::max(d, longest * 1.0e-3);
     const double spacing = std::cbrt(volume / std::max<double>(1.0, static_cast<double>(n)));
-    const double radius = spacing * this->splatSizeFromScale() / 8.0;
+    const double radius =
+            ParticleSplatDefaults::splatRadiusForSlider(spacing, ui->sliderScale->value());
     // Splats along the longest sightline: ∛N for a cube (the former viewer's
     // rule), and unchanged by a filter that cuts a slab.
     const double depth = std::max(longest / spacing, 1.0);
-    const double opacity = std::clamp(std::min(0.9, 20.0 / depth) * 0.35, 0.05, 0.9);
+    // A whole 8-bit step, at least eight (ParticleSplatDefaults): VTK stores
+    // the opacity as the splat colour's 8-bit alpha.
+    const double opacity = ParticleSplatDefaults::vtkOpacityValue(
+            ParticleSplatDefaults::opacityForDepth(depth));
     this->gaussianOpacity->RemoveAllPoints();
     this->gaussianOpacity->AddPoint(-1.0e15, opacity);
     this->gaussianOpacity->AddPoint(1.0e15, opacity);

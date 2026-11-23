@@ -9,6 +9,7 @@
 // (drag: turn; Shift-drag or right button: move; wheel: zoom).
 
 #include "ParticleGLView.h"
+#include "RaytraceLoadingState.h"
 
 #include <QImage>
 #include <QJsonObject>
@@ -23,6 +24,8 @@
 class QLabel;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QProgressBar;
+class QResizeEvent;
 class QStackedLayout;
 class QTimer;
 
@@ -57,6 +60,8 @@ public:
     explicit RaytraceViewport(Source source, QWidget *parent = nullptr);
 
     void setCamera(const QJsonObject &camera);
+    /// Orient the current camera to a standard desktop Camera-menu view.
+    void setCameraPreset(double azimuth, double elevation);
     QJsonObject camera() const { return m_camera; }
     /// The view was turned off: its camera is of the past, and the next time
     /// it is turned on it starts from the view on screen then.
@@ -89,12 +94,26 @@ signals:
     /// The backend has no route for the view (it is older than this client):
     /// `text` says so. Nothing will be drawn; the window turns the view off.
     void unavailable(const QString &text);
+    /// The user turned, panned or zoomed this view. Programmatic setCamera()
+    /// deliberately does not emit it, which prevents linked views echoing.
+    void cameraChanged(const QJsonObject &camera);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private:
     void fetch(const QString &key, const QJsonObject &request);
+    /// A fetch started: ``what`` a short title, ``detail`` a sentence under it
+    /// (empty: the view appears when its first frame is ready).
+    void beginLoading(const QString &what, const QString &detail = QString());
+    /// The fetch was superseded by the data already on screen.
+    void finishLoading();
+    /// A frame is on screen (the GPU view's, the backend's, or a still).
+    void frameShown();
+    void loadingError(const QString &detail);
+    /// The cover or the corner badge, as m_loading says.
+    void showLoadingState();
     void redraw(bool settle);
     void showImage(const QImage &image);
     void showGl();
@@ -106,6 +125,8 @@ private:
     /// A reply of a backend without the route: says so (unavailable) and
     /// returns true.
     bool routeMissing(QNetworkReply *reply, const QByteArray &body);
+    /// Why a reply failed: the backend's detail, else Qt's error.
+    static QString replyError(QNetworkReply *reply, const QByteArray &body);
     /// A grid's box and colours from a backend frame's headers, read with the
     /// settings the frame was asked with.
     void takeFallbackGrid(QNetworkReply *reply, bool projected,
@@ -118,11 +139,22 @@ private:
     QJsonObject m_camera;
     QString m_key;          ///< the particles on the GPU
     QString m_loadingKey;   ///< the particles being fetched
+    /// A current particle backend sent the colour scalar. Until it does, keep
+    /// palette/range in the fetch key so an older backend's baked RGB updates.
+    bool m_scalarColourRows{ false };
     QPointer<QNetworkReply> m_reply;
     QPoint m_dragFrom;
     bool m_failed{ false };
     QStackedLayout *m_pages{ nullptr };
     QLabel *m_image{ nullptr };     ///< a still, or the backend's frame without a GPU view
+    QWidget *m_loadingOverlay{ nullptr };
+    QLabel *m_loadingLabel{ nullptr };     ///< short preparation/error title
+    QLabel *m_loadingDetail{ nullptr };    ///< wrapping explanation below it
+    QProgressBar *m_loadingProgress{ nullptr };
+    QWidget *m_loadingBadge{ nullptr };    ///< over a frame already drawn
+    QLabel *m_badgeLabel{ nullptr };
+    QProgressBar *m_badgeProgress{ nullptr };
+    visivo::RaytraceLoadingState m_loading;
     bool m_showingStill{ false };
     QImage m_shown;
     QPointer<QNetworkReply> m_fallbackReply;

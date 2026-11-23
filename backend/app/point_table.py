@@ -198,13 +198,13 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
     from . import gadget_snapshot as gs   # noqa: PLC0415
     base, ptype = gs.split_ref(path)
     p = Path(base)
-    if ptype is None and not (p.is_dir() and gs.first_in_dir(p) is not None) \
+    if ptype is None and not (p.is_dir() and gs.first_in_dir(p, allowed) is not None) \
             and not (p.is_file() and gs.detect(p) is not None):
         return None
     if allowed is not None:
         # Before any of them is read beyond its first bytes.
         if p.is_dir():
-            first = gs.first_in_dir(p)
+            first = gs.first_in_dir(p, allowed)
             if first is not None and not allowed(str(first)):
                 raise PermissionError(f"{first.name} lies outside the folders this "
                                       "backend may read.")
@@ -245,13 +245,48 @@ def particle_metadata(path: str | Path) -> dict:
     return {"snapshot": component.snapshot.describe(), "component": component.describe()}
 
 
+def particle_catalogue_metadata(path: str | Path) -> dict:
+    """Catalogue-open metadata without constructing a full particle frame."""
+    from . import gadget_snapshot   # noqa: PLC0415
+    component = gadget_snapshot.resolve(path)
+    names = list(component.names)
+    axes = default_axes(names)
+
+    def field_type(name: str) -> str:
+        kind = component.column_dtype(name).kind
+        return "int" if kind in "iu" else "float" if kind == "f" else "string"
+
+    return {
+        "kind": "catalogue", "format": "gadget", "num_rows": component.num_rows,
+        "fields": [{"name": name, "type": field_type(name)} for name in names],
+        "coordinate_fields": {"ra": "", "dec": "", "glon": "", "glat": "",
+                              "x": axes[0], "y": axes[1], "z": axes[2],
+                              "system": "cartesian"},
+        **particle_metadata(path),
+    }
+
+
+def particle_rows(path: str | Path, rows, fields=None) -> pd.DataFrame:
+    """Only selected rows of a snapshot component, directly from its shards."""
+    from . import gadget_snapshot   # noqa: PLC0415
+    component = gadget_snapshot.resolve(path)
+    rows = np.asarray(rows, dtype=np.int64)
+    names = list(component.names) if fields is None else list(dict.fromkeys(fields))
+    unknown = [name for name in names if name not in component.names]
+    if unknown:
+        raise ValueError(f"Unknown particle field: {unknown[0]!r}")
+    return pd.DataFrame({name: component.take(name, rows) for name in names},
+                        index=pd.Index(rows), copy=False)
+
+
 def particle_frame(path: str | Path) -> pd.DataFrame:
     """A snapshot component as a catalogue's table: one column per block
     column (views of the memory map for a single-file snapshot), and their
     units in ``attrs["units"]``, as a catalogue file declares them."""
     from . import gadget_snapshot   # noqa: PLC0415
     component = gadget_snapshot.resolve(path)
-    columns = component.columns()
-    frame = pd.DataFrame({name: columns[name] for name in component.names}, copy=False)
+    # Compatibility path for operations that truly require a complete frame.
+    # Normal open, sampling and rendering use particle_rows/LazyColumns.
+    frame = pd.DataFrame({name: component.column(name) for name in component.names}, copy=False)
     frame.attrs["units"] = component.units()
     return frame

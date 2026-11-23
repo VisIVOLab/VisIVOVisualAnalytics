@@ -42,14 +42,15 @@ selected region is drawn thicker, lightly filled, with white handles.
 | Drag a region | moves it |
 | Drag a handle | reshapes it (box corner, radius, annulus radii, ellipse semi-axis, polygon vertex); the knob above a box or ellipse rotates it |
 | Double-click a region | opens *Region Properties…* |
-| Right-click a region | *Properties…*, *Analyse*, *Delete* |
+| Right-click a region | *Properties…*, *Analyse*, *Background Region*, *Delete* |
 | Delete or Backspace | deletes the selected region (a 2-D pane must have the focus) |
 | ⌘Z, ⇧⌘Z | undo and redo region changes (a 2-D pane must have the focus) |
 
 The same commands are in *Tools ▸ Regions*: *Region Properties…*, *Analyse
-Region*, *Delete Region*, *Undo Region Edit*, *Redo Region Edit*. Where
-regions overlap, a click on an outline picks that region, and inside, the
-smallest one wins. A click on a catalogue marker selects the source.
+Region*, *Delete Region*, *Undo Region Edit*, *Redo Region Edit*, and the
+setting *HI Mass Distance…*. Where regions overlap, a click on an outline
+picks that region, and inside, the smallest one wins. A click on a catalogue
+marker selects the source.
 
 ### Regions in Session Data
 
@@ -65,7 +66,7 @@ one file sit under a node named after the file, for example
 | Check box of a row | shows or hides that region |
 | Check box of a file or of *Regions* | shows or hides all of them |
 | Double-click a row | opens *Region Properties…* |
-| Right-click a row | *Properties…*, *Analyse*, *Rename…*, *Hide* or *Show*, *Delete*, *Export…* |
+| Right-click a row | *Properties…*, *Analyse*, *Rename…*, *Hide* or *Show*, *Background Region*, *Delete*, *Export…* |
 | Right-click a file or *Regions* | *Show All*, *Hide All*, *Delete All*, *Export All…* |
 
 A hidden region stays in the list but is not drawn anywhere: not on the
@@ -114,11 +115,82 @@ The spectrum pane works as for a probed pixel (stats bar, smoothing,
 
 The 2-D statistics are in the product's provenance (*Inspector ▸
 Parameters*): *Valid pixels*, *Blanked / NaN*, *Min*, *Max*, *Mean*, *Median*,
-*Std Dev*, measured on the plane the region was drawn on. In the image viewer a
-*Region Analysis* window shows them and adds σ (MAD) (1.4826 × median absolute
-deviation), the beam-aware integrated flux (*Radio (beam-aware)*, pixel sum ÷
-beam area, Jy for a Jy/beam image, when the header has `BMAJ`/`BMIN`) with the
-peak SNR, and per-layer values for a Stokes set. Blank pixels are left out.
+*Std Dev*, measured on the plane the region was drawn on, and on a channel or a
+moment-0 map the flux (see [Region flux and HI mass](#region-flux-and-hi-mass)).
+In the image viewer a *Region Analysis* window shows them and adds σ (MAD)
+(1.4826 × median absolute deviation), the beam-aware integrated flux
+(*Radio (beam-aware)*) with the peak SNR, and per-layer values for a Stokes
+set. Blank pixels are left out.
+
+### Region flux and HI mass
+
+On a map in Jy/beam with a beam in the header (`BMAJ`/`BMIN`), *Analyse* gives
+the region's flux, in both viewers:
+
+| Value | Meaning |
+|---|---|
+| *Integrated flux* | S = (Σ − N · mean_bg) / Ω with its error. Jy on a channel, Jy km/s on a moment-0 map |
+| *Flux error from* | the background region and its pixel count, mean and σ, or the map noise |
+| *Beam area* | Ω = π · BMAJ · BMIN / (4 ln 2) in pixels, and the beam |
+| *Flux note* | how the unit was read, and when the numbers are approximate |
+| *Flux warning* | the map looks masked or thresholded (see below) |
+| *HI mass* | M_HI = 2.356 × 10⁵ D² S M☉ (D in Mpc, S in Jy km/s), on a moment-0 map |
+
+Σ is the sum of the region's N valid pixels. A moment-0 map is in Jy/beam
+times the cube's spectral unit, and a velocity axis in m/s is converted to
+km/s. A frequency axis is converted with the rest frequency (Δv = c Δν / ν₀)
+in the cube viewer, as the backend's HI products do; without a rest frequency,
+and in the image viewer (an exported map has none), it stays in Jy Hz. A peak
+or mean map in Jy/beam gets no flux, nor does a map that is not per beam (K).
+A cube with no `BUNIT` is taken as Jy/beam, and *Flux note* says so.
+
+*Error*. The pixels within a beam are correlated, so the region holds N / Ω
+independent beams, and with a background region the error of its mean,
+subtracted N times, adds in quadrature:
+
+σ_S² = σ² N / Ω + σ² N² / (N_bg Ω)
+
+with N_bg the background region's valid pixels. A σ that cannot be measured
+(zero, or fewer than two pixels) gives no error.
+
+*Background region*. Right-click a region (on the image or in Session Data)
+and tick *Background Region*. *Analyse* on another region then subtracts the
+mean of the nearest background region, measured on the same map, and takes its
+standard deviation as σ. Session Data marks it `· background`; it stays one
+when hidden. It is ds9's `background` property, so a region file with
+`# background` brings it in and an export writes it back. Without a background
+region nothing is subtracted, σ is the MAD σ of the whole map (in the image
+viewer, of the pixels loaded; below full resolution, no error), and the second
+term goes.
+
+*Masked moment maps*. A moment computed with *Enable threshold mask* drops the
+faint emission and the noise: the flux comes out high and σ small or zero.
+*Flux warning* says so when the moment was computed with the mask, or when
+more than a fifth of the noise pixels are exactly 0 or blank (an exported
+masked map). Compute the moment with the mask off for fluxes.
+
+*Beam*. A cube with one beam per channel (a `BEAMS` table) uses its header
+beam, and *Flux note* says so; an exported moment map carries the beam of the
+central channel of its range.
+
+*Distance*. *Tools ▸ Regions ▸ HI Mass Distance…* takes a distance in Mpc
+(`25`) or a redshift (`z=0.0046`). A redshift gives the luminosity distance
+D_L in Planck18 and the mass M_HI = 2.356 × 10⁵ D_L² S / (1 + z) M☉, the flux
+being measured in the observed frame (Meyer et al. 2017, PASA 34, 52). Below
+cz = 1000 km/s peculiar velocities (about 300 km/s) dominate a distance from
+the redshift, and the result says so: type a distance instead. The setting is
+kept between sessions and used by both viewers. Leave it empty to show no
+mass.
+
+On a reduced map (a preview) the flux is computed from the displayed pixels,
+each counted for the block it stands for. The σ of block means is not a
+pixel's, so flux and error are marked approximate.
+
+Example: HCG 44 (`hgc44.fits`), moment 0 over channels 21 → 101 with the mask
+off, circles on the galaxies and an annulus between 4′ and 5.3′ around the
+central pair marked as background (2186 pixels). NGC 3190, NGC 3187 and
+NGC 3185 give 3.32 ± 0.27, 5.80 ± 0.35 and 1.36 ± 0.35 Jy km/s (Ω = 30.66
+pixels, σ_bg = 48.17 Jy/beam m/s), and at 25 Mpc 4.9, 8.5 and 2.0 × 10⁸ M☉.
 
 Reopening the row in Session Data redraws the region, selected, and its
 numbers. The Inspector's values can be copied (right-click ▸ *Copy*), and

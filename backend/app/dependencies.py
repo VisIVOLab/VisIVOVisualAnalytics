@@ -578,7 +578,7 @@ __all__ = [
     "_HEALPY_AVAILABLE",
     "_RA_CANDIDATES", "_DEC_CANDIDATES",
     "_default_worker_count", "_pool_initializer", "_error",
-    "_apply_tabular_query", "sample_step",
+    "_apply_tabular_query", "sample_step", "_random_sample_rows",
     "data_roots", "hide_hidden_entries", "_normalize_path", "_parse_vbt_header", "_is_fits", "_has_fits_name",
     "_is_supported_dataset",
     "_normalize_catalogue_field", "_catalogue_field_type",
@@ -638,8 +638,15 @@ def _apply_tabular_query(
     even_sample: bool = False,
     phase: int = 0,
     random_sample: bool = False,
+    periods: dict[str, float] | None = None,
 ) -> tuple["pd.DataFrame", int]:
     """Apply filters, sort, and limit/offset to a DataFrame.
+
+    Box and sphere selections make one boolean mask over the rows (no copy of
+    the frame, which a VBT read in place cannot index anyway when it is
+    big-endian), handed to the numeric page with the scalar filters. They
+    wrap round a periodic box: the period a selection states, else
+    ``periods`` (column -> length, the dataset's own) (app/periodic.py).
 
     ``even_sample``: when more rows match than ``limit``, one in every
     ``sample_step(total, limit)`` of them, from the ``phase``-th, instead of a
@@ -656,14 +663,28 @@ def _apply_tabular_query(
     Raises ``ValueError`` for unknown fields or operators.
     """
     _NUMERIC_OPS = {"=", "!=", ">", ">=", "<", "<="}
+    scalar_filters, spatial = [], None
+    for f in filters:
+        if f.box is None and f.sphere is None:
+            scalar_filters.append(f)
+            continue
+        inside = _spatial_mask(df, f, periods)
+        inside = inside if f.op == "inside" else ~inside
+        spatial = inside if spatial is None else (spatial & inside)
+    filters = scalar_filters
     # Numeric filters and no sort (a VBT of points read in place, issue #83):
     # one boolean mask, then only the page's rows are taken. Filtering the
     # frame instead copied every matching row of every column per request —
     # gigabytes on a table of a hundred million rows.
     page = _numeric_filter_page(df, filters, sort, limit, offset, _NUMERIC_OPS,
-                                even_sample=even_sample, phase=phase, random_sample=random_sample)
+                                even_sample=even_sample, phase=phase,
+                                random_sample=random_sample, mask=spatial)
     if page is not None:
         return page
+    if spatial is not None:
+        # Text filters or a sort: the general path, on the rows the spatial
+        # selection kept (taken byte-order safely, their index kept).
+        df = _take_rows(df, np.flatnonzero(spatial))
     for f in filters:
         if f.field not in df.columns:
             raise ValueError(f"Unknown field: {f.field!r}")
@@ -762,6 +783,41 @@ def _random_sample_rows(total: int, limit: int, phase: int) -> np.ndarray:
     return bounds[:-1][active] + (offsets[active] + phase) % widths[active]
 
 
+def _spatial_mask(df, f, periods=None) -> np.ndarray:
+    """The rows of ``df`` inside the box or sphere of filter ``f`` (before
+    its inside/outside operator), one coordinate column at a time."""
+    from .periodic import box_inside, selection_period, separation  # noqa: PLC0415
+    spatial = f.box if f.box is not None else f.sphere
+    fields = list(spatial.fields)
+    if len(fields) != 3:
+        raise ValueError("A spatial selection needs exactly three coordinate fields.")
+    missing = next((field for field in fields if field not in df.columns), None)
+    if missing is not None:
+        raise ValueError(f"Unknown field: {missing!r}")
+    if f.op not in ("inside", "outside"):
+        raise ValueError("A spatial selection operator is 'inside' or 'outside'.")
+    if f.box is not None:
+        if len(f.box.min) != 3 or len(f.box.max) != 3 \
+                or any(not np.isfinite(a) or not np.isfinite(b) or a >= b
+                       for a, b in zip(f.box.min, f.box.max)):
+            raise ValueError("Every box minimum must be finite and below its maximum.")
+        inside = np.ones(len(df), dtype=bool)
+        for field, lo, hi in zip(fields, f.box.min, f.box.max):
+            inside &= box_inside(df[field].to_numpy(copy=False), lo, hi,
+                                 selection_period(f.box.period, field, periods))
+        return inside
+    if len(f.sphere.center) != 3 \
+            or any(not np.isfinite(v) for v in f.sphere.center) \
+            or not np.isfinite(f.sphere.radius) or f.sphere.radius <= 0:
+        raise ValueError("A sphere needs a finite centre and positive radius.")
+    distance2 = np.zeros(len(df), dtype=np.float64)
+    for field, origin in zip(fields, f.sphere.center):
+        delta = separation(df[field].to_numpy(copy=False), origin,
+                           selection_period(f.sphere.period, field, periods))
+        distance2 += delta * delta
+    return distance2 <= f.sphere.radius * f.sphere.radius
+
+
 def _take_rows(df, rows):
     """``df.iloc[rows]`` for a VBT table too: pandas cannot index a column
     read big-endian from its file, so such a column is indexed with NumPy and
@@ -782,12 +838,12 @@ def _take_rows(df, rows):
 
 def _numeric_filter_page(df, filters, sort, limit, offset, numeric_ops, *,
                          even_sample: bool = False, phase: int = 0,
-                         random_sample: bool = False):
+                         random_sample: bool = False, mask: np.ndarray | None = None):
     """``(page, total)`` when every filter compares a numeric column with a
-    number and nothing is sorted; None otherwise (the general path)."""
+    number and nothing is sorted; None otherwise (the general path).
+    ``mask``: rows already selected (a spatial selection), or None."""
     if sort and sort.field in df.columns:
         return None
-    mask = None
     for f in filters:
         if f.field not in df.columns or f.op not in numeric_ops:
             return None

@@ -111,11 +111,15 @@ void RegionSessionController::showRowMenu(int id, const QPoint &globalPos)
     menu.addSeparator();
     QAction *rename = menu.addAction(u"Rename…"_s);
     QAction *toggle = menu.addAction(visible ? u"Hide"_s : u"Show"_s);
+    QAction *background = menu.addAction(u"Background Region"_s);
+    background->setCheckable(true);
+    background->setChecked(visivo::regions::isBackground(*r));
     QAction *remove = menu.addAction(u"Delete"_s);
     menu.addSeparator();
     QAction *exportOne = menu.addAction(u"Export…"_s);
-    for (QAction *a : { rename, toggle, remove })
+    for (QAction *a : { rename, toggle, remove, background })
         a->setEnabled(editable());
+    background->setEnabled(editable() && visivo::regions::hasArea(r->shape));
     const QPointer<RegionSessionController> self(this);
     QAction *chosen = menu.exec(globalPos);
     if (!self || !chosen || !m_list->find(id))
@@ -135,6 +139,10 @@ void RegionSessionController::showRowMenu(int id, const QPoint &globalPos)
         this->rename(id);
     } else if (chosen == toggle) {
         if (editable() && m_list->setVisible(id, !visible))
+            m_hooks.changed();
+    } else if (chosen == background) {
+        // Region flux (issue #401) subtracts the nearest background region.
+        if (editable() && m_list->setBackground(id, background->isChecked()))
             m_hooks.changed();
     } else if (chosen == remove) {
         if (!editable())

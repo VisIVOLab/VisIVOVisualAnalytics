@@ -15,18 +15,27 @@
 // rendering - Disconnected" with its last frame rate until the user switched
 // to Local and back.
 //
-// Now the view asks for a new session by itself, once. Once means once per
-// stable stream: a replacement that drops again before it has been live for
-// kStableLiveMs (a render process that dies at its first full-resolution
-// frame, say) is not replaced again, or the view would cycle create, live,
-// crash for ever; the banner offers Retry instead. A stream that dropped for
-// another reason (the backend went away, the network) offers Retry at once:
-// its session may still be there.
+// Now the view reconnects by itself (issue #411: after a sleep or a screen
+// lock the view stayed on a dead stream). A drop is followed by a check of the
+// session: one still there gets the same session's stream again, one that is
+// gone (closed for idling while the laptop slept, its process killed) a new
+// session, with the view's state and camera sent to it. A backend out of reach
+// (a tunnel being reopened, a backend restarting) is asked again after a
+// growing wait, a bounded number of times; then the view stops and offers
+// Reconnect.
+//
+// A new session is made once per stable stream: a replacement that drops with
+// its session ended before it has been live for kStableLiveMs (a render
+// process that dies at its first full-resolution frame, say) is not replaced
+// again, or the view would cycle create, live, crash for ever.
 //
 // Header-only, no widgets (TestRemoteRenderQueue).
 
 #include <QElapsedTimer>
 #include <QString>
+
+#include <algorithm>
+#include <array>
 
 namespace visivo {
 
@@ -41,12 +50,6 @@ inline const QString &sessionEndedCloseReason()
 /// failure, not as the same one again.
 inline constexpr qint64 kStableLiveMs = 10'000;
 
-enum class RemoteDropAction {
-    Ignore,       ///< Not a live remote view: a negotiation's own failure path handles it.
-    NewSession,   ///< Ask the backend for a new session, now, without asking the user.
-    OfferRetry,   ///< Show Retry: the user decides when to try again.
-};
-
 struct RemoteDrop
 {
     bool showingRemote = false;   ///< The view draws remotely (not Local, not switching).
@@ -60,31 +63,230 @@ inline bool sessionEnded(const RemoteDrop &d)
     return d.closeReason == sessionEndedCloseReason();
 }
 
-/// A view's replacements: whether a drop gets a new session or Retry.
-class RemoteRecovery
+/// The waits before each automatic attempt, in ms: short at first (a blip),
+/// then long enough for an SSH tunnel to be reopened (ClusterConnection sees a
+/// dead one within a minute and reopens it every 3 s) or a backend to restart.
+/// About two minutes in all; then the view offers Reconnect.
+inline constexpr std::array<int, 8> kReconnectDelaysMs{ 1'000,  2'000,  4'000,  8'000,
+                                                        15'000, 30'000, 30'000, 30'000 };
+
+/// How long the same session's stream may take to come back before the
+/// attempt counts as failed (a negotiation that never reports an end).
+inline constexpr int kReconnectAttemptTimeoutMs = 30'000;
+
+enum class ReconnectStep {
+    Ignore,         ///< Nothing to do: not a live remote view, or no reconnection under way.
+    CheckSession,   ///< Ask the backend whether the session is still there (GET .../levels).
+    SameSession,    ///< It is: connect the stream to it again.
+    NewSession,     ///< It is gone: ask for a new one, then send it the view's state.
+    Wait,           ///< Not now: try again after delayMs().
+    GiveUp,         ///< Stop, and offer Reconnect.
+};
+
+/// A view's automatic reconnection, from a drop to Live or to giving up.
+class RemoteReconnect
 {
 public:
-    RemoteDropAction onDrop(const RemoteDrop &d)
+    /// A stream dropped.
+    ReconnectStep onDrop(const RemoteDrop &d)
     {
         if (!d.showingRemote || !d.wasLive)
-            return RemoteDropAction::Ignore;
-        if (d.liveMs >= kStableLiveMs)
-            m_replacements = 0;   // what came before worked for a while
-        if (sessionEnded(d) && m_replacements == 0) {
-            ++m_replacements;
-            return RemoteDropAction::NewSession;
+            return ReconnectStep::Ignore;
+        m_refused = false;
+        if (d.liveMs >= kStableLiveMs) {
+            // What came before worked for a while: a new outage, a new budget.
+            m_failures = 0;
+            m_replacedLive = false;
+            m_inOutage = false;
         }
-        return RemoteDropAction::OfferRetry;
+        // A stream this outage brought back that dropped again soon after: a
+        // failed attempt, or a link that comes and goes would be reconnected
+        // for ever without a wait.
+        const bool droppedAgain = m_inOutage;
+        m_inOutage = true;
+        m_active = true;
+        m_replacing = false;
+        if (sessionEnded(d))
+            return newSessionOrGiveUp();
+        if (droppedAgain)
+            return failed();
+        return ReconnectStep::CheckSession;
     }
 
-    /// The user clicked Retry: that is this failure's replacement, so a quick
-    /// drop of it offers Retry again rather than a session of its own.
-    void userRetried() { m_replacements = 1; }
+    /// The check answered: @p httpStatus 0 when the backend did not answer.
+    ReconnectStep onCheck(int httpStatus)
+    {
+        if (!m_active)
+            return ReconnectStep::Ignore;
+        if (httpStatus == 404 || httpStatus == 410)
+            return newSessionOrGiveUp();
+        if (httpStatus == 401 || httpStatus == 403) {
+            // The backend refuses this client's token: asking again changes
+            // nothing (refusedAccess() lets the view say so).
+            m_active = false;
+            m_refused = true;
+            return ReconnectStep::GiveUp;
+        }
+        if (httpStatus >= 200 && httpStatus < 300)
+            return ReconnectStep::SameSession;
+        return failed();   // out of reach, or an error: the session may still be there
+    }
 
-    int replacements() const { return m_replacements; }
+    /// The attempt (the same session's stream, or a new session) did not
+    /// reach Live: the backend could not be reached, refused, or never answered.
+    ReconnectStep onAttemptFailed()
+    {
+        if (!m_active)
+            return ReconnectStep::Ignore;
+        m_replacing = false;
+        return failed();
+    }
+
+    /// The wait after a failure is over.
+    ReconnectStep onWaited() const
+    {
+        return m_active ? ReconnectStep::CheckSession : ReconnectStep::Ignore;
+    }
+
+    /// The stream is live again: the reconnection is over. A new session that
+    /// went live counts against the next drop that ends it quickly.
+    void onLive()
+    {
+        if (m_replacing)
+            m_replacedLive = true;
+        m_replacing = false;
+        m_active = false;
+    }
+
+    /// The user clicked Reconnect: a fresh budget, and one new session.
+    ReconnectStep userReconnect()
+    {
+        m_failures = 0;
+        m_replacedLive = false;
+        m_replacing = false;
+        m_inOutage = true;   // what it brings back is judged as any reconnection
+        m_refused = false;
+        m_active = true;
+        return ReconnectStep::CheckSession;
+    }
+
+    /// The user went to Local, or the window let its session go.
+    void cancel()
+    {
+        m_active = false;
+        m_replacing = false;
+    }
+
+    /// Between a drop and Live (or giving up).
+    bool active() const { return m_active; }
+    /// The last give-up was the backend refusing the token (401/403).
+    bool refusedAccess() const { return m_refused; }
+    /// The attempt under way, from 1.
+    int attempt() const { return m_failures + 1; }
+    static constexpr int maxAttempts() { return int(kReconnectDelaysMs.size()) + 1; }
+    /// The wait before the next attempt, after a failure.
+    int delayMs() const
+    {
+        const int i = std::clamp(m_failures - 1, 0, int(kReconnectDelaysMs.size()) - 1);
+        return kReconnectDelaysMs[size_t(i)];
+    }
 
 private:
-    int m_replacements = 0;
+    ReconnectStep failed()
+    {
+        ++m_failures;
+        if (m_failures >= maxAttempts()) {
+            m_active = false;
+            return ReconnectStep::GiveUp;
+        }
+        return ReconnectStep::Wait;
+    }
+
+    ReconnectStep newSessionOrGiveUp()
+    {
+        if (m_replacedLive) {
+            // A new session already went live in this outage and ended soon
+            // after: one more would end the same way.
+            m_active = false;
+            return ReconnectStep::GiveUp;
+        }
+        m_replacing = true;
+        return ReconnectStep::NewSession;
+    }
+
+    bool m_active = false;
+    bool m_replacing = false;      ///< the attempt under way is a new session
+    bool m_replacedLive = false;   ///< a new session went live in this outage
+    bool m_inOutage = false;       ///< dropped, and not stable since
+    bool m_refused = false;        ///< gave up on a 401/403
+    int m_failures = 0;
+};
+
+/// What the view says while it reconnects: the attempt, and the wait if any.
+inline QString reconnectStatus(int attempt, int maxAttempts, int waitMs)
+{
+    if (waitMs <= 0)
+        return QStringLiteral("Reconnecting to the backend (attempt %1 of %2)…")
+                .arg(attempt)
+                .arg(maxAttempts);
+    return QStringLiteral("Connection to the backend lost - trying again in %1 s "
+                          "(attempt %2 of %3)…")
+            .arg((waitMs + 999) / 1000)
+            .arg(attempt)
+            .arg(maxAttempts);
+}
+
+/// A stream that stopped without saying so: a WebSocket whose pings get no
+/// answer, a WebRTC stream with no frame. A peer that vanished (a laptop that
+/// slept, an SSH tunnel that died under it, a backend that closed the session
+/// but not the peer) never reports an end, so the view would stay on its last
+/// frame for good. check() runs every kCheckMs; traffic() is any sign of life.
+///
+/// A check that comes long after the one before means this process was not
+/// running (App Nap, a sleep): the time it was away is not silence, so the
+/// count starts again rather than declaring a stall that is only a late timer.
+class StreamWatchdog
+{
+public:
+    static constexpr qint64 kCheckMs = 2'000;
+    static constexpr qint64 kSuspendedGapMs = 3 * kCheckMs;
+
+    enum class Verdict { Off, Fine, Stalled };
+
+    /// @p firstTrafficGraceMs: extra time before the first sign of life is
+    /// due (a WebRTC stream is Live before its first frame, which a large
+    /// cube may take a while to render).
+    void start(qint64 nowMs, qint64 firstTrafficGraceMs = 0)
+    {
+        m_on = true;
+        m_lastCheck = nowMs;
+        m_lastTraffic = nowMs + std::max<qint64>(0, firstTrafficGraceMs);
+    }
+    void stop() { m_on = false; }
+    bool running() const { return m_on; }
+
+    void traffic(qint64 nowMs) { m_lastTraffic = nowMs; }
+
+    /// @p silenceMs: how long without traffic is a stall. A stall stops the
+    /// watchdog: the stream is over, the next one starts it again.
+    Verdict check(qint64 nowMs, qint64 silenceMs)
+    {
+        if (!m_on)
+            return Verdict::Off;
+        if (nowMs - m_lastCheck > kSuspendedGapMs)
+            m_lastTraffic = std::max(m_lastTraffic, nowMs);   // away, not silent
+        m_lastCheck = nowMs;
+        if (nowMs - m_lastTraffic > silenceMs) {
+            m_on = false;
+            return Verdict::Stalled;
+        }
+        return Verdict::Fine;
+    }
+
+private:
+    bool m_on = false;
+    qint64 m_lastTraffic = 0;
+    qint64 m_lastCheck = 0;
 };
 
 /// Whether the create, or the connection after it, now under way replaces a
@@ -152,6 +354,7 @@ public:
         m_wasLive = false;
         m_reason.clear();
         m_liveMs = 0;
+        m_lastTrafficMs = -1;
         m_liveSince.invalidate();
     }
 
@@ -162,12 +365,26 @@ public:
             m_liveSince.start();
     }
 
-    /// The stream ended; @p reason is the WebSocket's close reason.
+    /// A sign of life from the backend (a frame, a pong) while live.
+    void markTraffic()
+    {
+        if (m_liveSince.isValid())
+            m_lastTrafficMs = m_liveSince.elapsed();
+    }
+
+    /// The stream ended; @p reason is the WebSocket's close reason. It was
+    /// live up to its last sign of life, not up to when its end was noticed:
+    /// a stream that died at once but was taken for lost only after the
+    /// watchdog's silence (or WebRTC's own checks) is not a stable one, or a
+    /// half-dead link would reset the reconnection's budget at every drop.
     void closed(bool wasLive, const QString &reason)
     {
         m_wasLive = wasLive;
         m_reason = reason;
-        m_liveMs = m_liveSince.isValid() ? m_liveSince.elapsed() : 0;
+        m_liveMs = !m_liveSince.isValid() ? 0
+                : m_lastTrafficMs >= 0    ? m_lastTrafficMs
+                                          : m_liveSince.elapsed();
+        m_lastTrafficMs = -1;
         m_liveSince.invalidate();
     }
 
@@ -195,6 +412,7 @@ private:
     bool m_wasLive = false;
     QString m_reason;
     qint64 m_liveMs = 0;
+    qint64 m_lastTrafficMs = -1;   ///< since live; -1: none seen
     QElapsedTimer m_liveSince;
 };
 

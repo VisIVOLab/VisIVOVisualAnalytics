@@ -405,8 +405,14 @@ class WebRTCSession:
         pc = RTCPeerConnection()
         self._pc = pc
         # Register ourselves so /sdp/ice can find this PC by
-        # session_id when the client trickle-posts candidates.
+        # session_id when the client trickle-posts candidates. An offer for a
+        # session that already has a peer is the same client reconnecting
+        # (the route checked the owner): the old peer is closed, and its own
+        # close does not unregister this one (issue #411).
+        previous = _active_sessions.get(self._render.session_id)
         _active_sessions[self._render.session_id] = self
+        if previous is not None and previous is not self:
+            await previous.close()
 
         @pc.on("connectionstatechange")
         async def _on_state() -> None:
@@ -501,8 +507,11 @@ class WebRTCSession:
 
     async def close(self) -> None:
         # Drop ourselves from the global registry first so /sdp/ice
-        # stops accepting candidates for this PC.
-        _active_sessions.pop(self._render.session_id, None)
+        # stops accepting candidates for this PC; only ourselves: a newer peer
+        # of the same session (a reconnect) may have taken the entry, and the
+        # old peer's consent failing later must not unregister it.
+        if _active_sessions.get(self._render.session_id) is self:
+            del _active_sessions[self._render.session_id]
         if self._pc is not None:
             try:
                 await self._pc.close()

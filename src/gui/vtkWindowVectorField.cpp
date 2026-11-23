@@ -1,4 +1,5 @@
 #include "vtkWindowVectorField.h"
+#include "CameraPresetActions.h"
 #include "WindowCloseShortcut.h"
 
 #include "ColorMaps.h"
@@ -81,6 +82,11 @@ vtkWindowVectorField::vtkWindowVectorField(const QString &path, BackendVelocityG
     this->scalarBar = vtkSmartPointer<vtkScalarBarActor>::New();
 
     this->setupUi();
+    visivo::installCameraPresetMenu(this, [this](double azimuth, double elevation) {
+        visivo::applyCameraPreset(this->renderer, azimuth, elevation);
+        if (this->renderWindow)
+            this->renderWindow->Render();
+    });
     this->setupRenderer();
     this->applyColorMap(u"Inferno"_s);
     this->rebuildLodActors();

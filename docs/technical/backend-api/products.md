@@ -103,8 +103,11 @@ request is the `/v1/products/moment` request plus `output_basename`:
 ```
 
 An empty `output_basename` becomes `<source stem>_m<order>.fits`; an existing
-name gets a numeric suffix. The file carries the celestial WCS and a `BUNIT`
-derived from the cube. Response: `valid`, `error`, `output_path`,
+name gets a numeric suffix. The file carries the celestial WCS, a `BUNIT`
+derived from the cube and the cube's restoring beam (`BMAJ`, `BMIN`, `BPA`), so
+the image viewer gives the flux of a region of the map; a cube with one beam
+per channel (a `BEAMS` table) gets the beam of the central channel of the
+range and a `COMMENT` saying so. Response: `valid`, `error`, `output_path`,
 `workspace_filename`, `width`, `height`, `range_min`, `range_max`, `bunit`,
 `moment_unit`. A non-cube dataset is 422; a compute failure is `valid: false`.
 The map is computed exactly as `/v1/products/moment` computes it for the same

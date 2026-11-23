@@ -3,6 +3,8 @@
 
 #include "ImageLayerController.h"
 #include "LayerListModel.h"
+#include "RegionFlux.h"
+#include "RegionFluxUi.h"
 #include "RegionFullRes.h"
 #include "RegionModel.h"
 #include "RegionListExport.h"
@@ -180,6 +182,12 @@ void vtkWindowImage::setupRegionListActions()
     for (QAction *a : { m_actRegionProperties, m_actAnalyseRegion, m_actDeleteRegion,
                         m_actUndoRegion, m_actRedoRegion })
         a->setEnabled(false);
+    // Always available: the distance is a setting, not an action on a region.
+    m_actHiDistance = make(u"HI Mass Distance…"_s,
+            u"The distance (Mpc, or a redshift) at which Analyse gives the HI mass of a region "
+            u"on a moment-0 map."_s);
+    QObject::connect(m_actHiDistance, &QAction::triggered, this,
+                     [this]() { visivo::flux::askHiDistance(this); });
 }
 
 void vtkWindowImage::onRegionListChanged()
@@ -407,6 +415,12 @@ void vtkWindowImage::showRegionContextMenu(int id)
     menu.setToolTipsVisible(true);
     QAction *props = menu.addAction(u"Properties…"_s);
     QAction *analyse = menu.addAction(u"Analyse"_s);
+    QAction *background = menu.addAction(u"Background Region"_s);
+    background->setCheckable(true);
+    background->setChecked(visivo::regions::isBackground(*r));
+    background->setEnabled(visivo::regions::hasArea(r->shape));
+    background->setToolTip(u"Analyse subtracts the mean of the nearest background region from a "
+                           u"region's flux and takes its scatter as the noise."_s);
     menu.addSeparator();
     QAction *remove = menu.addAction(u"Delete"_s);
     menu.setTitle(r->name);
@@ -415,7 +429,10 @@ void vtkWindowImage::showRegionContextMenu(int id)
     if (!self || !chosen || !this->m_regions.find(id))
         return;
     this->m_regions.select(id);
-    if (chosen == props) {
+    if (chosen == background) {
+        if (!m_regionDrag.active && this->m_regions.setBackground(id, background->isChecked()))
+            this->onRegionListChanged();
+    } else if (chosen == props) {
         this->openRegionProperties(id);
     } else if (chosen == analyse) {
         this->onRegionListChanged();

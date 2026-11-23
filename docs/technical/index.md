@@ -93,6 +93,7 @@ multi-user-backend
 deployment/vr-pairing
 deployment/vr-cluster
 deployment/vr-public-loader
+deployment/meta-store
 deployment/copilot-self-hosted
 vr/reference
 vr/troubleshooting

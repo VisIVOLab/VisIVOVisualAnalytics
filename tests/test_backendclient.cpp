@@ -767,3 +767,63 @@ void TestBackendClient::parseParticleComponents_readsNameAndPath()
     QVERIFY(visivo::parseParticleComponents(QJsonValue()).isEmpty());
     QVERIFY(visivo::parseParticleComponents(QJsonValue(u"x"_s)).isEmpty());
 }
+
+void TestBackendClient::parsePointSeries_readsNumberedSnapshots()
+{
+    using namespace Qt::StringLiterals;
+    const auto result = BackendClient::parsePointSeries(QJsonObject{
+            { u"valid"_s, true },
+            { u"paths"_s, QJsonArray{ u"/run/snap_147.0::gadget-type=0"_s,
+                                      u"/run/snap_148.0::gadget-type=0"_s } },
+            { u"numbers"_s, QJsonArray{ 147, 148 } },
+            { u"index"_s, 1 },
+            { u"count"_s, 2 },
+    });
+    QVERIFY(result.valid);
+    QCOMPARE(result.paths.size(), 2);
+    QCOMPARE(result.numbers, QVector<int>({ 147, 148 }));
+    QCOMPARE(result.index, 1);
+}
+
+void TestBackendClient::parsePointSeries_rejectsMalformedPositions()
+{
+    using namespace Qt::StringLiterals;
+    const auto badIndex = BackendClient::parsePointSeries(QJsonObject{
+            { u"valid"_s, true }, { u"paths"_s, QJsonArray{ u"/run/snap_1"_s } },
+            { u"numbers"_s, QJsonArray{ 1 } }, { u"index"_s, 3 }, { u"count"_s, 1 },
+    });
+    QVERIFY(!badIndex.valid);
+    QVERIFY(!badIndex.error.isEmpty());
+
+    const auto unequal = BackendClient::parsePointSeries(QJsonObject{
+            { u"valid"_s, true }, { u"paths"_s, QJsonArray{ u"/run/snap_1"_s } },
+            { u"numbers"_s, QJsonArray{} }, { u"index"_s, 0 }, { u"count"_s, 1 },
+    });
+    QVERIFY(!unequal.valid);
+}
+
+void TestBackendClient::parsePointSeries_readsWhichOutputsOpen()
+{
+    using namespace Qt::StringLiterals;
+    // Issue #446: an early output without stars is marked, and skipped.
+    const QJsonArray paths{ u"/run/snap_000.0::gadget-type=4"_s,
+                            u"/run/snap_001.0::gadget-type=4"_s };
+    const auto marked = BackendClient::parsePointSeries(QJsonObject{
+            { u"valid"_s, true }, { u"paths"_s, paths }, { u"numbers"_s, QJsonArray{ 0, 1 } },
+            { u"available"_s, QJsonArray{ false, true } }, { u"index"_s, 1 }, { u"count"_s, 2 },
+    });
+    QVERIFY(marked.valid);
+    QCOMPARE(marked.available, QVector<bool>({ false, true }));
+    // An older backend marks none: every output opens.
+    const auto unmarked = BackendClient::parsePointSeries(QJsonObject{
+            { u"valid"_s, true }, { u"paths"_s, paths }, { u"numbers"_s, QJsonArray{ 0, 1 } },
+            { u"index"_s, 1 }, { u"count"_s, 2 },
+    });
+    QVERIFY(unmarked.valid);
+    QVERIFY(unmarked.available.isEmpty());
+    const auto shortMarks = BackendClient::parsePointSeries(QJsonObject{
+            { u"valid"_s, true }, { u"paths"_s, paths }, { u"numbers"_s, QJsonArray{ 0, 1 } },
+            { u"available"_s, QJsonArray{ true } }, { u"index"_s, 1 }, { u"count"_s, 2 },
+    });
+    QVERIFY(!shortMarks.valid);
+}

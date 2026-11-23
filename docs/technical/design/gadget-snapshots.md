@@ -84,6 +84,15 @@ comes from the positions (float or double) and from the block: IDs and the
 other integer blocks (`INT_BLOCKS`) are unsigned 4- or 8-byte integers. A
 block with several values per particle becomes several columns.
 
+**INFO.** A format-2 `INFO` block declares, per block, its value type, its
+values per particle and its types; it is used instead of the inference above.
+`FLOAT`/`FLOATN` name the run's `MyFloat`, which may be single while the
+positions are `DOUBLEN` (P-Gadget3, OpenGadget3 zoom-ins), so its 4 or 8
+bytes come from the block's length, the same in every file. A declared type
+the length contradicts, a value type the reader does not know, a width beyond
+`MAX_DIMS` or no particle types leave that block out with the reason in
+`skipped_reasons`; the rest of the snapshot opens.
+
 **Large blocks.** Record markers are read as unsigned 32-bit integers, so a
 block of 2 to 4 GiB reads as written. Past 4 GiB the marker wraps. The true
 length is then the marker plus a whole number of 4 GiB whose closing marker
@@ -109,6 +118,25 @@ particle type, and that does copy. The VR page's samples reuse this DataFrame
 instead of joining the columns again. An HDF5 dataset that is contiguous and
 unfiltered is memory-mapped at its file offset (`dataset.id.get_offset()`);
 a chunked or compressed one is read.
+
+**Selected rows of a compressed dataset.** Filters, sorted pages, samples and
+the copilot read rows through `Component.take`, a slice of rows at a time.
+A chunked or compressed HDF5 piece (TNG, EAGLE, Gadget-4) up to
+`VISIVO_GADGET_CACHE_MB` (default 512) is decompressed once into a cache
+shared by every component, least recently used out first, keyed by the file's
+size and modification time. Readers missing the same piece at once wait for
+the first one's decompression instead of repeating it, and closing a
+snapshot's last dataset drops its pieces. A larger piece is read in windows of
+whole HDF5 chunks (at most 64 MB each), each from its first to its last row
+asked for, so a contiguous slice reads only its own chunks. Placing 4 M of 8 M rows from
+four gzip shards went from 48 shard decompressions (4.2 s) to 4 (0.9 s).
+
+**Out-of-core queries.** Without a DataFrame, `/v1/catalogue/query` filters
+the component a million rows at a time with the same operators as a loaded
+catalogue (`=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `contains`, boxes and
+spheres). A sorted page keeps the first `offset + limit` rows (at most
+1,000,000) ordered by value, NaN last, ties by row number ascending in both
+directions, so consecutive pages are slices of one sequence.
 
 Measured on this Mac with synthetic data: 16 M dark-matter and 4 M gas
 particles (626 MiB). Scanning headers and markers takes 0.5 ms for one file
@@ -176,7 +204,133 @@ The other files of a multi-file snapshot, the file a `snapdir` folder holds
 and the run's parameter file are read too. `/v1/catalogue/open` and
 `/v1/files/classify` check each of them against the backend's data roots,
 resolving symbolic links, as they check the named file. A snapshot with one
-file outside the roots is refused.
+of its own files outside the roots is refused, and the classifier answers
+"File not found." without naming it. A parameter file outside the roots (one
+folder above a root, or a link out of it) is treated as absent: the snapshot
+opens with the default units, and `units.source` says the file was not used.
+
+The copilot's `catalogue_summary` of a component with more than 2 million
+rows reads an evenly spaced sample of 2 million rows per column, and says so
+in `sample` (`rows`, `of`, `every`).
+
+## Desktop splats and linked quantities
+
+The local Gaussian renderer sizes a uniform splat from the mean 3-D spacing
+`cuberoot(volume / rendered rows)`. Its initial normalized size is 0.75, so the
+radius passed to VTK is `spacing × 0.75 / 8`; the UI can still move below or
+above it. The opacity is `1.5 / depth` in whole 8-bit steps,
+`clamp(floor(255 × 1.5 / depth + 0.5), 8, 64) / 255`, where `depth` is the
+estimated number of mean spacings along the longest axis. Thus a typical line
+of sight starts near a total optical contribution of 1.5 instead of the former
+value 7. The steps follow from VTK's 8-bit pipeline: the opacity is stored as
+the splat colour's 8-bit alpha (truncated) and the splats add up in an 8-bit
+framebuffer. The former floor of 0.005 was stored as 1/255 (22 % low), a step
+more or less changed the brightness by 25 %, and the dark end of a colour map
+or a kernel's wings rounded to nothing. With at least 8 steps a cloud deeper
+than about 48 spacings is brighter than the nominal 1.5 (2.1× at a million
+particles in a cube, 3.2× at 3.66 million, 4.5× at 10 million) but keeps its
+faint colours. The value handed to VTK
+is a quarter step above the step (`ParticleSplatDefaults::vtkOpacityValue`,
+`point_splat.VTK_ALPHA_NUDGE`), so truncation cannot drop it a step. The VR
+page's 8-bit targets (`points.js splatOpacity`) use the same rule, in the same
+floating-point operations, so they agree at a step's boundary.
+
+Issue #457 removes the floor where a float target is available. The backend's
+point session adds its splats into a float32 target (`vtkToneMappingPass`,
+clamped onto the window) with VTK's opacity function at 1 and the peak opacity
+`min(1.5 × intensity / (35 × depth), 0.25)` written into the splat's fragment
+code (`point_splat.vtk_splat_shader`, `point_splat.splat_opacity(depth,
+intensity, steps=False)`), so the light of N splats is the same for any N. The
+exposure is the intensity alone, never derived from the frame, so two panes at
+one intensity compare and a real density difference stays visible. The VR
+page's float targets (`v2-f16`, `v2-f32`) keep the same unquantised value,
+divided by size², with no floor (the former 0.005 brightened a table from
+about 2.7e7 rows), and take `depth` from the rows they draw (the sample's
+spacing), so a sample of S rows grown to cover the table carries its light
+for any S. `validation/splat_brightness.py` checks it on a Plummer sphere
+from 1e5 to 3e7 particles (`validation/out/splat_brightness_{before,after}.md`):
+the point session and the float rules stay within 1 % of the smallest table and
+the projected profile at 1 % of the central density within 1 % of the analytic
+one. The desktop's local scene still uses the 8-bit steps above; it moves to
+the same pass and fragment code next. The same normalized size is sent to server-side
+rendering. The automatic Gaussian slider value (25) is the splats' own:
+switching to *Point* restores 100 while the user has not moved the slider
+(`ParticleSplatDefaults::automaticSliderValue`).
+
+Quantity-comparison windows share one backend dataset. Each window has its own
+link flag. A change of camera, selected source or representation is broadcast
+only when both sender and receiver are linked. Representation has a second,
+independent `Match rendering` facet that must also be enabled at both ends. It
+comprises shape, the shared size slider, render budget and ray-traced-light
+mode; the physical quantity, colormap, colour range and stretch are
+deliberately excluded. On relink, the joining view first adopts the enabled
+linked properties from a peer, so the group is coherent immediately and no
+echo loop is produced. Both flags and each autonomous camera survive snapshot
+replacement on the timeline: a replacement window takes its own flags before
+its controls are restored, under the applying guard, because it is created with
+its source's flags (`SnapshotTimelineSteps::restoreWithOwnFlags`).
+
+A particle window opens with positions and one quantity and loads the other
+columns of the same rows in the background. A comparison view made before those
+columns arrive waits for them (`m_awaitingHydration`) and takes the rows from
+its source when they do; if the source closes first, the view asks for them
+itself. After the first framing, a rebuild states why
+(`SnapshotTimelineSteps::Rebuild`): the same rows keep the camera, other rows
+(filter, Load more) keep it while the view is linked to open peers, and rows
+placed anew (frame, cosmology, distance mode) are framed again in that view
+only; a window's own framing is never broadcast. A closed window leaves the
+group in `closeEvent`. The camera received from a peer is also handed to the
+ray-traced view or, for a view drawn on the backend, kept as the render
+session's `set_camera` state (sent when the stream is live, at most every
+50 ms). The backend's own moves are not observed by the client, so a remote
+view follows but does not lead. The copilot's actions are routed by a
+per-window key, since comparison windows share their dataset id; the
+backend's dataset target is mapped to the asking panel's key.
+
+## Selected-population diagnostics (issue #426)
+
+The first diagnostics slice is an exact one-dimensional histogram plus moments
+for the active catalogue filters. The desktop sends the dataset id, field,
+optional weight, bin count, numerical range and the same scalar/spatial filter
+objects used by the point viewer to `POST /v1/catalogue/diagnostics`. It does
+not send the displayed points, so changing the render budget cannot change the
+scientific result.
+
+For a Gadget component the route evaluates the matcher directly against the
+memory-mapped particle table in bounded chunks. A first pass determines exact
+finite-population counts, extrema and moments; a second pass fills the bins.
+The route therefore does not retain the selected population in memory and its
+memory use is independent of the snapshot size. Ordinary catalogue dataframes
+use the same accumulator after applying their complete query filters. Weighted
+results reject non-finite and negative weights, while unweighted results reject
+only non-finite field values.
+
+Both passes read one chunk at a time, through the matcher for a component or
+a million rows of the loaded table at a time (only the columns needed), and
+check between chunks whether their task was cancelled
+(`/v1/tasks/catalogue_diagnostics`, issue #448). The variance combines each
+chunk's count, mean and squared deviations (Chan's pairwise update) instead of
+`E[x^2] - E[x]^2`, which loses every digit for positions far from the origin.
+
+**Periodic selections (issue #448).** A cosmological box is periodic, so a
+sphere around a halo near a face must reach the particles across it.
+`Component.periods()` gives the snapshot's `BoxSize` (when positive) for its
+position columns when the run is periodic. What the run states decides: a
+Gadget-4 HDF5 file's `Config` group (`PERIODIC` among its attributes or not),
+or `periodic=0`/`1` in `VISIVO_GADGET_UNITS`. When nothing states it, a
+comoving run is taken as periodic and any other as not. That guess is wrong
+for a non-periodic cosmological zoom, or an isolated galaxy integrated in
+comoving coordinates: set `periodic=0` for such a run, or send `"period": 0`
+with the selection. The
+out-of-core matcher, the point sessions' masks (`LazyColumns.periods`) and the
+DataFrame path use the nearest image for spheres and wrap boxes round the
+faces (`app/periodic.py`). A selection may state its own `period` (0: none).
+
+The response includes field and weight units from component metadata, the
+selection expression and explicit bin edges. The desktop carries these into
+the result summary and CSV export. No physical total is inferred when units are
+absent. Profiles, phase diagrams, linked brushing and multi-selection
+comparison remain separate extensions of #426.
 
 ## Series
 
@@ -185,16 +339,56 @@ a number. A multi-file snapshot lives in a folder named with the same number
 (`snapdir_010/snap_010.0`), so when that folder holds no other member of the
 series, the series runs over the sibling folders, with the file renumbered
 (`snapdir_011/snap_011.0`). `/v1/points/series` keeps the particle type, so
-each member's path is a reference to the same type.
+each member's path is a reference to the same type, and returns `available`:
+per member, whether its first file's header announces particles of that type
+(`gadget_snapshot.has_type`, false as well for a member that cannot be read).
+The desktop steps over the members marked false, and keeps marked the members
+it failed to open. The check reads headers only (`read_header`) and is cached
+by the first file's size and modification time; a window opened by a step is
+handed the series instead of asking for it again.
+
+The desktop asks for this route after opening a particle table. More than one
+member adds the Snapshot Timeline card. A time step constructs the replacement
+dataset first, then builds every linked quantity view from that one shared
+backend dataset and closes the old group. This avoids reopening a large
+snapshot once per quantity and prevents a partially updated comparison group.
+Camera and per-view visual encoding are restored; selection and explicit
+numeric colour limits are not, because neither particle identity nor equal
+distributions across outputs may be assumed. Playback starts the next step only
+after the current replacement has completed, so there are no stale concurrent
+opens to apply out of order; a step is also refused while any view of the group
+is building its scene or loading rows. A replacement that fails to open is
+reported once in the status bar, stops playback, releases its backend dataset
+and is marked unavailable in the group's series.
 
 ## SubFind (issue #392)
 
 The block parser is independent of the particle semantics. A SubFind group
 file in format 2 (`groups_NNN/sub_NNN.0`) uses the same header, with the
 groups counted as type 0 and the subhalos as type 1, and named blocks.
-`open_snapshot` already reads it (see the synthetic one in the demo data),
-so the group catalogue reader of #392 can reuse `scan_file` and
-`infer_block`.
+`open_snapshot` identifies this semantic from `GPOS`/`SPOS`. Components are
+therefore exposed as **FoF groups** and **subhalos**, rather than the ordinary
+particle-type names. The declared schemas cover the group positions, masses,
+overdensity radii, gas/star properties and contamination counters, and the
+subhalo positions, velocities, masses, radii, spin and parent identifiers.
+
+The catalogue metadata carries `catalogue_kind: subfind`, the object kind and
+the radius definitions. Length, mass and velocity fields use the same stored
+and physical-unit conversion as their parent snapshot. In the desktop viewer
+these metadata select structure-oriented defaults: spherical markers sized by
+Rvir (or the subhalo half-mass radius) and coloured by mass. Double-clicking a
+row frames the target using that physical radius instead of an arbitrary zoom.
+
+Framing (issue #448) is computed once, in `SubfindTargetFraming.h`, from the
+camera of the view on screen (`viewCamera`: the local VTK camera, the
+ray-traced view's, or the backend's `GET /v1/render/{id}/camera` for a Remote
+view) and applied to that view: the local camera, `RaytraceViewport::setCamera`,
+or a `set_camera` command to the point session. The local camera always
+follows, so switching view keeps the target. A double-click on the Remote or
+ray-traced view is picked by the window (an event filter) with that view's
+camera, since those widgets have no picker. A SAMP highlight only recentres the
+local view (`recentreLocalView`). The radius definitions from the metadata are
+shown in the Size list, Source Info and the status line.
 
 ## What to check against a real snapshot
 

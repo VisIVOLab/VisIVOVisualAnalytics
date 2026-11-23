@@ -38,6 +38,10 @@ public:
     void setBackend(const QString &url, const QString &token);
     /// The dataset the questions are about (may be empty).
     void setDatasetId(const QString &datasetId);
+    /// The key the copilot's actions are routed by (CopilotActionRouter),
+    /// when the view registered under its own rather than its dataset id:
+    /// views that share a dataset (comparison views) each have their own.
+    void setActionTarget(const QString &key) { m_actionTarget = key; }
 
     /// Example starter questions shown as clickable chips while the conversation
     /// is empty (discoverability). Each viewer passes prompts tailored to its
@@ -113,6 +117,7 @@ private:
     QString m_url;
     QString m_token;
     QString m_datasetId;
+    QString m_actionTarget;
     bool m_busy{ false };
     /// A Settings change landed while the panel was busy; applied on release.
     bool m_providerApplyPending{ false };
