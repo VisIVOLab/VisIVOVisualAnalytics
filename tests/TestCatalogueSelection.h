@@ -25,4 +25,5 @@ private slots:
     void theSizedRadiusIsPreferred();
     void radiiSayWhatTheyAreDefinedAgainst();
     void cameraJsonRoundTrips();
+    void aOneClickConditionJoinsTheAppliedFiltersOnly();
 };

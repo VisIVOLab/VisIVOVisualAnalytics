@@ -1320,24 +1320,21 @@ void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString
                 u"Wait for the current load to finish, then try again."_s, 6000);
         return;
     }
-    // The column's other conditions would leave nothing with this one (type
-    // = 4 and type = 0): they are replaced.
-    for (int i = static_cast<int>(this->activeFilters.size()) - 1; i >= 0; --i) {
-        const BackendTabularFilter &f = this->activeFilters[static_cast<std::size_t>(i)];
-        if (!f.isSpatial() && f.field == field) {
-            this->activeFilters.erase(this->activeFilters.begin() + i);
-            if (this->filterList)
-                delete this->filterList->takeItem(i);
-        }
+    if (this->remoteDatasetId.isEmpty())
+        return;
+    // The condition joins the filters the view was drawn with, not edits to
+    // the list the user has not applied: those stay in the list, with the
+    // condition, for their own Apply.
+    this->activeFilters =
+            visivo::selection::withOnlyCondition(this->activeFilters, field, u"="_s, value);
+    if (this->filterList) {
+        this->filterList->clear();
+        for (const BackendTabularFilter &f : this->activeFilters)
+            this->filterList->addItem(filterDisplayText(f));
     }
-    BackendTabularFilter filter;
-    filter.field = field;
-    filter.op = u"="_s;
-    filter.value = value;
-    this->activeFilters.push_back(filter);
-    if (this->filterList)
-        this->filterList->addItem(filterDisplayText(filter));
-    this->applyFilter();
+    this->m_appliedFilters.begin(visivo::selection::withOnlyCondition(
+            this->m_appliedFilters.filters(), field, u"="_s, value));
+    this->queryAppliedFilters();
 }
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
