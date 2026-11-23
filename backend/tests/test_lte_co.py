@@ -562,3 +562,86 @@ async def test_channels_in_the_notes_count_from_one(client, auth_headers, tmp_pa
     # 19th to the 33rd of 60 channels, as the cube viewer numbers them.
     assert out["assumptions"]["inputs"]["13CO"][0].startswith(
         "integrated over channels 19-33 of 60 (69 to 76 km/s")
+
+
+def _c18o_on_its_own_grid(path: Path, ref13: Path, tau13: np.ndarray, grid: str) -> Path:
+    """C18O on a sky grid of its own: ``transposed`` (GLAT on axis 1, GLON on
+    axis 2, as some survey cutouts are) or ``icrs`` (RA/Dec, rotated against
+    Galactic, and larger). τ at each pixel is τ(13CO)/X of the nearest 13CO
+    pixel on the sky, zero off the 13CO field."""
+    from astropy import units as u  # noqa: PLC0415
+    from astropy.coordinates import SkyCoord  # noqa: PLC0415
+    from astropy.wcs import WCS  # noqa: PLC0415
+
+    line = L.line("C18O", "3-2")
+    h = fits.Header()
+    if grid == "transposed":
+        ny, nx = NX, NY
+        axes = (("GLAT-CAR", 0.17, 2.0e-3), ("GLON-CAR", 40.15, -2.0e-3))
+    else:
+        centre = SkyCoord(40.15 * u.deg, 0.17 * u.deg, frame="galactic").icrs
+        ny = nx = 24
+        axes = (("RA---TAN", centre.ra.deg, -2.0e-3), ("DEC--TAN", centre.dec.deg, 2.0e-3))
+        h["RADESYS"] = "ICRS"
+    for i, ((ax, cv, cd), n) in enumerate(zip(axes, (nx, ny)), start=1):
+        h[f"CTYPE{i}"], h[f"CRVAL{i}"], h[f"CDELT{i}"], h[f"CUNIT{i}"] = ax, cv, cd, "deg"
+        h[f"CRPIX{i}"] = (n + 1) / 2.0
+    ref = WCS(fits.getheader(ref13)).celestial
+    yy, xx = np.mgrid[0:ny, 0:nx]
+    px, py = ref.world_to_pixel(WCS(h).pixel_to_world(xx, yy))
+    ix, iy = np.rint(px).astype(int), np.rint(py).astype(int)
+    inside = (ix >= 0) & (ix < NX) & (iy >= 0) & (iy < NY)
+    tau = np.zeros((ny, nx))
+    tau[inside] = tau13[iy[inside], ix[inside]] / X_TRUE
+    if grid == "transposed":
+        # The same pixels with the axes swapped, independently of the WCS.
+        np.testing.assert_array_equal(tau, tau13.T / X_TRUE)
+    dj = float(L.j_nu(line.t0, TEX_TRUE) - L.j_nu(line.t0, L.T_CMB_K))
+    cube = np.zeros((NZ, ny, nx))
+    cube[20:30] = ETA * dj * (1 - np.exp(-tau))[None]
+    h["CTYPE3"], h["CRVAL3"], h["CDELT3"], h["CRPIX3"], h["CUNIT3"] = "VRAD", V0, DV, 1.0, "km/s"
+    h["SPECSYS"] = "LSRK"
+    h["RESTFRQ"] = line.freq_hz
+    h["TEMPSCAL"] = "TA*"
+    fits.PrimaryHDU(cube.astype(np.float32), header=h).writeto(path)
+    return path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grid", ["same", "transposed", "icrs"])
+async def test_region_peaks_and_columns_on_another_grid(client, auth_headers, tmp_path, grid):
+    """A region's mean spectra are read on each cube's own grid: a C18O cube
+    with its sky axes swapped, or in another frame, gives the region the same
+    peaks, T_ex and columns as one on the 13CO grid, and none of them is
+    missing."""
+    tau = _tau13_map()
+    p13 = _write_cube(tmp_path / "13co.fits", L.line("13CO", "3-2"), tau)
+    if grid == "same":
+        p18 = _write_cube(tmp_path / "c18o.fits", L.line("C18O", "3-2"), tau / X_TRUE)
+    else:
+        p18 = _c18o_on_its_own_grid(tmp_path / "c18o.fits", p13, tau, grid)
+    a = await _open(client, auth_headers, p13)
+    h = {**auth_headers, "X-Visivo-Session": a["session_id"]}
+    b = await _open(client, auth_headers, p18, headers=h)
+    # Inside the τ = 2 band (x 8-11), away from its edges.
+    region = {"shape": "box", "center": [9.5, 4.5], "size": [2, 6], "angle_deg": 0}
+    body = _cube_body(a, b, regions=[region], distance_kpc=5.0)
+    body.pop("t_ex_k")
+    out = (await client.post("/v1/products/lte_co", json=body, headers=h)).json()
+    assert out["valid"], out["error"]
+    reg = out["regions"][0]
+    assert reg["n_pixels"] > 0
+    ln13, ln18 = L.line("13CO", "3-2"), L.line("C18O", "3-2")
+    dj = {s: float(L.j_nu(ln.t0, TEX_TRUE) - L.j_nu(ln.t0, L.T_CMB_K))
+          for s, ln in (("13CO", ln13), ("C18O", ln18))}
+    # Main-beam peaks: the region is uniform, so its mean spectra are exact.
+    assert reg["peak_13co_k"] == pytest.approx(dj["13CO"] * (1 - math.exp(-2.0)), rel=1e-5)
+    assert reg["peak_c18o_k"] == pytest.approx(
+        dj["C18O"] * (1 - math.exp(-2.0 / X_TRUE)), rel=1e-5)
+    assert reg["tau_13co"] == pytest.approx(2.0, rel=1e-2)
+    assert reg["t_ex_k"] == pytest.approx(TEX_TRUE, rel=1e-2)
+    for key, s, ln, t in (("n_13co_cm2", "13CO", ln13, 2.0),
+                          ("n_c18o_cm2", "C18O", ln18, 2.0 / X_TRUE)):
+        truth = float(L.thin_column_factor(ln, TEX_TRUE)) * dj[s] * t * (10 * DV)
+        assert reg[key] == pytest.approx(truth, rel=2e-2)
+    assert reg["n_h2_cm2"] is not None and reg["mass_msun"] > 0

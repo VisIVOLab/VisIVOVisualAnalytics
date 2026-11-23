@@ -281,6 +281,26 @@ def _pixel_scales_deg(wcs: WCS) -> tuple[float, float] | None:
     return float(s[0]), float(s[1])
 
 
+def _pixels_on(own_wcs: WCS, ref_wcs: WCS, xs: np.ndarray, ys: np.ndarray
+               ) -> tuple[np.ndarray, np.ndarray]:
+    """Nearest pixels (x, y) of ``own_wcs`` at the sky positions of the
+    reference pixels (xs, ys). The positions go through SkyCoord, never through
+    raw world values: the two grids may order their celestial axes differently
+    (a cutout with GLAT on axis 1 and GLON on axis 2), and may be in different
+    frames (Galactic and ICRS), which astropy converts. Positions that fall
+    off the sky of ``own_wcs`` are dropped."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            sky = ref_wcs.pixel_to_world(np.asarray(xs, dtype=float), np.asarray(ys, dtype=float))
+            px, py = own_wcs.world_to_pixel(sky)
+    except Exception as exc:  # noqa: BLE001 — incompatible frames, bad WCS
+        raise ValueError(f"The region cannot be placed on the cube's own sky grid: {exc}.") from None
+    px, py = np.asarray(px, dtype=np.float64), np.asarray(py, dtype=np.float64)
+    keep = np.isfinite(px) & np.isfinite(py)
+    return np.rint(px[keep]).astype(int), np.rint(py[keep]).astype(int)
+
+
 def _region_peak(line: _Line2D, ref_wcs: WCS, ys: np.ndarray, xs: np.ndarray) -> float:
     """Peak T_A* of the region's mean spectrum (a cube), or the mean of a peak
     map. The region's pixels (on the reference grid) are found on the cube's
@@ -294,11 +314,7 @@ def _region_peak(line: _Line2D, ref_wcs: WCS, ys: np.ndarray, xs: np.ndarray) ->
     if line.own_wcs is ref_wcs or not (ref_wcs.has_celestial and line.own_wcs.has_celestial):
         oy, ox = ys, xs
     else:
-        world = ref_wcs.pixel_to_world_values(xs.astype(float), ys.astype(float))
-        px, py = (np.asarray(v, dtype=np.float64) for v in
-                  line.own_wcs.world_to_pixel_values(*world))
-        keep = np.isfinite(px) & np.isfinite(py)
-        ox, oy = np.rint(px[keep]).astype(int), np.rint(py[keep]).astype(int)
+        ox, oy = _pixels_on(line.own_wcs, ref_wcs, xs, ys)
     ds = ScientificFitsDataset(line.path)
     hdul, raw = ds.open_memmap()
     try:
