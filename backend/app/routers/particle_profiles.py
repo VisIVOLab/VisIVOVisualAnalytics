@@ -127,7 +127,9 @@ def _region_limit(filters, pos, centre, periods) -> float | None:
     sampled. Inside boxes and spheres bound it from within, comparisons on a
     position field (x > 10, ...) are half-spaces, and outside boxes and
     spheres are holes whose nearest point bounds it. None without such a
-    boundary; 0 when the centre itself is not kept."""
+    boundary; 0 when the centre itself is not kept. A comparison compares raw
+    values, as the filter does, so on a periodic axis the kept slab is
+    bounded by the compared value and by a face of the box."""
     axis_of = {f: k for k, f in enumerate(pos)}
     limits = []
     for item in filters:
@@ -140,9 +142,16 @@ def _region_limit(filters, pos, centre, periods) -> float | None:
                 value = float(item.value)
             except ValueError:
                 continue
-            gap = float(separation(centre[k], value, periods[k]))
-            kept = gap < 0 if item.op.startswith("<") else gap > 0
-            limits.append(abs(gap) if kept else 0.0)
+            period = periods[k]
+            c = float(centre[k]) % period if period else float(centre[k])
+            below = item.op.startswith("<")
+            kept = {"<": c < value, "<=": c <= value, ">": c > value, ">=": c >= value}[item.op]
+            if not kept:
+                limits.append(0.0)
+            elif period:
+                limits.append(min(c, value - c) if below else min(c - value, period - c))
+            else:
+                limits.append(abs(c - value))
             continue
         if list(spatial.fields) != list(pos) or item.op not in ("inside", "outside"):
             continue
@@ -321,6 +330,8 @@ def _run_profile(session, entry, request: ParticleProfileRequest,
     if request.axis is not None and (not _three_finite(request.axis)
                                      or not any(request.axis)):
         raise ValueError("The polar axis needs three finite values, not all zero.")
+    if request.axis is not None and not vel:
+        raise ValueError("A polar axis needs the velocity fields.")
     periods = _periods(entry, request, pos)
     searching = request.centre.mode == "shrinking_sphere"
     centre = _centre(session, entry, request.filters, request.centre, pos, mass, periods,

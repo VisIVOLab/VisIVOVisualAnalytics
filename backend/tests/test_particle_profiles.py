@@ -402,3 +402,18 @@ def test_the_centre_particle_has_no_radial_velocity():
              "vx": np.array([5.0, 2.0]), "vy": np.zeros(2), "vz": np.zeros(2)}
     out = Geometry(POS, VEL, (0, 0, 0), [None] * 3, (0, 0, 0)).derive(table)
     assert np.isnan(out["radial_velocity"][0]) and out["radial_velocity"][1] == 2.0
+
+
+def test_comparisons_on_a_periodic_axis_are_slabs_bounded_by_the_box():
+    from app.routers.particle_profiles import _region_limit
+    from app.schemas import TabularFilter
+    periods = [1000.0] * 3
+
+    def limit(op, value, x):
+        return _region_limit([TabularFilter(field="x", op=op, value=str(value))], POS,
+                             (x, 500.0, 500.0), periods)
+    assert limit("<", 500, 10.0) == pytest.approx(10.0)
+    assert limit("<", 600, 10.0) == pytest.approx(10.0)
+    assert limit(">", 400, 990.0) == pytest.approx(10.0)
+    assert limit(">", 400, 300.0) == 0.0
+    assert limit("<", 600, 450.0) == pytest.approx(150.0)
