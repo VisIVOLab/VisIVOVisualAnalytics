@@ -690,3 +690,54 @@ class TestCdMatrixWithoutCdelt:
         spacing = _load(path).geometry_metadata()["spacing"]
         assert spacing[0] == pytest.approx(-2.0e-3)
         assert spacing[2] == pytest.approx(1.0e6)
+
+
+# ── Issue #498: a size-1 STOKES axis before FREQ (CASA export order) ─────────
+
+
+@pytest.fixture(scope="module")
+def stokes_before_freq_cube(tmp_path_factory) -> Path:
+    """RA, DEC, STOKES (size 1), FREQ (31): ALMA ARI-L / CASA exports."""
+    p = tmp_path_factory.mktemp("ds") / "stokes_before_freq.fits"
+    data = np.zeros((31, 1, 20, 24), dtype=np.float32)
+    h = fits.Header()
+    h["NAXIS"] = 4
+    for i, n in enumerate((24, 20, 1, 31), start=1):
+        h[f"NAXIS{i}"] = n
+    for key, values in {
+        "CTYPE": ("RA---SIN", "DEC--SIN", "STOKES", "FREQ"),
+        "CRVAL": (35.0, -5.0, 1.0, 268.0e9),
+        "CRPIX": (12.0, 10.0, 1.0, 1.0),
+        "CDELT": (-1e-6, 1e-6, 1.0, 15.6e6),
+        "CUNIT": ("deg", "deg", "", "Hz"),
+    }.items():
+        for i, value in enumerate(values, start=1):
+            h[f"{key}{i}"] = value
+    h["SPECSYS"] = "BARYCENT"
+    h["RESTFRQ"] = 268.0e9
+    h["BUNIT"] = "Jy/beam"
+    _write_fits(p, data, h)
+    return p
+
+
+class TestStokesBeforeFreq:
+    def test_the_viewer_wcs_describes_the_spectral_axis(self, stokes_before_freq_cube):
+        from app.fits_dataset import ScientificFitsDataset
+        geo = ScientificFitsDataset(stokes_before_freq_cube).geometry_metadata()
+        assert geo["kind"] == "cube"
+        assert (geo["width"], geo["height"], geo["depth"]) == (24, 20, 31)
+        assert geo["ctype"] == ["RA---SIN", "DEC--SIN", "FREQ"]
+        assert geo["cunit"][2] == "Hz"
+        assert geo["crval"][2] == pytest.approx(268.0e9)
+        assert geo["crpix"][2] == pytest.approx(1.0)
+        assert geo["spacing"][2] == pytest.approx(15.6e6)
+        assert geo["origin"][2] == pytest.approx(268.0e9)
+        assert geo["effective_cdelt"][2] == pytest.approx(15.6e6)
+
+    def test_the_usual_order_is_unchanged(self, stokes_cube):
+        from app.fits_dataset import ScientificFitsDataset
+        ds = ScientificFitsDataset(stokes_cube)
+        geo = ds.geometry_metadata()
+        assert ds.display_fits_axes() == [1, 2, 3]
+        assert geo["ctype"] == ["RA---SIN", "DEC--SIN", "FREQ"]
+        assert geo["spacing"][2] == pytest.approx(-0.5e6)

@@ -532,6 +532,18 @@ class ScientificFitsDataset:
     def _axis_float(self, key: str, default: float = 0.0) -> float:
         return float(self.header.get(key, default))
 
+    def display_fits_axes(self) -> list[int]:
+        """The FITS axes (1-based) the viewer's x, y, z stand for: the active
+        (non-degenerate) axes in order, then the degenerate ones, three of
+        them. ``width``, ``height`` and ``depth`` already count the active axes;
+        the WCS sent with them must describe the same axes. A CASA export puts
+        a size-1 STOKES axis third and FREQ fourth: reading axis 3 there gave
+        the viewer a Stokes axis with CDELT 1, so spectra showed channel
+        numbers as frequency (issue #498)."""
+        order = list(self.active_axes) + list(self.degenerate_axes)
+        order += [axis for axis in range(1, 4) if axis not in order]
+        return order[:3]
+
     def _cdelt(self, axis: int) -> float:
         """Degrees (or native units) per pixel along `axis`, CD matrix included.
 
@@ -643,7 +655,7 @@ class ScientificFitsDataset:
             eff2 = float(sky_p1y[1] - sky_ref[1])
             if not (np.isfinite(eff1) and np.isfinite(eff2)):
                 return None
-            return [eff1, eff2, self._cdelt(3)]
+            return [eff1, eff2, self._cdelt(self.display_fits_axes()[2])]
         except Exception as exc:
             logger.warning("[fits] effective_cdelt failed for path=%s: %s", self.path, exc)
             return None
@@ -732,11 +744,11 @@ class ScientificFitsDataset:
         return "preview_only" if size >= threshold else "auto_full"
 
     def geometry_metadata(self) -> dict[str, Any]:
-        spacing = [self._cdelt(1), self._cdelt(2), self._cdelt(3)]
+        axes = self.display_fits_axes()
+        spacing = [self._cdelt(axis) for axis in axes]
         origin = [
-            self._axis_float("CRVAL1") - spacing[0] * (self._axis_float("CRPIX1", 1.0) - 1.0),
-            self._axis_float("CRVAL2") - spacing[1] * (self._axis_float("CRPIX2", 1.0) - 1.0),
-            self._axis_float("CRVAL3") - spacing[2] * (self._axis_float("CRPIX3", 1.0) - 1.0),
+            self._axis_float(f"CRVAL{axis}") - step * (self._axis_float(f"CRPIX{axis}", 1.0) - 1.0)
+            for axis, step in zip(axes, spacing)
         ]
         squeezed = [size for size in self.axis_sizes if size > 1]
         if len(self.active_axes) == 2:
@@ -790,10 +802,10 @@ class ScientificFitsDataset:
             # BTYPE or LABEL, issue #416); equal to bunit when it is present.
             "intensity_unit": self.intensity_unit,
             "intensity_unit_note": self.intensity_unit_note,
-            "ctype": [str(self.header.get(f"CTYPE{i}", "")) for i in range(1, 4)],
-            "cunit": [str(self.header.get(f"CUNIT{i}", "")) for i in range(1, 4)],
-            "crval": [self._axis_float(f"CRVAL{i}") for i in range(1, 4)],
-            "crpix": [self._axis_float(f"CRPIX{i}", 1.0) for i in range(1, 4)],
+            "ctype": [str(self.header.get(f"CTYPE{i}", "")) for i in axes],
+            "cunit": [str(self.header.get(f"CUNIT{i}", "")) for i in axes],
+            "crval": [self._axis_float(f"CRVAL{i}") for i in axes],
+            "crpix": [self._axis_float(f"CRPIX{i}", 1.0) for i in axes],
             "cdelt": spacing,
             # Pixel scale from astropy WCS (handles CD matrix / PC matrix correctly).
             # Clients should prefer this over sqrt(|CDELT1*CDELT2|) * 3600.
@@ -1089,6 +1101,6 @@ class ScientificFitsDataset:
             "wcs_status": self.wcs_status,
             "wcs_warning_message": self.wcs_warning_message,
             "wcs_sanitized_axes": list(self.wcs_sanitized_axes),
-            "ctype": [str(self.header.get(f"CTYPE{i}", "")) for i in range(1, 4)],
-            "cunit": [str(self.header.get(f"CUNIT{i}", "")) for i in range(1, 4)],
+            "ctype": [str(self.header.get(f"CTYPE{i}", "")) for i in self.display_fits_axes()],
+            "cunit": [str(self.header.get(f"CUNIT{i}", "")) for i in self.display_fits_axes()],
         }
