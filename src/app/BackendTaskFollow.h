@@ -151,7 +151,8 @@ inline const QStringList &taskCreateKinds()
                                     QStringLiteral("decompress"),  QStringLiteral("particle_render"),
                                     QStringLiteral("volume_render"), QStringLiteral("catalogue_diagnostics"),
                                     QStringLiteral("catalogue_profile"),
-                                    QStringLiteral("catalogue_phase_diagram") };
+                                    QStringLiteral("catalogue_phase_diagram"),
+                                    QStringLiteral("particle_layers") };
     return kinds;
 }
 
