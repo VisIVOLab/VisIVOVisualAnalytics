@@ -646,9 +646,8 @@ private:
     vtkSmartPointer<vtkToneMappingPass> m_splatPass;
     void updateSplatPass();
     void updateGaussianSplats();
-    /// Point size of the Point shape, and the splats' size step (1..12).
-    int pointSizeFromScale() const;
-    double splatSizeFromScale() const;   ///< the splats' size step (former VBT viewer's)
+    /// Point size of the Point shape, in pixels (1..16).
+    double pointSizeFromScale() const;
     /// Bounds and number of the points with no filter: the splats are sized on
     /// them (over the render budget's stride), so that a filter removes points
     /// without restyling the others.

@@ -1138,17 +1138,9 @@ void vtkWindowCatalogue3D::updateGlyphScales()
             << "visual range:" << minVisual << maxVisual;
 }
 
-int vtkWindowCatalogue3D::pointSizeFromScale() const
+double vtkWindowCatalogue3D::pointSizeFromScale() const
 {
-    return static_cast<int>(std::lround(std::clamp(4.0 * (ui->sliderScale->value() / 100.0),
-                                                   3.0, 12.0)));
-}
-
-double vtkWindowCatalogue3D::splatSizeFromScale() const
-{
-    // The former VBT viewer's size step, 3 at the slider's default (100 %),
-    // and continuous: the whole slider reaches below and above it.
-    return std::clamp(3.0 * ui->sliderScale->value() / 100.0, 0.25, 12.0);
+    return ParticleSplatDefaults::pointSizeForSlider(ui->sliderScale->value());
 }
 
 void vtkWindowCatalogue3D::captureSplatBasis()
@@ -1179,7 +1171,8 @@ void vtkWindowCatalogue3D::updateGaussianSplats()
     const double rows = static_cast<double>(this->m_splatCount)
             / static_cast<double>(std::max<long long>(1, this->m_renderStride));
     const ParticleSplatDefaults::SplatStyle style = ParticleSplatDefaults::splatStyle(
-            this->m_splatBounds, rows, this->splatSizeFromScale());
+            this->m_splatBounds, rows,
+            ParticleSplatDefaults::splatSizeForSlider(ui->sliderScale->value()));
     this->gaussianMapper->SetScaleFactor(style.radius);
     ParticleSplatVtk::setSplatGain(this->gaussianMapper, style.gain);
 }
