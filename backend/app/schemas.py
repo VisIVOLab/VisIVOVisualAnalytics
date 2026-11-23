@@ -134,7 +134,9 @@ class OpenDatasetResponse(BaseModel):
     beam_minor: float | None = None
     beam_pa: float | None = None
     beam_per_channel: bool = False   # a BEAMS table: one beam per channel (issue #401)
-    # "header", "user" (typed with /v1/datasets/beam, issue #416) or "none".
+    # "header", "user" (typed with /v1/datasets/beam, issue #416), "none", or
+    # "not_applicable" for data without celestial axes (VBT fields, raw
+    # simulation fields), where no beam can be set.
     beam_source: str = ""
     # The values' unit when BUNIT is missing (TEMPSCAL/BTYPE/LABEL); equals
     # bunit when it is present, "" when nothing says. The note says where it
