@@ -434,7 +434,11 @@ def compute_lte(req: dict[str, Any], *, path13: str | None = None, path18: str |
 
     d13 = load(path13, kinds.get("13co"), req.get("rms_13co"), "integrated")
     d18 = load(path18, kinds.get("c18o"), req.get("rms_c18o"), "integrated")
-    d12 = load(path12, kinds.get("12co"), None, "peak", need_noise=False) if path12 else None
+    unused12 = bool(path12) and req.get("t_ex_k") is not None
+    d12 = (load(path12, kinds.get("12co"), None, "peak", need_noise=False)
+           if path12 and not unused12 else None)
+    if unused12:
+        warnings_out.append("12CO was given but not used: T_ex was typed.")
     d18, moved18 = _align(d18, d13)
     if moved18:
         warnings_out.append("C18O was reprojected onto the 13CO grid (bilinear).")
@@ -470,8 +474,6 @@ def compute_lte(req: dict[str, Any], *, path13: str | None = None, path18: str |
     if tex_mode == "12co":
         eta12, src12 = eta_mb_for(d12.header, req.get("eta_mb_12co"), "12CO")
         assumptions["eta_mb"]["12CO"] = [eta12, src12]
-    elif d12 is not None:
-        warnings_out.append("12CO was given but not used: T_ex was typed.")
     if tex_mode == "user":
         t_user = _user_tex(req)
         tex = np.full(shape, t_user)
