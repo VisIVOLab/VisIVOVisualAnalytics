@@ -137,6 +137,11 @@ The FITS header has a linear grid centred on the focal point:
 - `DEPTH`: the slab in physical kpc, or `all`.
 - `WEIGHT`, `POWER` and `CLIPPED`: what each particle carries, the power it
   is raised to, and the rows whose weight was capped.
+- `KERNEL` (`GAUSS`), `KSCALE` (the `radius_scale` used), `HSMLDEF`
+  (`support`: a smoothing-length column is read as the support radius H, as
+  Gadget defines it) and `HSMLSRC` (the column, or the neighbour count). The
+  same keys are in `map_units` (`kernel`, `kernel_scale`, `hsml_definition`,
+  `smoothing`).
 
 A unit that is not a physical one (`relative`, or `none` for a map coloured
 by its density) leaves `BUNIT` empty and names it in the comment. A

@@ -120,7 +120,7 @@ def test_a_gadget_map_is_written_in_physical_units(tmp_path, monkeypatch):
     cam = {"position": (500, 500, 2000), "focal_point": (500, 500, 500), "view_up": (0, 1, 0),
            "parallel": True, "parallel_scale": 250.0}
     req = router.ParticleRenderRequest(dataset_id="g", mode="projected", width=500, height=500,
-                                       slab=300.0, cameras=[cam])
+                                       slab=300.0, radius_scale=0.5, cameras=[cam])
     loop = asyncio.new_event_loop()
     try:
         async def run():
@@ -156,6 +156,9 @@ def test_a_gadget_map_is_written_in_physical_units(tmp_path, monkeypatch):
             assert head["PROJAXIS"] == "0 0 -1"
             assert head["XAXIS"] == "1 0 0" and head["YAXIS"] == "0 1 0"
             assert head["HUNITS"] is True and head["POWER"] == 1.0 and head["CLIPPED"] == 0
+            assert head["KERNEL"] == "GAUSS" and head["KSCALE"] == 0.5
+            assert head["HSMLDEF"] == "support" and head["HSMLSRC"] == "32 neighbours"
+            assert hdul["MEAN"].header["KERNEL"] == "GAUSS"
             # Every particle lies in the slab and the view: their mass, 1e10/h
             # Msun each, is the map's sum over its pixels' area.
             held = hdul[0].data.sum(dtype=np.float64) * head["CDELT1"] * head["CDELT2"]

@@ -286,6 +286,9 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
             component, axes=axes, weight=weight, power=req.intensity_power,
             clipped=stats["clipped_rows"], light_unit=light_unit,
             log10=bool(req.intensity_field and req.intensity_log10),
+            radius_scale=req.radius_scale,
+            smoothing=(f"column {req.radius_field}" if req.radius_field
+                       else f"{req.neighbours} neighbours"),
             colour_by=req.colour_by, value_field=req.colour.field,
             velocity=req.velocity or _velocity_columns(table.columns))
     if req.mode == "light":

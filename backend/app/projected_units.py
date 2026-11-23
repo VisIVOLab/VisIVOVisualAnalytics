@@ -20,11 +20,16 @@ import math
 import numpy as np
 
 RELATIVE = "relative"
+#: The kernel the maps are drawn with (particle_raytrace: exp(-d²/h²), sigma
+#: h/√2, h the smoothing length times radius_scale) and how a smoothing-length
+#: column is read: as the support radius H, Gadget's convention (#393).
+_KERNEL = {"kernel": "gauss", "hsml_definition": "support"}
 
 
 def map_units(component, *, axes, weight: str | None, power: float, clipped: int,
               light_unit: float, colour_by: str, value_field: str | None,
-              velocity: tuple[str, str, str] | None, log10: bool = False) -> dict:
+              velocity: tuple[str, str, str] | None, log10: bool = False,
+              radius_scale: float = 1.0, smoothing: str = "") -> dict:
     """What a projected map's two planes are and the factors that make them
     physical, for a table of points (``component`` a Gadget snapshot's
     particle type, or None for any other table).
@@ -43,7 +48,8 @@ def map_units(component, *, axes, weight: str | None, power: float, clipped: int
     ``hubble_units``, ``scale_factor``."""
     out = {"density_unit": RELATIVE, "density_factor": 1.0, "value_unit": RELATIVE,
            "value_factor": 1.0, "weighting": weight or "number",
-           "power": float(power) if weight else 1.0, "clipped_rows": int(clipped)}
+           "power": float(power) if weight else 1.0, "clipped_rows": int(clipped),
+           **_KERNEL, "kernel_scale": float(radius_scale), "smoothing": smoothing}
     if component is None:
         return out
     physical, stored = component.physical(), component.units()
@@ -162,6 +168,12 @@ def projected_fits(maps: np.ndarray, units: dict, camera, width: int, height: in
         h["WEIGHT"] = (units["weighting"], "what each particle carries")
         h["POWER"] = (units.get("power", 1.0), "the weight raised to this power")
         h["CLIPPED"] = (units.get("clipped_rows", 0), "rows whose weight was capped")
+        h["KERNEL"] = (units.get("kernel", "gauss").upper(), "exp(-d^2/h^2), sigma = h/sqrt 2")
+        h["KSCALE"] = (units.get("kernel_scale", 1.0), "h = smoothing length x KSCALE")
+        h["HSMLDEF"] = (units.get("hsml_definition", "support"),
+                        "HSML read as the support radius H (Gadget)")
+        if units.get("smoothing"):
+            h["HSMLSRC"] = (units["smoothing"], "where the smoothing lengths came from")
         h["ORIGIN"] = "VisIVO Visual Analytics"
     buf = io.BytesIO()
     fits.HDUList(hdus).writeto(buf)
