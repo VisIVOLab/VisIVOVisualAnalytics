@@ -30,8 +30,8 @@ lie on an image.
    every row while the window keeps a page for picking.
 
 3. Colour the points by a column. In *VISUAL ENCODING*, choose `LDensity`
-   for the colour and a colour map. *Edit* beside the colour map sets the
-   range and the scale. A colour bar on the right shows the column's values.
+   in *Colour by* and a colour map. *Range and scale…* sets the range and the
+   scale. A colour bar on the right shows the column's values.
 
 4. Set the shape to *Gaussian splats* in *SOURCE REPRESENTATION*. Splats add
    up their light, so dense knots are bright and thin filaments stay visible.

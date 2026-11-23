@@ -17,7 +17,10 @@ theoretical models served by the VLKB. The fit runs on the backend.
 The SED is built from:
 
 - a band-merged catalogue (VLKB): all the rows of the source, one per band
-  (the children under the parent row in the table);
+  (the children under the parent row in the table). The 22 µm row also brings
+  its WISE 3.4, 4.6 and 12 µm and 2MASS J, H, Ks fluxes, and the 21 µm row the
+  MSX A, C, D and E fluxes (8.28, 12.13, 14.65 and 21.34 µm; the MSX errors
+  are percentages and are converted to Jy);
 - a flat catalogue: the flux columns of the row (`flux_250`, `F350`,
   `S_870um`, …), one point per recognised column.
 
@@ -33,6 +36,15 @@ instead. *Collapse branches* sums the branches of each band into one point
 (fluxes added, errors in quadrature, the largest size). A band that mixes a
 detection with an upper limit is not collapsed, and the log says so.
 
+### Bands in the fit
+
+The window opens with only the bands at λ ≥ 160 µm ticked. At 70 µm and
+shorter the emission comes from warm, internally heated dust that a single
+cold greybody does not describe, and the Hi-GAL clump catalogue fits
+λ ≥ 160 µm for that reason (Elia et al. 2017, 2021). *Fit λ ≥* and *Tick these
+bands* in the *Photometry* tab apply another limit (0 ticks every band). With
+fewer than two bands above the limit every band is ticked, and the log says so.
+
 A fit needs detections at two different wavelengths at least; upper limits
 alone, or two branches of one band, are refused with the reason.
 
@@ -42,7 +54,14 @@ The plot is on the left, four tabs on the right.
 
 - *Photometry*: one row per measurement (wavelength, flux, error, size,
   designation). *Use* includes it in the fit; *UL* marks the flux as an upper
-  limit.
+  limit. Double-click a flux or error to edit it (not while branches are
+  collapsed); a changed value is in italics and its tooltip gives the
+  catalogue's. *Scale 350/500 µm to the 250 µm source size* multiplies those
+  two bands by θ₂₅₀/θ_λ, the ratio of the deconvolved sizes (beams 17.8, 25.0
+  and 35.7″, Giannini et al. 2012), as the Hi-GAL clump catalogue does; the
+  VLKB rows carry the unscaled fluxes. With it, two of the three m030039
+  clumps of use case 12 come out within 0.1 K and 2 % of the catalogue T and
+  M; the smallest, barely larger than the beam, within 0.2 K and 4 %.
 - *Fit*: the model (*Optically thin*, *Optically thick*, *Both (compare)*), the
   *Source and dust* constants (*Distance*, *κ(λ_ref)*, *λ_ref*, *Source size*),
   *Apply PACS colour corrections*, and a *min / max / steps* row per fitted
@@ -61,8 +80,9 @@ Under the plot:
 - *Fit greybody*: runs the thin, thick or both fits.
 - *Fit theoretical models*: scores the photometry against the VLKB model grid.
 - *Clear fits*: removes the fitted curves.
-- *Export…*: CSV with the photometry, the model flux at each band and the fit
-  parameters.
+- *Export…*: CSV with the photometry (as edited or scaled, with the
+  catalogue flux and the scale factor beside it), the model flux at each band
+  and the fit parameters.
 
 On the plot, filled points are in the fit, hollow ones are not; a click fits
 that point alone at its wavelength, ⌘/Ctrl-click adds a point. The plot and
@@ -79,7 +99,7 @@ Fitted: mass, dust temperature, β. Constants:
 
 | Setting | Meaning |
 |---|---|
-| *Distance* | in parsecs. Mass and luminosity scale as d²; the distance error is not in the quoted uncertainties and is usually the largest. |
+| *Distance* | in parsecs, 1000 pc until you change it. Mass and luminosity scale as d²; the distance error is not in the quoted uncertainties and is usually the largest. When the catalogue row has a distance, *Use catalogue (X kpc)* next to the field copies it in; it is never used on its own, because the VLKB distances are an older set than the catalogue's (Mège et al. 2021). |
 | *κ(λ_ref)* | opacity per unit mass at λ_ref, cm² g⁻¹, default 0.1 at 300 µm (Hi-GAL). It includes the gas-to-dust ratio, so the mass is gas plus dust. |
 | *λ_ref* | wavelength of that opacity, in µm. |
 | *β* | fixed at 2 by default (one step). Free it only when sub-mm bands constrain it; otherwise it trades off against temperature. |
@@ -105,6 +125,12 @@ when you select it. *Band weights* (Mid-IR, Far-IR, Sub-mm), *Pre-filter* and
 service; otherwise the button says that no service is configured.
 
 ## Reading the results
+
+*L, greybody only* is the fitted greybody integrated over 5–2000 µm. When the
+SED has a 70 µm detection, *L_bol, observed + greybody* follows Elia et al.
+(2017) for protostellar clumps: the observed fluxes from 20 to 160 µm joined
+by a trapezoid in F_ν, plus the greybody beyond 160 µm. For such clumps it is
+the number to compare with the catalogue's L_bol.
 
 Uncertainties are 1σ intervals for one parameter (Δχ² = 1, the other
 parameters re-minimised). PACS 70, 100 and 160 µm colour corrections are on by

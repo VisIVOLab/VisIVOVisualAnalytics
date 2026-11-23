@@ -217,6 +217,16 @@ def _names_temperature(text: str) -> bool:
     return any(tok in _TEMPERATURE_TOKENS for tok in re.split(r"[\s,;()\[\]]+", low))
 
 
+_SKY_AXES = frozenset({"RA", "DEC", "GLON", "GLAT", "ELON", "ELAT", "HLON", "HLAT",
+                       "SLON", "SLAT", "TLON", "TLAT"})
+
+
+def _sky_ctype(ctype: str) -> bool:
+    """A CTYPE naming a celestial longitude or latitude, with or without a
+    projection code ("RA---SIN", "GLON", "DEC")."""
+    return (ctype or "").strip().upper().split("-")[0] in _SKY_AXES
+
+
 def _beam_complete(beam: BeamMetadata) -> bool:
     """Both beam axes present, finite and positive."""
     return all(v is not None and np.isfinite(v) and v > 0 for v in (beam.major, beam.minor))
@@ -298,6 +308,10 @@ class ScientificFitsDataset:
             else "none"
         self.beam_header_partial = self.beam_source == "none" and (
             "BMAJ" in header or "BMIN" in header)
+        if self.beam_source == "none" and (is_field_ref(self.path) or not any(
+                _sky_ctype(str(header.get(f"CTYPE{i}", "")))
+                for i in range(1, self.naxis + 1))):
+            self.beam_source = "not_applicable"
         if self.beam_source == "none":
             from . import beam_override_store  # noqa: PLC0415
             typed = beam_override_store.get(self.path)

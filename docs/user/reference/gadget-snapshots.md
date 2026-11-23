@@ -47,8 +47,9 @@ the marker (in the Local, Remote or ray-traced view) or its table row to
 centre the camera on it and frame 1.25 times its radius. The radius the
 markers are sized by is used when it is one of them; otherwise `rvir`, then
 R500/R2500 (half-mass radius or Rmax for a subhalo). The camera keeps the
-direction it looks from. The status line names the target and the radius used
-(also when the view was already framed). A row highlighted from another tool
+direction it looks from. A line naming the target and the radius used
+appears in the window's status bar for a few seconds and stays in the
+Inspector's selection line (also when the view was already framed). A row highlighted from another tool
 over SAMP is only recentred, at the same distance, and never reframed.
 
 The Inspector states that the dataset is a SubFind catalogue and distinguishes
@@ -100,135 +101,70 @@ The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
 to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
 
-For a large particle table, the initial Gaussian-splat size is derived from
-the mean particle spacing and starts at 0.75 times that spacing. Opacity is
-reduced for deeper point clouds so the initial view retains structure instead
-of immediately saturating, down to a floor that keeps the faint end of the
-colour map visible. Very large tables (more than about 100,000 particles in a
-cube) therefore start brighter: about twice the nominal brightness at a
-million particles, three times at 3.7 million and four and a half times at 10
-million. Lower **Splat size** if dense regions saturate. **Splat size** remains available for deliberately emphasizing compact
-or diffuse features. Switching the shape to *Point* gives the slider its
-default value back, as long as you have not moved it.
+A large particle table starts as Gaussian splats 0.75 mean particle spacings
+wide, with an opacity that falls as the cloud gets deeper, so the same field
+looks equally bright from 100,000 or 30 million particles at one intensity:
+in the Local and *Remote* views and in a headset with a float target. A
+headset without one still brightens large tables. For quantitative
+comparisons use a [projected map](raytraced-particles.md). Lower
+**Splat size** if dense regions saturate. The whole slider changes the size,
+in the Local and Remote views alike: splats from 0.25 to 12 on the scale of
+the 0.75 above (3 at the slider's default), points from 1 to 16 pixels.
+Switching the shape to *Point* restores the default size, as long as you have
+not moved the slider.
 
 ## Rendering and analysis
 
-You can use a particle type wherever you can use a VBT point table: filters and
-colour by any column, the remote 3-D view on the backend,
-[ray-traced particles](raytraced-particles.md), the [VR headset](vr.md), and
-the *Previous* and *Next* snapshot buttons in the headset, which step through
-`snapdir_000`, `snapdir_001` … (or `snap_000`, `snap_001` … in one folder)
-and keep the same particle type.
+A particle type works wherever a VBT point table does: filters and colour by
+any column, the *Camera* presets, the remote 3-D view on the backend,
+[ray-traced particles](raytraced-particles.md) and the [VR headset](vr.md),
+whose *Previous* and *Next* buttons step through the numbered outputs. The
+3-D regions and *Selection Diagnostics…* described in
+[Catalogues and HiPS](catalogues-hips.md#3-d-regions-and-selection-diagnostics)
+evaluate every particle of the type, not only the loaded sample.
+
+In a cosmological snapshot the box is periodic: a box or sphere selection near
+one face also takes the particles just across the opposite face. A run that
+does not say whether it is periodic is taken as periodic when it is comoving,
+which is wrong for a zoom or isolated run in comoving coordinates; the
+administrator can set `periodic=0` in `VISIVO_GADGET_UNITS`
+([Configuration](../../technical/configuration.md)).
 
 ### Move through simulation time
 
-When the backend finds other numbered outputs beside the open one, a **Snapshot
-Timeline** card appears in the Visualization panel. It shows the output number,
-its position in the discovered series, the header time and redshift when
-available. Use **Previous**, **Next**, the slider or **Play** to move through
-the series. Both flat series (`snap_000`, `snap_001`, …) and Gadget's numbered
-folders (`snapdir_000/snap_000.0`, …) are supported; the selected particle type
-is retained. A catalogue opened from several files at once (the pieces of one
-output, `snap_z0_1_1_1.vbt` … `_8`) has no timeline.
+When the backend finds other numbered outputs beside the open one
+(`snap_000`, `snap_001` … or `snapdir_000/snap_000.0` …), a **Snapshot
+Timeline** card appears in the Visualization panel with the output number,
+its position in the series, the time and the redshift. **Previous**, **Next**,
+the slider and **Play** move through the series with the same particle type.
+Outputs without that type (an early output with no stars yet), or that cannot
+be read, are skipped, and the card says how many. A catalogue opened from
+several files at once has no timeline.
 
-Outputs that do not have the selected particle type (an early output without
-stars yet) or that cannot be read are skipped by **Previous**, **Next**, the
-slider and **Play**; the card says how many are skipped. If an output still
-fails to open, the status bar says why, playback stops and that output is
-skipped from then on.
-
-If several physical-quantity windows are linked, the new output is opened for
-the complete group before the old windows close. Each view keeps its quantity
-(found by its column name, so a different column order cannot switch it),
-colormap, stretch, representation, point or splat size, render budget, camera
-and window placement. When the new output has no column of that name, the
-status bar lists the missing quantity. The numerical colour range is
-recalculated for the new output because its data distribution may differ. A
-step waits until every view has finished loading its particles' quantities.
-
-Source selection is deliberately cleared at every step. The timeline compares
-the same particle *type* and region, but it does not claim that a row in one
-snapshot identifies the same particle or structure in the next. Cross-snapshot
-identity requires a separate validated tracking workflow.
+Each linked quantity window moves with the step and keeps its quantity (by
+column name), colour map, stretch, representation, size, render budget,
+camera and position. The colour range is recomputed for the new output. A
+missing quantity, or an output that fails to open, is reported in the status
+bar. The selection is cleared at every step: a row in one output is not
+claimed to be the same particle in the next.
 
 ### Compare physical quantities
 
-Choose *Tools ▸ Compare Quantity…* in a Gadget particle window to open another
-view of the **same loaded particles**. Each linked window visualizes a different
-physical quantity through colour. For example, a `rho` view and a `temperature`
-view have the same particle positions but obtain their colours from different
-columns and use different numerical ranges.
+*Tools ▸ Compare Quantity…* opens another view of the **same loaded
+particles**, coloured by a different quantity (for example `rho` beside
+`temperature`). The comparison card at the top of the Visualization panel
+names the view's quantity and offers *Add another quantity…*. In *Visual
+Encoding*, **Colour by** chooses the quantity, **Colormap** only the palette,
+and **Range and scale…** the view's range and stretch.
 
-The comparison card at the top of the Visualization inspector identifies linked
-windows and shows the quantity used by the current view. It also provides *Add
-another quantity…* for creating a third view. In Visual Encoding:
-
-- **Colour by** selects the data or physical quantity being visualized;
-- **Colormap** selects only the colour palette used to represent that quantity;
-- **Range and scale…** controls that view's numerical range and stretch.
-
-The **Linked** button is on by default. Linked views share camera, source
-selection and representation: shape, splat or point size, render budget and
-ray-traced-light mode. A filter or *Load more* in a linked view keeps the
-group's camera; use *Reset Camera* to frame the new rows in every view. A new
-coordinate frame or cosmology frames that view again, without moving the
-others. A view
-drawn on the backend (*View ▸ Rendering ▸ Remote*, or *Auto* with more rows than
-loaded) follows the group's camera, but turning it does not move the others: its
-comparison card says so. Switch it to *Local* to lead the group. This keeps rendering choices from masquerading as
-physical differences. Quantity, colormap, colour range and stretch remain
-independent because different physical fields need different encodings.
-
-**Match rendering** is also on by default. Turn it off only when the rendering
-itself is the intended comparison: camera and source selection remain linked,
-but shape, size, render budget and ray-traced-light mode become autonomous for
-that view. Turning it on again immediately adopts the rendering of a linked
-peer.
-
-Turn **Linked** off to make one view autonomous. Its comparison card and title
-show `UNLINKED`, but it remains a member of the comparison. Turning **Linked**
-on again immediately adopts the camera, selection and representation of an
-already linked peer (unless **Match rendering** is off); it does not overwrite
-that view's quantity or colour mapping.
-
-### Measure a selected population
-
-Choose *Tools ▸ Selection Diagnostics…* to calculate an exact histogram and
-summary statistics for a quantity. The calculation uses every row matched by
-the **applied** scalar and spatial filters (the ones the view was last
-filtered with by **Apply**, not edits to the list not yet applied), including
-rows that are not present in the interactive rendering sample. When other
-filters are applied while the dialog is open, its population line follows and
-a result on show is computed again. Select an optional weight quantity for a
-weighted histogram and weighted mean, and choose the number of bins before
-running the calculation.
-
-On a large snapshot the two exact passes can take minutes: a progress bar and
-the elapsed time are shown while the backend works. **Cancel** stops waiting
-for the answer and drops the request; the backend may still finish the pass it
-started. One run is out at a time: a new one waits until the previous request
-has stopped.
-
-3-D regions (**Select 3-D region…** under the filter list) are named. A new
-region is offered the first free name (*Region 1*, *Region 2*, …), and a name
-already used by another region of the same window is refused. Regions are kept while the window is
-open; they are not yet saved with a session.
-
-In a cosmological snapshot the box is periodic: a box or sphere selection
-near one face also takes the particles just across the opposite face, as the
-simulation sees them. This applies to the position columns and to the
-diagnostics, the table and the remote view alike.
-
-The result records the quantity and weight units (when the snapshot declares
-them), the complete selection expression, the number of selected and finite
-rows, and the binning. Use **Save CSV…** to preserve the numerical result and
-its provenance, or **Save PNG…** for the plotted histogram. A missing unit is
-shown as *not declared* rather than guessed. Non-finite quantity values and
-non-finite or negative weights are excluded and reported through the selected
-and finite row counts.
-
-Profiles, phase diagrams, brushing between plots, physical integrated totals
-and side-by-side comparison of saved selections are planned as later parts of
-the quantitative-diagnostics workflow.
+- **Linked** (on by default): the views share camera, selection, shape, size,
+  render budget and ray-traced light. Quantity, colour map, range and stretch
+  stay per view. Turn it off to make one view `UNLINKED`.
+- **Match rendering** (on by default): turn it off to keep camera and
+  selection linked but let shape, size, budget and light differ.
+- A filter or *Load more* in one view keeps the group's camera; *Reset
+  Camera* frames the new rows in every view.
+- A view drawn on the backend (*View ▸ Rendering ▸ Remote*) follows the
+  group's camera but does not lead it; switch it to *Local* to lead.
 
 Details: [technical notes](../../technical/design/gadget-snapshots.md).

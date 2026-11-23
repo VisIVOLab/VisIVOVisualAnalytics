@@ -1102,6 +1102,18 @@ set_target_properties(test_remote_render PROPERTIES
         MACOSX_BUNDLE FALSE   # plain command-line binary
 )
 
+# ── Validation tool: splat brightness against the number of particles ───────
+# Draws a Plummer sphere offscreen through the catalogue viewer's splat rules
+# (issue #457; validation/INDEX.md). VTK only; built on request:
+#   cmake --build build --target splat_brightness
+add_executable(splat_brightness EXCLUDE_FROM_ALL tools/splat_brightness.cpp)
+target_include_directories(splat_brightness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/gui)
+target_link_libraries(splat_brightness PRIVATE ${VTK_LIBRARIES})
+vtk_module_autoinit(
+        TARGETS splat_brightness
+        MODULES ${VTK_LIBRARIES}
+)
+
 install(TARGETS ${PROJECT_NAME}
         BUNDLE DESTINATION .
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
