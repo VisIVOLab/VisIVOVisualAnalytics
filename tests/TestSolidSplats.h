@@ -10,6 +10,10 @@ class TestSolidSplats : public QObject
 private slots:
     void staleNaNScalarsAreClearedWhenGoingSolid();
     void theTableMapsEverythingNaNIncludedToTheSolidColour();
+    void gaussianDefaultsAvoidImmediateSaturation();
+    void gaussianOpacityAdaptsToSightlineDepth();
+    void gaussianOpacityIsStoredOnItsStep();
+    void splatSizeDefaultDoesNotCarryOverToPoints();
 };
 
 #endif

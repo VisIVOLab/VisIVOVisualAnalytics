@@ -110,6 +110,124 @@ async def test_reap_noop_when_all_active():
     assert (await mgr.snapshot())["active_sessions"] == 2
 
 
+class _Clocks:
+    """A wall clock and a monotonic one, moved by hand: a sleep moves the
+    wall clock only (the monotonic clock stops then on macOS and Linux)."""
+
+    def __init__(self) -> None:
+        self.wall = time.time()
+        self.mono = 1000.0
+
+    def run(self, seconds: float) -> None:
+        self.wall += seconds
+        self.mono += seconds
+
+    def sleep(self, seconds: float) -> None:
+        self.wall += seconds
+
+
+def _clocked_manager(monkeypatch, ttl: float) -> tuple[rm.RenderManager, _Clocks]:
+    clocks = _Clocks()
+    monkeypatch.setattr(rm.time, "time", lambda: clocks.wall)
+    return rm.RenderManager(max_sessions=8, idle_ttl_seconds=ttl,
+                            clock=lambda: clocks.mono), clocks
+
+
+async def test_reap_does_not_count_a_sleep_as_idle_time(monkeypatch):
+    """Issue #411: a laptop that slept wakes with the wall clock far ahead.
+    The time it slept is not idle time: a view left on screen is not closed on
+    waking, one idle before the sleep still is."""
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=300)
+    watched = await mgr.create_session("/data/watched.fits")
+    forgotten = await mgr.create_session("/data/forgotten.fits")
+    watched.stats.last_command_at = clocks.wall - 10.0      # a keepalive just before
+    forgotten.stats.last_command_at = clocks.wall - 298.0   # idle before the sleep
+    assert await mgr._reap_once() == []
+
+    clocks.sleep(600.0)   # ten minutes asleep
+    clocks.run(5.0)       # and the reaper's interval
+    evicted = await mgr._reap_once()
+
+    assert evicted == [forgotten.session_id]
+    assert not watched.closed
+    # Idle time counts again from waking on.
+    for _ in range(61):
+        clocks.run(5.0)
+        await mgr._reap_once()
+    assert watched.closed
+
+
+async def test_a_sleep_before_the_first_pass_is_not_idle_time(monkeypatch):
+    """The reaper starts with the first session: a machine that sleeps before
+    the reaper's first pass is still told by the start time (issue #411)."""
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=30)
+    await mgr.start()
+    try:
+        sess = await mgr.create_session("/data/a.fits")
+        sess.stats.last_command_at = clocks.wall
+        clocks.sleep(50.0)   # asleep: the first pass comes after the TTL
+        clocks.run(1.0)
+        assert await mgr._reap_once() == []
+        assert not sess.closed
+    finally:
+        await mgr.stop()
+
+
+async def test_a_late_pass_is_not_a_sleep(monkeypatch):
+    """A slow pass, a blocked event loop or a stopped process moves both clocks:
+    the time is idle time as any other, and an idle session is closed."""
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=30)
+    sess = await mgr.create_session("/data/a.fits")
+    sess.stats.last_command_at = clocks.wall
+    assert await mgr._reap_once() == []
+    clocks.run(45.0)
+    assert await mgr._reap_once() == [sess.session_id]
+
+
+async def test_regular_passes_are_not_a_sleep(monkeypatch):
+    mgr, clocks = _clocked_manager(monkeypatch, ttl=100)
+    sess = await mgr.create_session("/data/a.fits")
+    sess.stats.last_command_at = clocks.wall
+    for _ in range(21):
+        clocks.run(rm._REAP_INTERVAL_S)
+        await mgr._reap_once()
+    assert sess.closed
+
+async def test_evicting_a_session_closes_its_webrtc_peer(monkeypatch):
+    """Issue #411: a peer left connected to a closed session sends no frame and
+    never ends, so the desktop showed a frozen "Live" view for good."""
+    import sys
+    import types
+
+    closed: list[str] = []
+
+    class _Peer:
+        def __init__(self, sid: str) -> None:
+            self.sid = sid
+
+        async def close(self) -> None:
+            closed.append(self.sid)
+            peers.pop(self.sid, None)
+
+    peers: dict[str, _Peer] = {}
+    module = types.ModuleType("app.webrtc_session")
+    module.get_active_webrtc_session = peers.get
+    monkeypatch.setitem(sys.modules, "app.webrtc_session", module)
+
+    mgr = rm.RenderManager(max_sessions=8, idle_ttl_seconds=100)
+    idle = await mgr.create_session("/data/idle.fits")
+    kept = await mgr.create_session("/data/kept.fits")
+    peers[idle.session_id] = _Peer(idle.session_id)
+    peers[kept.session_id] = _Peer(kept.session_id)
+    idle.stats.last_command_at = time.time() - 200.0
+
+    assert await mgr._reap_once() == [idle.session_id]
+    assert closed == [idle.session_id]
+
+    assert await mgr.close_session(kept.session_id) is True
+    assert closed == [idle.session_id, kept.session_id]
+
+
 async def test_init_failure_does_not_leak_a_slot(monkeypatch):
     """If a session fails to initialize, it must be evicted so its slot frees."""
     class _BadSession(_FakeSession):

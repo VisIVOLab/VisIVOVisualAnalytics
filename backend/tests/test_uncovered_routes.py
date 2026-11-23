@@ -834,6 +834,25 @@ async def test_hi_products_with_a_beam(client: AsyncClient, auth_headers: dict, 
         json={"channel_start": 9, "channel_end": 3}, headers=headers)
     assert rev.status_code == 422, rev.text
 
+    # Issue #401: one region, less a background annulus, with an error.
+    circle = {"frame": "image", "shape": "circle", "center": [16, 16], "radius": 6}
+    ring = {"frame": "image", "shape": "annulus", "center": [16, 16], "radii": [10, 14]}
+    reg = await client.post(
+        f"/v1/analysis/hi-products/{ds['dataset_id']}",
+        json={"distance_mpc": 10.0, "region": circle, "background_region": ring},
+        headers=headers)
+    assert reg.status_code == 200, reg.text
+    region = reg.json()["region"]
+    assert region["error_from"] == "background"
+    assert region["n_pixels"] > 0 and region["background_n_pixels"] > 0
+    assert region["flux_jy_kms"] > 0 and region["flux_error_jy_kms"] > 0
+    assert region["hi_mass_msun"] == pytest.approx(2.356e5 * 100.0 * region["flux_jy_kms"])
+    bad = await client.post(
+        f"/v1/analysis/hi-products/{ds['dataset_id']}",
+        json={"region": {"frame": "image", "shape": "circle", "center": [16, 16]}},
+        headers=headers)
+    assert bad.status_code == 422, bad.text
+
 
 @pytest.mark.asyncio
 async def test_spectral_baseline_subtracts_a_pedestal(

@@ -23,6 +23,8 @@
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
 #include "ProductOrigin.h"
+#include "RegionFlux.h"
+#include "RegionFluxUi.h"
 #include "RegionFullRes.h"
 #include "RegionImport.h"
 #include "RegionListExport.h"
@@ -127,6 +129,7 @@ struct RegionStatistics
     long long totalCount{ 0 };
     long long validCount{ 0 };
     long long blankedCount{ 0 };
+    long long zeroCount{ 0 };   ///< valid pixels exactly 0 (displayed only; a clipped moment map)
     double minValue{ 0. };
     double maxValue{ 0. };
     double mean{ 0. };
@@ -134,6 +137,9 @@ struct RegionStatistics
     double stddev{ 0. };
     double sum{ 0. };       ///< Sum of valid pixels (for Jy = sum / Ω_beam_px)
     double madSigma{ 0. };  ///< 1.4826 × MAD — robust σ estimate
+    /// Full-resolution pixels each counted pixel stands for: 1, or the block
+    /// area for the displayed pixels below full resolution (issue #401).
+    double pixelsPerSample{ 1. };
     bool valid{ false };
 };
 
@@ -253,6 +259,8 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData,
             }
 
             ++stats.validCount;
+            if (value == 0.0)
+                ++stats.zeroCount;
             stats.minValue = std::min(stats.minValue, value);
             stats.maxValue = std::max(stats.maxValue, value);
             sum += value;
@@ -267,6 +275,8 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData,
 
     stats.sum = sum;
     stats.mean = sum / static_cast<double>(stats.validCount);
+    if (grid.reduced())
+        stats.pixelsPerSample = std::max(1.0, grid.spacingX) * std::max(1.0, grid.spacingY);
     stats.stddev = std::sqrt(std::max(0.0, sumSq / static_cast<double>(stats.validCount)
                                                - stats.mean * stats.mean));
     std::sort(values.begin(), values.end());
@@ -287,6 +297,139 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData,
 
     stats.valid = true;
     return stats;
+}
+
+/// What a free function needs of the window to give the flux rows.
+struct FluxContext
+{
+    double bmajDeg{ 0.0 }, bminDeg{ 0.0 }, cdelt1Deg{ 0.0 }, cdelt2Deg{ 0.0 };
+    QString bunit;
+    vtkImageData *image{ nullptr };   ///< the master layer, for the map noise
+    visivo::DisplayGrid grid;
+    std::optional<RegionStatistics> background;
+    QString backgroundName;
+};
+
+/// The rows of the Region Analysis "Radio (beam-aware)" section (issue #401):
+/// beam, beam area, integrated flux with its error in the image's unit (Jy,
+/// Jy km/s for a moment-0 map), where the error comes from, the HI mass at the
+/// distance set, and the peak SNR. Empty when the beam area is unknown.
+QList<QPair<QString, QString>> regionFluxRows(const RegionStatistics &stats, const FluxContext &c)
+{
+    QList<QPair<QString, QString>> rows;
+    const double omega = visivo::flux::beamAreaPixels(
+            c.bmajDeg, c.bminDeg, c.cdelt1Deg, c.cdelt2Deg);
+    if (!(omega > 0.0))
+        return rows;
+    rows.append({ u"Beam (BMAJ × BMIN)"_s,
+                  QStringLiteral("%1\" × %2\"")
+                          .arg(c.bmajDeg * 3600.0, 0, 'f', 2)
+                          .arg(c.bminDeg * 3600.0, 0, 'f', 2) });
+    rows.append({ u"Beam area (pixels)"_s, QStringLiteral("%1").arg(omega, 0, 'f', 2) });
+
+    // The unit of the flux follows the image's (issue #401): Jy for a Jy/beam
+    // map, Jy km/s for a moment-0 map in Jy/beam m/s or km/s. A map with no
+    // BUNIT is taken as Jy/beam, as before, and says so. A frequency-integrated
+    // map stays in Jy Hz: an exported map has no rest frequency.
+    const QString bunit = c.bunit.trimmed();
+    visivo::flux::FluxUnit unit = visivo::flux::parseFluxUnit(bunit);
+    QStringList notes;
+    if (bunit.isEmpty()) {
+        unit = visivo::flux::parseFluxUnit(u"Jy/beam"_s);
+        notes << u"no BUNIT in the header: Jy/beam assumed"_s;
+    }
+    if (!unit.perBeam) {
+        rows.append({ u"Integrated flux"_s,
+                      u"not a flux: the image is in %1, not per beam"_s.arg(bunit) });
+    } else {
+        const auto fmt = [](double v) { return QString::number(v, 'g', 5); };
+        const QString shownUnit = bunit.isEmpty() ? QString() : u" "_s + bunit;
+        visivo::flux::Noise noise;
+        QString noiseFrom;
+        bool clipped = false;
+        bool approximate = stats.pixelsPerSample > 1.0;
+        if (c.background && c.background->valid) {
+            const RegionStatistics &b = *c.background;
+            clipped = visivo::flux::looksClipped(long(b.validCount), long(b.zeroCount),
+                                                 long(b.blankedCount));
+            approximate = approximate || b.pixelsPerSample > 1.0;
+            noise.mean = b.mean;
+            noise.sigma = b.validCount >= 2 ? b.stddev : std::numeric_limits<double>::quiet_NaN();
+            noise.count = long(b.validCount);
+            noise.subtract = true;
+            noiseFrom = u"background %1 (%2 px, mean %3, σ %4%5), mean subtracted"_s
+                                .arg(c.backgroundName)
+                                .arg(b.validCount)
+                                .arg(fmt(b.mean), fmt(b.stddev), shownUnit);
+        } else if (!c.grid.reduced()) {
+            // The image's own noise, from the full-resolution pixels loaded.
+            std::vector<double> values;
+            long zeros = 0, blanks = 0;
+            if (vtkImageData *img = c.image) {
+                int e[6];
+                img->GetExtent(e);
+                values.reserve(std::size_t(e[1] - e[0] + 1) * std::size_t(e[3] - e[2] + 1));
+                for (int y = e[2]; y <= e[3]; ++y)
+                    for (int x = e[0]; x <= e[1]; ++x) {
+                        const double v = img->GetScalarComponentAsDouble(x, y, e[4], 0);
+                        if (!std::isfinite(v))
+                            ++blanks;
+                        else if (v == 0.0)
+                            ++zeros;
+                        values.push_back(v);
+                    }
+            }
+            clipped = visivo::flux::looksClipped(long(values.size()) - blanks, zeros, blanks);
+            noise.sigma = visivo::flux::madSigma(values);
+            noiseFrom = u"map noise (σ_MAD %1%2 over the pixels loaded), no background subtracted"_s
+                                .arg(fmt(noise.sigma), shownUnit);
+        } else {
+            noiseFrom = u"none: mark a background region for an error (the map is shown "
+                        u"below full resolution)"_s;
+        }
+        if (!c.backgroundName.isEmpty() && !noise.subtract)
+            noiseFrom = u"background %1 not measured; "_s.arg(c.backgroundName) + noiseFrom;
+        // Statistics of displayed pixels below full resolution: each stands
+        // for a block of the file's, and their σ is a block's, not a pixel's.
+        const visivo::flux::RegionFlux f = visivo::flux::regionFlux(
+                stats.sum, long(stats.validCount), omega, unit, noise, stats.pixelsPerSample);
+        if (f.valid) {
+            if (!std::isfinite(f.error) && (noise.subtract || !c.grid.reduced()))
+                noiseFrom += u"; σ cannot be measured (zero, or fewer than two pixels): no error"_s;
+            rows.append({ u"Integrated flux"_s, visivo::flux::formatFlux(f) });
+            rows.append({ u"Flux error from"_s, noiseFrom });
+            if (approximate)
+                notes << u"from the displayed pixels below full resolution, each a block of the "
+                         u"file's: flux and error approximate"_s;
+            if (unit.frequencyToHz > 0.0)
+                notes << u"integrated over frequency: Jy Hz (the image has no rest frequency)"_s;
+            if (!notes.isEmpty())
+                rows.append({ u"Flux note"_s, notes.join(u"; "_s) });
+            if (clipped)
+                rows.append({ u"Flux warning"_s,
+                              u"more than a fifth of the noise pixels are 0 or blank: the map "
+                              u"looks masked or thresholded, the flux is biased (faint emission below the "
+                              u"threshold is lost) and the error too small"_s });
+            if (unit.velocity) {
+                const visivo::flux::TypedDistance d = visivo::flux::storedHiDistance();
+                if (d.ok) {
+                    const double massError = std::isfinite(f.error)
+                            ? d.hiMass(f.error)
+                            : std::numeric_limits<double>::quiet_NaN();
+                    rows.append({ u"HI mass"_s,
+                                  u"%1 at %2"_s.arg(visivo::flux::formatHiMass(d.hiMass(f.flux),
+                                                                               massError),
+                                                    d.describe()) });
+                } else {
+                    rows.append({ u"HI mass"_s,
+                                  u"set a distance in Tools ▸ Regions ▸ HI Mass Distance…"_s });
+                }
+            }
+        }
+    }
+    const double snrPeak = (stats.madSigma > 0.0) ? (stats.maxValue / stats.madSigma) : 0.0;
+    rows.append({ u"Peak SNR (peak/σ_MAD)"_s, QStringLiteral("%1").arg(snrPeak, 0, 'f', 1) });
+    return rows;
 }
 
 }  // namespace
@@ -784,7 +927,16 @@ void vtkWindowImage::analyzeRegion(int id)
             ? u"the displayed pixels, each the mean of %1\u00d7%1"_s.arg(block)
             : u"the displayed pixels, 1 in %1\u00d7%1 sampled"_s.arg(block);
 
-    auto present = [this, region, grid](const RegionStatistics &stats, const QString &scope) {
+    // The background region for the flux (issue #401): the nearest one marked
+    // so, measured on the same pixels as the region.
+    std::optional<visivo::regions::Region> backgroundRegion;
+    if (const auto *bg = visivo::flux::nearestBackground(this->m_regions.regions(), region))
+        backgroundRegion = *bg;
+    const QString backgroundName = backgroundRegion ? backgroundRegion->name : QString();
+
+    auto present = [this, region, grid, backgroundName](const RegionStatistics &stats,
+                                                         const QString &scope,
+                                                         const std::optional<RegionStatistics> &background) {
         auto *imageData = this->layers->getImageData(this->layers->getMasterIndex());
 
         // Built as a RECORD, then shown and registered from that single description
@@ -814,23 +966,19 @@ void vtkWindowImage::analyzeRegion(int id)
 
             // ── Radio-specific: integrated flux if beam known ────────────────
             if (this->hasBeamInfo()) {
-                const double Omega_beam_px = this->beamAreaPixels();
-                if (Omega_beam_px > 0.0) {
-                    const double fluxJy = stats.sum / Omega_beam_px;
-                    const double snrPeak = (stats.madSigma > 0.0)
-                            ? (stats.maxValue / stats.madSigma) : 0.0;
-                    sections.append({ u"Radio (beam-aware)"_s,
-                            { { u"Beam (BMAJ × BMIN)"_s,
-                                QStringLiteral("%1\" × %2\"")
-                                        .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 2)
-                                        .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 2) },
-                              { u"Beam area (pixels)"_s,
-                                QStringLiteral("%1").arg(Omega_beam_px, 0, 'f', 2) },
-                              { u"Integrated flux"_s,
-                                QStringLiteral("%1 Jy").arg(fluxJy, 0, 'g', 6) },
-                              { u"Peak SNR (peak/σ_MAD)"_s,
-                                QStringLiteral("%1").arg(snrPeak, 0, 'f', 1) } } });
-                }
+                FluxContext flux;
+                flux.bmajDeg = this->m_beamMajorDeg;
+                flux.bminDeg = this->m_beamMinorDeg;
+                flux.cdelt1Deg = this->remoteDatasetCdelt[0];
+                flux.cdelt2Deg = this->remoteDatasetCdelt[1];
+                flux.bunit = this->remoteDatasetBunit;
+                flux.image = imageData;
+                flux.grid = grid;
+                flux.background = background;
+                flux.backgroundName = backgroundName;
+                const auto radio = regionFluxRows(stats, flux);
+                if (!radio.isEmpty())
+                    sections.append({ u"Radio (beam-aware)"_s, radio });
             }
 
             // ── Per-Stokes flux when a Stokes set is loaded ──────────────────
@@ -927,27 +1075,47 @@ void vtkWindowImage::analyzeRegion(int id)
         const auto b = visivo::displayedVoxelBounds(region, grid);
         clipped = b[0] < extent[0] || b[1] > extent[1] || b[2] < extent[2] || b[3] > extent[3];
     }
+    const auto reachesBeyond = [imageData, grid](const visivo::regions::Region &r) {
+        if (!imageData)
+            return false;
+        int extent[6];
+        imageData->GetExtent(extent);
+        const auto b = visivo::displayedVoxelBounds(r, grid);
+        return b[0] < extent[0] || b[1] > extent[1] || b[2] < extent[2] || b[3] > extent[3];
+    };
+    if (backgroundRegion && reachesBeyond(*backgroundRegion))
+        clipped = true;   // its statistics come from the file too
+    // The background measured on the pixels shown, for the paths that use them.
+    std::optional<RegionStatistics> displayedBackground;
+    if (backgroundRegion)
+        displayedBackground = computeRegionStatistics2D(imageData, *backgroundRegion, grid);
     if (!grid.reduced() && !clipped) {
-        present(displayed, u"the full-resolution pixels"_s);
+        present(displayed, u"the full-resolution pixels"_s, displayedBackground);
         return;
     }
     const QString loadedPixels = grid.reduced()
             ? displayedPixels
             : u"the full-resolution pixels loaded (the region reaches beyond them)"_s;
     if (this->remoteDatasetId.isEmpty()) {
-        present(displayed, loadedPixels);
+        present(displayed, loadedPixels, displayedBackground);
         return;
     }
 
     // The list region is already in source pixels: the backend gets it as is.
     QJsonObject canonical = visivo::regions::toCanonical(region, 0.0);
     canonical.remove(u"props"_s);
+    QJsonObject canonicalBackground;
+    if (backgroundRegion) {
+        canonicalBackground = visivo::regions::toCanonical(*backgroundRegion, 0.0);
+        canonicalBackground.remove(u"props"_s);
+    }
     this->m_regionStatsPending = true;
     this->updateRegionReadout();
-    auto *watcher = new QFutureWatcher<BackendRegionStatsResult>(this);
-    QObject::connect(watcher, &QFutureWatcher<BackendRegionStatsResult>::finished, this,
-                     [this, watcher, present, displayed, loadedPixels, requestGeneration,
-                      region]() {
+    using Pair = std::pair<BackendRegionStatsResult, std::optional<BackendRegionStatsResult>>;
+    auto *watcher = new QFutureWatcher<Pair>(this);
+    QObject::connect(watcher, &QFutureWatcher<Pair>::finished, this,
+                     [this, watcher, present, displayed, displayedBackground, loadedPixels,
+                      requestGeneration, region, backgroundRegion]() {
         watcher->deleteLater();
         if (requestGeneration != this->m_regionDialogGeneration)
             return;   // another region meanwhile: the readout is its
@@ -958,32 +1126,48 @@ void vtkWindowImage::analyzeRegion(int id)
             return;   // deleted meanwhile
         if (!visivo::regions::sameGeometry(*now, region))
             return;   // the region was edited meanwhile: these numbers are not its
-        const BackendRegionStatsResult r = watcher->result();
-        if (!r.valid) {
+        const auto toStats = [](const BackendRegionStatsResult &r) {
+            RegionStatistics stats;
+            stats.totalCount = r.totalCount;
+            stats.validCount = r.validCount;
+            stats.blankedCount = r.blankedCount;
+            stats.minValue = r.minValue;
+            stats.maxValue = r.maxValue;
+            stats.sum = r.sum;
+            stats.mean = r.mean;
+            stats.median = r.median;
+            stats.stddev = r.rms;
+            stats.madSigma = r.madSigma;
+            stats.valid = r.validCount > 0;
+            return stats;
+        };
+        const Pair result = watcher->result();
+        if (!result.first.valid) {
             present(displayed, u"%1 (the full-resolution statistics failed: %2)"_s
-                                       .arg(loadedPixels, r.error));
+                                       .arg(loadedPixels, result.first.error),
+                    displayedBackground);
             return;
         }
-        RegionStatistics stats;
-        stats.totalCount = r.totalCount;
-        stats.validCount = r.validCount;
-        stats.blankedCount = r.blankedCount;
-        stats.minValue = r.minValue;
-        stats.maxValue = r.maxValue;
-        stats.sum = r.sum;
-        stats.mean = r.mean;
-        stats.median = r.median;
-        stats.stddev = r.rms;
-        stats.madSigma = r.madSigma;
-        stats.valid = r.validCount > 0;
-        present(stats, u"the full-resolution data (from the file)"_s);
+        // The background from the file too, unless it was moved or failed:
+        // then none, rather than one measured on other pixels than the region.
+        std::optional<RegionStatistics> background;
+        const visivo::regions::Region *bgNow =
+                backgroundRegion ? this->m_regions.find(backgroundRegion->id) : nullptr;
+        if (result.second && result.second->valid && bgNow
+            && visivo::regions::sameGeometry(*bgNow, *backgroundRegion))
+            background = toStats(*result.second);
+        present(toStats(result.first), u"the full-resolution data (from the file)"_s, background);
     });
     const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
     const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
-    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, canonical]() {
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, canonical,
+                                          canonicalBackground]() {
         BackendClient client(url, token);
         client.setSessionId(session);
-        return client.regionStats(dataset, canonical);
+        Pair out{ client.regionStats(dataset, canonical), std::nullopt };
+        if (!canonicalBackground.isEmpty())
+            out.second = client.regionStats(dataset, canonicalBackground);
+        return out;
     }));
 }
 

@@ -1,4 +1,6 @@
 #include "CatalogueFormat.h"
+#include "CameraPresetActions.h"
+#include "ParticleSplatDefaults.h"
 #include "WindowCloseShortcut.h"
 #include "BusyStatus.h"
 #include "VbtByteOrderPrompt.h"
@@ -19,6 +21,8 @@
 #include "CatalogueSelectionKey.h"
 #include "AssistantPanel.h"
 #include "CopilotActionRouter.h"
+#include "SnapshotTimelineSteps.h"
+#include "SimulationDiagnosticsDialog.h"
 #include "theme/VisivoTheme.h"
 
 // ── VTK ──────────────────────────────────────────────────────────────────────
@@ -65,6 +69,7 @@
 #include <QDebug>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QDockWidget>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -79,6 +84,8 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScopeGuard>
+#include <QUuid>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QTableView>
@@ -175,19 +182,187 @@ static std::optional<BackendTabularFilter> showAddFilterDialog(
     return BackendTabularFilter{ field, op, value };
 }
 
+static QString filterDisplayText(const BackendTabularFilter &filter)
+{
+    if (filter.shape == u"box"_s) {
+        const QString name = filter.name.trimmed().isEmpty() ? u"Box selection"_s : filter.name;
+        return u"%1 · %2 box (%3, %4, %5)"_s.arg(
+                name, filter.op, filter.fields.value(0), filter.fields.value(1),
+                filter.fields.value(2));
+    }
+    if (filter.shape == u"sphere"_s) {
+        const QString name = filter.name.trimmed().isEmpty() ? u"Sphere selection"_s : filter.name;
+        return u"%1 · %2 sphere, r=%3 (%4, %5, %6)"_s.arg(
+                name, filter.op, QString::number(filter.radius, 'g', 6),
+                filter.fields.value(0), filter.fields.value(1), filter.fields.value(2));
+    }
+    return u"%1 %2 %3"_s.arg(filter.field, filter.op, filter.value);
+}
+
+// takenNames: the other regions' names. A new region is offered the first
+// free "Region N", and a name already in use is refused: the list, the
+// diagnostics and the backend tell regions apart by it.
+static std::optional<BackendTabularFilter> showSpatialFilterDialog(
+        QWidget *parent, const QStringList &fields, const std::array<double, 6> &bounds,
+        const QStringList &takenNames, const BackendTabularFilter *existing = nullptr)
+{
+    auto *dlg = new QDialog(parent);
+    dlg->setWindowTitle(existing ? u"Edit 3-D Region"_s : u"Select 3-D Region"_s);
+    dlg->setModal(true);
+    dlg->setMinimumWidth(420);
+    auto *layout = new QFormLayout(dlg);
+    layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+    auto *name = new QLineEdit(dlg);
+    name->setPlaceholderText(u"e.g. Northern outflow"_s);
+    name->setText(existing ? existing->name : visivo::selection::nextRegionName(takenNames));
+    auto *shape = new QComboBox(dlg);
+    shape->addItem(u"Box"_s, u"box"_s);
+    shape->addItem(u"Sphere"_s, u"sphere"_s);
+    if (existing)
+        shape->setCurrentIndex(existing->shape == u"sphere"_s ? 1 : 0);
+    auto *operation = new QComboBox(dlg);
+    operation->addItem(u"Inside"_s, u"inside"_s);
+    operation->addItem(u"Outside"_s, u"outside"_s);
+    if (existing)
+        operation->setCurrentIndex(existing->op == u"outside"_s ? 1 : 0);
+
+    std::array<QComboBox *, 3> axes{};
+    auto *axesWidget = new QWidget(dlg);
+    auto *axesLayout = new QHBoxLayout(axesWidget);
+    axesLayout->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        axes[i] = new QComboBox(axesWidget);
+        axes[i]->addItems(fields);
+        const QString wanted = existing ? existing->fields.value(i) : fields.value(i);
+        axes[i]->setCurrentText(wanted);
+        axesLayout->addWidget(axes[i]);
+    }
+
+    std::array<QDoubleSpinBox *, 6> values{};
+    const auto makeValue = [dlg](double initial) {
+        auto *spin = new QDoubleSpinBox(dlg);
+        spin->setDecimals(8);
+        spin->setRange(-std::numeric_limits<double>::max(),
+                       std::numeric_limits<double>::max());
+        spin->setValue(initial);
+        return spin;
+    };
+    auto *boxWidget = new QWidget(dlg);
+    auto *boxLayout = new QFormLayout(boxWidget);
+    boxLayout->setContentsMargins(0, 0, 0, 0);
+    for (int i = 0; i < 3; ++i) {
+        const double lo = existing && existing->shape == u"box"_s
+                ? existing->minimum[i] : bounds[i * 2];
+        const double hi = existing && existing->shape == u"box"_s
+                ? existing->maximum[i] : bounds[i * 2 + 1];
+        values[i * 2] = makeValue(lo);
+        values[i * 2 + 1] = makeValue(hi);
+        auto *range = new QWidget(boxWidget);
+        auto *rangeLayout = new QHBoxLayout(range);
+        rangeLayout->setContentsMargins(0, 0, 0, 0);
+        rangeLayout->addWidget(values[i * 2]);
+        rangeLayout->addWidget(values[i * 2 + 1]);
+        boxLayout->addRow(QString(QChar(u'X' + i)) + u" min / max"_s, range);
+    }
+
+    std::array<QDoubleSpinBox *, 4> sphereValues{};
+    auto *sphereWidget = new QWidget(dlg);
+    auto *sphereLayout = new QFormLayout(sphereWidget);
+    sphereLayout->setContentsMargins(0, 0, 0, 0);
+    double diagonal2 = 0.0;
+    for (int i = 0; i < 3; ++i) {
+        const double centre = existing && existing->shape == u"sphere"_s
+                ? existing->centre[i] : (bounds[i * 2] + bounds[i * 2 + 1]) * 0.5;
+        sphereValues[i] = makeValue(centre);
+        sphereLayout->addRow(QString(QChar(u'X' + i)) + u" centre"_s, sphereValues[i]);
+        const double extent = bounds[i * 2 + 1] - bounds[i * 2];
+        diagonal2 += extent * extent;
+    }
+    sphereValues[3] = makeValue(existing && existing->shape == u"sphere"_s
+                                        ? existing->radius : std::sqrt(diagonal2) * 0.25);
+    sphereValues[3]->setMinimum(std::numeric_limits<double>::min());
+    sphereLayout->addRow(u"Radius"_s, sphereValues[3]);
+
+    layout->addRow(u"Name"_s, name);
+    layout->addRow(u"Shape"_s, shape);
+    layout->addRow(u"Keep"_s, operation);
+    layout->addRow(u"Coordinates X / Y / Z"_s, axesWidget);
+    layout->addRow(u"Box"_s, boxWidget);
+    layout->addRow(u"Sphere"_s, sphereWidget);
+    const auto updateShape = [shape, boxWidget, sphereWidget]() {
+        const bool box = shape->currentData().toString() == u"box"_s;
+        boxWidget->setVisible(box);
+        sphereWidget->setVisible(!box);
+    };
+    QObject::connect(shape, QOverload<int>::of(&QComboBox::currentIndexChanged), dlg,
+                     updateShape);
+    updateShape();
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dlg);
+    layout->addRow(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, dlg, [dlg, name, takenNames]() {
+        // Kept open on a clash, so the name can be changed in place.
+        if (visivo::selection::isTakenName(name->text(), takenNames)) {
+            QMessageBox::warning(dlg, u"Name in use"_s,
+                                 u"Another 3-D region is already called \u201c%1\u201d. "
+                                 u"Choose another name."_s.arg(name->text().trimmed()));
+            name->setFocus();
+            name->selectAll();
+            return;
+        }
+        dlg->accept();
+    });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
+    if (dlg->exec() != QDialog::Accepted) {
+        dlg->deleteLater();
+        return std::nullopt;
+    }
+
+    BackendTabularFilter result;
+    result.shape = shape->currentData().toString();
+    result.name = name->text().trimmed();
+    result.op = operation->currentData().toString();
+    for (auto *axis : axes)
+        result.fields.append(axis->currentText());
+    if (result.shape == u"box"_s) {
+        for (int i = 0; i < 3; ++i) {
+            result.minimum[i] = values[i * 2]->value();
+            result.maximum[i] = values[i * 2 + 1]->value();
+            if (result.minimum[i] >= result.maximum[i]) {
+                QMessageBox::warning(parent, u"Invalid Region"_s,
+                                     u"Every box minimum must be below its maximum."_s);
+                dlg->deleteLater();
+                return std::nullopt;
+            }
+        }
+    } else {
+        for (int i = 0; i < 3; ++i)
+            result.centre[i] = sphereValues[i]->value();
+        result.radius = sphereValues[3]->value();
+    }
+    dlg->deleteLater();
+    return result;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Construction / destruction
 // ─────────────────────────────────────────────────────────────────────────────
 
+bool vtkWindowCatalogue3D::s_openingStep = false;
+
 vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QString &backendUrl,
                                            const QString &backendToken, const QStringList &paths,
-                                           const Catalogue3DLabel &label, QWidget *parent)
+                                           const Catalogue3DLabel &label, QWidget *parent,
+                                           vtkWindowCatalogue3D *comparisonSource)
     : QMainWindow(parent)
     , ui(new Ui::vtkWindowCatalogue3D)
     , filepath(filepath)
     , backendUrl(backendUrl)
     , backendToken(backendToken)
     , m_cataloguePaths(paths)
+    , m_openedByStep(s_openingStep)
+    , m_copilotRouteKey(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {
     // Cmd+W closes it, as the title bar's button does (WindowCloseShortcut.h).
     visivo::installCloseWindowShortcut(this);
@@ -201,12 +376,21 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     QObject::connect(&this->filterWatcher, &QFutureWatcher<Catalogue3DFilterTaskResult>::finished,
                      this, [this]() {
                          this->filterBusy = false;
+                         // The background query for the first rows' other
+                         // columns, if this was it: read by buildScene() (the
+                         // camera stays), cleared on every way out.
+                         const bool hydration = this->m_hydratingAttributes;
+                         const auto hydrationDone = qScopeGuard(
+                                 [this]() { this->m_hydratingAttributes = false; });
                          // Re-enable filter controls
                          if (this->btnFilterApply) {
                              this->btnFilterApply->setEnabled(true);
                          }
                          if (this->btnFilterAdd) {
                              this->btnFilterAdd->setEnabled(true);
+                         }
+                         if (this->btnFilterAddSpatial) {
+                             this->btnFilterAddSpatial->setEnabled(this->m_cartesian);
                          }
                          if (this->filterStatusLabel) {
                              this->filterStatusLabel->setText({});
@@ -216,11 +400,31 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          if (!result.valid) {
                              if (this->m_loadIndicator)
                                  this->m_loadIndicator->hide();
+                             // The rows on screen are still the previous
+                             // filters': so is the Remote view again.
+                             if (this->m_appliedFilters.fail()) {
+                                 this->pushRemoteState();
+                                 emit appliedFiltersChanged(this->m_appliedFilters.filters());
+                             }
+                             if (std::exchange(this->m_awaitingHydration, false)) {
+                                 // The views waiting on these columns stop
+                                 // waiting: they keep the rows they have.
+                                 this->shareHydratedRows(HydrationShare::StopWaiting);
+                             }
                              DiagnosticsManager::instance()->publish(
                                      DiagnosticsLevel::Warning, DiagnosticsCategory::Remote,
                                      u"Catalogue3D"_s,
                                      u"Filter failed: "_s + result.error,
                                      this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
+                             if (hydration) {
+                                 // A background load: said, not put up as a
+                                 // box (a step's window during Play, too).
+                                 this->statusBar()->showMessage(
+                                         u"The particles' other quantities were not loaded: %1"_s
+                                                 .arg(result.error),
+                                         10000);
+                                 return;
+                             }
                              if (isSessionExpiryError(result.error)) {
                                  QMessageBox msg(this);
                                  msg.setWindowTitle(u"Session Expired"_s);
@@ -248,6 +452,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  this->entries, this->schema, this->selectedIndex);
                          this->entries = result.entries;
                          this->unplacedEntries = result.unplaced;
+                         if (this->m_appliedFilters.succeed())
+                             emit appliedFiltersChanged(this->m_appliedFilters.filters());
                          // Update pagination state
                          // By rows consumed: rows skipped for bad coordinates
                          // must not be fetched again by the next page.
@@ -305,7 +511,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->selectedIndex = CatalogueSelection::indexOf(
                                  this->entries, this->schema, selected);
                          if (!this->entries.empty()) {
-                             this->buildScene();
+                             // The background load brings the same rows.
+                             this->buildScene(hydration
+                                                      ? SnapshotTimelineSteps::Rebuild::SameRows
+                                                      : SnapshotTimelineSteps::Rebuild::NewRows);
                              this->buildLabels();
                          }
                          this->refreshCatalogueTable();
@@ -317,6 +526,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->renderWindow->Render();
                          if (this->m_loadIndicator)
                              this->m_loadIndicator->hide();
+                         // Any query answered here brings every column; the
+                         // views waiting on this one take its rows when they
+                         // are the same rows, else ask for their own.
+                         if (std::exchange(this->m_awaitingHydration, false))
+                             this->shareHydratedRows(hydration ? HydrationShare::Rows
+                                                               : HydrationShare::LoadOwn);
                      });
 
     // ── Connect "load more" watcher ───────────────────────────────────────────
@@ -433,12 +648,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  this->backendUrl, this->remoteSessionId, this->remoteDatasetId);
                          if (this->m_copilot) {
                              this->m_copilot->setDatasetId(this->remoteDatasetId);
+                             this->m_copilot->setActionTarget(this->m_copilotRouteKey);
                              CopilotActionRouter::instance()->registerTarget(
                                      this->remoteDatasetId, this,
                                      [this](const QList<QJsonObject> &acts) {
                                          this->applyCopilotActions(acts);
                                      },
-                                     [this]() { this->undoCopilotActions(); });
+                                     [this]() { this->undoCopilotActions(); },
+                                     this->m_copilotRouteKey);
                          }
                          // The window is on a NEW session now: the status rail
                          // and the Inspector both named the expired one until
@@ -453,19 +670,55 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      });
 
     BackendClient client(backendUrl, backendToken);
+    bool hydrateParticleAttributes = false;
     const QString catFormat = catalogueFormatForPath(filepath);
     // A window the user opens: a VBT is read as the backend was last told,
     // and warned again when its header looks wrong (issue #165).
     client.setUseRememberedVbtByteOrder(false);
-    auto opened = this->m_cataloguePaths.size() > 1
-            ? client.openCatalogue(this->m_cataloguePaths, catFormat)
-            : client.openCatalogue(filepath, catFormat);
+    BackendCatalogueInfo opened;
+    if (comparisonSource) {
+        // A comparison is another rendering of the exact same loaded rows.
+        // Reopening a 45-million-particle snapshot here would repeat the
+        // expensive scan and create a second backend dataset for no benefit.
+        this->remoteDatasetId = comparisonSource->remoteDatasetId;
+        this->remoteSessionId = comparisonSource->remoteSessionId;
+        visivo::DatasetUsers::instance().acquire(this->backendUrl, this->remoteSessionId,
+                                                 this->remoteDatasetId);
+        this->m_cartesian = comparisonSource->m_cartesian;
+        this->m_skyCoordinates = comparisonSource->m_skyCoordinates;
+        this->m_pointTable = comparisonSource->m_pointTable;
+        this->m_tableFormat = comparisonSource->m_tableFormat;
+        this->m_snapshotMetadata = comparisonSource->m_snapshotMetadata;
+        this->m_componentMetadata = comparisonSource->m_componentMetadata;
+        this->m_serverSideRendering = comparisonSource->m_serverSideRendering;
+        this->m_tableRows = comparisonSource->m_tableRows;
+        this->schema = comparisonSource->schema;
+        this->rawHeaders = comparisonSource->rawHeaders;
+        this->entries = comparisonSource->entries;
+        this->unplacedEntries = comparisonSource->unplacedEntries;
+        this->m_currentOffset = comparisonSource->m_currentOffset;
+        this->m_sampleStep = comparisonSource->m_sampleStep;
+        this->m_samplePhase = comparisonSource->m_samplePhase;
+        this->m_sampleLimit = comparisonSource->m_sampleLimit;
+        this->m_pageSize = comparisonSource->m_pageSize;
+        this->m_totalCount = comparisonSource->m_totalCount;
+        this->activeFilters = comparisonSource->activeFilters;
+        this->m_appliedFilters.adopt(comparisonSource->m_appliedFilters.settled());
+        // The source's rows may still lack the columns its background query
+        // is bringing: this view takes them from it when they arrive.
+        this->m_awaitingHydration = comparisonSource->m_awaitingHydration;
+        this->detectVelocityColumns();
+    } else {
+        opened = this->m_cataloguePaths.size() > 1
+                ? client.openCatalogue(this->m_cataloguePaths, catFormat)
+                : client.openCatalogue(filepath, catFormat);
+    }
     // A VBT whose values look like the other byte order than its header says
     // (issue #165): ask, and open it again in the order chosen. A button's
     // answer is remembered, and the automatic reopen after a session expiry
     // (autoReopenThenLoadMore, a client left at its default) sends it; after
     // Escape nothing is sent, and the backend reads the file as it does now.
-    if (opened.valid
+    if (!comparisonSource && opened.valid
         && visivo::askVbtByteOrder(this, backendUrl, filepath, opened.byteOrderWarning,
                                    opened.byteOrder, &this->m_byteOrderPromptMs)) {
         // The first answer's dataset is closed by the backend as the order
@@ -475,12 +728,20 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 ? client.openCatalogue(this->m_cataloguePaths, catFormat)
                 : client.openCatalogue(filepath, catFormat);
     }
-    if (!opened.valid) {
+    if (comparisonSource) {
+        const int loadedRows = static_cast<int>(entries.size() + unplacedEntries.size());
+        ui->labelStatus->setText(
+                u"Comparison view · %1 of %2 rows · shared backend dataset."_s
+                        .arg(loadedRows).arg(this->m_totalCount));
+    } else if (!opened.valid) {
         // Before the box: its reading time is not the open's ("Last 5 jobs").
         this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
-        // The opener's busy indicator is not up behind the box (#159).
-        const visivo::BusyPause box;
-        QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
+        this->m_openError = opened.error;
+        if (!this->m_openedByStep) {
+            // The opener's busy indicator is not up behind the box (#159).
+            const visivo::BusyPause box;
+            QMessageBox::critical(this, u"Catalogue Error"_s, opened.error);
+        }
         ui->labelStatus->setText(u"Load error: "_s + opened.error);
     } else {
         this->remoteDatasetId = opened.datasetId;
@@ -503,6 +764,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             && opened.path != filepath && this->m_cataloguePaths.size() <= 1)
             this->filepath = opened.path;
         visivo::rememberFieldNames(opened.components);
+        this->m_snapshotMetadata = opened.snapshot;
+        this->m_componentMetadata = opened.component;
         // Any catalogue the backend can draw (sky or cartesian), issue #83.
         this->m_serverSideRendering = opened.serverSideRenderingAvailable;
         this->m_tableRows = opened.numRows;
@@ -512,10 +775,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         // still matters for a re-open into a live window.
         if (this->m_copilot) {
             this->m_copilot->setDatasetId(this->remoteDatasetId);
+            this->m_copilot->setActionTarget(this->m_copilotRouteKey);
             CopilotActionRouter::instance()->registerTarget(
                     this->remoteDatasetId, this,
                     [this](const QList<QJsonObject> &acts) { this->applyCopilotActions(acts); },
-                    [this]() { this->undoCopilotActions(); });
+                    [this]() { this->undoCopilotActions(); }, this->m_copilotRouteKey);
         }
         this->schema.headers.clear();
         this->schema.fields.clear();
@@ -537,6 +801,41 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         BackendTabularQueryRequest qreq;
         qreq.datasetId = this->remoteDatasetId;
         qreq.randomSample = true;
+        if (opened.particles) {
+            // Bound first-paint cost by values, not only rows. Random sampling
+            // still spans the entire snapshot; later phases refine it.
+            constexpr int initialCellBudget = 850000;
+            const int fields = std::max(1, static_cast<int>(opened.fields.size()));
+            qreq.limit = std::clamp(initialCellBudget / fields, 10000, 100000);
+            qreq.limit = std::max(10000, qreq.limit / 5000 * 5000);
+            this->m_pageSize = qreq.limit;
+
+            // First paint needs positions and one meaningful scalar, not every
+            // run-specific field.  The deterministic random sample is queried
+            // again in the background below to hydrate its complete rows.
+            const auto appendField = [&qreq](const QString &name) {
+                if (!name.isEmpty() && !qreq.fields.contains(name))
+                    qreq.fields.append(name);
+            };
+            appendField(opened.xField);
+            appendField(opened.yField);
+            appendField(opened.zField);
+            const QStringList preferred{ u"rho"_s, u"density"_s, u"temperature"_s,
+                                         u"mass"_s, u"u"_s, u"sfr"_s, u"age"_s };
+            for (const QString &wanted : preferred) {
+                const auto it = std::find_if(
+                        opened.fields.cbegin(), opened.fields.cend(),
+                        [&wanted](const auto &field) {
+                            return field.name.compare(wanted, Qt::CaseInsensitive) == 0;
+                        });
+                if (it != opened.fields.cend()) {
+                    appendField(it->name);
+                    break;
+                }
+            }
+            hydrateParticleAttributes = qreq.fields.size() < opened.fields.size();
+            this->m_awaitingHydration = hydrateParticleAttributes;
+        }
         const auto subset = client.queryTabularCatalogue(qreq);
         this->m_sampleStep = subset.step;
         this->m_samplePhase = 1;
@@ -545,8 +844,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         if (!subset.valid || !parsed.valid) {
             const QString error = !subset.valid ? subset.error : parsed.errorMessage;
             this->m_openFailedAtMs = QDateTime::currentMSecsSinceEpoch();
-            const visivo::BusyPause box;
-            QMessageBox::critical(this, u"Catalogue Error"_s, error);
+            this->m_openError = error;
+            if (!this->m_openedByStep) {
+                const visivo::BusyPause box;
+                QMessageBox::critical(this, u"Catalogue Error"_s, error);
+            }
             ui->labelStatus->setText(u"Load error: "_s + error);
         } else {
             this->entries = parsed.entries;
@@ -607,6 +909,13 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     this->refreshCatalogueTable();
     this->applyPointTableLayout();
     this->choosePointTableDefaults();
+    if (hydrateParticleAttributes) {
+        // Let Qt present the lightweight scene first.  Attribute hydration is
+        // then ordinary asynchronous filtering with no filters: the fixed RNG
+        // returns the same row indices and the watcher atomically replaces the
+        // partial rows once all columns have arrived.
+        QTimer::singleShot(0, this, [this]() { this->startAttributeHydration(); });
+    }
 
     // ── Filter signal/slot connections ───────────────────────────────────────
     // Widgets (filterList, btnFilter*, filterStatusLabel, btnLoadMore) were
@@ -624,6 +933,28 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             filterableFields = this->schema.headers; // fallback: all fields
         }
 
+        const auto coordinateFields = [this]() {
+            const auto fieldFor = [this](const QString &key, const QString &fallback) {
+                if (key.startsWith(u"raw:"_s))
+                    return this->rawHeaders.value(key.mid(4).toInt(), fallback);
+                return fallback;
+            };
+            return QStringList{
+                    fieldFor(this->mapXKey, this->schema.xFieldName),
+                    fieldFor(this->mapYKey, this->schema.yFieldName),
+                    fieldFor(this->mapZKey, this->schema.zFieldName),
+            };
+        };
+        if (this->btnFilterAddSpatial) {
+            this->btnFilterAddSpatial->setEnabled(this->m_cartesian);
+            if (!this->m_cartesian) {
+                this->btnFilterAddSpatial->setToolTip(
+                        u"3-D region selection currently requires Cartesian coordinates."_s);
+            }
+        }
+        for (const BackendTabularFilter &filter : this->activeFilters)
+            this->filterList->addItem(filterDisplayText(filter));
+
         // Filter: Add
         QObject::connect(this->btnFilterAdd, &QPushButton::clicked, this,
                          [this, filterableFields]() {
@@ -632,8 +963,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  return;
                              }
                              this->activeFilters.push_back(*filter);
-                             this->filterList->addItem(QStringLiteral("%1 %2 %3").arg(
-                                     filter->field, filter->op, filter->value));
+                             this->filterList->addItem(filterDisplayText(*filter));
                              DiagnosticsManager::instance()->publish(
                                      DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
                                      QStringLiteral("Catalogue3D"),
@@ -641,6 +971,40 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                              .arg(filter->field, filter->op, filter->value),
                                      this->remoteDatasetId, this->remoteSessionId,
                                      QStringLiteral("filter"));
+                         });
+        // Named spatial selection over the complete Cartesian dataset.
+        QObject::connect(this->btnFilterAddSpatial, &QPushButton::clicked, this,
+                         [this, filterableFields, coordinateFields]() {
+                             std::array<double, 6> bounds{ -1.0, 1.0, -1.0, 1.0, -1.0, 1.0 };
+                             if (this->sourcePoints && this->sourcePoints->GetNumberOfPoints() > 0) {
+                                 double current[6];
+                                 this->sourcePoints->GetBounds(current);
+                                 bool valid = true;
+                                 for (int i = 0; i < 3; ++i)
+                                     valid = valid && std::isfinite(current[i * 2])
+                                             && std::isfinite(current[i * 2 + 1])
+                                             && current[i * 2] < current[i * 2 + 1];
+                                 if (valid)
+                                     std::copy(std::begin(current), std::end(current), bounds.begin());
+                             }
+                             QStringList fields = filterableFields;
+                             const QStringList coordinates = coordinateFields();
+                             for (auto it = coordinates.crbegin(); it != coordinates.crend(); ++it) {
+                                 fields.removeAll(*it);
+                                 fields.prepend(*it);
+                             }
+                             const auto filter = showSpatialFilterDialog(
+                                     this, fields, bounds,
+                                     visivo::selection::regionNames(this->activeFilters));
+                             if (!filter)
+                                 return;
+                             this->activeFilters.push_back(*filter);
+                             this->filterList->addItem(filterDisplayText(*filter));
+                             DiagnosticsManager::instance()->publish(
+                                     DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
+                                     u"Catalogue3D"_s,
+                                     u"Spatial selection added: "_s + filterDisplayText(*filter),
+                                     this->remoteDatasetId, this->remoteSessionId, u"filter"_s);
                          });
         // Filter: Edit on double-click
         QObject::connect(
@@ -653,20 +1017,33 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                     if (row < 0 || row >= static_cast<int>(this->activeFilters.size())) {
                         return;
                     }
-                    const auto updated =
-                            showAddFilterDialog(this, filterableFields, &this->activeFilters[row]);
+                    const BackendTabularFilter &current = this->activeFilters[row];
+                    std::optional<BackendTabularFilter> updated;
+                    if (current.isSpatial()) {
+                        std::array<double, 6> bounds{ -1.0, 1.0, -1.0, 1.0, -1.0, 1.0 };
+                        if (this->sourcePoints && this->sourcePoints->GetNumberOfPoints() > 0) {
+                            double currentBounds[6];
+                            this->sourcePoints->GetBounds(currentBounds);
+                            std::copy(std::begin(currentBounds), std::end(currentBounds),
+                                      bounds.begin());
+                        }
+                        updated = showSpatialFilterDialog(
+                                this, filterableFields, bounds,
+                                visivo::selection::regionNames(this->activeFilters, row),
+                                &current);
+                    } else {
+                        updated = showAddFilterDialog(this, filterableFields, &current);
+                    }
                     if (!updated) {
                         return;
                     }
                     this->activeFilters[row] = *updated;
-                    item->setText(QStringLiteral("%1 %2 %3")
-                                          .arg(updated->field, updated->op, updated->value));
+                    item->setText(filterDisplayText(*updated));
                     DiagnosticsManager::instance()->publish(
                             DiagnosticsLevel::Info, DiagnosticsCategory::Remote,
                             QStringLiteral("Catalogue3D"),
-                            QStringLiteral("Filter [%1] edited: %2 %3 %4")
-                                    .arg(row)
-                                    .arg(updated->field, updated->op, updated->value),
+                            QStringLiteral("Filter [%1] edited: %2")
+                                    .arg(row).arg(filterDisplayText(*updated)),
                             this->remoteDatasetId, this->remoteSessionId,
                             QStringLiteral("filter"));
                 });
@@ -733,6 +1110,33 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                                  u"(WebXR page), refined by the backend when still."_s);
             QObject::connect(actionVr, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::openInVrHeadset);
+            auto *actionCompare = toolsMenu->addAction(u"Compare Quantity…"_s);
+            actionCompare->setToolTip(
+                    u"Open another physical quantity of these simulation rows with a linked "
+                    u"camera and selection, without reopening the backend dataset."_s);
+            actionCompare->setEnabled(this->m_pointTable && !this->remoteDatasetId.isEmpty());
+            QObject::connect(actionCompare, &QAction::triggered, this,
+                             &vtkWindowCatalogue3D::openQuantityComparison);
+            auto *actionSelectionDiagnostics = toolsMenu->addAction(
+                    u"Selection Diagnostics…"_s);
+            actionSelectionDiagnostics->setToolTip(
+                    u"Exact histogram and statistics for the complete population matching "
+                    u"the active scalar and spatial selections."_s);
+            actionSelectionDiagnostics->setEnabled(
+                    this->m_cartesian && !this->remoteDatasetId.isEmpty());
+            QObject::connect(actionSelectionDiagnostics, &QAction::triggered, this, [this]() {
+                // The population of the rows on screen: the applied filters,
+                // followed as they change, not the list being edited.
+                auto *dialog = new SimulationDiagnosticsDialog(
+                        this->backendUrl, this->backendToken, this->remoteSessionId,
+                        this->remoteDatasetId, this->numericColumns(),
+                        this->m_appliedFilters.filters(), this);
+                QObject::connect(this, &vtkWindowCatalogue3D::appliedFiltersChanged, dialog,
+                                 &SimulationDiagnosticsDialog::setFilters);
+                dialog->show();
+                dialog->raise();
+                dialog->activateWindow();
+            });
             // The sources with no distance, left out of the scene (issue #265).
             this->m_actionUnplaced = toolsMenu->addAction(u"Unplaced Sources…"_s);
             this->m_actionUnplaced->setToolTip(
@@ -787,6 +1191,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &QAction::setChecked);
     QObject::connect(ui->actionResetCamera, &QAction::triggered, this,
                      &vtkWindowCatalogue3D::resetCamera);
+    visivo::installCameraPresetMenu(this, [this](double azimuth, double elevation) {
+        this->applyCameraPreset(azimuth, elevation);
+    });
     // Deselecting: this, Esc, or a click on empty space (onMouseEvent). Also
     // on the window itself, not only in the menu: the macOS menu bar does not
     // take Esc as a key equivalent.
@@ -803,8 +1210,24 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         QObject::connect(this, &vtkWindowCatalogue3D::sourceSelectionChanged, clear,
                          [clear](int idx) { clear->setEnabled(idx >= 0); });
     }
-    QObject::connect(this->comboGeometry, &QComboBox::currentIndexChanged, this,
-                     [this](int) { this->updateGeometryMode(); });
+    QObject::connect(this->comboGeometry, &QComboBox::currentIndexChanged, this, [this](int) {
+        // The Gaussian default size (a quarter of the slider's) is the
+        // splats'; points drawn at it were one pixel wide. While the user has
+        // not moved the slider, it follows the shape.
+        if (this->m_sliderAutomatic) {
+            const int value = ParticleSplatDefaults::automaticSliderValue(
+                    this->comboGeometry->currentText() == u"Gaussian splats"_s,
+                    ui->sliderScale->value());
+            if (value != ui->sliderScale->value()) {
+                // Quietly: updateGeometryMode below restyles once with it
+                // (scaleChanged would restyle the old shape first), and the
+                // shape's broadcast to linked views carries the slider too.
+                const QSignalBlocker quiet(ui->sliderScale);
+                ui->sliderScale->setValue(value);
+            }
+        }
+        this->updateGeometryMode();
+    });
     QObject::connect(this->m_rtLightCheck, &QCheckBox::toggled, this,
                      [this](bool) { this->updateGeometryMode(); });
     QObject::connect(this->comboSizeMode, &QComboBox::currentIndexChanged, this,
@@ -823,7 +1246,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->hoveredIndex  = -1;
         // Same rows, only turned: the selected source stays selected (#298).
         if (!this->entries.empty()) {
-            this->buildScene();
+            this->buildScene(SnapshotTimelineSteps::Rebuild::Placement);
             this->buildLabels();
         }
         this->refreshSelectionAfterReplacement();
@@ -886,10 +1309,13 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleBoundingBox);
     QObject::connect(this->chkShowShells, &QCheckBox::toggled, this,
                      &vtkWindowCatalogue3D::toggleShells);
+    this->setupComparisonLink(comparisonSource);
+    this->setupSnapshotTimeline(comparisonSource);
 }
 
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
 {
+    this->teardownComparisonLink();
     if (this->m_markerObserverTag)
         this->renderer->RemoveObserver(this->m_markerObserverTag);
     delete ui;

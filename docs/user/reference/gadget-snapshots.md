@@ -15,6 +15,7 @@ header.
 | One file (`snap_010`) | the file |
 | Several files (`snapdir_010/snap_010.0` … `.N`) | any one of the files, or the `snapdir_010` folder; all the files are read together |
 | HDF5 (`snap_010.hdf5`, `snap_010.0.hdf5` …) | as above |
+| SubFind (`groups_010/sub_010.0` …) | any file in the group catalogue; choose **FoF groups** or **subhalos** |
 
 Binary format 1 (no block names) and format 2 (named blocks) are both read,
 in either byte order. If a file of a multi-file snapshot is missing, or the
@@ -28,6 +29,32 @@ When you open a snapshot, a dialog asks which component to open: *gas*,
 listed when the run has them). Each opens in its own window, named
 *snapshot · type* (for example *snap_010.0 · gas*), and is listed in
 *Session Data* and *Recent* under that name.
+
+### FoF groups and SubFind subhalos
+
+A SubFind group catalogue opens as objects rather than particles. FoF groups
+start as spherical markers sized by `rvir` and coloured by `mvir`; subhalos use
+their half-mass radius and mass when those blocks are present. Use **Size by**
+and **Colour by** to select R500/R2500 or another mass definition instead.
+SubFind defines these radii against the **mean background density** of the
+universe, not the critical density many other catalogues use: `rvir` is
+relative to the mean background density, `r500` and `r2500` enclose 500 and
+2500 times it. The Size list, Source Info and the status line say so next to
+each radius.
+
+Select a marker or table row to inspect its physical properties. Double-click
+the marker (in the Local, Remote or ray-traced view) or its table row to
+centre the camera on it and frame 1.25 times its radius. The radius the
+markers are sized by is used when it is one of them; otherwise `rvir`, then
+R500/R2500 (half-mass radius or Rmax for a subhalo). The camera keeps the
+direction it looks from. A line naming the target and the radius used
+appears in the window's status bar for a few seconds and stays in the
+Inspector's selection line (also when the view was already framed). A row highlighted from another tool
+over SAMP is only recentred, at the same distance, and never reframed.
+
+The Inspector states that the dataset is a SubFind catalogue and distinguishes
+FoF groups from subhalos. Stored code units and their kpc/M☉/km s⁻¹ conversions
+are shown alongside the other Gadget metadata.
 
 ## Columns
 
@@ -66,19 +93,81 @@ not: its lengths and velocities are not scaled by a.
 
 A block whose particle types cannot be told from its size (for example,
 equal numbers of gas and dark-matter particles in a single file) is left out
-rather than guessed. The snapshot's information lists it and says why.
+rather than guessed. So is a block whose `INFO` entry does not match its size
+or names a type the reader does not know. The snapshot's information and the
+file browser list it and say why; the other blocks open as usual.
 
 The copilot reports the snapshot's redshift, scale factor, box size and
 cosmology, the units of each column, and the factor that converts each one
 to physical units: kpc (× a/h), M☉ (/h), and peculiar km/s (× √a).
 
+A large particle table starts as Gaussian splats 0.75 mean particle spacings
+wide, with an opacity that falls as the cloud gets deeper. In the local 3-D
+view, above about 100,000 particles in a cube the picture comes out brighter
+than nominal (about twice at a million particles, four and a half times at 10
+million), so the local view's splat brightness is not comparable between
+tables of different size; use a [projected map](raytraced-particles.md) for
+that. The server-rendered (*Remote*) view, and a headset that has a float
+target at the default splat size, have no such floor: there the same field
+looks the same from 100,000 or 30 million particles at one intensity. Lower
+**Splat size** if dense regions saturate. The whole slider changes the size,
+in the Local and Remote views alike: splats from 0.25 to 12 on the scale of
+the 0.75 above (3 at the slider's default), points from 1 to 16 pixels.
+Switching the shape to *Point* restores the default size, as long as you have
+not moved the slider.
+
 ## Rendering and analysis
 
-You can use a particle type wherever you can use a VBT point table: filters and
-colour by any column, the remote 3-D view on the backend,
-[ray-traced particles](raytraced-particles.md), the [VR headset](vr.md), and
-the *Previous* and *Next* snapshot buttons in the headset, which step through
-`snapdir_000`, `snapdir_001` … (or `snap_000`, `snap_001` … in one folder)
-and keep the same particle type.
+A particle type works wherever a VBT point table does: filters and colour by
+any column, the *Camera* presets, the remote 3-D view on the backend,
+[ray-traced particles](raytraced-particles.md) and the [VR headset](vr.md),
+whose *Previous* and *Next* buttons step through the numbered outputs. The
+3-D regions and *Selection Diagnostics…* described in
+[Catalogues and HiPS](catalogues-hips.md#3-d-regions-and-selection-diagnostics)
+evaluate every particle of the type, not only the loaded sample.
+
+In a cosmological snapshot the box is periodic: a box or sphere selection near
+one face also takes the particles just across the opposite face. A run that
+does not say whether it is periodic is taken as periodic when it is comoving,
+which is wrong for a zoom or isolated run in comoving coordinates; the
+administrator can set `periodic=0` in `VISIVO_GADGET_UNITS`
+([Configuration](../../technical/configuration.md)).
+
+### Move through simulation time
+
+When the backend finds other numbered outputs beside the open one
+(`snap_000`, `snap_001` … or `snapdir_000/snap_000.0` …), a **Snapshot
+Timeline** card appears in the Visualization panel with the output number,
+its position in the series, the time and the redshift. **Previous**, **Next**,
+the slider and **Play** move through the series with the same particle type.
+Outputs without that type (an early output with no stars yet), or that cannot
+be read, are skipped, and the card says how many. A catalogue opened from
+several files at once has no timeline.
+
+Each linked quantity window moves with the step and keeps its quantity (by
+column name), colour map, stretch, representation, size, render budget,
+camera and position. The colour range is recomputed for the new output. A
+missing quantity, or an output that fails to open, is reported in the status
+bar. The selection is cleared at every step: a row in one output is not
+claimed to be the same particle in the next.
+
+### Compare physical quantities
+
+*Tools ▸ Compare Quantity…* opens another view of the **same loaded
+particles**, coloured by a different quantity (for example `rho` beside
+`temperature`). The comparison card at the top of the Visualization panel
+names the view's quantity and offers *Add another quantity…*. In *Visual
+Encoding*, **Colour by** chooses the quantity, **Colormap** only the palette,
+and **Range and scale…** the view's range and stretch.
+
+- **Linked** (on by default): the views share camera, selection, shape, size,
+  render budget and ray-traced light. Quantity, colour map, range and stretch
+  stay per view. Turn it off to make one view `UNLINKED`.
+- **Match rendering** (on by default): turn it off to keep camera and
+  selection linked but let shape, size, budget and light differ.
+- A filter or *Load more* in one view keeps the group's camera; *Reset
+  Camera* frames the new rows in every view.
+- A view drawn on the backend (*View ▸ Rendering ▸ Remote*) follows the
+  group's camera but does not lead it; switch it to *Local* to lead.
 
 Details: [technical notes](../../technical/design/gadget-snapshots.md).

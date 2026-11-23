@@ -68,9 +68,11 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from ..point_splat import SPLAT_RULES
+from ..periodic import box_inside, selection_period, separation
+from ..point_splat import SPLAT_RULES, splat_opacity, vtk_splat_shader
 from ..point_sample import _Q, _STAT_CHUNK, _colour_stats, place_rows, quantise64
-from ._common import SessionStats, _build_color_tf, _parse_tf_points, set_camera
+from ._common import (SessionStats, _build_color_tf, _parse_tf_points, camera_preset,
+                      set_camera)
 from ._stereo_points import PointStereoMixin, _vtk_matrix
 from ._window import (RenderThreadError, new_offscreen_window, offscreen_kind,
                       render_executor)
@@ -227,31 +229,62 @@ def _widened(lo: float) -> float:
 
 def _box_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
     """A box filter (issue #259, the headset's box selection):
-    ``{"box": {"fields": [x, y, z], "min": [...], "max": [...]}, "op":
-    "inside" | "outside"}``: the rows inside the box (bounds included), or
-    those outside it."""
+    ``{"box": {"fields": [x, y, z], "min": [...], "max": [...], "period":
+    optional}, "op": "inside" | "outside"}``: the rows inside the box (bounds
+    included), or those outside it. On a periodic coordinate (the snapshot's
+    box, ``columns.column_periods``, or the ``period`` given) the box wraps round
+    the volume (app/periodic.py)."""
     box = f.get("box") or {}
     fields, lo, hi = box.get("fields") or [], box.get("min") or [], box.get("max") or []
     op = str(f.get("op", "inside"))
     if not (len(fields) == len(lo) == len(hi)) or not fields or op not in ("inside", "outside"):
         raise ValueError("A box filter is {box: {fields, min, max}, op: inside | outside}.")
+    periods = getattr(columns, "column_periods", None)
     inside = np.ones(len(rows), dtype=bool)
     for name, a, b in zip(fields, lo, hi):
         if name not in columns:
             raise ValueError(f"Unknown field: {name!r}")
-        col = np.asarray(columns[name][rows])
-        inside &= (col >= float(a)) & (col <= float(b))
+        inside &= box_inside(columns[name][rows], float(a), float(b),
+                             selection_period(box.get("period"), name, periods))
+    return inside if op == "inside" else ~inside
+
+
+def _sphere_mask(columns, f: dict, rows: np.ndarray) -> np.ndarray:
+    """A spherical selection in the units of its three coordinate fields,
+    by the nearest image on a periodic coordinate (see _box_mask)."""
+    sphere = f.get("sphere") or {}
+    fields = sphere.get("fields") or []
+    center = sphere.get("center") or []
+    radius = float(sphere.get("radius", 0.0))
+    op = str(f.get("op", "inside"))
+    if len(fields) != 3 or len(center) != 3 or not math.isfinite(radius) or radius <= 0 \
+            or op not in ("inside", "outside"):
+        raise ValueError(
+            "A sphere filter is {sphere: {fields: [x,y,z], center: [x,y,z], "
+            "radius: positive}, op: inside | outside}.")
+    periods = getattr(columns, "column_periods", None)
+    distance2 = np.zeros(len(rows), dtype=np.float64)
+    for name, origin in zip(fields, center):
+        if name not in columns:
+            raise ValueError(f"Unknown field: {name!r}")
+        delta = separation(columns[name][rows], float(origin),
+                           selection_period(sphere.get("period"), name, periods))
+        distance2 += delta * delta
+    inside = distance2 <= radius * radius
     return inside if op == "inside" else ~inside
 
 
 def _filter_mask(columns, filters: list[dict], rows: np.ndarray) -> np.ndarray:
     """The rows (of ``rows``) passing every filter. Numeric operators only: a
-    VBT holds numbers; or a box (:func:`_box_mask`). Unknown fields or
+    VBT holds numbers; or a box/sphere spatial predicate. Unknown fields or
     operators raise ValueError."""
     keep = np.ones(len(rows), dtype=bool)
     for f in filters:
         if "box" in f:
             keep &= _box_mask(columns, f, rows)
+            continue
+        if "sphere" in f:
+            keep &= _sphere_mask(columns, f, rows)
             continue
         name, op = str(f.get("field", "")), str(f.get("op", ""))
         if name not in columns:
@@ -285,14 +318,17 @@ def uniform_scale(placed):
     return placed
 
 
-def gaussian_splat(bounds, npts: int, size: int, intensity: int) -> tuple[float, float]:
+def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[float, float]:
     """Splat radius and per-splat opacity, as the desktop viewer derives them
     (vtkWindowCatalogue3D::updateGaussianSplats): radius = mean spacing ×
     size / 8, the spacing ∛(volume / N) of the box the points fill (a filter
-    that cuts a slab keeps it, as it keeps the density); opacity =
-    min(0.9, 20 / D) × intensity, clamped to [0.05, 0.9], D the splats along
-    the longest sightline (longest side / spacing: ∛N for a cube, as the
-    former VBT viewer had, and unchanged by a filter)."""
+    that cuts a slab keeps it, as it keeps the density); opacity is normalized
+    to 1.5 / D at the standard intensity, D the splats along the longest
+    sightline (longest side / spacing: ∛N for a cube, and unchanged by a
+    filter), unquantised (point_splat.splat_opacity with ``steps`` false):
+    the session adds its splats into a float target (issue #457), where N
+    splats give the same light for any N; in 8-bit steps, at least 8, a
+    table of 10 M rows came out 4.5 times too bright."""
     dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]]
     longest = max(max(dims), 1.0e-6)
     # A flat axis (points in a plane) counts as a thousandth of the longest.
@@ -300,8 +336,20 @@ def gaussian_splat(bounds, npts: int, size: int, intensity: int) -> tuple[float,
     spacing = math.cbrt(volume / max(npts, 1))
     radius = spacing * size / 8.0
     depth = max(longest / spacing, 1.0)
-    opacity = min(max(min(0.9, 20.0 / depth) * intensity / 100.0, 0.05), 0.9)
-    return radius, opacity
+    return radius, splat_opacity(depth, intensity, steps=False)
+
+
+def _float_target_pass():
+    """The renderer's passes drawn into a float32 target and clamped onto the
+    window (vtkToneMappingPass, Clamp; VTK 9.0 and later): splats of an
+    opacity below an 8-bit step add up there instead of being rounded away at
+    every addition. The clamp leaves what is within 0..1 (the background, the
+    box, the labels) as it was."""
+    import vtk
+    tone = vtk.vtkToneMappingPass()
+    tone.SetToneMappingType(vtk.vtkToneMappingPass.Clamp)
+    tone.SetDelegatePass(vtk.vtkRenderStepsPass())
+    return tone
 
 
 class PointRenderSession(PointStereoMixin):
@@ -514,6 +562,9 @@ class PointRenderSession(PointStereoMixin):
         self._polydata = vtk.vtkPolyData()
         self._lod_polydata = vtk.vtkPolyData()
         self._gauss_opacity = vtk.vtkPiecewiseFunction()
+        self._gauss_opacity.AddPoint(-1.0e15, 1.0)
+        self._gauss_opacity.AddPoint(1.0e15, 1.0)
+        self._float_pass = _float_target_pass()
         for lod, poly in ((False, self._polydata), (True, self._lod_polydata)):
             points = vtk.vtkPolyDataMapper()
             # The Gaussian mapper draws the same arrays and VTK shares their
@@ -692,16 +743,22 @@ class PointRenderSession(PointStereoMixin):
     def _apply_style_on_thread(self) -> None:
         if self.view.mode == "gaussian":
             bounds, count = self._splat_basis
-            radius, opacity = gaussian_splat(bounds, count, self.view.size, self.view.intensity)
-            self._gauss_opacity.RemoveAllPoints()
-            self._gauss_opacity.AddPoint(-1.0e15, opacity)
-            self._gauss_opacity.AddPoint(1.0e15, opacity)
+            radius, gain = gaussian_splat(bounds, count, self.view.size, self.view.intensity)
             for lod in (False, True):
                 # The radius is in the table's units; VTK scales a splat by
-                # the actor's matrix (uniform, see uniform_scale).
-                self._mappers[("gaussian", lod)].SetScaleFactor(
-                    radius / float(self._local_to_table[0, 0]))
+                # the actor's matrix (uniform, see uniform_scale). A drag's
+                # sample of every stride-th row carries the stride's light, so
+                # the view does not dim while it moves.
+                mapper = self._mappers[("gaussian", lod)]
+                mapper.SetScaleFactor(radius / float(self._local_to_table[0, 0]))
+                shader = vtk_splat_shader(gain * (self._lod_stride if lod else 1))
+                if (mapper.GetSplatShaderCode() or "") != shader:
+                    mapper.SetSplatShaderCode(shader)
+            self._renderer.SetPass(self._float_pass)
         else:
+            # Points write the depth a headset's frame reads back, which the
+            # float target's pass keeps in its own framebuffer.
+            self._renderer.SetPass(None)
             self._actor.GetProperty().SetPointSize(self.view.size)
         self._actor.SetMapper(self._mappers[(self.view.mode, self.view.interactive)])
         self._actor.GetProperty().SetOpacity(1.0)
@@ -755,6 +812,14 @@ class PointRenderSession(PointStereoMixin):
             # meanwhile, hands it back.
             set_camera(cam, command)
             self._renderer.ResetCameraClippingRange()
+        elif ctype == "camera_preset" and self._renderer is not None:
+            # The desktop's Camera menu (issues #390, #448): as for a volume
+            # session, the view is named, the scene fitted along it.
+            try:
+                camera_preset(self._renderer, command)
+            except ValueError as exc:
+                logger.warning("[point-render %s] camera_preset refused: %s",
+                               self.session_id[:8], exc)
         elif ctype == "set_interactive":
             self.view.interactive = bool(command.get("value", False))
             self._apply_style_on_thread()
@@ -914,6 +979,8 @@ class PointRenderSession(PointStereoMixin):
 
     def _close_on_thread(self) -> None:
         if self._render_window is not None:
+            if getattr(self, "_float_pass", None) is not None:
+                self._float_pass.ReleaseGraphicsResources(self._render_window)
             self._render_window.Finalize()
         self._render_window = self._renderer = None
         self._columns = {}

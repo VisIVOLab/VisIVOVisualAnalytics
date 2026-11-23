@@ -247,7 +247,17 @@ def _prepare(entry: dict, req: ParticleRenderRequest) -> dict:
     particles = {"positions": pos, "radius": radius, "intensity": light,
                  "frame": (origin, scale)}
     if req.mode == "light":
-        particles["colour"] = _colours(table.columns, rows, req.colour)
+        # The interactive GPU view can apply the point viewer's LUT itself.
+        # Keep the scalar instead of baking RGB: changing its range, scale or
+        # palette then needs no second pass over (and transfer of) the table.
+        # Stills and movies still receive RGB and use the reference renderer.
+        if getattr(req, "colour_values", False) and req.colour.field:
+            if req.colour.field not in table.columns:
+                raise ValueError(f"Unknown colour field: {req.colour.field!r}")
+            particles["value"] = np.asarray(table.columns[req.colour.field][rows],
+                                             dtype=np.float32)
+        else:
+            particles["colour"] = _colours(table.columns, rows, req.colour)
     elif req.colour_by == "colour" and req.colour.field:
         if req.colour.field not in table.columns:
             raise ValueError(f"Unknown colour field: {req.colour.field!r}")
@@ -421,11 +431,23 @@ _PREVIEW_LOCK = asyncio.Lock()
 _PREVIEW_WORK = threading.Lock()
 _PARTICLE_FIELDS = ("dataset_id", "x", "y", "z", "sky", "filters", "colour", "radius_field",
                     "radius_scale", "neighbours", "intensity_field", "intensity_log10",
-                    "intensity_power", "mode", "colour_by", "velocity")
+                    "intensity_power", "mode", "colour_by", "velocity", "colour_values")
+
+
+def _particle_key_fields(req: ParticleRenderRequest) -> dict:
+    """What in ``req`` shapes the prepared particles. A 3-D render whose
+    colours go to the client as the colour column's values (``colour_values``)
+    depends on the column alone: its palette, range and log scale are the
+    client's, and changing them must not prepare the particles again (the
+    smoothing lengths' neighbour search) nor abort a first load (#447)."""
+    fields = req.model_dump(include=set(_PARTICLE_FIELDS))
+    if fields.get("colour_values") and req.mode == "light" and req.colour.field:
+        fields["colour"] = {"field": req.colour.field}
+    return fields
 
 
 def _prepared(entry: dict, req: ParticleRenderRequest, token: str) -> dict:
-    fields = req.model_dump(include=set(_PARTICLE_FIELDS))
+    fields = _particle_key_fields(req)
     # The files' version too: a table rewritten under the same dataset id is
     # prepared again rather than drawn from the particles of the old one.
     key = token + dataset_identity(entry) + json.dumps(fields, sort_keys=True, default=str)
@@ -506,6 +528,10 @@ class ParticleDataRequest(ParticleRenderRequest):
     # moves its camera into that frame. False (a client that predates it):
     # the table's own coordinates, a float32 cast of them, as before.
     local_frame: bool = False
+    # Send the colour field itself to a current desktop client. Its GPU applies
+    # palette/range/log immediately; false preserves the RGB wire format for
+    # older consumers and tests of the reference rendering path.
+    colour_values: bool = False
 
 
 @router.post("/v1/particle_render/particles")
@@ -515,8 +541,9 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
     preview to sum the same kernels: little-endian float32 rows, their fields
     in ``X-Visivo-Particle-Fields``. A 3-D render's rows: position, size,
     emission at the kernel's peak (app/particle_raytrace.py,
-    emission_weights) and colour; a projected map's: position, size, mass at
-    the peak and the quantity its hue averages (0 without one)."""
+    emission_weights) and colour (RGB, or its scalar when ``colour_values``);
+    a projected map's: position, size, mass at the peak and the quantity its
+    hue averages (0 without one)."""
     from ..particle_raytrace import emission_weights  # noqa: PLC0415
     entry = _require_dataset(session, request.dataset_id)
     from .render import point_table_spec  # noqa: PLC0415
@@ -546,6 +573,13 @@ async def particle_render_particles(request: ParticleDataRequest, token: str = _
                      else np.nan_to_num(np.asarray(value, dtype=np.float32)))
             columns = [pos, radius[:, None], weight[:, None], value[:, None]]
             names = "x,y,z,r,w,v"
+        elif "value" in particles:
+            weight = emission_weights(particles["intensity"], radius, request.quantity)
+            # NaN stays NaN: the client colours it with the table's NaN colour,
+            # as the stills do (_colours); as 0 it looked like data (#447).
+            value = np.asarray(particles["value"], dtype=np.float32)
+            columns = [pos, radius[:, None], weight[:, None], value[:, None]]
+            names = "x,y,z,r,e,v"
         else:
             weight = emission_weights(particles["intensity"], radius, request.quantity)
             columns = [pos, radius[:, None], weight[:, None], particles["colour"]]

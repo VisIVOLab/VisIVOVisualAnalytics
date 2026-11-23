@@ -7,6 +7,7 @@ Restored after a router refactor dropped these routes while the desktop client
 import asyncio
 import base64
 import logging
+from typing import Any
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -117,6 +118,13 @@ class HiProductsRequest(BaseModel):
     # restricted to real signal rather than the whole noisy field.
     threshold_auto: bool = False
     rest_freq_hz: float | None = None
+    # Issue #401: the flux and HI mass of one region (a canonical image-frame
+    # region, 0-based full-resolution pixels, as /v1/regions/stats takes it),
+    # less the mean of a background region, with an error.
+    region: dict[str, Any] | None = None
+    background_region: dict[str, Any] | None = None
+    # Without distance_mpc: the Planck18 luminosity distance of this redshift.
+    redshift: float | None = None
 
 
 @router.post("/v1/analysis/hi-products/{dataset_id}", tags=["analysis"])
@@ -128,9 +136,12 @@ async def hi_products(
 ) -> dict:
     """HI column density + integrated HI mass from moment-0 (R-19).
 
-    Optically-thin N_HI [cm^-2] map summary and, when a distance is supplied, the
-    integrated HI mass [M_sun]. Requires a Jy/beam cube with a known beam and a
-    velocity spectral axis (or a rest frequency for a frequency axis)."""
+    Optically-thin N_HI [cm^-2] map summary and, when a distance (or a
+    redshift) is supplied, the integrated HI mass [M_sun]. With ``region`` the
+    response's ``region`` holds that region's flux in Jy km/s, background
+    subtracted when ``background_region`` is given, its error and HI mass
+    (issue #401). Requires a Jy/beam cube with a known beam and a velocity
+    spectral axis (or a rest frequency for a frequency axis)."""
     from ..compute import worker_hi_products  # noqa: PLC0415
 
     entry = _require_dataset(session, dataset_id)
@@ -140,7 +151,8 @@ async def hi_products(
         result = await asyncio.to_thread(
             worker_hi_products, entry["path"], request.channel_start, request.channel_end,
             request.distance_mpc, request.mask_enabled, request.threshold_value,
-            request.rest_freq_hz, request.threshold_auto)
+            request.rest_freq_hz, request.threshold_auto, request.region,
+            request.background_region, request.redshift)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -155,7 +167,10 @@ async def hi_products(
                 "mask_enabled": request.mask_enabled,
                 "threshold_value": request.threshold_value,
                 "threshold_auto": request.threshold_auto,
-                "rest_freq_hz": request.rest_freq_hz})
+                "rest_freq_hz": request.rest_freq_hz,
+                "region": request.region,
+                "background_region": request.background_region,
+                "redshift": request.redshift})
     return {"valid": True, "error": "", **result}
 
 

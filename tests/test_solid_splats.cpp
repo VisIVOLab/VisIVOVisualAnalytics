@@ -1,6 +1,7 @@
 #include "TestSolidSplats.h"
 
 #include "gui/SolidSplats.h"
+#include "gui/ParticleSplatDefaults.h"
 
 #include <QtTest/QtTest>
 
@@ -63,4 +64,64 @@ void TestSolidSplats::theTableMapsEverythingNaNIncludedToTheSolidColour()
     QCOMPARE(lut.nan[1], SolidSplats::kGreen);
     QCOMPARE(lut.nan[2], SolidSplats::kBlue);
     QVERIFY(lut.range[0] <= -1.0e15 && lut.range[1] >= 1.0e15);
+}
+
+void TestSolidSplats::gaussianDefaultsAvoidImmediateSaturation()
+{
+    QCOMPARE(ParticleSplatDefaults::initialSliderValue(), 25);
+    QCOMPARE(3.0 * ParticleSplatDefaults::initialSliderValue() / 100.0, 0.75);
+}
+
+void TestSolidSplats::gaussianOpacityAdaptsToSightlineDepth()
+{
+    using namespace ParticleSplatDefaults;
+    // Whole 8-bit steps of 1.5 / depth, half up, from 8 to 64.
+    QCOMPARE(opacityForDepth(1.0), 64.0 / 255.0);
+    QCOMPARE(opacityForDepth(30.0), 13.0 / 255.0);    // 12.75 steps
+    QCOMPARE(opacityForDepth(0.0), 64.0 / 255.0);
+    QCOMPARE(opacityForDepth(std::numeric_limits<double>::quiet_NaN()), 64.0 / 255.0);
+    // A million-row cube (depth 100, 3.8 steps) and a deep one (0.4 steps)
+    // keep at least eight steps: their dark colours still add something.
+    QCOMPARE(alphaStepsForDepth(100.0), kMinAlphaSteps);
+    QCOMPARE(alphaStepsForDepth(1000.0), kMinAlphaSteps);
+    QCOMPARE(opacityForDepth(1000.0), 8.0 / 255.0);
+    // A hair from a step's boundary: the same steps as the point session
+    // (backend test_point_render.py) and the VR page (layers.test.mjs).
+    QCOMPARE(alphaStepsForDepth(12.966), 30);
+    QCOMPARE(alphaStepsForDepth(6.4286), 59);
+    QCOMPARE(alphaStepsForDepth(6.3223), 61);
+    QCOMPARE(alphaStepsForDepth(6.0236), 64);
+    // The intensity, as the point session's control scales it.
+    QCOMPARE(alphaStepsForDepth(40.0, 70.0), 19);   // 19.125 steps
+}
+
+void TestSolidSplats::gaussianOpacityIsStoredOnItsStep()
+{
+    using namespace ParticleSplatDefaults;
+    // Every step survives VTK's truncating 8-bit store, also through float
+    // (its opacity table is float), and so does rounding.
+    for (int k = kMinAlphaSteps; k <= kMaxAlphaSteps; ++k) {
+        const double value = vtkOpacityValue(k / 255.0);
+        QCOMPARE(storedAlphaSteps(value), k);
+        QCOMPARE(storedAlphaSteps(double(float(value))), k);
+        QCOMPARE(int(std::lround(value * 255.0)), k);
+    }
+    // The former floor, 0.005, was stored as one step: 22 % low.
+    QCOMPARE(storedAlphaSteps(0.005), 1);
+    // No depth gives an effective alpha below eight steps.
+    for (double depth = 1.0; depth < 1.0e6; depth *= 1.37)
+        QVERIFY(storedAlphaSteps(vtkOpacityValue(opacityForDepth(depth))) >= kMinAlphaSteps);
+}
+
+void TestSolidSplats::splatSizeDefaultDoesNotCarryOverToPoints()
+{
+    using namespace ParticleSplatDefaults;
+    // The automatic Gaussian size leaves with the splats and comes back with them.
+    QCOMPARE(automaticSliderValue(false, initialSliderValue()), kDefaultSliderValue);
+    QCOMPARE(automaticSliderValue(true, kDefaultSliderValue), initialSliderValue());
+    // Already right for the shape, or another value: kept.
+    QCOMPARE(automaticSliderValue(true, initialSliderValue()), initialSliderValue());
+    QCOMPARE(automaticSliderValue(false, kDefaultSliderValue), kDefaultSliderValue);
+    QCOMPARE(automaticSliderValue(false, 60), 60);
+    QCOMPARE(automaticSliderValue(true, 60), 60);
 }

@@ -4155,7 +4155,11 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
         // so they know the click registered while the 3-5 s WebRTC
         // negotiation happens.
         this->m_remoteSwitchInProgress = true;
-        // Retry belongs to a stream that dropped; this switch replaces it.
+        // The user's own switch takes over an automatic reconnection (whose
+        // new session is asked for through here, not by the user).
+        if (fromUserAction)
+            this->cancelRemoteReconnect();
+        // Reconnect belongs to a stream that dropped; this switch replaces it.
         if (this->m_remoteRenderBannerRetry)
             this->m_remoteRenderBannerRetry->hide();
         // A new switch starts without the progress of an earlier one.
@@ -4303,6 +4307,12 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
                 this->m_remoteReplacement.ended();
                 if (this->m_remoteSwitchProgressTimer)
                     this->m_remoteSwitchProgressTimer->stop();
+                // The banner was just set to "Connecting to remote rendering…"
+                // above, and no Live will come to put it back: it stayed on
+                // that line over a live stream for good (issue #411).
+                if (this->m_remoteRenderBannerLabel)
+                    this->m_remoteRenderBannerLabel->setText(
+                            u"Remote rendering (GPU on backend) - click ✕ to switch to Local"_s);
                 if (this->m_localRecommendRemoteBanner)
                     this->m_localRecommendRemoteBanner->setVisible(false);
                 if (this->m_localRecommendRemoteSwitchBtn) {
@@ -4314,6 +4324,8 @@ void vtkWindowCube::applyRenderMode(RenderMode requested, bool fromUserAction)
             }
         }
     } else {
+        // Local now: no attempt to bring the remote stream back behind it.
+        this->cancelRemoteReconnect();
         if (this->m_renderStack) {
             this->m_renderStack->setCurrentIndex(0);
         }
@@ -8027,6 +8039,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->m_actDeleteRegion);
     add(u"Regions"_s, self->m_actUndoRegion);
     add(u"Regions"_s, self->m_actRedoRegion);
+    add(u"Regions"_s, self->m_actHiDistance);
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
 

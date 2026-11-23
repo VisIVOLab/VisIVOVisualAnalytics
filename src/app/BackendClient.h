@@ -30,6 +30,7 @@
 #include <atomic>
 #include <limits>
 #include <map>
+#include <optional>
 #include <vector>
 
 namespace visivo {
@@ -219,6 +220,9 @@ struct BackendOpenDatasetResult
     double beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double beamPaDeg{ 0.0 };
+    /// The cube has one beam per channel (a BEAMS table); the beam above is
+    /// the header's (issue #401).
+    bool beamPerChannel{ false };
     /// Size-aware loading policy (added for Pattern B).
     /// ``recommendedLoadMode`` is "auto_full" when the cube fits the
     /// laptop's RAM/VTK budget comfortably, or "preview_only" when the
@@ -562,6 +566,24 @@ struct BackendCatalogueInfo
     QString path;
     /// A snapshot's particle types, (name, path): each opens on its own.
     QList<QPair<QString, QString>> components;
+    /// Gadget snapshot and selected particle-type metadata. In particular,
+    /// component contains the stored units and physical conversion factors.
+    QJsonObject snapshot;
+    QJsonObject component;
+};
+
+/// Numbered snapshot files surrounding an open particle table.
+struct BackendPointSeriesResult
+{
+    bool valid{ false };
+    QString error;
+    QStringList paths;
+    QVector<int> numbers;
+    /// Per output: whether it can be opened with the particle type shown
+    /// (issue #446). Empty from an older backend: every output can.
+    QVector<bool> available;
+    int index{ -1 };
+    int count{ 0 };
 };
 
 struct BackendCatalogueSubset
@@ -617,6 +639,17 @@ struct BackendTabularFilter
     QString field;
     QString op;    // "=", "!=", ">", ">=", "<", "<=", "contains", "in"
     QString value;
+    /// Empty for a field predicate; "box" or "sphere" for a spatial predicate.
+    QString shape;
+    QString name;
+    QStringList fields;
+    std::array<double, 3> minimum{ 0.0, 0.0, 0.0 };
+    std::array<double, 3> maximum{ 0.0, 0.0, 0.0 };
+    std::array<double, 3> centre{ 0.0, 0.0, 0.0 };
+    double radius{ 0.0 };
+
+    bool isSpatial() const { return shape == QStringLiteral("box")
+                                    || shape == QStringLiteral("sphere"); }
 };
 
 struct BackendTabularQueryRequest
@@ -624,6 +657,10 @@ struct BackendTabularQueryRequest
     QString datasetId;
     int limit{ 100000 };
     int offset{ 0 };
+    /// Empty requests every field.  A first-paint query can project only the
+    /// coordinates and initial visual quantity, then hydrate the same stable
+    /// sample in the background.
+    QStringList fields;
     std::vector<BackendTabularFilter> filters;
     QString sortField;
     QString sortDirection; // "asc" or "desc", empty = no sort
@@ -651,6 +688,37 @@ struct BackendTabularQueryResponse
     std::map<QString, std::vector<double>> columns;
     QStringList fieldNames;
     int numRows{ 0 };
+};
+
+struct BackendCatalogueDiagnosticsRequest
+{
+    QString datasetId;
+    QString field;
+    QString weightField;
+    int bins{ 64 };
+    std::vector<BackendTabularFilter> filters;
+};
+
+struct BackendCatalogueDiagnosticsResponse
+{
+    bool valid{ false };
+    QString error;
+    QString field;
+    QString fieldUnit;
+    QString weightField;
+    QString weightUnit;
+    QString weighting;
+    QStringList selection;
+    qint64 selectedRows{ 0 };
+    qint64 finiteRows{ 0 };
+    double minimum{ 0.0 };
+    double maximum{ 0.0 };
+    double mean{ 0.0 };
+    double stddev{ 0.0 };
+    std::optional<double> weightedMean;
+    std::optional<double> weightSum;
+    QVector<double> binEdges;
+    QVector<double> counts;
 };
 
 // ── VBT (VisIVO Binary Table) ─────────────────────────────────────────────────
@@ -2388,6 +2456,10 @@ public:
     /// catalogue (e.g. the spatial subtables of a cosmological snapshot).
     BackendCatalogueInfo openCatalogue(const QStringList &paths,
                                        const QString &format = QStringLiteral("csv"));
+    /// POST /v1/points/series — discover adjacent numbered simulation snapshots.
+    BackendPointSeriesResult requestPointSeries(const QString &datasetId) const;
+    /// Parse the route response; public so the client contract is unit-tested.
+    static BackendPointSeriesResult parsePointSeries(const QJsonObject &object);
     /// @p returnMessage: stage the file and hand the SAMP message back
     /// (mtype, params) for the client to send, rather than queueing it.
     BackendSampSendResult sendFitsToSamp(const QString &path,
@@ -2440,6 +2512,10 @@ public:
                                         int channelStart, int channelEnd) const;
     BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
     BackendTabularQueryResponse queryTabularCatalogue(const BackendTabularQueryRequest &req) const;
+    /// @p abort, when given and set, drops the request at once (Cancel).
+    BackendCatalogueDiagnosticsResponse catalogueDiagnostics(
+            const BackendCatalogueDiagnosticsRequest &req,
+            const std::atomic_bool *abort = nullptr) const;
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;
@@ -3333,7 +3409,11 @@ private:
                            int *statusOut = nullptr,
                            /// False on a 429 retry: the "started" line belongs to the
                            /// attempt the user triggered, not to each retry of it.
-                           bool announceStart = true) const;
+                           bool announceStart = true,
+                           /// As performGet's: set, the reply is dropped at once
+                           /// (no 401 retry), so a cancelled caller's worker
+                           /// thread is free again.
+                           const std::atomic_bool *abort = nullptr) const;
     std::chrono::milliseconds requestTimeoutFor(const QUrl &url) const;
 
     static QByteArray decodePayload(const QJsonObject &object, const QString &base64Field,

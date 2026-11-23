@@ -24,16 +24,17 @@ the two orders, which tells the order. Every marker is checked.
   name in that order whose size it has; a record that matches none is kept as
   ``BLK<n>``.
 * Format 2 puts an 8-byte record before each block: its 4-character name and
-  the size of the block that follows. Any block is read, known or not.
+  the size of the block that follows. Its optional INFO block declares dtype,
+  dimensions and particle types, so run-specific fields can be read safely.
+  Without INFO, unknown blocks are reported but not guessed as integer/float.
 
 A block holds its types one after the other, type 0 first, and only the types
-it is for. Which types those are is inferred from the sizes: the block's
-length in every file must be one element size times the particles of one set
-of types in that file (:data:`TYPE_SETS`, the known blocks' own set first).
-Files with different mixtures of types leave one answer; a block whose size
-fits no set is left out and named in :attr:`Snapshot.skipped`. The element
-type follows from the positions (float or double) and from the block (IDs are
-integers); a block of several values per particle becomes several columns.
+it is for. Known blocks' declared types are checked against their sizes in
+every file. When a known block's declared shape does not fit, the consistent
+type set can be recovered from all files together; an unknown block without
+an INFO declaration is left out and named in :attr:`Snapshot.skipped` because
+its numeric dtype cannot be recovered safely. A block of several values per
+particle becomes several columns.
 
 Masses absent from the MASS block come from the header's mass table: a column
 of that constant.
@@ -56,11 +57,14 @@ the entropy K = kT / n_e^(2/3) in keV cm^2.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 import struct
+import threading
+from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -70,6 +74,7 @@ import numpy as np
 REF_SEP = "::gadget-type="
 NTYPES = 6
 TYPE_NAMES = ("gas", "dark matter", "disk", "bulge", "stars", "black holes")
+SUBFIND_TYPE_NAMES = ("FoF groups", "subhalos", "IDs", "large groups", "type 4", "type 5")
 HEADER_BYTES = 256
 
 # ── Physical constants (cgs) ─────────────────────────────────────────────────
@@ -398,12 +403,47 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "CLDX": ((0,), 1, ("cold_fraction",)),
     # SubFind group catalogues (issue #392): groups are "type" 0, subhalos 1.
     "GPOS": ((0,), 3, ("x", "y", "z")),
+    "MTOT": ((0,), 1, ("group_mass",)),
     "MVIR": ((0,), 1, ("mvir",)),
     "RVIR": ((0,), 1, ("rvir",)),
+    "M500": ((0,), 1, ("m500",)),
+    "R500": ((0,), 1, ("r500",)),
+    "M25K": ((0,), 1, ("m2500",)),
+    "R25K": ((0,), 1, ("r2500",)),
+    "MGAS": ((0,), 1, ("gas_mass",)),
+    "MSTR": ((0,), 1, ("stellar_mass",)),
+    "TGAS": ((0,), 1, ("gas_temperature",)),
+    "LGAS": ((0,), 1, ("gas_luminosity",)),
+    "MCON": ((0,), 1, ("contaminating_mass",)),
     "SPOS": ((1,), 3, ("x", "y", "z")),
+    "SVEL": ((1,), 3, ("vx", "vy", "vz")),
+    "SCM": ((1,), 3, ("centre_of_mass_x", "centre_of_mass_y", "centre_of_mass_z")),
+    "SPIN": ((1,), 3, ("spin_x", "spin_y", "spin_z")),
+    "MSUB": ((1,), 1, ("subhalo_mass",)),
+    "VMAX": ((1,), 1, ("vmax",)),
+    "RMAX": ((1,), 1, ("rmax",)),
+    "RHMS": ((1,), 1, ("half_mass_radius",)),
+    "SMST": ((1,), 1, ("stellar_mass",)),
+    "SSFR": ((1,), 1, ("star_formation_rate",)),
+    "SAGE": ((1,), 1, ("stellar_age",)),
+    "SZ": ((1,), None, ("metallicity",)),
+    "GLEN": ((0,), 1, ("group_length",)),
+    "GOFF": ((0,), 1, ("group_offset",)),
+    "NSUB": ((0,), 1, ("num_subhalos",)),
+    "FSUB": ((0,), 1, ("first_subhalo",)),
+    "NCON": ((0,), 1, ("num_contaminated",)),
+    "SLEN": ((1,), 1, ("subhalo_length",)),
+    "SOFF": ((1,), 1, ("subhalo_offset",)),
+    "SSUB": ((1,), 1, ("subhalo_parent",)),
+    "MBID": ((1,), 1, ("most_bound_id",)),
+    "GRNR": ((1,), 1, ("group_number",)),
 }
+#: Columns that are positions in the box: periodic in a cosmological run.
+PERIODIC_COLUMNS = frozenset({"x", "y", "z", "centre_of_mass_x", "centre_of_mass_y",
+                              "centre_of_mass_z"})
 #: Blocks of integers (read as unsigned of 4 or 8 bytes).
-INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB"}
+INT_BLOCKS = {"ID", "BHPC", "GLEN", "GOFF", "SLEN", "SOFF", "SSUB", "NSUB", "FSUB",
+              "NCON", "MBID", "GRNR"}
 #: An inferred block holds at most this many values per particle: beyond it a
 #: set of a few particles (two black holes) would "explain" almost any size.
 MAX_DIMS = 32
@@ -478,8 +518,8 @@ def infer_block(name: str, lengths: list[tuple[tuple[int, ...], int]], mass,
     length there)`` for EVERY file of the snapshot (0 where the file has no
     such block): all of them together decide.
 
-    A known block is read with its own types and width. Any other (or a
-    known one whose size does not fit) is tried for every set of the types
+    A known block is read with its own types and width. A known block whose
+    size does not fit is tried for every set of the types
     present: a set must explain the size in every file with a whole number of
     values per particle, at most MAX_DIMS. Exactly one such reading is taken
     (flagged ``inferred``); none, or several (equal gas and dark-matter counts
@@ -488,6 +528,9 @@ def infer_block(name: str, lengths: list[tuple[tuple[int, ...], int]], mass,
     worse than a missing one."""
     present = tuple(t for t in range(NTYPES) if any(np_[t] for np_, _ in lengths))
     known = BLOCKS.get(name)
+    if known is None:
+        return None, ("unknown binary block: its bytes do not declare whether values are "
+                      "integers or floats; add an explicit block schema before reading it")
     if known is not None:
         types = tuple(t for t in _resolve_types(known[0], None, mass) if t in present)
         element = _element(name, types, lengths, fsize) if types else None
@@ -594,6 +637,10 @@ class UnitSystem:
     #: Lengths and masses in units of 1/h.
     hubble_units: bool = True
     source: str = "Gadget defaults"
+    #: The box is periodic: a Gadget-4 HDF5 file's ``Config/PERIODIC``, or
+    #: ``periodic=`` in VISIVO_GADGET_UNITS; None when nothing states it
+    #: (then a comoving run is taken as periodic, see Component.periods).
+    periodic: bool | None = None
 
     def describe(self) -> dict:
         return {"length_cm": self.length_cm, "mass_g": self.mass_g,
@@ -613,9 +660,9 @@ def _unit_name(value: float, names: dict, base: str) -> str:
     return f"{value:.6g} {base}"
 
 
-def parameter_file(first_file: str | Path) -> Path | None:
-    """The run's parameter file Gadget writes (``parameters-usedvalues`` ...)
-    beside the snapshot or one folder up, or None."""
+def _parameter_candidate(first_file: str | Path) -> Path | None:
+    """The first parameter file beside the snapshot or one folder up,
+    wherever it lies."""
     folder = Path(first_file).parent
     for where in (folder, folder.parent):
         for name in _PARAM_FILES:
@@ -623,6 +670,34 @@ def parameter_file(first_file: str | Path) -> Path | None:
             if p.is_file():
                 return p
     return None
+
+
+def _within_env_roots(path: Path) -> bool:
+    """Whether ``path`` (resolved, so a symbolic link counts where it leads)
+    lies in VISIVO_DATA_ROOTS; True when no roots are set. The same rule as
+    the backend's own path check, without importing it (render and pyramid
+    processes read snapshots without the rest of the backend)."""
+    raw = os.environ.get("VISIVO_DATA_ROOTS", "").strip()
+    roots = [Path(part).expanduser().resolve() for part in raw.split(os.pathsep)
+             if part.strip()]
+    if not roots:
+        return True
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return any(resolved == root or root in resolved.parents for root in roots)
+
+
+def parameter_file(first_file: str | Path) -> Path | None:
+    """The run's parameter file Gadget writes (``parameters-usedvalues`` ...)
+    beside the snapshot or one folder up, or None. One outside the data
+    roots (the folder above a root, a symbolic link out of it) counts as
+    absent: the snapshot opens with the default units and says so
+    (:func:`units_for`), rather than being refused for a file it only
+    reads units from."""
+    p = _parameter_candidate(first_file)
+    return p if p is not None and _within_env_roots(p) else None
 
 
 def looks_comoving(header: Header) -> bool:
@@ -645,6 +720,9 @@ def units_for(first_file: str | Path, hdf5_units: dict | None = None,
     params = parameter_file(first_file)
     if params is not None:
         units = _from_params(params, units)
+    elif _parameter_candidate(first_file) is not None:
+        units = replace(units, source=units.source + " (the run's parameter file lies "
+                        "outside the folders this backend may read and was not used)")
     if hdf5_units:
         units = replace(units, source="the HDF5 file's units", **hdf5_units)
     env = os.environ.get(UNITS_ENV, "").strip()
@@ -688,7 +766,7 @@ def _from_env(text: str, units: UnitSystem) -> UnitSystem:
         key, value = key.strip(), value.strip()
         if key in ("length_cm", "mass_g", "velocity_cm_s"):
             kw[key] = float(value)
-        elif key in ("comoving", "hubble_units"):
+        elif key in ("comoving", "hubble_units", "periodic"):
             kw[key] = value.lower() not in ("0", "false", "no", "")
         elif key:
             raise ValueError(f"{UNITS_ENV}: unknown key {key!r}")
@@ -718,6 +796,140 @@ class Piece:
         with h5py.File(self.path, "r") as f:
             return np.asarray(f[self.dataset][()]).reshape(self.rows, self.dims)
 
+    @property
+    def nbytes(self) -> int:
+        return self.rows * self.dims * np.dtype(self.dtype).itemsize
+
+
+# ── Selected rows of a chunked or compressed HDF5 dataset ────────────────────
+#
+# Such a dataset cannot be memory-mapped: any read decompresses whole HDF5
+# chunks. Component.take is called a slice of rows at a time (a filter walks
+# the table in chunks, a sample reads x, y and z in pieces), so reading the
+# whole dataset per call decompressed a shard dozens of times (issue #445).
+# A dataset up to the cache budget is decompressed once and kept, shared by
+# every component and bounded in bytes; a larger one is read in windows of
+# whole HDF5 chunks spanning only the rows asked for.
+
+#: Megabytes of decompressed HDF5 pieces kept for row reads (0: none).
+PIECE_CACHE_ENV = "VISIVO_GADGET_CACHE_MB"
+PIECE_CACHE_DEFAULT_MB = 512
+#: At most this many bytes are decompressed into one window of a dataset
+#: larger than the cache budget (rounded to whole HDF5 chunks).
+WINDOW_BYTES = 64 << 20
+
+
+def piece_cache_bytes() -> int:
+    """The cache budget, from the environment when it is a finite number of
+    megabytes (0 or more); the default otherwise (nan, inf, text)."""
+    try:
+        mb = float(os.environ.get(PIECE_CACHE_ENV, PIECE_CACHE_DEFAULT_MB))
+        if not math.isfinite(mb) or mb < 0:
+            raise ValueError(mb)
+        return int(mb * (1 << 20))
+    except (ValueError, OverflowError):
+        return int(PIECE_CACHE_DEFAULT_MB * (1 << 20))
+
+
+class _PieceCache:
+    """Least recently used decompressed pieces, at most the budget in bytes,
+    keyed by the file's identity (a rewritten file is not served stale).
+
+    Concurrent misses on one piece decompress it once: the first reader
+    holds that key's lock while it reads, the others wait on it and then
+    find the entry (other pieces are read meanwhile)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._items: OrderedDict = OrderedDict()
+        self._bytes = 0
+        self._loading: dict = {}            # key -> (lock, waiters)
+
+    def get(self, piece: Piece) -> np.ndarray | None:
+        """The piece's (rows, dims) values, or None when it exceeds the budget."""
+        budget = piece_cache_bytes()
+        if piece.nbytes > budget:
+            return None
+        st = os.stat(piece.path)
+        key = (piece.path, piece.dataset, st.st_size, st.st_mtime_ns)
+        with self._lock:
+            hit = self._items.get(key)
+            if hit is not None:
+                self._items.move_to_end(key)
+                return hit
+            entry = self._loading.setdefault(key, [threading.Lock(), 0])
+            entry[1] += 1
+        try:
+            with entry[0]:                  # one reader per piece at a time
+                with self._lock:
+                    hit = self._items.get(key)
+                    if hit is not None:     # read by the reader before us
+                        self._items.move_to_end(key)
+                        return hit
+                values = piece.array()      # outside the cache lock: seconds
+                with self._lock:
+                    self._items[key] = values
+                    self._bytes += values.nbytes
+                    while self._bytes > budget and len(self._items) > 1:
+                        _, old = self._items.popitem(last=False)
+                        self._bytes -= old.nbytes
+                return values
+        finally:
+            with self._lock:
+                entry[1] -= 1
+                if entry[1] == 0:
+                    self._loading.pop(key, None)
+
+    def drop(self, paths) -> int:
+        """Forget the pieces read from ``paths`` (a closed dataset's files);
+        the number dropped."""
+        wanted = {str(p) for p in paths}
+        with self._lock:
+            keys = [k for k in self._items if k[0] in wanted]
+            for k in keys:
+                self._bytes -= self._items.pop(k).nbytes
+        return len(keys)
+
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+            self._bytes = 0
+
+
+PIECE_CACHE = _PieceCache()
+
+
+def _read_window(dataset, start: int, stop: int, column: int) -> np.ndarray:
+    """Rows ``start:stop`` of one column of an HDF5 dataset (1-D or 2-D)."""
+    if dataset.ndim == 1:
+        return dataset[start:stop]
+    return dataset[start:stop, column]
+
+
+def _read_rows_windowed(piece: Piece, local: np.ndarray, column: int) -> np.ndarray:
+    """``column`` at rows ``local`` of an HDF5 piece too large for the cache:
+    the rows asked for, sorted, are read window by window (whole HDF5 chunks,
+    at most WINDOW_BYTES), each window from its first to its last row asked
+    for, so a contiguous slice reads only its own chunks and memory stays at
+    one window."""
+    import h5py  # noqa: PLC0415
+    unique, inverse = np.unique(local, return_inverse=True)
+    out = np.empty(unique.size, dtype=np.dtype(piece.dtype))
+    with h5py.File(piece.path, "r") as f:
+        dataset = f[piece.dataset]
+        chunk = dataset.chunks[0] if dataset.chunks else 1
+        per_row = np.dtype(piece.dtype).itemsize * (piece.dims if dataset.ndim > 1 else 1)
+        window = max(chunk, (WINDOW_BYTES // max(1, per_row)) // chunk * chunk)
+        i = 0
+        while i < unique.size:
+            first = int(unique[i])
+            end = min(piece.rows, (first // window + 1) * window)
+            j = int(np.searchsorted(unique, end, side="left"))
+            last = int(unique[j - 1]) + 1
+            out[i:j] = _read_window(dataset, first, last, column)[unique[i:j] - first]
+            i = j
+    return out[inverse]
+
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -729,6 +941,9 @@ class Snapshot:
     skipped: tuple[str, ...] = ()   # blocks left out: no single reading
     fmt: str = ""
     skip_reasons: tuple = ()        # (name, why) of each block left out
+    # HDF5 permits the same dataset name to have a different shape or dtype in
+    # different PartType groups. Binary files have one spec for every type.
+    component_specs: dict = field(default_factory=dict)  # (name, type) -> BlockSpec
 
     @property
     def path(self) -> str:
@@ -756,16 +971,27 @@ class Snapshot:
     def describe(self) -> dict:
         h = self.header
         return {"format": self.fmt, "files": len(self.files),
+                "catalogue_kind": "subfind" if self.is_subfind else "particles",
                 "time": h.time, "scale_factor": self.scale_factor,
                 "redshift": h.redshift, "box_size": h.box_size, "omega0": h.omega0,
                 "omega_lambda": h.omega_lambda, "hubble_param": h.hubble,
                 "mass_table": list(h.mass), "npart_total": list(h.npart_total),
                 "units": self.units.describe(),
                 "blocks": {name: {"types": list(b.types), "dims": b.dims, "dtype": b.dtype,
-                                  "inferred": b.inferred}
+                                  "inferred": b.inferred,
+                                  **({"by_type": {
+                                      str(t): {"dims": self.component_specs[(name, t)].dims,
+                                               "dtype": self.component_specs[(name, t)].dtype}
+                                      for t in b.types if (name, t) in self.component_specs}}
+                                     if self.component_specs else {})}
                            for name, b in self.blocks.items()},
                 "skipped_blocks": list(self.skipped),
                 "skipped_reasons": dict(self.skip_reasons)}
+
+    @property
+    def is_subfind(self) -> bool:
+        """Whether this Gadget-family file is a FoF/SubFind group catalogue."""
+        return "GPOS" in self.blocks or "SPOS" in self.blocks
 
 
 def snapshot_files(path: str | Path) -> list[Path]:
@@ -783,7 +1009,7 @@ def snapshot_files(path: str | Path) -> list[Path]:
             if cand.is_file():
                 p = cand
                 break
-    header = scan_file(p).header
+    header = read_header(p)
     if header.num_files <= 1:
         return [p]
     m = re.match(r"^(?P<base>.*)\.(?P<k>\d+)(?P<ext>\.hdf5|\.h5)?$", p.name)
@@ -803,13 +1029,16 @@ def snapshot_files(path: str | Path) -> list[Path]:
 MAX_PROBES = 64
 
 
-def first_in_dir(folder: Path) -> Path | None:
+def first_in_dir(folder: Path, allowed=None) -> Path | None:
     """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
     (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
     that is one. Only names are listed; at most MAX_PROBES files are read."""
     try:
         with os.scandir(folder) as it:
-            names = sorted(e.name for e in it if e.is_file())
+            # Do not follow a directory child's symlink before the caller's
+            # allow-list has had a chance to reject its resolved target.
+            names = sorted(e.name for e in it
+                           if e.is_file(follow_symlinks=False) or e.is_symlink())
     except OSError:
         return None
     probes = 0
@@ -820,8 +1049,11 @@ def first_in_dir(folder: Path) -> Path | None:
             probes += 1
             if probes > MAX_PROBES:
                 return None
-            if is_gadget(folder / name):
-                return folder / name
+            candidate = folder / name
+            if allowed is not None and not allowed(str(candidate)):
+                continue
+            if is_gadget(candidate):
+                return candidate
     return None
 
 
@@ -867,6 +1099,19 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
             break
     if fsize not in (4, 8):
         raise ValueError(f"POS holds {fsize} bytes per coordinate: not float or double")
+    info_schemas = [_format2_info(f) for f in layouts]
+    declared, info_skips = {}, {}
+    for schema in info_schemas:
+        for name, candidate in schema.items():
+            if isinstance(candidate, str):
+                info_skips.setdefault(name, candidate)
+                continue
+            previous = declared.get(name)
+            if previous is not None and (candidate.dtype, candidate.dims) != (
+                    previous.dtype, previous.dims):
+                raise ValueError(f"The snapshot files declare different INFO schemas for {name}")
+            types = tuple(sorted(set((previous.types if previous else ()) + candidate.types)))
+            declared[name] = replace(candidate, types=types)
     names: list[str] = []
     for f in layouts:
         for b in f.blocks:
@@ -874,13 +1119,20 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
                 names.append(b.name)
     specs, pieces, skipped = {}, {}, []
     for name in names:
+        if name == "INFO":
+            continue
         # Every file decides, those without the block too (they must have
         # none of its particles).
         lengths = []
         for f in layouts:
             blk = [b for b in f.blocks if b.name == name]
             lengths.append((f.header.npart, sum(b.nbytes for b in blk)))
-        spec, why = infer_block(name, lengths, first.mass, fsize)
+        spec = declared.get(name)
+        why = info_skips.get(name, "")
+        if spec is not None:
+            spec, why = _info_block(spec, lengths, fsize)
+        elif not why:
+            spec, why = infer_block(name, lengths, first.mass, fsize)
         if spec is None:
             skipped.append((name, why))
             continue
@@ -902,21 +1154,131 @@ def _assemble(layouts: tuple[FileLayout, ...]) -> Snapshot:
                     tuple(n for n, _ in skipped), fmt, tuple(skipped))
 
 
+#: INFO value types -> numpy kind and, when the type fixes it, the bytes per
+#: value. FLOAT/FLOATN leave the size open: OpenGadget3 and P-Gadget3 write
+#: "FLOAT" for a block of the run's MyFloat, single even when the positions
+#: are double (DOUBLEN), so the block's own length decides.
+_INFO_TYPES = {"FLOAT": ("f", None), "FLOATN": ("f", None),
+               "DOUBLE": ("f", 8), "DOUBLEN": ("f", 8),
+               "LLONG": ("u", 8), "ULONG64": ("u", 8),
+               "LONG": ("u", 4), "ULONG": ("u", 4), "INT": ("u", 4), "UINT": ("u", 4)}
+
+
+def _format2_info(layout: FileLayout) -> dict[str, BlockSpec | str]:
+    """Read the optional format-2 INFO schema without touching block data.
+
+    Each entry is a BlockSpec, or the reason its block is left out (a value
+    type this reader does not know, no particle types, a width beyond
+    MAX_DIMS): one odd entry costs its block, not the snapshot. A FLOAT
+    entry's dtype is ``"f"``, its size settled by :func:`_info_block`."""
+    info = next((block for block in layout.blocks if block.name == "INFO"), None)
+    if info is None:
+        return {}
+    if info.nbytes % 40:
+        raise ValueError(f"{Path(layout.path).name}: INFO has {info.nbytes} bytes, not 40-byte entries")
+    with open(layout.path, "rb") as handle:
+        handle.seek(info.offset)
+        raw = handle.read(info.nbytes)
+    out: dict[str, BlockSpec | str] = {}
+    for offset in range(0, len(raw), 40):
+        entry = raw[offset:offset + 40]
+        name = entry[:4].decode("ascii", "replace").rstrip(" \0")
+        value_type = entry[4:12].decode("ascii", "replace").rstrip(" \0").upper()
+        dims, *flags = struct.unpack(f"{layout.endian}i6i", entry[12:])
+        if not name:
+            raise ValueError(f"{Path(layout.path).name}: INFO entry without a block name")
+        kind = _INFO_TYPES.get(value_type)
+        if kind is None:
+            out[name] = f"INFO declares value type {value_type!r}, which this reader does not know"
+            continue
+        if not 1 <= dims <= MAX_DIMS:
+            out[name] = f"INFO declares {dims} values per particle (1..{MAX_DIMS} supported)"
+            continue
+        types = tuple(index for index, active in enumerate(flags) if active)
+        if name == "MASS":
+            types = tuple(index for index in types if layout.header.mass[index] == 0)
+            if not types:
+                continue
+        if not types:
+            out[name] = "INFO declares no particle types for it"
+            continue
+        dtype = f"{kind[0]}{kind[1]}" if kind[1] else kind[0]
+        out[name] = BlockSpec(name, types, dtype, dims, False)
+    return out
+
+
+def _info_block(spec: BlockSpec, lengths, fsize: int) -> tuple[BlockSpec | None, str]:
+    """``(spec, why not)`` of a block INFO declares, checked against its
+    length in every file. A FLOAT block takes 4 or 8 bytes a value from the
+    length (the same in every file; the positions' size when no file holds
+    its particles); a declared size the length contradicts leaves the block
+    out with the reason, rather than read it with the wrong stride."""
+    counts = [(sum(npart[t] for t in spec.types) * spec.dims, length)
+              for npart, length in lengths]
+    dtype = spec.dtype
+    if dtype == "f":
+        sizes = {length // values for values, length in counts
+                 if values and length % values == 0}
+        if not any(values for values, _ in counts):
+            sizes = {fsize}
+        if len(sizes) != 1 or next(iter(sizes)) not in (4, 8):
+            found = ", ".join(f"{length} bytes for {values} values"
+                              for values, length in counts if values)
+            return None, (f"INFO declares FLOAT x {spec.dims} for types {list(spec.types)}; "
+                          f"the block has {found}: neither float nor double")
+        dtype = f"f{next(iter(sizes))}"
+    itemsize = np.dtype(dtype).itemsize
+    for values, length in counts:
+        if length != values * itemsize:
+            return None, (f"INFO declares {dtype} x {spec.dims} for types {list(spec.types)}, "
+                          f"requiring {values * itemsize} bytes; the block has {length}")
+    return replace(spec, dtype=dtype), ""
+
+
 def _assemble_hdf5(layouts, header: Header) -> Snapshot:
-    specs, pieces = {}, {}
+    specs, component_specs, pieces = {}, {}, {}
+    by_file = []
     for f in layouts:
+        current = {}
         for b in f.blocks:
+            rows = f.header.npart[b.ptype]
+            if b.shape[0] != rows:
+                raise ValueError(f"{Path(f.path).name}: {b.dataset} has {b.shape[0]} rows; "
+                                 f"the header announces {rows} PartType{b.ptype} particles")
             dims = b.shape[1] if len(b.shape) == 2 else 1
             kind = np.dtype(b.dtype)
+            key = (b.name, b.ptype)
+            if key in current:
+                raise ValueError(f"{Path(f.path).name}: more than one dataset maps to "
+                                 f"{b.name} for PartType{b.ptype}")
+            current[key] = b
+            previous = component_specs.get(key)
+            dtype = f"{kind.kind}{kind.itemsize}"
+            if previous is not None and (previous.dims != dims or previous.dtype != dtype):
+                raise ValueError(
+                    f"{Path(f.path).name}: {b.dataset} has shape (*, {dims}) and dtype "
+                    f"{dtype}; earlier files use (*, {previous.dims}) and {previous.dtype}")
+            component_specs[key] = BlockSpec(b.name, (b.ptype,), dtype, dims, False)
             spec = specs.get(b.name)
             types = tuple(sorted(set((spec.types if spec else ()) + (b.ptype,))))
-            specs[b.name] = BlockSpec(b.name, types, kind.str[1:], dims, False)
+            # The aggregate spec is descriptive only; Component uses the
+            # per-PartType spec above so heterogeneous groups cannot corrupt
+            # their column layout.
+            specs[b.name] = BlockSpec(b.name, types, spec.dtype if spec else dtype,
+                                      spec.dims if spec else dims, False)
             pieces.setdefault((b.name, b.ptype), []).append(
                 Piece(f.path, b.offset, b.dtype, b.shape[0], dims, b.dataset))
+        by_file.append(current)
+    all_keys = set().union(*(set(found) for found in by_file))
+    for name, ptype in sorted(all_keys):
+        for f, found in zip(layouts, by_file):
+            if f.header.npart[ptype] and (name, ptype) not in found:
+                raise ValueError(f"{Path(f.path).name}: PartType{ptype} is missing {name}, "
+                                 "which is present for that particle type in another file")
     pieces = {k: tuple(v) for k, v in pieces.items()}
     return Snapshot(layouts, header, specs, pieces,
                     units_for(layouts[0].path, _hdf5_units(layouts[0].path), header), (),
-                    "Gadget HDF5")
+                    "Gadget HDF5", component_specs=component_specs)
 
 
 def _hdf5_units(path: str) -> dict:
@@ -935,6 +1297,10 @@ def _hdf5_units(path: str) -> dict:
                         out[attr] = float(a[key])
                 if "ComovingIntegrationOn" in a and "comoving" not in out:
                     out["comoving"] = bool(int(a["ComovingIntegrationOn"]))
+            # Gadget-4 lists its compile-time options as attributes of
+            # Config: PERIODIC among them or not says whether the box is.
+            if "Config" in f:
+                out["periodic"] = "PERIODIC" in f["Config"].attrs
     except Exception:   # noqa: BLE001 - units are optional
         return {}
     return out
@@ -962,6 +1328,7 @@ class Component:
         self._arrays: dict[str, list[np.ndarray]] = {}
         self._sources: dict[str, tuple[str, int]] = {}
         for name, spec in snapshot.blocks.items():
+            spec = snapshot.component_specs.get((name, ptype), spec)
             if ptype not in spec.types or not snapshot.pieces.get((name, ptype)):
                 continue
             for k, col in enumerate(spec.columns):
@@ -984,7 +1351,8 @@ class Component:
 
     @property
     def name(self) -> str:
-        return TYPE_NAMES[self.ptype]
+        names = SUBFIND_TYPE_NAMES if self.snapshot.is_subfind else TYPE_NAMES
+        return names[self.ptype]
 
     def column(self, name: str) -> np.ndarray:
         if name in self._sources:
@@ -1007,8 +1375,113 @@ class Component:
             return self.entropy().astype(np.float32)
         raise KeyError(name)
 
+    def column_dtype(self, name: str) -> np.dtype:
+        """The dtype of a column without reading any particle values."""
+        if name in self._sources:
+            block, _ = self._sources[name]
+            pieces = self.snapshot.pieces[(block, self.ptype)]
+            return np.dtype(pieces[0].dtype).newbyteorder("=")
+        if name == "mass" and self._mass_from_table:
+            spec = self.snapshot.blocks.get("POS")
+            return np.dtype(spec.dtype if spec is not None else "f4")
+        if name in self.derived:
+            return np.dtype("f4")
+        raise KeyError(name)
+
+    def take(self, name: str, rows) -> np.ndarray:
+        """Read only selected rows across all snapshot files."""
+        rows = np.asarray(rows, dtype=np.int64)
+        scalar = rows.ndim == 0
+        rows = rows.reshape(-1)
+        if rows.size and (rows.min() < 0 or rows.max() >= self.num_rows):
+            raise IndexError("particle row outside the component")
+        if name in self._sources:
+            block, column = self._sources[name]
+            pieces = self.snapshot.pieces[(block, self.ptype)]
+            ends = np.cumsum([piece.rows for piece in pieces], dtype=np.int64)
+            which = np.searchsorted(ends, rows, side="right")
+            out = np.empty(rows.size, dtype=self.column_dtype(name))
+            for index in np.unique(which):
+                selected = which == index
+                start = 0 if index == 0 else ends[index - 1]
+                out[selected] = self._piece_rows(block, int(index), rows[selected] - start,
+                                                 column)
+        elif name == "mass" and self._mass_from_table:
+            out = np.full(rows.size, self.snapshot.header.mass[self.ptype],
+                          dtype=self.column_dtype(name))
+        elif name == "temperature" and name in self.derived:
+            out = self._temperature_rows(rows).astype(np.float32)
+        elif name == "entropy" and name in self.derived:
+            temperature = self._temperature_rows(rows)
+            density = self._physical_density_rows(rows)
+            x = HYDROGEN_MASS_FRACTION
+            if "ne" in self._sources:
+                electrons = (np.asarray(self.take("ne", rows), dtype=np.float64)
+                             * x * density / PROTON_MASS_G)
+            else:
+                electrons = 0.5 * (1.0 + x) * density / PROTON_MASS_G
+            out = (BOLTZMANN_ERG_K * temperature / KEV_ERG
+                   / electrons ** (2.0 / 3.0)).astype(np.float32)
+        else:
+            raise KeyError(name)
+        return out[0] if scalar else out
+
+    def _piece_rows(self, block: str, index: int, local: np.ndarray, column: int) -> np.ndarray:
+        """``column`` of piece ``index`` of ``block`` at its rows ``local``:
+        from the memory map, from the arrays column() already read, from the
+        shared cache of decompressed HDF5 pieces, or window by window for an
+        HDF5 piece larger than that cache."""
+        piece = self.snapshot.pieces[(block, self.ptype)][index]
+        if piece.offset is not None or piece.rows == 0:
+            return piece.array()[local, column]
+        arrays = self._arrays.get(block)
+        if arrays is not None:
+            return arrays[index][local, column]
+        values = PIECE_CACHE.get(piece)
+        if values is not None:
+            return values[local, column]
+        return _read_rows_windowed(piece, local, column)
+
+    def _temperature_rows(self, rows: np.ndarray) -> np.ndarray:
+        u = np.asarray(self.take("u", rows), dtype=np.float64)
+        if self.snapshot.header.flag_entropy_instead_u:
+            rho = np.asarray(self.take("rho", rows), dtype=np.float64)
+            rho /= self.snapshot.scale_factor ** 3
+            u = u * rho ** (GAMMA - 1.0) / (GAMMA - 1.0)
+        u *= self.snapshot.units.velocity_cm_s ** 2
+        if "ne" in self._sources:
+            ne = np.asarray(self.take("ne", rows), dtype=np.float64)
+            x = HYDROGEN_MASS_FRACTION
+            mu = 4.0 / (1.0 + 3.0 * x + 4.0 * x * ne)
+        else:
+            mu = 4.0 / (3.0 + 5.0 * HYDROGEN_MASS_FRACTION)
+        return (GAMMA - 1.0) * mu * PROTON_MASS_G / BOLTZMANN_ERG_K * u
+
+    def _physical_density_rows(self, rows: np.ndarray) -> np.ndarray:
+        units, h = self.snapshot.units, self.snapshot.hubble
+        factor = units.mass_g / units.length_cm ** 3 * h ** 2
+        return (np.asarray(self.take("rho", rows), dtype=np.float64) * factor
+                / self.snapshot.scale_factor ** 3)
+
     def columns(self) -> "LazyColumns":
         return LazyColumns(self)
+
+    def periods(self) -> dict[str, float]:
+        """The period of each coordinate column: the BoxSize (positive) of a
+        periodic run, {} for any other. Periodic is what the run states (a
+        Gadget-4 HDF5 ``Config/PERIODIC``, ``periodic=`` in
+        VISIVO_GADGET_UNITS); when nothing states it, a comoving run is taken
+        as periodic and any other as not. That guess is wrong for a
+        non-periodic cosmological zoom and for an isolated run integrated in
+        comoving coordinates: state ``periodic=0`` for those (or send
+        ``period: 0`` with a selection). Box and sphere selections wrap on
+        these columns (app/periodic.py)."""
+        units = self.snapshot.units
+        periodic = units.periodic if units.periodic is not None else bool(units.comoving)
+        box = float(self.snapshot.header.box_size)
+        if not (periodic and math.isfinite(box) and box > 0):
+            return {}
+        return {name: box for name in self.names if name in PERIODIC_COLUMNS}
 
     # ── physics ──
     def _u_cgs(self) -> np.ndarray:
@@ -1065,10 +1538,29 @@ class Component:
         vel = f"{u['velocity']} (internal, x sqrt(a))" if self.snapshot.units.comoving \
             else u["velocity"]
         table = {"x": length, "y": length, "z": length, "hsml": length,
+                 "hsml_stars": length, "bh_accretion_radius": length,
+                 "rvir": length, "r500": length, "r2500": length,
+                 "rmax": length, "half_mass_radius": length,
+                 "centre_of_mass_x": length, "centre_of_mass_y": length,
+                 "centre_of_mass_z": length,
                  "vx": vel, "vy": vel, "vz": vel, "mass": mass, "bh_mass": mass,
+                 "initial_mass": mass,
+                 "group_mass": mass, "mvir": mass, "m500": mass, "m2500": mass,
+                 "gas_mass": mass, "stellar_mass": mass, "subhalo_mass": mass,
+                 "contaminating_mass": mass,
                  "rho": f"{mass} / ({length})^3", "u": f"({u['velocity']})^2",
-                 "temperature": "K", "entropy": "keV cm^2"}
-        return {n: table[n] for n in self.names if n in table}
+                 "potential": f"({u['velocity']})^2",
+                 "temperature": "K", "entropy": "keV cm^2",
+                 "ne": "dimensionless", "nh": "dimensionless",
+                 "metallicity": "dimensionless", "cold_fraction": "dimensionless",
+                 "id": "dimensionless identifier", "most_bound_id": "dimensionless identifier",
+                 "group_length": "particle count", "group_offset": "particle index",
+                 "num_subhalos": "count", "first_subhalo": "subhalo index",
+                 "num_contaminated": "particle count", "subhalo_length": "particle count",
+                 "subhalo_offset": "particle index", "subhalo_parent": "subhalo index",
+                 "group_number": "group index"}
+        return {n: table.get(n, "code units (physical conversion not declared)")
+                for n in self.names}
 
     def physical(self) -> dict[str, dict]:
         """Per column, the factor that makes it physical and the unit then:
@@ -1081,14 +1573,37 @@ class Component:
         vel = units.velocity_cm_s / 1e5 * (np.sqrt(a) if units.comoving else 1.0)
         rho = units.mass_g / units.length_cm ** 3 * hh ** 2 / a ** 3
         table = {"x": (length, "kpc"), "y": (length, "kpc"), "z": (length, "kpc"),
-                 "hsml": (length, "kpc"), "vx": (vel, "km/s"), "vy": (vel, "km/s"),
+                 "hsml": (length, "kpc"), "hsml_stars": (length, "kpc"),
+                 "bh_accretion_radius": (length, "kpc"),
+                 "rvir": (length, "kpc"), "r500": (length, "kpc"),
+                 "r2500": (length, "kpc"), "rmax": (length, "kpc"),
+                 "half_mass_radius": (length, "kpc"),
+                 "centre_of_mass_x": (length, "kpc"),
+                 "centre_of_mass_y": (length, "kpc"),
+                 "centre_of_mass_z": (length, "kpc"),
+                 "vx": (vel, "km/s"), "vy": (vel, "km/s"),
                  "vz": (vel, "km/s"), "mass": (mass, "Msun"), "bh_mass": (mass, "Msun"),
-                 "rho": (rho, "g/cm^3"), "u": (units.velocity_cm_s ** 2, "erg/g")}
+                 "initial_mass": (mass, "Msun"),
+                 "group_mass": (mass, "Msun"), "mvir": (mass, "Msun"),
+                 "m500": (mass, "Msun"), "m2500": (mass, "Msun"),
+                 "gas_mass": (mass, "Msun"), "stellar_mass": (mass, "Msun"),
+                 "subhalo_mass": (mass, "Msun"), "contaminating_mass": (mass, "Msun"),
+                 "rho": (rho, "g/cm^3"), "u": (units.velocity_cm_s ** 2, "erg/g"),
+                 "ne": (1.0, "dimensionless"), "nh": (1.0, "dimensionless"),
+                 "metallicity": (1.0, "dimensionless"),
+                 "cold_fraction": (1.0, "dimensionless")}
         return {n: {"factor": float(table[n][0]), "unit": table[n][1]}
                 for n in self.names if n in table}
 
     def describe(self) -> dict:
         return {"type": self.ptype, "name": self.name, "num_rows": self.num_rows,
+                "catalogue_kind": "subfind" if self.snapshot.is_subfind else "particles",
+                **({"object_kind": "group" if self.ptype == 0 else "subhalo",
+                    "radius_definitions": {
+                        "rvir": "mean background density",
+                        "r500": "500 times mean background density",
+                        "r2500": "2500 times mean background density"}}
+                   if self.snapshot.is_subfind and self.ptype in (0, 1) else {}),
                 "columns": list(self.names), "units": self.units(),
                 "physical": self.physical(), "derived": dict(self.derived),
                 "mass_from_table": self._mass_from_table,
@@ -1102,13 +1617,16 @@ class LazyColumns(Mapping):
 
     def __init__(self, component: Component):
         self._component = component
-        self._kept: dict[str, np.ndarray] = {}
+        self._kept = {}
+        # Read by the point sessions' box and sphere filters; a name no
+        # column takes (a mapping's keys are its columns).
+        self.column_periods = component.periods()
 
-    def __getitem__(self, name: str) -> np.ndarray:
+    def __getitem__(self, name: str):
         if name not in self._kept:
             if name not in self._component.names:
                 raise KeyError(name)
-            self._kept[name] = self._component.column(name)
+            self._kept[name] = SegmentedColumn(self._component, name)
         return self._kept[name]
 
     def __iter__(self):
@@ -1121,7 +1639,68 @@ class LazyColumns(Mapping):
         return name in self._component.names
 
 
+class SegmentedColumn:
+    """Array-like view that reads indexed rows without joining file pieces."""
+
+    def __init__(self, component: Component, name: str):
+        self.component = component
+        self.name = name
+        self.dtype = component.column_dtype(name)
+        self.shape = (component.num_rows,)
+        self.ndim = 1
+
+    def __len__(self) -> int:
+        return self.shape[0]
+
+    def __getitem__(self, rows):
+        """Rows by a slice, an integer (negative from the end), an integer
+        array, or a boolean mask of the column's length, as numpy indexes;
+        anything else (floats, a mask of another length) raises IndexError
+        rather than being read as row numbers."""
+        n = len(self)
+        if isinstance(rows, slice):
+            return self.component.take(self.name, np.arange(*rows.indices(n), dtype=np.int64))
+        if isinstance(rows, (int, np.integer)) and not isinstance(rows, (bool, np.bool_)):
+            row = int(rows)
+            if not -n <= row < n:
+                raise IndexError(f"row {row} outside a column of {n}")
+            return self.component.take(self.name, row % n)
+        index = np.asarray(rows)
+        if index.size == 0 and index.ndim == 1 and index.dtype != bool:
+            index = index.astype(np.int64)      # [] is float64 to numpy
+        if index.dtype == bool:
+            if index.shape != (n,):
+                raise IndexError(f"boolean index of shape {index.shape} for a column of {n}")
+            return self.component.take(self.name, np.flatnonzero(index))
+        if index.dtype.kind not in "iu" or index.ndim > 1:
+            raise IndexError("a particle column is indexed by a slice, integers or a "
+                             f"boolean mask, not {index.dtype} of {index.ndim} dimensions")
+        index = index.astype(np.int64, copy=False)
+        if index.size and (index.min() < -n or index.max() >= n):
+            raise IndexError(f"row outside a column of {n}")
+        return self.component.take(self.name, np.where(index < 0, index + n, index))
+
+    def __array__(self, dtype=None, copy=None) -> np.ndarray:
+        values = self.component.take(self.name, np.arange(len(self), dtype=np.int64))
+        if dtype is not None:
+            values = values.astype(dtype, copy=False)
+        elif copy:
+            values = values.copy()
+        return values
+
+
 # ── References ───────────────────────────────────────────────────────────────
+
+def release(path: str | Path) -> int:
+    """Drop what is kept in memory for the snapshot ``path`` (a component
+    reference or a file of it) once no dataset reads it: its decompressed
+    HDF5 pieces. The number of pieces dropped; 0 for anything else."""
+    try:
+        snap = open_snapshot(split_ref(path)[0])
+    except (OSError, ValueError):
+        return 0
+    return PIECE_CACHE.drop(f.path for f in snap.files)
+
 
 def gadget_ref(first_file: str | Path, ptype: int) -> str:
     return f"{first_file}{REF_SEP}{int(ptype)}"
@@ -1142,13 +1721,69 @@ def resolve(path: str | Path) -> Component:
     return open_snapshot(base).component(ptype)
 
 
+def read_header(path: str | Path) -> Header:
+    """The header of one snapshot file, read alone (no block is scanned)."""
+    found = detect(path)
+    if found is None:
+        raise ValueError(f"{path} is not a Gadget snapshot file.")
+    fmt, e = found
+    if fmt == 0:
+        return _scan_hdf5(str(path)).header
+    with open(path, "rb") as fh:
+        # Format 1: the header record first; format 2: after its 8-byte
+        # "HEAD" name record (16 bytes with its markers).
+        fh.seek(4 if fmt == 1 else 20)
+        return parse_header(fh.read(HEADER_BYTES), e)
+
+
+def has_type(path: str | Path, ptype: int) -> bool:
+    """Whether the snapshot ``path`` names (a file of it, its base name or
+    its folder) has particles of type ``ptype``, from its headers: an early
+    output without stars, or one that cannot be read (a file missing, not a
+    snapshot), has none. Only headers and the files' names are read, and
+    the answer is kept while the first file is unchanged, so a whole series
+    can be checked at every open."""
+    try:
+        files = snapshot_files(path)
+        size, mtime = _stat(files[0])
+        return _has_type(tuple(str(f) for f in files), int(ptype), size, mtime)
+    except (OSError, ValueError):
+        return False
+
+
+@lru_cache(maxsize=4096)
+def _has_type(files: tuple[str, ...], ptype: int, _size: int, _mtime: int) -> bool:
+    try:
+        header = read_header(files[0])
+        if not 0 <= ptype < len(header.npart_total):
+            return False
+        if any(header.npart_total):
+            return header.npart_total[ptype] > 0
+        # Some writers leave the totals at zero: the files' own counts.
+        return any(read_header(f).npart[ptype] > 0 for f in files)
+    except (OSError, ValueError):
+        return False
+
+
+def _offered(snapshot: Snapshot, ptype: int) -> bool:
+    """Whether type ``ptype`` opens as points: it has particles, and in a
+    SubFind catalogue positions too (its ID list and large-group table have
+    none, issue #448)."""
+    if not snapshot.counts()[ptype]:
+        return False
+    return not snapshot.is_subfind or {"x", "y", "z"} <= set(snapshot.component(ptype).names)
+
+
 def default_type(snapshot: Snapshot) -> int | None:
-    """The type a snapshot opens on: the first with particles (gas first)."""
-    return next((t for t, n in enumerate(snapshot.counts()) if n), None)
+    """The type a snapshot opens on: the first offered (gas first)."""
+    return next((t for t in range(NTYPES) if _offered(snapshot, t)), None)
 
 
 def gadget_components(path: str | Path) -> list[dict]:
-    """Every particle type with particles: ``{name, path, num_rows}``."""
+    """Every particle type with particles: ``{name, path, num_rows}``. Of a
+    SubFind catalogue, only the types with positions (groups, subhalos):
+    its ID list and large-group table are no points to draw (issue #448)."""
     snap = open_snapshot(split_ref(path)[0])
-    return [{"name": TYPE_NAMES[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
-            for t, n in enumerate(snap.counts()) if n]
+    names = SUBFIND_TYPE_NAMES if snap.is_subfind else TYPE_NAMES
+    return [{"name": names[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
+            for t, n in enumerate(snap.counts()) if _offered(snap, t)]

@@ -15,7 +15,7 @@ cube of its first field, or a PLUTO binary output (see *PLUTO output* below). A 
 (see *Compressed FITS* below). Any other file type is answered with
 `valid: false` ("Unsupported file type. Expected FITS (.fits, .fit, also
 compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).").
-Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa`), `bunit`, and:
+Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa`, and `beam_per_channel`: true when a `BEAMS` table gives one beam per channel, the beam fields then being the header's), `bunit`, and:
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -286,7 +286,12 @@ Paginated, filtered query.
 }
 ```
 `limit` defaults to 100000 and `offset` to 0; `sort.direction` is `asc`
-(default) or `desc`.
+(default) or `desc`. Filter operators: `=`, `!=`, `<`, `<=`, `>`, `>=`,
+`in` (comma-separated values) and `contains` (case-insensitive), for a loaded
+catalogue and a snapshot's particle type alike. On a particle type read out of
+core, a sort orders NaN last and equal values by row number ascending in both
+directions, so successive pages neither repeat nor skip rows; `offset + limit`
+may not exceed 1,000,000.
 Response: `total_rows`, `returned_rows`, `rows[]` (key-value maps), and
 `row_index[]`: for each returned row, its 0-based position in the catalogue as
 opened, before any filter, sort or sample (empty if the table's index cannot
@@ -304,6 +309,64 @@ Supported filter operators: `<`, `<=`, `>`, `>=`, `=`, `!=` (numeric on a numeri
 column, string comparison otherwise), `contains` (case-insensitive substring)
 and `in` (comma-separated values). An unknown field or operator is answered
 with `valid: false`.
+
+A spatial selection is a filter with `"op": "inside"` or `"outside"` and a
+`box` (`{"fields": [x, y, z], "min": [...], "max": [...]}`) or a `sphere`
+(`{"fields": [x, y, z], "center": [...], "radius": r}`). Either may carry
+`"period": L`, the length of a periodic box: distances then use the nearest
+periodic image and a box wraps round the faces. Without it, a cosmological
+Gadget snapshot's `BoxSize` is the period of its position columns (`x`, `y`,
+`z`, `centre_of_mass_*`) when the run is periodic (a Gadget-4 `Config/PERIODIC`,
+`periodic=` in `VISIVO_GADGET_UNITS`, else a comoving run); `"period": 0`
+turns wrapping off. A VBT or catalogue
+wraps only when the period is given. On a loaded table the selection is one
+boolean mask applied with the scalar filters, so a big-endian VBT read in
+place works and only the page's rows are copied.
+
+### `POST /v1/catalogue/diagnostics`
+
+Exact histogram and summary moments over the complete filtered population:
+
+```json
+{
+  "dataset_id": "...",
+  "field": "rho",
+  "weight_field": "mass",
+  "bins": 64,
+  "range_min": 1e-12,
+  "range_max": 1e-3,
+  "filters": [
+    { "field": "x", "op": ">=", "value": "-1000" }
+  ]
+}
+```
+
+`weight_field` and the range (both ends or neither) are optional; `bins` is
+between 4 and 512. The response contains `selected_rows`, `finite_rows`,
+extrema, mean and standard deviation (population, combined chunk by chunk with
+Chan's update, so it keeps its digits far from zero), optional `weighted_mean`
+and `weight_sum`, `bin_edges`, `counts`, the field and weight units, and
+textual weighting and selection provenance. Counts are floating point because
+weighted bins contain sums of weights. A loaded table is read a million rows
+at a time, only the columns the filters, the field and the weight need.
+
+### `POST /v1/tasks/catalogue_diagnostics`
+
+The same request and computation as a task, for a table large enough that the
+two passes take a while: the answer is `{task_id, status: "running"}`. It
+takes one of the session's compute slots until the computation ends (HTTP 429
+when none comes free), as the other heavy tasks do.
+`GET /v1/tasks/{task_id}` gives `progress` (0 to 1 over both passes; one pass
+when the range is given) and, once `completed`, `result`, the diagnostics
+response above (`valid: false` with the reason for an unknown field or a bad
+range). `DELETE /v1/tasks/{task_id}` stops it between two chunks (status
+`cancelled`).
+
+For out-of-core particle tables the calculation is a bounded-memory two-pass
+scan over the full component. It is independent of the point-render sample and
+render budget. Non-finite field values are excluded; weighted calculations also
+exclude non-finite and negative weights. An unknown field, invalid range or
+population with no finite values returns `valid: false`.
 
 ---
 

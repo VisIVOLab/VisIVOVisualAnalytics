@@ -133,6 +133,7 @@ class OpenDatasetResponse(BaseModel):
     beam_major: float | None = None
     beam_minor: float | None = None
     beam_pa: float | None = None
+    beam_per_channel: bool = False   # a BEAMS table: one beam per channel (issue #401)
     # Size-aware loading policy. Clients use ``recommended_load_mode``
     # to decide whether to auto-load full resolution or default to
     # preview-only. Threshold is configurable via
@@ -560,10 +561,33 @@ class CatalogueSubsetResponse(BaseModel):
     rows: list[dict[str, Any]] = []
 
 
+class TabularBox(BaseModel):
+    fields: list[str]
+    min: list[float]
+    max: list[float]
+    # The period of the three coordinates (a periodic simulation box), so the
+    # box wraps round it; None: the dataset's own when it states one (a
+    # cosmological Gadget snapshot's BoxSize), 0: no wrapping.
+    period: float | None = None
+
+
+class TabularSphere(BaseModel):
+    fields: list[str]
+    center: list[float]
+    radius: float
+    # As TabularBox.period: distances by the nearest periodic image.
+    period: float | None = None
+
+
 class TabularFilter(BaseModel):
-    field: str
-    op: str    # "=", "!=", ">", ">=", "<", "<=", "contains", "in"
-    value: str
+    # A scalar predicate has field/op/value. A reproducible spatial predicate
+    # has box or sphere plus op=inside|outside and an optional user-facing name.
+    field: str = ""
+    op: str = ""
+    value: str = ""
+    name: str = ""
+    box: TabularBox | None = None
+    sphere: TabularSphere | None = None
 
 
 class TabularSortSpec(BaseModel):
@@ -575,6 +599,10 @@ class TabularQueryRequest(BaseModel):
     dataset_id: str
     limit: int = 100000
     offset: int = 0
+    # Empty means every column.  Large particle tables can request only the
+    # coordinates needed for first paint, then hydrate all attributes in a
+    # background query over the same deterministic sample.
+    fields: list[str] = []
     filters: list[TabularFilter] = []
     sort: TabularSortSpec | None = None
     # When more rows match than ``limit``: an even sample of them (one in every
@@ -602,6 +630,37 @@ class TabularQueryResponse(BaseModel):
     num_rows: int = 0
     fields: list[str] = []
     columns: dict[str, str] = {}
+
+
+class CatalogueDiagnosticsRequest(BaseModel):
+    dataset_id: str
+    field: str
+    weight_field: str = ""
+    bins: int = Field(default=64, ge=4, le=512)
+    filters: list[TabularFilter] = []
+    range_min: float | None = None
+    range_max: float | None = None
+
+
+class CatalogueDiagnosticsResponse(BaseModel):
+    valid: bool
+    error: str
+    field: str = ""
+    field_unit: str = ""
+    weight_field: str = ""
+    weight_unit: str = ""
+    selected_rows: int = 0
+    finite_rows: int = 0
+    minimum: float = 0.0
+    maximum: float = 0.0
+    mean: float = 0.0
+    stddev: float = 0.0
+    weighted_mean: float | None = None
+    weight_sum: float | None = None
+    bin_edges: list[float] = []
+    counts: list[float] = []
+    weighting: str = "unweighted"
+    selection: list[str] = []
 
 
 class VbtOpenRequest(BaseModel):

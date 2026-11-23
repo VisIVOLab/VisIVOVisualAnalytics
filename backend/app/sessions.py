@@ -87,6 +87,24 @@ class SessionQuotaExceeded(RuntimeError):
     """Raised when a token already holds the maximum number of live sessions."""
 
 
+def release_particle_cache(entry: dict, others) -> None:
+    """Drop the decompressed HDF5 pieces kept for a closed Gadget dataset
+    (gadget_snapshot.PIECE_CACHE) when none of ``others`` reads the same
+    snapshot file."""
+    path = str(entry.get("path") or "")
+    if entry.get("format") != "gadget" or not path:
+        return
+    try:
+        from .gadget_snapshot import release, split_ref  # noqa: PLC0415
+        base = split_ref(path)[0]
+        if any(split_ref(str(o.get("path") or ""))[0] == base for o in others
+               if o is not entry and o.get("format") == "gadget"):
+            return
+        release(path)
+    except Exception:   # noqa: BLE001 - a cache, never a reason to fail a close
+        logger.debug("[sessions] particle cache release failed", exc_info=True)
+
+
 def _safe_close_memmap(arr: object) -> None:
     """Close a numpy memmap's underlying file descriptor safely.
 
@@ -146,6 +164,7 @@ class Session:
         waiting for the garbage collector.
         """
         for dataset_id, entry in self.datasets.items():
+            release_particle_cache(entry, ())
             if entry.get("kind") == "vbt":
                 mm = entry.get("memmap")
                 if mm is not None:
@@ -155,6 +174,11 @@ class Session:
                         dataset_id,
                         _redact(self.session_id),
                     )
+
+    def release_particle_cache(self, entry: dict) -> None:
+        """After ``entry`` closed: the memory kept for its snapshot, unless
+        another dataset of this session still reads that snapshot."""
+        release_particle_cache(entry, self.datasets.values())
 
     def try_acquire_task_slot(self) -> bool:
         """Atomically increment active-task counter if below the limit.

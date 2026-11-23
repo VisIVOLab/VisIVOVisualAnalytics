@@ -12,6 +12,7 @@
 #include "TestRemoteSliceCache.h"
 #include "TestLinkedWindowRegistry.h"
 #include "TestLinkedCameraSync.h"
+#include "TestSnapshotTimelineSteps.h"
 #include "TestSpectralUnitConvert.h"
 #include "TestCubeRegionGeom.h"
 #include "TestCubeToolGate.h"
@@ -36,6 +37,7 @@
 #include "TestViewerModeState.h"
 #include "TestRemoteLevels.h"
 #include "TestRemoteCameraPreset.h"
+#include "TestCatalogueSelection.h"
 #include "TestRemoteRenderQueue.h"
 #include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
@@ -51,6 +53,7 @@
 #include "TestTaskQuitDrain.h"
 #include "TestVelocityLodGeometry.h"
 #include "TestSolidSplats.h"
+#include "TestRaytraceViewRules.h"
 #include "TestSystemQuitRedirect.h"
 #include "TestSupportedFormats.h"
 #include "TestFilePreview.h"
@@ -68,6 +71,7 @@
 #include "TestLayerCardGeometry.h"
 #include "TestRegionReadout.h"
 #include "TestRegionModel.h"
+#include "TestRegionFlux.h"
 #include "TestBackendUrlLocality.h"
 #include "TestSkavaClient.h"
 #include "TestPvPathGeometry.h"
@@ -103,6 +107,7 @@ int main(int argc, char *argv[])
     { TestRemoteSliceCache t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedWindowRegistry t; status |= QTest::qExec(&t, argc, argv); }
     { TestLinkedCameraSync     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSnapshotTimelineSteps t; status |= QTest::qExec(&t, argc, argv); }
     { TestSpectralUnitConvert t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeRegionGeom   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeToolGate     t; status |= QTest::qExec(&t, argc, argv); }
@@ -127,6 +132,7 @@ int main(int argc, char *argv[])
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteLevels     t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteCameraPreset t; status |= QTest::qExec(&t, argc, argv); }
+    { TestCatalogueSelection t; status |= QTest::qExec(&t, argc, argv); }
     { TestRemoteRenderQueue t; status |= QTest::qExec(&t, argc, argv); }
     { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
@@ -157,6 +163,7 @@ int main(int argc, char *argv[])
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionModel      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRegionFlux       t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkavaClient      t; status |= QTest::qExec(&t, argc, argv); }
     { TestPvPathGeometry   t; status |= QTest::qExec(&t, argc, argv); }
@@ -176,5 +183,6 @@ int main(int argc, char *argv[])
     { TestCopilotChoice    t; status |= QTest::qExec(&t, argc, argv); }
     { TestVelocityLodGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestSolidSplats      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRaytraceViewRules t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

@@ -42,7 +42,7 @@ class ParticleGLView : public QOpenGLWidget, protected QOpenGLExtraFunctions
     Q_OBJECT
 
 public:
-    enum class Mode { Light, Projected };
+    enum class Mode { Light, LightScalar, Projected };
     /// A map's hue: the density, a named map over the mean quantity's spread,
     /// the view's colours over their range, or (a grid) the mean colour index
     /// itself, the table spanning [hueMin, hueMax] of the colour's quantity.
@@ -63,6 +63,9 @@ public:
         bool hueLog = false;
         double hueMin = 0.0, hueMax = 1.0;   ///< the view's colours' range (ViewColours)
         std::vector<QVector3D> lut;          ///< 256 colours
+        /// A colour value that is NaN (LightScalar): the stills' colour for
+        /// it, VTK's lookup-table default (particle_render.py, _colours).
+        QVector3D nanColour{ 0.5f, 0.0f, 0.0f };
         double slab = 0.0;   ///< a map's thickness about the focal plane (0: everything)
         /// A grid: the optical depth where the light is brightest (0: none),
         /// and the samples per voxel along a ray.
@@ -77,9 +80,10 @@ public:
     explicit ParticleGLView(QWidget *parent = nullptr);
     ~ParticleGLView() override;
 
-    /// Rows of little-endian float32: x y z r e red green blue (Light) or
-    /// x y z r w v (Projected), as the backend sends them: positions and
-    /// sizes in ``frame`` (the table's coordinates are origin + scale × row),
+    /// Rows of little-endian float32: x y z r e red green blue (Light),
+    /// x y z r e value (LightScalar), or x y z r w v (Projected), as the
+    /// backend sends them: positions and sizes in ``frame`` (the table's
+    /// coordinates are origin + scale × row),
     /// which the camera is moved into before it is drawn in float.
     void setParticles(const QByteArray &rows, int count, Mode mode,
                       const visivo::ParticleFrame &frame = {});
@@ -113,6 +117,10 @@ public:
 signals:
     /// GL could not start or draw (an old driver): the caller falls back.
     void failed(const QString &reason);
+    /// The first complete frame after new particles or a new grid was drawn.
+    /// Callers use this to keep a preparation overlay visible until the GPU,
+    /// rather than just the network request, is actually ready.
+    void frameReady();
 
 protected:
     void initializeGL() override;
@@ -134,9 +142,11 @@ private:
     /// from the brightest column of an emission-only pass at a quarter size.
     double gridKappa(const QSize &size);
     void toneTo(GLuint fbo, const QSize &size);
-    void toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo, double hueHi);
+    void toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo, double hueHi,
+                  bool hueLog);
 
     bool m_ready{ false };
+    bool m_framePending{ false };
     Mode m_mode{ Mode::Light };
     int m_count{ 0 };
     QByteArray m_rows;

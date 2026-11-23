@@ -1,4 +1,5 @@
 #include "ParticleGLView.h"
+#include "ScalarColourRange.h"
 
 #include <QJsonArray>
 #include <QMatrix4x4>
@@ -31,16 +32,24 @@ layout(location = 0) in vec3 a_pos;
 layout(location = 1) in float a_r;
 layout(location = 2) in float a_e;
 layout(location = 3) in vec3 a_col;
+uniform sampler2D u_lut;
 uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform int u_parallel;
 uniform float u_pxPerUnit;   // parallel: pixels per unit; perspective: the focal length in pixels
 uniform int u_projected;
+uniform int u_scalarColour;
+uniform int u_hueLog;
+uniform float u_hueLo;     // the colour range's low end (its log10 on a log scale)
+uniform float u_hueSpan;   // and its width, both worked out in double; 0: flat
+uniform vec3 u_nanColour;
 uniform float u_slab;    // a map's half thickness about the focal plane; 0: everything
 uniform float u_focal;   // the focal plane's depth
 out vec2 v_xy;
 out vec3 v_emit;
 const float CUT = 2.5;
+// By its bits: a compiler's fast maths may take isnan() to be always false.
+bool nanValue(float x) { return (floatBitsToUint(x) & 0x7fffffffu) > 0x7f800000u; }
 void main() {
     vec2 corner = vec2((gl_VertexID & 1) == 0 ? -1.0 : 1.0, (gl_VertexID & 2) == 0 ? -1.0 : 1.0);
     vec4 c = u_view * vec4(a_pos, 1.0);
@@ -59,7 +68,28 @@ void main() {
     float reach = CUT * a_r * grown / max(rpx, 1e-30);
     gl_Position = u_proj * (c + vec4(corner * reach, 0.0, 0.0));
     v_xy = corner * CUT;
-    v_emit = u_projected == 1 ? vec3(a_e * w, a_e * w * a_col.x, 0.0) : a_col * (a_e * w);
+    vec3 colour = a_col;
+    if (u_scalarColour == 1) {
+        // As the stills colour it (particle_render.py, _colours): NaN in the
+        // table's NaN colour; on a log scale, a value at or below zero in the
+        // lowest colour. No absolute floor: cgs densities reach 1e-30 and less.
+        float v = a_col.x;
+        if (nanValue(v)) {
+            colour = u_nanColour;
+        } else {
+            float t = 0.0;
+            if (u_hueSpan > 0.0) {
+                if (u_hueLog == 1)
+                    t = v > 0.0 ? (log2(v) * 0.30102999566398120 - u_hueLo) / u_hueSpan : 0.0;
+                else
+                    t = (v - u_hueLo) / u_hueSpan;
+            }
+            t = clamp(t, 0.0, 1.0);
+            colour = texture(u_lut, vec2(t * (255.0 / 256.0) + 0.5 / 256.0, 0.5)).rgb;
+        }
+    }
+    v_emit = u_projected == 1 ? vec3(a_e * w, a_e * w * a_col.x, 0.0)
+                              : colour * (a_e * w);
 }
 )";
 
@@ -117,8 +147,17 @@ void main() {
             rgb = b > 0.0 ? lut(b) : vec3(0.0);
         } else {
             float m = a.g / d;
-            float x = u_hueLog == 1 ? log(max(m, 1e-30)) / log(10.0) : m;
-            float f = clamp((x - u_hueLo) / max(u_hueHi - u_hueLo, 1e-30), 0.0, 1.0);
+            // No absolute floor (a mean of cgs densities is below 1e-30): on
+            // a log scale a mean at or below zero takes the lowest hue.
+            float span = u_hueHi - u_hueLo;
+            float f = 0.0;
+            if (span > 0.0) {
+                if (u_hueLog == 1)
+                    f = m > 0.0 ? (log2(m) * 0.30102999566398120 - u_hueLo) / span : 0.0;
+                else
+                    f = (m - u_hueLo) / span;
+            }
+            f = clamp(f, 0.0, 1.0);
             rgb = lut(u_hue == 1 ? 0.3 + 0.7 * f : f) * b;
         }
         o = vec4(clamp(rgb, 0.0, 1.0), 1.0);
@@ -303,7 +342,7 @@ void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode,
     // The box the particles fill (the first three fields of every row), in
     // the table's coordinates: the overlay labels it and draws it with the
     // camera, which is in them too.
-    const int fields = mode == Mode::Projected ? 6 : 8;
+    const int fields = mode == Mode::Light ? 8 : 6;
     const float *f = reinterpret_cast<const float *>(rows.constData());
     m_hasBounds = count > 0;
     m_bounds = { 1e300, -1e300, 1e300, -1e300, 1e300, -1e300 };
@@ -317,6 +356,7 @@ void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode,
         }
     m_upload = true;
     m_stats = false;
+    m_framePending = true;
     update();
 }
 
@@ -333,6 +373,7 @@ void ParticleGLView::setGrid(Grid grid, Mode mode)
     m_gridUpload = m_hasGrid;
     m_kappaStale = true;
     m_stats = false;
+    m_framePending = true;
     update();
 }
 
@@ -344,14 +385,17 @@ void ParticleGLView::setCamera(const QJsonObject &camera)
 
 void ParticleGLView::setTone(const Tone &tone)
 {
+    const bool lutChanged = tone.lut != m_tone.lut;
+    const bool scalarColourChanged = lutChanged || tone.hueLog != m_tone.hueLog
+            || tone.hueMin != m_tone.hueMin || tone.hueMax != m_tone.hueMax;
     const bool hueChanged = tone.hue != m_tone.hue || tone.hueLog != m_tone.hueLog
             || tone.slab != m_tone.slab || tone.absorption != m_tone.absorption
             || tone.quality != m_tone.quality;
     if (tone.absorption != m_tone.absorption || tone.quality != m_tone.quality)
         m_kappaStale = true;
     m_tone = tone;
-    m_lutDirty = true;
-    if (hueChanged)
+    m_lutDirty = m_lutDirty || lutChanged;
+    if (hueChanged || (m_mode == Mode::LightScalar && scalarColourChanged))
         m_stats = false;
     update();
 }
@@ -405,7 +449,10 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
             o.lut = m_tone.lut;
             o.lo = m_tone.hueMin;
             o.hi = m_tone.hueMax;
-            o.log = m_tone.hueLog;
+            // Linear when a log range reaches zero, as the picture is drawn.
+            o.log = m_tone.hue == Hue::Index
+                    ? m_tone.hueLog
+                    : visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog).log;
         }
         o.hasBar = !o.lut.empty() && o.hi > o.lo;
         return o;
@@ -414,7 +461,8 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
     o.lut = m_tone.lut;
     o.lo = m_tone.hueMin;
     o.hi = m_tone.hueMax;
-    o.log = m_tone.hueLog;
+    // Linear when a log range reaches zero, as the splats are coloured.
+    o.log = visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog).log;
     o.hasBar = !o.lut.empty() && o.hi > o.lo;
     return o;
 }
@@ -498,7 +546,7 @@ void ParticleGLView::accumulate(const QSize &size)
         return;
     }
     if (m_upload) {
-        const int fields = m_mode == Mode::Projected ? 6 : 8;
+        const int fields = m_mode == Mode::Light ? 8 : 6;
         m_vao->bind();
         m_vbo->bind();
         m_vbo->allocate(m_rows.constData(), int(m_rows.size()));
@@ -508,7 +556,7 @@ void ParticleGLView::accumulate(const QSize &size)
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(0));
         glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(12));
         glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void *>(16));
-        glVertexAttribPointer(3, m_mode == Mode::Projected ? 1 : 3, GL_FLOAT, GL_FALSE, stride,
+        glVertexAttribPointer(3, m_mode == Mode::Light ? 3 : 1, GL_FLOAT, GL_FALSE, stride,
                               reinterpret_cast<void *>(20));
         for (int loc = 0; loc < 4; ++loc)
             glVertexAttribDivisor(GLuint(loc), 1);
@@ -561,6 +609,16 @@ void ParticleGLView::accumulate(const QSize &size)
     m_splat->setUniformValue("u_parallel", parallel ? 1 : 0);
     m_splat->setUniformValue("u_pxPerUnit", float(pxPerUnit));
     m_splat->setUniformValue("u_projected", m_mode == Mode::Projected ? 1 : 0);
+    m_splat->setUniformValue("u_scalarColour", m_mode == Mode::LightScalar ? 1 : 0);
+    const visivo::ScalarColourRange hue =
+            visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog);
+    m_splat->setUniformValue("u_hueLog", hue.log ? 1 : 0);
+    m_splat->setUniformValue("u_hueLo", float(hue.lo));
+    m_splat->setUniformValue("u_hueSpan", float(hue.span));
+    m_splat->setUniformValue("u_nanColour", m_tone.nanColour);
+    glActiveTexture(GL_TEXTURE0);
+    m_lutTexture->bind(0);
+    m_splat->setUniformValue("u_lut", 0);
     // The slab is in the table's units, the particles in the frame's.
     m_splat->setUniformValue("u_slab", float(m_mode == Mode::Projected
                                                      ? m_tone.slab / (2.0 * m_frame.scale)
@@ -569,6 +627,7 @@ void ParticleGLView::accumulate(const QSize &size)
     m_vao->bind();
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, m_count);
     m_vao->release();
+    m_lutTexture->release(0);
     m_splat->release();
     glDisable(GL_BLEND);
     m_accum->release();
@@ -590,7 +649,7 @@ void ParticleGLView::toneTo(GLuint fbo, const QSize &size)
         m_accum->release();
         std::vector<float> a, b;
         a.reserve(rgba.size() / 4);
-        if (m_mode == Mode::Light) {
+        if (m_mode != Mode::Projected) {
             for (size_t i = 0; i < rgba.size(); i += 4) {
                 const float lum = 0.2126f * rgba[i] + 0.7152f * rgba[i + 1] + 0.0722f * rgba[i + 2];
                 if (lum > 0)
@@ -622,14 +681,21 @@ void ParticleGLView::toneTo(GLuint fbo, const QSize &size)
     const int curve = m_tone.curve == u"log"_s ? 1 : m_tone.curve == u"exponential"_s ? 2
                     : m_tone.curve == u"linear"_s ? 3 : 0;
     double hueLo = m_hueLo, hueHi = m_hueHi;
-    if (m_tone.hue == Hue::ViewColours) {   // the view's own range
-        hueLo = m_tone.hueLog ? std::log10(std::max(m_tone.hueMin, 1e-300)) : m_tone.hueMin;
-        hueHi = m_tone.hueLog ? std::log10(std::max(m_tone.hueMax, 1e-300)) : m_tone.hueMax;
+    bool hueLog = m_tone.hueLog;
+    if (m_tone.hue == Hue::ViewColours) {
+        // The view's own range, as the 3-D render's splats take it: linear
+        // when a log range reaches zero.
+        const visivo::ScalarColourRange r =
+                visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog);
+        hueLo = r.lo;
+        hueHi = r.lo + r.span;
+        hueLog = r.log;
     } else if (m_tone.hue == Hue::Index) {   // the mean index is the table's place
         hueLo = 0.0;
         hueHi = 1.0;
+        hueLog = false;
     }
-    toneWith(fbo, lo, hi, curve, hueLo, hueHi);
+    toneWith(fbo, lo, hi, curve, hueLo, hueHi, hueLog);
 }
 
 void ParticleGLView::ensureLut()
@@ -652,7 +718,7 @@ void ParticleGLView::ensureLut()
 }
 
 void ParticleGLView::toneWith(GLuint fbo, double lo, double hi, int curve, double hueLo,
-                              double hueHi)
+                              double hueHi, bool hueLog)
 {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     m_tonePass->bind();
@@ -672,8 +738,7 @@ void ParticleGLView::toneWith(GLuint fbo, double lo, double hi, int curve, doubl
     m_tonePass->setUniformValue("u_hi", float(hi));
     m_tonePass->setUniformValue("u_hue", m_tone.hue == Hue::Density ? 0
                                        : m_tone.hue == Hue::NamedMap ? 1 : 2);
-    m_tonePass->setUniformValue("u_hueLog",
-                                m_tone.hueLog && m_tone.hue != Hue::Index ? 1 : 0);
+    m_tonePass->setUniformValue("u_hueLog", hueLog ? 1 : 0);
     m_tonePass->setUniformValue("u_hueLo", float(hueLo));
     m_tonePass->setUniformValue("u_hueHi", float(hueHi));
     m_quadVao->bind();
@@ -854,4 +919,8 @@ void ParticleGLView::paintGL()
                                  QRectF(rect.x() / dpr, rect.y() / dpr, rect.width() / dpr,
                                         rect.height() / dpr),
                                  m_camera, overlay());
+    if (m_framePending) {
+        m_framePending = false;
+        emit frameReady();
+    }
 }
