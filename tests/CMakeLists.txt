@@ -151,6 +151,8 @@ add_executable(VisIVOTests
     test_ray_voxel_pick.cpp
     TestSedBuilder.h
     test_sed_builder.cpp
+    TestMolecularLineClient.h
+    test_molecular_line_client.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h

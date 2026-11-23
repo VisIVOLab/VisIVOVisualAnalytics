@@ -939,6 +939,9 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
+    result.beamSource = object.value(QStringLiteral("beam_source")).toString();
+    result.intensityUnit = object.value(QStringLiteral("intensity_unit")).toString();
+    result.intensityUnitNote = object.value(QStringLiteral("intensity_unit_note")).toString();
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1181,6 +1184,9 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
+    result.beamSource = object.value(QStringLiteral("beam_source")).toString();
+    result.intensityUnit = object.value(QStringLiteral("intensity_unit")).toString();
+    result.intensityUnitNote = object.value(QStringLiteral("intensity_unit_note")).toString();
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1452,6 +1458,26 @@ BackendPixelSkyResult BackendClient::pixelToSky(const QString &datasetId, double
     result.decDeg = object.value(QStringLiteral("dec_deg")).toDouble();
     result.frame = object.value(QStringLiteral("frame")).toString();
     return result;
+}
+
+visivo::beam::BeamResult BackendClient::setDatasetBeam(
+        const visivo::beam::BeamRequest &request) const
+{
+    QString error;
+    int status = 0;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/beam")),
+                        QJsonDocument(visivo::beam::requestBody(request)), error, nullptr,
+                        &status);
+    if (!error.isEmpty()) {
+        visivo::beam::BeamResult result;
+        const QString why = status >= 400 ? visivo::replyErrorText(payload) : QString();
+        result.error = visivo::isMissingRouteReply(status, payload)
+                ? QStringLiteral("This backend cannot keep a typed beam; update it.")
+                : (why.isEmpty() ? error : why);
+        return result;
+    }
+    return visivo::beam::parseResponse(QJsonDocument::fromJson(payload).object());
 }
 
 BackendSampImportResult BackendClient::importSampUrl(const QString &url,

@@ -23,4 +23,12 @@ private slots:
     void backgroundFlagRoundTripsAndUndoes();
     void distancesAndMasses();
     void fluxAndMassText();
+    void everyUnitKindIsRecognised();
+    void aJyPerPixelMapSumsWithoutTheBeam();
+    void aSurfaceBrightnessMapIsMultipliedByThePixelSolidAngle();
+    void aTemperatureMapGivesBrightnessTimesAreaNotJy();
+    void aRegionSmallerThanTheBeamIsOneSample();
+    void unitsWithUnreadTailsAreUnknown();
+    void aFluxIsRefusedWithTheReason();
+    void anHiMassOnlyForTheTwentyOneCentimetreLine();
 };

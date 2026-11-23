@@ -46,12 +46,18 @@ to the displayed spectrum on the backend and draws the model as an orange
 dashed curve. The stats bar shows peak, centre and FWHM with 1σ errors, the
 integral and the residual rms. *Clear Fit* removes it.
 
-- At least 6 finite channels are needed.
+- The *Fit* menu beside the button chooses the channels: *Fit visible
+  range* (the default) fits only the part of the spectrum on screen, so zoom
+  on the line first; *Fit typed range…* asks for two axis values; *Fit whole
+  spectrum* uses every channel. The summary ends with the range fitted, and
+  the model is drawn over that range only.
+- At least 6 finite channels are needed in the range.
 - The fit tries several starting positions and widths and keeps the best
-  resolved solution, so a narrow line on a wide spectrum is found as long as
-  it stands out. A strong edge spike or a brighter noise peak can still
-  capture the fit; the result then carries a warning that it is unreliable.
-  The profiler does not yet restrict the fit to the visible range.
+  resolved solution. A strong edge spike or a brighter noise peak inside the
+  range can still capture it. The summary then starts with *⚠ CHECK THE FIT*,
+  the label on the plot turns red, and the tooltip gives the reason: the
+  backend's warning, or a negative peak on an emission spectrum (a dip in the
+  baseline, not the line). Narrow the range and fit again.
 - When channels are correlated (instrumental or display smoothing) the
   summary says by how much the errors were scaled (*errors ×1.4 for
   correlated channels*) or that they are uncorrected.
