@@ -1432,11 +1432,8 @@ void vtkWindowCube::requestFullResolutionRegionSpectrum(
         if (!this->m_products1d.contains(productId))
             return;
         const BackendSpectrumResult r = watcher->result();
-        if (!r.valid || r.values.size() != this->m_products1d[productId].values.size()) {
-            const QString why = r.valid ? u"the file has %1 channels, the view %2"_s
-                                                  .arg(r.values.size())
-                                                  .arg(this->m_products1d[productId].values.size())
-                                        : r.error;
+        if (!r.valid || r.values.isEmpty()) {
+            const QString why = r.valid ? u"no channels"_s : r.error;
             this->statusBar()->showMessage(
                     u"%1: the full-resolution spectrum failed (%2); the spectrum shown is the "
                     u"3-D preview's."_s.arg(regionLabel, why),
@@ -1444,6 +1441,15 @@ void vtkWindowCube::requestFullResolutionRegionSpectrum(
             return;
         }
         Spectrum1D &sp = this->m_products1d[productId];
+        // Every channel of the file: a preview may show fewer (its sampling is
+        // along z too), so the axis is rebuilt, in the viewer's own spectral
+        // convention and unit, from the file's channel indices.
+        sp.key.resize(r.values.size());
+        for (qsizetype i = 0; i < r.values.size(); ++i) {
+            bool okAxis = false;
+            const double v = this->spectralAxisValue(double(i), &okAxis);
+            sp.key[i] = okAxis ? v : double(i);
+        }
         sp.values = r.values;
         const QString scope = u"full resolution, %1 pixels (from the file)"_s.arg(r.nPix);
         params.insert(u"Spectrum from"_s, scope);
