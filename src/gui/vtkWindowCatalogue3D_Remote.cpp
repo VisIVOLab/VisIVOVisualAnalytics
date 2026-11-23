@@ -849,6 +849,8 @@ void vtkWindowCatalogue3D::leaveRaytraced(const QString &why)
 void vtkWindowCatalogue3D::setRaytraced(bool on)
 {
     this->enablePointOnlyControls(!on);
+    if (on)
+        this->updateSplatPass();   // nothing local is drawn meanwhile
     if (!on) {
         if (this->m_rtCard)
             this->m_rtCard->hide();

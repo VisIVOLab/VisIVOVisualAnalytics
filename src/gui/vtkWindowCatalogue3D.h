@@ -83,6 +83,7 @@ class QFormLayout;
 class QVBoxLayout;
 class RemoteRenderWidget;
 class vtkPointGaussianMapper;
+class vtkToneMappingPass;
 class vtkPiecewiseFunction;
 class AssistantPanel;
 QT_BEGIN_NAMESPACE
@@ -357,7 +358,9 @@ private:
     void buildShells();
     void updateGlyphPipeline();
     void updateGlyphScales();
-    void updatePointPositions();
+    /// ``newSplatBasis``: the points moved, so the splats' box and number of
+    /// points are taken again; false keeps those of the table with no filter.
+    void updatePointPositions(bool newSplatBasis = true);
     void updateColorMapping();
     void ensureCatalogueDock();
     void refreshCatalogueTable();
@@ -622,6 +625,7 @@ private:
     vtkNew<vtkMaskPoints> renderDecimator;
     int m_renderBudget{ 1000000 };
     bool m_renderDecimated{ false };
+    long long m_renderStride{ 1 };   ///< every m_renderStride-th point is drawn
     void applyRenderBudget();
     /// Status text when the GPU point budget is thinning the cloud (empty when
     /// the full cloud is drawn). Reassures that picking/stats use every source.
@@ -638,13 +642,19 @@ private:
     vtkNew<vtkPointGaussianMapper> gaussianMapper;
     vtkNew<vtkPiecewiseFunction> gaussianOpacity;
     vtkNew<vtkActor> gaussianActor;
+    /// The renderer's pass in Gaussian mode only (ParticleSplatVtk).
+    vtkSmartPointer<vtkToneMappingPass> m_splatPass;
+    void updateSplatPass();
     void updateGaussianSplats();
     /// Point size of the Point shape, in pixels (1..16).
     double pointSizeFromScale() const;
-    /// Bounds and count of the points with no filter: the splats are sized on
-    /// them, so that a filter removes points without restyling the others.
+    /// Bounds and number of the points with no filter: the splats are sized on
+    /// them (over the render budget's stride), so that a filter removes points
+    /// without restyling the others.
     double m_splatBounds[6]{ 0, 0, 0, 0, 0, 0 };
     vtkIdType m_splatCount{ 0 };
+    QString m_splatBasisKey;   ///< the table m_splatBounds/m_splatCount belong to
+    void captureSplatBasis();
     /// The size slider holds a value the viewer chose (the Gaussian default
     /// for a large table), not the user: a change of shape may change it
     /// (ParticleSplatDefaults::automaticSliderValue).

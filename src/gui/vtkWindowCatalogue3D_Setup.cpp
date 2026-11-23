@@ -431,6 +431,8 @@ void vtkWindowCatalogue3D::buildControlPages()
                              if (this->entries.empty())
                                  return;
                              this->applyRenderBudget();
+                             if (this->geometryMode == GeometryMode::Gaussian)
+                                 this->updateGaussianSplats();
                              this->renderWindow->Render();
                              if (this->filterStatusLabel)
                                  this->filterStatusLabel->setText(
