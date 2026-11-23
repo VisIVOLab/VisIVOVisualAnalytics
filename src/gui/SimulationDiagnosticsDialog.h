@@ -25,14 +25,16 @@ class QListWidget;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
+class QTableWidget;
 class QTabWidget;
 class QTimer;
 class QCustomPlot;
 class QCPMarginGroup;
 
 /// Exact diagnostics of the particles a catalogue window has selected, over
-/// the complete population on the backend: a histogram, a radial profile and
-/// a phase diagram (issues #448, #426). One run at a time, as a backend task
+/// the complete population on the backend: a histogram, a profile
+/// (spherical, cylindrical or along an axis), a phase diagram and the
+/// physical totals (issues #448, #426). One run at a time, as a backend task
 /// with progress and Cancel.
 class SimulationDiagnosticsDialog : public QDialog
 {
@@ -60,7 +62,7 @@ public:
     void setCentreSources(PointSource pickedPoint, TargetSource subfindTarget);
 
 private:
-    enum class Kind { Histogram, Profile, Phase };
+    enum class Kind { Histogram, Profile, Phase, Totals };
 
     struct Outcome
     {
@@ -69,6 +71,7 @@ private:
         visivo::profiles::ProfileResult profile;
         visivo::profiles::PhaseResult phase;
         visivo::profiles::PhaseRequest phaseAsked;
+        visivo::profiles::TotalsResult totals;
     };
 
     /// A run, validated and with everything it needs, as asked when the
@@ -88,6 +91,8 @@ private:
     QWidget *buildHistogramTab(const QStringList &numericFields);
     QWidget *buildProfileTab(const QStringList &numericFields);
     QWidget *buildPhaseTab(const QStringList &numericFields);
+    QWidget *buildTotalsTab();
+    void updateGeometryControls();
     Kind currentKind() const;
     void run();
     void runKind(Kind kind);
@@ -103,6 +108,7 @@ private:
     void presentHistogram(const BackendCatalogueDiagnosticsResponse &result);
     void presentProfile(const visivo::profiles::ProfileResult &result);
     void presentPhase(const visivo::profiles::PhaseResult &result);
+    void presentTotals(const visivo::profiles::TotalsResult &result);
     void plotProfile();
     void saveCsv();
     void savePng();
@@ -123,6 +129,8 @@ private:
     bool m_hasHistogram = false;
     bool m_hasProfile = false;
     bool m_hasPhase = false;
+    visivo::profiles::TotalsResult m_totals;
+    bool m_hasTotals = false;
     /// What the phase diagram on show was asked for: its axes, scales and
     /// weight, which the controls may no longer say.
     visivo::profiles::PhaseRequest m_phaseAsked;
@@ -161,12 +169,17 @@ private:
     QPointer<QLabel> m_summary;
     QPointer<QCustomPlot> m_plot;
 
-    // Radial profile
+    // Profile
+    QPointer<QComboBox> m_geometry;
     QPointer<QComboBox> m_centreMode;
     QPointer<QDoubleSpinBox> m_pointX, m_pointY, m_pointZ;
     QPointer<QPushButton> m_usePicked;
     QPointer<QLabel> m_targetLabel;
     QPointer<QDoubleSpinBox> m_rMin, m_rMax;
+    QPointer<QLabel> m_rangeLabel, m_binsLabel, m_heightLabel, m_axisLabel;
+    QPointer<QCheckBox> m_useHeight;
+    QPointer<QDoubleSpinBox> m_zMin, m_zMax;
+    QPointer<QWidget> m_heightRow;
     QPointer<QSpinBox> m_profileBins;
     QPointer<QComboBox> m_profileAxis;
     QPointer<QListWidget> m_profileColumns;
@@ -180,6 +193,10 @@ private:
     QPointer<QSpinBox> m_phaseXBins, m_phaseYBins;
     QPointer<QLabel> m_phaseSummary;
     QPointer<QCustomPlot> m_phasePlot;
+
+    // Totals
+    QPointer<QLabel> m_totalsSummary;
+    QPointer<QTableWidget> m_totalsTable;
 };
 
 #endif

@@ -22,6 +22,9 @@ private slots:
     void theProfileRunsAsATask();
     void thePhaseDiagramRunsAsATaskAndCancels();
     void anOlderBackendIsToldToUpdate();
+    void theGeometryGoesInTheBodyWithItsSlab();
+    void cylindricalAndAxialAnswersAreParsed();
+    void theTotalsRunAsATaskWithReasonsForMissingValues();
 };
 
 #endif

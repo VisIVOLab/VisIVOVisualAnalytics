@@ -2585,6 +2585,13 @@ public:
             const visivo::profiles::PhaseRequest &req,
             const std::vector<BackendTabularFilter> &filters,
             visivo::BackendTaskControl *control) const;
+    /** The physical totals of the particles matching @p filters (mass,
+     *  centre-of-mass velocity, momentum, kinetic and thermal energy, with
+     *  the backend's default fields), through /v1/tasks/catalogue_totals.
+     *  Blocks: call it on a worker. */
+    visivo::profiles::TotalsResult catalogueTotalsFollowingTask(
+            const QString &datasetId, const std::vector<BackendTabularFilter> &filters,
+            visivo::BackendTaskControl *control) const;
     BackendVbtOpenResult openVbt(const QString &path, const QString &format = QString());
     BackendVbtSubsetResult requestVbtSubset(const QString &datasetId, int maxRows = 0,
                                             const QString &fieldName = QString()) const;

@@ -21,7 +21,9 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QHeaderView>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTextStream>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -97,8 +99,9 @@ SimulationDiagnosticsDialog::SimulationDiagnosticsDialog(
 
     m_tabs = new QTabWidget(this);
     m_tabs->addTab(this->buildHistogramTab(numericFields), u"Histogram"_s);
-    m_tabs->addTab(this->buildProfileTab(numericFields), u"Radial profile"_s);
+    m_tabs->addTab(this->buildProfileTab(numericFields), u"Profile"_s);
     m_tabs->addTab(this->buildPhaseTab(numericFields), u"Phase diagram"_s);
+    m_tabs->addTab(this->buildTotalsTab(), u"Totals"_s);
     outer->addWidget(m_tabs, 1);
 
     auto *runRow = new QHBoxLayout;
@@ -167,6 +170,19 @@ QWidget *SimulationDiagnosticsDialog::buildProfileTab(const QStringList &numeric
     auto *layout = new QVBoxLayout(page);
     auto *form = new QFormLayout;
 
+    m_geometry = new QComboBox(page);
+    m_geometry->addItem(u"Spherical shells (r)"_s, static_cast<int>(profiles::Geometry::Spherical));
+    m_geometry->addItem(u"Cylindrical annuli (R, distance from the axis)"_s,
+                        static_cast<int>(profiles::Geometry::Cylindrical));
+    m_geometry->addItem(u"Along the axis (z, signed height)"_s,
+                        static_cast<int>(profiles::Geometry::Axial));
+    m_geometry->setToolTip(
+            u"Spherical: log-spaced shells about the centre. Cylindrical: log-spaced annuli in "
+            u"the distance R from the axis through the centre, over the whole selection or a "
+            u"slab in z. Along the axis: linear slabs in the signed height z, optionally "
+            u"within R < the radius limit."_s);
+    form->addRow(u"Geometry"_s, m_geometry);
+
     m_centreMode = new QComboBox(page);
     m_centreMode->addItem(u"Shrinking sphere"_s, static_cast<int>(profiles::CentreMode::ShrinkingSphere));
     m_centreMode->addItem(u"Point"_s, static_cast<int>(profiles::CentreMode::Point));
@@ -203,15 +219,29 @@ QWidget *SimulationDiagnosticsDialog::buildProfileTab(const QStringList &numeric
     rangeLayout->addWidget(m_rMin);
     rangeLayout->addWidget(new QLabel(u"to"_s, rangeRow));
     rangeLayout->addWidget(m_rMax);
-    rangeRow->setToolTip(u"Radii in the table's length unit. Automatic: from the larger of the "
-                         u"smallest distance and r_max/1000, out to the largest distance, half "
-                         u"the box, or the edge of a box or sphere selection."_s);
-    form->addRow(u"Radius range"_s, rangeRow);
+    m_rangeLabel = new QLabel(page);
+    form->addRow(m_rangeLabel, rangeRow);
+
+    m_heightRow = new QWidget(page);
+    auto *heightLayout = new QHBoxLayout(m_heightRow);
+    heightLayout->setContentsMargins(0, 0, 0, 0);
+    m_useHeight = new QCheckBox(m_heightRow);
+    m_zMin = coordinateBox(m_heightRow);
+    m_zMax = coordinateBox(m_heightRow);
+    m_zMin->setValue(-1.0);
+    m_zMax->setValue(1.0);
+    heightLayout->addWidget(m_useHeight);
+    heightLayout->addWidget(m_zMin, 1);
+    heightLayout->addWidget(new QLabel(u"to"_s, m_heightRow));
+    heightLayout->addWidget(m_zMax, 1);
+    m_heightLabel = new QLabel(page);
+    form->addRow(m_heightLabel, m_heightRow);
+
     m_profileBins = new QSpinBox(page);
     m_profileBins->setRange(4, 256);
     m_profileBins->setValue(32);
-    m_profileBins->setToolTip(u"Logarithmically spaced shells."_s);
-    form->addRow(u"Shells (log)"_s, m_profileBins);
+    m_binsLabel = new QLabel(page);
+    form->addRow(m_binsLabel, m_profileBins);
     m_profileAxis = new QComboBox(page);
     m_profileAxis->addItem(u"Angular momentum of the centre"_s, QString());
     m_profileAxis->addItem(u"x"_s, u"x"_s);
@@ -221,7 +251,8 @@ QWidget *SimulationDiagnosticsDialog::buildProfileTab(const QStringList &numeric
             u"The polar axis of the polar and azimuthal velocity components. By default the "
             u"angular momentum of the particles in the smallest sphere about the centre that "
             u"holds 1000 of them; the radial velocity does not depend on it."_s);
-    form->addRow(u"Polar axis"_s, m_profileAxis);
+    m_axisLabel = new QLabel(page);
+    form->addRow(m_axisLabel, m_profileAxis);
 
     m_profileColumns = new QListWidget(page);
     m_profileColumns->setMaximumHeight(110);
@@ -254,6 +285,10 @@ QWidget *SimulationDiagnosticsDialog::buildProfileTab(const QStringList &numeric
 
     QObject::connect(m_centreMode, &QComboBox::currentIndexChanged, this,
                      [this](int) { this->updateCentreControls(); });
+    QObject::connect(m_geometry, &QComboBox::currentIndexChanged, this,
+                     [this](int) { this->updateGeometryControls(); });
+    QObject::connect(m_useHeight, &QCheckBox::toggled, this,
+                     [this](bool) { this->updateGeometryControls(); });
     QObject::connect(m_usePicked, &QPushButton::clicked, this, [this]() {
         const auto point = m_pickedPoint ? m_pickedPoint() : std::nullopt;
         if (!point) {
@@ -265,6 +300,82 @@ QWidget *SimulationDiagnosticsDialog::buildProfileTab(const QStringList &numeric
         m_pointZ->setValue((*point)[2]);
     });
     this->updateCentreControls();
+    this->updateGeometryControls();
+    return page;
+}
+
+void SimulationDiagnosticsDialog::updateGeometryControls()
+{
+    if (!m_geometry)
+        return;
+    const auto geometry = static_cast<profiles::Geometry>(m_geometry->currentData().toInt());
+    const bool spherical = geometry == profiles::Geometry::Spherical;
+    const bool axial = geometry == profiles::Geometry::Axial;
+    m_heightLabel->setVisible(!spherical);
+    m_heightRow->setVisible(!spherical);
+    m_zMin->setEnabled(m_useHeight->isChecked());
+    m_zMax->setEnabled(m_useHeight->isChecked());
+    // An axial profile takes no inner radius: only the limit R < r_max.
+    m_rMin->setEnabled(!axial);
+    if (axial) {
+        m_rangeLabel->setText(u"Radius limit (R <)"_s);
+        m_rMin->setToolTip(u"Not used along the axis."_s);
+        m_rMax->setToolTip(u"Only particles closer to the axis than this count; automatic: "
+                           u"all of them (no volume density then, only the linear one)."_s);
+        m_heightLabel->setText(u"Height range (z)"_s);
+        m_useHeight->setToolTip(u"Unchecked: ± the automatic outer radius about the centre."_s);
+        m_binsLabel->setText(u"Slabs (linear)"_s);
+        m_profileBins->setToolTip(u"Linearly spaced slabs in z along the axis."_s);
+    } else if (!spherical) {
+        m_rangeLabel->setText(u"R range"_s);
+        m_rMin->setToolTip(u"Automatic: R_max/1000."_s);
+        m_rMax->setToolTip(u"Automatic: as the spherical outer radius."_s);
+        m_heightLabel->setText(u"Slab (z)"_s);
+        m_useHeight->setToolTip(u"Checked: only particles with z_min ≤ z < z_max count, and the "
+                                u"volume density is given. Unchecked: the whole selection along "
+                                u"the axis (surface density only)."_s);
+        m_binsLabel->setText(u"Annuli (log)"_s);
+        m_profileBins->setToolTip(u"Logarithmically spaced annuli in R."_s);
+    } else {
+        m_rangeLabel->setText(u"Radius range"_s);
+        const QString tip = u"Radii in the table's length unit. Automatic: from the larger of the "
+                            u"smallest distance and r_max/1000, out to the largest distance, "
+                            u"half the box, or the edge of a box or sphere selection."_s;
+        m_rMin->setToolTip(tip);
+        m_rMax->setToolTip(tip);
+        m_binsLabel->setText(u"Shells (log)"_s);
+        m_profileBins->setToolTip(u"Logarithmically spaced shells."_s);
+    }
+    m_axisLabel->setText(spherical ? u"Polar axis"_s : u"Axis"_s);
+    m_profileAxis->setToolTip(
+            spherical
+                    ? u"The polar axis of the polar and azimuthal velocity components. By "
+                      u"default the angular momentum of the particles in the smallest sphere "
+                      u"about the centre that holds 1000 of them; the radial velocity does not "
+                      u"depend on it."_s
+                    : u"The axis through the centre that R and z are measured from. By default "
+                      u"the angular momentum of the particles in the smallest sphere about the "
+                      u"centre that holds 1000 of them, or the table's z without velocities."_s);
+}
+
+QWidget *SimulationDiagnosticsDialog::buildTotalsTab()
+{
+    auto *page = new QWidget(this);
+    auto *layout = new QVBoxLayout(page);
+    m_totalsSummary = newSummary(
+            u"Mass, centre-of-mass velocity, momentum, kinetic and thermal energy of the "
+            u"complete selected population, in physical units when the table declares them."_s,
+            page);
+    layout->addWidget(m_totalsSummary);
+    m_totalsTable = new QTableWidget(0, 4, page);
+    m_totalsTable->setHorizontalHeaderLabels(
+            { u"Quantity"_s, u"Physical value"_s, u"As stored"_s, u"Note"_s });
+    m_totalsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_totalsTable->horizontalHeader()->setStretchLastSection(true);
+    m_totalsTable->verticalHeader()->setVisible(false);
+    m_totalsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_totalsTable->setWordWrap(true);
+    layout->addWidget(m_totalsTable, 1);
     return page;
 }
 
@@ -419,6 +530,8 @@ SimulationDiagnosticsDialog::Kind SimulationDiagnosticsDialog::currentKind() con
         return Kind::Profile;
     case 2:
         return Kind::Phase;
+    case 3:
+        return Kind::Totals;
     default:
         return Kind::Histogram;
     }
@@ -431,6 +544,8 @@ QLabel *SimulationDiagnosticsDialog::summaryOf(Kind kind) const
         return m_profileSummary;
     case Kind::Phase:
         return m_phaseSummary;
+    case Kind::Totals:
+        return m_totalsSummary;
     case Kind::Histogram:
         break;
     }
@@ -444,6 +559,8 @@ QCustomPlot *SimulationDiagnosticsDialog::plotOf(Kind kind) const
         return m_profilePlot;
     case Kind::Phase:
         return m_phasePlot;
+    case Kind::Totals:
+        return nullptr;   // a table, no plot
     case Kind::Histogram:
         break;
     }
@@ -477,7 +594,8 @@ void SimulationDiagnosticsDialog::setFilters(const std::vector<BackendTabularFil
     // way or on show computed again.
     const bool rerun = m_running || (currentKind() == Kind::Histogram && m_hasHistogram)
             || (currentKind() == Kind::Profile && m_hasProfile)
-            || (currentKind() == Kind::Phase && m_hasPhase);
+            || (currentKind() == Kind::Phase && m_hasPhase)
+            || (currentKind() == Kind::Totals && m_hasTotals);
     const Kind kind = m_running ? m_runningKind : currentKind();
     this->clearAllResults();
     if (!rerun)
@@ -509,6 +627,11 @@ void SimulationDiagnosticsDialog::clearResult(Kind kind)
     case Kind::Phase:
         m_hasPhase = false;
         break;
+    case Kind::Totals:
+        m_hasTotals = false;
+        if (m_totalsTable)
+            m_totalsTable->setRowCount(0);
+        break;
     }
     if (QCustomPlot *plot = plotOf(kind)) {
         plot->clearPlottables();
@@ -526,7 +649,7 @@ void SimulationDiagnosticsDialog::clearResult(Kind kind)
 
 void SimulationDiagnosticsDialog::clearAllResults()
 {
-    for (Kind kind : { Kind::Histogram, Kind::Profile, Kind::Phase })
+    for (Kind kind : { Kind::Histogram, Kind::Profile, Kind::Phase, Kind::Totals })
         this->clearResult(kind);
 }
 
@@ -535,11 +658,12 @@ void SimulationDiagnosticsDialog::updateSaveButtons()
     const Kind kind = currentKind();
     const bool has = kind == Kind::Histogram ? m_hasHistogram
             : kind == Kind::Profile          ? m_hasProfile
-                                             : m_hasPhase;
+            : kind == Kind::Phase            ? m_hasPhase
+                                             : m_hasTotals;
     if (m_saveCsv)
         m_saveCsv->setEnabled(has);
     if (m_savePng)
-        m_savePng->setEnabled(has);
+        m_savePng->setEnabled(has && kind != Kind::Totals);
 }
 
 void SimulationDiagnosticsDialog::run()
@@ -572,12 +696,22 @@ std::optional<SimulationDiagnosticsDialog::Job> SimulationDiagnosticsDialog::bui
         profiles::ProfileRequest &profile = job.profile;
         profile.datasetId = m_datasetId;
         profile.centre = *centre;
-        profile.rMin = m_rMin->value() > 0.0 ? m_rMin->value() : kNaN;
+        profile.geometry = static_cast<profiles::Geometry>(m_geometry->currentData().toInt());
+        const bool axial = profile.geometry == profiles::Geometry::Axial;
+        profile.rMin = !axial && m_rMin->value() > 0.0 ? m_rMin->value() : kNaN;
         profile.rMax = m_rMax->value() > 0.0 ? m_rMax->value() : kNaN;
         if (std::isfinite(profile.rMin) && std::isfinite(profile.rMax)
             && profile.rMin >= profile.rMax) {
             m_profileSummary->setText(u"The inner radius must be smaller than the outer one."_s);
             return std::nullopt;
+        }
+        if (profile.geometry != profiles::Geometry::Spherical && m_useHeight->isChecked()) {
+            if (m_zMin->value() >= m_zMax->value()) {
+                m_profileSummary->setText(u"The lower height must be below the upper one."_s);
+                return std::nullopt;
+            }
+            profile.zMin = m_zMin->value();
+            profile.zMax = m_zMax->value();
         }
         profile.bins = m_profileBins->value();
         const QString axis = m_profileAxis->currentData().toString();
@@ -592,6 +726,8 @@ std::optional<SimulationDiagnosticsDialog::Job> SimulationDiagnosticsDialog::bui
                 profile.columns << m_profileColumns->item(i)->text();
         return job;
     }
+    if (kind == Kind::Totals)
+        return job;   // the dataset and the filters are all it needs
     profiles::PhaseRequest &phase = job.phase;
     phase.datasetId = m_datasetId;
     phase.x = { m_phaseX->currentText(), m_phaseXLog->isChecked(), m_phaseXBins->value() };
@@ -669,7 +805,7 @@ void SimulationDiagnosticsDialog::start(const Job &job)
         }
     });
     watcher->setFuture(QtConcurrent::run([url = m_backendUrl, token = m_backendToken,
-                                          session = m_sessionId, job,
+                                          session = m_sessionId, dataset = m_datasetId, job,
                                           control = m_control]() {
         BackendClient client(url, token);
         client.setSessionId(session);
@@ -682,6 +818,9 @@ void SimulationDiagnosticsDialog::start(const Job &job)
         else if (job.kind == Kind::Profile)
             outcome.profile =
                     client.catalogueProfileFollowingTask(job.profile, job.filters, control.get());
+        else if (job.kind == Kind::Totals)
+            outcome.totals = client.catalogueTotalsFollowingTask(dataset, job.filters,
+                                                                 control.get());
         else
             outcome.phase = client.cataloguePhaseDiagramFollowingTask(job.phase, job.filters,
                                                                       control.get());
@@ -726,6 +865,9 @@ void SimulationDiagnosticsDialog::present(const Outcome &outcome)
         if (outcome.phase.valid)
             m_phaseAsked = outcome.phaseAsked;
         this->presentPhase(outcome.phase);
+        break;
+    case Kind::Totals:
+        this->presentTotals(outcome.totals);
         break;
     }
     this->updateSaveButtons();
@@ -794,6 +936,8 @@ void SimulationDiagnosticsDialog::presentProfile(const profiles::ProfileResult &
     m_profile = result;
     m_hasProfile = true;
     const QString lengthUnit = profiles::unitOf(result.units, u"radius"_s);
+    const bool spherical = result.geometry == profiles::Geometry::Spherical;
+    const bool axial = result.geometry == profiles::Geometry::Axial;
     QString text = u"%L1 selected particles; centre %2 (%3, %4, %5)"_s
                            .arg(result.selectedRows)
                            .arg(result.centreMode)
@@ -802,18 +946,40 @@ void SimulationDiagnosticsDialog::presentProfile(const profiles::ProfileResult &
                            .arg(result.centre[2], 0, 'g', 8);
     if (!lengthUnit.isEmpty())
         text += u" [%1]"_s.arg(lengthUnit);
-    text += u"; %1 shells from %2 to %3"_s.arg(result.rMid.size())
+    if (!spherical)
+        text += u"; axis %1 (%2)"_s.arg(profiles::vectorText(result.axisVector), result.axisFrom);
+    text += u"; %1 %2 from %3 to %4"_s.arg(result.rMid.size())
+                    .arg(spherical ? u"shells in r"_s : axial ? u"slabs in z"_s : u"annuli in R"_s)
                     .arg(result.rMin, 0, 'g', 5)
                     .arg(result.rMax, 0, 'g', 5);
+    if (result.geometry == profiles::Geometry::Cylindrical)
+        text += std::isfinite(result.zMin)
+                ? u" within the slab %1 ≤ z < %2"_s.arg(result.zMin, 0, 'g', 5)
+                          .arg(result.zMax, 0, 'g', 5)
+                : u" over the whole selection along the axis"_s;
+    if (axial && std::isfinite(result.rLimit))
+        text += u" within R < %1"_s.arg(result.rLimit, 0, 'g', 5);
     if (std::isfinite(result.completeRadius))
-        text += u", complete out to %1 (outer shells, hollow, reach past the selection or half "
-                u"the box)"_s.arg(result.completeRadius, 0, 'g', 5);
-    text += u". %L1 inside r_min, %L2 outside r_max."_s.arg(result.insideRMinCount)
-                    .arg(result.outsideRMaxCount);
+        text += u", complete out to %1 from the centre (incomplete bins, hollow, reach past the "
+                u"selection or half the box)"_s.arg(result.completeRadius, 0, 'g', 5);
+    if (axial)
+        text += u". %L1 below z_min, %L2 above z_max"_s.arg(result.insideRMinCount)
+                        .arg(result.outsideRMaxCount);
+    else
+        text += u". %L1 inside r_min, %L2 outside r_max"_s.arg(result.insideRMinCount)
+                        .arg(result.outsideRMaxCount);
+    if (!spherical && result.outsideRegionCount > 0)
+        text += axial ? u", %L1 at R ≥ the limit"_s.arg(result.outsideRegionCount)
+                      : u", %L1 outside the slab"_s.arg(result.outsideRegionCount);
+    text += u"."_s;
+    if (!spherical && result.density.isEmpty())
+        text += axial ? u" No volume density without a radius limit."_s
+                      : u" No volume density without a slab."_s;
     if (result.velocity.present) {
         text += u" Velocities are peculiar (no Hubble flow), relative to the centre velocity %1;"
-                u" polar axis %2."_s
+                u" %2 %3."_s
                         .arg(profiles::vectorText(result.velocity.centreVelocity),
+                             spherical ? u"polar axis"_s : u"components about the axis"_s,
                              profiles::vectorText(result.velocity.axis));
     }
     text += u" Values in the table's units as it states them (comoving and /h where the run "
@@ -825,11 +991,19 @@ void SimulationDiagnosticsDialog::presentProfile(const profiles::ProfileResult &
     const QString previous = m_profileShow->currentData().toString();
     const QSignalBlocker blocker(m_profileShow);
     m_profileShow->clear();
-    m_profileShow->addItem(u"Density"_s, u"density"_s);
+    if (result.geometry == profiles::Geometry::Cylindrical)
+        m_profileShow->addItem(u"Surface density"_s, u"surface_density"_s);
+    if (axial)
+        m_profileShow->addItem(u"Linear density"_s, u"linear_density"_s);
+    if (!result.density.isEmpty())
+        m_profileShow->addItem(u"Density"_s, u"density"_s);
     m_profileShow->addItem(u"Enclosed mass"_s, u"enclosed_mass"_s);
     for (const profiles::ColumnProfile &c : result.columns)
         m_profileShow->addItem(u"%1 (median, 16–84%)"_s.arg(c.name), u"column:"_s + c.name);
-    if (result.velocity.present) {
+    if (result.velocity.present && result.velocity.cylindricalComponents) {
+        m_profileShow->addItem(u"Velocity dispersion σ_R, σ_φ, σ_z"_s, u"sigma_cyl"_s);
+        m_profileShow->addItem(u"Mean velocity v_R, v_φ, v_z"_s, u"mean_cyl"_s);
+    } else if (result.velocity.present) {
         m_profileShow->addItem(u"Velocity dispersion σ_r, σ_θ, σ_φ"_s, u"sigma"_s);
         m_profileShow->addItem(u"Anisotropy β"_s, u"beta"_s);
     }
@@ -851,10 +1025,19 @@ void SimulationDiagnosticsDialog::plotProfile()
     }
     const profiles::ProfileResult &r = m_profile;
     const QString show = m_profileShow->currentData().toString();
-    const QString lengthUnit = profiles::unitOf(r.units, u"radius"_s);
-    plot->xAxis->setLabel(profiles::axisTitle(u"r"_s, lengthUnit));
-    plot->xAxis->setScaleType(QCPAxis::stLogarithmic);
-    plot->xAxis->setTicker(QSharedPointer<QCPAxisTickerLog>::create());
+    const bool axial = r.geometry == profiles::Geometry::Axial;
+    const QString binName = axial ? u"z"_s
+            : r.geometry == profiles::Geometry::Cylindrical ? u"R"_s
+                                                            : u"r"_s;
+    plot->xAxis->setLabel(profiles::axisTitle(binName, profiles::binUnit(r)));
+    // Slabs in z are linear and signed: no log axis there.
+    if (axial) {
+        plot->xAxis->setScaleType(QCPAxis::stLinear);
+        plot->xAxis->setTicker(QSharedPointer<QCPAxisTicker>::create());
+    } else {
+        plot->xAxis->setScaleType(QCPAxis::stLogarithmic);
+        plot->xAxis->setTicker(QSharedPointer<QCPAxisTickerLog>::create());
+    }
 
     // Complete shells drawn solid, the outer ones past the selection hollow:
     // their density is missing the volume outside it.
@@ -888,14 +1071,35 @@ void SimulationDiagnosticsDialog::plotProfile()
     if (show == u"density"_s) {
         addCurve(r.density, primary, u"density"_s);
         yTitle = profiles::axisTitle(u"ρ"_s, profiles::unitOf(r.units, u"density"_s));
+    } else if (show == u"surface_density"_s) {
+        addCurve(r.surfaceDensity, primary, u"Σ"_s);
+        yTitle = profiles::axisTitle(u"Σ"_s, profiles::unitOf(r.units, u"surface_density"_s));
+    } else if (show == u"linear_density"_s) {
+        addCurve(r.linearDensity, primary, u"λ"_s);
+        yTitle = profiles::axisTitle(u"λ = dM/dz"_s,
+                                     profiles::unitOf(r.units, u"linear_density"_s));
     } else if (show == u"enclosed_mass"_s) {
-        addCurve(r.enclosedMass, primary, u"M(<r)"_s);
-        yTitle = profiles::axisTitle(u"M(<r)"_s, profiles::unitOf(r.units, u"mass"_s));
+        const QString name = u"M(<%1)"_s.arg(binName);
+        addCurve(r.enclosedMass, primary, name);
+        yTitle = profiles::axisTitle(name, profiles::unitOf(r.units, u"mass"_s));
     } else if (show == u"sigma"_s) {
         addCurve(r.velocity.sigmaR, primary, u"σ_r"_s);
         addCurve(r.velocity.sigmaTheta, QColor(230, 140, 40), u"σ_θ"_s);
         addCurve(r.velocity.sigmaPhi, QColor(90, 180, 90), u"σ_φ"_s);
         yTitle = profiles::axisTitle(u"σ, peculiar"_s, profiles::unitOf(r.units, u"velocity"_s));
+        logY = false;
+    } else if (show == u"sigma_cyl"_s) {
+        addCurve(r.velocity.sigmaCylindricalR, primary, u"σ_R"_s);
+        addCurve(r.velocity.sigmaPhi, QColor(230, 140, 40), u"σ_φ"_s);
+        addCurve(r.velocity.sigmaZ, QColor(90, 180, 90), u"σ_z"_s);
+        yTitle = profiles::axisTitle(u"σ, peculiar"_s, profiles::unitOf(r.units, u"velocity"_s));
+        logY = false;
+    } else if (show == u"mean_cyl"_s) {
+        addCurve(r.velocity.meanCylindricalRadial, primary, u"v_R"_s);
+        addCurve(r.velocity.meanAzimuthal, QColor(230, 140, 40), u"v_φ"_s);
+        addCurve(r.velocity.meanVertical, QColor(90, 180, 90), u"v_z"_s);
+        yTitle = profiles::axisTitle(u"mean velocity, peculiar"_s,
+                                     profiles::unitOf(r.units, u"velocity"_s));
         logY = false;
     } else if (show == u"beta"_s) {
         addCurve(r.velocity.beta, primary, u"β"_s);
@@ -1012,11 +1216,58 @@ void SimulationDiagnosticsDialog::presentPhase(const profiles::PhaseResult &resu
     plot->replot();
 }
 
+void SimulationDiagnosticsDialog::presentTotals(const profiles::TotalsResult &result)
+{
+    if (result.cancelled) {
+        m_totalsSummary->setText(u"Cancelled."_s);
+        this->clearResult(Kind::Totals);
+        return;
+    }
+    if (!result.valid) {
+        m_totalsSummary->setText(u"Totals failed: %1"_s.arg(result.error));
+        this->clearResult(Kind::Totals);
+        return;
+    }
+    m_totals = result;
+    m_hasTotals = true;
+    QString text = u"%L1 selected particles: %L2 with a mass, %L3 of them with velocities, %L4 "
+                   u"with an internal energy."_s
+                           .arg(result.selectedRows)
+                           .arg(result.withMass)
+                           .arg(result.withVelocity)
+                           .arg(result.withEnergy);
+    text += u" Velocities are peculiar, in the simulation frame; the centre-of-mass velocity "
+            u"and its frame use the particles with velocities. A value that cannot be made "
+            u"physical is left empty with the reason."_s;
+    m_totalsSummary->setText(text);
+    m_totalsTable->setRowCount(int(result.quantities.size()));
+    for (int i = 0; i < result.quantities.size(); ++i) {
+        const profiles::TotalsQuantity &q = result.quantities[i];
+        const auto withUnit = [](const QVector<double> &v, const QString &unit) {
+            const QString number = profiles::componentsText(v);
+            return number.isEmpty() || unit.isEmpty() ? number : u"%1 %2"_s.arg(number, unit);
+        };
+        auto *name = new QTableWidgetItem(profiles::totalsLabel(q.name));
+        name->setToolTip(q.name);
+        m_totalsTable->setItem(i, 0, name);
+        m_totalsTable->setItem(i, 1, new QTableWidgetItem(
+                q.value.isEmpty() ? u"—"_s : withUnit(q.value, q.unit)));
+        m_totalsTable->setItem(i, 2, new QTableWidgetItem(
+                q.hasStored ? withUnit(q.storedValue, q.storedUnit) : u"—"_s));
+        auto *note = new QTableWidgetItem(q.reason);
+        note->setToolTip(q.reason);
+        m_totalsTable->setItem(i, 3, note);
+    }
+    m_totalsTable->resizeRowsToContents();
+}
+
 void SimulationDiagnosticsDialog::savePng()
 {
     const Kind kind = currentKind();
+    if (kind == Kind::Totals)
+        return;   // a table: Save CSV
     const QString name = kind == Kind::Histogram ? u"selection-diagnostics.png"_s
-            : kind == Kind::Profile             ? u"radial-profile.png"_s
+            : kind == Kind::Profile             ? u"profile.png"_s
                                                 : u"phase-diagram.png"_s;
     const QString path = QFileDialog::getSaveFileName(this, u"Save diagnostics plot"_s, name,
                                                       u"PNG image (*.png)"_s);
@@ -1028,7 +1279,8 @@ void SimulationDiagnosticsDialog::saveCsv()
 {
     const Kind kind = currentKind();
     const QString name = kind == Kind::Histogram ? u"selection-diagnostics.csv"_s
-            : kind == Kind::Profile             ? u"radial-profile.csv"_s
+            : kind == Kind::Profile             ? u"profile.csv"_s
+            : kind == Kind::Totals              ? u"selection-totals.csv"_s
                                                 : u"phase-diagram.csv"_s;
     const QString path = QFileDialog::getSaveFileName(this, u"Save diagnostics table"_s, name,
                                                       u"CSV table (*.csv)"_s);
@@ -1046,6 +1298,10 @@ void SimulationDiagnosticsDialog::saveCsv()
     }
     if (kind == Kind::Phase) {
         out << profiles::phaseCsv(m_phase, !m_phaseAsked.weightField.isEmpty());
+        return;
+    }
+    if (kind == Kind::Totals) {
+        out << profiles::totalsCsv(m_totals);
         return;
     }
     out << "# field," << m_histogram.field << '\n';

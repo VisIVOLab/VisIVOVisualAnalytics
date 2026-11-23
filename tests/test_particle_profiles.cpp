@@ -18,11 +18,14 @@
 #include <QtTest>
 
 #include <cmath>
+#include <limits>
 #include <functional>
 #include <memory>
 
 using namespace Qt::StringLiterals;
 namespace profiles = visivo::profiles;
+
+static double kNaNForTests() { return std::numeric_limits<double>::quiet_NaN(); }
 
 namespace {
 
@@ -511,4 +514,182 @@ void TestParticleProfiles::anOlderBackendIsToldToUpdate()
     QVERIFY(!r.cancelled);
     QVERIFY2(r.error.contains(u"update"_s), qPrintable(r.error));
     QCOMPARE(backend.count("POST", "/v1/catalogue/profile"), 0);
+}
+
+void TestParticleProfiles::theGeometryGoesInTheBodyWithItsSlab()
+{
+    profiles::ProfileRequest req;
+    QJsonObject spherical;
+    profiles::addProfileFields(spherical, req);
+    QVERIFY(!spherical.contains(u"geometry"_s));   // the backend's default
+    QVERIFY(!spherical.contains(u"z_min"_s));
+
+    req.geometry = profiles::Geometry::Cylindrical;
+    req.rMin = 0.1;
+    req.zMin = -2.0;
+    req.zMax = 3.0;
+    QJsonObject cylinder;
+    profiles::addProfileFields(cylinder, req);
+    QCOMPARE(cylinder.value(u"geometry"_s).toString(), u"cylindrical"_s);
+    QCOMPARE(cylinder.value(u"r_min"_s).toDouble(), 0.1);
+    QCOMPARE(cylinder.value(u"z_min"_s).toDouble(), -2.0);
+    QCOMPARE(cylinder.value(u"z_max"_s).toDouble(), 3.0);
+
+    // Axial: no inner radius (the backend refuses one); one bound alone is
+    // no slab.
+    req.geometry = profiles::Geometry::Axial;
+    req.zMax = kNaNForTests();
+    QJsonObject axial;
+    profiles::addProfileFields(axial, req);
+    QCOMPARE(axial.value(u"geometry"_s).toString(), u"axial"_s);
+    QVERIFY(!axial.contains(u"r_min"_s));
+    QVERIFY(!axial.contains(u"z_min"_s));
+    QVERIFY(!axial.contains(u"z_max"_s));
+}
+
+void TestParticleProfiles::cylindricalAndAxialAnswersAreParsed()
+{
+    const QJsonObject axis{ { u"vector"_s, QJsonArray{ 0.0, 0.0, 1.0 } },
+                            { u"from"_s, u"given"_s },
+                            { u"through"_s, QJsonArray{ 1.0, 2.0, 3.0 } } };
+    QJsonObject cylinder{
+        { u"geometry"_s, u"cylindrical"_s },
+        { u"r_lo"_s, QJsonArray{ 1.0, 2.0 } }, { u"r_hi"_s, QJsonArray{ 2.0, 4.0 } },
+        { u"r_mid"_s, QJsonArray{ 1.4, 2.8 } }, { u"r_mean"_s, QJsonArray{ 1.5, QJsonValue() } },
+        { u"complete"_s, QJsonArray{ true, true } }, { u"count"_s, QJsonArray{ 10, 0 } },
+        { u"mass"_s, QJsonArray{ 5.0, 0.0 } }, { u"surface_density"_s, QJsonArray{ 0.5, 0.0 } },
+        { u"density"_s, QJsonValue() },   // no slab: no volume density
+        { u"enclosed_mass"_s, QJsonArray{ 6.0, 6.0 } },
+        { u"r_min"_s, 1.0 }, { u"r_max"_s, 4.0 }, { u"selected_rows"_s, 20 },
+        { u"inside_r_min"_s, QJsonObject{ { u"count"_s, 2 } } },
+        { u"outside_r_max"_s, QJsonObject{ { u"count"_s, 8 } } },
+        { u"z_range"_s, QJsonValue() },
+        { u"outside_z_range"_s, QJsonObject{ { u"count"_s, 0 } } },
+        { u"axis"_s, axis }, { u"columns"_s, QJsonObject() },
+        { u"velocity"_s, QJsonObject{ { u"sigma_R"_s, QJsonArray{ 3.0, QJsonValue() } },
+                                     { u"sigma_z"_s, QJsonArray{ 1.0, QJsonValue() } },
+                                     { u"mean_vertical"_s, QJsonArray{ 0.1, QJsonValue() } } } } };
+    profiles::ProfileResult c = profiles::parseProfile(
+            QJsonObject{ { u"valid"_s, true }, { u"profile"_s, cylinder } });
+    QVERIFY2(c.valid, qPrintable(c.error));
+    QVERIFY(c.geometry == profiles::Geometry::Cylindrical);
+    QVERIFY(c.density.isEmpty());
+    QCOMPARE(c.surfaceDensity[0], 0.5);
+    QVERIFY(std::isnan(c.zMin));
+    QCOMPARE(c.axisVector[2], 1.0);
+    QCOMPARE(c.axisFrom, u"given"_s);
+    QVERIFY(c.velocity.cylindricalComponents);
+    QCOMPARE(c.velocity.sigmaCylindricalR[0], 3.0);
+    QVERIFY(std::isnan(c.velocity.sigmaZ[1]));
+    const QString csv = profiles::profileCsv(c);
+    QVERIFY(csv.contains(u"# geometry,cylindrical"_s));
+    QVERIFY(csv.contains(u",surface_density,"_s));
+    QVERIFY(csv.contains(u"sigma_R"_s));
+    QVERIFY(!csv.contains(u"beta"_s));
+    // A cylinder must carry its surface density.
+    cylinder.remove(u"surface_density"_s);
+    QVERIFY(!profiles::parseProfile(QJsonObject{ { u"valid"_s, true }, { u"profile"_s, cylinder } })
+                     .valid);
+
+    const QJsonObject slabs{
+        { u"geometry"_s, u"axial"_s },
+        { u"z_lo"_s, QJsonArray{ -1.0, 0.0 } }, { u"z_hi"_s, QJsonArray{ 0.0, 1.0 } },
+        { u"z_mid"_s, QJsonArray{ -0.5, 0.5 } }, { u"z_mean"_s, QJsonArray{ -0.4, 0.6 } },
+        { u"complete"_s, QJsonArray{ true, false } }, { u"count"_s, QJsonArray{ 3, 4 } },
+        { u"mass"_s, QJsonArray{ 3.0, 4.0 } }, { u"linear_density"_s, QJsonArray{ 3.0, 4.0 } },
+        { u"density"_s, QJsonArray{ 0.3, 0.4 } }, { u"enclosed_mass"_s, QJsonArray{ 4.0, 8.0 } },
+        { u"z_min"_s, -1.0 }, { u"z_max"_s, 1.0 }, { u"r_limit"_s, 2.0 },
+        { u"selected_rows"_s, 12 },
+        { u"below_z_min"_s, QJsonObject{ { u"count"_s, 1 } } },
+        { u"above_z_max"_s, QJsonObject{ { u"count"_s, 2 } } },
+        { u"outside_r_limit"_s, QJsonObject{ { u"count"_s, 2 } } },
+        { u"axis"_s, axis }, { u"columns"_s, QJsonObject() } };
+    const profiles::ProfileResult a = profiles::parseProfile(QJsonObject{
+            { u"valid"_s, true }, { u"profile"_s, slabs },
+            { u"units"_s, QJsonObject{ { u"radius"_s, u"kpc"_s }, { u"height"_s, u"kpc"_s } } } });
+    QVERIFY2(a.valid, qPrintable(a.error));
+    QVERIFY(a.geometry == profiles::Geometry::Axial);
+    QCOMPARE(a.rMid, (QVector<double>{ -0.5, 0.5 }));
+    QCOMPARE(a.rMin, -1.0);
+    QCOMPARE(a.rLimit, 2.0);
+    QCOMPARE(a.insideRMinCount, 1);
+    QCOMPARE(a.outsideRMaxCount, 2);
+    QCOMPARE(a.outsideRegionCount, 2);
+    QCOMPARE(a.linearDensity[1], 4.0);
+    QCOMPARE(profiles::binUnit(a), u"kpc"_s);
+    const QString axialCsv = profiles::profileCsv(a);
+    QVERIFY(axialCsv.contains(u"z_lo,z_hi,z_mid,z_mean"_s));
+    QVERIFY(axialCsv.contains(u"# r_limit,2"_s));
+}
+
+namespace {
+
+QJsonObject totalsAnswer()
+{
+    const QJsonObject mass{ { u"value"_s, 2.0e10 }, { u"unit"_s, u"Msun"_s },
+                            { u"stored"_s, QJsonObject{ { u"value"_s, 2.0 },
+                                                       { u"unit"_s, u"1e10 Msun/h"_s } } },
+                            { u"reason"_s, QJsonValue() } };
+    const QJsonObject com{ { u"value"_s, QJsonArray{ 1.0, -2.0, 3.0 } }, { u"unit"_s, u"km/s"_s },
+                           { u"stored"_s, QJsonObject{ { u"value"_s, QJsonArray{ 1.0, -2.0, 3.0 } },
+                                                      { u"unit"_s, u"km/s"_s } } },
+                           { u"reason"_s, QJsonValue() } };
+    const QJsonObject thermal{ { u"value"_s, QJsonValue() }, { u"unit"_s, u"erg"_s },
+                               { u"stored"_s, QJsonValue() },
+                               { u"reason"_s, u"The table has no internal energy u, as for dark "
+                                              u"matter."_s } };
+    return QJsonObject{
+        { u"valid"_s, true }, { u"error"_s, QString() },
+        { u"totals"_s,
+          QJsonObject{ { u"count"_s, 100 },
+                       { u"rows"_s, QJsonObject{ { u"selected"_s, 100 }, { u"with_mass"_s, 100 },
+                                                 { u"with_velocity"_s, 90 },
+                                                 { u"with_energy"_s, 0 } } },
+                       { u"mass_with_velocity"_s, 1.8 },
+                       { u"quantities"_s,
+                         QJsonObject{ { u"thermal_energy"_s, thermal }, { u"mass"_s, mass },
+                                      { u"centre_of_mass_velocity"_s, com } } } } },
+        { u"provenance"_s, QJsonObject{ { u"dataset_id"_s, u"d1"_s } } } };
+}
+
+}   // namespace
+
+void TestParticleProfiles::theTotalsRunAsATaskWithReasonsForMissingValues()
+{
+    MockBackend backend([](const Request &r) -> Reply {
+        if (r.method == "POST" && r.path == "/v1/tasks/catalogue_totals")
+            return { 200, kCreated };
+        if (r.method == "GET" && r.path == "/v1/tasks/t1")
+            return { 200, taskStatus(u"completed"_s, 1.0, totalsAnswer()) };
+        return { 404, QJsonObject{ { u"detail"_s, u"Not Found"_s } } };
+    });
+    QVERIFY(backend.server.isListening());
+    visivo::BackendTaskControl control;
+    const QString url = backend.url();
+    const profiles::TotalsResult r = follow<profiles::TotalsResult>([url, &control]() {
+        return BackendClient(url).catalogueTotalsFollowingTask(u"d1"_s, oneFilter(), &control);
+    });
+    QVERIFY2(r.valid, qPrintable(r.error));
+    const QJsonObject body = backend.bodyOf("/v1/tasks/catalogue_totals");
+    QCOMPARE(body.value(u"dataset_id"_s).toString(), u"d1"_s);
+    QCOMPARE(body.value(u"filters"_s).toArray().size(), 1);
+    QVERIFY(!body.contains(u"limit"_s));
+    QCOMPARE(r.withVelocity, 90);
+    QCOMPARE(r.massWithVelocity, 1.8);
+    // Listed in the dialog's order, whatever order the JSON keeps.
+    QCOMPARE(r.quantities.size(), 3);
+    QCOMPARE(r.quantities[0].name, u"mass"_s);
+    QCOMPARE(r.quantities[1].name, u"centre_of_mass_velocity"_s);
+    QCOMPARE(r.quantities[2].name, u"thermal_energy"_s);
+    QCOMPARE(r.quantities[0].value, (QVector<double>{ 2.0e10 }));
+    QCOMPARE(profiles::componentsText(r.quantities[1].value), u"(1, -2, 3)"_s);
+    QVERIFY(r.quantities[2].value.isEmpty());
+    QVERIFY(!r.quantities[2].hasStored);
+    QVERIFY(r.quantities[2].reason.contains(u"internal energy"_s));
+    const QString csv = profiles::totalsCsv(r);
+    QVERIFY(csv.contains(u"# dataset_id,d1"_s));
+    QVERIFY(csv.contains(u"mass,,20000000000,Msun,2,1e10 Msun/h,"_s));
+    QVERIFY(csv.contains(u"centre_of_mass_velocity,1,-2,km/s,-2,km/s,"_s));
+    QVERIFY(csv.contains(u"thermal_energy,,,erg,,,The table has no internal energy u; as for "
+                         u"dark matter."_s));
 }

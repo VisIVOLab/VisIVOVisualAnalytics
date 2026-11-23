@@ -120,9 +120,9 @@ In a Cartesian table (VBT points, Gadget snapshots, Cartesian catalogues):
   a ray-traced render holds them the dialog says the backend is busy. *Save CSV…* keeps the numbers with
   their units and selection, *Save PNG…* the plot. Non-finite values are
   left out and counted; a negative or non-finite weight counts as zero, so
-  choosing a weight never changes the unweighted statistics. The dialog has two more tabs,
+  choosing a weight never changes the unweighted statistics. The dialog has three more tabs,
   computed the same way (one run at a time, with progress and *Cancel*):
-  - *Radial profile*: density (log-log), enclosed mass, and the
+  - *Profile*: density (log-log), enclosed mass, and the
     mass-weighted median and 16–84th percentiles of the quantities ticked,
     in log-spaced shells around a centre. The centre is the shrinking-sphere
     centre (Power et al. 2003) by default, a typed point or the particle
@@ -131,12 +131,23 @@ In a Cartesian table (VBT points, Gadget snapshots, Cartesian catalogues):
     β follow, about the *Polar axis* (the central particles' angular
     momentum by default, or x, y, z). Velocities are peculiar, relative to
     the centre's. Shells reaching past the selected region or half the box
-    are drawn hollow.
+    are drawn hollow. *Geometry* switches to cylindrical annuli in R, the
+    distance from the *Axis* through the centre (surface density, and the
+    volume density inside an optional slab in z), or to linear slabs in z
+    along the axis (linear density, and the volume density within an
+    optional radius limit); velocities then come as v_R, v_φ, v_z and their
+    dispersions.
   - *Phase diagram*: a 2-D histogram of two quantities (linear or log, bins
     per axis), counted or weighted, drawn as log10 with a colour bar; radius
     and radial_velocity use the profile tab's centre. The line under it
     gives the selected, binned, outside and dropped rows (and weights), which
     add up.
+  - *Totals*: mass, centre-of-mass velocity, momentum, kinetic energy (also
+    in the centre-of-mass frame), 1-D velocity dispersion and thermal energy
+    of the whole selection, in Msun, km/s and erg when the snapshot declares
+    its units, and as stored. A total that cannot be computed (no internal
+    energy for dark matter, an undeclared unit) is left empty with the
+    reason.
 
   Values are in the table's units as it states them (comoving and /h where
   the run uses them); the CSV gives the provenance and the factors to

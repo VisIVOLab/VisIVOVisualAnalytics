@@ -3287,6 +3287,20 @@ visivo::profiles::PhaseResult BackendClient::cataloguePhaseDiagramFollowingTask(
             [](const QJsonObject &o) { return visivo::profiles::parsePhase(o); });
 }
 
+visivo::profiles::TotalsResult BackendClient::catalogueTotalsFollowingTask(
+        const QString &datasetId, const std::vector<BackendTabularFilter> &filters,
+        visivo::BackendTaskControl *control) const
+{
+    QJsonObject body = selectionBody(datasetId, filters);
+    body.remove(QStringLiteral("limit"));
+    body.remove(QStringLiteral("offset"));
+    const BackendTaskCreateResult created =
+            createCatalogueTask(QStringLiteral("/v1/tasks/catalogue_totals"), body);
+    return followCatalogueTask<visivo::profiles::TotalsResult>(
+            *this, created, QStringLiteral("catalogue_totals"), control,
+            [](const QJsonObject &o) { return visivo::profiles::parseTotals(o); });
+}
+
 BackendCatalogueDiagnosticsResponse BackendClient::parseCatalogueDiagnostics(
         const QJsonObject &object)
 {

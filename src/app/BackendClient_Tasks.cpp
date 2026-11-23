@@ -983,6 +983,8 @@ visivo::TaskFollowResult visivo::followBackendTask(const BackendClient &client,
                     ? QStringLiteral("catalogue_profile")
             : logTag.contains(QStringLiteral("catalogue_phase_diagram"), Qt::CaseInsensitive)
                     ? QStringLiteral("catalogue_phase_diagram")
+            : logTag.contains(QStringLiteral("catalogue_totals"), Qt::CaseInsensitive)
+                    ? QStringLiteral("catalogue_totals")
                     : QString();
     const QString sessionId = client.sessionId();
     auto publish = [&](DiagnosticsLevel level, const QString &message) {
