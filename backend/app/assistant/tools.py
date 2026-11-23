@@ -206,7 +206,10 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
     if frame is None and path and component_format(path) == "gadget":
         # A snapshot's particle type is opened out of core (no frame): its
         # statistics are streamed from the shards, a slice of rows at a time.
-        return _particle_catalogue_summary(path, params, context or {})
+        out = _particle_catalogue_summary(path, params, context or {})
+        if _wants_subfind_check(params):
+            out["subfind_velocity_check"] = _subfind_velocity_check(path, params)
+        return out
     if frame is None:
         if not path:
             raise ValueError("catalogue_summary requires a loaded catalogue dataset.")
@@ -247,6 +250,11 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
     }
     if context is not None and is_particle_format(context.get("format")):
         _describe_particles(out, context, (getattr(frame, "attrs", None) or {}).get("units"))
+    if _wants_subfind_check(params):
+        out["subfind_velocity_check"] = (
+            _subfind_velocity_check(path, params)
+            if path and component_format(path) == "gadget"
+            else {"error": "the loaded catalogue is not a Gadget-4 SubFind catalogue"})
     return out
 
 
@@ -310,6 +318,32 @@ def _particle_catalogue_summary(path: str, params: dict[str, Any],
     }
     _describe_particles(out, meta, component.units())
     return out
+
+
+def _wants_subfind_check(params: dict[str, Any]) -> bool:
+    """Whether ``subfind_velocity_check`` asks for the check: absent, null
+    and false do not (0 does, and is refused as no subhalos)."""
+    value = params.get("subfind_velocity_check")
+    return value is not None and value is not False
+
+
+def _subfind_velocity_check(path: str, params: dict[str, Any]) -> dict[str, Any]:
+    """The SubFind velocity-convention check (app/subfind_check.py) of a
+    loaded Gadget-4 group catalogue, or why it cannot be made: the copilot
+    reports that instead of a failed summary. ``subfind_velocity_check`` is
+    the number of subhalos (true: the default number). The snapshot it finds
+    must pass the backend's own path rule, as one the user opens would."""
+    from ..dependencies import _within_data_roots  # noqa: PLC0415
+    from ..subfind_check import DEFAULT_SUBHALOS, subfind_velocity_check  # noqa: PLC0415
+    try:
+        value = params["subfind_velocity_check"]
+        subhalos = DEFAULT_SUBHALOS if value is True else _int_param(
+            params, "subfind_velocity_check")
+        if subhalos < 1:
+            raise ValueError("subfind_velocity_check must be a positive number of subhalos.")
+        return subfind_velocity_check(path, subhalos=subhalos, allowed=_within_data_roots)
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        return {"error": str(exc)}
 
 
 def _describe_particles(out: dict[str, Any], context: dict[str, Any], units) -> None:
@@ -529,7 +563,7 @@ def _noise_estimate(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
     sigma = sigma[np.isfinite(sigma)]
     mad = mad[np.isfinite(mad)]
     return {
-        "bunit": ds.bunit,
+        "bunit": ds.intensity_unit,
         "channel_start": res.get("channel_start"),
         "channel_end": res.get("channel_end"),
         "num_channels": res.get("num_channels"),
@@ -698,7 +732,7 @@ def _fit_line(path: str | None, params: dict[str, Any]) -> dict[str, Any]:
         "n_channels": len(spec["values"]),
         "spectral_unit": spec.get("spectral_unit"),
         "spectral_type": spec.get("spectral_type"),
-        "bunit": ds.bunit,
+        "bunit": ds.intensity_unit,
         **fit,
     }
 
@@ -1155,12 +1189,17 @@ TOOLS: dict[str, AssistantTool] = {
                 "column min/max/mean/finite-count. Use this to know what a "
                 "redshift / position catalogue contains before reasoning about it. "
                 "Combine a redshift column's range with cosmology_distance to "
-                "convert to distances."
+                "convert to distances. For a Gadget-4 SubFind catalogue, "
+                "subfind_velocity_check=N also compares the N most massive "
+                "subhalos' stored velocity with their member particles' in the "
+                "snapshot beside it, and says which velocity convention "
+                "(svel=) the catalogue uses."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "max_columns": {"type": "integer"},
+                    "subfind_velocity_check": {"type": "integer"},
                 },
                 "additionalProperties": False,
             },

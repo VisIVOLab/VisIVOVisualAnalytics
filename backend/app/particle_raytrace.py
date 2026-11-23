@@ -249,6 +249,14 @@ if njit is not None:
         return image, zsum
 
 
+def kernel_scale(radius: np.ndarray) -> float:
+    """The size :func:`emission_weights` measures the particles against: the
+    median of their positive smoothing lengths (1 when none)."""
+    radius = np.asarray(radius, dtype=np.float64)
+    sized = radius[np.isfinite(radius) & (radius > 0)]
+    return float(np.median(sized)) if sized.size else 1.0
+
+
 def emission_weights(intensity: np.ndarray, radius: np.ndarray, quantity: str) -> np.ndarray:
     """Each particle's emission at the peak of its kernel, from its intensity
     and what that measures (see the module doc): a density by ``h``, an amount
@@ -260,8 +268,7 @@ def emission_weights(intensity: np.ndarray, radius: np.ndarray, quantity: str) -
         raise ValueError(f"Unknown quantity {quantity!r}: one of {QUANTITIES}.")
     e = np.asarray(intensity, dtype=np.float64)
     radius = np.asarray(radius, dtype=np.float64)
-    sized = radius[np.isfinite(radius) & (radius > 0)]
-    scale = float(np.median(sized)) if sized.size else 1.0
+    scale = kernel_scale(radius)
     if quantity == "density":
         return e * (radius / scale)
     return e * (scale / np.maximum(radius, 1e-30 * scale)) ** 2
@@ -385,27 +392,36 @@ def smoothing_lengths(positions: np.ndarray, neighbours: int = 32, *,
         return _half_distance(dist[:, 0])
     if not n:
         return np.ones(0, dtype=np.float32)
-    pts = _contiguous(pts, box)
+    return _half_distance(_cut_distances(_contiguous(pts, box), neighbours, region, box))
+
+
+def _cut_distances(pts, neighbours: int, region, box) -> np.ndarray:
+    """The ``neighbours``-th neighbour distance of a cut's particles ``pts``
+    (contiguous round the box) among the region's (see smoothing_lengths)."""
     lo, hi = pts.min(axis=0), pts.max(axis=0)
-    dist, margin = _neighbour_distance(pts, region, lo, hi, _margin(lo, hi, n, neighbours),
-                                       neighbours, box)
+    dist, margin = _neighbour_distance(pts, region, lo, hi,
+                                       _margin(lo, hi, len(pts), neighbours), neighbours, box)
     short = np.flatnonzero(dist > _inside_distance(pts, lo, hi, margin, box))
-    if short.size:
-        # The k-th distance found so far bounds the true one: every neighbour
-        # a particle can have lies within it. Searched again in bands of a
-        # factor 2 of it, so one sparse particle does not widen the search
-        # of all the others; at most _MAX_BANDS, each reading the population.
-        logd = np.log2(dist[short])
-        band = np.floor(logd)
-        if len(np.unique(band)) > _MAX_BANDS:
-            band = np.searchsorted(np.quantile(logd, np.linspace(0, 1, _MAX_BANDS + 1)[1:-1]),
-                                   logd)
-        for b in np.unique(band):
-            idx = short[band == b]
-            far = pts[idx]
-            dist[idx], _ = _neighbour_distance(far, region, far.min(axis=0), far.max(axis=0),
-                                               float(dist[idx].max()), neighbours, box)
-    return _half_distance(dist)
+    # The k-th distance found so far bounds the true one: every neighbour a
+    # particle can have lies within it.
+    for idx in _bands(dist, short):
+        far = pts[idx]
+        dist[idx], _ = _neighbour_distance(far, region, far.min(axis=0), far.max(axis=0),
+                                           float(dist[idx].max()), neighbours, box)
+    return dist
+
+
+def _bands(dist: np.ndarray, which: np.ndarray) -> list[np.ndarray]:
+    """``which`` (indices into ``dist``) in bands of a factor 2 of their
+    distance, so one sparse particle does not widen the search of all the
+    others; at most _MAX_BANDS (quantiles of it), each reading the population."""
+    if not which.size:
+        return []
+    logd = np.log2(np.maximum(dist[which], np.finfo(np.float64).tiny))
+    band = np.floor(logd)
+    if len(np.unique(band)) > _MAX_BANDS:
+        band = np.searchsorted(np.quantile(logd, np.linspace(0, 1, _MAX_BANDS + 1)[1:-1]), logd)
+    return [which[band == b] for b in np.unique(band)]
 
 
 def _margin(lo, hi, n: int, neighbours: int) -> float:
@@ -435,7 +451,7 @@ def _neighbour_distance(pts, region, lo, hi, margin: float, neighbours: int,
     for growth in range(_MARGIN_GROWTHS + 1):
         if growth == _MARGIN_GROWTHS:
             margin = math.inf
-        pool = np.asarray(region(lo - margin, hi + margin), dtype=np.float64).reshape(-1, 3)
+        pool = np.asarray(region(lo - margin, hi + margin), dtype=np.float64)[:, :3]
         if len(pool) > neighbours or math.isinf(margin):
             break
         margin = 16.0 * margin if margin > 0 else 1e-6 * scale
@@ -536,7 +552,8 @@ def normalised_light(values, log10: bool = False,
     ``usable``: a finite value (in linear, a positive one too) whose light
     stays above 0 in float32. ``stats``: ``dropped_rows`` (the others),
     ``clipped_rows`` (capped) and ``light_span_decades`` (of the finite
-    values), for a client to say what was left out."""
+    values), for a client to say what was left out, and ``light_unit``: the
+    value (in linear) a light of 1 stands for, before the power."""
     logs = _log_light(values, log10)
     usable = np.isfinite(logs)
     finite = logs[usable]
@@ -546,6 +563,8 @@ def normalised_light(values, log10: bool = False,
         return np.zeros(0, dtype=np.float32), usable, stats
     stats["light_span_decades"] = float(finite.max() - finite.min())
     reference, top = _light_reference(finite, stats["light_span_decades"])
+    with np.errstate(over="ignore", under="ignore"):
+        stats["light_unit"] = float(np.power(10.0, reference))
     excess = float(power) * (finite - reference)
     # The sum of every particle's light stays finite in float32.
     ceiling = min(max(LIGHT_CEILING_DECADES, float(power) * (top - reference)),
@@ -581,17 +600,49 @@ def _log_light(values, log10: bool) -> np.ndarray:
 
 
 def velocity_dispersion(positions: np.ndarray, velocities: np.ndarray,
-                        neighbours: int = 32) -> np.ndarray:
+                        neighbours: int = 32, *, boxsize=None, region=None) -> np.ndarray:
     """Each particle's local velocity dispersion: the one-dimensional spread
     of the velocities of its ``neighbours`` nearest particles (itself
-    included), sqrt(<|v - <v>|²> / 3)."""
-    from scipy.spatial import cKDTree   # noqa: PLC0415
+    included), sqrt(<|v - <v>|²> / 3).
+
+    ``boxsize`` and ``region`` as for :func:`smoothing_lengths`, the
+    region's rows carrying the velocities after the positions: a cut's
+    particles take their neighbours from the whole population, past its
+    faces and across a periodic box's."""
     pts = np.asarray(positions, dtype=np.float64)
     vel = np.asarray(velocities, dtype=np.float32)
-    k = min(neighbours + 1, len(pts))
+    box = _boxsize(boxsize, pts.shape[1] if pts.ndim == 2 else 3)
+    if region is None:
+        wrapped = _wrapped(pts, box)
+        return _dispersion(wrapped, wrapped, vel, neighbours, box)
+    out = np.zeros(len(pts), dtype=np.float32)
+    if not len(pts):
+        return out
+    pts = _contiguous(pts, box)
+    dist = _cut_distances(pts, neighbours, region, box)
+    # Every neighbour of a band's particles lies within its largest distance.
+    for idx in _bands(dist, np.arange(len(pts))):
+        near = pts[idx]
+        # Widened by float32's rounding of the cut's positions, which the
+        # region reads back in float64 (coincident particles: a 0 distance).
+        reach = float(dist[idx].max()) + 4.0 * float(np.finfo(np.float32).eps) * max(
+            1.0, float(np.abs(near).max()))
+        pool = np.asarray(region(near.min(axis=0) - reach, near.max(axis=0) + reach),
+                          dtype=np.float64)
+        out[idx] = _dispersion(_wrapped(pool[:, :3], box), _wrapped(near, box),
+                               pool[:, 3:6].astype(np.float32), neighbours, box)
+    return out
+
+
+def _dispersion(pool: np.ndarray, pts: np.ndarray, vel: np.ndarray, neighbours: int,
+                box) -> np.ndarray:
+    """The dispersion of ``pts`` among the ``pool``'s particles (velocities
+    ``vel``), its tree queried in batches of bounded temporaries."""
+    from scipy.spatial import cKDTree   # noqa: PLC0415
+    k = min(neighbours + 1, len(pool))
     if k < 2:
         return np.zeros(len(pts), dtype=np.float32)
-    tree = cKDTree(pts)
+    tree = cKDTree(pool, boxsize=box)
     out = np.empty(len(pts), dtype=np.float32)
     batch = max(4096, 8_000_000 // k)   # bounded temporaries: (batch, k, 3)
     for start in range(0, len(pts), batch):
@@ -682,21 +733,33 @@ def in_slab(positions: np.ndarray, camera: Camera, thickness: float | None) -> n
 def projected_maps(positions: np.ndarray, radius: np.ndarray, weight: np.ndarray,
                    value: np.ndarray | None, camera: Camera, width: int, height: int, *,
                    slab: float | None = None) -> np.ndarray:
-    """``(height, width, 2)``: the projected density (the columns of the
-    particles' kernels, each of mass ``weight``) and the density-weighted mean
-    of ``value`` along each line of sight (NaN where nothing lies)."""
+    """``(height, width, 2)``: the projected density (the particles' kernels,
+    each of mass ``weight``: the mass each pixel holds) and the
+    density-weighted mean of ``value`` along each
+    line of sight (NaN where nothing lies, or no particle has a value)."""
     cam = parallel_camera(camera)
     keep = in_slab(positions, cam, slab)
     w = np.asarray(weight, dtype=np.float32)[keep]
-    v = (np.zeros(int(keep.sum()), dtype=np.float32) if value is None
-         else np.nan_to_num(np.asarray(value, dtype=np.float32)[keep]))
-    # Three additive channels: the mass, the mass times the value, nothing.
-    channels = np.stack([np.ones_like(w), v, np.zeros_like(w)], axis=1)
-    light = render(positions[keep], np.asarray(radius)[keep], channels, w, cam, width, height,
+    radius = np.asarray(radius)[keep]
+    if value is None:
+        v, has = np.zeros_like(w), np.ones_like(w)
+    else:
+        v = np.asarray(value, dtype=np.float32)[keep]
+        has = np.isfinite(v).astype(np.float32)
+        v = np.where(has > 0, v, 0.0).astype(np.float32)
+    # Three additive channels: the mass, the mass times the value, the mass
+    # of the particles that have a value (a NaN is no value, not 0).
+    channels = np.stack([np.ones_like(w), v, has], axis=1)
+    light = render(positions[keep], radius, channels, w, cam, width, height,
                    quantity="per_particle")
-    density = light[..., 0]
+    # A particle of weight 1 sums, over the pixels, to its kernel's area
+    # pi s^2 (1 - exp(-cutoff^2)) in pixels (s the size emission_weights
+    # measures it against, in pixels): the column over that area is the
+    # mass each pixel holds.
+    s_px = kernel_scale(radius) * height / (2.0 * max(cam.parallel_scale, 1e-30))
+    density = light[..., 0] / (math.pi * s_px * s_px * (1.0 - math.exp(-_CUTOFF * _CUTOFF)))
     with np.errstate(divide="ignore", invalid="ignore"):
-        mean = np.where(density > 0, light[..., 1] / density, np.nan)
+        mean = np.where(light[..., 2] > 0, light[..., 1] / light[..., 2], np.nan)
     return np.stack([density, mean], axis=-1).astype(np.float32)
 
 

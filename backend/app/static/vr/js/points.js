@@ -281,17 +281,15 @@ export const F16_OPACITY_FLOOR = 1 / 512;
  * into an 8-bit framebuffer, where fewer steps lost the faint colours). The
  * desktop and the point session use the same steps, in the same operations
  * (point_splat.splat_opacity). With `steps` false (a float target, no 8-bit
- * store) it is unquantised, kept in [FLOAT_OPACITY_MIN, FLOAT_OPACITY_MAX].
+ * store) it is unquantised, at most FLOAT_OPACITY_MAX and with no floor
+ * (issue #457: a floor of 0.005 brightened a table from about 2.7e7 rows).
  */
 export const ALPHA_STEPS_MIN = 8;
 export const ALPHA_STEPS_MAX = 64;
-export const FLOAT_OPACITY_MIN = 0.005;
 export const FLOAT_OPACITY_MAX = 0.25;
 export function splatOpacity(depth, intensity = 35, steps = true) {
   if (!(Number.isFinite(depth) && depth > 0)) return steps ? ALPHA_STEPS_MAX / 255 : FLOAT_OPACITY_MAX;
-  if (!steps) {
-    return Math.min(Math.max(1.5 * intensity / (35 * depth), FLOAT_OPACITY_MIN), FLOAT_OPACITY_MAX);
-  }
+  if (!steps) return Math.min(1.5 * intensity / (35 * depth), FLOAT_OPACITY_MAX);
   const k = Math.floor(1.5 * intensity / (35 * depth) * 255 + 0.5);
   return Math.min(Math.max(k, ALPHA_STEPS_MIN), ALPHA_STEPS_MAX) / 255;
 }
@@ -313,15 +311,17 @@ export function acceptFrame(header, style, rule) {
 /**
  * Splat radius (data units) and opacity, as the desktop and the point session
  * size them (render_session/points.py gaussian_splat): spacing ∛(volume / N)
- * of the box the points fill, radius = spacing × size / 8; opacity is
- * 1.5 / D at the standard intensity, in whole 8-bit steps in an 8-bit
- * target and unquantised in a float one (splatOpacity), with D the longest
- * side / spacing, as the
- * splat `rule` draws it (ruleOpacity: over size² in a float target, issue
- * #263, so the size step changes the size, not the brightness; the
- * desktop's at size 1, the default). N is the table's rows: a sample of
- * fewer rows is drawn with splats larger by ∛(rows per sample row), so it
- * covers the same volume.
+ * of the box the points fill, radius = spacing × size / 8; N is the table's
+ * rows, and a sample of fewer rows is drawn with splats larger by ∛(rows per
+ * sample row), so it covers the same volume. Opacity is 1.5 / D at the
+ * standard intensity, in whole 8-bit steps in an 8-bit target and
+ * unquantised in a float one (splatOpacity), as the splat `rule` draws it
+ * (ruleOpacity: over size² in a float target, issue #263, so the size step
+ * changes the size, not the brightness). D is the longest side over the
+ * spacing of the rows drawn (issue #457): the sample's grown splats then
+ * carry the whole table's light whatever the governor draws, where the
+ * table's spacing showed (sample / rows)^(1/3) of it. A page from before
+ * (v1) took the table's.
  */
 export function splatStyle(bounds, totalRows, sampleRows, size, intensity, rule = 'v1') {
   const dims = [bounds[1] - bounds[0], bounds[3] - bounds[2], bounds[5] - bounds[4]];
@@ -329,10 +329,10 @@ export function splatStyle(bounds, totalRows, sampleRows, size, intensity, rule 
   const volume = dims.reduce((p, d) => p * Math.max(d, longest * 1e-3), 1);
   const spacing = Math.cbrt(volume / Math.max(1, totalRows));
   const radius = (spacing * size) / 8;
-  const depth = Math.max(longest / spacing, 1);
+  const grow = Math.cbrt(Math.max(1, totalRows / Math.max(1, sampleRows)));
+  const depth = Math.max(longest / (rule === 'v1' ? spacing : spacing * grow), 1);
   const floatTarget = rule === 'v2-f16' || rule === 'v2-f32';
   const opacity = ruleOpacity(splatOpacity(depth, intensity, !floatTarget), size, rule);
-  const grow = Math.cbrt(Math.max(1, totalRows / Math.max(1, sampleRows)));
   return { radius, opacity, sampleRadius: radius * grow };
 }
 

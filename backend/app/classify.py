@@ -317,10 +317,12 @@ def _classify_particles(path: Path, allowed=None) -> dict | None:
     from . import gadget_snapshot as gs  # noqa: PLC0415
     from .point_table import particle_components, particle_dataset_path  # noqa: PLC0415
 
+    catalogue = None
     if path.is_dir():
         first = gs.first_in_dir(path, allowed)
         if first is None:
             return None
+        catalogue = gs.catalogue_in_dir(path, first, allowed)
         path = first
     elif gs.detect(path) is None:
         return None
@@ -352,6 +354,9 @@ def _classify_particles(path: Path, allowed=None) -> dict | None:
         detail += " Blocks left out: " + "; ".join(
             f"{name} ({reasons[name]})" if reasons.get(name) else name
             for name in snap.skipped) + "."
+    if catalogue is not None:
+        detail += (f" The folder also holds the group catalogue {catalogue.name}: open that "
+                   "file for its FoF groups and subhalos as targets.")
     return _result("particles", "catalogue", True, detail, open_path=ref,
                    components=components)
 

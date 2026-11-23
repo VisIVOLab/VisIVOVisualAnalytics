@@ -103,9 +103,16 @@ def worker_map_math(
     positive flux). Map B is combined pixel by pixel only when it lies on A's
     sky grid; otherwise it is first reprojected onto A's grid (see
     :func:`_align_to_a`), and ``reprojected`` in the result says so.
+
+    Maps that share no pixel are refused, and so is any result with no finite
+    pixel: an all-blank map answered as a success looked like a computed
+    product (issue #416). A partial overlap is computed and reported as
+    ``overlap_fraction`` (of A's finite pixels) with a ``warning``.
     """
     a, header, wcs_a = load_image2d(path_a)
     reprojected = False
+    overlap_fraction: float | None = None
+    warning = ""
 
     if op in _UNARY_OPS:
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -130,6 +137,7 @@ def worker_map_math(
                     f"Map {name} declares sky axes but its WCS cannot be read, so "
                     "the maps cannot be matched on the sky.")
         b, reprojected = _align_to_a(a, wcs_a, b, wcs_b)
+        overlap_fraction, warning = _overlap(a, b, reprojected)
         with np.errstate(divide="ignore", invalid="ignore"):
             if op == "add":
                 out = a + b
@@ -147,6 +155,12 @@ def worker_map_math(
             f"{sorted(_UNARY_OPS | _BINARY_OPS)}")
 
     out = np.asarray(out, dtype=np.float32)
+    if not np.isfinite(out).any():
+        raise ValueError(
+            f"The result of '{op}' has no finite pixel"
+            + (" (spectral_index needs both fluxes finite and positive)"
+               if op == "spectral_index" else "")
+            + ", so no map was written.")
     out_header = header.copy()
     out_header["BUNIT"] = "" if op in ("divide", "ratio", "spectral_index") else out_header.get("BUNIT", "")
     out_header["HISTORY"] = f"VisIVO map_math op={op}"
@@ -164,6 +178,8 @@ def worker_map_math(
         "height": int(out.shape[0]),
         "op": op,
         "reprojected": reprojected,
+        "overlap_fraction": overlap_fraction,
+        "warning": warning,
         "range_min": float(np.min(finite)) if finite.size else 0.0,
         "range_max": float(np.max(finite)) if finite.size else 0.0,
     }
@@ -296,6 +312,27 @@ def _align_to_a(a: np.ndarray, wcs_a: WCS,
     if b.shape == a.shape and _same_sky_grid(wcs_a, wcs_b, a.shape):
         return b, False
     return _reproject_to(b, wcs_b, wcs_a, a.shape), True
+
+
+def _overlap(a: np.ndarray, b: np.ndarray, reprojected: bool) -> tuple[float, str]:
+    """Fraction of A's finite pixels where B (on A's grid) is finite too, and
+    the warning to show when it is below one; raises when it is zero."""
+    a_ok = np.isfinite(a)
+    n_a = int(np.count_nonzero(a_ok))
+    if n_a == 0:
+        raise ValueError("Map A has no finite pixel, so there is nothing to combine.")
+    shared = int(np.count_nonzero(a_ok & np.isfinite(b)))
+    if shared == 0:
+        raise ValueError(
+            "Maps A and B do not overlap: no pixel of A has a value in B"
+            + (" once B is reprojected onto A's sky grid" if reprojected else "")
+            + ". Check that the two maps cover the same region of the sky.")
+    if shared == n_a:
+        return 1.0, ""
+    fraction = shared / n_a
+    return fraction, (
+        f"Maps A and B overlap on {100.0 * fraction:.1f}% of map A's pixels "
+        f"({shared} of {n_a}); the result is blank elsewhere.")
 
 
 def _reproject_to(image: np.ndarray, src_wcs: WCS, target_wcs: WCS,

@@ -58,9 +58,9 @@ The card shows the main settings; *More settings* opens the rest.
 | *Slab*, *Range* | A projected map's thickness around the focal plane, in the table's units (*Everything* by default), and the decades of density its brightness spans (*Automatic* by default). |
 | *Curve*, *Stretch*, *Gamma*, *Saturation* | The tone curve of a 3-D render. *Asinh* and *Logarithmic* lift faint light (more with a higher stretch), *Exponential* compresses the bright, *Linear* does neither. |
 
-The analysis view's Gaussian splats get brighter as a table grows, so their
-brightness is not comparable between tables of different size; use a
-*Projected map* for that.
+The analysis view's Gaussian splats keep the same brightness whatever the
+number of particles, but they are a picture, not a measurement: use a
+*Projected map* for numbers.
 
 *Box* draws the data's bounding box and *Colour bar* the colour scale (the
 colour column in a 3-D render; the relative column density, or the hue's
@@ -79,8 +79,14 @@ settings, box and colour bar.
   regrade it without rendering again.
 - *Save Image…*: the still as graded, as PNG.
 - *Save Light…*: the light before the tone curve, as a floating-point FITS
-  (red, green and blue planes; for a projected map, the density and its
-  weighted mean).
+  (red, green and blue planes). A projected map is saved as its density and
+  its weighted mean. For a Gadget snapshot they are in physical units: the
+  surface density in M☉/kpc² (the particles' mass, unless *Light* names
+  another column), the mean in its own unit (K for the temperature, keV cm²
+  for the entropy, km/s for a velocity dispersion), and the pixels in
+  physical kpc. The header also gives the comoving pixel size, the redshift,
+  h, a, the line of sight and the slab's depth. Other tables have no stated
+  units, so their maps are relative.
 - *Movie…*: an orbit about the view's up axis (*Turn*, *Length*, *Rate*), with
   the still's exposure so frames do not flicker. Encoded as MP4 (H.264) when
   `ffmpeg` is installed, otherwise saved as numbered PNG frames.

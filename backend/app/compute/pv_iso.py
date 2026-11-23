@@ -13,7 +13,9 @@ from typing import Any  # noqa: F401
 
 import numpy as np
 
-from ..fits_dataset import ScientificFitsDataset  # noqa: F401
+from ..fits_dataset import (  # noqa: F401
+    USER_BEAM_NOTE, ScientificFitsDataset, copy_intensity_provenance,
+)
 from .abort import check_abort
 from ._common import (  # noqa: F401
     logger,
@@ -432,7 +434,7 @@ def worker_pv(path: str, vertices: list[list[float]], width_pixels: int,
             np.ascontiguousarray(r["spectral_coordinates"], dtype="<f8").tobytes()).decode("ascii"),
         "spectral_crval": r["spectral_crval"],
         "spectral_cdelt": r["spectral_cdelt"],
-        "bunit": dataset.bunit,
+        "bunit": dataset.intensity_unit,
         "beam_major": dataset.beam.major,
         "beam_minor": dataset.beam.minor,
         "beam_pa": dataset.beam.pa,
@@ -494,8 +496,11 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
                 "VELREF", "ZSOURCE", "OBJECT", "TELESCOP", "EQUINOX", "RADESYS", "MJD-OBS", "DATE-OBS"):
         if key in src:
             hdr[key] = src[key]
-    if dataset.bunit:
-        hdr["BUNIT"] = dataset.bunit
+    if dataset.intensity_unit:
+        hdr["BUNIT"] = dataset.intensity_unit
+    copy_intensity_provenance(src, hdr)
+    if dataset.beam_source == "user":
+        hdr.add_comment(USER_BEAM_NOTE)
     beam = dataset.beam
     if beam.major and beam.minor:
         hdr["BMAJ"] = float(beam.major)
@@ -526,7 +531,7 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
         "height": int(r["pv"].shape[0]),
         "range_min": float(finite.min()) if finite.size else 0.0,
         "range_max": float(finite.max()) if finite.size else 0.0,
-        "bunit": dataset.bunit or "",
+        "bunit": dataset.intensity_unit or "",
     }
 
 

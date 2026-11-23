@@ -63,9 +63,9 @@ from z (comoving, Planck18)*).
 ### Source representation and visual encoding
 
 - *Shape*: *Ellipsoid*, *Sphere*, *Point*, *Cross*, *Gaussian splats*
-  (additive light, for simulation particles; *Scale* sets their size; on large
-  tables their brightness grows with the number of particles, so compare
-  tables of different size with a projected map instead), and the
+  (additive light, for simulation particles; *Scale* sets their size; their
+  brightness does not depend on the number of particles; for numbers use a
+  projected map), and the
   separate *Ray-traced light* check, which draws a simulation for figures on
   the GPU from data prepared by the backend
   ([Ray-traced particles](raytraced-particles.md)).

@@ -48,6 +48,7 @@ class QDockWidget;
 class QProgressDialog;
 class QFrame;
 class QLabel;
+class DatasetBeamControl;
 class ToolResultDialog;
 class RegionPropertiesDialog;
 class vtkCallbackCommand;
@@ -120,6 +121,9 @@ public:
     /// Beam indicator — same contract as vtkWindowCube::setBeamInfo().
     /// Pass NaN major to hide. Call after construction.
     void setBeamInfo(double majorDeg, double minorDeg, double paDeg);
+    /// How the unit was inferred when BUNIT is missing, and where the beam
+    /// came from ("header", "user", "none"); issue #416.
+    void setUnitAndBeamSource(const QString &unitNote, const QString &beamSource);
 
     /// Switch the viewer to dynamic-spectrum / beamformed mode. Disables
     /// celestial-WCS specific tools (catalogue overlay, polarization vectors,
@@ -202,6 +206,8 @@ signals:
     /// image's sky, or the catalogue a VLKB query just saved. Only the host can
     /// open a dataset, and what the file is decides which viewer gets it.
     void openInOwnWindowRequested(const QString &path);
+    /// Open a FITS the backend wrote (an LTE map) on this window's backend.
+    void openBackendFitsRequested(const QString &path, const QString &label);
 
 public:
     enum class RegionMode
@@ -1009,6 +1015,10 @@ protected:
     QPointer<QAction> m_actLoadAnnot;
     QPointer<QAction> m_actPublicationFigure;
     QPointer<QAction> m_actImageQuality;
+    /// LTE analysis of CO isotopologues (issue #416, vtkWindowImage_Products.cpp).
+    QPointer<QAction> m_actLteCo;
+    void openLteCoDialog();
+    int m_lteRuns{ 0 };
     QPointer<QAction> m_actAngle;
     QPointer<QAction> m_actClearMeas;
     void setMeasurementMode(MeasurementMode mode);
@@ -1086,6 +1096,11 @@ private:
     double m_beamMajorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamMinorDeg{ std::numeric_limits<double>::quiet_NaN() };
     double m_beamPaDeg{ std::numeric_limits<double>::quiet_NaN() };
+    QString m_intensityUnitNote;
+    QString m_beamSource;
+    QPointer<QLabel> m_unitValueLabel;
+    QPointer<DatasetBeamControl> m_beamControl;
+    void refreshUnitAndBeamRows();
 
     // Polarization vector overlay
     vtkNew<vtkPoints> m_polVecPoints;

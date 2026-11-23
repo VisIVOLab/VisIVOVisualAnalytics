@@ -48,10 +48,9 @@ the window loads an even sample of the table:
   spanning three decades or more opens on a Log scale.
 - *SOURCE REPRESENTATION ▸ Shape*: *Point*, or *Gaussian splats* (the default
   above a million rows). Splats are emissive, so dense regions add up to bright
-  and faint filaments stay visible. On large tables splat brightness grows with
-  the number of particles, so it is not comparable between tables of different
-  size; use a projected map of [ray-traced particles](raytraced-particles.md)
-  for that. *Scale* sets the point or splat size. The
+  and faint filaments stay visible. Splat brightness does not depend on the number
+  of particles; for numbers use a projected map of
+  [ray-traced particles](raytraced-particles.md). *Scale* sets the point or splat size. The
   ellipsoid, sphere and cross glyphs of object catalogues are not offered.
 - *Ray-traced light*: draws every row as a continuous medium on this machine's
   GPU, for figures and movies. See [Ray-traced particles](raytraced-particles.md).

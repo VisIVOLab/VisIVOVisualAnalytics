@@ -49,6 +49,7 @@ add_library(visivo_test_support STATIC
     ${VISIVO_ROOT}/src/app/BackendClient_Tasks.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_VrPair.cpp
     ${VISIVO_ROOT}/src/app/BackendClient_CubeLod.cpp
+    ${VISIVO_ROOT}/src/app/BackendClient_Products.cpp
     ${VISIVO_ROOT}/src/thirdparty/qrcodegen/qrcodegen.cpp
     ${VISIVO_ROOT}/src/app/BackendUrl.cpp
     ${VISIVO_ROOT}/src/app/LaunchOptions.cpp
@@ -111,6 +112,8 @@ add_executable(VisIVOTests
     test_backend_contract.cpp
     TestRemoteSliceCache.h
     test_remote_slice_cache.cpp
+    TestSliceDetailPlan.h
+    test_slice_detail_plan.cpp
     TestLinkedWindowRegistry.h
     test_linked_window_registry.cpp
     TestLinkedCameraSync.h
@@ -151,6 +154,10 @@ add_executable(VisIVOTests
     test_ray_voxel_pick.cpp
     TestSedBuilder.h
     test_sed_builder.cpp
+    TestMolecularLineClient.h
+    test_molecular_line_client.cpp
+    TestLteCoRequest.h
+    test_lte_co_request.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h
@@ -329,3 +336,26 @@ set_tests_properties(VisIVOQuitExitRenderSessions PROPERTIES SKIP_RETURN_CODE 77
 add_test(NAME VisIVOQuitExitRenderSessionsAboutToQuit
          COMMAND VisIVOQuitExitTest --render-sessions-about-to-quit)
 set_tests_properties(VisIVOQuitExitRenderSessionsAboutToQuit PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+
+# ── Widget tests ─────────────────────────────────────────────────────────────
+# A process of its own that links QtWidgets (VisIVOTests deliberately does
+# not): a window's real form, built by uic with its VTK view stubbed, driven
+# with QTest's mouse. Only the base Qt is needed, as for the suite above.
+find_package(Qt6 COMPONENTS Widgets)
+if (TARGET Qt6::Widgets)
+    qt_wrap_ui(VISIVO_WIDGET_TEST_FORMS ${VISIVO_ROOT}/ui/vtkWindowCatalogue3D.ui)
+    add_executable(VisIVOSizeSliderDragTest
+        test_size_slider_drag.cpp
+        ${VISIVO_WIDGET_TEST_FORMS}
+    )
+    set_target_properties(VisIVOSizeSliderDragTest PROPERTIES AUTOMOC ON)
+    target_include_directories(VisIVOSizeSliderDragTest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/widget_stubs
+        ${VISIVO_ROOT}/src/gui
+        ${CMAKE_CURRENT_BINARY_DIR}
+    )
+    target_link_libraries(VisIVOSizeSliderDragTest PRIVATE Qt::Widgets Qt::Test)
+    add_test(NAME VisIVOSizeSliderDrag COMMAND VisIVOSizeSliderDragTest)
+    set_tests_properties(VisIVOSizeSliderDrag PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+endif()

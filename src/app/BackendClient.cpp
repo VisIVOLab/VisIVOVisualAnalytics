@@ -939,6 +939,9 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
+    result.beamSource = object.value(QStringLiteral("beam_source")).toString();
+    result.intensityUnit = object.value(QStringLiteral("intensity_unit")).toString();
+    result.intensityUnitNote = object.value(QStringLiteral("intensity_unit_note")).toString();
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1181,6 +1184,9 @@ BackendOpenDatasetResult BackendClient::openSkavaDataset(const QString &obsId,
     if (!bmin.isNull()) result.beamMinorDeg = bmin.toDouble();
     if (!bpa.isNull())  result.beamPaDeg    = bpa.toDouble();
     result.beamPerChannel = object.value(QStringLiteral("beam_per_channel")).toBool(false);
+    result.beamSource = object.value(QStringLiteral("beam_source")).toString();
+    result.intensityUnit = object.value(QStringLiteral("intensity_unit")).toString();
+    result.intensityUnitNote = object.value(QStringLiteral("intensity_unit_note")).toString();
 
     // Size-aware loading policy (Pattern B). Defaults preserve legacy
     // auto-full behaviour for backends that don't return these fields.
@@ -1454,6 +1460,26 @@ BackendPixelSkyResult BackendClient::pixelToSky(const QString &datasetId, double
     return result;
 }
 
+visivo::beam::BeamResult BackendClient::setDatasetBeam(
+        const visivo::beam::BeamRequest &request) const
+{
+    QString error;
+    int status = 0;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/beam")),
+                        QJsonDocument(visivo::beam::requestBody(request)), error, nullptr,
+                        &status);
+    if (!error.isEmpty()) {
+        visivo::beam::BeamResult result;
+        const QString why = status >= 400 ? visivo::replyErrorText(payload) : QString();
+        result.error = visivo::isMissingRouteReply(status, payload)
+                ? QStringLiteral("This backend cannot keep a typed beam; update it.")
+                : (why.isEmpty() ? error : why);
+        return result;
+    }
+    return visivo::beam::parseResponse(QJsonDocument::fromJson(payload).object());
+}
+
 BackendSampImportResult BackendClient::importSampUrl(const QString &url,
                                                      const QString &filename) const
 {
@@ -1558,13 +1584,23 @@ BackendCubePreviewResult BackendClient::requestPreview(const QString &datasetId,
 }
 
 BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, const QString &axis,
-                                                   int index) const
+                                                   int index, int maxLongestSide,
+                                                   const std::optional<QRect> &region) const
 {
     BackendCubeSliceResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("axis"), axis },
-                                          { QStringLiteral("index"), index } });
+    QJsonObject request{ { QStringLiteral("dataset_id"), datasetId },
+                         { QStringLiteral("axis"), axis },
+                         { QStringLiteral("index"), index } };
+    if (maxLongestSide > 0)
+        request.insert(QStringLiteral("max_longest_side"), maxLongestSide);
+    if (region && region->isValid()) {
+        request.insert(QStringLiteral("x0"), region->left());
+        request.insert(QStringLiteral("x1"), region->right());
+        request.insert(QStringLiteral("y0"), region->top());
+        request.insert(QStringLiteral("y1"), region->bottom());
+    }
+    const QJsonDocument body(request);
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/slice")), body, error);
     if (!error.isEmpty()) {
@@ -1579,6 +1615,11 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
     result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
     result.rangeMin = object.value(QStringLiteral("range_min")).toDouble();
     result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
+    result.fullWidth = object.value(QStringLiteral("full_width")).toInt(result.width);
+    result.fullHeight = object.value(QStringLiteral("full_height")).toInt(result.height);
+    result.x0 = object.value(QStringLiteral("x0")).toInt(0);
+    result.y0 = object.value(QStringLiteral("y0")).toInt(0);
+    result.stride = std::max(1, object.value(QStringLiteral("stride")).toInt(1));
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {
@@ -3662,6 +3703,9 @@ const QStringList &heavyComputePaths()
         // Selection Diagnostics: two exact passes over every particle of the
         // selection, minutes on a large snapshot read out of core (#448).
         QStringLiteral("/catalogue/diagnostics"),
+        // Reads two or three whole cubes, reprojects and solves per pixel,
+        // with no ceiling of its own on the server (issue #416).
+        QStringLiteral("/products/lte_co"),
     };
     return paths;
 }

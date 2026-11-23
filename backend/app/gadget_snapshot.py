@@ -160,6 +160,11 @@ class FileLayout:
     fmt: int                        # 1 | 2 (0 for HDF5)
     header: Header
     blocks: tuple[RawBlock, ...]
+    #: The code that wrote an HDF5 group catalogue ("gadget4", "arepo"),
+    #: "" for a snapshot or a binary file.
+    producer: str = ""
+    #: A Gadget-4 lightcone group catalogue (see _is_lightcone_catalogue).
+    lightcone: bool = False
 
 
 def detect(path: str | Path) -> tuple[int, str] | None:
@@ -196,7 +201,10 @@ def _is_hdf5_snapshot(path) -> bool:
     try:
         import h5py  # noqa: PLC0415
         with h5py.File(path, "r") as f:
-            return "Header" in f and "NumPart_ThisFile" in f["Header"].attrs
+            if "Header" not in f:
+                return False
+            attrs = f["Header"].attrs
+            return "NumPart_ThisFile" in attrs or "Ngroups_ThisFile" in attrs
     except Exception:   # noqa: BLE001 - not readable as one: not a snapshot
         return False
 
@@ -417,6 +425,9 @@ BLOCKS: dict[str, tuple[object, int | None, tuple[str, ...]]] = {
     "MCON": ((0,), 1, ("contaminating_mass",)),
     "SPOS": ((1,), 3, ("x", "y", "z")),
     "SVEL": ((1,), 3, ("vx", "vy", "vz")),
+    # A group's mass-weighted velocity: in the HDF5 catalogues only, under
+    # its HDF5 name (no binary block name has 8 letters).
+    "GroupVel": ((0,), 3, ("vx", "vy", "vz")),
     "SCM": ((1,), 3, ("centre_of_mass_x", "centre_of_mass_y", "centre_of_mass_z")),
     "SPIN": ((1,), 3, ("spin_x", "spin_y", "spin_z")),
     "MSUB": ((1,), 1, ("subhalo_mass",)),
@@ -575,10 +586,30 @@ class H5Block:
     offset: int | None              # in the file, when memory-mappable
 
 
+#: The groups of a FoF/SubFind HDF5 catalogue (``fof_subhalo_tab_NNN.hdf5``
+#: of Gadget-4 and Arepo) -> the "type" the binary catalogues give them.
+SUBFIND_HDF5_GROUPS = {"Group": 0, "Subhalo": 1}
+#: Their datasets -> the binary SubFind block they are, so both kinds of
+#: catalogue have the same columns (and the same framing radii, #441).
+#: Any other dataset is a column of its own name.
+SUBFIND_HDF5_BLOCKS = {
+    "GroupPos": "GPOS", "GroupMass": "MTOT", "GroupLen": "GLEN",
+    "GroupNsubs": "NSUB", "GroupFirstSub": "FSUB",
+    "Group_M_TopHat200": "MVIR", "Group_R_TopHat200": "RVIR",
+    "Group_M_Crit500": "M500", "Group_R_Crit500": "R500",
+    "SubhaloPos": "SPOS", "SubhaloVel": "SVEL", "SubhaloCM": "SCM", "SubhaloSpin": "SPIN",
+    "SubhaloMass": "MSUB", "SubhaloVmax": "VMAX", "SubhaloVmaxRad": "RMAX",
+    "SubhaloHalfmassRad": "RHMS", "SubhaloLen": "SLEN", "SubhaloGroupNr": "GRNR",
+    "SubhaloGrNr": "GRNR", "SubhaloIDMostbound": "MBID",
+}
+
+
 def _scan_hdf5(path: str) -> FileLayout:
     import h5py  # noqa: PLC0415
     with h5py.File(path, "r") as f:
         a = f["Header"].attrs
+        if "NumPart_ThisFile" not in a and "Ngroups_ThisFile" in a:
+            return _scan_hdf5_catalogue(path, f)
 
         def get(key, default=0):
             return a[key] if key in a else default
@@ -614,12 +645,80 @@ def _scan_hdf5(path: str) -> FileLayout:
     return FileLayout(path, "hdf5", "", 0, header, tuple(blocks))
 
 
+def _scan_hdf5_catalogue(path: str, f) -> FileLayout:
+    """A FoF/SubFind HDF5 catalogue file: groups as type 0 and subhalos as
+    type 1, counted by ``Ngroups_*`` and ``Nsubhalos_*`` (Gadget-4) or
+    ``Nsubgroups_*`` (Arepo). Gadget-4 keeps the cosmology in
+    ``Parameters``, Arepo in the header."""
+    import h5py  # noqa: PLC0415
+    a = f["Header"].attrs
+    params = f["Parameters"].attrs if "Parameters" in f else {}
+
+    def get(key, default=0):
+        for attrs in (a, params):
+            if key in attrs:
+                return np.asarray(attrs[key]).reshape(-1)[0]
+        return default
+    # Gadget-4 writes Nsubhalos_* (neither count in a FoF-only fof_tab),
+    # Arepo Nsubgroups_* and its cosmology in the header.
+    gadget4 = "Nsubhalos_ThisFile" in a or (
+        "Nsubgroups_ThisFile" not in a and "HubbleParam" not in a)
+    sub = "Nsubhalos" if gadget4 else "Nsubgroups"
+    npart = (int(get("Ngroups_ThisFile")), int(get(f"{sub}_ThisFile")), 0, 0, 0, 0)
+    total = (int(get("Ngroups_Total")), int(get(f"{sub}_Total")), 0, 0, 0, 0)
+    time = float(get("Time", 0.0))
+    header = Header(npart, (0.0,) * NTYPES, time, float(get("Redshift", 0.0)), 0, 0, total, 0,
+                    max(1, int(get("NumFiles", get("NumFilesPerSnapshot", 1)))),
+                    float(get("BoxSize", 0.0)), float(get("Omega0", 0.0)),
+                    float(get("OmegaLambda", 0.0)), float(get("HubbleParam", 1.0)))
+    blocks = []
+    for gname, t in SUBFIND_HDF5_GROUPS.items():
+        group = f.get(gname)
+        if group is None:
+            continue
+        for dname, dset in group.items():
+            if not isinstance(dset, h5py.Dataset) or dset.ndim not in (1, 2):
+                continue
+            offset = None
+            if dset.chunks is None and dset.compression is None:
+                offset = dset.id.get_offset()
+            blocks.append(H5Block(SUBFIND_HDF5_BLOCKS.get(dname, dname), t, dset.name,
+                                  tuple(dset.shape), dset.dtype.str, offset))
+    return FileLayout(path, "hdf5", "", 0, header, tuple(blocks),
+                      "gadget4" if gadget4 else "arepo",
+                      gadget4 and _is_lightcone_catalogue(path, f))
+
+
+def _is_lightcone_catalogue(path: str, f) -> bool:
+    """Whether a Gadget-4 group catalogue was found on the lightcone: its
+    header says nothing of it, but Gadget-4 names those ``lc_fof_...`` in
+    ``lc_groups_NNN`` (run.cc), and a run that wrote them was compiled with
+    LIGHTCONE_PARTICLES_GROUPS (its ``Config``, when written). There the
+    particle velocities are already peculiar (subfind_properties.cc,
+    fof<lcparticles>) and the positions are around the observer, not in
+    the periodic box (fof.cc)."""
+    p = Path(path)
+    named = p.name.startswith("lc_") or p.parent.name.startswith("lc_groups")
+    config = f.get("Config")
+    return named and (config is None or "LIGHTCONE_PARTICLES_GROUPS" in config.attrs)
+
+
 # ── Units ────────────────────────────────────────────────────────────────────
 
 #: ``key=value,...`` with any of length_cm, mass_g, velocity_cm_s, comoving
-#: (0/1), hubble_units (0/1): overrides the snapshot's units, for runs whose
-#: parameter file is not beside them.
+#: (0/1), hubble_units (0/1), periodic (0/1), svel and srad (SubFind
+#: conventions, see UnitSystem): overrides the snapshot's units, for runs
+#: whose parameter file is not beside them.
 UNITS_ENV = "VISIVO_GADGET_UNITS"
+#: The SubFind subhalo velocity conventions: the power of a that makes the
+#: stored value peculiar, and how the stored value is described.
+SUBFIND_VEL_FACTORS = {"peculiar": (0.0, "peculiar (SubFind convention)"),
+                       "snapshot": (0.5, "internal, x sqrt(a)"),
+                       "canonical": (-1.0, "a^2 dx/dt, x 1/a"),
+                       "comoving": (-1.0, "a^2 dx/dt, x 1/a")}
+#: Blocks of SubFind subhalo radii, whose frame (comoving or physical)
+#: depends on the writer (Component._subhalo_radii_physical).
+SUBHALO_RADIUS_BLOCKS = frozenset({"RHMS", "RMAX", "SubhaloHalfmassRadType"})
 _PARAM_FILES = ("parameters-usedvalues", "parameters-usedValues", "param.txt-usedvalues",
                 "params.txt-usedvalues", "parameters.txt-usedvalues")
 
@@ -641,16 +740,32 @@ class UnitSystem:
     #: ``periodic=`` in VISIVO_GADGET_UNITS; None when nothing states it
     #: (then a comoving run is taken as periodic, see Component.periods).
     periodic: bool | None = None
+    #: How a SubFind catalogue stores subhalo velocities (SVEL, SubhaloVel):
+    #: "peculiar" (x 1; what Gadget-4 and Arepo write, and the default for
+    #: P-Gadget3 files, whose writer is not public), "snapshot" (with the
+    #: particles' internal sqrt(a)) or "comoving" (a^2 dx/dt, x 1/a).
+    #: ``svel=`` in VISIVO_GADGET_UNITS.
+    subfind_vel: str = "peculiar"
+    #: Whether subhalo half-mass and Vmax radii are "comoving" or "physical";
+    #: None: as their writer stores them (physical for Gadget-4 HDF5,
+    #: comoving for Arepo and the binary catalogues). ``srad=``.
+    subfind_radii: str | None = None
 
     def describe(self) -> dict:
         return {"length_cm": self.length_cm, "mass_g": self.mass_g,
                 "velocity_cm_s": self.velocity_cm_s, "comoving": self.comoving,
                 "hubble_units": self.hubble_units, "source": self.source,
+                "subfind_vel": self.subfind_vel, "subfind_radii": self.subfind_radii,
                 "length": _unit_name(self.length_cm, {"kpc": KPC_CM, "Mpc": 1e3 * KPC_CM,
                                                       "pc": 1e-3 * KPC_CM}, "cm"),
                 "mass": _unit_name(self.mass_g, {"1e10 Msun": 1e10 * MSUN_G,
                                                  "Msun": MSUN_G}, "g"),
-                "velocity": _unit_name(self.velocity_cm_s, {"km/s": 1e5}, "cm/s")}
+                "velocity": _unit_name(self.velocity_cm_s, {"km/s": 1e5}, "cm/s"),
+                # Whether the box wraps, by Component.periods' rule (stated,
+                # else a comoving run is): with a positive box size, the
+                # selections and neighbour searches wrap round it.
+                "periodic": self.periodic if self.periodic is not None
+                else bool(self.comoving)}
 
 
 def _unit_name(value: float, names: dict, base: str) -> str:
@@ -768,6 +883,15 @@ def _from_env(text: str, units: UnitSystem) -> UnitSystem:
             kw[key] = float(value)
         elif key in ("comoving", "hubble_units", "periodic"):
             kw[key] = value.lower() not in ("0", "false", "no", "")
+        elif key == "svel":
+            if value.lower() not in SUBFIND_VEL_FACTORS:
+                raise ValueError(f"{UNITS_ENV}: svel={value!r}: one of "
+                                 + ", ".join(SUBFIND_VEL_FACTORS))
+            kw["subfind_vel"] = value.lower()
+        elif key == "srad":
+            if value.lower() not in ("comoving", "physical"):
+                raise ValueError(f"{UNITS_ENV}: srad={value!r}: comoving or physical")
+            kw["subfind_radii"] = value.lower()
         elif key:
             raise ValueError(f"{UNITS_ENV}: unknown key {key!r}")
     return replace(units, source=f"{UNITS_ENV}", **kw)
@@ -944,6 +1068,11 @@ class Snapshot:
     # HDF5 permits the same dataset name to have a different shape or dtype in
     # different PartType groups. Binary files have one spec for every type.
     component_specs: dict = field(default_factory=dict)  # (name, type) -> BlockSpec
+    #: The code that wrote an HDF5 group catalogue ("gadget4", "arepo"), "".
+    producer: str = ""
+    #: A Gadget-4 lightcone group catalogue: velocities already peculiar,
+    #: each object at its own scale factor.
+    lightcone: bool = False
 
     @property
     def path(self) -> str:
@@ -972,6 +1101,7 @@ class Snapshot:
         h = self.header
         return {"format": self.fmt, "files": len(self.files),
                 "catalogue_kind": "subfind" if self.is_subfind else "particles",
+                **({"lightcone": True} if self.lightcone else {}),
                 "time": h.time, "scale_factor": self.scale_factor,
                 "redshift": h.redshift, "box_size": h.box_size, "omega0": h.omega0,
                 "omega_lambda": h.omega_lambda, "hubble_param": h.hubble,
@@ -991,7 +1121,7 @@ class Snapshot:
     @property
     def is_subfind(self) -> bool:
         """Whether this Gadget-family file is a FoF/SubFind group catalogue."""
-        return "GPOS" in self.blocks or "SPOS" in self.blocks
+        return bool(self.producer) or "GPOS" in self.blocks or "SPOS" in self.blocks
 
 
 def snapshot_files(path: str | Path) -> list[Path]:
@@ -1029,10 +1159,54 @@ def snapshot_files(path: str | Path) -> list[Path]:
 MAX_PROBES = 64
 
 
-def first_in_dir(folder: Path, allowed=None) -> Path | None:
-    """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
-    (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
-    that is one. Only names are listed; at most MAX_PROBES files are read."""
+#: Names probed in a folder, in this order: the first file of a multi-file
+#: snapshot or catalogue, a snapshot, a single-file group catalogue
+#: (``fof_subhalo_tab_NNN.hdf5``, ``fof_tab_NNN``, ``lc_fof_...``, ``sub_NNN``).
+_CATALOGUE_NAME = r"^(lc_)?fof_|^sub_|^subhalo_tab|^group_tab"
+_DIR_PATTERNS = (r"\.0(\.hdf5|\.h5)?$", r"^snap", _CATALOGUE_NAME)
+#: A later file of a multi-file set (``.1``, ``.7.hdf5``): its ``.0`` file
+#: stands for it when the folder holds that.
+_LATER_FILE = re.compile(r"\.[1-9]\d*(\.hdf5|\.h5)?$")
+#: The output number of a snapshot or catalogue name (``snapshot_004.hdf5``,
+#: ``fof_subhalo_tab_004.0.hdf5``, ``sub_002.0``).
+_OUTPUT_NUMBER = re.compile(r"_(\d{3,})(\.\d+)?(\.hdf5|\.h5)?$")
+
+
+def is_companion_name(name: str) -> bool:
+    """Whether a file is the most-bound-only companion Gadget-4 writes
+    beside a snapshot with SUBFIND_ORPHAN_TREATMENT
+    (``<base>-prevmostboundonly_NNN``, snap_io.cc): not the snapshot."""
+    return "-prevmostboundonly" in name
+
+
+def _later_file(name: str, names) -> bool:
+    """Whether ``name`` is a later file of a set whose ``.0`` the folder
+    holds (a single-file ``snapshot.100`` is not)."""
+    m = _LATER_FILE.search(name)
+    return m is not None and f"{name[:m.start()]}.0{m.group(1) or ''}" in names
+
+
+def is_group_catalogue(path: str | Path, found=False) -> bool:
+    """Whether a Gadget-family file is a FoF/SubFind group catalogue: an HDF5
+    file counting groups (``Ngroups_ThisFile``), a binary one with GPOS or
+    SPOS blocks. Only the header (binary: the block markers) is read.
+    ``found``: :func:`detect`'s answer when the caller has it."""
+    found = detect(path) if found is False else found
+    if found is None:
+        return False
+    try:
+        if found[0] == 0:
+            import h5py  # noqa: PLC0415
+            with h5py.File(path, "r") as f:
+                return "Ngroups_ThisFile" in f["Header"].attrs
+        return any(b.name in ("GPOS", "SPOS") for b in scan_file(path).blocks)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def _gadget_files_in_dir(folder: Path, allowed=None):
+    """The Gadget files of a folder (see _DIR_PATTERNS), each once, with
+    whether it is a group catalogue; at most MAX_PROBES files are read."""
     try:
         with os.scandir(folder) as it:
             # Do not follow a directory child's symlink before the caller's
@@ -1040,20 +1214,66 @@ def first_in_dir(folder: Path, allowed=None) -> Path | None:
             names = sorted(e.name for e in it
                            if e.is_file(follow_symlinks=False) or e.is_symlink())
     except OSError:
-        return None
-    probes = 0
-    for pattern in (r"\.0(\.hdf5|\.h5)?$", r"^snap"):
+        return
+    probes, seen, present = 0, set(), set(names)
+    for pattern in _DIR_PATTERNS:
         for name in names:
-            if not re.search(pattern, name):
+            if (name in seen or not re.search(pattern, name) or is_companion_name(name)
+                    or _later_file(name, present)):
                 continue
+            seen.add(name)
             probes += 1
             if probes > MAX_PROBES:
-                return None
+                return
             candidate = folder / name
             if allowed is not None and not allowed(str(candidate)):
                 continue
-            if is_gadget(candidate):
-                return candidate
+            found = detect(candidate) if candidate.is_file() else None
+            if found is not None:
+                yield candidate, is_group_catalogue(candidate, found)
+
+
+def first_in_dir(folder: Path, allowed=None) -> Path | None:
+    """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
+    (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
+    that is one, else a single-file group catalogue. Particles come first:
+    a folder holding a snapshot and its group catalogue opens the snapshot
+    (:func:`catalogue_in_dir` names the catalogue). Only names are listed;
+    at most MAX_PROBES files are read."""
+    catalogue = None
+    for candidate, is_catalogue in _gadget_files_in_dir(folder, allowed):
+        if not is_catalogue:
+            return candidate
+        catalogue = catalogue or candidate
+    return catalogue
+
+
+def catalogue_in_dir(folder: Path, snapshot: str | Path, allowed=None) -> Path | None:
+    """The group catalogue of the same output as ``snapshot`` (a particle
+    snapshot file) in ``folder``, or None. Only names of that output number
+    are probed."""
+    if is_group_catalogue(snapshot):
+        return None
+    m = _OUTPUT_NUMBER.search(Path(snapshot).name)
+    if m is None:
+        return None
+    try:
+        with os.scandir(folder) as it:
+            names = sorted(e.name for e in it
+                           if e.is_file(follow_symlinks=False) or e.is_symlink())
+    except OSError:
+        return None
+    present = set(names)
+    for name in names:
+        number = _OUTPUT_NUMBER.search(name)
+        if (number is None or number.group(1) != m.group(1)
+                or not re.search(_CATALOGUE_NAME, name) or _later_file(name, present)):
+            continue
+        candidate = folder / name
+        if allowed is not None and not allowed(str(candidate)):
+            continue
+        if is_gadget(candidate) and is_group_catalogue(candidate):
+            return candidate
     return None
 
 
@@ -1276,9 +1496,16 @@ def _assemble_hdf5(layouts, header: Header) -> Snapshot:
                 raise ValueError(f"{Path(f.path).name}: PartType{ptype} is missing {name}, "
                                  "which is present for that particle type in another file")
     pieces = {k: tuple(v) for k, v in pieces.items()}
+    producer = layouts[0].producer
+    if any(f.producer != producer for f in layouts):
+        raise ValueError("The files mix particle snapshots and group catalogues")
+    lightcone = layouts[0].lightcone
+    fmt = {"gadget4": "Gadget-4 SubFind HDF5", "arepo": "Arepo SubFind HDF5"}.get(
+        producer, "Gadget HDF5") + (", lightcone" if lightcone else "")
     return Snapshot(layouts, header, specs, pieces,
                     units_for(layouts[0].path, _hdf5_units(layouts[0].path), header), (),
-                    "Gadget HDF5", component_specs=component_specs)
+                    fmt, component_specs=component_specs, producer=producer,
+                    lightcone=lightcone)
 
 
 def _hdf5_units(path: str) -> dict:
@@ -1362,7 +1589,9 @@ class Component:
                 arrays = self._arrays[block] = [
                     p.array() for p in self.snapshot.pieces[(block, self.ptype)]]
             parts = [a[:, k] for a in arrays]
-            return parts[0] if len(parts) == 1 else np.concatenate(parts)
+            out = parts[0] if len(parts) == 1 else np.concatenate(parts)
+            scale = self._read_scale(name)
+            return out if scale == 1.0 else (out * scale).astype(out.dtype)
         if name == "mass" and self._mass_from_table:
             spec = self.snapshot.blocks.get("POS")
             dtype = spec.dtype if spec is not None else "f4"
@@ -1424,6 +1653,9 @@ class Component:
                    / electrons ** (2.0 / 3.0)).astype(np.float32)
         else:
             raise KeyError(name)
+        scale = self._read_scale(name)
+        if scale != 1.0:
+            out = (out * scale).astype(out.dtype)
         return out[0] if scalar else out
 
     def _piece_rows(self, block: str, index: int, local: np.ndarray, column: int) -> np.ndarray:
@@ -1475,11 +1707,12 @@ class Component:
         non-periodic cosmological zoom and for an isolated run integrated in
         comoving coordinates: state ``periodic=0`` for those (or send
         ``period: 0`` with a selection). Box and sphere selections wrap on
-        these columns (app/periodic.py)."""
+        these columns (app/periodic.py). A lightcone catalogue's positions
+        are around the observer: they never wrap."""
         units = self.snapshot.units
         periodic = units.periodic if units.periodic is not None else bool(units.comoving)
         box = float(self.snapshot.header.box_size)
-        if not (periodic and math.isfinite(box) and box > 0):
+        if not (periodic and math.isfinite(box) and box > 0) or self.snapshot.lightcone:
             return {}
         return {name: box for name in self.names if name in PERIODIC_COLUMNS}
 
@@ -1528,24 +1761,85 @@ class Component:
         kt_kev = BOLTZMANN_ERG_K * self.temperature() / KEV_ERG
         return kt_kev / self.electron_density() ** (2.0 / 3.0)
 
+    def _velocity_convention(self, name: str) -> tuple[float, str] | None:
+        """For a velocity column, the power of a that makes it peculiar and
+        what the stored value is: a particle's carries Gadget's internal
+        sqrt(a); a SubFind subhalo's is written peculiar by Gadget-4
+        (subfind_properties.cc) and Arepo (subfind_properties.c), unless
+        ``svel=`` says otherwise; an HDF5 catalogue's GroupVel is the
+        members' mass-weighted internal a^2 dx/dt (fof.cc), so 1/a. On the
+        lightcone both are peculiar already, whatever ``svel=`` says
+        (fac_vel_to_phys = 1). None for any other column."""
+        source = self._sources.get(name)
+        if source is None or name not in ("vx", "vy", "vz"):
+            return None
+        block = source[0]
+        if self.snapshot.lightcone and block in ("SVEL", "GroupVel"):
+            return 0.0, "peculiar (lightcone)"
+        if block == "SVEL":
+            return SUBFIND_VEL_FACTORS[self.snapshot.units.subfind_vel]
+        if block == "GroupVel":
+            return -1.0, "a^2 dx/dt, x 1/a"
+        return 0.5, "internal, x sqrt(a)"
+
+    def _subhalo_radii_physical(self) -> bool:
+        """Whether this SubFind component's half-mass and Vmax radii are
+        stored physical: Gadget-4 measures them in physical distances
+        (subfind_properties.cc, fac_comov_to_phys); Arepo and the binary
+        catalogues keep them comoving. ``srad=`` overrides."""
+        stated = self.snapshot.units.subfind_radii
+        if stated is not None:
+            return stated == "physical"
+        return self.snapshot.producer == "gadget4"
+
+    def _is_subhalo_radius(self, name: str) -> bool:
+        source = self._sources.get(name)
+        return (self.snapshot.is_subfind and source is not None
+                and source[0] in SUBHALO_RADIUS_BLOCKS)
+
+    def _read_scale(self, name: str) -> float:
+        """The factor a column is multiplied by when read: 1/a for subhalo
+        radii stored physical, so that they are comoving like the positions
+        whose markers and framing they size (#441); 1 for any other. On the
+        lightcone Gadget-4 makes them physical with the group's GroupAscale,
+        which it sets to the time the groups were found, the header's
+        (fof.cc), so the header's a undoes it there too."""
+        if self._is_subhalo_radius(name) and self._subhalo_radii_physical():
+            return 1.0 / self.snapshot.scale_factor
+        return 1.0
+
+    def _hdf5_catalogue_extras(self, length_phys, vel) -> dict:
+        """Columns of the Gadget-4 and Arepo HDF5 catalogues whose units their
+        writers state: SubhaloVelDisp in physical km/s (Hubble flow
+        included), SubhaloSpin in physical (L/h)(V) (subfind_properties.cc,
+        subfind_properties.c). A binary catalogue's SPIN stays undeclared."""
+        if not self.snapshot.producer:
+            return {}
+        return {"subhaloveldisp": vel, "spin_x": length_phys, "spin_y": length_phys,
+                "spin_z": length_phys}
+
     def units(self) -> dict[str, str]:
         """Each column's unit as stored (code units, stated)."""
         u = self.snapshot.units.describe()
         h = "/h" if self.snapshot.units.hubble_units else ""
-        com = " comoving" if self.snapshot.units.comoving else ""
+        comoving = bool(self.snapshot.units.comoving)
+        com = " comoving" if comoving else ""
         length = f"{u['length']}{h}{com}"
         mass = f"{u['mass']}{h}"
-        vel = f"{u['velocity']} (internal, x sqrt(a))" if self.snapshot.units.comoving \
-            else u["velocity"]
+        vel = u["velocity"]
+        sub_radius = (f"{length} (stored physical, x 1/a on read)"
+                      if comoving and self._subhalo_radii_physical() else length)
         table = {"x": length, "y": length, "z": length, "hsml": length,
                  "hsml_stars": length, "bh_accretion_radius": length,
                  "rvir": length, "r500": length, "r2500": length,
-                 "rmax": length, "half_mass_radius": length,
+                 "rmax": sub_radius, "half_mass_radius": sub_radius,
+                 "group_r_mean200": length, "group_r_crit200": length,
                  "centre_of_mass_x": length, "centre_of_mass_y": length,
                  "centre_of_mass_z": length,
-                 "vx": vel, "vy": vel, "vz": vel, "mass": mass, "bh_mass": mass,
-                 "initial_mass": mass,
+                 "vmax": f"{vel} physical",
+                 "mass": mass, "bh_mass": mass, "initial_mass": mass,
                  "group_mass": mass, "mvir": mass, "m500": mass, "m2500": mass,
+                 "group_m_mean200": mass, "group_m_crit200": mass,
                  "gas_mass": mass, "stellar_mass": mass, "subhalo_mass": mass,
                  "contaminating_mass": mass,
                  "rho": f"{mass} / ({length})^3", "u": f"({u['velocity']})^2",
@@ -1559,18 +1853,27 @@ class Component:
                  "num_contaminated": "particle count", "subhalo_length": "particle count",
                  "subhalo_offset": "particle index", "subhalo_parent": "subhalo index",
                  "group_number": "group index"}
+        table.update(self._hdf5_catalogue_extras(f"{u['length']}{h} {vel} physical",
+                                                 f"{vel} physical"))
+        for n in self.names:
+            if self._is_subhalo_radius(n):
+                table[n] = sub_radius
+        for n in ("vx", "vy", "vz"):
+            convention = self._velocity_convention(n)
+            if convention is not None:
+                table[n] = f"{vel} ({convention[1]})" if comoving else vel
         return {n: table.get(n, "code units (physical conversion not declared)")
                 for n in self.names}
 
     def physical(self) -> dict[str, dict]:
         """Per column, the factor that makes it physical and the unit then:
         lengths in kpc (x a / h), masses in Msun (/ h), velocities in km/s
-        peculiar (x sqrt(a)), density in g/cm^3."""
+        peculiar (see _velocity_convention), density in g/cm^3."""
         units, hh = self.snapshot.units, self.snapshot.hubble
         a = self.snapshot.scale_factor          # never 0: 1 when not comoving
         length = units.length_cm / KPC_CM * a / hh
         mass = units.mass_g / MSUN_G / hh
-        vel = units.velocity_cm_s / 1e5 * (np.sqrt(a) if units.comoving else 1.0)
+        kms = units.velocity_cm_s / 1e5
         rho = units.mass_g / units.length_cm ** 3 * hh ** 2 / a ** 3
         table = {"x": (length, "kpc"), "y": (length, "kpc"), "z": (length, "kpc"),
                  "hsml": (length, "kpc"), "hsml_stars": (length, "kpc"),
@@ -1578,13 +1881,15 @@ class Component:
                  "rvir": (length, "kpc"), "r500": (length, "kpc"),
                  "r2500": (length, "kpc"), "rmax": (length, "kpc"),
                  "half_mass_radius": (length, "kpc"),
+                 "group_r_mean200": (length, "kpc"), "group_r_crit200": (length, "kpc"),
                  "centre_of_mass_x": (length, "kpc"),
                  "centre_of_mass_y": (length, "kpc"),
                  "centre_of_mass_z": (length, "kpc"),
-                 "vx": (vel, "km/s"), "vy": (vel, "km/s"),
-                 "vz": (vel, "km/s"), "mass": (mass, "Msun"), "bh_mass": (mass, "Msun"),
+                 "vmax": (kms, "km/s"),
+                 "mass": (mass, "Msun"), "bh_mass": (mass, "Msun"),
                  "initial_mass": (mass, "Msun"),
                  "group_mass": (mass, "Msun"), "mvir": (mass, "Msun"),
+                 "group_m_mean200": (mass, "Msun"), "group_m_crit200": (mass, "Msun"),
                  "m500": (mass, "Msun"), "m2500": (mass, "Msun"),
                  "gas_mass": (mass, "Msun"), "stellar_mass": (mass, "Msun"),
                  "subhalo_mass": (mass, "Msun"), "contaminating_mass": (mass, "Msun"),
@@ -1592,17 +1897,38 @@ class Component:
                  "ne": (1.0, "dimensionless"), "nh": (1.0, "dimensionless"),
                  "metallicity": (1.0, "dimensionless"),
                  "cold_fraction": (1.0, "dimensionless")}
+        table.update(self._hdf5_catalogue_extras(
+            (units.length_cm / KPC_CM / hh * kms, "kpc km/s"), (kms, "km/s")))
+        for n in self.names:
+            if self._is_subhalo_radius(n):
+                table[n] = (length, "kpc")
+        for n in ("vx", "vy", "vz"):
+            convention = self._velocity_convention(n)
+            if convention is not None:
+                table[n] = (kms * a ** convention[0], "km/s")
         return {n: {"factor": float(table[n][0]), "unit": table[n][1]}
                 for n in self.names if n in table}
+
+    def _radius_definitions(self) -> dict[str, str]:
+        """What each SubFind overdensity radius encloses. An HDF5 catalogue
+        maps Group_R_TopHat200 to rvir and Group_R_Crit500 to r500
+        (SUBFIND_HDF5_BLOCKS), as Gadget-4 and Arepo define them
+        (subfind_so.cc)."""
+        if self.snapshot.producer:
+            return {"rvir": "Bryan & Norman (1998) virial overdensity Delta_c(z) "
+                            "times critical density",
+                    "r500": "500 times critical density",
+                    "group_r_mean200": "200 times mean background density",
+                    "group_r_crit200": "200 times critical density"}
+        return {"rvir": "mean background density",
+                "r500": "500 times mean background density",
+                "r2500": "2500 times mean background density"}
 
     def describe(self) -> dict:
         return {"type": self.ptype, "name": self.name, "num_rows": self.num_rows,
                 "catalogue_kind": "subfind" if self.snapshot.is_subfind else "particles",
                 **({"object_kind": "group" if self.ptype == 0 else "subhalo",
-                    "radius_definitions": {
-                        "rvir": "mean background density",
-                        "r500": "500 times mean background density",
-                        "r2500": "2500 times mean background density"}}
+                    "radius_definitions": self._radius_definitions()}
                    if self.snapshot.is_subfind and self.ptype in (0, 1) else {}),
                 "columns": list(self.names), "units": self.units(),
                 "physical": self.physical(), "derived": dict(self.derived),
