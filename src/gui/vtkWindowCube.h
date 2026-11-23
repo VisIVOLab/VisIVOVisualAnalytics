@@ -2770,6 +2770,30 @@ protected:
     bool m_serverSideRenderingAvailable{ true };
     QString spectralAxisTooltip() const;
     void refreshSpectralAxisUi();
+    /// The spectral axis as shown (issue #496): the file's linear WCS, or a
+    /// table from /v1/spectral/axis in another quantity and frame.
+    struct SpectralAxisChoice
+    {
+        QString quantity{ QStringLiteral("native") };   ///< native, frequency, vrad, vopt
+        QString frame{ QStringLiteral("native") };      ///< native or a SPECSYS name
+        double restFreqHz{ 0.0 };                       ///< 0: the header's
+        bool tableActive{ false };
+        QVector<double> values;                         ///< one per channel
+        QString unit, ctype, frameName, note;
+        QString nativeFrame;                            ///< the file's SPECSYS
+        /// The choice last ASKED for: a second pick before the first answer
+        /// builds on it, and only the latest request's answer is applied.
+        QString askedQuantity{ QStringLiteral("native") };
+        QString askedFrame{ QStringLiteral("native") };
+        double askedRestFreqHz{ 0.0 };
+        quint64 requestSeq{ 0 };
+    };
+    SpectralAxisChoice m_spectralAxis;
+    QPointer<QMenu> m_menuSpectralAxis;
+    void setupSpectralAxisMenu();
+    void requestSpectralAxis(const QString &quantity, const QString &frame, double restFreqHz,
+                             bool quiet = false);
+    void applySpectralAxisChange();
     bool remoteHasWcsAxis(int axis) const;
     double remoteVoxelToWcs(int axis, double voxelIndex, bool *ok = nullptr) const;
     QString remoteFormatAxisCoordinate(int axis, double voxelIndex) const;

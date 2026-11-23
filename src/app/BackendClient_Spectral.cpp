@@ -365,6 +365,41 @@ BackendSpectrumResult BackendClient::spectralAperture(const QString &datasetId,
     return parseSpectrum(raw, error);
 }
 
+BackendSpectralAxisResult BackendClient::spectralAxisTable(const QString &datasetId,
+                                                          const QString &quantity,
+                                                          const QString &frame,
+                                                          double restFreqHz) const
+{
+    QJsonObject body{ { QStringLiteral("dataset_id"), datasetId },
+                      { QStringLiteral("quantity"), quantity },
+                      { QStringLiteral("frame"), frame } };
+    if (restFreqHz > 0.0)
+        body.insert(QStringLiteral("rest_freq_hz"), restFreqHz);
+    QString error;
+    const QByteArray raw = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/spectral/axis")), QJsonDocument(body), error);
+    BackendSpectralAxisResult r;
+    const QJsonObject o = QJsonDocument::fromJson(raw).object();
+    if (!error.isEmpty()) {
+        // A 422 carries the reason ("the header lacks the observation date…").
+        const QString detail = o.value(QStringLiteral("detail")).toString();
+        r.error = detail.isEmpty() ? error : detail;
+        return r;
+    }
+    r.valid = o.value(QStringLiteral("valid")).toBool();
+    r.error = o.value(QStringLiteral("error")).toString();
+    for (const QJsonValue &v : o.value(QStringLiteral("values")).toArray())
+        r.values.append(v.toDouble(std::numeric_limits<double>::quiet_NaN()));
+    r.unit = o.value(QStringLiteral("unit")).toString();
+    r.ctype = o.value(QStringLiteral("ctype")).toString();
+    r.frame = o.value(QStringLiteral("frame")).toString();
+    r.nativeFrame = o.value(QStringLiteral("native_frame")).toString();
+    r.restFreqHz = o.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
+    r.headerRestFreqHz = o.value(QStringLiteral("header_rest_freq_hz")).toDouble(0.0);
+    r.note = o.value(QStringLiteral("note")).toString();
+    return r;
+}
+
 BackendSpectrumResult BackendClient::spectralRegion(const QString &datasetId,
                                                     const QJsonObject &region) const
 {

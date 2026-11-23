@@ -2657,6 +2657,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->menuWCS->setToolTipsVisible(true);
     formatGroup->addAction(this->actionWcsSexagesimal);
     formatGroup->addAction(this->actionWcsDecimal);
+    this->setupSpectralAxisMenu();
     QObject::connect(formatGroup, &QActionGroup::triggered, this, [this](QAction *action) {
         this->wcsFormatExplicitlyChosen = true;
         this->useSexagesimalWcsFormat = action == this->actionWcsSexagesimal;

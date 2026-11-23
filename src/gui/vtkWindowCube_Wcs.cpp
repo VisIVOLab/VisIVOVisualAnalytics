@@ -1,5 +1,7 @@
 #include "vtkWindowCube.h"
 #include "ui_vtkWindowCube.h"
+#include <QtConcurrent>
+#include <QFutureWatcher>
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
 #include "SpectralAxisInfer.h"
@@ -184,6 +186,25 @@ constexpr int overlayTickCount = 5;  // moved here with the WCS overlay methods
 
 vtkWindowCube::SpectralAxisDescriptor vtkWindowCube::spectralAxisDescriptor() const
 {
+    // A table in another quantity or frame (issue #496), labelled with it.
+    if (this->m_spectralAxis.tableActive) {
+        auto descriptor = spectralaxis::inferSpectralAxisDescriptor(
+                this->m_spectralAxis.ctype, this->m_spectralAxis.unit, true);
+        descriptor.trusted = true;
+        descriptor.inferred = false;
+        descriptor.physical = true;
+        descriptor.sourceLabel = this->m_spectralAxis.ctype;
+        if (descriptor.label.trimmed().isEmpty())
+            descriptor.label = u"Spectral"_s;
+        if (!this->m_spectralAxis.frameName.isEmpty())
+            descriptor.label += u" [%1]"_s.arg(this->m_spectralAxis.frameName);
+        return descriptor;
+    }
+    auto withFrame = [this](SpectralAxisDescriptor d) {
+        if (d.physical && !this->m_spectralAxis.nativeFrame.isEmpty())
+            d.label += u" [%1]"_s.arg(this->m_spectralAxis.nativeFrame);
+        return d;
+    };
     const bool hasBackendSpectralMetadata = !this->remoteSpectralAxisType.trimmed().isEmpty()
             || !this->remoteSpectralAxisUnit.trimmed().isEmpty();
     if (hasBackendSpectralMetadata) {
@@ -202,15 +223,26 @@ vtkWindowCube::SpectralAxisDescriptor vtkWindowCube::spectralAxisDescriptor() co
         if (descriptor.label.trimmed().isEmpty()) {
             descriptor.label = u"Spectral"_s;
         }
-        return descriptor;
+        return withFrame(descriptor);
     }
-    return spectralaxis::inferSpectralAxisDescriptor(this->remoteDatasetCtype[2],
-                                       this->remoteDatasetCunit[2],
-                                       this->remoteHasWcsAxis(2));
+    return withFrame(spectralaxis::inferSpectralAxisDescriptor(this->remoteDatasetCtype[2],
+                                                               this->remoteDatasetCunit[2],
+                                                               this->remoteHasWcsAxis(2)));
 }
 
 double vtkWindowCube::spectralAxisValue(double datasetVoxelIndex, bool *ok) const
 {
+    // The table: one value per channel, linear between two (a fractional
+    // index is a position between channels, as on the linear axis).
+    const QVector<double> &table = this->m_spectralAxis.values;
+    if (this->m_spectralAxis.tableActive && !table.isEmpty()) {
+        const double i = std::clamp(datasetVoxelIndex, 0.0, double(table.size() - 1));
+        const int lo = int(std::floor(i));
+        const int hi = std::min(lo + 1, int(table.size()) - 1);
+        if (ok)
+            *ok = true;
+        return table[lo] + (table[hi] - table[lo]) * (i - lo);
+    }
     const auto descriptor = this->spectralAxisDescriptor();
     if (descriptor.kind == SpectralAxisKind::Channel || !descriptor.physical) {
         if (ok) {
@@ -231,10 +263,14 @@ QString vtkWindowCube::formatSpectralAxisValue(double datasetVoxelIndex) const
         return QString::number(std::lround(datasetVoxelIndex));
     }
 
+    // The frame too, so the number is never read in the wrong one (#496).
+    const QString frame = this->m_spectralAxis.tableActive ? this->m_spectralAxis.frameName
+                                                           : this->m_spectralAxis.nativeFrame;
+    const QString suffix = frame.isEmpty() ? QString() : u" "_s + frame;
     if (descriptor.unit.isEmpty()) {
-        return QString::number(value, 'g', 12);
+        return QString::number(value, 'g', 12) + suffix;
     }
-    return u"%1 %2"_s.arg(QString::number(value, 'g', 12), descriptor.unit);
+    return u"%1 %2"_s.arg(QString::number(value, 'g', 12), descriptor.unit) + suffix;
 }
 
 QString vtkWindowCube::spectralAxisTitle() const
@@ -1100,3 +1136,171 @@ void vtkWindowCube::updateMomentWcsOverlay()
                        .arg(bottomMargin, 0, 'g', 12)
                        .arg(xRight, 0, 'g', 12);
 }
+
+// ── The spectral axis in another quantity or frame (issue #496) ─────────────
+
+void vtkWindowCube::setupSpectralAxisMenu()
+{
+    if (this->remoteDatasetId.isEmpty() || this->remoteDatasetDepth <= 1)
+        return;
+    auto *menu = ui->menuWCS->addMenu(u"Spectral Axis"_s);
+    this->m_menuSpectralAxis = menu;
+    menu->setToolTipsVisible(true);
+    auto *quantities = new QActionGroup(this);
+    const std::pair<const char *, const char *> qs[] = {
+        { "native", "As in the File" }, { "frequency", "Frequency" },
+        { "vrad", "Radio Velocity" }, { "vopt", "Optical Velocity" } };
+    for (const auto &[key, text] : qs) {
+        QAction *a = menu->addAction(QString::fromLatin1(text));
+        a->setCheckable(true);
+        a->setChecked(QLatin1String(key) == QLatin1String("native"));
+        a->setData(QString::fromLatin1(key));
+        quantities->addAction(a);
+    }
+    quantities->actions().at(2)->setToolTip(
+            u"v = c (1 − ν/ν₀), with the rest frequency ν₀ of the header or the one you set."_s);
+    quantities->actions().at(3)->setToolTip(u"v = c (ν₀/ν − 1)."_s);
+    menu->addSeparator();
+    auto *frameMenu = menu->addMenu(u"Reference Frame"_s);
+    frameMenu->setToolTipsVisible(true);
+    auto *frames = new QActionGroup(this);
+    const std::pair<const char *, const char *> fs[] = {
+        { "native", "As in the File" }, { "BARYCENT", "Barycentric" }, { "LSRK", "LSRK" },
+        { "LSRD", "LSRD" }, { "GEOCENTR", "Geocentric" }, { "TOPOCENT", "Topocentric" },
+        { "GALACTOC", "Galactocentric" } };
+    for (const auto &[key, text] : fs) {
+        QAction *a = frameMenu->addAction(QString::fromLatin1(text));
+        a->setCheckable(true);
+        a->setChecked(QLatin1String(key) == QLatin1String("native"));
+        a->setData(QString::fromLatin1(key));
+        frames->addAction(a);
+    }
+    frameMenu->setToolTip(u"Needs the observation date and, for topocentric, the observatory's "
+                          u"position in the header."_s);
+    QAction *rest = menu->addAction(u"Rest Frequency…"_s);
+    rest->setToolTip(u"The rest frequency the velocities are measured from."_s);
+
+    QObject::connect(quantities, &QActionGroup::triggered, this, [this](QAction *a) {
+        this->requestSpectralAxis(a->data().toString(), this->m_spectralAxis.askedFrame,
+                                  this->m_spectralAxis.askedRestFreqHz);
+    });
+    QObject::connect(frames, &QActionGroup::triggered, this, [this](QAction *a) {
+        this->requestSpectralAxis(this->m_spectralAxis.askedQuantity, a->data().toString(),
+                                  this->m_spectralAxis.askedRestFreqHz);
+    });
+    QObject::connect(rest, &QAction::triggered, this, [this]() {
+        const double current = this->m_spectralAxis.askedRestFreqHz > 0.0
+                ? this->m_spectralAxis.askedRestFreqHz
+                : this->m_restFreqHz;
+        bool ok = false;
+        const double ghz = QInputDialog::getDouble(
+                this, u"Rest Frequency"_s,
+                u"Rest frequency in GHz (the header's: %1):"_s.arg(
+                        this->m_restFreqHz > 0.0 ? QString::number(this->m_restFreqHz / 1e9, 'f', 9)
+                                                 : u"none"_s),
+                current > 0.0 ? current / 1e9 : 0.0, 0.0, 1e7, 9, &ok);
+        if (ok && ghz > 0.0)
+            this->requestSpectralAxis(this->m_spectralAxis.askedQuantity,
+                                      this->m_spectralAxis.askedFrame, ghz * 1e9);
+    });
+    // The file's frame, for the labels, once.
+    this->requestSpectralAxis(u"native"_s, u"native"_s, 0.0, /*quiet=*/true);
+}
+
+void vtkWindowCube::requestSpectralAxis(const QString &quantity, const QString &frame,
+                                        double restFreqHz, bool quiet)
+{
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+    const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
+    quint64 seq = 0;
+    if (!quiet) {
+        this->m_spectralAxis.askedQuantity = quantity;
+        this->m_spectralAxis.askedFrame = frame;
+        this->m_spectralAxis.askedRestFreqHz = restFreqHz;
+        seq = ++this->m_spectralAxis.requestSeq;
+    }
+    auto *watcher = new QFutureWatcher<BackendSpectralAxisResult>(this);
+    QObject::connect(watcher, &QFutureWatcherBase::finished, this,
+                     [this, watcher, quantity, frame, restFreqHz, quiet, seq]() {
+        watcher->deleteLater();
+        // A later pick is on its way: this answer is not the one wanted.
+        if (!quiet && seq != this->m_spectralAxis.requestSeq)
+            return;
+        const BackendSpectralAxisResult r = watcher->result();
+        auto syncMenu = [this]() {
+            if (!this->m_menuSpectralAxis)
+                return;
+            const auto check = [](QMenu *m, const QString &key) {
+                for (QAction *a : m->actions())
+                    if (a->isCheckable())
+                        a->setChecked(a->data().toString() == key);
+            };
+            check(this->m_menuSpectralAxis, this->m_spectralAxis.quantity);
+            for (QAction *a : this->m_menuSpectralAxis->actions())
+                if (a->menu())
+                    check(a->menu(), this->m_spectralAxis.frame);
+        };
+        if (!r.valid || r.values.size() != this->remoteDatasetDepth) {
+            if (!quiet) {
+                const QString why = r.valid ? u"%1 values for %2 channels"_s
+                                                      .arg(r.values.size())
+                                                      .arg(this->remoteDatasetDepth)
+                                            : r.error;
+                QMessageBox::warning(this, u"Spectral Axis"_s,
+                                     u"The spectral axis cannot be shown that way: %1"_s.arg(why));
+            }
+            // Back to what is shown: the next pick builds on it.
+            this->m_spectralAxis.askedQuantity = this->m_spectralAxis.quantity;
+            this->m_spectralAxis.askedFrame = this->m_spectralAxis.frame;
+            this->m_spectralAxis.askedRestFreqHz = this->m_spectralAxis.restFreqHz;
+            syncMenu();
+            return;
+        }
+        this->m_spectralAxis.nativeFrame = r.nativeFrame;
+        if (quiet && quantity == u"native"_s && frame == u"native"_s) {
+            this->refreshSpectralAxisUi();   // the frame in the labels
+            return;
+        }
+        this->m_spectralAxis.quantity = quantity;
+        this->m_spectralAxis.frame = frame;
+        this->m_spectralAxis.restFreqHz = restFreqHz;
+        const bool nativeAxis = quantity == u"native"_s && frame == u"native"_s;
+        this->m_spectralAxis.tableActive = !nativeAxis;
+        this->m_spectralAxis.values = r.values;
+        this->m_spectralAxis.unit = r.unit;
+        this->m_spectralAxis.ctype = r.ctype;
+        this->m_spectralAxis.frameName = r.frame;
+        this->m_spectralAxis.note = r.note;
+        // The line overlay places lines with the rest frequency in use.
+        if (r.restFreqHz > 0.0)
+            this->m_restFreqHz = r.restFreqHz;
+        syncMenu();
+        this->applySpectralAxisChange();
+    });
+    watcher->setFuture(QtConcurrent::run([=]() {
+        BackendClient client(url, token);
+        client.setSessionId(session);
+        return client.spectralAxisTable(dataset, quantity, frame, restFreqHz);
+    }));
+}
+
+void vtkWindowCube::applySpectralAxisChange()
+{
+    // What reads the axis now reads it the new way: the slice's value, the
+    // headers, every live plot. Spectra kept as products keep the axis they
+    // were measured on (they are records); new ones take this one.
+    // The channel on the slider (the displayed index may not be set yet).
+    ui->lineSpectral->setText(this->formatSpectralAxisValue(
+            this->clampRemoteSliceIndex(ui->spinSlice->value() - 1)));
+    this->refreshSpectralAxisUi();
+    this->pushSpectralAxisContext(this->probePlotWidget);
+    this->updateLiveSpectrumHeader();
+    const QString note = this->m_spectralAxis.note.isEmpty()
+            ? QString()
+            : u" (%1)"_s.arg(this->m_spectralAxis.note);
+    this->statusBar()->showMessage(
+            u"Spectral axis: %1%2. Spectra measured from now on use it; saved ones keep theirs."_s
+                    .arg(this->spectralAxisTitle(), note),
+            8000);
+}
+
