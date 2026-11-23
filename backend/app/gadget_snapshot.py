@@ -163,6 +163,8 @@ class FileLayout:
     #: The code that wrote an HDF5 group catalogue ("gadget4", "arepo"),
     #: "" for a snapshot or a binary file.
     producer: str = ""
+    #: A Gadget-4 lightcone group catalogue (see _is_lightcone_catalogue).
+    lightcone: bool = False
 
 
 def detect(path: str | Path) -> tuple[int, str] | None:
@@ -683,7 +685,22 @@ def _scan_hdf5_catalogue(path: str, f) -> FileLayout:
             blocks.append(H5Block(SUBFIND_HDF5_BLOCKS.get(dname, dname), t, dset.name,
                                   tuple(dset.shape), dset.dtype.str, offset))
     return FileLayout(path, "hdf5", "", 0, header, tuple(blocks),
-                      "gadget4" if gadget4 else "arepo")
+                      "gadget4" if gadget4 else "arepo",
+                      gadget4 and _is_lightcone_catalogue(path, f))
+
+
+def _is_lightcone_catalogue(path: str, f) -> bool:
+    """Whether a Gadget-4 group catalogue was found on the lightcone: its
+    header says nothing of it, but Gadget-4 names those ``lc_fof_...`` in
+    ``lc_groups_NNN`` (run.cc), and a run that wrote them was compiled with
+    LIGHTCONE_PARTICLES_GROUPS (its ``Config``, when written). There the
+    particle velocities are already peculiar (subfind_properties.cc,
+    fof<lcparticles>) and the positions are around the observer, not in
+    the periodic box (fof.cc)."""
+    p = Path(path)
+    named = p.name.startswith("lc_") or p.parent.name.startswith("lc_groups")
+    config = f.get("Config")
+    return named and (config is None or "LIGHTCONE_PARTICLES_GROUPS" in config.attrs)
 
 
 # ── Units ────────────────────────────────────────────────────────────────────
@@ -1053,6 +1070,9 @@ class Snapshot:
     component_specs: dict = field(default_factory=dict)  # (name, type) -> BlockSpec
     #: The code that wrote an HDF5 group catalogue ("gadget4", "arepo"), "".
     producer: str = ""
+    #: A Gadget-4 lightcone group catalogue: velocities already peculiar,
+    #: each object at its own scale factor.
+    lightcone: bool = False
 
     @property
     def path(self) -> str:
@@ -1081,6 +1101,7 @@ class Snapshot:
         h = self.header
         return {"format": self.fmt, "files": len(self.files),
                 "catalogue_kind": "subfind" if self.is_subfind else "particles",
+                **({"lightcone": True} if self.lightcone else {}),
                 "time": h.time, "scale_factor": self.scale_factor,
                 "redshift": h.redshift, "box_size": h.box_size, "omega0": h.omega0,
                 "omega_lambda": h.omega_lambda, "hubble_param": h.hubble,
@@ -1138,10 +1159,54 @@ def snapshot_files(path: str | Path) -> list[Path]:
 MAX_PROBES = 64
 
 
-def first_in_dir(folder: Path, allowed=None) -> Path | None:
-    """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
-    (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
-    that is one. Only names are listed; at most MAX_PROBES files are read."""
+#: Names probed in a folder, in this order: the first file of a multi-file
+#: snapshot or catalogue, a snapshot, a single-file group catalogue
+#: (``fof_subhalo_tab_NNN.hdf5``, ``fof_tab_NNN``, ``lc_fof_...``, ``sub_NNN``).
+_CATALOGUE_NAME = r"^(lc_)?fof_|^sub_|^subhalo_tab|^group_tab"
+_DIR_PATTERNS = (r"\.0(\.hdf5|\.h5)?$", r"^snap", _CATALOGUE_NAME)
+#: A later file of a multi-file set (``.1``, ``.7.hdf5``): its ``.0`` file
+#: stands for it when the folder holds that.
+_LATER_FILE = re.compile(r"\.[1-9]\d*(\.hdf5|\.h5)?$")
+#: The output number of a snapshot or catalogue name (``snapshot_004.hdf5``,
+#: ``fof_subhalo_tab_004.0.hdf5``, ``sub_002.0``).
+_OUTPUT_NUMBER = re.compile(r"_(\d{3,})(\.\d+)?(\.hdf5|\.h5)?$")
+
+
+def is_companion_name(name: str) -> bool:
+    """Whether a file is the most-bound-only companion Gadget-4 writes
+    beside a snapshot with SUBFIND_ORPHAN_TREATMENT
+    (``<base>-prevmostboundonly_NNN``, snap_io.cc): not the snapshot."""
+    return "-prevmostboundonly" in name
+
+
+def _later_file(name: str, names) -> bool:
+    """Whether ``name`` is a later file of a set whose ``.0`` the folder
+    holds (a single-file ``snapshot.100`` is not)."""
+    m = _LATER_FILE.search(name)
+    return m is not None and f"{name[:m.start()]}.0{m.group(1) or ''}" in names
+
+
+def is_group_catalogue(path: str | Path, found=False) -> bool:
+    """Whether a Gadget-family file is a FoF/SubFind group catalogue: an HDF5
+    file counting groups (``Ngroups_ThisFile``), a binary one with GPOS or
+    SPOS blocks. Only the header (binary: the block markers) is read.
+    ``found``: :func:`detect`'s answer when the caller has it."""
+    found = detect(path) if found is False else found
+    if found is None:
+        return False
+    try:
+        if found[0] == 0:
+            import h5py  # noqa: PLC0415
+            with h5py.File(path, "r") as f:
+                return "Ngroups_ThisFile" in f["Header"].attrs
+        return any(b.name in ("GPOS", "SPOS") for b in scan_file(path).blocks)
+    except (OSError, ValueError, KeyError):
+        return False
+
+
+def _gadget_files_in_dir(folder: Path, allowed=None):
+    """The Gadget files of a folder (see _DIR_PATTERNS), each once, with
+    whether it is a group catalogue; at most MAX_PROBES files are read."""
     try:
         with os.scandir(folder) as it:
             # Do not follow a directory child's symlink before the caller's
@@ -1149,20 +1214,66 @@ def first_in_dir(folder: Path, allowed=None) -> Path | None:
             names = sorted(e.name for e in it
                            if e.is_file(follow_symlinks=False) or e.is_symlink())
     except OSError:
-        return None
-    probes = 0
-    for pattern in (r"\.0(\.hdf5|\.h5)?$", r"^snap"):
+        return
+    probes, seen, present = 0, set(), set(names)
+    for pattern in _DIR_PATTERNS:
         for name in names:
-            if not re.search(pattern, name):
+            if (name in seen or not re.search(pattern, name) or is_companion_name(name)
+                    or _later_file(name, present)):
                 continue
+            seen.add(name)
             probes += 1
             if probes > MAX_PROBES:
-                return None
+                return
             candidate = folder / name
             if allowed is not None and not allowed(str(candidate)):
                 continue
-            if is_gadget(candidate):
-                return candidate
+            found = detect(candidate) if candidate.is_file() else None
+            if found is not None:
+                yield candidate, is_group_catalogue(candidate, found)
+
+
+def first_in_dir(folder: Path, allowed=None) -> Path | None:
+    """The snapshot a folder (a ``snapdir``) holds: its first ``<name>.0``
+    (or ``.0.hdf5``) that is a Gadget file, else its first ``snap*`` file
+    that is one, else a single-file group catalogue. Particles come first:
+    a folder holding a snapshot and its group catalogue opens the snapshot
+    (:func:`catalogue_in_dir` names the catalogue). Only names are listed;
+    at most MAX_PROBES files are read."""
+    catalogue = None
+    for candidate, is_catalogue in _gadget_files_in_dir(folder, allowed):
+        if not is_catalogue:
+            return candidate
+        catalogue = catalogue or candidate
+    return catalogue
+
+
+def catalogue_in_dir(folder: Path, snapshot: str | Path, allowed=None) -> Path | None:
+    """The group catalogue of the same output as ``snapshot`` (a particle
+    snapshot file) in ``folder``, or None. Only names of that output number
+    are probed."""
+    if is_group_catalogue(snapshot):
+        return None
+    m = _OUTPUT_NUMBER.search(Path(snapshot).name)
+    if m is None:
+        return None
+    try:
+        with os.scandir(folder) as it:
+            names = sorted(e.name for e in it
+                           if e.is_file(follow_symlinks=False) or e.is_symlink())
+    except OSError:
+        return None
+    present = set(names)
+    for name in names:
+        number = _OUTPUT_NUMBER.search(name)
+        if (number is None or number.group(1) != m.group(1)
+                or not re.search(_CATALOGUE_NAME, name) or _later_file(name, present)):
+            continue
+        candidate = folder / name
+        if allowed is not None and not allowed(str(candidate)):
+            continue
+        if is_gadget(candidate) and is_group_catalogue(candidate):
+            return candidate
     return None
 
 
@@ -1388,11 +1499,13 @@ def _assemble_hdf5(layouts, header: Header) -> Snapshot:
     producer = layouts[0].producer
     if any(f.producer != producer for f in layouts):
         raise ValueError("The files mix particle snapshots and group catalogues")
+    lightcone = layouts[0].lightcone
     fmt = {"gadget4": "Gadget-4 SubFind HDF5", "arepo": "Arepo SubFind HDF5"}.get(
-        producer, "Gadget HDF5")
+        producer, "Gadget HDF5") + (", lightcone" if lightcone else "")
     return Snapshot(layouts, header, specs, pieces,
                     units_for(layouts[0].path, _hdf5_units(layouts[0].path), header), (),
-                    fmt, component_specs=component_specs, producer=producer)
+                    fmt, component_specs=component_specs, producer=producer,
+                    lightcone=lightcone)
 
 
 def _hdf5_units(path: str) -> dict:
@@ -1594,11 +1707,12 @@ class Component:
         non-periodic cosmological zoom and for an isolated run integrated in
         comoving coordinates: state ``periodic=0`` for those (or send
         ``period: 0`` with a selection). Box and sphere selections wrap on
-        these columns (app/periodic.py)."""
+        these columns (app/periodic.py). A lightcone catalogue's positions
+        are around the observer: they never wrap."""
         units = self.snapshot.units
         periodic = units.periodic if units.periodic is not None else bool(units.comoving)
         box = float(self.snapshot.header.box_size)
-        if not (periodic and math.isfinite(box) and box > 0):
+        if not (periodic and math.isfinite(box) and box > 0) or self.snapshot.lightcone:
             return {}
         return {name: box for name in self.names if name in PERIODIC_COLUMNS}
 
@@ -1653,12 +1767,15 @@ class Component:
         sqrt(a); a SubFind subhalo's is written peculiar by Gadget-4
         (subfind_properties.cc) and Arepo (subfind_properties.c), unless
         ``svel=`` says otherwise; an HDF5 catalogue's GroupVel is the
-        members' mass-weighted internal a^2 dx/dt (fof.cc), so 1/a.
-        None for any other column."""
+        members' mass-weighted internal a^2 dx/dt (fof.cc), so 1/a. On the
+        lightcone both are peculiar already, whatever ``svel=`` says
+        (fac_vel_to_phys = 1). None for any other column."""
         source = self._sources.get(name)
         if source is None or name not in ("vx", "vy", "vz"):
             return None
         block = source[0]
+        if self.snapshot.lightcone and block in ("SVEL", "GroupVel"):
+            return 0.0, "peculiar (lightcone)"
         if block == "SVEL":
             return SUBFIND_VEL_FACTORS[self.snapshot.units.subfind_vel]
         if block == "GroupVel":
@@ -1683,7 +1800,10 @@ class Component:
     def _read_scale(self, name: str) -> float:
         """The factor a column is multiplied by when read: 1/a for subhalo
         radii stored physical, so that they are comoving like the positions
-        whose markers and framing they size (#441); 1 for any other."""
+        whose markers and framing they size (#441); 1 for any other. On the
+        lightcone Gadget-4 makes them physical with the group's GroupAscale,
+        which it sets to the time the groups were found, the header's
+        (fof.cc), so the header's a undoes it there too."""
         if self._is_subhalo_radius(name) and self._subhalo_radii_physical():
             return 1.0 / self.snapshot.scale_factor
         return 1.0
