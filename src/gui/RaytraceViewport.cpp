@@ -17,6 +17,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QTimer>
 #include <QUrl>
@@ -120,6 +121,31 @@ RaytraceViewport::RaytraceViewport(Source source, QWidget *parent)
     badgeLayout->addWidget(m_badgeProgress);
     m_loadingBadge->hide();
 
+    // What the light left out, so rows do not go missing without a word.
+    m_lightNote = new QWidget(this);
+    m_lightNote->setObjectName(u"raytraceLightNote"_s);
+    m_lightNote->setAttribute(Qt::WA_StyledBackground, true);
+    m_lightNote->setStyleSheet(
+            u"#raytraceLightNote { background: rgba(2, 6, 23, 200); border-radius: 6px; }"
+            u"#raytraceLightNote QLabel { color: #fbbf24; font-size: 12px; }"_s);
+    auto *noteLayout = new QVBoxLayout(m_lightNote);
+    noteLayout->setContentsMargins(10, 6, 10, 6);
+    noteLayout->setSpacing(4);
+    m_lightLabel = new QLabel(m_lightNote);
+    m_lightLabel->setWordWrap(true);
+    m_lightLabel->setAccessibleName(u"Ray-traced light report"_s);
+    noteLayout->addWidget(m_lightLabel);
+    m_gasOnly = new QPushButton(u"Show type %1 only"_s.arg(visivo::kGasType), m_lightNote);
+    m_gasOnly->setToolTip(u"Add the filter %1 = %2 (gas, in Gadget's numbering) and draw "
+                          u"the gas on its own."_s.arg(m_source.typeColumn)
+                                  .arg(visivo::kGasType));
+    noteLayout->addWidget(m_gasOnly, 0, Qt::AlignLeft);
+    connect(m_gasOnly, &QPushButton::clicked, this, [this]() {
+        m_gasOnly->setEnabled(false);   // until the filtered particles report
+        emit typeFilterRequested(m_source.typeColumn, QString::number(visivo::kGasType));
+    });
+    m_lightNote->hide();
+
     connect(m_gl, &ParticleGLView::frameReady, this, &RaytraceViewport::frameShown);
     connect(m_gl, &ParticleGLView::failed, this, [this](const QString &reason) {
         m_failed = true;
@@ -153,6 +179,42 @@ void RaytraceViewport::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     showLoadingState();
+    placeLightNote();
+}
+
+void RaytraceViewport::showLightReport(const visivo::ParticleLightReport &report)
+{
+    if (!m_lightNote)
+        return;
+    const QString text = visivo::lightReportText(report);
+    const bool suggest = visivo::suggestTypeFilter(report, m_source.typeColumn);
+    m_lightLabel->setText(
+            suggest ? u"%1\nTwo populations share the light: show type %2 (gas) only?"_s
+                              .arg(text)
+                              .arg(visivo::kGasType)
+                    : text);
+    m_lightNote->setToolTip(visivo::lightReportTooltip(report));
+    m_gasOnly->setVisible(suggest);
+    m_gasOnly->setEnabled(true);
+    m_lightNote->setVisible(!text.isEmpty());
+    placeLightNote();
+}
+
+void RaytraceViewport::placeLightNote()
+{
+    if (!m_lightNote || m_lightNote->isHidden())
+        return;
+    const int margin = 10;
+    const int width = std::min(std::max(120, std::min(300, this->width() / 3)),
+                               std::max(1, this->width() - 2 * margin));
+    const int forWidth = m_lightNote->heightForWidth(width);
+    const int height = forWidth > 0 ? forWidth : m_lightNote->sizeHint().height();
+    // Bottom left: the loading badge is top right, the colour bar right.
+    m_lightNote->setGeometry(margin, std::max(margin, this->height() - height - margin), width,
+                             height);
+    m_lightNote->raise();
+    if (m_loadingOverlay && m_loadingOverlay->isVisible())
+        m_loadingOverlay->raise();   // the cover stays over everything
 }
 
 void RaytraceViewport::beginLoading(const QString &what, const QString &detail)
@@ -332,6 +394,11 @@ void RaytraceViewport::fallbackFrame()
             QImage image;
             image.loadFromData(reply->readAll());
             if (!image.isNull()) {
+                if (!m_source.grid)
+                    showLightReport(visivo::lightReportFromHeaders(
+                            reply->rawHeader(VisivoHeaders::PARTICLE_DROPPED),
+                            reply->rawHeader(VisivoHeaders::PARTICLE_CLIPPED),
+                            reply->rawHeader(VisivoHeaders::PARTICLE_COUNT).toLongLong()));
                 takeFallbackGrid(reply, projected, tone);
                 m_fallbackImage = image;
                 m_fallbackCamera = camera;
@@ -514,6 +581,11 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
             loadingError(u"The backend returned invalid particle data."_s);
             return;
         }
+        const visivo::ParticleLightReport light = visivo::lightReportFromHeaders(
+                reply->rawHeader(VisivoHeaders::PARTICLE_DROPPED),
+                reply->rawHeader(VisivoHeaders::PARTICLE_CLIPPED),
+                qint64(count) * std::max(1, reply->rawHeader(VisivoHeaders::PARTICLE_STEP).toInt()));
+        showLightReport(light);
         m_gl->setParticles(rows, count,
                            map ? ParticleGLView::Mode::Projected
                                : scalarLight ? ParticleGLView::Mode::LightScalar
@@ -534,6 +606,9 @@ void RaytraceViewport::fetch(const QString &key, const QJsonObject &request)
         QString note = u"Ray-traced view: %1 particles on the GPU"_s.arg(QLocale().toString(count));
         if (step > 1)
             note += u", one in %1 of the table carrying their light"_s.arg(step);
+        const QString left = visivo::lightReportText(light);
+        if (!left.isEmpty())
+            note += u"; "_s + left;
         emit message(note);
     });
 }

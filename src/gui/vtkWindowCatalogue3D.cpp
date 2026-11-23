@@ -1313,6 +1313,33 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     this->setupSnapshotTimeline(comparisonSource);
 }
 
+void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString &value)
+{
+    if (this->filterBusy || this->m_sceneBuilding) {
+        this->statusBar()->showMessage(
+                u"Wait for the current load to finish, then try again."_s, 6000);
+        return;
+    }
+    // The column's other conditions would leave nothing with this one (type
+    // = 4 and type = 0): they are replaced.
+    for (int i = static_cast<int>(this->activeFilters.size()) - 1; i >= 0; --i) {
+        const BackendTabularFilter &f = this->activeFilters[static_cast<std::size_t>(i)];
+        if (!f.isSpatial() && f.field == field) {
+            this->activeFilters.erase(this->activeFilters.begin() + i);
+            if (this->filterList)
+                delete this->filterList->takeItem(i);
+        }
+    }
+    BackendTabularFilter filter;
+    filter.field = field;
+    filter.op = u"="_s;
+    filter.value = value;
+    this->activeFilters.push_back(filter);
+    if (this->filterList)
+        this->filterList->addItem(filterDisplayText(filter));
+    this->applyFilter();
+}
+
 vtkWindowCatalogue3D::~vtkWindowCatalogue3D()
 {
     this->teardownComparisonLink();

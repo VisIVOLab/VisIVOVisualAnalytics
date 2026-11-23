@@ -346,6 +346,9 @@ private:
     /// Apply: the edited filter list becomes the applied one, then the rows
     /// are queried with it.
     void applyFilter();
+    /// Adds ``field = value`` to the filters and applies them (the
+    /// ray-traced view's "Show gas only").
+    void addAndApplyFilter(const QString &field, const QString &value);
     /// The rows queried again with the applied filters (Load all, attribute
     /// hydration): edits not yet applied stay unapplied.
     void queryAppliedFilters();
