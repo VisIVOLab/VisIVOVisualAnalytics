@@ -735,6 +735,16 @@ class ParticleProfileRequest(BaseModel):
     #: None: the dataset's own box (a periodic Gadget snapshot); 0: no
     #: wrapping; a length: that period on the three position fields.
     period: float | None = None
+    #: "spherical": shells in the distance from the centre. "cylindrical":
+    #: annuli in the distance R from the axis through the centre (r_min,
+    #: r_max; the whole selection along the axis, or the slab z_min..z_max
+    #: when both are given). "axial": slabs in the signed height z along the
+    #: axis (z_min..z_max, default the selection's extent either way), over
+    #: every R or only R < r_max. The axis is ``axis``, else the angular
+    #: momentum of the central particles, else the table's z.
+    geometry: Literal["spherical", "cylindrical", "axial"] = "spherical"
+    z_min: float | None = None
+    z_max: float | None = None
 
 
 class ParticleProfileResponse(BaseModel):
@@ -743,6 +753,27 @@ class ParticleProfileResponse(BaseModel):
     profile: dict[str, Any] = {}
     centre: dict[str, Any] = {}
     units: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+
+
+class ParticleTotalsRequest(BaseModel):
+    """Physical totals of the selected particles (issue #426)."""
+    dataset_id: str
+    filters: list[TabularFilter] = []
+    #: Only used to read the row count when no other column is needed.
+    position_fields: list[str] = ["x", "y", "z"]
+    #: None: vx, vy, vz when the table has them; []: none.
+    velocity_fields: list[str] | None = None
+    #: None: "mass" when the table has it; "": none (no mass-weighted total).
+    mass_field: str | None = None
+    #: Specific internal energy: None: "u" when the table has it; "": none.
+    energy_field: str | None = None
+
+
+class ParticleTotalsResponse(BaseModel):
+    valid: bool
+    error: str
+    totals: dict[str, Any] = {}
     provenance: dict[str, Any] = {}
 
 
