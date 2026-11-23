@@ -3804,7 +3804,10 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
         || path.contains(QStringLiteral("/analysis/cube-stats"))
         // A region's statistics at full resolution read the region from the
         // file, several times for its median on a large one (issue #95).
-        || path.contains(QStringLiteral("/regions/stats"))) {
+        || path.contains(QStringLiteral("/regions/stats"))
+        // A region's spectrum at full resolution reads the region over every
+        // channel of the file (issue #499).
+        || path.contains(QStringLiteral("/spectral/region"))) {
         return std::chrono::milliseconds(600000); // 10 min
     }
     // Copilot query: the server enforces its own wall-clock budget

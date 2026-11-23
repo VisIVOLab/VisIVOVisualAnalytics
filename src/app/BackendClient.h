@@ -1509,6 +1509,8 @@ struct BackendSpectrumResult
     QVector<double> values;         ///< flux per channel (NaN where blanked)
     QString spectralUnit;           ///< e.g. "Hz", "m", "pix"
     QString spectralType;           ///< CTYPE3, e.g. "FREQ", "VRAD"
+    /// Pixels averaged (aperture or region): 0 when the answer does not say.
+    qint64 nPix{ 0 };
 };
 
 // ── A-01: Aperture photometry ─────────────────────────────────────────────────
@@ -3262,6 +3264,11 @@ public:
 
     /** POST /v1/spectral/aperture — mean spectrum over a circular aperture
      *  (radius in pixels), computed on the node. */
+    /** POST /v1/spectral/region: the mean spectrum over every pixel of a
+     *  canonical image-frame region (full-resolution pixels), read from the
+     *  file in blocks (issue #499). Blocks: call it on a worker. */
+    BackendSpectrumResult spectralRegion(const QString &datasetId,
+                                         const QJsonObject &region) const;
     BackendSpectrumResult spectralAperture(const QString &datasetId,
                                             double x, double y,
                                             double radiusPixels = 3.0) const;
