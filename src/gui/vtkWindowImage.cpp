@@ -1853,9 +1853,23 @@ void vtkWindowImage::closeEvent(QCloseEvent *event)
 
 
 
+bool vtkWindowImage::refuseWhileBusy(const QString &what)
+{
+    if (!this->isBusy())
+        return false;
+    // A second load would replace the one under way (one layer watcher): it
+    // is refused, but not in silence - the menu item seemed dead (issue #500).
+    // A dialog, not the status bar: the bar's permanent labels can leave its
+    // message no room, and the user asked for this action explicitly.
+    QMessageBox::information(this, what,
+                             u"The image (or a layer) is still loading. Try again when it is "
+                             u"ready."_s);
+    return true;
+}
+
 void vtkWindowImage::addLayerFromBrowser()
 {
-    if (this->isBusy()) {
+    if (this->refuseWhileBusy(u"Add Image Layer"_s)) {
         return;
     }
 
@@ -2244,9 +2258,8 @@ void vtkWindowImage::showLayerLoadFailure(const ImageLayerLoadResult &result,
 }
 
 
-void vtkWindowImage::addLayerImage(const std::string &filepath, bool ignoreOverlap)
+bool vtkWindowImage::layerGoesThroughBackend(const QString &path) const
 {
-    const QString path = QString::fromStdString(filepath);
     // WHOSE filesystem is this path on? Every dataset here is opened through the
     // backend, so a path is a BACKEND path. Asking QFile::exists() answers a
     // different question - "is there a file here with that name" - and on a
@@ -2271,9 +2284,28 @@ void vtkWindowImage::addLayerImage(const std::string &filepath, bool ignoreOverl
     // the backend reads its header and its decompressed copy.
     const bool compressed = BackendClient::isCompressedFitsName(path)
             || BackendClient::isCompressedFitsName(this->filepath);
-    const bool useBackend = !this->remoteBackendUrl.isEmpty()
+    return !this->remoteBackendUrl.isEmpty()
             && (compressed || !(backendIsLocal && haveBothLocally));
-    if (useBackend) {
+}
+
+ImageLayerLoadResult vtkWindowImage::loadAlignedLayer(bool viaBackend, const QString &backendUrl,
+                                                      const QString &backendToken,
+                                                      const QString &sessionId,
+                                                      const QString &layerPath,
+                                                      const QString &masterPath,
+                                                      bool ignoreOverlap)
+{
+    if (viaBackend)
+        return loadRemoteImageLayer(backendUrl, backendToken, sessionId, layerPath, masterPath,
+                                    ignoreOverlap);
+    return loadImageLayer(ImageLayerLoadRequest { masterPath.toStdString(), layerPath.toStdString(),
+                                                  ignoreOverlap });
+}
+
+void vtkWindowImage::addLayerImage(const std::string &filepath, bool ignoreOverlap)
+{
+    const QString path = QString::fromStdString(filepath);
+    if (this->layerGoesThroughBackend(path)) {
         this->setLayerImportEnabled(false);
         this->showPersistentStatusMessage(
                 u"Loading %1 from the backend..."_s.arg(QFileInfo(path).fileName()));

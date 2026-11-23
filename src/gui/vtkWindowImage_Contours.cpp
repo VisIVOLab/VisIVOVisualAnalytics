@@ -1,4 +1,7 @@
 #include "vtkWindowImage.h"
+#include <QtConcurrent>
+#include <QFutureWatcher>
+#include <vtkTransform.h>
 #include "ui_vtkWindowImage.h"
 #include "CubeViewportGeometry.h"
 
@@ -249,15 +252,21 @@ void vtkWindowImage::setContoursVisible(bool vis)
 
 void vtkWindowImage::addExternalContours()
 {
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                : nullptr;
-    if (!ren) return;
+    if (!ui->vtk->renderWindow() || !ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer())
+        return;
 
-    const QString path = QFileDialog::getOpenFileName(
-            this, u"Load Contour FITS"_s, QString(),
-            u"FITS files (*.fits *.fit);;All files (*)"_s);
-    if (path.isEmpty()) return;
+    // The same picker and the same alignment as Add Image Layer: the file is a
+    // backend path, and its contours are drawn where its WCS puts it on this
+    // image. They used to be drawn from the raw pixel grid, at the master's
+    // pixel (0, 0) and at the other file's pixel scale (issue #500).
+    RemoteFileBrowserDialog dialog(this->remoteBackendUrl, this->remoteBackendToken, this);
+    dialog.setPurpose(u"Load Contour from FITS"_s);
+    dialog.setFileTypes({ visivo::FileType::Fits }, visivo::FileType::Fits, u"image-layer"_s);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const QString path = dialog.selectedFilePath();
+    if (path.isEmpty())
+        return;
 
     bool ok = false;
     const QString levelsStr = QInputDialog::getText(
@@ -275,18 +284,45 @@ void vtkWindowImage::addExternalContours()
     }
     if (levels.isEmpty()) return;
 
-    vtkNew<vtkFITSReader> reader;
-    reader->SetFileName(path.toStdString().c_str());
-    reader->Update();
-    auto *extData = reader->GetOutput();
-    if (!extData || extData->GetNumberOfPoints() == 0) {
-        QMessageBox::warning(this, u"Contour"_s,
-                u"Could not read FITS data from:\n%1"_s.arg(path));
+    this->showPersistentStatusMessage(
+            u"Loading contours of %1..."_s.arg(QFileInfo(path).fileName()));
+    auto *watcher = new QFutureWatcher<ImageLayerLoadResult>(this);
+    QObject::connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path, levels]() {
+        watcher->deleteLater();
+        this->statusBar()->clearMessage();
+        const ImageLayerLoadResult result = watcher->result();
+        if (!result.valid || !result.imageData) {
+            QMessageBox::warning(this, u"Contour"_s,
+                                 u"No contours from %1:\n%2"_s.arg(
+                                         QFileInfo(path).fileName(),
+                                         QString::fromStdString(result.errorMessage)));
+            return;
+        }
+        this->applyExternalContours(QFileInfo(path).fileName(), result, levels);
+    });
+    watcher->setFuture(QtConcurrent::run(
+            &vtkWindowImage::loadAlignedLayer, this->layerGoesThroughBackend(path),
+            this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId, path,
+            this->filepath, false));
+}
+
+void vtkWindowImage::applyExternalContours(const QString &label,
+                                           const ImageLayerLoadResult &result,
+                                           const QVector<double> &levels)
+{
+    auto *ren = ui->vtk->renderWindow()
+                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
+                : nullptr;
+    if (!ren || !result.imageData)
         return;
-    }
+    // Placed as a layer is: the image in master pixels (its own decimation
+    // and the WCS alignment in spacing and origin), turned about its origin.
+    vtkImageData *data = result.imageData;
+    data->SetSpacing(result.spacing[0], result.spacing[1], result.spacing[2]);
+    data->SetOrigin(result.origin[0], result.origin[1], result.origin[2]);
 
     vtkNew<vtkContourFilter> contour;
-    contour->SetInputData(extData);
+    contour->SetInputData(data);
     contour->SetNumberOfContours(levels.size());
     for (int i = 0; i < levels.size(); ++i)
         contour->SetValue(i, levels[i]);
@@ -300,10 +336,15 @@ void vtkWindowImage::addExternalContours()
     actor->SetMapper(mapper);
     actor->GetProperty()->SetColor(1.0, 0.4, 0.2);
     actor->GetProperty()->SetLineWidth(1.5);
+    vtkNew<vtkTransform> transform;
+    transform->Translate(result.origin[0], result.origin[1], 0.);
+    transform->RotateWXYZ(result.rotationDegrees, 0., 0., 1.);
+    transform->Translate(-result.origin[0], -result.origin[1], 0.);
+    actor->SetUserTransform(transform);
     actor->VisibilityOn();
 
     ren->AddActor(actor);
-    m_externalContourLayers.append({ QFileInfo(path).fileName(), actor });
+    m_externalContourLayers.append({ label, actor });
     ui->vtk->renderWindow()->Render();
 }
 

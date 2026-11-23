@@ -550,6 +550,9 @@ private:
     };
     QVector<ExternalContourLayer> m_externalContourLayers;
     void addExternalContours();
+    /// Draws the contours of a layer already aligned to the master (issue #500).
+    void applyExternalContours(const QString &label, const ImageLayerLoadResult &result,
+                               const QVector<double> &levels);
     void clearAllContours();
     RegionMode regionMode{ RegionMode::None };
     bool useSexagesimalWcsFormat{ false };
@@ -885,6 +888,20 @@ protected:
     ///        image's sky — the user's answer to the refusal, since the sky
     ///        bounds behind it are a bounding box and can be too narrow.
     void addLayerImage(const std::string &filepath, bool ignoreOverlap = false);
+    /// Whether a layer (or an external contour file) at @p path is read and
+    /// aligned through the backend rather than from this filesystem: the
+    /// choice addLayerImage() makes, shared so both place it the same way.
+    bool layerGoesThroughBackend(const QString &path) const;
+    /// A layer aligned to the master as addLayerImage() aligns it, read on the
+    /// calling thread (blocks: call it on a worker, with copies of the window's
+    /// backend settings, never the window itself).
+    static ImageLayerLoadResult loadAlignedLayer(bool viaBackend, const QString &backendUrl,
+                                                 const QString &backendToken,
+                                                 const QString &sessionId,
+                                                 const QString &layerPath,
+                                                 const QString &masterPath, bool ignoreOverlap);
+    /// Says why a layer cannot be added now instead of doing nothing.
+    bool refuseWhileBusy(const QString &what);
     bool remoteHasWcsAxis(int axis) const;
     double remoteVoxelToWcs(int axis, double voxelIndex, bool *ok = nullptr) const;
     QString remoteFormatAxisCoordinate(int axis, double voxelIndex) const;
