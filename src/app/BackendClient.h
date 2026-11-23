@@ -440,6 +440,14 @@ struct BackendCubeSliceResult
     double rangeMin{ 0. };
     double rangeMax{ 0. };
     QByteArray data;
+    /// Sample (i, j) is plane pixel (x0 + i * stride, y0 + j * stride) of a
+    /// fullWidth x fullHeight plane (issue #381). A backend before it sends
+    /// none of these and answers every pixel: the defaults say so.
+    int fullWidth{ 0 };
+    int fullHeight{ 0 };
+    int x0{ 0 };
+    int y0{ 0 };
+    int stride{ 1 };
 };
 
 struct BackendCubeSubvolumeResult
@@ -2499,8 +2507,12 @@ public:
     BackendRegionLevelResult requestRegionLevel(const QString &datasetId, int level, int x0, int x1,
                                                 int y0, int y1, int z0, int z1, int ghost = 1,
                                                 const QString &source = QStringLiteral("auto")) const;
+    /// One channel, or the part @p region (inclusive plane pixels) of it, read
+    /// every stride pixels so neither side exceeds @p maxLongestSide (0: every
+    /// pixel). Issue #381.
     BackendCubeSliceResult requestSlice(const QString &datasetId, const QString &axis,
-                                        int index) const;
+                                        int index, int maxLongestSide = 0,
+                                        const std::optional<QRect> &region = std::nullopt) const;
     BackendCubeSubvolumeResult requestSubvolume(const QString &datasetId, int x0, int x1, int y0,
                                                 int y1, int z0, int z1,
                                                 bool keepSlabs = false) const;
