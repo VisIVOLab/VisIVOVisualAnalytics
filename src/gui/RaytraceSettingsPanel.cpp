@@ -1,5 +1,7 @@
 #include "RaytraceSettingsPanel.h"
 
+#include "ParticleLightReport.h"
+
 #include "ColormapIcon.h"
 #include "vtk/ColorMaps.h"
 
@@ -172,6 +174,13 @@ RaytraceSettingsPanel::RaytraceSettingsPanel(const QStringList &numericColumns, 
     m_sizeRow->addWidget(m_neighbours);
     m_sizeRow->addWidget(m_sizeScale);
     pf->addRow(QString(), m_sizeRow);
+    m_periodic = new QCheckBox(u"Periodic box"_s);
+    m_periodic->setChecked(true);
+    m_periodic->setToolTip(u"Particles near a face of the simulation box find their neighbours "
+                           u"across it, on the opposite side (the box's own period). Off: the "
+                           u"faces are edges, and the particles there get larger smoothing "
+                           u"lengths."_s);
+    pf->addRow(QString(), m_periodic);
     m_lightLog = new QCheckBox(u"log"_s);
     m_lightLog->setToolTip(u"The column holds the logarithm of the quantity (LogMass, LogD…)"_s);
     auto *lightRow = new QHBoxLayout;
@@ -268,6 +277,7 @@ RaytraceSettingsPanel::RaytraceSettingsPanel(const QStringList &numericColumns, 
     connect(m_light, &QComboBox::currentIndexChanged, this, particles_);
     connect(m_quantity, &QComboBox::currentIndexChanged, this, particles_);
     connect(m_lightLog, &QCheckBox::toggled, this, particles_);
+    connect(m_periodic, &QCheckBox::toggled, this, particles_);
     connect(m_neighbours, &QSpinBox::valueChanged, this, particles_);
     for (QDoubleSpinBox *box : { m_sizeScale, m_contrast, m_absorption, m_slab })
         connect(box, &QDoubleSpinBox::valueChanged, this, particles_);
@@ -306,6 +316,8 @@ void RaytraceSettingsPanel::syncRows()
     m_map->setEnabled(by != u"colour"_s);
     m_mapLog->setEnabled(by == u"velocity_dispersion"_s);
     m_neighbours->setEnabled(m_size->currentData().toString().isEmpty());
+    setRowVisible(m_periodic, m_periodicKnown && more);
+    m_periodic->setEnabled(m_size->currentData().toString().isEmpty());
     m_lightLog->setEnabled(!m_light->currentData().toString().isEmpty());
 }
 
@@ -327,6 +339,8 @@ QJsonObject RaytraceSettingsPanel::fields() const
         f.insert(u"radius_field"_s, size);
     f.insert(u"radius_scale"_s, m_sizeScale->value());
     f.insert(u"neighbours"_s, m_neighbours->value());
+    if (size.isEmpty())
+        visivo::insertPeriod(f, m_periodicKnown, m_periodic->isChecked());
     const QString light = m_light->currentData().toString();
     if (!light.isEmpty()) {
         f.insert(u"intensity_field"_s, light);
@@ -411,7 +425,7 @@ QString RaytraceSettingsPanel::particlesKey(const QJsonObject &request)
 {
     QJsonObject key;
     for (const QString &k : { u"dataset_id"_s, u"x"_s, u"y"_s, u"z"_s, u"sky"_s, u"filters"_s,
-                              u"radius_field"_s, u"radius_scale"_s, u"neighbours"_s,
+                              u"radius_field"_s, u"radius_scale"_s, u"neighbours"_s, u"period"_s,
                               u"intensity_field"_s, u"intensity_log10"_s, u"intensity_power"_s,
                               u"quantity"_s, u"mode"_s, u"colour_by"_s })
         if (request.contains(k))
@@ -423,6 +437,15 @@ QString RaytraceSettingsPanel::particlesKey(const QJsonObject &request)
     else if (request.value(u"colour_by"_s).toString() == u"colour"_s)
         key.insert(u"colour_field"_s, request.value(u"colour"_s).toObject().value(u"field"_s));
     return QString::fromUtf8(QJsonDocument(key).toJson(QJsonDocument::Compact));
+}
+
+void RaytraceSettingsPanel::setPeriodicBoxKnown(bool known)
+{
+    if (known == m_periodicKnown)
+        return;
+    m_periodicKnown = known;
+    syncRows();
+    emit particlesChanged();
 }
 
 QJsonObject RaytraceSettingsPanel::settings() const
@@ -437,7 +460,7 @@ QJsonObject RaytraceSettingsPanel::settings() const
              { u"absorption"_s, m_absorption->value() }, { u"ev"_s, m_exposureEv->value() },
              { u"curve"_s, m_curve->currentIndex() },   { u"stretch"_s, m_stretch->value() },
              { u"gamma"_s, m_gamma->value() },          { u"saturation"_s, m_saturation->value() },
-             { u"more"_s, m_more->isChecked() } };
+             { u"more"_s, m_more->isChecked() },  { u"periodic"_s, m_periodic->isChecked() } };
 }
 
 void RaytraceSettingsPanel::setSettings(const QJsonObject &s)
@@ -445,7 +468,8 @@ void RaytraceSettingsPanel::setSettings(const QJsonObject &s)
     {
         // One change for all of them, not one per control.
         const QList<QWidget *> all{ m_mode, m_colourBy, m_map, m_mapLog, m_slab, m_decades,
-                                    m_size, m_neighbours, m_sizeScale, m_light, m_lightLog,
+                                    m_size, m_neighbours, m_sizeScale, m_periodic, m_light,
+                                    m_lightLog,
                                     m_contrast, m_quantity, m_absorption, m_exposureEv,
                                     m_curve, m_stretch, m_gamma, m_saturation };
         std::vector<std::unique_ptr<QSignalBlocker>> blocks;
@@ -460,6 +484,7 @@ void RaytraceSettingsPanel::setSettings(const QJsonObject &s)
         m_size->setCurrentIndex(s.value(u"size"_s).toInt());
         m_neighbours->setValue(s.value(u"neighbours"_s).toInt(32));
         m_sizeScale->setValue(s.value(u"scale"_s).toDouble(1.0));
+        m_periodic->setChecked(s.value(u"periodic"_s).toBool(true));
         m_light->setCurrentIndex(s.value(u"light"_s).toInt());
         m_lightLog->setChecked(s.value(u"light_log"_s).toBool());
         m_contrast->setValue(s.value(u"contrast"_s).toDouble(1.0));

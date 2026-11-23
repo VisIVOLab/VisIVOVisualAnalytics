@@ -353,22 +353,231 @@ def composite(sx, sy, radius, weight, emission, absorption, order, width: int, h
     return light, (zsum if depth is not None else None)
 
 
-def smoothing_lengths(positions: np.ndarray, neighbours: int = 32) -> np.ndarray:
+def smoothing_lengths(positions: np.ndarray, neighbours: int = 32, *,
+                      boxsize=None, region=None) -> np.ndarray:
     """Smoothing lengths where a snapshot has none: half the distance to the
     ``neighbours``-th nearest particle, the support an SPH kernel would have
-    with that many neighbours."""
+    with that many neighbours.
+
+    ``boxsize``: the period of each axis (0: none), so a periodic box's
+    particles find their neighbours across its faces (positions wrapped into
+    [0, L)). ``region(lo, hi)``: the positions of every particle of the
+    population within [lo, hi] on each axis (round the box on a periodic
+    one; a bound may be infinite), these among them. Given, the particles
+    are a cut of that population (a box, a sphere, a slab) and their
+    neighbours are searched beyond its faces too (issue #414): within a
+    margin of the cut's bounds, then, for the particles whose neighbours
+    reach past that margin, within their own distance, which makes every
+    length the one the whole population gives. None: the neighbours are the
+    ``positions``."""
     from scipy.spatial import cKDTree   # noqa: PLC0415
     pts = np.asarray(positions, dtype=np.float64)
-    k = min(neighbours + 1, len(pts))
+    n = len(pts)
+    box = _boxsize(boxsize, pts.shape[1] if pts.ndim == 2 else 3)
+    if region is None:
+        k = min(neighbours + 1, n)
+        if k < 2:
+            return np.ones(n, dtype=np.float32)
+        wrapped = _wrapped(pts, box)
+        # Only the k-th neighbour: the whole (N, k) answer is gigabytes for a
+        # snapshot of tens of millions.
+        dist, _ = cKDTree(wrapped, boxsize=box).query(wrapped, k=[k], workers=-1)
+        return _half_distance(dist[:, 0])
+    if not n:
+        return np.ones(0, dtype=np.float32)
+    pts = _contiguous(pts, box)
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    dist, margin = _neighbour_distance(pts, region, lo, hi, _margin(lo, hi, n, neighbours),
+                                       neighbours, box)
+    short = np.flatnonzero(dist > _inside_distance(pts, lo, hi, margin, box))
+    if short.size:
+        # The k-th distance found so far bounds the true one: every neighbour
+        # a particle can have lies within it. Searched again in bands of a
+        # factor 2 of it, so one sparse particle does not widen the search
+        # of all the others; at most _MAX_BANDS, each reading the population.
+        logd = np.log2(dist[short])
+        band = np.floor(logd)
+        if len(np.unique(band)) > _MAX_BANDS:
+            band = np.searchsorted(np.quantile(logd, np.linspace(0, 1, _MAX_BANDS + 1)[1:-1]),
+                                   logd)
+        for b in np.unique(band):
+            idx = short[band == b]
+            far = pts[idx]
+            dist[idx], _ = _neighbour_distance(far, region, far.min(axis=0), far.max(axis=0),
+                                               float(dist[idx].max()), neighbours, box)
+    return _half_distance(dist)
+
+
+def _margin(lo, hi, n: int, neighbours: int) -> float:
+    """How far past a cut's bounds its neighbours are searched first: three
+    times the radius that holds ``neighbours`` particles at the cut's mean
+    density (on a flat extent, its largest side; 0 for a point)."""
+    extent = np.asarray(hi, dtype=np.float64) - np.asarray(lo, dtype=np.float64)
+    volume = float(np.prod(extent))
+    if not (volume > 0 and math.isfinite(volume)):
+        return float(extent.max()) if extent.size else 0.0
+    return 3.0 * (3.0 * neighbours * volume / (4.0 * math.pi * n)) ** (1.0 / 3.0)
+
+
+_MARGIN_GROWTHS = 8
+_MAX_BANDS = 4
+
+
+def _neighbour_distance(pts, region, lo, hi, margin: float, neighbours: int,
+                        box) -> tuple[np.ndarray, float]:
+    """``(distance, margin)``: the ``neighbours``-th neighbour distance of
+    ``pts`` among the region's particles within ``margin`` of [lo, hi]
+    (``pts`` among them), the margin widened sixteenfold while it holds too few
+    (from a millionth of the bounds' size when it is 0), at last to the
+    whole population."""
+    from scipy.spatial import cKDTree   # noqa: PLC0415
+    scale = max(1.0, float(np.abs(np.concatenate([lo, hi])).max()))
+    for growth in range(_MARGIN_GROWTHS + 1):
+        if growth == _MARGIN_GROWTHS:
+            margin = math.inf
+        pool = np.asarray(region(lo - margin, hi + margin), dtype=np.float64).reshape(-1, 3)
+        if len(pool) > neighbours or math.isinf(margin):
+            break
+        margin = 16.0 * margin if margin > 0 else 1e-6 * scale
+    k = min(neighbours + 1, len(pool))
     if k < 2:
-        return np.ones(len(pts), dtype=np.float32)
-    # Only the k-th neighbour: the whole (N, k) answer is gigabytes for a
-    # snapshot of tens of millions.
-    dist, _ = cKDTree(pts).query(pts, k=[k], workers=-1)
-    h = 0.5 * dist[:, 0]
+        return np.zeros(len(pts)), margin
+    dist, _ = cKDTree(_wrapped(pool, box), boxsize=box).query(_wrapped(pts, box), k=[k],
+                                                               workers=-1)
+    return dist[:, 0], margin
+
+
+def _inside_distance(pts, lo, hi, margin: float, box) -> np.ndarray:
+    """How far each of ``pts`` is from the faces of [lo - margin, hi + margin]:
+    a sphere that small around it holds only particles the region gave. An
+    axis whose padded interval covers its period has no face."""
+    reach = np.full(len(pts), np.inf)
+    for i in range(pts.shape[1]):
+        if box is not None and box[i] > 0 and hi[i] - lo[i] + 2.0 * margin >= box[i]:
+            continue
+        reach = np.minimum(reach, np.minimum(pts[:, i] - (lo[i] - margin),
+                                             (hi[i] + margin) - pts[:, i]))
+    return reach
+
+
+def _contiguous(pts: np.ndarray, box: np.ndarray | None) -> np.ndarray:
+    """``pts`` moved round the box on each periodic axis so that they start
+    past the widest empty arc: a cut across a face is one short interval, not
+    one spanning the box (whose search would read the whole population)."""
+    if box is None:
+        return pts
+    out = np.array(pts, dtype=np.float64)
+    for i in np.flatnonzero(box):
+        period = box[i]
+        w = np.sort(np.mod(out[:, i], period))
+        if len(w) < 2:
+            continue
+        gaps = np.diff(np.append(w, w[0] + period))
+        start = w[(int(np.argmax(gaps)) + 1) % len(w)]
+        out[:, i] = start + np.mod(out[:, i] - start, period)
+    return out
+
+
+def _boxsize(boxsize, dims: int) -> np.ndarray | None:
+    """The periods as cKDTree takes them, None when no axis has one."""
+    if boxsize is None:
+        return None
+    box = np.broadcast_to(np.asarray(boxsize, dtype=np.float64), (dims,)).copy()
+    box[~(np.isfinite(box) & (box > 0))] = 0.0
+    return box if box.any() else None
+
+
+def _wrapped(pts: np.ndarray, box: np.ndarray | None) -> np.ndarray:
+    """``pts`` folded into [0, L) on each periodic axis, as cKDTree needs."""
+    if box is None:
+        return pts
+    out = np.array(pts, dtype=np.float64)
+    for i in np.flatnonzero(box):
+        col = np.mod(out[:, i], box[i])
+        col[col >= box[i]] = 0.0
+        out[:, i] = col
+    return out
+
+
+def _half_distance(dist: np.ndarray) -> np.ndarray:
+    h = 0.5 * np.asarray(dist, dtype=np.float64)
     positive = h > 0
     floor = h[positive].min() if positive.any() else 1.0
     return np.where(positive, h, floor).astype(np.float32)
+
+
+LIGHT_PERCENTILE = 99.5
+#: A column spanning more decades than this may mix two populations (gas and
+#: stars in one table), looked for as an empty stretch of
+#: ``POPULATION_GAP_DECADES`` in its values.
+WIDE_SPAN_DECADES = 20.0
+POPULATION_GAP_DECADES = 10.0
+#: How far above the reference the other population's light may reach at
+#: least, in decades.
+LIGHT_CEILING_DECADES = 2.0
+_FLOAT32_DECADES = math.log10(float(np.finfo(np.float32).max))
+
+
+def normalised_light(values, log10: bool = False,
+                     power: float = 1.0) -> tuple[np.ndarray, np.ndarray, dict]:
+    """``(light, usable, stats)`` of an intensity column: the float32 light
+    of the ``usable`` rows raised to ``power``, 1 at a reference, the
+    ``LIGHT_PERCENTILE``-th percentile of the values; ``log10``: the column
+    holds its log10.
+
+    A percentile, not the largest value: in a table mixing gas and stars the
+    star rows lie tens of decades above the gas and, as the reference,
+    pushed all of it to nothing. When the column splits into two populations
+    (see ``WIDE_SPAN_DECADES``) the reference is the larger one's, and the
+    other reaches no higher than that one's brightest row (at least
+    ``LIGHT_CEILING_DECADES`` above the reference). A single population is
+    only kept within float32's range: its contrast is the tone curve's.
+
+    ``usable``: a finite value (in linear, a positive one too) whose light
+    stays above 0 in float32. ``stats``: ``dropped_rows`` (the others),
+    ``clipped_rows`` (capped) and ``light_span_decades`` (of the finite
+    values), for a client to say what was left out."""
+    logs = _log_light(values, log10)
+    usable = np.isfinite(logs)
+    finite = logs[usable]
+    stats = {"dropped_rows": int(len(usable) - len(finite)), "clipped_rows": 0,
+             "light_span_decades": 0.0}
+    if not len(finite):
+        return np.zeros(0, dtype=np.float32), usable, stats
+    stats["light_span_decades"] = float(finite.max() - finite.min())
+    reference, top = _light_reference(finite, stats["light_span_decades"])
+    excess = float(power) * (finite - reference)
+    # The sum of every particle's light stays finite in float32.
+    ceiling = min(max(LIGHT_CEILING_DECADES, float(power) * (top - reference)),
+                  _FLOAT32_DECADES - math.log10(len(finite)) - 2.0)
+    stats["clipped_rows"] = int(np.count_nonzero(excess > ceiling))
+    with np.errstate(under="ignore"):
+        light = (10.0 ** np.minimum(excess, ceiling)).astype(np.float32)
+    lit = light > 0
+    usable[np.flatnonzero(usable)[~lit]] = False
+    stats["dropped_rows"] += int(np.count_nonzero(~lit))
+    return light[lit], usable, stats
+
+
+def _light_reference(logs: np.ndarray, span: float) -> tuple[float, float]:
+    """``(reference, top)``: the log10 value the light is 1 at and the
+    largest of the population it is taken from (see :func:`normalised_light`)."""
+    if span > WIDE_SPAN_DECADES:
+        ordered = np.sort(logs)
+        gaps = np.diff(ordered)
+        cut = int(np.argmax(gaps))
+        if gaps[cut] > POPULATION_GAP_DECADES:
+            lower, upper = ordered[:cut + 1], ordered[cut + 1:]
+            logs = lower if len(lower) >= len(upper) else upper
+    return float(np.percentile(logs, LIGHT_PERCENTILE)), float(logs.max())
+
+
+def _log_light(values, log10: bool) -> np.ndarray:
+    v = np.asarray(values, dtype=np.float64)
+    if log10:
+        return v
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.log10(v)
 
 
 def velocity_dispersion(positions: np.ndarray, velocities: np.ndarray,

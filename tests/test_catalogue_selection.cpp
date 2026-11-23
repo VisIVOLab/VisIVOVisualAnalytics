@@ -272,3 +272,37 @@ void TestCatalogueSelection::cameraJsonRoundTrips()
     partial.insert(QStringLiteral("view_up"), QJsonArray{ 0.0, 1.0 });
     QVERIFY(!framing::cameraFromJson(partial).has_value());
 }
+
+using namespace Qt::StringLiterals;
+
+void TestCatalogueSelection::aOneClickConditionJoinsTheAppliedFiltersOnly()
+{
+    // Applied: a region and a type of 4. Edited but not applied: a cut on rho.
+    visivo::selection::AppliedFilters applied;
+    applied.begin({ region(u"Halo"_s), predicate(u"type"_s, u"4"_s) });
+    QVERIFY(applied.succeed());   // filtered now, unfiltered before
+    const std::vector<BackendTabularFilter> edits{ region(u"Halo"_s),
+                                                   predicate(u"type"_s, u"4"_s),
+                                                   predicate(u"rho"_s, u"2"_s) };
+    // What the view now queries: the applied list, type 4 replaced by 0.
+    const auto query = visivo::selection::withOnlyCondition(applied.filters(), u"type"_s,
+                                                            u"="_s, u"0"_s);
+    QCOMPARE(int(query.size()), 2);
+    QCOMPARE(query[0].shape, u"sphere"_s);
+    QCOMPARE(query[1].field, u"type"_s);
+    QCOMPARE(query[1].value, u"0"_s);
+    for (const BackendTabularFilter &f : query)
+        QVERIFY(f.field != u"rho"_s);   // the pending edit is not applied
+    applied.begin(query);
+    QVERIFY(applied.succeed());
+    QVERIFY(visivo::selection::sameFilters(applied.filters(), query));
+    // The list keeps the pending edit, with the condition, for its own Apply.
+    const auto list = visivo::selection::withOnlyCondition(edits, u"type"_s, u"="_s, u"0"_s);
+    QCOMPARE(int(list.size()), 3);
+    QCOMPARE(list[1].field, u"rho"_s);
+    QCOMPARE(list[2].field, u"type"_s);
+    QCOMPARE(list[2].value, u"0"_s);
+    // A second click changes nothing.
+    QVERIFY(visivo::selection::sameFilters(
+            visivo::selection::withOnlyCondition(query, u"type"_s, u"="_s, u"0"_s), query));
+}

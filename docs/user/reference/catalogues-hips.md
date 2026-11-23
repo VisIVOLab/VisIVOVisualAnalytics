@@ -20,6 +20,16 @@ A sky catalogue (RA, Dec) is placed in 3-D from a distance or a redshift; a
 table of X, Y, Z columns is drawn in its own units (*AXIS MAPPING* picks the
 columns).
 
+A large X, Y, Z table with a column only gas particles have (smoothing length,
+density, internal energy or temperature, also as logarithms such as `LogD` or
+`LogT`; a mass alone is also a halo catalogue's), with no RA/Dec and no
+redshift column and at least 500,000 rows, opens as a simulation's particles,
+as a Gadget snapshot or a VBT does. It is drawn as points or Gaussian splats with no object glyphs and
+labelled with its format and row count, and *Compare Quantity…* is
+available. *Tools ▸ Treat Rows as Simulation Particles* switches either way
+for a table the rule got wrong. The choice is remembered for the file, which
+opens again. A table marked as particles has no snapshot timeline.
+
 ### Frame and distance
 
 - *Frame*: FK5 / J2000 (default), Galactic (l, b) or *Supergalactic (SGL,

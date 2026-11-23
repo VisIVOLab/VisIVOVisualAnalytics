@@ -15,10 +15,11 @@ A **render request** is shared by all the routes:
 | `dataset_id` | A VBT point table or a catalogue opened in this session (else 422). |
 | `x`, `y`, `z` | Position columns; empty: the table's own (a sky catalogue's computed `@x`/`@y`/`@z`). |
 | `sky` | `{frame, distance_mode, cosmology}`: a sky catalogue's positions, as for the point session. |
-| `filters` | `[{field, op, value}]`, numeric operators, as the point session takes them. |
+| `filters` | `[{field, op, value}]`, numeric operators, or `{box}` / `{sphere}` selections, as the point session takes them. |
 | `colour` | `{field, points, lut, min, max, log}`: the view's colours (its colour function `[[x, r, g, b], …]`, or a named map). |
-| `radius_field`, `radius_scale`, `neighbours` | Each particle's smoothing length: a column, or half the distance to its `neighbours`-th nearest particle; times `radius_scale`. |
-| `intensity_field`, `intensity_log10`, `intensity_power` | The light: a column (holding its log10), raised to `intensity_power`; none: 1 for every particle. |
+| `radius_field`, `radius_scale`, `neighbours` | Each particle's smoothing length: a column, or half the distance to its `neighbours`-th nearest particle; times `radius_scale`. See [Smoothing lengths](#smoothing-lengths). |
+| `period` | The period of the three position axes for that neighbour search: `null` the table's own (a periodic Gadget snapshot's `BoxSize`), `0` none, `L` a box of side `L` in the table's units. A box or sphere filter's own `period` applies to the selection only. |
+| `intensity_field`, `intensity_log10`, `intensity_power` | The light: a column (holding its log10), raised to `intensity_power`; none: 1 for every particle. See [Light](#light). |
 | `quantity` | `per_particle` (the light is an amount, weighted 1/h²) or `density` (weighted h, a column). |
 | `absorption` | Grey absorption, as the optical depth where the emitted light is brightest (0: emission only). |
 | `mode` | `light` (a 3-D render) or `projected` (a map: no perspective, log density). |
@@ -27,6 +28,46 @@ A **render request** is shared by all the routes:
 | `cameras` | `[{position, focal_point, view_up, view_angle, parallel, parallel_scale}]`, VTK's camera; 1 to 7200 (one: a still). |
 | `tone` | `{exposure, ev, curve, stretch, gamma, saturation, decades}`: `exposure` null is automatic (the 99.5th percentile of the lit pixels' luminance); `ev` stops over it; `curve` `asinh`, `log`, `exponential` or `linear`; `decades` a map's brightness range. |
 
+### Smoothing lengths
+
+Without `radius_field`, h is half the distance to the `neighbours`-th nearest
+particle (`particle_raytrace.smoothing_lengths`, issue #414). The filters on a
+position column (a box or sphere on the position axes, or a comparison of one)
+cut the drawn particles. The other filters choose the population the
+neighbours come from. A cut's particles find their neighbours in that
+population, past the cut's faces. The search reads the population within a
+margin of the cut's bounding box (three times the radius that holds
+`neighbours` particles at the cut's mean density). Any particle whose
+neighbours reach past that margin is searched again within its own distance,
+so every h equals the one the whole population gives. On a periodic table
+(`period`) the search uses the minimum image (`cKDTree(boxsize)`, positions
+wrapped into [0, L)), and a cut across a face is one interval round the box.
+The intensity does not change h: rows left out for their light still count
+as neighbours. A box over position and other columns is split into the two
+kinds of filter. An `outside` box, or a sphere on another column, chooses the
+population.
+
+### Light
+
+`intensity_field` is normalised by `particle_raytrace.normalised_light`. The
+light is 1 at the 99.5th percentile of the values (their log10), raised to
+`intensity_power`. The largest value is not used as the reference, because a
+few extreme rows would push every other row below float range. When the
+values span more than 20 decades and an empty stretch of more than 10 decades
+splits them into two populations (gas and stars in one table), the larger
+population sets the reference. The other population is then capped at the
+larger one's brightest row, and at least 2 decades above the reference.
+Otherwise the light is only capped to keep the sum of every particle's light
+within float32. The tone curve sets the contrast. Rows without a usable value
+(not finite, zero or negative in linear, or 0 once in float32) are left out.
+
+They are counted. The task result carries `dropped_rows`, `clipped_rows` and
+`light_span_decades` (the span of the finite values, in decades). The preview
+and particle routes carry `X-Visivo-Particle-Dropped` and
+`X-Visivo-Particle-Clipped`. A client shows them when they are not 0. A large
+`clipped_rows` with a span above 20 decades means the column mixes two
+populations, and the user should filter by type.
+
 ## Routes
 
 ### `POST /v1/tasks/particle_render`
@@ -34,7 +75,8 @@ A **render request** is shared by all the routes:
 Renders one frame per camera as a task (`GET /v1/tasks/{task_id}` for its
 progress, `DELETE` to cancel between frames). A movie's exposure is fixed on its
 first frame. The result: `frames`, `width`, `height`, `particles`, `exposure`
-(before `ev`), `seconds`, `hdr` (a still keeps its light). Files live in the
+(before `ev`), `seconds`, `hdr` (a still keeps its light), and `dropped_rows`,
+`clipped_rows`, `light_span_decades` (see [Light](#light)). Files live in the
 workspace's hidden `.renders/{task_id}`.
 
 ### `GET /v1/particle_render/{task_id}/frames/{index}`

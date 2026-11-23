@@ -58,7 +58,9 @@ tests/
   test_update_check.cpp            #  9 — GitHub latest-release reply, version comparison
   test_source_table.cpp            # 11 — VLKB cutouts for a source table
   test_backend_task_follow.cpp     # 23 — following a backend task to its end, with back-off
+  test_particle_light_report.cpp   #  5 — rows a ray-traced render dropped or clipped, the gas-only suggestion, period
   test_diagnostics_task.cpp        #  6 — selection diagnostics as a backend task: create, poll, cancel, fallback
+  test_particle_table_rule.cpp     #  4 — which plain tables hold particles (issue #414) and the per-file choice
   test_samp.cpp                    # 39 — SAMP: XML-RPC codec, callback server, row identity and linking
   test_cosmology_tools.cpp         # 38 — cosmology tools: custom models, distance table, P(ℓ) slope, bindings
   test_copilot_status.cpp          #  8 — why the copilot cannot answer, as the panels show it

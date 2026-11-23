@@ -313,6 +313,13 @@ private:
     QPointer<QLabel> m_placementStatus;
     QPointer<QPushButton> m_unplacedButton;
     QPointer<QAction> m_actionUnplaced;
+    /// A plain table of points may be marked as particles or as objects
+    /// (ParticleTableRule.h); a snapshot or a VBT is not asked.
+    bool m_particleChoiceOffered{ false };
+    /// Particles by the rule or the user's choice, not by the file's format:
+    /// no snapshot timeline (its files are not known to be a run's outputs).
+    bool m_particlesByRule{ false };
+    void setParticleChoice(bool particles);
     void refreshPlacementStatus();
     /// The "Unplaced sources" table: Name, RA, Dec, cz [km/s], Reason.
     void showUnplacedSources();
@@ -346,6 +353,9 @@ private:
     /// Apply: the edited filter list becomes the applied one, then the rows
     /// are queried with it.
     void applyFilter();
+    /// Adds ``field = value`` to the filters and applies them (the
+    /// ray-traced view's "Show gas only").
+    void addAndApplyFilter(const QString &field, const QString &value);
     /// The rows queried again with the applied filters (Load all, attribute
     /// hydration): edits not yet applied stay unapplied.
     void queryAppliedFilters();

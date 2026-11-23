@@ -220,10 +220,14 @@ add_executable(VisIVOTests
     TestCosmologyTools.h
     test_cosmology_tools.cpp
     test_backend_task_follow.cpp
+    TestParticleLightReport.h
+    test_particle_light_report.cpp
     TestDiagnosticsTask.h
     test_diagnostics_task.cpp
     TestParticleProfiles.h
     test_particle_profiles.cpp
+    TestParticleTableRule.h
+    test_particle_table_rule.cpp
     TestSamp.h
     test_samp.cpp
     ${VISIVO_ROOT}/src/app/SampCallbackServer.cpp
