@@ -84,12 +84,29 @@ Under the plot:
   catalogue flux and the scale factor beside it), the model flux at each band
   and the fit parameters.
 
-On the plot, filled points are in the fit, hollow ones are not; a click fits
-that point alone at its wavelength, ⌘/Ctrl-click adds a point. The plot and
-the *Photometry* table always agree.
+On the plot, each survey has its own colour (2MASS, WISE, MSX, Spitzer IRAC
+and MIPS, Herschel PACS and SPIRE, other), named in the legend. Filled points
+are in the fit; hollow, fainter ones are not. Every point has its error bar. On
+log axes an error bar that would reach zero or below runs to the bottom of the
+plot, with no arrowhead: arrows mark only upper limits.
 
-Upper limits (*UL*) are drawn as downward triangles. They are not in the χ²,
-but any model brighter than a limit is rejected.
+Thin lines join each counterpart to the one it was matched with in the next
+band, so where a band has several counterparts the SED forks (the band-merged
+tree; each row of the VLKB SED view is one branch). Upper limits are nodes of
+the tree like the detections. A link between two bands in the fit is drawn
+darker. With *Collapse branches* on there is one point per
+band and a single line through them.
+
+A click fits that point alone at its wavelength, ⌘/Ctrl-click adds a point. The
+plot and the *Photometry* table always agree.
+
+The axes cover the photometry: the flux axis runs from a decade below the
+faintest band to half a decade above the brightest, and the fitted curves are
+cut at the frame rather than stretching it.
+
+Upper limits (*UL*) are drawn as a short bar with an arrow pointing down
+(*Upper limit* in the legend). They are
+not in the χ², but any model brighter than a limit is rejected.
 
 ## Optically thin model
 

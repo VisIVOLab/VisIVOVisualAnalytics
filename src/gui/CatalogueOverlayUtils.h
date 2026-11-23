@@ -63,6 +63,10 @@ struct CatalogueOverlayEntry
     /// (VLKB: the band-merged designation). Empty when the catalogue has no such
     /// relation, and the table then stays flat.
     QString groupKey;
+    /// The rows of the VLKB SED view this detection appears on. Each row is one
+    /// branch of the band-merged tree (one counterpart per band), so two
+    /// detections on a common row are linked in the SED. Empty elsewhere.
+    std::vector<int> sedRows;
 };
 
 struct CatalogueOverlayParseResult
@@ -94,6 +98,7 @@ struct VlkbCatalogueRaw
         /// that belong to this band or to no band at all.
         QList<QPair<QString, QString>> fields;
         QString groupKey;   ///< band-merged designation: one source, several bands
+        std::vector<int> rows;   ///< response rows (tree branches) carrying this detection
     };
     struct Polyline { std::vector<std::array<double, 2>> pts; QString label; };  // (glon,glat)
     std::vector<Ellipse> ellipses;

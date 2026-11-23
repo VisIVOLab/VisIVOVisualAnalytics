@@ -31,6 +31,7 @@
 #include "TestKinematicLevelField.h"
 #include "TestRayVoxelPick.h"
 #include "TestSedBuilder.h"
+#include "TestSedPlotStyle.h"
 #include "TestMolecularLineClient.h"
 #include "TestLteCoRequest.h"
 #include "TestVlkbPosString.h"
@@ -133,6 +134,7 @@ int main(int argc, char *argv[])
     { TestKinematicLevelField t; status |= QTest::qExec(&t, argc, argv); }
     { TestRayVoxelPick     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSedBuilder       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSedPlotStyle     t; status |= QTest::qExec(&t, argc, argv); }
     { TestMolecularLineClient t; status |= QTest::qExec(&t, argc, argv); }
     { TestLteCoRequest t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }

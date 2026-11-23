@@ -76,6 +76,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
+#include <QHash>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QColor>
@@ -1593,7 +1594,10 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
     };
 
     const int iGlonFt = idx(u"glonft"_s), iGlatFt = idx(u"glatft"_s);
-    QSet<QString> seen;   // dedupe the SED view's repeated rows by band + position
+    // Dedupe the SED view's repeated rows by band + position, remembering every
+    // row a detection was seen on: a row is one branch of the band-merged tree,
+    // and the SED draws its links from them.
+    QHash<QString, std::size_t> seen;
     for (int i = headerEnd + 1; i < lines.size(); ++i) {   // after the header record
         QString line = QString::fromUtf8(lines[i]);
         // Same rule as the file parser: a text column returned by SELECT * can
@@ -1644,8 +1648,12 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
             // other source silently lost that band from its tree.
             const QString key = QStringLiteral("%1_%2_%3_%4").arg(bands[b])
                     .arg(glon, 0, 'f', 5).arg(glat, 0, 'f', 5).arg(group);
-            if (seen.contains(key)) continue;
-            seen.insert(key);
+            const int row = i;
+            if (const auto found = seen.constFind(key); found != seen.cend()) {
+                out.ellipses[*found].rows.push_back(row);
+                continue;
+            }
+            seen.insert(key, out.ellipses.size());
             // A NAME, not "Source 64": the published designation when there is
             // one, otherwise the standard Galactic designation written from the
             // position (G039.884-0.163), plus the band, since one physical source
@@ -1674,7 +1682,7 @@ VlkbCatalogueRaw fetchVlkbSources(const QString &base, const QString &adql,
                 fields.append({ name, value });
             }
             out.ellipses.push_back({ glon, glat, fa, fb, pa, bands[b], designation, fields,
-                                     group });
+                                     group, { row } });
         }
     }
     out.valid = true;
@@ -2127,6 +2135,7 @@ void vtkWindowImage::onVlkbCatalogueReady()
         ce.angleDeg = e.paDeg;
         ce.extra = e.fields;
         ce.groupKey = e.groupKey;
+        ce.sedRows = e.rows;
         for (const auto &kv : e.fields) {
             if (!parsed.extraFields.contains(kv.first))
                 parsed.extraFields.append(kv.first);

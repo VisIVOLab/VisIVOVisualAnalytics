@@ -68,6 +68,10 @@ struct SedPoint
     /// Index of the overlay entry this point came from, or -1 when several
     /// bands were read out of one flat row.
     int entryIndex{ -1 };
+    /// The branches of the band-merged tree this point lies on (the VLKB SED
+    /// view's rows). Two points sharing a branch are linked in the SED, as the
+    /// legacy client drew them. Empty when the catalogue gives no tree.
+    std::vector<int> branches;
 };
 
 struct SedBuildResult
@@ -247,6 +251,7 @@ inline bool pointFromEntry(const CatalogueOverlayEntry &entry, int entryIndex, S
     point.fluxJy = flux;
     point.band = tag;
     point.entryIndex = entryIndex;
+    point.branches = entry.sedRows;
     numericField(entry.extra, errorCandidates(tag), &point.errorJy);
     if (!std::isfinite(point.errorJy) || point.errorJy < 0.0)
         point.errorJy = 0.0;
@@ -324,6 +329,8 @@ inline std::vector<SedPoint> pointsFromWideRow(const CatalogueOverlayEntry &entr
         point.fluxJy = flux;
         point.band = named ? QString::fromLatin1(named->tag) : QString::number(wavelength);
         point.entryIndex = entryIndex;
+        // One flat row is one SED: a single branch through all its bands.
+        point.branches = { entryIndex };
         point.label = entry.label;
         // The error column mirrors the flux column's own spelling.
         const QString stem = field.first.trimmed();
@@ -377,6 +384,7 @@ inline std::vector<SedPoint> counterpartPoints(const CatalogueOverlayEntry &entr
         point.fluxJy = flux;
         point.band = QString::fromLatin1(column.tag);
         point.entryIndex = entryIndex;
+        point.branches = entry.sedRows;
         numericField(entry.extra, { QStringLiteral("err_%1").arg(name) }, &point.errorJy);
         if (!std::isfinite(point.errorJy) || point.errorJy < 0.0)
             point.errorJy = 0.0;
