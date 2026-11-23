@@ -42,17 +42,22 @@ the window loads an even sample of the table:
 - *Load all*: loads every row.
 - *AXIS MAPPING*: the X, Y, Z columns, else the first three; any three columns
   can be chosen.
-- *VISUAL ENCODING ▸ Color*: the column that colours the points, by default the
+- *VISUAL ENCODING ▸ Colour by*: the column that colours the points, by default the
   first one that is not a position. *Single colour* draws every point alike.
-  *Edit*, beside the colour map, sets Min, Max and the scale; a positive column
+  *Range and scale…* sets Min, Max and the scale; a positive column
   spanning three decades or more opens on a Log scale.
 - *SOURCE REPRESENTATION ▸ Shape*: *Point*, or *Gaussian splats* (the default
   above a million rows). Splats are emissive, so dense regions add up to bright
-  and faint filaments stay visible. *Scale* sets the point or splat size. The
+  and faint filaments stay visible. On large tables splat brightness grows with
+  the number of particles, so it is not comparable between tables of different
+  size; use a projected map of [ray-traced particles](raytraced-particles.md)
+  for that. *Scale* sets the point or splat size. The
   ellipsoid, sphere and cross glyphs of object catalogues are not offered.
 - *Ray-traced light*: draws every row as a continuous medium on this machine's
   GPU, for figures and movies. See [Ray-traced particles](raytraced-particles.md).
-- *FILTERS*: restrict the rows by value; several filters combine.
+- *FILTERS*: restrict the rows by value or by a named 3-D region; several
+  filters combine. *Tools ▸ Selection Diagnostics…* and *Tools ▸ Compare
+  Quantity…* work as for [Gadget snapshots](gadget-snapshots.md).
 - Hover or click a point to see its row. *Esc*, a click on empty space or
   *View ▸ Clear Selection* deselects it. The *Catalogue* dock lists the loaded
   rows.

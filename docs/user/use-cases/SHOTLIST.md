@@ -75,7 +75,7 @@ Pending VR shots, not yet referenced by the pages (add the figure directives to 
 
 | File | What must be on screen |
 |---|---|
-| `06-catalogues-hips-crossmatch-1.png` | 3-D catalogue viewer, 1600 × 1000, `NKATZ_2.3M.tbl` with *Load all* done, shape *Gaussian splats*, coloured by `LDensity` (log scale, Inferno or the default map), colour bar visible, one point selected with its ring and the *Source Info* page showing its row. Check that positions come from `X`, `Y`, `Z` (the *AXIS MAPPING* section visible in the dock). |
+| `06-catalogues-hips-crossmatch-1.png` | **Re-capture**: the current shot predates the new splat size and opacity and shows the old *Color* label (now *Colour by*). 3-D catalogue viewer, 1600 × 1000, `NKATZ_2.3M.tbl` with *Load all* done, shape *Gaussian splats*, coloured by `LDensity` (log scale, Inferno or the default map), colour bar visible, one point selected with its ring and the *Source Info* page showing its row. Check that positions come from `X`, `Y`, `Z` (the *AXIS MAPPING* section visible in the dock). |
 | `06-catalogues-hips-crossmatch-2.png` | Main window, 1600 × 1000, *HiPS Viewer* tab: a Herschel 250 µm survey (chosen with *Browse…* and `herschel 250`) or DSS colour, centred on a resolved target typed in *Target:* (`M31` works for DSS; a Galactic-plane target such as `W43` for Herschel), the order and field of view visible in the toolbar. |
 | `06-catalogues-hips-crossmatch-3.png` | Image viewer, 1400 × 1000, `vlkb-cutout_2023-09-08_04-44-11_833602_continuum-higal_mosaic_mosaic_wgls_m030039_PSW.fits` after *Tools ▸ Catalogue ▸ Cross-match with Catalogue…* with `simbad`, radius 60: markers with names on the image, *Session Data* showing *Cross-match with simbad*. Needs network access on the backend. |
 
