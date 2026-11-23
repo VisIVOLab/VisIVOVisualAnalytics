@@ -58,6 +58,10 @@ The card shows the main settings; *More settings* opens the rest.
 | *Slab*, *Range* | A projected map's thickness around the focal plane, in the table's units (*Everything* by default), and the decades of density its brightness spans (*Automatic* by default). |
 | *Curve*, *Stretch*, *Gamma*, *Saturation* | The tone curve of a 3-D render. *Asinh* and *Logarithmic* lift faint light (more with a higher stretch), *Exponential* compresses the bright, *Linear* does neither. |
 
+The analysis view's Gaussian splats get brighter as a table grows, so their
+brightness is not comparable between tables of different size; use a
+*Projected map* for that.
+
 *Box* draws the data's bounding box and *Colour bar* the colour scale (the
 colour column in a 3-D render; the relative column density, or the hue's
 quantity, in a projected map). Both appear in the view and on saved stills and

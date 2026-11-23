@@ -977,7 +977,9 @@ visivo::TaskFollowResult visivo::followBackendTask(const BackendClient &client,
     const QString operation = logTag.contains(QStringLiteral("moment"), Qt::CaseInsensitive)
             ? QStringLiteral("moment")
             : logTag.contains(QStringLiteral("pv"), Qt::CaseInsensitive) ? QStringLiteral("pv")
-                                                                         : QString();
+            : logTag.contains(QStringLiteral("catalogue_diagnostics"), Qt::CaseInsensitive)
+                    ? QStringLiteral("catalogue_diagnostics")
+                    : QString();
     const QString sessionId = client.sessionId();
     auto publish = [&](DiagnosticsLevel level, const QString &message) {
         DiagnosticsManager::instance()->publish(level, DiagnosticsCategory::Task,

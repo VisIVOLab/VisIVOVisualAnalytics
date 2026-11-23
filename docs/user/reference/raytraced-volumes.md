@@ -21,6 +21,9 @@ camera back when the check is cleared.
 - Drag to turn, Shift-drag or the right button to move, scroll to zoom.
 - The view is drawn on this machine's GPU from a grid of at most 256³ voxels,
   sampled from a larger cube. Stills and movies use the full cube.
+- A panel covers the view until the first frame is drawn; later changes keep
+  the picture turnable with a small badge in the top-right corner. If
+  preparing fails, the panel or the badge says why.
 - Without a GPU view on this machine, the backend draws a frame each time the
   view stops moving.
 - A backend older than the client has no ray-traced views: the check clears

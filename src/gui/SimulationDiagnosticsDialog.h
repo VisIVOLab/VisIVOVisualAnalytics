@@ -7,8 +7,11 @@
 #include <QElapsedTimer>
 #include <QPointer>
 
-#include <atomic>
 #include <memory>
+
+namespace visivo {
+struct BackendTaskControl;
+}
 
 class QComboBox;
 class QLabel;
@@ -60,8 +63,10 @@ private:
     /// it, so the backend is never asked for two passes at once from here.
     bool m_inFlight = false;
     bool m_rerunQueued = false;
-    /// The out worker's cancel flag (shared: it outlives this dialog).
-    std::shared_ptr<std::atomic_bool> m_abort;
+    /// The out worker's task: its progress, and the abort that cancels it on
+    /// the backend (shared: it outlives this dialog).
+    std::shared_ptr<visivo::BackendTaskControl> m_control;
+    void showProgress();
     QElapsedTimer m_elapsed;
     QPointer<QTimer> m_tick;
     QPointer<QComboBox> m_field;
