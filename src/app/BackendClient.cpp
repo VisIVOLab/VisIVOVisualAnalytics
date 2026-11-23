@@ -1558,13 +1558,23 @@ BackendCubePreviewResult BackendClient::requestPreview(const QString &datasetId,
 }
 
 BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, const QString &axis,
-                                                   int index) const
+                                                   int index, int maxLongestSide,
+                                                   const std::optional<QRect> &region) const
 {
     BackendCubeSliceResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("axis"), axis },
-                                          { QStringLiteral("index"), index } });
+    QJsonObject request{ { QStringLiteral("dataset_id"), datasetId },
+                         { QStringLiteral("axis"), axis },
+                         { QStringLiteral("index"), index } };
+    if (maxLongestSide > 0)
+        request.insert(QStringLiteral("max_longest_side"), maxLongestSide);
+    if (region && region->isValid()) {
+        request.insert(QStringLiteral("x0"), region->left());
+        request.insert(QStringLiteral("x1"), region->right());
+        request.insert(QStringLiteral("y0"), region->top());
+        request.insert(QStringLiteral("y1"), region->bottom());
+    }
+    const QJsonDocument body(request);
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/slice")), body, error);
     if (!error.isEmpty()) {
@@ -1579,6 +1589,11 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
     result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
     result.rangeMin = object.value(QStringLiteral("range_min")).toDouble();
     result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
+    result.fullWidth = object.value(QStringLiteral("full_width")).toInt(result.width);
+    result.fullHeight = object.value(QStringLiteral("full_height")).toInt(result.height);
+    result.x0 = object.value(QStringLiteral("x0")).toInt(0);
+    result.y0 = object.value(QStringLiteral("y0")).toInt(0);
+    result.stride = std::max(1, object.value(QStringLiteral("stride")).toInt(1));
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {

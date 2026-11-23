@@ -126,6 +126,7 @@
     "POST /v1/cube/slice",
     "POST /v1/cube/subvolume",
     "POST /v1/cube/subvolume_bin",
+    "POST /v1/datasets/beam",
     "POST /v1/datasets/cutout",
     "POST /v1/datasets/open",
     "POST /v1/datasets/open_skava",

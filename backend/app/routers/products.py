@@ -413,7 +413,9 @@ async def map_math(
         valid=True, workspace_filename=Path(result["output_path"]).name,
         output_path=result["output_path"], width=result["width"], height=result["height"],
         range_min=result["range_min"], range_max=result["range_max"],
-        info={"op": result["op"], "reprojected": result["reprojected"]})
+        info={"op": result["op"], "reprojected": result["reprojected"],
+              "overlap_fraction": result["overlap_fraction"],
+              "warning": result["warning"]})
 
 
 class MosaicRequest(BaseModel):

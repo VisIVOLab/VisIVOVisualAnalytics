@@ -1870,6 +1870,7 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest,
     cache_params = {
         "vertices": vertices,
         "width_pixels": max(1, int(request.width_pixels)),
+        "beam": [dataset.beam_source, dataset.beam.major, dataset.beam.minor, dataset.beam.pa],
     }
     cache_key, param_hash = PRODUCT_CACHE.make_key(dataset.path, "pv", cache_params)
     cached = PRODUCT_CACHE.get(cache_key)

@@ -289,7 +289,7 @@ def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
 
     out: dict[str, Any] = {
         "selected_voxels": selected, "valid_voxels": valid, "blank_voxels": selected - valid,
-        "bunit": dataset.bunit or "",
+        "bunit": dataset.intensity_unit or "",
         "sum": _finite(total) if valid else None,
         "mean": _finite(mean) if valid else None,
         "rms": _finite(math.sqrt(max(0.0, m2 / valid))) if valid else None,
@@ -339,7 +339,7 @@ def worker_cube_mask_stats(path: str, mask_bytes: bytes | None,
             out["flux_note"] = "every selected voxel is blank"
     else:
         out["spectrum"] = [_finite(v) for v in spectrum]
-        out["spectrum_unit"] = f"sum of {dataset.bunit}" if dataset.bunit else "sum"
+        out["spectrum_unit"] = f"sum of {dataset.intensity_unit}" if dataset.intensity_unit else "sum"
 
     out["hi"] = _hi_measures(
         dataset, out, shape, vel, dvk, chans, beam_px, n_chan[zs[0]:zs[-1] + 1],
@@ -367,7 +367,7 @@ def _hi_measures(dataset, out: dict[str, Any], spectrum: np.ndarray, vel, dvk, c
     measured in the noise frame (None when the noise was supplied)."""
     ox, oy, oz = origin
     notes: list[str] = []
-    bunit = dataset.bunit or ""
+    bunit = dataset.intensity_unit or ""
     axis = axis or {}
     hi: dict[str, Any] = {
         "flux_jy_kms": out["flux_jy_kms"], "flux_err_jy_kms": None,
