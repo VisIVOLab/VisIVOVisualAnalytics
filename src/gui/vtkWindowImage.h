@@ -10,6 +10,7 @@
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
 
+#include <vtkInteractorStyleImage.h>
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
 
@@ -172,6 +173,14 @@ private slots:
 
     // Interactors
     void setInteractorStyleImage();
+    /// The image's own interactor style: its left-drag rewrites the selected layer's
+    /// colour range (the one the colour bar shows), 'r' resets the display.
+    vtkSmartPointer<vtkInteractorStyleImage> makeImageInteractorStyle();
+    /// A window/level drag: the selected layer's colour range becomes [lo, hi].
+    void dragDisplayRange(double lo, double hi);
+    /// View > Reset Display: the selected layer's stretch and colour range back to
+    /// the autoscale it opened with. Colour map, opacity and the camera are kept.
+    void resetDisplay();
     void setInteractorStyleProfile();
     void setInteractorStyleRegion();
     void toggleProbeFreeze();
@@ -757,6 +766,10 @@ private:
     void showRegionContextMenu(int id);
     void openRegionProperties(int id = -1);
     void deleteSelectedRegion();
+    /// A ruler or angle measurement is on the image: Delete takes it when no region is selected.
+    bool measurementDeletable() const;
+    /// Enable Delete when a visible region is selected or a measurement is shown.
+    void updateDeleteAction();
     void undoRegionEdit();
     void redoRegionEdit();
     bool finalizePolygonRegion();
@@ -1137,6 +1150,12 @@ private:
     QPointer<QLabel> m_unitValueLabel;
     QPointer<DatasetBeamControl> m_beamControl;
     void refreshUnitAndBeamRows();
+    /// The file of the selected layer (the window's own file for the base image).
+    QString selectedLayerPath() const;
+    /// The BUNIT of the selected layer: the base image's from its metadata, another
+    /// layer's from its FITS header, read once per file.
+    QString selectedLayerBunit();
+    QHash<QString, QString> m_layerBunit;   ///< layer file -> BUNIT ("" when it has none)
 
     // Polarization vector overlay
     vtkNew<vtkPoints> m_polVecPoints;

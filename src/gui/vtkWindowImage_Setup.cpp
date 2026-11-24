@@ -12,6 +12,7 @@
 #include "ColorMaps.h"
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
+#include "ImageLayerContext.h"
 #include "ImageLayerController.h"
 #include "FitsHeaderEditorDialog.h"
 #include "ImageLayerImportService.h"
@@ -203,8 +204,7 @@ void vtkWindowImage::setupRenderer()
     ui->vtk->setRenderWindow(win);
     ui->vtk->setEnableTouchEventProcessing(false);
 
-    vtkNew<vtkInteractorStyleImage> style;
-    win->GetInteractor()->SetInteractorStyle(style);
+    win->GetInteractor()->SetInteractorStyle(this->makeImageInteractorStyle());
     // Selecting, moving and editing a region of the list come first: a press on
     // a region must neither pan the image nor start a new region under it. The
     // callback runs ahead of the interactor style (higher priority) and aborts
@@ -489,13 +489,16 @@ void vtkWindowImage::setupRenderer()
 
 void vtkWindowImage::showFitsHeaderDialog()
 {
+    // The header of the layer selected in the list, not always the base image's:
+    // with layers stacked, the title names the file the cards come from.
+    const QString layerPath = this->selectedLayerPath();
     BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
-    const auto result = client.fileHeader(this->filepath);
+    const auto result = client.fileHeader(layerPath);
 
     auto *dlg = new QDialog(this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowModality(Qt::NonModal);
-    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(visivo::datasetDisplayName(this->filepath)));
+    dlg->setWindowTitle(u"FITS Header - %1"_s.arg(visivo::datasetDisplayName(layerPath)));
     dlg->resize(620, 480);
 
     auto *vbox = new QVBoxLayout(dlg);
@@ -520,7 +523,7 @@ void vtkWindowImage::showFitsHeaderDialog()
             QStringLiteral("color: %1; font-size: 14px; font-weight: 700;")
                     .arg(QLatin1StringView(VisivoTheme::kOnSurface())));
     headerLayout->addWidget(title);
-    auto *sub = new QLabel(this->filepath, header);
+    auto *sub = new QLabel(layerPath, header);
     sub->setStyleSheet(
             QStringLiteral("color: %1; font-size: 11px; "
                             "font-family: 'JetBrains Mono', 'SF Mono', Menlo, monospace;")
@@ -566,10 +569,10 @@ void vtkWindowImage::showFitsHeaderDialog()
                      u"in the Workspace. This file is not modified."_s);
     const QStringList cards = result.cards;
     QPointer<vtkWindowImage> self(this);
-    QObject::connect(edit, &QPushButton::clicked, dlg, [this, self, dlg, cards]() {
+    QObject::connect(edit, &QPushButton::clicked, dlg, [this, self, dlg, cards, layerPath]() {
         if (!self)
             return;
-        auto *editor = new FitsHeaderEditorDialog(this->filepath, cards,
+        auto *editor = new FitsHeaderEditorDialog(layerPath, cards,
                                                   this->remoteBackendUrl,
                                                   this->remoteBackendToken, self);
         editor->setAttribute(Qt::WA_DeleteOnClose);
@@ -2330,8 +2333,8 @@ void vtkWindowImage::setupSidebar()
                 l->setAlignment(align);
                 return l;
             };
-            gl->addWidget(gridHdr(u"Ax"_s),                     0, 0);
-            gl->addWidget(gridHdr(u"Type [unit]"_s),            0, 1);
+            gl->addWidget(gridHdr(u"Axis"_s),                   0, 0);
+            gl->addWidget(gridHdr(u"CTYPE (CUNIT)"_s),          0, 1);
             gl->addWidget(gridHdr(u"\u0394"_s, Qt::AlignRight), 0, 2);
 
             auto *sep = new QFrame;
@@ -2347,9 +2350,11 @@ void vtkWindowImage::setupSidebar()
                 if (ctype.isEmpty())
                     continue;
                 const QString &cunit = this->remoteDatasetCunit[ax];
-                const QString typeStr = cunit.isEmpty()
-                        ? ctype
-                        : QStringLiteral("%1 [%2]").arg(ctype, cunit);
+                // This window shows a plane: whatever lies beyond the two sky
+                // axes is collapsed. Said so, because "VRAD [m s-1]" beside the
+                // image reads like the unit of its values.
+                const bool collapsed = ax >= 2;
+                const QString typeStr = visivo::layerctx::axisTypeLabel(ctype, cunit, collapsed);
                 const QString deltaStr =
                         QStringLiteral("%1").arg(this->remoteDatasetCdelt[ax], 0, 'g', 5);
 
@@ -2358,6 +2363,10 @@ void vtkWindowImage::setupSidebar()
 
                 auto *typeLbl = new QLabel(typeStr);
                 typeLbl->setStyleSheet(fnValStyle);
+                typeLbl->setToolTip(visivo::layerctx::axisRowText(ax + 1, ctype, cunit, collapsed)
+                                    + (collapsed ? u". An axis of the plane, not the unit of the "
+                                                   u"values (see Unit)."_s
+                                                 : QString()));
                 typeLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
                 auto *deltaLbl = new QLabel(deltaStr);

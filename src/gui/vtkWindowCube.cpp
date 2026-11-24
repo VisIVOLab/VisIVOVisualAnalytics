@@ -4930,6 +4930,15 @@ void vtkWindowCube::refreshPvOverlay()
     const auto committed = this->pvEffectivePath();
     const bool pathShown = (this->pvModeActive || keepingForPlotWindow) && committed.size() >= 2;
     this->refreshPaneOverlayPaths(pathShown ? committed : std::vector<std::array<double, 2>>{});
+
+    // The Delete key is bound to an action the gate enables, and a disabled
+    // action drops the key: the gate has to follow the path as it is drawn and
+    // deleted. Set before the call, so a refresh the gate itself causes stops here.
+    const bool deletable = this->pvPathDeletable();
+    if (deletable != this->m_pvDeletableShown) {
+        this->m_pvDeletableShown = deletable;
+        this->applyMomentToolGate();
+    }
 }
 
 void vtkWindowCube::clearPv()
@@ -6333,6 +6342,26 @@ void vtkWindowCube::schedulePvLiveUpdate(int delayMs)
         });
     }
     this->m_pvLiveTimer->start(std::max(0, delayMs));
+}
+
+bool vtkWindowCube::pvPathDeletable() const
+{
+    return this->pvModeActive && !this->pvPolylineVertices.empty()
+            && this->m_pvEdit == PvEdit::None;
+}
+
+void vtkWindowCube::deletePvPath()
+{
+    if (!this->pvPathDeletable())
+        return;
+    this->pvPolylineVertices.clear();
+    this->pvValid = false;
+    this->pvDragging = false;
+    this->pvCursorValid = false;
+    this->refreshPvOverlay();
+    this->statusBar()->showMessage(u"PV path deleted. Draw another, or leave PV mode."_s, 5000);
+    if (auto *win = this->active2dWin())
+        win->Render();
 }
 
 void vtkWindowCube::startNewPvPath()
@@ -15143,7 +15172,9 @@ void vtkWindowCube::applyMomentToolGate()
     // menu shows every reason as a line of its own, and five identical lines
     // under one group read as noise. Undo and Redo grey out as an Edit menu does.
     applyGate(m_actRegionProperties.data(), sd.editSelectedRegion, reasonNoSelectedRegion);
-    applyGate(m_actDeleteRegion.data(), sd.editSelectedRegion, QString());
+    // Delete takes the selected region, else the PV path on the slice.
+    m_pvDeletableShown = this->pvPathDeletable();
+    applyGate(m_actDeleteRegion.data(), sd.editSelectedRegion || m_pvDeletableShown, QString());
     applyGate(m_actAnalyseRegion.data(), m_cubeActionsEnabled && sd.analyseRegion,
               sd.editSelectedRegion ? reasonNoSlice : QString());
     applyGate(m_actUndoRegion.data(), sd.undoRegion, QString());

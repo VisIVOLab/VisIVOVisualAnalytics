@@ -169,6 +169,7 @@ void vtkWindowImage::addMeasurementPoint(int voxelX, int voxelY)
             m_measLabelActor->VisibilityOn();
         }
     }
+    this->updateDeleteAction();
     if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
 }
 
@@ -257,6 +258,7 @@ void vtkWindowImage::clearMeasurement()
     m_measLineActor1->VisibilityOff();
     m_measLineActor2->VisibilityOff();
     if (m_measLabelActor) m_measLabelActor->VisibilityOff();
+    this->updateDeleteAction();
     if (ui->vtk->renderWindow()) ui->vtk->renderWindow()->Render();
 }
 

@@ -99,7 +99,12 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
     auto *stretch = new QComboBox(&dlg);
     stretch->addItems(QStringList{ u"linear"_s, u"log"_s, u"sqrt"_s, u"asinh"_s, u"power"_s });
     auto *cmap = new QComboBox(&dlg);
-    cmap->addItems(QStringList{ u"inferno"_s, u"viridis"_s, u"magma"_s, u"gray"_s, u"hot"_s, u"cubehelix"_s });
+    // matplotlib names, which the backend hands to matplotlib as they are; the white-to-hue
+    // maps (and their reverses) are the ones that print well on paper.
+    cmap->addItems(QStringList{ u"inferno"_s, u"viridis"_s, u"magma"_s, u"gray"_s, u"hot"_s,
+                                u"cubehelix"_s, u"Purples"_s, u"Blues"_s, u"Greens"_s, u"Reds"_s,
+                                u"Greys"_s, u"Oranges"_s, u"Purples_r"_s, u"Blues_r"_s,
+                                u"Greens_r"_s, u"Reds_r"_s, u"Greys_r"_s, u"Oranges_r"_s });
     auto *title = new QLineEdit(&dlg);
     auto *grid = new QCheckBox(u"WCS sky grid"_s, &dlg); grid->setChecked(true);
     auto *cbar = new QCheckBox(u"Colorbar (BUNIT)"_s, &dlg); cbar->setChecked(true);

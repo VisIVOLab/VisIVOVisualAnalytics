@@ -74,6 +74,12 @@ public:
     vtkLookupTable *getLookupTable(int index) const;
 
     /**
+   * @param index layer row
+   * @return the file the layer was loaded from (empty for a row out of range)
+   */
+    QString layerFilepath(int index) const;
+
+    /**
    * @param index
    * @return layer's opacity [0, 1]
    */

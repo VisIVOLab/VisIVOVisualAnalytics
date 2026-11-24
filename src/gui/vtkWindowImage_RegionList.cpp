@@ -168,7 +168,9 @@ void vtkWindowImage::setupRegionListActions()
             u"pixels or a sky frame (double-click a region does the same)."_s);
     m_actAnalyseRegion = make(u"Analyse Region"_s,
             u"Statistics of the selected region."_s);
-    m_actDeleteRegion = make(u"Delete Region"_s, u"Remove the selected region."_s);
+    m_actDeleteRegion = make(u"Delete Region"_s,
+            u"Remove the selected region, or the ruler measurement when no region is selected "
+            u"(Delete or Backspace on the image)."_s);
     m_actUndoRegion = make(u"Undo Region Edit"_s,
             u"Undo the last change to this window's regions (draw, move, reshape, delete)."_s);
     m_actRedoRegion = make(u"Redo Region Edit"_s, u"Redo the region change just undone."_s);
@@ -200,6 +202,18 @@ void vtkWindowImage::setupRegionListActions()
                      [this]() { visivo::flux::askHiDistance(this); });
 }
 
+bool vtkWindowImage::measurementDeletable() const
+{
+    return this->m_measMode != MeasurementMode::None && !this->m_measPoints.empty();
+}
+
+void vtkWindowImage::updateDeleteAction()
+{
+    if (m_actDeleteRegion)
+        m_actDeleteRegion->setEnabled(this->m_regions.selectedVisible() != nullptr
+                                      || this->measurementDeletable());
+}
+
 void vtkWindowImage::onRegionListChanged()
 {
     this->refreshRegionListOverlay();
@@ -212,7 +226,7 @@ void vtkWindowImage::onRegionListChanged()
     if (m_actRegionProperties) {
         m_actRegionProperties->setEnabled(shownSelected);
         m_actAnalyseRegion->setEnabled(haveSelected);
-        m_actDeleteRegion->setEnabled(shownSelected);
+        this->updateDeleteAction();
         m_actUndoRegion->setEnabled(this->m_regions.canUndo());
         m_actRedoRegion->setEnabled(this->m_regions.canRedo());
     }
@@ -497,8 +511,14 @@ void vtkWindowImage::deleteSelectedRegion()
     // The image side never deletes what it does not show (#388): a hidden
     // region goes from its Session Data row.
     const Region *r = this->m_regions.selectedVisible();
-    if (!r)
+    if (!r) {
+        // No region selected: the key takes the ruler or angle measurement.
+        if (this->measurementDeletable()) {
+            this->clearMeasurement();
+            this->statusBar()->showMessage(u"Measurement deleted."_s, 4000);
+        }
         return;
+    }
     const QString name = r->name;
     this->m_regions.remove(r->id);
     this->onRegionListChanged();

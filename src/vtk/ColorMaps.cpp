@@ -10,9 +10,41 @@
 #include <vtkLookupTable.h>
 #include <vtkMath.h>
 
+#include "SequentialColorTables.h"
+
 using namespace std::string_literals;
 
+namespace {
+// One of the white-to-hue maps of SequentialColorTables.h, optionally reversed
+// (dark to white, for a light-on-dark display of a map made for paper).
+std::function<void(vtkLookupTable *)> sequential(std::size_t index, bool reversed)
+{
+    return [index, reversed](vtkLookupTable *lut) {
+        const auto &table = SequentialColorTables::kTables[index];
+        lut->SetNumberOfTableValues(SequentialColorTables::kEntries);
+        for (std::size_t i = 0; i < SequentialColorTables::kEntries; ++i) {
+            float rgb[3];
+            SequentialColorTables::entry(table, reversed, i, rgb);
+            lut->SetTableValue(static_cast<vtkIdType>(i), rgb[0], rgb[1], rgb[2]);
+        }
+    };
+}
+} // namespace
+
 const std::map<std::string, std::function<void(vtkLookupTable *)>> ColorMaps::LookupTables = {
+    // Same order as SequentialColorTables::kTables.
+    { "Purples"s, sequential(0, false) },
+    { "Purples_r"s, sequential(0, true) },
+    { "Blues"s, sequential(1, false) },
+    { "Blues_r"s, sequential(1, true) },
+    { "Greens"s, sequential(2, false) },
+    { "Greens_r"s, sequential(2, true) },
+    { "Reds"s, sequential(3, false) },
+    { "Reds_r"s, sequential(3, true) },
+    { "Greys"s, sequential(4, false) },
+    { "Greys_r"s, sequential(4, true) },
+    { "Oranges"s, sequential(5, false) },
+    { "Oranges_r"s, sequential(5, true) },
     { "Inferno"s, &ColorMaps::SetInferno },
     { "Viridis"s, &ColorMaps::SetViridis },
     { "Magma"s, &ColorMaps::SetMagma },

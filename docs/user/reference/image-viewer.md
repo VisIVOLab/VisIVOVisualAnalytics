@@ -51,9 +51,11 @@ stacking order.
 
 ## Header
 
-Click the *IMAGE* tag in the toolbar to see the FITS header, then *Edit…* to
-change, add or remove keywords. The result is saved as a new file in the
-Workspace; the original is never changed. `SIMPLE`, `BITPIX`, `NAXISn`,
+Click the *IMAGE* tag in the toolbar to see the FITS header of the layer
+selected in the list (the window title and the path under *FITS Header* name its
+file), then *Edit…* to change, add or remove keywords. With layers stacked, select
+the layer first: the base image is only the first of them. The result is saved as
+a new file in the Workspace; the original is never changed. `SIMPLE`, `BITPIX`, `NAXISn`,
 `BSCALE`, `BZERO` and `BLANK` cannot be edited. On saving, the backend reports
 the WCS the edited header describes.
 
@@ -66,12 +68,19 @@ the WCS the edited header describes.
 When the header has `BMAJ` and `BMIN` (and optionally `BPA`), the beam is drawn
 as an ellipse in the bottom-left corner.
 
+The axes table of *Inspector ▸ Properties* (*INFO / STATS*) lists each axis as its `CTYPE` and
+`CUNIT`. A window shows one plane, so every axis beyond the two sky axes is
+marked *collapsed*, for example *VRAD (m s-1, collapsed)*: it is a coordinate of
+the plane, not the unit of the values (that is *Unit*, below).
+
 *Inspector ▸ Properties* shows the *Unit* and the *Beam* (the same rows exist in
 the cube viewer):
 
 - *Unit*: `BUNIT`, or, when the header has none, the unit read from `TEMPSCAL`,
   `BTYPE` or `LABEL` marked *(no BUNIT)*; the tooltip says which keyword it
-  came from. Spectrum axes say the same (*Intensity (K, no BUNIT)*).
+  came from. Spectrum axes say the same (*Intensity (K, no BUNIT)*). It follows
+  the selected layer: another layer shows its own `BUNIT`, read from its header
+  (the *(no BUNIT)* inference applies to the base image only).
 - *Beam*: the size and where it came from, *(header)* or *(set by user)*.
   When the header has no complete beam, *Set beam…* asks for the major axis,
   the minor axis (same as major if left at zero) and the position angle, in
@@ -93,6 +102,20 @@ the cube viewer):
 - *Edit*: the 2-D LUT editor. Drag the control points; the scale (Linear, Log,
   Sqrt, Square, Power γ) is set here.
 - Layer opacity: blends the selected layer over those below.
+- Dragging with the left button on the image changes the colour range of the
+  selected layer, the one the colour bar and the *Edit* editor show: the
+  horizontal motion widens or narrows the range, the vertical motion moves it up
+  or down. There is no second window/level state behind it. Pan with the middle
+  button and zoom with the wheel.
+- *View ▸ Reset Display* (or the R key while the image has the focus) brings the
+  selected layer back to a linear stretch and to the autoscaled range it opened
+  with. The colour map, the opacity and the camera are kept.
+
+The *Color map* list includes the single-hue maps *Purples*, *Blues*, *Greens*,
+*Reds*, *Greys* and *Oranges*, which run from white to the hue, and the same
+names ending in `_r`, which run from the hue to white. They are the ColorBrewer
+sequential schemes, the ones most often used for simulation output on a light
+background. The cube, point-cloud and VR pickers list them too.
 
 Blank (NaN) pixels are transparent.
 
@@ -242,7 +265,9 @@ slice here as a contour overlay.
 - *Ruler (Distance)*: click two points. The distance is shown in pixels and,
   with a WCS, in arcseconds, arcminutes or degrees (great-circle distance).
 - *Angle (3 Points)*: click A, B, C; shows the angle at B in degrees.
-- *Clear Measurement*: removes the measurement.
+- *Clear Measurement*: removes the measurement. Delete or Backspace, with the
+  image in focus and no region selected, does the same (with a region selected
+  the key deletes the region).
 
 ### Tools ▸ Statistics
 

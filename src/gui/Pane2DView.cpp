@@ -3,6 +3,7 @@
 #include "ColorMaps.h"
 #include "CubeViewportGeometry.h"
 #include "CubeWcsUtil.h"
+#include "LutWindowLevelStyle.h"
 #include "WcsAxisTicks.h"
 
 #include <QDebug>
@@ -46,71 +47,6 @@
 #include <cmath>
 
 namespace {
-
-// §5.2: window/level drag redirected to the LUT TABLE RANGE (not the vtkImageProperty).
-// vtkInteractorStyleImage's default windows the image property's ColorWindow/ColorLevel,
-// a post-scale of the already-coloured RGBA that the colorbar + mapper DON'T see — the
-// "washout". Here a LEFT-drag rewrites the pane's LUT range instead (horizontal = window
-// width, vertical = level/centre), so drag, colorbar and the dock Range fields are ONE
-// state. Pan (middle) + zoom (wheel/right) fall through to the base class.
-class PaneWindowLevelStyle : public vtkInteractorStyleImage
-{
-public:
-    static PaneWindowLevelStyle *New();
-    vtkTypeMacro(PaneWindowLevelStyle, vtkInteractorStyleImage);
-    std::function<double()> getLo, getHi;
-    std::function<void(double, double)> setRange;
-
-    // §5.2: window/level is the LEFT-drag (the natural gesture; the macOS trackpad
-    // phantom-press bug is fixed via setEnableTouchEventProcessing(false), so a deliberate
-    // drag is safe). We DON'T call the base OnLeftButtonDown, which would window the image
-    // PROPERTY (the RGBA washout) — we redirect to the LUT range instead. Wheel = zoom,
-    // middle = pan from the base class.
-    void OnLeftButtonDown() override
-    {
-        if (!setRange || !this->GetInteractor())
-            return;
-        const int *p = this->GetInteractor()->GetEventPosition();
-        m_x0 = p[0];
-        m_y0 = p[1];
-        m_lo0 = getLo ? getLo() : 0.;
-        m_hi0 = getHi ? getHi() : 1.;
-        m_dragging = true;
-    }
-    void OnLeftButtonUp() override { m_dragging = false; }
-    void OnMouseMove() override
-    {
-        if (!m_dragging) {
-            Superclass::OnMouseMove();   // pan/zoom in-progress, hover — base behaviour
-            return;
-        }
-        const int *p = this->GetInteractor()->GetEventPosition();
-        int size[2] = { 1, 1 };
-        if (auto *rw = this->GetInteractor()->GetRenderWindow())
-            if (const int *s = rw->GetSize()) {
-                size[0] = s[0];
-                size[1] = s[1];
-            }
-        const double W = std::max(1, size[0]);
-        const double H = std::max(1, size[1]);
-        double window = m_hi0 - m_lo0;
-        if (!(window > 0.))
-            window = 1.;
-        const double level = 0.5 * (m_hi0 + m_lo0);
-        const double dx = p[0] - m_x0;
-        const double dy = p[1] - m_y0;
-        const double newWindow = window * std::exp(2.0 * dx / W);   // exp → always positive
-        const double newLevel = level - (dy / H) * window;
-        setRange(newLevel - 0.5 * newWindow, newLevel + 0.5 * newWindow);
-    }
-
-private:
-    int m_x0{ 0 }, m_y0{ 0 };
-    double m_lo0{ 0. }, m_hi0{ 1. };
-    bool m_dragging{ false };
-};
-vtkStandardNewMacro(PaneWindowLevelStyle);
-
 
 // Same as vtkWindowCube's WCS overlay: five evenly-spaced tick labels per axis.
 constexpr int kOverlayTickCount = 5;
@@ -198,7 +134,9 @@ Pane2DView::Pane2DView(QObject *parent)
     // own interactor + plain vtkInteractorStyleImage, LEFT-drag windows the contrast (its
     // OWN m_lut), hover does nothing — idle panes are gated by the Qt-level swallow in
     // vtkWindowCube::eventFilter (§5.1). Do NOT Disable() it (QVTK renders through it).
-    vtkNew<PaneWindowLevelStyle> style;
+    // §5.2: the left-drag rewrites the LUT table range (LutWindowLevelStyle), so drag,
+    // colorbar and the dock Range fields are ONE state.
+    vtkNew<LutWindowLevelStyle> style;
     style->getLo = [this]() { return this->rangeMin(); };
     style->getHi = [this]() { return this->rangeMax(); };
     style->setRange = [this](double lo, double hi) { this->setRange(lo, hi); };

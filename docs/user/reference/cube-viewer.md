@@ -184,7 +184,8 @@ and validation: [Cube viewer: methods](../../technical/methods/cube-viewer.md).
 ### Colour maps
 
 - *Color map* in *DISPLAY*: Inferno, Viridis, Magma, Plasma, Cividis and
-  others.
+  others, among them the white-to-hue maps *Purples*, *Blues*, *Greens*, *Reds*,
+  *Greys* and *Oranges* (each also reversed, `_r`).
 - *Edit* (3-D view active): the 3-D LUT editor, with the cube's histogram,
   the colour range (drag the cyan Min and orange Max lines, or type them), the
   map and the scale (*Linear*, *Log*, *Sqrt*, *Square*, *Power*), which applies

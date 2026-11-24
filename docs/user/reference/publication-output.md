@@ -20,7 +20,7 @@ backend.
 | Field | Values |
 |---|---|
 | *Stretch* | `linear`, `log`, `sqrt`, `asinh`, `power` |
-| *Colormap* | `inferno`, `viridis`, `magma`, `gray`, `hot`, `cubehelix` |
+| *Colormap* | `inferno`, `viridis`, `magma`, `gray`, `hot`, `cubehelix`, and the white-to-hue maps `Purples`, `Blues`, `Greens`, `Reds`, `Greys`, `Oranges` (each also reversed with `_r`) |
 | *Title* | optional |
 | *WCS sky grid* | on by default |
 | *Colorbar (BUNIT)* | colour bar labelled with the data's `BUNIT`; on by default |
