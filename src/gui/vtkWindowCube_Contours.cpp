@@ -21,6 +21,7 @@
 #include <vtkTrivialProducer.h>
 
 #include <QGridLayout>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QStatusBar>
@@ -169,14 +170,24 @@ void vtkWindowCube::exportContours()
         return;
     }
     // The slice's world to the cube's pixels (0-based), as the regions are.
-    const auto lines = m_contourLayer->lines([placement](double x, double y) {
-        const visivo::regions::Vec2 p = placement->toCube(x, y);
-        return std::array<double, 2>{ p[0], p[1] };
-    });
+    bool tooMany = false;
+    vc::LineSource source = m_contourLayer->lineSource(
+            [placement](double x, double y) {
+                const visivo::regions::Vec2 p = placement->toCube(x, y);
+                return std::array<double, 2>{ p[0], p[1] };
+            },
+            vc::kMaxExportSegments, &tooMany);
+    if (tooMany) {
+        QMessageBox::information(this, u"Export Contours"_s,
+                                 u"These contours have more than %1 million segments, too many to "
+                                 u"write: raise the lowest level, smooth the image or draw fewer "
+                                 u"levels."_s.arg(vc::kMaxExportSegments / 1'000'000));
+        return;
+    }
     const QString frame = ui->actionGalactic->isChecked()
             ? u"galactic"_s
             : (ui->actionEcliptic->isChecked() ? u"ecliptic"_s : u"fk5"_s);
-    vc::exportContours(this, lines, m_contourLayer->settings().lineWidth,
+    vc::exportContours(this, std::move(source),
                        { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
                          this->remoteDatasetId, this->filepath },
                        frame);

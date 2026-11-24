@@ -1292,14 +1292,19 @@ QWidget *vtkWindowImage::buildContourControlsBlock()
     targetLayout->setContentsMargins(0, 0, 0, 0);
     targetLayout->setHorizontalSpacing(8);
     m_contourTarget = new QComboBox(m_contourTargetRow);
+    // A file name must not set the width of the Inspector.
+    m_contourTarget->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_contourTarget->setMinimumContentsLength(10);
+    m_contourTarget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_contourTarget->addItem(u"This image"_s);
+    targetLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     targetLayout->addRow(u"Contours of"_s, m_contourTarget.data());
     m_contourTargetRow->setVisible(false);
     cardLayout->addWidget(m_contourTargetRow);
     QObject::connect(m_contourTarget, &QComboBox::currentIndexChanged, this, [this](int) {
         if (ContourLayer *layer = editedContourLayer(); layer && m_contourPanel) {
             m_contourPanel->setSettings(layer->settings());
-            m_contourPanel->setProblem(QString());
+            m_contourPanel->setProblem(noteOfContourLayer(layer));
         }
     });
 

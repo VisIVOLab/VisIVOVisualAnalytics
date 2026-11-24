@@ -29,4 +29,18 @@ private slots:
     void closedLinesArePolygonsAndOpenOnesSegments();
     void regionsCarryColourWidthDashAndLevel();
     void verticesTableFollowsTheRegions();
+    void verticesThatAreNotNumbersCutTheLines();
+    void linesWithTooFewFinitePointsAreSkipped();
+    void sigmaIsRecordedInTheRegions();
+    void segmentsAreJoinedIntoLines();
+    void segmentsWithABadEndSplitTheLine();
+    void joinedLinesCarryLevelColourAndDash();
+    void dashesFollowTheLengthAndRoundCorners();
+    void largeImagesAreThinned();
+    void signedMultiplesGiveNegativeLevels();
+    void defaultLevelsAreThreeFiveTenTwentySigma();
+    void radioImagesAlsoGetMinusThreeSigmaDashed();
+    void aMaskedMomentMapFallsBackToLogLevels();
+    void aSimulationFieldFallsBackToLogLevels();
+    void theLevelsInUseAreDescribed();
 };

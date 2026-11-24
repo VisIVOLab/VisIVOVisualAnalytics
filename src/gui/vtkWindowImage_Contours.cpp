@@ -324,12 +324,21 @@ void vtkWindowImage::exportContours()
         return;
     }
     // The world of this window is the image's pixels (0-based), as the regions'.
-    const auto lines = layer->lines(
-            [](double x, double y) { return std::array<double, 2>{ x, y }; });
+    bool tooMany = false;
+    vc::LineSource source = layer->lineSource(
+            [](double x, double y) { return std::array<double, 2>{ x, y }; },
+            vc::kMaxExportSegments, &tooMany);
+    if (tooMany) {
+        QMessageBox::information(this, u"Export Contours"_s,
+                                 u"These contours have more than %1 million segments, too many to "
+                                 u"write: raise the lowest level, smooth the image or draw fewer "
+                                 u"levels."_s.arg(vc::kMaxExportSegments / 1'000'000));
+        return;
+    }
     const QString frame = ui->actionGalactic->isChecked()
             ? u"galactic"_s
             : (ui->actionEcliptic->isChecked() ? u"ecliptic"_s : u"fk5"_s);
-    vc::exportContours(this, lines, layer->settings().lineWidth,
+    vc::exportContours(this, std::move(source),
                        { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
                          this->remoteDatasetId, this->filepath },
                        frame);
@@ -383,8 +392,16 @@ void vtkWindowImage::refreshContourTargets()
     // The panel shows the layer that is picked.
     if (ContourLayer *layer = editedContourLayer(); layer && m_contourPanel) {
         m_contourPanel->setSettings(layer->settings());
-        m_contourPanel->setProblem(QString());
+        m_contourPanel->setProblem(noteOfContourLayer(layer));
     }
+}
+
+QString vtkWindowImage::noteOfContourLayer(const ContourLayer *layer) const
+{
+    for (const auto &ext : m_externalContourLayers)
+        if (ext.layer.get() == layer && !ext.note.isEmpty())
+            return ext.note.left(1).toUpper() + ext.note.mid(1);
+    return QString();
 }
 
 void vtkWindowImage::addExternalContours()
@@ -450,21 +467,20 @@ void vtkWindowImage::applyExternalContours(const QString &label,
     layer->setPixelScale(1.0, contourArcsecPerPixel());
 
     // Radio contours are multiples of the noise: start from 3, 5, 10 and 20
-    // sigma of this file's pixels, in one colour; the panel changes all of it.
-    vc::Settings s;
-    s.levelMode = vc::LevelMode::Sigma;
-    s.sigma = ContourLayer::noiseOf(data);
-    s.colourMode = vc::ColourMode::Single;
-    double range[2];
-    data->GetScalarRange(range);
-    if (std::isfinite(range[0]) && std::isfinite(range[1]) && range[0] < range[1]) {
-        s.lower = range[0];
-        s.upper = range[1];
-    }
-    const QString problem = layer->setSettings(s);
+    // sigma of this file's pixels (and -3 sigma, dashed, for a radio image), in
+    // one colour; the panel changes all of it. Where sigma says nothing about the
+    // file (a map that is zero outside its mask, a simulated field) the levels
+    // are logarithmic between percentiles of the positive values instead.
+    const bool radio = vc::isRadioUnit(this->remoteDatasetBunit)
+            || std::isfinite(m_beamMajorDeg);
+    QString note;
+    vc::Settings s = vc::defaultSettings(ContourLayer::statsOf(data), radio, &note);
+    QString problem = layer->setSettings(s);
+    if (!note.isEmpty())
+        problem = note.left(1).toUpper() + note.mid(1) + (problem.isEmpty() ? QString() : u"\n"_s + problem);
     layer->setVisible(true);
 
-    m_externalContourLayers.append({ label, layer, data });
+    m_externalContourLayers.append({ label, layer, data, note });
     if (m_contourTarget) {
         // Show the new layer's settings, and the panel itself: the file was
         // loaded to be styled.
@@ -509,7 +525,7 @@ void vtkWindowImage::overlayExternalContourData(const QString &label, vtkImageDa
     layer->setSettings(s);
     layer->setVisible(true);
 
-    m_externalContourLayers.append({ label, layer, data });
+    m_externalContourLayers.append({ label, layer, data, QString() });
     refreshContourTargets();
     statusBar()->showMessage(
             QStringLiteral("Contour overlay from cube: %1").arg(label), 3000);

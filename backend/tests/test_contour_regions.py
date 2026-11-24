@@ -71,5 +71,67 @@ class TestContourRegions(unittest.TestCase):
                 self.assertAlmostEqual(want[1], got[1], places=5)
 
 
+class TestNanBorderedImage(unittest.TestCase):
+    """A contour that runs along the blanked (NaN) edge of an image has vertices
+    that are not numbers; the client writes them as JSON null. The export used to
+    fail on them as "Unprocessable Entity" (sky frames) or "Internal Server Error"
+    (pixels), with no reason. Now it says which vertex, and the lines the client
+    cuts at those vertices go through, in both."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        import tempfile
+        import numpy as np
+        from astropy.io import fits
+        from fastapi.testclient import TestClient
+        from app.main import app
+        from tests.test_regions import _TEST_TOKEN, _wcs_header
+        os.environ.setdefault("VISIVO_TOKEN", _TEST_TOKEN)
+        data = np.random.default_rng(1).normal(size=(64, 64)).astype(np.float32)
+        data[:6, :] = np.nan
+        data[:, -6:] = np.nan
+        cls.fits = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+        cls.fits.close()
+        fits.PrimaryHDU(data, _wcs_header(crval=(202.47, 47.195), crpix=(32, 32),
+                                          scale_arcsec=2.0)).writeto(cls.fits.name, overwrite=True)
+        cls.client = TestClient(app, raise_server_exceptions=True)
+        cls.h = {"X-Visivo-Token": _TEST_TOKEN}
+        opened = cls.client.post("/v1/datasets/open", json={"path": cls.fits.name}, headers=cls.h).json()
+        cls.dataset = opened["dataset_id"]
+        if opened.get("session_id"):
+            cls.h["X-Visivo-Session"] = opened["session_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        import os
+        os.unlink(cls.fits.name)
+
+    def _post(self, regions, to_frame=""):
+        return self.client.post("/v1/regions/export", headers=self.h, json={
+            "format": "ds9", "regions": regions, "dataset_id": self.dataset, "to_frame": to_frame})
+
+    def _with_null(self):
+        line = _polyline()
+        line["points"] = [[1.0, 1.0], None, [4.0, 3.5]]   # what Qt makes of a NaN
+        return line
+
+    def test_a_vertex_that_is_not_a_number_is_named(self):
+        for frame in ("", "fk5", "galactic"):
+            r = self._post([_polygon(), self._with_null()], frame)
+            self.assertEqual(r.status_code, 422, (frame, r.text))
+            self.assertIn("Region 2, vertex 2", r.json()["detail"])
+
+    def test_the_cut_lines_are_written_in_pixels_and_on_the_sky(self):
+        # What the client sends once it has dropped the vertex: the polygon
+        # that was cut is an open line, and a piece of one vertex is gone.
+        cut = _polyline()
+        cut["points"] = [[1.0, 1.0], [4.0, 3.5]]
+        for frame in ("", "fk5", "galactic"):
+            r = self._post([_polygon(), cut], frame)
+            self.assertEqual(r.status_code, 200, (frame, r.text))
+            self.assertIn("line(", r.json()["text"])
+
+
 if __name__ == "__main__":
     unittest.main()

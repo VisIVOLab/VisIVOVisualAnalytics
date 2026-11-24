@@ -252,7 +252,12 @@ fitting in [SED fitting](sed-fitting.md).
   *Inspector ▸ Parameters* while the tool is on (see below).
 - *Load Contour from FITS…*: contours from another FITS file (for example a
   radio moment 0 over an optical image), drawn where its WCS puts it on this
-  image. They start at 3, 5, 10 and 20 σ of that file, in one colour. Several
+  image. They start at 3, 5, 10 and 20 σ of that file, in one colour, and at
+  -3 σ, dashed, for a radio image (Jy/beam, or a beam in the header). Where σ
+  says nothing about the file (it is zero outside a mask, or the values are all
+  positive, as in a density from a simulation) they start at eight logarithmic
+  levels between the 5th and the 99.5th percentile of its positive values, and
+  the panel says so. Several
   can be stacked; the *Contours of* box at the top of the Parameters tab
   chooses which set the settings below are for, so another file's contours take
   the same controls as the image's own.
@@ -267,25 +272,38 @@ another file, and in the cube viewer's slice (*Show Contours* there):
 
 | Setting | What it does |
 | --- | --- |
-| *Levels* | How the levels are chosen. *Count, Lower to Upper*: *Count* levels from *Lower* to *Upper*, both included. *n × σ of the noise*: multiples of the noise *σ* (default 3, 5, 10, 20), with *Also -n σ* for the negative levels. *Logarithmic*: *Count* levels spaced geometrically from *Lower* to *Upper* (both above 0). *List*: the levels you type, separated by commas. |
+| *Levels* | How the levels are chosen. *Count, Lower to Upper*: *Count* levels from *Lower* to *Upper*, both included. *n × σ of the noise*: multiples of the noise *σ* (default 3, 5, 10, 20; a negative multiple such as -3 is a level below zero), with *Also -n σ* for the negative levels. *Logarithmic*: *Count* levels spaced geometrically from *Lower* to *Upper* (both above 0). *List*: the levels you type, separated by commas. |
 | *Noise σ* | The noise for the σ levels, in the unit of the data. *Estimate* fills it. For the image's own contours it is the sigma-clipped RMS of the whole image, the number *Tools ▸ Estimate Noise* reports; for another file, or when the image is not open on the backend, it is 1.4826 × the median absolute deviation of the pixels, which bright sources hardly move. In the cube viewer it is the noise of the channel on screen. |
 | *Smooth* | A Gaussian smoothing of the pixels before they are contoured, with its σ in pixels or in arcsec. The image itself is not changed, and blanked pixels stay blank. *Off* leaves the pixels as they are. |
 | *Colour* | *One colour* (a picker), *Colour map over the levels* (a map spread over the levels, lowest to highest), or *Colour per level* (colours typed lowest first, repeated when there are more levels than colours). |
 | *Line width* | In pixels. |
 | *Dash negative levels* | Draws the levels below zero as dashed lines. |
 
-If the settings give no levels (an unknown noise, a list that is empty, a
+Under the settings the panel lists the noise and the levels in use. If the
+settings give no levels (an unknown noise, a list that is empty, a
 logarithmic range that reaches 0) the reason is shown under the settings and
 nothing is drawn.
 
+An image of more than four megapixels (a 10 000 × 10 000 continuum image, for
+example) is contoured on one pixel in every n along each axis, so that the
+contours appear at once; the panel says so ("Large image: ..."). The contours
+are built in the background and the previous ones stay on screen until the new
+ones are ready. The dashes of the negative levels are a length on the screen,
+and follow the zoom.
+
 *Export Contours…* writes the lines as a DS9 region file, a polygon for each
 closed contour and a segment for one that leaves the image, each with its
-colour, width, dash and its level as a tag; or as a table of vertices (CSV: level,
+colour, width, dash and its level as a tag (for levels in σ also the noise,
+`sigma=`, and the multiple, `n_sigma=`); or as a table of vertices (CSV: level,
 line number, whether it closes, vertex, and the two coordinates). The
 coordinates are in the sky frame you pick (the frame of the window comes first)
 or in image pixels (1-based); sky positions use the dataset's WCS on the
 backend, so they need the image to be open there. The file loads in DS9 on top
-of the same image.
+of the same image. The lines are joined and sent in the background, with a
+progress box that can cancel; the export is of the contours as drawn (on a
+thinned image, the thinned ones), and refuses contours of more than two million
+segments, which are mostly noise. A line that crosses a blanked (NaN) pixel is
+cut there.
 
 ### Tools ▸ Measure
 

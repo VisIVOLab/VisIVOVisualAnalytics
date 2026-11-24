@@ -15,16 +15,22 @@
 
 #include <QString>
 
+#include <cstddef>
 #include <vector>
 
 class QMainWindow;
 
 namespace visivo::contours {
 
-/// Ask for the file kind, the frame and the path, then write the file. Messages
-/// go to @p window's status bar. @p defaultFrame is "galactic", "fk5" or
+/// More segments than this are not written: the file would be of no use to ds9
+/// (a contour of noise, mostly) and the request too big for the backend.
+constexpr std::size_t kMaxExportSegments = 2'000'000;
+
+/// Ask for the file kind, the frame and the path, then write the file: the
+/// segments of @p source are joined into lines and sent off the GUI thread, with
+/// a progress dialog that can stop it. Messages go to @p window's status bar. @p defaultFrame is "galactic", "fk5" or
 /// "ecliptic". With no dataset on the backend only image pixels are offered.
-void exportContours(QMainWindow *window, const std::vector<Line> &lines, double lineWidth,
+void exportContours(QMainWindow *window, LineSource source,
                     const visivo::regions::ExportContext &ctx, const QString &defaultFrame);
 
 }   // namespace visivo::contours

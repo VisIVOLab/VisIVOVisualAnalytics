@@ -17,8 +17,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -35,7 +37,8 @@ struct Settings
     double lower{ 0.0 };
     double upper{ 1.0 };
     /// Sigma: the noise, in the data's unit (0 = not measured yet), the
-    /// multiples of it that are drawn, and whether -n x sigma is drawn as well.
+    /// multiples of it that are drawn (a negative one, "-3", is below zero), and
+    /// whether -n x sigma is drawn as well for each positive one.
     double sigma{ 0.0 };
     QString multiples{ QStringLiteral("3, 5, 10, 20") };
     bool negative{ false };
@@ -126,10 +129,12 @@ inline std::vector<double> levels(const Settings &s, QString *problem = nullptr)
         bool ok = true;
         const QVector<double> multiples = parseNumberList(s.multiples, &ok);
         for (double m : multiples) {
-            if (!(m > 0.0))
+            // A negative multiple is a level below zero (-3 draws -3 sigma);
+            // "negative" adds the mirror of the positive ones.
+            if (m == 0.0)
                 continue;
             out.push_back(m * s.sigma);
-            if (s.negative)
+            if (s.negative && m > 0.0)
                 out.push_back(-m * s.sigma);
         }
         if (out.empty())
@@ -189,6 +194,123 @@ double robustSigma(const T *data, std::size_t n)
     for (std::size_t i = 0; i < n; i += stride)
         sample.push_back(double(data[i]));
     return robustSigma(std::move(sample));
+}
+
+/// What decides the levels an image gets at first.
+struct DataStats
+{
+    double sigma{ 0.0 };           ///< 1.4826 x MAD; 0 when it cannot be told
+    double min{ 0.0 }, max{ 0.0 };   ///< of the finite values
+    double lowPositive{ 0.0 };     ///< 5th percentile of the positive finite values
+    double highPositive{ 0.0 };    ///< 99.5th percentile of the same
+    bool valid{ false };           ///< at least two finite values
+};
+
+/// The statistics of the finite values of @p sample.
+inline DataStats dataStats(std::vector<double> sample)
+{
+    DataStats st;
+    sample.erase(std::remove_if(sample.begin(), sample.end(),
+                                [](double v) { return !std::isfinite(v); }),
+                 sample.end());
+    if (sample.size() < 2)
+        return st;
+    st.valid = true;
+    const auto [lo, hi] = std::minmax_element(sample.begin(), sample.end());
+    st.min = *lo;
+    st.max = *hi;
+    std::vector<double> positive;
+    for (double v : sample)
+        if (v > 0.0)
+            positive.push_back(v);
+    if (!positive.empty()) {
+        const auto percentile = [&positive](double q) {
+            const std::size_t at = std::min(positive.size() - 1,
+                                            std::size_t(q * double(positive.size() - 1) + 0.5));
+            std::nth_element(positive.begin(), positive.begin() + std::ptrdiff_t(at),
+                             positive.end());
+            return positive[at];
+        };
+        st.lowPositive = percentile(0.05);
+        st.highPositive = percentile(0.995);
+    }
+    st.sigma = robustSigma(std::move(sample));
+    return st;
+}
+
+/// Whether @p bunit is a radio brightness: Jy/beam and its kin.
+inline bool isRadioUnit(const QString &bunit)
+{
+    const QString u = bunit.toLower();
+    return u.contains(QLatin1String("jy")) || u.contains(QLatin1String("beam"));
+}
+
+/// The levels a file's contours start with (Load Contour from FITS): 3, 5, 10
+/// and 20 sigma of its noise, and -3 sigma, dashed, when @p radio (a radio
+/// image has a negative side that is noise or a sidelobe worth seeing). When
+/// sigma says nothing about the image (the MAD is zero, as in a map that is
+/// zero outside its mask; the data do not reach 3 sigma or go below -2 sigma, as
+/// in a simulated field or an image on a sky level, which are not noise around
+/// zero) the levels are logarithmic
+/// between the 5th and 99.5th percentile of the positive values, and @p note
+/// says so; with no positive values they are linear over the range.
+inline Settings defaultSettings(const DataStats &st, bool radio, QString *note = nullptr)
+{
+    Settings s;
+    s.colourMode = ColourMode::Single;
+    if (note)
+        note->clear();
+    if (!st.valid)
+        return s;
+    s.lower = st.min;
+    s.upper = st.max;
+    // Noise is centred on zero and reaches below it, and the data reach its
+    // 3-sigma level: an all-positive field (a density, an optical image on a sky
+    // level) has a MAD that is not a noise, and 3 x it is just a small number.
+    const bool reaches = st.sigma > 0.0 && std::isfinite(st.sigma) && 3.0 * st.sigma <= st.max
+            && st.min <= -2.0 * st.sigma;
+    if (reaches) {
+        s.levelMode = LevelMode::Sigma;
+        s.sigma = st.sigma;
+        s.multiples = radio ? QStringLiteral("-3, 3, 5, 10, 20") : QStringLiteral("3, 5, 10, 20");
+        return s;
+    }
+    s.count = 8;
+    if (st.highPositive > st.lowPositive && st.lowPositive > 0.0) {
+        s.levelMode = LevelMode::Log;
+        s.lower = st.lowPositive;
+        s.upper = st.highPositive;
+        if (note)
+            *note = QStringLiteral("sigma is not meaningful for this image: logarithmic levels "
+                                   "between %1 and %2.")
+                            .arg(s.lower, 0, 'g', 4).arg(s.upper, 0, 'g', 4);
+    } else {
+        s.levelMode = LevelMode::Count;
+        if (note)
+            *note = QStringLiteral("sigma is not meaningful for this image: levels spread evenly "
+                                   "between %1 and %2.")
+                            .arg(s.lower, 0, 'g', 4).arg(s.upper, 0, 'g', 4);
+    }
+    s.sigma = st.sigma;
+    return s;
+}
+
+/// A line for the panel: the noise and the levels the contours are drawn at.
+inline QString describeLevels(const Settings &s, const std::vector<double> &lv)
+{
+    if (lv.empty())
+        return QString();
+    QString out;
+    if (s.levelMode == LevelMode::Sigma && s.sigma > 0.0)
+        out = QStringLiteral("σ = %1. ").arg(s.sigma, 0, 'g', 4);
+    constexpr std::size_t kShown = 8;
+    QStringList shown;
+    for (std::size_t i = 0; i < std::min(lv.size(), kShown); ++i)
+        shown << QString::number(lv[i], 'g', 4);
+    out += QStringLiteral("%1 level(s): %2").arg(lv.size()).arg(shown.join(QStringLiteral(", ")));
+    if (lv.size() > kShown)
+        out += QStringLiteral(", … %1").arg(lv.back(), 0, 'g', 4);
+    return out;
 }
 
 /// Index of the level nearest to @p value in the ascending @p lv; -1 if empty.
@@ -293,33 +415,272 @@ struct Line
 /// count them) for `POST /v1/regions/export`: a closed line is a polygon, an
 /// open one (it leaves the image) a polyline, which ds9 reads as a segment. Each
 /// carries its colour, width and dash, and its level as a tag.
-inline QJsonArray canonicalRegions(const std::vector<Line> &lines, double lineWidth)
+///
+/// A vertex that is not a number is dropped and the line split there: a contour
+/// that runs along a blanked (NaN) edge of the image has such vertices, and
+/// Qt writes them as JSON null, which the backend cannot read. A piece of a
+/// polygon that was cut is a polyline; pieces with too few vertices are skipped.
+inline QJsonArray canonicalRegions(const std::vector<Line> &lines, double lineWidth,
+                                   double sigma = 0.0)
 {
     QJsonArray out;
+    const auto append = [&](const Line &l, const std::vector<std::array<double, 2>> &pts,
+                            bool closed) {
+        QJsonArray points;
+        for (const auto &p : pts)
+            points.append(QJsonArray{ p[0] + 1.0, p[1] + 1.0 });
+        QJsonArray tags{ QStringLiteral("level=%1").arg(l.level, 0, 'g', 8) };
+        // Levels in sigma: the file says which noise they are multiples of.
+        if (sigma > 0.0) {
+            tags.append(QStringLiteral("sigma=%1").arg(sigma, 0, 'g', 8));
+            tags.append(QStringLiteral("n_sigma=%1").arg(l.level / sigma, 0, 'g', 4));
+        }
+        QJsonObject props{ { QStringLiteral("color"), l.colour },
+                           { QStringLiteral("width"), lineWidth },
+                           { QStringLiteral("tag"), tags } };
+        if (l.dashed)
+            props[QStringLiteral("dash")] = true;
+        out.append(QJsonObject{ { QStringLiteral("shape"),
+                                  closed ? QStringLiteral("polygon") : QStringLiteral("line") },
+                                { QStringLiteral("frame"), QStringLiteral("image") },
+                                { QStringLiteral("unit"), QStringLiteral("pix") },
+                                { QStringLiteral("points"), points },
+                                { QStringLiteral("props"), props } });
+    };
     for (const Line &l : lines) {
         std::vector<std::array<double, 2>> pts = l.pixels;
         // A closed line repeats its first vertex at the end; a polygon does not.
         if (l.closed && pts.size() > 1 && pts.front() == pts.back())
             pts.pop_back();
-        if (pts.size() < (l.closed ? 3u : 2u))
+        const bool whole = std::all_of(pts.begin(), pts.end(), [](const std::array<double, 2> &p) {
+            return std::isfinite(p[0]) && std::isfinite(p[1]);
+        });
+        if (whole) {
+            if (pts.size() >= (l.closed ? 3u : 2u))
+                append(l, pts, l.closed);
             continue;
-        QJsonArray points;
-        for (const auto &p : pts)
-            points.append(QJsonArray{ p[0] + 1.0, p[1] + 1.0 });
-        QJsonObject props{ { QStringLiteral("color"), l.colour },
-                           { QStringLiteral("width"), lineWidth },
-                           { QStringLiteral("tag"),
-                             QJsonArray{ QStringLiteral("level=%1").arg(l.level, 0, 'g', 8) } } };
-        if (l.dashed)
-            props[QStringLiteral("dash")] = true;
-        out.append(QJsonObject{ { QStringLiteral("shape"),
-                                  l.closed ? QStringLiteral("polygon") : QStringLiteral("line") },
-                                { QStringLiteral("frame"), QStringLiteral("image") },
-                                { QStringLiteral("unit"), QStringLiteral("pix") },
-                                { QStringLiteral("points"), points },
-                                { QStringLiteral("props"), props } });
+        }
+        std::vector<std::array<double, 2>> run;
+        const auto flush = [&]() {
+            if (run.size() >= 2)
+                append(l, run, false);
+            run.clear();
+        };
+        for (const auto &p : pts) {
+            if (std::isfinite(p[0]) && std::isfinite(p[1]))
+                run.push_back(p);
+            else
+                flush();
+        }
+        flush();
     }
     return out;
+}
+
+/// The step, in pixels along each axis, at which a @p width x @p height image is
+/// sampled so that no more than @p maxPixels of it are contoured (1 = all of
+/// it). A large image is thinned, as its preview is, because the cost of the
+/// first contours grows with it.
+inline int thinStride(long long width, long long height, long long maxPixels)
+{
+    if (width <= 0 || height <= 0 || maxPixels <= 0 || width * height <= maxPixels)
+        return 1;
+    int stride = int(std::ceil(std::sqrt(double(width) * double(height) / double(maxPixels))));
+    while (((width + stride - 1) / stride) * ((height + stride - 1) / stride) > maxPixels)
+        ++stride;
+    return std::max(stride, 1);
+}
+
+// ── Joining segments into lines ──
+// The contour filter gives one segment per grid cell it crosses; a dash pattern
+// and a region file need the lines those segments make. VTK's own joiner is far
+// too slow on a contour of a large image (minutes for a few million segments),
+// and here every point is shared by at most two segments, so a walk from one
+// segment to the next is all it takes: linear in the number of segments.
+
+/// Lines as runs of point ids, one after another.
+struct Chains
+{
+    std::vector<std::int64_t> ids;          ///< the ids of every line, end to end
+    std::vector<std::size_t> start{ 0 };    ///< line i is ids[start[i], start[i + 1])
+    std::vector<unsigned char> closed;      ///< 1 when line i ends where it starts
+    bool cancelled{ false };                ///< stopped early: what is here is partial
+    std::size_t count() const { return closed.size(); }
+};
+
+/// Join the segments @p segs (pairs of point ids, @p nSegments of them, over
+/// @p nPoints points) into lines. A segment with an end that is not usable
+/// (@p pointOk, when given, is 0 there) is left out, which splits the line it
+/// was in. @p cancel, when it turns true, stops the walk.
+template <typename Id>
+Chains chainSegments(const Id *segs, std::size_t nSegments, std::size_t nPoints,
+                     const unsigned char *pointOk = nullptr,
+                     const std::atomic<bool> *cancel = nullptr)
+{
+    Chains out;
+    constexpr std::int64_t none = -1;
+    // The (at most two) segments of each point; a third one cannot happen on a
+    // contour and would only be left as a line of its own.
+    std::vector<std::int64_t> slot(2 * nPoints, none);
+    std::vector<unsigned char> done(nSegments, 0);
+    for (std::size_t s = 0; s < nSegments; ++s) {
+        const std::int64_t a = std::int64_t(segs[2 * s]), b = std::int64_t(segs[2 * s + 1]);
+        if (a == b || a < 0 || b < 0 || std::size_t(a) >= nPoints || std::size_t(b) >= nPoints
+            || (pointOk && (!pointOk[a] || !pointOk[b]))) {
+            done[s] = 1;
+            continue;
+        }
+        for (const std::int64_t p : { a, b }) {
+            std::int64_t &first = slot[std::size_t(2 * p)];
+            (first == none ? first : slot[std::size_t(2 * p + 1)]) = std::int64_t(s);
+        }
+    }
+    const auto next = [&](std::int64_t p) {
+        for (std::size_t k = 0; k < 2; ++k) {
+            const std::int64_t s = slot[std::size_t(2 * p) + k];
+            if (s != none && !done[std::size_t(s)])
+                return s;
+        }
+        return none;
+    };
+    const auto other = [&](std::int64_t s, std::int64_t p) {
+        const std::int64_t a = std::int64_t(segs[2 * std::size_t(s)]);
+        return a == p ? std::int64_t(segs[2 * std::size_t(s) + 1]) : a;
+    };
+    std::vector<std::int64_t> ahead, behind;
+    for (std::size_t s0 = 0; s0 < nSegments; ++s0) {
+        if (done[s0])
+            continue;
+        if (cancel && (s0 & 0xFFF) == 0 && cancel->load(std::memory_order_relaxed)) {
+            out.cancelled = true;
+            break;
+        }
+        done[s0] = 1;
+        const std::int64_t a = std::int64_t(segs[2 * s0]), b = std::int64_t(segs[2 * s0 + 1]);
+        ahead.clear();
+        behind.clear();
+        for (std::int64_t cur = b, s; (s = next(cur)) != none;) {
+            done[std::size_t(s)] = 1;
+            cur = other(s, cur);
+            ahead.push_back(cur);
+        }
+        const bool closed = !ahead.empty() && ahead.back() == a;
+        if (!closed) {
+            for (std::int64_t cur = a, s; (s = next(cur)) != none;) {
+                done[std::size_t(s)] = 1;
+                cur = other(s, cur);
+                behind.push_back(cur);
+            }
+        }
+        out.ids.insert(out.ids.end(), behind.rbegin(), behind.rend());
+        out.ids.push_back(a);
+        out.ids.push_back(b);
+        out.ids.insert(out.ids.end(), ahead.begin(), ahead.end());
+        out.start.push_back(out.ids.size());
+        out.closed.push_back(closed ? 1 : 0);
+    }
+    return out;
+}
+
+/// The contour segments of an image, with their vertices where they are to be
+/// written (source pixels, 0-based), and how the lines they make are drawn: a
+/// snapshot the export joins into lines off the GUI thread, so that nothing of
+/// the live pipeline is shared with it.
+struct LineSource
+{
+    std::vector<std::array<double, 2>> points;   ///< NaN where a vertex is not a number
+    std::vector<double> level;                   ///< the contour value at each point
+    std::vector<std::int64_t> segments;          ///< pairs of point ids
+    std::vector<double> levels;                  ///< the levels drawn, ascending
+    std::vector<QString> colours;                ///< "#rrggbb", one per level
+    bool dashNegative{ true };
+    double lineWidth{ 1.0 };
+    /// The noise the levels are multiples of (0 when they are not).
+    double sigma{ 0.0 };
+    /// How it was made, when that is worth telling (the image was thinned).
+    QString note;
+};
+
+/// The lines of @p src, each with the colour of its level and dashed when it is
+/// below zero and the source says so. Vertices that are not numbers cut the
+/// lines. @p cancel, when it turns true, returns what is joined so far.
+inline std::vector<Line> joinLines(const LineSource &src, const std::atomic<bool> *cancel = nullptr)
+{
+    std::vector<Line> out;
+    if (src.levels.empty() || src.colours.empty())
+        return out;
+    std::vector<unsigned char> ok(src.points.size());
+    for (std::size_t i = 0; i < ok.size(); ++i)
+        ok[i] = std::isfinite(src.points[i][0]) && std::isfinite(src.points[i][1]);
+    const Chains chains = chainSegments(src.segments.data(), src.segments.size() / 2,
+                                        src.points.size(), ok.data(), cancel);
+    out.reserve(chains.count());
+    for (std::size_t c = 0; c < chains.count(); ++c) {
+        const std::size_t from = chains.start[c], to = chains.start[c + 1];
+        if (to - from < 2)
+            continue;
+        Line line;
+        const int idx = nearestLevel(src.levels, src.level[std::size_t(chains.ids[from])]);
+        line.level = src.levels[std::size_t(idx)];
+        line.dashed = src.dashNegative && line.level < 0.0;
+        line.colour = src.colours[std::min<std::size_t>(std::size_t(idx), src.colours.size() - 1)];
+        line.closed = chains.closed[c] != 0;
+        line.pixels.reserve(to - from);
+        for (std::size_t i = from; i < to; ++i)
+            line.pixels.push_back(src.points[std::size_t(chains.ids[i])]);
+        out.push_back(std::move(line));
+    }
+    return out;
+}
+
+// ── Dashes ──
+
+/// The pieces of the polyline @p pts that a dash pattern leaves: @p on long,
+/// then @p off of gap, from the first vertex, measured along the line (a
+/// vertex at a turn does not restart it). Each piece goes to @p put as a
+/// vector of points. A line shorter than a dash comes out whole.
+template <typename Sink>
+void dashPolyline(const std::vector<std::array<double, 2>> &pts, double on, double off, Sink &&put)
+{
+    if (pts.size() < 2)
+        return;
+    const double period = on + off;
+    if (!(on > 0.0) || !(period > on)) {
+        put(pts);
+        return;
+    }
+    std::vector<std::array<double, 2>> piece;
+    double phase = 0.0;   // position inside the pattern, 0..period
+    for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
+        const auto &p = pts[i], &q = pts[i + 1];
+        const double length = std::hypot(q[0] - p[0], q[1] - p[1]);
+        double at = 0.0;   // along this segment
+        while (at < length) {
+            const bool drawing = phase < on;
+            const double boundary = drawing ? on : period;
+            const double step = std::min(length - at, boundary - phase);
+            if (drawing) {
+                if (piece.empty())
+                    piece.push_back({ p[0] + (q[0] - p[0]) * at / length,
+                                      p[1] + (q[1] - p[1]) * at / length });
+                const double t = (at + step) / length;
+                piece.push_back({ p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t });
+            }
+            const bool reached = step >= boundary - phase;
+            at = step >= length - at ? length : at + step;
+            phase = reached ? boundary : phase + step;
+            if (reached) {
+                if (drawing) {
+                    put(piece);
+                    piece.clear();
+                }
+                if (boundary == period)
+                    phase = 0.0;
+            }
+        }
+    }
+    if (piece.size() >= 2)
+        put(piece);
 }
 
 /// A table of the vertices of canonical contour regions (the output of

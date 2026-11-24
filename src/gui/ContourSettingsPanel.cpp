@@ -139,6 +139,21 @@ ContourSettingsPanel::ContourSettingsPanel(QWidget *parent) : QWidget(parent)
     m_problem->setStyleSheet(u"QLabel { color: #d9534f; }"_s);
     m_problem->hide();
     outer->addWidget(m_problem.data());
+    // What is drawn: the noise and the levels in use, for whoever reads the
+    // figure (the typed numbers may be rounded, or come from the image).
+    m_levelsInfo = new QLabel(this);
+    m_levelsInfo->setWordWrap(true);
+    m_levelsInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_levelsInfo->setStyleSheet(u"QLabel { color: palette(placeholder-text); }"_s);
+    m_levelsInfo->hide();
+    outer->addWidget(m_levelsInfo.data());
+
+    // The panel lives in the Inspector: a combo box as wide as its longest
+    // entry (a file name) would push it past the edge.
+    for (QComboBox *combo : findChildren<QComboBox *>()) {
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(8);
+    }
 
     // Edits commit when finished (text) or at once (the rest).
     connect(m_levelMode, &QComboBox::currentIndexChanged, this, [this] {
@@ -196,6 +211,17 @@ void ContourSettingsPanel::setSettings(const vc::Settings &s)
                                   .arg(c.name(), c.lightness() > 128 ? u"#000"_s : u"#fff"_s)
                         : QString());
     syncRows();
+    updateLevelsInfo();
+}
+
+void ContourSettingsPanel::updateLevelsInfo()
+{
+    if (!m_levelsInfo)
+        return;
+    const vc::Settings s = settings();
+    const QString text = vc::describeLevels(s, vc::levels(s));
+    m_levelsInfo->setText(text);
+    m_levelsInfo->setVisible(!text.isEmpty());
 }
 
 vc::Settings ContourSettingsPanel::settings() const
@@ -259,5 +285,6 @@ void ContourSettingsPanel::pickColour()
 
 void ContourSettingsPanel::emitChanged()
 {
+    updateLevelsInfo();
     emit changed();
 }

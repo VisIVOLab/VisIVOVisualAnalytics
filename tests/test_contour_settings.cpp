@@ -6,10 +6,13 @@
 #include "ContourSettings.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QTest>
 
+#include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -305,4 +308,313 @@ void TestContourSettings::verticesTableFollowsTheRegions()
     QCOMPARE(rows.at(0), QStringLiteral("level,line,closed,vertex,x,y"));
     QCOMPARE(rows.at(1), QStringLiteral("0.5,1,1,1,1.00000000,1.00000000"));
     QCOMPARE(rows.at(4), QStringLiteral("1.5,2,0,1,6.00000000,6.00000000"));
+}
+
+namespace {
+
+const double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+/// Every number in the regions' points, to see that none is null.
+bool allPointsAreNumbers(const QJsonArray &regions)
+{
+    for (const QJsonValue &r : regions)
+        for (const QJsonValue &p : r.toObject().value(QStringLiteral("points")).toArray()) {
+            const QJsonArray xy = p.toArray();
+            if (xy.size() != 2 || !xy.at(0).isDouble() || !xy.at(1).isDouble())
+                return false;
+        }
+    return true;
+}
+
+}   // namespace
+
+void TestContourSettings::verticesThatAreNotNumbersCutTheLines()
+{
+    // A contour along a blanked edge: Qt writes the NaN as JSON null, which the
+    // backend refuses ("Unprocessable Entity" / "Internal Server Error").
+    vc::Line polygon;
+    polygon.closed = true;
+    polygon.colour = QStringLiteral("#ff0000");
+    polygon.pixels = { { 0, 0 }, { 4, 0 }, { kNaN, 4 }, { 0, 4 }, { 0, 1 } };
+    vc::Line open;
+    open.colour = QStringLiteral("#00ff00");
+    open.pixels = { { 0, 0 }, { 1, 1 }, { 2, kNaN }, { 3, 3 }, { 4, 4 }, { 5, 5 } };
+    const QJsonArray regions = vc::canonicalRegions({ polygon, open }, 1.0);
+    QVERIFY(allPointsAreNumbers(regions));
+    // The polygon is cut at the bad vertex into (0,0)(4,0) and (0,4)(0,1), the
+    // open line into (0,0)(1,1) and (3,3)(4,4)(5,5): four open lines. A line that
+    // was cut is not joined again.
+    QCOMPARE(regions.size(), 4);
+    for (const QJsonValue &r : regions)
+        QCOMPARE(r.toObject().value(QStringLiteral("shape")).toString(), QStringLiteral("line"));
+    // The same through the JSON text the request is made of: no null.
+    QVERIFY(!QJsonDocument(regions).toJson().contains("null"));
+}
+
+void TestContourSettings::linesWithTooFewFinitePointsAreSkipped()
+{
+    vc::Line polyline;
+    polyline.pixels = { { 0, 0 }, { kNaN, 1 }, { 2, 2 }, { kNaN, kNaN }, { 4, 4 } };
+    vc::Line polygon;
+    polygon.closed = true;
+    polygon.pixels = { { 0, 0 }, { 1, 1 }, { kNaN, 3 } };
+    vc::Line allBad;
+    allBad.pixels = { { kNaN, kNaN }, { kNaN, 1 } };
+    const QJsonArray regions = vc::canonicalRegions({ polyline, polygon, allBad }, 1.0);
+    // Only the polygon's two finite vertices make a line; nothing else has two in a row.
+    QCOMPARE(regions.size(), 1);
+    QVERIFY(allPointsAreNumbers(regions));
+}
+
+void TestContourSettings::sigmaIsRecordedInTheRegions()
+{
+    vc::Line line;
+    line.level = -0.0003;
+    line.pixels = { { 0, 0 }, { 1, 1 } };
+    const QJsonArray regions = vc::canonicalRegions({ line }, 1.0, 0.0001);
+    const QJsonArray tags = regions.at(0).toObject().value(QStringLiteral("props")).toObject()
+                                    .value(QStringLiteral("tag")).toArray();
+    QVERIFY(tags.contains(QStringLiteral("sigma=0.0001")));
+    QVERIFY(tags.contains(QStringLiteral("n_sigma=-3")));
+    // Not in sigma: only the level.
+    const QJsonArray plain = vc::canonicalRegions({ line }, 1.0);
+    QCOMPARE(plain.at(0).toObject().value(QStringLiteral("props")).toObject()
+                     .value(QStringLiteral("tag")).toArray().size(), 1);
+}
+
+void TestContourSettings::segmentsAreJoinedIntoLines()
+{
+    // Points 0-1-2-3 an open line; 4-5-6-7 a square that closes. The segments
+    // are given in no order and some the wrong way round.
+    const std::vector<std::int64_t> segs = { 6, 5, 2, 3, 4, 5, 0, 1, 7, 4, 1, 2, 6, 7 };
+    const vc::Chains c = vc::chainSegments(segs.data(), segs.size() / 2, 8);
+    QCOMPARE(c.count(), std::size_t(2));
+    QCOMPARE(c.cancelled, false);
+    std::size_t open = 0, loops = 0;
+    for (std::size_t i = 0; i < c.count(); ++i) {
+        const std::size_t n = c.start[i + 1] - c.start[i];
+        if (c.closed[i]) {
+            ++loops;
+            QCOMPARE(n, std::size_t(5));   // four corners, the first again
+            QCOMPARE(c.ids[c.start[i]], c.ids[c.start[i + 1] - 1]);
+        } else {
+            ++open;
+            QCOMPARE(n, std::size_t(4));
+            const auto a = c.ids[c.start[i]], b = c.ids[c.start[i + 1] - 1];
+            QVERIFY((a == 0 && b == 3) || (a == 3 && b == 0));
+        }
+    }
+    QCOMPARE(open, std::size_t(1));
+    QCOMPARE(loops, std::size_t(1));
+}
+
+void TestContourSettings::segmentsWithABadEndSplitTheLine()
+{
+    const std::vector<std::int64_t> segs = { 0, 1, 1, 2, 2, 3, 3, 4 };
+    const std::vector<unsigned char> ok = { 1, 1, 0, 1, 1 };   // point 2 is not a number
+    const vc::Chains c = vc::chainSegments(segs.data(), 4, 5, ok.data());
+    // 0-1 and 3-4 are left; 1-2 and 2-3 are dropped with point 2.
+    QCOMPARE(c.count(), std::size_t(2));
+    QCOMPARE(c.ids.size(), std::size_t(4));
+    // Cancelled before it starts: nothing, and it says so.
+    std::atomic<bool> stop{ true };
+    const vc::Chains none = vc::chainSegments(segs.data(), 4, 5, nullptr, &stop);
+    QVERIFY(none.cancelled);
+    QCOMPARE(none.count(), std::size_t(0));
+}
+
+void TestContourSettings::joinedLinesCarryLevelColourAndDash()
+{
+    vc::LineSource src;
+    src.points = { { 0, 0 }, { 1, 0 }, { 2, 0 }, { 0, 5 }, { 1, 5 }, { kNaN, 5 }, { 3, 5 } };
+    src.level = { -1, -1, -1, 2, 2, 2, 2 };
+    src.segments = { 0, 1, 1, 2, 3, 4, 4, 5, 5, 6 };   // the last two touch the NaN point
+    src.levels = { -1, 2 };
+    src.colours = { QStringLiteral("#0000ff"), QStringLiteral("#ff0000") };
+    src.dashNegative = true;
+    const std::vector<vc::Line> lines = vc::joinLines(src);
+    QCOMPARE(lines.size(), std::size_t(2));
+    const vc::Line &neg = lines.at(0).level < 0 ? lines.at(0) : lines.at(1);
+    const vc::Line &pos = lines.at(0).level < 0 ? lines.at(1) : lines.at(0);
+    QCOMPARE(neg.pixels.size(), std::size_t(3));
+    QVERIFY(neg.dashed);
+    QCOMPARE(neg.colour, QStringLiteral("#0000ff"));
+    QVERIFY(!pos.dashed);
+    QCOMPARE(pos.pixels.size(), std::size_t(2));   // cut at the NaN: 3-4 only
+    src.dashNegative = false;
+    for (const vc::Line &l : vc::joinLines(src))
+        QVERIFY(!l.dashed);
+}
+
+void TestContourSettings::dashesFollowTheLengthAndRoundCorners()
+{
+    // 10 long, 2 drawn and 1 blank: dashes at 0-2, 3-5, 6-8 and 9-10.
+    std::vector<std::vector<std::array<double, 2>>> pieces;
+    vc::dashPolyline({ { 0, 0 }, { 10, 0 } }, 2.0, 1.0,
+                     [&](const std::vector<std::array<double, 2>> &p) { pieces.push_back(p); });
+    QCOMPARE(pieces.size(), std::size_t(4));
+    QCOMPARE(pieces[1].front()[0], 3.0);
+    QCOMPARE(pieces[1].back()[0], 5.0);
+    QCOMPARE(pieces[3].front()[0], 9.0);
+    QCOMPARE(pieces[3].back()[0], 10.0);
+    // A corner inside a dash is kept in it: 3 along x, then 3 up, 4 drawn / 2 blank.
+    pieces.clear();
+    vc::dashPolyline({ { 0, 0 }, { 3, 0 }, { 3, 3 } }, 4.0, 2.0,
+                     [&](const std::vector<std::array<double, 2>> &p) { pieces.push_back(p); });
+    QCOMPARE(pieces.size(), std::size_t(1));
+    QCOMPARE(pieces[0].size(), std::size_t(3));
+    QCOMPARE(pieces[0].back()[1], 1.0);
+    // No pattern: the line comes out whole.
+    pieces.clear();
+    vc::dashPolyline({ { 0, 0 }, { 5, 0 } }, 0.0, 1.0,
+                     [&](const std::vector<std::array<double, 2>> &p) { pieces.push_back(p); });
+    QCOMPARE(pieces.size(), std::size_t(1));
+}
+
+void TestContourSettings::largeImagesAreThinned()
+{
+    QCOMPARE(vc::thinStride(1500, 1500, 4'000'000), 1);
+    QCOMPARE(vc::thinStride(2000, 2000, 4'000'000), 1);
+    const int s = vc::thinStride(10368, 10368, 4'000'000);
+    QVERIFY(s >= 6);
+    QVERIFY(((10368 + s - 1) / s) * ((10368 + s - 1) / s) <= 4'000'000);
+    QVERIFY(vc::thinStride(5184, 5184, 4'000'000) >= 3);
+    QCOMPARE(vc::thinStride(0, 10, 100), 1);
+}
+
+void TestContourSettings::signedMultiplesGiveNegativeLevels()
+{
+    vc::Settings s;
+    s.levelMode = vc::LevelMode::Sigma;
+    s.sigma = 2.0;
+    s.multiples = QStringLiteral("-3, 3, 5");
+    const std::vector<double> lv = vc::levels(s);
+    QCOMPARE(lv.size(), std::size_t(3));
+    QCOMPARE(lv.at(0), -6.0);
+    QCOMPARE(lv.at(2), 10.0);
+}
+
+namespace {
+
+/// A noise image of sigma 1 around zero with a bright source (a radio map's look).
+vc::DataStats noiseImageStats()
+{
+    std::vector<double> sample;
+    unsigned state = 12345;
+    for (int i = 0; i < 20000; ++i) {
+        // A sum of uniforms: bell-shaped enough, and reproducible.
+        double v = 0.0;
+        for (int k = 0; k < 12; ++k) {
+            state = state * 1664525u + 1013904223u;
+            v += double(state >> 8) / double(1u << 24);
+        }
+        sample.push_back(v - 6.0);
+    }
+    sample.push_back(60.0);   // a source
+    return vc::dataStats(sample);
+}
+
+}   // namespace
+
+void TestContourSettings::defaultLevelsAreThreeFiveTenTwentySigma()
+{
+    const vc::DataStats st = noiseImageStats();
+    QVERIFY(st.sigma > 0.8 && st.sigma < 1.2);
+    QString note = QStringLiteral("stale");
+    const vc::Settings s = vc::defaultSettings(st, /*radio=*/false, &note);
+    QCOMPARE(s.levelMode, vc::LevelMode::Sigma);
+    QVERIFY(note.isEmpty());
+    QCOMPARE(s.colourMode, vc::ColourMode::Single);
+    const std::vector<double> lv = vc::levels(s);
+    QCOMPARE(lv.size(), std::size_t(4));
+    QCOMPARE(lv.at(0), 3.0 * st.sigma);
+    QCOMPARE(lv.at(1), 5.0 * st.sigma);
+    QCOMPARE(lv.at(2), 10.0 * st.sigma);
+    QCOMPARE(lv.at(3), 20.0 * st.sigma);
+}
+
+void TestContourSettings::radioImagesAlsoGetMinusThreeSigmaDashed()
+{
+    QVERIFY(vc::isRadioUnit(QStringLiteral("Jy/beam")));
+    QVERIFY(vc::isRadioUnit(QStringLiteral("JY/BEAM")));
+    QVERIFY(vc::isRadioUnit(QStringLiteral("mJy beam-1")));
+    QVERIFY(!vc::isRadioUnit(QStringLiteral("count")));
+    const vc::DataStats st = noiseImageStats();
+    const vc::Settings s = vc::defaultSettings(st, /*radio=*/true);
+    const std::vector<double> lv = vc::levels(s);
+    QCOMPARE(lv.size(), std::size_t(5));
+    QCOMPARE(lv.front(), -3.0 * st.sigma);
+    QVERIFY(s.dashNegative);   // a level below zero is drawn dashed
+}
+
+void TestContourSettings::aMaskedMomentMapFallsBackToLogLevels()
+{
+    // Zero (and NaN) outside the mask, a few hundred positive values inside:
+    // the MAD is zero, and sigma levels would be 0 x n.
+    std::vector<double> sample(10000, 0.0);
+    for (int i = 0; i < 2000; ++i)
+        sample.push_back(kNaN);
+    for (int i = 0; i < 300; ++i)
+        sample.push_back(0.1 + 0.05 * i);   // 0.1 .. 15
+    const vc::DataStats st = vc::dataStats(sample);
+    QCOMPARE(st.sigma, 0.0);
+    QString note;
+    const vc::Settings s = vc::defaultSettings(st, /*radio=*/true, &note);
+    QCOMPARE(s.levelMode, vc::LevelMode::Log);
+    QVERIFY(note.contains(QStringLiteral("not meaningful")));
+    QVERIFY(note.contains(QStringLiteral("logarithmic")));
+    QVERIFY(s.lower > 0.0 && s.lower < s.upper);
+    QVERIFY(s.upper < st.max);   // the 99.5th percentile, not the maximum
+    QVERIFY(s.lower >= 0.1);
+    QString problem;
+    const std::vector<double> lv = vc::levels(s, &problem);
+    QVERIFY(problem.isEmpty());
+    QCOMPARE(lv.size(), std::size_t(8));
+    QCOMPARE(lv.front(), s.lower);
+    QCOMPARE(lv.back(), s.upper);
+}
+
+void TestContourSettings::aSimulationFieldFallsBackToLogLevels()
+{
+    // A density spread over seven decades, all positive (the range of a PLUTO
+    // field): its MAD is a spread, not a noise, and 3 x it is of no meaning.
+    std::vector<double> sample;
+    for (int i = 0; i < 5000; ++i)
+        sample.push_back(1.83e-12 * std::pow(2.11593e-5 / 1.83e-12, i / 4999.0));
+    const vc::DataStats st = vc::dataStats(sample);
+    QVERIFY(st.sigma > 0.0);
+    QString note;
+    const vc::Settings s = vc::defaultSettings(st, /*radio=*/false, &note);
+    QCOMPARE(s.levelMode, vc::LevelMode::Log);
+    QVERIFY(note.contains(QStringLiteral("not meaningful")));
+    QVERIFY(s.lower > 1.83e-12 && s.upper < 2.11593e-5);
+    // The levels are a geometric progression inside the data's range.
+    const std::vector<double> lv = vc::levels(s);
+    QCOMPARE(lv.size(), std::size_t(8));
+    QVERIFY(std::abs(lv[1] / lv[0] - lv[7] / lv[6]) < 1e-9 * (lv[1] / lv[0]));
+    // Only negative or zero values: no log levels, an even spread says so.
+    const vc::Settings flat =
+            vc::defaultSettings(vc::dataStats({ -3.0, -2.0, -1.0, 0.0 }), false, &note);
+    QCOMPARE(flat.levelMode, vc::LevelMode::Count);
+    QVERIFY(note.contains(QStringLiteral("evenly")));
+}
+
+void TestContourSettings::theLevelsInUseAreDescribed()
+{
+    vc::Settings s;
+    s.levelMode = vc::LevelMode::Sigma;
+    s.sigma = 0.00041;
+    s.multiples = QStringLiteral("-3, 3, 5");
+    const QString text = vc::describeLevels(s, vc::levels(s));
+    QVERIFY(text.contains(QStringLiteral("σ = 0.00041")));
+    QVERIFY(text.contains(QStringLiteral("3 level(s)")));
+    QVERIFY(text.contains(QStringLiteral("-0.00123")));
+    s.levelMode = vc::LevelMode::Count;
+    s.count = 20;
+    s.lower = 0;
+    s.upper = 19;
+    const QString many = vc::describeLevels(s, vc::levels(s));
+    QVERIFY(many.contains(QStringLiteral("20 level(s)")));
+    QVERIFY(many.contains(QStringLiteral("…")));
+    QVERIFY(vc::describeLevels(s, {}).isEmpty());
 }

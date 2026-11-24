@@ -43,6 +43,7 @@ signals:
 
 private:
     void syncRows();
+    void updateLevelsInfo();
     void pickColour();
     void emitChanged();
 
@@ -67,6 +68,7 @@ private:
     QPointer<QDoubleSpinBox> m_width;
     QPointer<QCheckBox> m_dash;
     QPointer<QLabel> m_problem;
+    QPointer<QLabel> m_levelsInfo;
 };
 
 #endif   // ContourSettingsPanel_h
