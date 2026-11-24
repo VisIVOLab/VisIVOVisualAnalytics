@@ -339,10 +339,12 @@ read as regions. See [Catalogues and HiPS](catalogues-hips.md).
   followed, including *Shift+R* and the *Camera* presets. The chips next to the
   button choose which facets are linked. See
   [Figures, movies and linked views](publication-output.md).
-- *Link to Image…*, *Unlink from Image*: link the 2-D slice to an image window in
-  sky coordinates (pan, zoom and cursor follow in both). A line drawn on the image
-  can then cut a PV diagram here. See
-  [Link an image and a cube](publication-output.md#link-an-image-and-a-cube).
+- *Link Views* also reaches image windows that have it on: the slice and the
+  image follow each other by sky, and the cursor of one is a crosshair in the other.
+  See [Link an image and a cube](publication-output.md#link-an-image-and-a-cube).
+- *Send Selected Region to Linked Image*, *Send All Regions to Linked Image*
+  (under Regions): copy regions to the image windows in the group, placed on the
+  same sky.
 - *Open in VR*: shows the cube on a PC VR headset through an OpenXR runtime
   (SteamVR, Oculus, Windows Mixed Reality, Monado). Needs a build with VR
   support (not the default macOS build); otherwise it says what is missing.

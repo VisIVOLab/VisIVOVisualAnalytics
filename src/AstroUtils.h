@@ -7,6 +7,7 @@
 
 #include <QString>
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,47 @@ public:
    * @param syswcs Input WCS
    */
     void sky2xy(const double *pos, double *pix, int syswcs);
+
+    /// What a 2-D view shows, in 0-based pixels of its own dataset: the pixel at
+    /// the centre of the data area and how many pixels tall the area is.
+    struct View
+    {
+        double cx{ 0.0 };
+        double cy{ 0.0 };
+        double height{ 0.0 };
+    };
+
+    /**
+   * The pixel of @p to at the same sky position as pixel (px, py) of this
+   * image, both 0-based (a world of the viewers) and through J2000, so two
+   * images in different projections, frames and rotations match. A position
+   * off @p to's image but within its projection is placed (the other view may
+   * simply be panned past its edge); one off the projection is not.
+   * @return false when either image has no celestial WCS or a position has no
+   *         pixel on the projection.
+   */
+    bool pixelToPixel(AstroUtils &to, double px, double py, double &tx, double &ty);
+
+    /**
+   * How a small step in this image's pixels at (px, py) lands in @p to's: the
+   * 2x2 matrix {a, b, c, d} (row-major) with d(tx) = a dpx + b dpy and
+   * d(ty) = c dpx + d dpy, by a central difference of half a pixel. A shape's
+   * size and angle go across with it, the position through pixelToPixel.
+   */
+    bool pixelJacobian(AstroUtils &to, double px, double py, std::array<double, 4> &m);
+
+    /**
+   * The view of @p to that shows the same sky as @p v of this image: the same
+   * centre and the same angular height. North is not turned (a pan and a zoom,
+   * as CARTA's XY matching does), so two images rotated against each other keep
+   * their own orientation. False when the centre is not on @p to's projection.
+   */
+    bool matchView(AstroUtils &to, const View &v, View &out);
+
+    /**
+   * @return true if the header holds a celestial solution (not XY | LINEAR).
+   */
+    bool hasSky() const;
 
     /**
    * @return Arcseconds per pixel

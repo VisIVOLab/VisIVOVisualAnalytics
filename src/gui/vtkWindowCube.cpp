@@ -49,9 +49,9 @@
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
+#include "vtkWindowImage.h"
 #include "PvPathGeometry.h"
 #include "RegionListExport.h"
-#include "SkyLinkHub.h"
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
 #include "ThresholdShare.h"
@@ -3158,6 +3158,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     for (const auto &w : vtkWindowCube::s_registry.snapshot())
         if (w && w != this)
             w->refreshLinkedFacetChips();
+    // ...and an image window can now link to this cube (issue #522).
+    vtkWindowImage::refreshLinkTargets();
 
     // REGIONS group
     ui->menuTools->addSeparator();
@@ -3427,7 +3429,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
-    SkyLinkHub::instance().forget(this);
     // Its hooks reach into the region list, a member that goes before the
     // children are deleted.
     delete this->m_regionSession;
@@ -3468,6 +3469,11 @@ vtkWindowCube::~vtkWindowCube()
     for (const auto &w : vtkWindowCube::s_registry.snapshot())
         if (w)
             w->refreshLinkedFacetChips();
+    // The images linked to this cube stop showing its cursor and lose a target.
+    for (const auto &img : vtkWindowImage::linkedPeers())
+        if (img)
+            img->hideLinkedCursor();
+    vtkWindowImage::refreshLinkTargets();
     if (this->m_cubeCameraRenderWindow && this->m_cubeCameraFrameTag != 0)
         this->m_cubeCameraRenderWindow->RemoveObserver(this->m_cubeCameraFrameTag);
     this->m_cubeCameraFrameTag = 0;
@@ -8363,8 +8369,6 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
 
     add(u"Views"_s, self->m_actSendSliceToImage);
     add(u"Views"_s, self->m_actLinkViews);
-    add(u"Views"_s, self->m_actSkyLink);
-    add(u"Views"_s, self->m_actSkyUnlink);
     add(u"Views"_s, self->m_actOpenInVR);
     add(u"Views"_s, self->m_actOpenInVrHeadset);
     add(u"Views"_s, self->m_actShowInHeadset);
@@ -10077,7 +10081,8 @@ void vtkWindowCube::refreshLinkedFacetChips()
     // it is gated on real targets now (the Tools ▸ Link Views action is gated
     // with it, in applyMomentToolGate, and states the reason).
     // Disabled chips keep their checked state, so re-enabling restores the choice.
-    const bool hasLinkTargets = (m_paneCount > 1 || s_registry.size() > 1);
+    const bool hasLinkTargets =
+            (m_paneCount > 1 || s_registry.size() > 1 || vtkWindowImage::openCount() > 0);
     if (m_paneLinkedBtn)
         m_paneLinkedBtn->setEnabled(hasLinkTargets);
     const bool master = m_linkViews && hasLinkTargets;
@@ -10833,7 +10838,6 @@ void vtkWindowCube::onSliceCameraFrame()
     if (!this->m_sliceCameraTracker.lastFrameMoved())
         return;
     this->scheduleSliceDetail();
-    this->skyLinkSliceMoved();   // a linked image follows (issue #522)
     // Record the new view as the shared one on every frame of the move, not when the send goes
     // out: a slice that arrives in between (a channel scrub) refits the slice and puts the shared
     // view back, and that must be this view, not the one before the zoom.
@@ -15417,7 +15421,8 @@ void vtkWindowCube::applyMomentToolGate()
     }
     // Same test refreshLinkedFacetChips() uses for the facet chips: >1 pane here
     // (intra-window sync) or >1 open cube window (cross-window sync).
-    stateIn.haveLinkTargets = (m_paneCount > 1 || s_registry.size() > 1);
+    stateIn.haveLinkTargets =
+            (m_paneCount > 1 || s_registry.size() > 1 || vtkWindowImage::openCount() > 0);
     const CubeToolGate::Decision sd = CubeToolGate::evaluate(stateIn);
 
     applyGate(m_actPinSpectrum.data(), m_cubeActionsEnabled && sd.pinSpectrum, reasonNoProbe);
@@ -15443,7 +15448,6 @@ void vtkWindowCube::applyMomentToolGate()
     applyGate(m_actMomentPower.data(), m_cubeActionsEnabled && haveMoment, reasonNoMoment);
     applyGate(m_actMomentSkeleton.data(), m_cubeActionsEnabled && haveMoment, reasonNoMoment);
     this->refreshMomentMapToolSources();
-    this->refreshSkyLinkActions();
     this->refreshToolMenuGateNotes();
 }
 

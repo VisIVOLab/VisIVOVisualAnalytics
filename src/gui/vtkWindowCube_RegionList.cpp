@@ -562,8 +562,8 @@ void vtkWindowCube::setupRegionListActions()
     QObject::connect(m_actKeepAllRegionSpectra, &QAction::triggered, this,
                      [this]() { this->keepAllRegionSpectra(); });
 
-    // Link to an image (issue #522): regions drawn there arrive here, and back.
-    this->setupSkyLinkActions();
+    // Link Views with an image (issue #522): regions go across to it.
+    this->setupLinkImageActions();
 }
 
 // ── Drawing the list ─────────────────────────────────────────────────────────

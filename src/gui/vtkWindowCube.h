@@ -14,7 +14,9 @@
 #include "LinkedCameraSync.h"
 #include "LinkedWindowRegistry.h"
 #include "SkyCursorOverlay.h"
-#include "SkyLinkEndpoint.h"
+#include "LinkedDatasetSky.h"
+#include "AstroUtils.h"
+#include "RegionImport.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
 #include "ProbeSpectrumFetch.h"
@@ -284,7 +286,7 @@ struct RemoteKinematicSelectResult
     visivo::SharedSelectionOrigin shared;
 };
 
-class vtkWindowCube : public QMainWindow, public SkyLinkEndpoint
+class vtkWindowCube : public QMainWindow
 {
     Q_OBJECT
 
@@ -2277,9 +2279,6 @@ protected:
     void exportRegionsToFile();
     /// Tools ▸ Regions ▸ Import Region; @p path skips the file dialog.
     void importRegionsFromFile(const QString &path = QString(), const QString &note = QString());
-    /// Put the regions read from a file in the list as one change, select
-    /// the first, and analyse the first with an area.
-    void applyImportedRegions(const visivo::regions::ImportResult &result);
 
     // ── The region list (issue #341, vtkWindowCube_RegionList.cpp) ───────────
     // Regions drawn, imported, restored or typed in are kept in m_regions until
@@ -2781,36 +2780,41 @@ protected:
     void applyLinkedRenderMode(bool isosurface);
 
 public:
-    // ── Sky link to an image window (issue #522, vtkWindowCube_SkyLink.cpp) ──
-    // SkyLinkEndpoint: what SkyLinkHub asks of this window. The view and the
-    // cursor are those of the 2-D slice.
-    QWidget *skyLinkWidget() override { return this; }
-    bool skyLinkIsCube() const override { return true; }
-    QString skyLinkLabel() const override;
-    const visivo::skylink::SkyWcs *skyWcs() override;
-    bool skyViewRead(visivo::skylink::View &view) override;
-    void skyViewApply(const visivo::skylink::View &view) override;
-    void skyCursorShow(double px, double py) override;
-    void skyCursorHide() override;
-    std::vector<visivo::regions::Region> skyRegions(bool selectedOnly) const override;
-    int skyAddRegions(const std::vector<visivo::regions::Region> &regions,
-                      const QString &label) override;
-    bool skyRunPv(const std::vector<std::array<double, 2>> &path, const QString &label) override;
-    void skyLinkStateChanged() override { this->refreshSkyLinkActions(); }
-    void skyMessage(const QString &text) override;
+    // ── Link Views with an image window (issue #522, vtkWindowCube_LinkImage.cpp) ──
+    // An image window joins the same Link Views group as an "other-kind" peer:
+    // its pan and zoom and the cube slice's follow each other by sky centre and
+    // angular scale (through AstroUtils, whatever the two grids), the cursor of
+    // one is a crosshair in the other, and regions and PV paths go across.
+    /// The cube windows that have Link Views on (the peers an image window reaches).
+    static QList<QPointer<vtkWindowCube>> linkedPeers();
+    /// A window opened or closed: re-gate Link Views on every cube window.
+    static void refreshLinkTargets();
+    /// Every open cube window, linked or not: an image's Link Views needs a target.
+    static int openCount();
+    /// The context of this window's dataset for the region routes.
+    visivo::regions::ExportContext regionContext() const;
+    /// An image's view, in its own pixels (@p from is its sky), on this slice.
+    void applyLinkedImageView(AstroUtils &from, const AstroUtils::View &view);
+    /// The cursor of an image, at pixel (px, py) of @p from, as a crosshair here.
+    void showLinkedCursor(AstroUtils &from, double px, double py);
+    void hideLinkedCursor();
+    /// Regions read from a file or sent from an image: put in the list as one change, select
+    /// the first, and analyse the first with an area.
+    void applyImportedRegions(const visivo::regions::ImportResult &result);
+    /// Cut a PV along a path in this cube's pixels (a line drawn on an image).
+    bool startPvAlongPath(const std::vector<std::array<double, 2>> &path);
+    /// This cube's sky; null without a celestial WCS.
+    AstroUtils *linkSky();
 
 protected:
-    void setupSkyLinkActions();
-    void refreshSkyLinkActions();
-    /// After a frame of the slice moved by the user: tell the linked images.
-    void skyLinkSliceMoved();
-    /// The cursor at display position (x, y) of the slice, to the linked images.
-    void skyLinkCursorFromDisplay(int displayX, int displayY);
-    std::optional<visivo::skylink::SkyWcs> m_skyWcs;
-    bool m_skyWcsRead{ false };
-    SkyCursorOverlay m_skyCursor;
-    QPointer<QAction> m_actSkyLink;
-    QPointer<QAction> m_actSkyUnlink;
+    void setupLinkImageActions();
+    /// The linked images' list of cursors: the slice cursor at display (x, y).
+    void sendLinkedCursor(int displayX, int displayY);
+    /// Send the selected region (with its rings) or all of them to the linked images.
+    void sendRegionsToImages(bool selectedOnly);
+    LinkedDatasetSky m_linkSky;
+    SkyCursorOverlay m_linkCursor;
+    QElapsedTimer m_linkCursorClock;
     QPointer<QAction> m_actSendSelectedRegion;
     QPointer<QAction> m_actSendAllRegions;
 

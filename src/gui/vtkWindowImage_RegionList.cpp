@@ -200,8 +200,8 @@ void vtkWindowImage::setupRegionListActions()
             u"on a moment-0 map."_s);
     QObject::connect(m_actHiDistance, &QAction::triggered, this,
                      [this]() { visivo::flux::askHiDistance(this); });
-    // Link to a cube (issue #522): regions and paths drawn here, used there.
-    this->setupSkyLinkActions();
+    // Link Views with a cube (issue #522): regions and paths drawn here, used there.
+    this->setupLinkCubeActions();
 }
 
 bool vtkWindowImage::measurementDeletable() const
@@ -232,7 +232,7 @@ void vtkWindowImage::onRegionListChanged()
         m_actUndoRegion->setEnabled(this->m_regions.canUndo());
         m_actRedoRegion->setEnabled(this->m_regions.canRedo());
     }
-    this->refreshSkyLinkActions();
+    this->refreshLinkCubeActions();
 
     // The properties dialog follows the selection, and goes when its region does.
     if (m_regionPropertiesDialog) {

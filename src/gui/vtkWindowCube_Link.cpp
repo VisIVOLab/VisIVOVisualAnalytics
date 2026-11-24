@@ -23,6 +23,7 @@
 #include "Pane2DView.h"
 #include "SpectralUnitConvert.h"
 #include "theme/SegmentedToggle.h"
+#include "vtkWindowImage.h"
 
 #include <vtkCamera.h>
 #include <vtkCommand.h>
@@ -100,6 +101,11 @@ void vtkWindowCube::setLinkViews(bool on)
     if (!on) {
         this->m_linkCameraTracker.reset();
         this->m_linked2DValid = false;   // STEP6-P2: drop the shared 2-D camera so a later relink starts fresh
+        // The crosshairs of this window's cursor in the linked images, and theirs here (#522).
+        this->hideLinkedCursor();
+        for (const auto &img : vtkWindowImage::linkedPeers())
+            if (img)
+                img->hideLinkedCursor();
         this->statusBar()->showMessage(u"Linked views: off."_s, 3000);
         return;
     }
@@ -121,7 +127,7 @@ void vtkWindowCube::setLinkViews(bool on)
     // they snap into alignment immediately (colour is left to adopt on the next
     // change, to avoid silently clobbering a peer's chosen colour map).
     const auto windows = s_registry.snapshot();   // snapshot — peers may mutate the list
-    int peers = 0;
+    int peers = static_cast<int>(vtkWindowImage::linkedPeers().size());   // images (#522)
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews)
             ++peers;
@@ -409,6 +415,38 @@ void vtkWindowCube::broadcastLinked2DCamera(const double dataCenterXY[2], double
     for (const auto &p : windows)
         if (p && p != this && p->m_linkViews && p->m_linkCamera && this->sameSpatialGrid2D(p))
             p->applyLinked2DCamera(dataCenterXY, worldHeight);
+    // The images in the group (issue #522): another grid, so by sky centre and
+    // angular scale rather than by pixel.
+    const auto images = vtkWindowImage::linkedPeers();
+    if (images.isEmpty())
+        return;
+    if (AstroUtils *sky = this->linkSky()) {
+        const AstroUtils::View view{ dataCenterXY[0], dataCenterXY[1], worldHeight };
+        for (const auto &img : images)
+            if (img)
+                img->applyLinkedView(*sky, view);
+    }
+}
+
+QList<QPointer<vtkWindowCube>> vtkWindowCube::linkedPeers()
+{
+    QList<QPointer<vtkWindowCube>> out;
+    for (const auto &w : s_registry.snapshot())
+        if (w && w->m_linkViews)
+            out.append(w);
+    return out;
+}
+
+int vtkWindowCube::openCount()
+{
+    return s_registry.size();
+}
+
+void vtkWindowCube::refreshLinkTargets()
+{
+    for (const auto &w : s_registry.snapshot())
+        if (w)
+            w->refreshLinkedFacetChips();
 }
 
 void vtkWindowCube::applyLinked2DCamera(const double dataCenterXY[2], double worldHeight)

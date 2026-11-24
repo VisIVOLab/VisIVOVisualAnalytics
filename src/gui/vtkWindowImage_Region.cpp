@@ -914,20 +914,24 @@ void vtkWindowImage::importRegionsFromFile(const QString &path, const QString &n
             { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
               this->remoteDatasetId, this->filepath },
             [self](const visivo::regions::ImportResult &result) {
-                if (!self)
-                    return;
-                // A drag still running ends here: the import is its own
-                // change, after it, not inside its undo step.
-                if (self->m_regionDrag.active) {
-                    self->m_regionDrag.active = false;
-                    self->m_regions.endGesture();
-                }
-                // One change for the whole file (one Undo takes it back); the
-                // first region is selected.
-                if (!self->m_regions.addAll(result.regions, result.fileName).empty())
-                    self->onRegionListChanged();
+                if (self)
+                    self->applyImportedRegions(result);
             },
             path, note);
+}
+
+void vtkWindowImage::applyImportedRegions(const visivo::regions::ImportResult &result)
+{
+    // A drag still running ends here: the import is its own change, after
+    // it, not inside its undo step.
+    if (this->m_regionDrag.active) {
+        this->m_regionDrag.active = false;
+        this->m_regions.endGesture();
+    }
+    // One change for the whole file (one Undo takes it back); the first region
+    // is selected.
+    if (!this->m_regions.addAll(result.regions, result.fileName).empty())
+        this->onRegionListChanged();
 }
 
 void vtkWindowImage::exportRegionsToFile()

@@ -10,7 +10,10 @@
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
 #include "SkyCursorOverlay.h"
-#include "SkyLinkEndpoint.h"
+#include "AstroUtils.h"
+#include "LinkedDatasetSky.h"
+#include "LinkedWindowRegistry.h"
+#include "RegionImport.h"
 
 #include <vtkInteractorStyleImage.h>
 #include <vtkNew.h>
@@ -96,7 +99,7 @@ class vtkWindowImage;
 }
 QT_END_NAMESPACE
 
-class vtkWindowImage : public QMainWindow, public SkyLinkEndpoint
+class vtkWindowImage : public QMainWindow
 {
     Q_OBJECT
 
@@ -757,36 +760,50 @@ private:
     void refreshRegionListOverlay();
 
 public:
-    // ── Sky link to a cube window (issue #522, vtkWindowImage_SkyLink.cpp) ──
-    // SkyLinkEndpoint: what SkyLinkHub asks of this window.
-    QWidget *skyLinkWidget() override { return this; }
-    bool skyLinkIsCube() const override { return false; }
-    QString skyLinkLabel() const override;
-    const visivo::skylink::SkyWcs *skyWcs() override;
-    bool skyViewRead(visivo::skylink::View &view) override;
-    void skyViewApply(const visivo::skylink::View &view) override;
-    void skyCursorShow(double px, double py) override;
-    void skyCursorHide() override;
-    std::vector<visivo::regions::Region> skyRegions(bool selectedOnly) const override;
-    int skyAddRegions(const std::vector<visivo::regions::Region> &regions,
-                      const QString &label) override;
-    std::vector<visivo::regions::Vec2> skyPvPath() const override;
-    void skyLinkStateChanged() override { this->refreshSkyLinkActions(); }
-    void skyMessage(const QString &text) override;
+    // ── Link Views with a cube window (issue #522, vtkWindowImage_LinkCube.cpp) ──
+    // The image joins the cube viewers' Link Views group as a peer of another
+    // kind: its pan and zoom and the cube slice's follow each other by sky
+    // centre and angular scale (AstroUtils::matchView, whatever the two grids),
+    // the cursor of one is a crosshair in the other, regions and a PV path drawn
+    // here go to the cube. Both windows must have Link Views on.
+    /// The image windows that have Link Views on (the peers a cube window reaches).
+    static QList<QPointer<vtkWindowImage>> linkedPeers();
+    /// Every open image window, linked or not: a cube's Link Views needs a target.
+    static int openCount();
+    /// A window opened or closed: re-gate Link Views on every image window.
+    static void refreshLinkTargets();
+    /// The context of this window's dataset for the region routes.
+    visivo::regions::ExportContext regionContext() const;
+    /// A cube's view, in its own pixels (@p from is its sky), on this image.
+    void applyLinkedView(AstroUtils &from, const AstroUtils::View &view);
+    /// The cursor of a cube, at pixel (px, py) of @p from, as a crosshair here.
+    void showLinkedCursor(AstroUtils &from, double px, double py);
+    void hideLinkedCursor();
+    /// Regions read from a file or sent from a cube: put in the list as one change.
+    void applyImportedRegions(const visivo::regions::ImportResult &result);
+    /// This image's sky; null without a celestial WCS.
+    AstroUtils *linkSky();
 
 private:
-    void setupSkyLinkActions();
-    void refreshSkyLinkActions();
-    /// After every frame: tell the linked cubes when the view moved.
-    void skyLinkCameraFrame();
+    static LinkedWindowRegistry<vtkWindowImage> s_registry;
+    void setLinkViews(bool on);
+    void setupLinkCubeActions();
+    void refreshLinkCubeActions();
+    /// After every frame: send the view to the linked cubes when the user moved it.
+    void onLinkedCameraFrame();
+    void broadcastLinkedView();
     /// The cursor at display position (x, y), to the linked cubes.
-    void skyLinkCursorFromDisplay(int displayX, int displayY);
-    std::optional<visivo::skylink::SkyWcs> m_skyWcs;
-    bool m_skyWcsRead{ false };
-    SkyCursorOverlay m_skyCursor;
-    LinkedCameraSync::Watch m_skyViewWatch;
-    QPointer<QAction> m_actSkyLink;
-    QPointer<QAction> m_actSkyUnlink;
+    void sendLinkedCursor(int displayX, int displayY);
+    void sendRegionsToCubes(bool selectedOnly);
+    /// Cut a PV along the selected line in every linked cube.
+    void extractPvInCubes();
+    bool m_linkViews{ false };
+    bool m_applyingLinkedView{ false };
+    LinkedDatasetSky m_linkSky;
+    SkyCursorOverlay m_linkCursor;
+    QElapsedTimer m_linkCursorClock;
+    LinkedCameraSync::Tracker m_linkCameraTracker;
+    QPointer<QAction> m_actLinkViews;
     QPointer<QAction> m_actSendSelectedRegion;
     QPointer<QAction> m_actSendAllRegions;
     QPointer<QAction> m_actExtractPvInCube;

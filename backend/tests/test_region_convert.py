@@ -150,5 +150,117 @@ class TestRegionConvertHttp(unittest.TestCase):
                                    regions=[reg]).status_code, 422)
 
 
+class TestRegionsBetweenDatasets(unittest.TestCase):
+    """Regions sent from one image to another through the sky (issue #522).
+
+    The desktop client places a region on the sky with the first dataset
+    (``to_frame: icrs``) and back on the pixels of the second (``to_frame:
+    image``): the same route twice, so a circle stays a circle and a box turns
+    with the other grid. The numbers are astropy's on two headers that differ in
+    pixel scale, rotation, projection and frame.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("VISIVO_TOKEN", _TEST_TOKEN)
+        from astropy.coordinates import SkyCoord
+        from astropy.io import fits
+        from astropy.wcs import WCS
+        from fastapi.testclient import TestClient
+        from app.main import app
+        cls.client = TestClient(app, raise_server_exceptions=True)
+        ha = _wcs_header(crval=(202.47, 47.195), crpix=(32.5, 32.5), scale_arcsec=2.0,
+                         rot_deg=25.0, ctype=("RA---SIN", "DEC--SIN"), radesys="ICRS")
+        # A Galactic TAN image of the same field: 3 arcsec/pixel, turned the other way.
+        centre = SkyCoord(202.47, 47.195, unit="deg", frame="icrs").galactic
+        hb = _wcs_header(crval=(float(centre.l.deg), float(centre.b.deg)), crpix=(32.5, 32.5),
+                         scale_arcsec=3.0, rot_deg=-40.0, ctype=("GLON-TAN", "GLAT-TAN"), radesys=None)
+        cls.wa, cls.wb = WCS(ha).celestial, WCS(hb).celestial
+        cls.files = []
+        cls.ids = {}
+        cls.h = {"X-Visivo-Token": _TEST_TOKEN}
+        for key, header in (("a", ha), ("b", hb)):
+            f = tempfile.NamedTemporaryFile(suffix=".fits", delete=False)
+            f.close()
+            fits.PrimaryHDU(np.ones((64, 64), np.float32), header).writeto(f.name, overwrite=True)
+            cls.files.append(f.name)
+            d = cls.client.post("/v1/datasets/open", json={"path": f.name}, headers=cls.h).json()
+            cls.ids[key] = d["dataset_id"]
+            if d.get("session_id"):
+                cls.h["X-Visivo-Session"] = d["session_id"]
+
+    @classmethod
+    def tearDownClass(cls):
+        for f in cls.files:
+            os.unlink(f)
+
+    def convert(self, regions, to_frame, dataset, **extra):
+        r = self.client.post("/v1/regions/convert", headers=self.h,
+                             json=dict(regions=regions, to_frame=to_frame,
+                                       dataset_id=self.ids[dataset], origin=0, **extra))
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["regions"]
+
+    def send(self, regions):
+        """A to B, as the client does: pixels of A to the sky, the sky to pixels of B."""
+        return self.convert(self.convert(regions, "icrs", "a"), "image", "b")
+
+    def astropy_pixel(self, x, y):
+        sky = self.wa.pixel_to_world(x, y)
+        bx, by = self.wb.world_to_pixel(sky)
+        return float(bx), float(by)
+
+    def jacobian(self, x, y):
+        h = 0.5
+        xp, xm = self.astropy_pixel(x + h, y), self.astropy_pixel(x - h, y)
+        yp, ym = self.astropy_pixel(x, y + h), self.astropy_pixel(x, y - h)
+        return np.array([[(xp[0] - xm[0]) / (2 * h), (yp[0] - ym[0]) / (2 * h)],
+                         [(xp[1] - xm[1]) / (2 * h), (yp[1] - ym[1]) / (2 * h)]])
+
+    def test_circle_keeps_its_sky_size_and_place(self):
+        out = self.send([{"shape": "circle", "frame": "image", "center": [20.0, 25.0],
+                          "radius": 6.0, "unit": "pix"}])[0]
+        bx, by = self.astropy_pixel(20.0, 25.0)
+        np.testing.assert_allclose(out["center"], [bx, by], atol=1e-5)
+        self.assertEqual(out["unit"], "pix")
+        # 6 px x 2" = 12" = 4 px of 3".
+        self.assertAlmostEqual(out["radius"], 4.0, places=2)
+
+    def test_box_turns_with_the_other_grid(self):
+        angle = 20.0
+        out = self.send([{"shape": "box", "frame": "image", "center": [30.0, 28.0],
+                          "size": [12.0, 6.0], "angle_deg": angle, "unit": "pix"}])[0]
+        j = self.jacobian(30.0, 28.0)
+        v = j @ np.array([np.cos(np.radians(angle)), np.sin(np.radians(angle))])
+        expected = np.degrees(np.arctan2(v[1], v[0]))
+        self.assertLess(abs((out["angle_deg"] - expected + 180.0) % 360.0 - 180.0), 0.05)
+        np.testing.assert_allclose(out["size"], [8.0, 4.0], atol=0.02)   # 2" to 3" pixels
+
+    def test_polygon_and_line_vertices_are_exact(self):
+        pts = [[5.0, 8.0], [40.5, 12.25], [22.0, 50.0]]
+        for shape in ("polygon", "line"):
+            pts_in = pts if shape == "polygon" else pts[:2]
+            out = self.send([{"shape": shape, "frame": "image", "points": pts_in, "unit": "pix"}])[0]
+            expected = [self.astropy_pixel(x, y) for x, y in pts_in]
+            np.testing.assert_allclose(out["points"], expected, atol=1e-5)
+
+    def test_there_and_back_is_the_identity(self):
+        reg = {"shape": "ellipse", "frame": "image", "center": [18.5, 40.0], "semi_axes": [9.0, 4.0],
+               "angle_deg": 35.0, "unit": "pix"}
+        there = self.send([reg])
+        sky = self.convert(there, "icrs", "b")
+        back = self.convert(sky, "image", "a")[0]
+        np.testing.assert_allclose(back["center"], reg["center"], atol=1e-5)
+        np.testing.assert_allclose(back["semi_axes"], reg["semi_axes"], atol=1e-3)
+        self.assertLess(abs((back["angle_deg"] - 35.0 + 180.0) % 360.0 - 180.0), 0.05)
+
+    def test_a_region_off_the_other_projection_is_refused(self):
+        far = {"shape": "point", "frame": "icrs", "center": [22.47, -47.195], "unit": "deg"}
+        r = self.client.post("/v1/regions/convert", headers=self.h,
+                             json=dict(regions=[far], to_frame="image", dataset_id=self.ids["b"],
+                                       origin=0))
+        self.assertEqual(r.status_code, 422, r.text)
+
+
 if __name__ == "__main__":
     unittest.main()

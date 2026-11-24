@@ -641,7 +641,7 @@ set(PROJECT_SOURCES
         src/gui/RegionFrameText.h
         src/gui/RegionListOverlay.cpp
         src/gui/SkyCursorOverlay.cpp
-        src/gui/SkyLinkHub.cpp
+        src/gui/LinkedDatasetSky.cpp
         src/gui/RegionListOverlay.h
         src/gui/RegionListExport.cpp
         src/gui/RegionListExport.h
@@ -702,7 +702,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Raytrace.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
         src/gui/vtkWindowCube_RegionList.cpp
-        src/gui/vtkWindowCube_SkyLink.cpp
+        src/gui/vtkWindowCube_LinkImage.cpp
         src/gui/vtkWindowCube_LiveRegionSpectrum.cpp
         src/gui/Pane2DView.cpp
         src/gui/Pane2DView.h
@@ -752,7 +752,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Cosmology.cpp
         src/gui/vtkWindowImage_Region.cpp
         src/gui/vtkWindowImage_RegionList.cpp
-        src/gui/vtkWindowImage_SkyLink.cpp
+        src/gui/vtkWindowImage_LinkCube.cpp
         src/gui/vtkWindowImage_RegionMeasure.cpp
         src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp
