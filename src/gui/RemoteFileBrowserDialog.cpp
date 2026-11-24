@@ -467,7 +467,8 @@ bool RemoteFileBrowserDialog::isSelectable(const QTreeWidgetItem *item) const
     // could be seen in the list and not opened, with no explanation: the
     // button simply stayed grey. Under All files that is any file, and the
     // backend classifies it afterwards and says so when it cannot.
-    return visivo::fileTypeMatches(item->text(0), this->currentFileType());
+    return visivo::fileTypeMatchesEntry(item->text(0), item->data(0, IsFitsRole).toBool(),
+                                        this->currentFileType());
 }
 
 bool RemoteFileBrowserDialog::isListed(const BackendFileEntry &entry) const
@@ -477,7 +478,7 @@ bool RemoteFileBrowserDialog::isListed(const BackendFileEntry &entry) const
     // under All files, as the native dialogs do.
     if (entry.type == u"directory"_s)
         return type == visivo::FileType::AllFiles || !visivo::isHiddenFileName(entry.name);
-    return visivo::fileTypeMatches(entry.name, type);
+    return visivo::fileTypeMatchesEntry(entry.name, entry.isFits, type);
 }
 
 visivo::FileType RemoteFileBrowserDialog::currentFileType() const

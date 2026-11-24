@@ -133,3 +133,23 @@ void TestStokesCompanion::aNameThatMatchesNoPattern_yieldsNoCandidates()
                     .isEmpty());
     QVERIFY(visivo::stokesCompanionCandidates(QString(), QStringLiteral("Q")).isEmpty());
 }
+
+void TestStokesCompanion::aNameWithoutExtension_takesTheBareRoleSuffix()
+{
+    // ATCA delivers FITS images with no extension (issue #501).
+    const QSet<QString> names = { QStringLiteral("AGN_SHORES_I"), QStringLiteral("AGN_SHORES_Q"),
+                                  QStringLiteral("AGN_SHORES_U"), QStringLiteral("AGN_SHORES_P") };
+    QCOMPARE(visivo::pickStokesCompanion(QStringLiteral("AGN_SHORES_I"), QStringLiteral("Q"), names),
+             QStringLiteral("AGN_SHORES_Q"));
+    QCOMPARE(visivo::pickStokesCompanion(QStringLiteral("AGN_SHORES_I"), QStringLiteral("U"), names),
+             QStringLiteral("AGN_SHORES_U"));
+    // No V image there: nothing is invented.
+    QVERIFY(visivo::pickStokesCompanion(QStringLiteral("AGN_SHORES_I"), QStringLiteral("V"), names)
+                    .isEmpty());
+    const QSet<QString> pb = { QStringLiteral("F_I_PB"), QStringLiteral("F_Q") };
+    QCOMPARE(visivo::pickStokesCompanion(QStringLiteral("F_I_PB"), QStringLiteral("Q"), pb),
+             QStringLiteral("F_Q"));
+    // A name that only contains "_I" in the middle is not rewritten.
+    QVERIFY(visivo::stokesCompanionCandidates(QStringLiteral("A_Image"), QStringLiteral("Q"))
+                    .isEmpty());
+}

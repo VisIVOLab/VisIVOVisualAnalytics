@@ -185,7 +185,8 @@ async def open_dataset(
         return OpenDatasetResponse(
             valid=False,
             error="Unsupported file type. Expected FITS (.fits, .fit, also "
-                  "compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).")
+                  "compressed: .fits.gz, .fz; or any file whose first card is "
+                  "SIMPLE = T) or HDF5 (.h5, .hdf5, .bfdata).")
     try:
         kind, geometry = await asyncio.to_thread(_fits_metadata, path)
     except FitsTruncatedError as exc:

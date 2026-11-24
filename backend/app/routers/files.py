@@ -27,6 +27,27 @@ router = APIRouter(tags=['files'])
 logger = logging.getLogger('visivo.backend')
 _auth = Depends(verify_token)
 
+def _file_entries(children: list[Path]) -> list[FileEntry]:
+    entries: list[FileEntry] = []
+    for child in children:
+        try:
+            st = child.stat()
+            size = int(st.st_size)
+            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
+        except OSError:
+            size, mtime = 0, ""
+        ftype = "directory" if child.is_dir() else "file"
+        entries.append(FileEntry(
+            name=child.name,
+            path=str(child),
+            type=ftype,
+            size=size,
+            modified_time=mtime,
+            is_fits=_is_fits(child) if ftype == "file" else False,
+        ))
+    return entries
+
+
 @router.get("/v1/files/list", response_model=FilesListResponse, tags=["files"])
 async def list_files(
     path: str = Query(""),
@@ -54,23 +75,9 @@ async def list_files(
     if hide_hidden_entries():
         children = [c for c in children if not c.name.startswith(".")]
 
-    entries: list[FileEntry] = []
-    for child in children:
-        try:
-            st = child.stat()
-            size = int(st.st_size)
-            mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat()
-        except OSError:
-            size, mtime = 0, ""
-        ftype = "directory" if child.is_dir() else "file"
-        entries.append(FileEntry(
-            name=child.name,
-            path=str(child),
-            type=ftype,
-            size=size,
-            modified_time=mtime,
-            is_fits=_is_fits(child) if child.is_file() else False,
-        ))
+    # Off the event loop: a file with no FITS name is read for its first card
+    # (issue #501), and a big directory on a network filesystem is slow.
+    entries = await asyncio.to_thread(_file_entries, children)
 
     return FilesListResponse(valid=True, error="", current_path=str(directory), entries=entries)
 

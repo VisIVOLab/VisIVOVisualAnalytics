@@ -241,7 +241,8 @@ client. For full-Stokes cubes use the cube viewer
 - *Load Stokes Q/U/V Companions…*: finds the Q, U and V files next to the
   Stokes I file (on the backend's filesystem) by their names, reports what it
   found and what is missing, and loads them as layers. You can locate missing
-  ones by hand.
+  ones by hand. Names with no extension work too (`AGN_SHORES_I` finds
+  `AGN_SHORES_Q` and `AGN_SHORES_U`).
 - *Compute Pol. Intensity (P)*: P = √(Q² + U²).
 - *Compute Pol. Angle (PA)*: PA = ½ atan2(U, Q), in degrees from −90 to +90,
   north through east.

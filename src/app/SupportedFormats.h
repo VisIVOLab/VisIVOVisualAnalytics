@@ -26,7 +26,8 @@
 //
 // These are a VIEW filter. The backend classifies a file by its content, so a
 // FITS or a CSV under some other name still opens: it is listed under
-// "All files".
+// "All files". A FITS the backend recognised by its first card (no extension)
+// is also listed under the groups that take FITS (fileTypeMatchesEntry).
 
 #include <QLatin1StringView>
 #include <QList>
@@ -159,6 +160,20 @@ inline bool fileTypeMatches(QStringView name, FileType type)
             return true;
     }
     return false;
+}
+
+/// Like fileTypeMatches, for a file the backend has already read: `isFits` is
+/// its verdict (is_fits in /v1/files/list: the extension, else the first card
+/// `SIMPLE  = T`, issue #501). A FITS under a name that does not say so (the
+/// ATCA images `AGN_SHORES_I`) belongs to every group that lists FITS names:
+/// the FITS group, the catalogues (FITS tables) and "All supported files".
+inline bool fileTypeMatchesEntry(QStringView name, bool isFits, FileType type)
+{
+    using namespace Qt::StringLiterals;
+    if (fileTypeMatches(name, type))
+        return true;
+    return isFits && !name.isEmpty() && !isHiddenFileName(name)
+            && fileTypeSuffixes(type).contains(u".fits"_s);
 }
 
 /// The group stored under `key`, if any.
