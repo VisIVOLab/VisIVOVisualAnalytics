@@ -10,6 +10,7 @@
 #include <QWidget>
 #include <QVector>
 
+#include <functional>
 #include <limits>
 #include <memory>
 
@@ -117,6 +118,24 @@ public:
     void pinCurrentSpectrum(const QString &label = QString());
     /// Drop all pinned comparison curves and hide the legend.
     void clearPinnedSpectra();
+
+    /// One curve laid over the current spectrum by the host (the cube window's
+    /// live region spectra, #521): unlike a pin it is set from outside, in a
+    /// colour and under a name the host chose, and replaced as a whole.
+    struct OverlayCurve
+    {
+        QString name;
+        QColor colour;
+        QVector<double> key;
+        QVector<double> values;
+    };
+    /// Replace the host's overlay curves (an empty list takes them all off).
+    /// While there are any, the legend is shown and the main curve is drawn in
+    /// @p primaryColour under @p primaryName. They survive updateSpectrumPlot()
+    /// and are not part of the CSV export, which is the main curve.
+    void setOverlaySpectra(const QVector<OverlayCurve> &curves, const QString &primaryName = QString(),
+                           const QColor &primaryColour = QColor());
+    int overlaySpectrumCount() const { return static_cast<int>(m_overlayGraphs.size()); }
     int  pinnedSpectrumCount() const { return static_cast<int>(m_pinnedGraphs.size()); }
 
     // ── Pane migration (the spectrum controls move to Inspector › Analysis) ────
@@ -148,6 +167,11 @@ public:
     void clearLines();                            ///< remove the Line-ID overlay
     void saveSpectrumCsvNow();                     ///< export the raw spectrum as CSV
     void saveSpectrumPngNow();                     ///< export the plot as PNG
+    /// What an export (CSV, PNG) must wait for: called with the export to run,
+    /// it calls it when ready, now or later, or never to cancel it. The live
+    /// region spectrum keeps a full-resolution product with it first (#521).
+    using ExportGate = std::function<void(std::function<void()> proceed)>;
+    void setExportGate(ExportGate gate) { m_exportGate = std::move(gate); }
     bool canFit() const { return !m_backendUrl.isEmpty() && !m_fitInProgress; }   ///< can START a fit
     /// Which part of the spectrum the Gaussian fit sees (issue #416). The
     /// visible range is the default: a whole-spectrum fit locks onto whatever
@@ -184,10 +208,16 @@ private slots:
     /// two columns. Only meaningful in spectrum-mode — the button is
     /// hidden in image-profile mode.
     void saveSpectrumCsv();
+    /// The bodies of the two exports above, after the gate let them go.
+    void savePlot1PngNow();
+    void saveSpectrumCsvBody();
+    /// Runs @p action at once, or when the export gate says so.
+    void runGated(std::function<void()> action);
     /// Fit a Gaussian to the current spectrum via the backend and overlay it.
     void requestLineFit();
 
 private:
+    ExportGate m_exportGate;
     Ui::ProfileWidget *ui;
     vtkSmartPointer<vtkImageData> dataset;
     std::unique_ptr<AstroUtils> astro;
@@ -212,7 +242,10 @@ private:
     // spectra so they can be compared. graph(0) is always the live/current
     // series; pinned graphs are appended after it and survive live updates.
     QVector<QCPGraph *> m_pinnedGraphs;
-    QString m_lastSpectrumTitle;   ///< last title passed to updateSpectrumPlot (pin label default)
+    QVector<QCPGraph *> m_overlayGraphs;   ///< the host's curves (setOverlaySpectra)
+    QString m_overlayPrimaryName;          ///< the main curve's legend entry while they are on
+    QColor m_overlayPrimaryColour;
+    QString m_lastSpectrumTitle;  ///< last title passed to updateSpectrumPlot (pin label default)
     QPushButton *m_btnPin       { nullptr };
     QPushButton *m_btnClearPins { nullptr };
     void refreshPinButtons();

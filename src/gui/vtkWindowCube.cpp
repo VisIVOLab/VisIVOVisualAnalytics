@@ -3430,6 +3430,10 @@ vtkWindowCube::~vtkWindowCube()
         ProductRegistry::instance().removeProduct(this->m_spectrumLiveId);
         this->m_spectrumLiveId.clear();
     }
+    if (!this->m_regionLiveId.isEmpty()) {   // the live region spectrum's row too (#521)
+        ProductRegistry::instance().removeProduct(this->m_regionLiveId);
+        this->m_regionLiveId.clear();
+    }
     // Pop-out: detach the event filter from any detached-pane window BEFORE teardown (the
     // window is a child → Qt deletes it, but a stray event must not reach a half-dead cube).
     for (auto &s : m_slots)
@@ -8269,6 +8273,9 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->m_actUndoRegion);
     add(u"Regions"_s, self->m_actRedoRegion);
     add(u"Regions"_s, self->m_actHiDistance);
+    add(u"Regions"_s, self->m_actLiveRegionSpectra);
+    add(u"Regions"_s, self->m_actOverlayRegionSpectra);
+    add(u"Regions"_s, self->m_actKeepAllRegionSpectra);
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
 
@@ -12678,8 +12685,26 @@ void vtkWindowCube::mountView(int slot)
         // Call unconditionally: an EMPTY live product clears the plot (so a slot reused from a
         // previous spectrum doesn't show stale data until the first hover).
         sp->updateSpectrumPlot(s.key, s.values, s.label, /*live=*/false);
+        // The overlay of the live region spectrum belongs to that product only:
+        // a slot reused for another spectrum must not keep the curves.
+        const bool isLiveRegion = !m_regionLiveId.isEmpty() && v.productId == m_regionLiveId;
+        // Exporting the live spectrum keeps it first, at full resolution (#521).
+        if (isLiveRegion)
+            sp->setExportGate([this](std::function<void()> proceed) {
+                this->keepLiveRegionForExport(std::move(proceed));
+            });
+        else
+            sp->setExportGate({});
+        if (!isLiveRegion && sp->overlaySpectrumCount() > 0)
+            sp->setOverlaySpectra({});
         m_paneProductId[slot] = v.productId;
         w = sp;
+        if (isLiveRegion) {
+            QMetaObject::invokeMethod(this, [this]() {
+                this->updateLiveRegionHeader();
+                this->pushLiveRegionOverlay();
+            }, Qt::QueuedConnection);
+        }
         if (isLiveProduct) {
             // After the assignment below, so the header helper finds this slot
             // mounted; deferred because mountView() is mid-flight.
@@ -13780,6 +13805,36 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
     grid->addWidget(m_specInspSavePng,    3, 1);
     col->addLayout(grid);
 
+    // The live region spectrum's own controls (#521): keep it, lay all the
+    // regions' spectra over it. Shown only while the target IS that spectrum.
+    m_specInspLiveRegion = new QWidget();
+    auto *liveCol = new QVBoxLayout(m_specInspLiveRegion);
+    liveCol->setContentsMargins(0, 0, 0, 0);
+    liveCol->setSpacing(4);
+    m_specInspKeep = mkBtn(u"Keep as product"_s,
+                           u"Save this region's spectrum in Session Data with its statistics "
+                           u"(the same as Analyse Region)."_s);
+    m_specInspOverlayAll = new QCheckBox(u"Overlay all regions"_s);
+    m_specInspOverlayAll->setStyleSheet(
+            QStringLiteral("color:%1; font-size:11px;").arg(fgMuted));
+    m_specInspOverlayAll->setToolTip(
+            u"Lay the spectra of all the other regions over this one, each in its region's "
+            u"colour and under its name."_s);
+    m_specInspKeepAll = mkBtn(u"Keep all regions"_s,
+                              u"One full-resolution spectrum product in Session Data for every "
+                              u"region, run in the background; it can be cancelled."_s);
+    liveCol->addWidget(m_specInspKeep);
+    liveCol->addWidget(m_specInspKeepAll);
+    liveCol->addWidget(m_specInspOverlayAll);
+    col->addWidget(m_specInspLiveRegion);
+    m_specInspLiveRegion->setVisible(false);
+    QObject::connect(m_specInspKeep, &QPushButton::clicked, this,
+                     [this]() { this->keepLiveRegionSpectrum(); });
+    QObject::connect(m_specInspKeepAll, &QPushButton::clicked, this,
+                     [this]() { this->keepAllRegionSpectra(); });
+    QObject::connect(m_specInspOverlayAll, &QCheckBox::toggled, this,
+                     [this](bool on) { this->setLiveRegionOverlayAll(on); });
+
     m_specInspStats = new QLabel(u"-"_s);
     m_specInspStats->setStyleSheet(
             QStringLiteral("color:%1; font-size:10px; font-family:'JetBrains Mono','SF Mono',monospace;")
@@ -13842,6 +13897,12 @@ void vtkWindowCube::updateSpectrumInspectorControls()
             for (int i = 0; i < 4; ++i)
                 if (isSpectrum(i) && m_slots[i].view.productId == m_spectrumLiveId)
                     return i;
+        // …and so is the selected region's live spectrum, whose Keep and overlay
+        // controls would otherwise need a click on the plot first.
+        if (!m_regionLiveId.isEmpty())
+            for (int i = 0; i < 4; ++i)
+                if (isSpectrum(i) && m_slots[i].view.productId == m_regionLiveId)
+                    return i;
         return -1;
     };
     const int slot = spectrumSlot();
@@ -13853,6 +13914,15 @@ void vtkWindowCube::updateSpectrumInspectorControls()
     }
     m_spectrumInspector->setVisible(true);
     m_specInspTitle->setText(m_products1d[m_slots[slot].view.productId].label);
+    if (m_specInspLiveRegion) {
+        const bool liveRegion = !m_regionLiveId.isEmpty()
+                && m_slots[slot].view.productId == m_regionLiveId;
+        m_specInspLiveRegion->setVisible(liveRegion);
+        if (liveRegion && m_specInspOverlayAll) {
+            const QSignalBlocker b(m_specInspOverlayAll);
+            m_specInspOverlayAll->setChecked(m_liveRegionOverlayAll);
+        }
+    }
     {   // reflect the pane's current smoothing without echoing back into it
         QSignalBlocker b(m_specInspSmooth);
         const int idx = m_specInspSmooth->findData(sp->smoothingCode());

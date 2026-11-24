@@ -239,6 +239,8 @@ void ProfileWidget::setupImagePlots(const QString &xLabel, const QString &yLabel
     ui->plot2->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     this->clearFitOverlay();   // drop fit refs before clearGraphs() frees them
     ui->plot1->clearGraphs();
+    m_pinnedGraphs.clear();
+    m_overlayGraphs.clear();
     ui->plot2->clearGraphs();
     ui->plot1->addGraph();
     ui->plot2->addGraph();
@@ -319,6 +321,7 @@ void ProfileWidget::setupSpectrumPlot(const QString &xLabel, const QString &yLab
     this->clearFitOverlay();   // drop fit refs before clearGraphs() frees them
     ui->plot1->clearGraphs();
     m_pinnedGraphs.clear();    // clearGraphs() just freed the pinned graph pointers
+    m_overlayGraphs.clear();
     refreshPinButtons();
     ui->plot1->addGraph();
     ui->plot1->legend->setVisible(false);
@@ -1319,7 +1322,7 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
     // update). Pinned curves must survive so several regions can be compared.
     for (int i = ui->plot1->graphCount() - 1; i >= 1; --i) {
         QCPGraph *g = ui->plot1->graph(i);
-        if (!m_pinnedGraphs.contains(g)) {
+        if (!m_pinnedGraphs.contains(g) && !m_overlayGraphs.contains(g)) {
             ui->plot1->removeGraph(g);
         }
     }
@@ -1327,12 +1330,16 @@ void ProfileWidget::updateSpectrumPlot(const QVector<double> &key, const QVector
     Q_UNUSED(live);
 
     const bool havePins = !m_pinnedGraphs.isEmpty();
+    const bool haveOverlay = !m_overlayGraphs.isEmpty();
     QCPGraph *live0 = ui->plot1->graph(0);
-    live0->setPen(QPen(QColor(0, 170, 255), 1.5));
+    live0->setPen(QPen(haveOverlay && m_overlayPrimaryColour.isValid() ? m_overlayPrimaryColour
+                                                                        : QColor(0, 170, 255),
+                       1.5));
     live0->setData(key, values);
-    live0->setName(havePins ? u"Current"_s : QString());
-    ui->plot1->legend->setVisible(havePins);
-    if (havePins) applyPinnedLegendTheme();
+    live0->setName(haveOverlay ? m_overlayPrimaryName
+                               : havePins ? u"Current"_s : QString());
+    ui->plot1->legend->setVisible(havePins || haveOverlay);
+    if (havePins || haveOverlay) applyPinnedLegendTheme();
     ui->plot1->rescaleAxes();
     if (auto *titleElement = qobject_cast<QCPTextElement *>(ui->plot1->plotLayout()->element(0, 0))) {
         titleElement->setText(title);
@@ -1458,6 +1465,37 @@ void ProfileWidget::pinCurrentSpectrum(const QString &label)
     refreshPinButtons();
 }
 
+void ProfileWidget::setOverlaySpectra(const QVector<OverlayCurve> &curves,
+                                      const QString &primaryName, const QColor &primaryColour)
+{
+    if (m_dialogInProgress || ui->plot1->graphCount() == 0) return;
+    for (QCPGraph *g : m_overlayGraphs)
+        ui->plot1->removeGraph(g);
+    m_overlayGraphs.clear();
+    m_overlayPrimaryName = primaryName;
+    m_overlayPrimaryColour = primaryColour;
+    for (const OverlayCurve &c : curves) {
+        auto *g = ui->plot1->addGraph();
+        g->setData(c.key, c.values);
+        QPen pen(c.colour.isValid() ? c.colour : QColor(160, 160, 160));
+        pen.setWidthF(1.2);
+        g->setPen(pen);
+        g->setName(c.name);
+        m_overlayGraphs.push_back(g);
+    }
+    QCPGraph *live0 = ui->plot1->graph(0);
+    const bool haveOverlay = !m_overlayGraphs.isEmpty();
+    live0->setPen(QPen(haveOverlay && primaryColour.isValid() ? primaryColour
+                                                               : QColor(0, 170, 255),
+                       1.5));
+    live0->setName(haveOverlay ? primaryName
+                               : m_pinnedGraphs.isEmpty() ? QString() : u"Current"_s);
+    ui->plot1->legend->setVisible(haveOverlay || !m_pinnedGraphs.isEmpty());
+    if (ui->plot1->legend->visible()) applyPinnedLegendTheme();
+    ui->plot1->rescaleAxes();
+    ui->plot1->replot();
+}
+
 void ProfileWidget::clearPinnedSpectra()
 {
     if (m_pinnedGraphs.isEmpty()) { refreshPinButtons(); return; }
@@ -1465,8 +1503,11 @@ void ProfileWidget::clearPinnedSpectra()
         ui->plot1->removeGraph(g);
     }
     m_pinnedGraphs.clear();
-    ui->plot1->legend->setVisible(false);
-    if (ui->plot1->graphCount() > 0) ui->plot1->graph(0)->setName(QString());
+    // The host's overlay curves are not pins: their legend stays.
+    const bool haveOverlay = !m_overlayGraphs.isEmpty();
+    ui->plot1->legend->setVisible(haveOverlay);
+    if (ui->plot1->graphCount() > 0)
+        ui->plot1->graph(0)->setName(haveOverlay ? m_overlayPrimaryName : QString());
     ui->plot1->replot();
     refreshPinButtons();
 }
@@ -1660,7 +1701,25 @@ static QString runAppModalSaveDialog(QWidget *anchor, const QString &title,
     return dlg.selectedFiles().value(0);
 }
 
+void ProfileWidget::runGated(std::function<void()> action)
+{
+    if (!m_exportGate) {
+        action();
+        return;
+    }
+    QPointer<ProfileWidget> alive(this);
+    m_exportGate([alive, action = std::move(action)]() {
+        if (alive)
+            action();
+    });
+}
+
 void ProfileWidget::savePlot1Png()
+{
+    this->runGated([this]() { this->savePlot1PngNow(); });
+}
+
+void ProfileWidget::savePlot1PngNow()
 {
     // QPointer-aware: even though the Qt-rendered dialog blocks input
     // during exec(), nothing prevents some other code from calling
@@ -1711,6 +1770,11 @@ void ProfileWidget::showAndRaiseFirstTime()
 }
 
 void ProfileWidget::saveSpectrumCsv()
+{
+    this->runGated([this]() { this->saveSpectrumCsvBody(); });
+}
+
+void ProfileWidget::saveSpectrumCsvBody()
 {
     // QPointer-aware: macOS native sheets run a nested event loop; if
     // anything deletes this widget mid-dialog (cube viewer disposing the

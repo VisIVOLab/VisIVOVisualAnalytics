@@ -185,6 +185,8 @@ add_executable(VisIVOTests
     test_region_full_res.cpp
     TestContourSettings.h
     test_contour_settings.cpp
+    TestLiveRegionSpectra.h
+    test_live_region_spectra.cpp
     TestRegionModel.h
     test_region_model.cpp
     TestRegionFlux.h
