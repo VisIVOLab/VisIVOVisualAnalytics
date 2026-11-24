@@ -743,6 +743,14 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Dynspec.cpp
         src/gui/vtkWindowImage_Measurement.cpp
         src/gui/vtkWindowImage_Contours.cpp
+        src/gui/ContourLayer.cpp
+        src/gui/vtkWindowCube_Contours.cpp
+        src/gui/ContourLayer.h
+        src/gui/ContourSettings.h
+        src/gui/ContourSettingsPanel.cpp
+        src/gui/ContourSettingsPanel.h
+        src/gui/ContourExport.cpp
+        src/gui/ContourExport.h
         src/gui/vtkWindowImage_Annotations.cpp
         src/gui/vtkWindowImage_Products.cpp
         src/gui/vtkWindowImage_Cosmology.cpp

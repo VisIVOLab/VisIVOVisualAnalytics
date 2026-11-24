@@ -1,4 +1,5 @@
 #include "vtkWindowImage.h"
+#include "ContourSettingsPanel.h"
 #include "BackendLocality.h"
 #include "app/BackendWording.h"
 #include "app/DatasetName.h"
@@ -1254,9 +1255,6 @@ QWidget *vtkWindowImage::buildPolVectorSettingsBlock()
 
 QWidget *vtkWindowImage::buildContourControlsBlock()
 {
-    if (!m_contourLevelSpin || !m_contourLowerEdit || !m_contourUpperEdit)
-        return nullptr;
-
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -1287,16 +1285,36 @@ QWidget *vtkWindowImage::buildContourControlsBlock()
                          });
     }
 
-    // Re-home the widgets that setupSidebar() already built and wired, rather
-    // than building a second set: two Level spin boxes writing the same
-    // m_contourLevel would disagree the moment either is used.
-    auto *form = new QFormLayout();
-    form->setHorizontalSpacing(8);
-    form->setVerticalSpacing(4);
-    form->addRow(u"Level"_s, m_contourLevelSpin.data());
-    form->addRow(u"Lower"_s, m_contourLowerEdit.data());
-    form->addRow(u"Upper"_s, m_contourUpperEdit.data());
-    cardLayout->addLayout(form);
+    // Which contours the settings below are for: the image's own, or one of
+    // the files loaded with Load Contour from FITS. Hidden until there is one.
+    m_contourTargetRow = new QWidget(card);
+    auto *targetLayout = new QFormLayout(m_contourTargetRow);
+    targetLayout->setContentsMargins(0, 0, 0, 0);
+    targetLayout->setHorizontalSpacing(8);
+    m_contourTarget = new QComboBox(m_contourTargetRow);
+    m_contourTarget->addItem(u"This image"_s);
+    targetLayout->addRow(u"Contours of"_s, m_contourTarget.data());
+    m_contourTargetRow->setVisible(false);
+    cardLayout->addWidget(m_contourTargetRow);
+    QObject::connect(m_contourTarget, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (ContourLayer *layer = editedContourLayer(); layer && m_contourPanel) {
+            m_contourPanel->setSettings(layer->settings());
+            m_contourPanel->setProblem(QString());
+        }
+    });
+
+    m_contourPanel = new ContourSettingsPanel(card);
+    cardLayout->addWidget(m_contourPanel);
+    QObject::connect(m_contourPanel, &ContourSettingsPanel::changed, this,
+                     &vtkWindowImage::onContourPanelChanged);
+    QObject::connect(m_contourPanel, &ContourSettingsPanel::estimateRequested, this,
+                     &vtkWindowImage::estimateContourNoise);
+
+    auto *exportButton = new QPushButton(u"Export Contours…"_s, card);
+    exportButton->setToolTip(u"Save the contours as a ds9 region file (a polygon per line, with "
+                             u"its colour and width) or as a table of vertices."_s);
+    QObject::connect(exportButton, &QPushButton::clicked, this, &vtkWindowImage::exportContours);
+    cardLayout->addWidget(exportButton);
 
     layout->addWidget(card);
     return page;
@@ -1348,6 +1366,7 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Contours"_s, self->m_actToggleContours);
     add(u"Contours"_s, self->m_actLoadExternalContour);
     add(u"Contours"_s, self->m_actClearAllContours);
+    add(u"Contours"_s, self->m_actExportContours);
 
     // The pixel probe / profile crosshair. It was on neither surface after the
     // regroup - only on the Tools page the Analysis tab superseded, which is
@@ -1551,7 +1570,7 @@ void vtkWindowImage::setupSidebar()
         toolsLayout->addWidget(card);
     }
 
-    // Card: Contours (same Level / Lower / Upper as the cube viewer)
+    // Card: Contours
     {
         auto *card = new QFrame(pageTools);
         card->setStyleSheet(cardStyle);
@@ -1565,43 +1584,13 @@ void vtkWindowImage::setupSidebar()
 
         cl->addWidget(makeToolBtn(m_actToggleContours, card));
 
-        auto *formLayout = new QFormLayout();
-        formLayout->setHorizontalSpacing(8);
-        formLayout->setVerticalSpacing(4);
-
-        m_contourLevelSpin = new QSpinBox(card);
-        m_contourLevelSpin->setRange(1, 100);
-        m_contourLevelSpin->setValue(m_contourLevel);
-        formLayout->addRow(u"Level"_s, m_contourLevelSpin);
-
-        m_contourLowerEdit = new QLineEdit(QString::number(m_contourLower, 'g', 6), card);
-        m_contourLowerEdit->setValidator(new QDoubleValidator(card));
-        formLayout->addRow(u"Lower"_s, m_contourLowerEdit);
-
-        m_contourUpperEdit = new QLineEdit(QString::number(m_contourUpper, 'g', 6), card);
-        m_contourUpperEdit->setValidator(new QDoubleValidator(card));
-        formLayout->addRow(u"Upper"_s, m_contourUpperEdit);
-        QSpinBox  *levelSpin = m_contourLevelSpin;
-        QLineEdit *lowerEdit = m_contourLowerEdit;
-        QLineEdit *upperEdit = m_contourUpperEdit;
-
-        cl->addLayout(formLayout);
-        toolsLayout->addWidget(card);
-
-        QObject::connect(levelSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-                         [this](int v) { m_contourLevel = v; updateContours(); });
-        QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
-                         [this, lowerEdit]() {
-                             commitContourBounds(lowerEdit->text().toDouble(), m_contourUpper);
-                         });
-        QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
-                         [this, upperEdit]() {
-                             commitContourBounds(m_contourLower, upperEdit->text().toDouble());
-                         });
-
+        // The levels, the colours and the rest of the contour style are in
+        // Inspector > Parameters, while the tool is on.
         // External contour overlay actions (mirror the Tools menu)
         cl->addWidget(makeToolBtn(m_actLoadExternalContour, card));
         cl->addWidget(makeToolBtn(m_actClearAllContours,    card));
+        cl->addWidget(makeToolBtn(m_actExportContours,      card));
+        toolsLayout->addWidget(card);
     }
 
     // Card: I/O — Export to Workspace (mirror the Tools menu)
@@ -1846,7 +1835,7 @@ void vtkWindowImage::setupSidebar()
         toolsLayout->addWidget(card);
     }
 
-    // Card: Contours (same Level / Lower / Upper as the cube viewer)
+    // Card: Contours
     {
         auto *card = new QFrame(pageTools);
         card->setStyleSheet(cardStyle);
@@ -1860,43 +1849,13 @@ void vtkWindowImage::setupSidebar()
 
         cl->addWidget(makeToolBtn(m_actToggleContours, card));
 
-        auto *formLayout = new QFormLayout();
-        formLayout->setHorizontalSpacing(8);
-        formLayout->setVerticalSpacing(4);
-
-        m_contourLevelSpin = new QSpinBox(card);
-        m_contourLevelSpin->setRange(1, 100);
-        m_contourLevelSpin->setValue(m_contourLevel);
-        formLayout->addRow(u"Level"_s, m_contourLevelSpin);
-
-        m_contourLowerEdit = new QLineEdit(QString::number(m_contourLower, 'g', 6), card);
-        m_contourLowerEdit->setValidator(new QDoubleValidator(card));
-        formLayout->addRow(u"Lower"_s, m_contourLowerEdit);
-
-        m_contourUpperEdit = new QLineEdit(QString::number(m_contourUpper, 'g', 6), card);
-        m_contourUpperEdit->setValidator(new QDoubleValidator(card));
-        formLayout->addRow(u"Upper"_s, m_contourUpperEdit);
-        QSpinBox  *levelSpin = m_contourLevelSpin;
-        QLineEdit *lowerEdit = m_contourLowerEdit;
-        QLineEdit *upperEdit = m_contourUpperEdit;
-
-        cl->addLayout(formLayout);
-        toolsLayout->addWidget(card);
-
-        QObject::connect(levelSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-                         [this](int v) { m_contourLevel = v; updateContours(); });
-        QObject::connect(lowerEdit, &QLineEdit::editingFinished, this,
-                         [this, lowerEdit]() {
-                             commitContourBounds(lowerEdit->text().toDouble(), m_contourUpper);
-                         });
-        QObject::connect(upperEdit, &QLineEdit::editingFinished, this,
-                         [this, upperEdit]() {
-                             commitContourBounds(m_contourLower, upperEdit->text().toDouble());
-                         });
-
+        // The levels, the colours and the rest of the contour style are in
+        // Inspector > Parameters, while the tool is on.
         // External contour overlay actions (mirror the Tools menu)
         cl->addWidget(makeToolBtn(m_actLoadExternalContour, card));
         cl->addWidget(makeToolBtn(m_actClearAllContours,    card));
+        cl->addWidget(makeToolBtn(m_actExportContours,      card));
+        toolsLayout->addWidget(card);
     }
 
     // Card: I/O — Export to Workspace (mirror the Tools menu)

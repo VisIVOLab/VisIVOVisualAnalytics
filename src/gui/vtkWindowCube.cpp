@@ -3325,13 +3325,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                          });
     }
 
-    // Setup Contours UI
-    ui->lineLevel->setText(QString::number(this->level));
-    ui->lineLevel->setValidator(new QIntValidator(ui->lineLevel));
-    ui->lineLowerBound->setText(QString::number(this->lowerBound));
-    ui->lineLowerBound->setValidator(new QDoubleValidator(ui->lineLowerBound));
-    ui->lineUpperBound->setText(QString::number(this->upperBound));
-    ui->lineUpperBound->setValidator(new QDoubleValidator(ui->lineUpperBound));
+    // Contours: the checkbox is the canonical state; the settings are the shared
+    // panel (setupContours(), called with the slice pipeline).
     QObject::connect(ui->checkContours, &QCheckBox::checkStateChanged, this,
                      &vtkWindowCube::updateContoursVisibility);
     // The sidebar's "Show Contours" toggle button drives the canonical
@@ -3349,16 +3344,6 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         QObject::connect(ui->checkContours, &QCheckBox::toggled, btn, [btn](bool on) {
             QSignalBlocker b(btn);
             btn->setChecked(on);
-        });
-    }
-    QObject::connect(ui->lineLevel, &QLineEdit::editingFinished, this,
-                     &vtkWindowCube::updateContours);
-    // Typing a bound claims it: the data-driven initialisation must not
-    // overwrite the user's own numbers if the preview lands afterwards.
-    for (QLineEdit *edit : { ui->lineLowerBound, ui->lineUpperBound }) {
-        QObject::connect(edit, &QLineEdit::editingFinished, this, [this]() {
-            m_contourBoundsInitialised = true;
-            this->updateContours();
         });
     }
 
@@ -7879,7 +7864,12 @@ void vtkWindowCube::set2dWcsOverlayVisible(bool visible)
 void vtkWindowCube::updateContoursVisibility()
 {
     const bool on = ui->checkContours->isChecked();
-    this->contoursActor->SetVisibility(on);
+    if (m_contourLayer)
+        m_contourLayer->setVisible(on);
+    // Turning them on is also when the sigma of the slice on screen and the
+    // pixel scale are looked at: the panel may hold levels in sigma.
+    if (on && m_contourPanel)
+        this->onContourPanelChanged();
     // The tool's settings live in the Inspector's Parameters tab while the tool
     // is on. They used to live in a .ui page (pageContours) inside the hidden
     // sidebar container - built, wired, and unreachable: Level / Lower / Upper
@@ -7935,54 +7925,6 @@ void vtkWindowCube::clearPersistentStatusMessage()
     }
 
     this->statusMessageClearTimer.start(remaining);
-}
-
-void vtkWindowCube::updateContours()
-{
-    const int levels = ui->lineLevel->text().toInt();
-    const double lower = ui->lineLowerBound->text().toDouble();
-    const double upper = ui->lineUpperBound->text().toDouble();
-    // An inverted or empty range is a user-input mistake, not something to draw
-    // a guess from, so say why instead of leaving a toggle that does nothing.
-    if (levels < 1 || !(lower < upper)) {
-        this->statusBar()->showMessage(
-                u"Contour levels need Lower < Upper and at least one level."_s, 4000);
-        return;
-    }
-    this->contours->GenerateValues(levels, lower, upper);
-    // The mapper's colour range was built from the placeholder bounds too;
-    // without this every line comes out the same end-of-table colour.
-    if (this->contoursActor && this->contoursActor->GetMapper())
-        this->contoursActor->GetMapper()->SetScalarRange(lower, upper);
-    this->sliceWin->Render();
-}
-
-void vtkWindowCube::refreshContourBoundsFromData()
-{
-    // Only the first time: after that the boxes hold the user's own numbers and
-    // a later data update must not overwrite them.
-    if (m_contourBoundsInitialised)
-        return;
-    if (!(this->lowerBound < this->upperBound))
-        return;
-    // The fields are the source of truth for updateContours(), so the bounds
-    // have to survive the round trip through text: QString::number's default
-    // six significant digits can collapse two close bounds onto one number,
-    // which would then fail validation with the flag already spent.
-    const QString lowerText = QString::number(this->lowerBound, 'g', 9);
-    const QString upperText = QString::number(this->upperBound, 'g', 9);
-    if (!(lowerText.toDouble() < upperText.toDouble()))
-        return;
-    {
-        const QSignalBlocker b(ui->lineLowerBound);
-        ui->lineLowerBound->setText(lowerText);
-    }
-    {
-        const QSignalBlocker b(ui->lineUpperBound);
-        ui->lineUpperBound->setText(upperText);
-    }
-    m_contourBoundsInitialised = true;
-    this->updateContours();
 }
 
 void vtkWindowCube::thresholdSliderChanged(int action)

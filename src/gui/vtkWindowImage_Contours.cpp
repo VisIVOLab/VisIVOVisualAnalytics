@@ -9,6 +9,8 @@
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "CatalogueTableModel.h"
+#include "ContourExport.h"
+#include "ContourSettingsPanel.h"
 #include "ColorMaps.h"
 #include "CatalogueOverlayUtils.h"
 #include "DiagnosticsWindow.h"
@@ -48,13 +50,14 @@
 #include <vtkPoints.h>
 #include <vtkCellArray.h>
 #include <vtkPolyData.h>
-#include <vtkContourFilter.h>
-#include <vtkFlyingEdges2D.h>
+#include <vtkDataArray.h>
+#include <vtkPointData.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkProperty.h>
 #include <vtkProperty2D.h>
 #include <vtkRegularPolygonSource.h>
 #include <vtkRenderer.h>
+#include <vtkRenderWindow.h>
 #include <vtkRendererCollection.h>
 #include <vtkScalarBarActor.h>
 #include <vtkTextActor.h>
@@ -112,8 +115,68 @@
 using namespace Qt::StringLiterals;
 using namespace CubeGeom;  // shared viewport-geometry helpers (deduplicated)
 
+
 // ── Contours ──
-// Extracted verbatim from vtkWindowImage.cpp. Contour pipeline + external-FITS contour overlay.
+// The image's own contours and those of other files are ContourLayers
+// (ContourLayer.h) drawn with the settings of ContourSettingsPanel: levels by
+// count, sigma, logarithm or list, an optional smoothing, colours, width and
+// dashed negative levels (issue #519).
+
+namespace vc = visivo::contours;
+
+namespace {
+
+/// Two bounds that are the same number as far as typing is concerned: the panel
+/// shows nine digits, so an untouched bound comes back slightly rounded.
+bool sameBound(double a, double b)
+{
+    return std::abs(a - b) <= 1e-6 * std::max({ std::abs(a), std::abs(b), 1e-30 });
+}
+
+vtkRenderer *rendererOf(vtkRenderWindow *win)
+{
+    return win ? win->GetRenderers()->GetFirstRenderer() : nullptr;
+}
+
+}   // namespace
+
+ContourLayer *vtkWindowImage::ownContourLayer()
+{
+    if (!m_contourLayer) {
+        m_contourLayer = std::make_unique<ContourLayer>();
+        m_contourLayer->attach(rendererOf(ui->vtk->renderWindow()));
+        m_contourLayer->setPixelScale(1.0, contourArcsecPerPixel());
+    }
+    return m_contourLayer.get();
+}
+
+ContourLayer *vtkWindowImage::editedContourLayer()
+{
+    const int at = m_contourTarget ? m_contourTarget->currentIndex() : 0;
+    if (at <= 0 || at > m_externalContourLayers.size())
+        return ownContourLayer();
+    return m_externalContourLayers.at(at - 1).layer.get();
+}
+
+vtkImageData *vtkWindowImage::contourDataOf(const ContourLayer *layer) const
+{
+    if (layer == m_contourLayer.get()) {
+        return this->layers ? this->layers->getImageData(this->layers->getMasterIndex())
+                            : nullptr;
+    }
+    for (const auto &ext : m_externalContourLayers)
+        if (ext.layer.get() == layer)
+            return ext.data;
+    return nullptr;
+}
+
+double vtkWindowImage::contourArcsecPerPixel() const
+{
+    // The sky size of a pixel along the latitude axis, which is never stretched
+    // by the projection.
+    const double deg = std::abs(this->remoteDatasetCdelt[1]);
+    return std::isfinite(deg) ? deg * 3600.0 : 0.0;
+}
 
 void vtkWindowImage::setupContourPipeline()
 {
@@ -122,102 +185,154 @@ void vtkWindowImage::setupContourPipeline()
             : nullptr;
     if (!imageData) return;
 
+    ContourLayer *layer = ownContourLayer();
+    vc::Settings s = layer->settings();
+
     // The bounds follow the data until the user overrides them: setContoursVisible()
     // rebuilds this pipeline after every preview -> full swap, and re-reading the
-    // range then would silently discard the numbers typed in the CONTOURS block.
+    // range then would silently discard the numbers typed in the panel.
     double range[2];
     imageData->GetScalarRange(range);
     if (!m_contourBoundsUserSet && std::isfinite(range[0]) && std::isfinite(range[1])
         && range[0] < range[1]) {
-        m_contourLower = range[0];
-        m_contourUpper = range[1];
+        s.lower = range[0];
+        s.upper = range[1];
     }
+    // Levels in sigma need a noise: start from the pixels' own.
+    if (!(s.sigma > 0.0))
+        s.sigma = ContourLayer::noiseOf(imageData);
 
-    const bool firstTime = !m_contourFilter;
-    if (firstTime) {
-        m_contourFilter = vtkSmartPointer<vtkFlyingEdges2D>::New();
-        m_contourActor  = vtkSmartPointer<vtkActor>::New();
+    layer->setInputData(imageData);
+    layer->setPixelScale(1.0, contourArcsecPerPixel());
+    const QString problem = layer->setSettings(s);
+    layer->setVisible(m_contoursVisible);
+    // The panel shows the values the layer is actually using, not the stale
+    // defaults from construction time.
+    if (m_contourPanel && editedContourLayer() == layer) {
+        m_contourPanel->setSettings(s);
+        m_contourPanel->setProblem(problem);
     }
-
-    m_contourFilter->SetInputData(imageData);
-    m_contourFilter->GenerateValues(m_contourLevel, m_contourLower, m_contourUpper);
-    m_contourFilter->Update();
-
-    if (firstTime) {
-        vtkNew<vtkPolyDataMapper> mapper;
-        mapper->SetInputConnection(m_contourFilter->GetOutputPort());
-        mapper->SetScalarRange(m_contourLower, m_contourUpper);
-        m_contourActor->SetMapper(mapper);
-        m_contourActor->VisibilityOff();
-
-        auto *ren = ui->vtk->renderWindow()
-                    ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                    : nullptr;
-        if (ren) ren->AddViewProp(m_contourActor);
-    } else if (m_contourActor->GetMapper()) {
-        static_cast<vtkPolyDataMapper *>(m_contourActor->GetMapper())
-                ->SetScalarRange(m_contourLower, m_contourUpper);
-    }
-
-    // Sync the sidebar line edits so the user sees the values the filter is
-    // actually using, not the stale defaults from construction time.
-    syncContourBoundFields();
-
-    m_contourActor->SetVisibility(m_contoursVisible);
     m_contourPipelineDirty = false;
 }
 
-void vtkWindowImage::syncContourBoundFields()
+void vtkWindowImage::onContourPanelChanged()
 {
-    if (m_contourLowerEdit) {
-        const QSignalBlocker b(m_contourLowerEdit);
-        m_contourLowerEdit->setText(QString::number(m_contourLower, 'g', 9));
-    }
-    if (m_contourUpperEdit) {
-        const QSignalBlocker b(m_contourUpperEdit);
-        m_contourUpperEdit->setText(QString::number(m_contourUpper, 'g', 9));
-    }
-}
-
-void vtkWindowImage::commitContourBounds(double lower, double upper)
-{
-    // Refuse rather than store: setupContourPipeline() feeds these members
-    // straight to GenerateValues, so an unusable pair accepted here would come
-    // back on the next rebuild even though updateContours() had rejected it.
-    if (!std::isfinite(lower) || !std::isfinite(upper) || !(lower < upper)) {
-        statusBar()->showMessage(
-                u"Contour bounds need Lower < Upper, keeping the previous pair."_s, 4000);
-        syncContourBoundFields();
+    if (!m_contourPanel)
         return;
-    }
-    m_contourLower = lower;
-    m_contourUpper = upper;
-    // From here the bounds are the user's, and data updates leave them alone.
-    m_contourBoundsUserSet = true;
-    updateContours();
-}
-
-void vtkWindowImage::updateContours()
-{
-    // Typing a level before the pipeline exists is not an error: build it, then
-    // apply. setupContourPipeline() keeps the bounds already entered.
-    if (!m_contourFilter && m_contourPipelineDirty)
+    // Typing before the pipeline exists is not an error: build it, then apply.
+    if (m_contourPipelineDirty && m_contoursVisible && m_contourTarget
+        && m_contourTarget->currentIndex() <= 0)
         setupContourPipeline();
-    if (!m_contourFilter) return;
-    if (m_contourLevel < 1 || !(m_contourLower < m_contourUpper)) {
-        statusBar()->showMessage(
-                u"Contour levels need Lower < Upper and at least one level."_s, 4000);
+    ContourLayer *layer = editedContourLayer();
+    if (!layer)
         return;
+    vc::Settings s = m_contourPanel->settings();
+    const vc::Settings before = layer->settings();
+    const bool own = layer == m_contourLayer.get();
+    // From here the bounds are the user's, and data updates leave them alone.
+    if (own && (!sameBound(s.lower, before.lower) || !sameBound(s.upper, before.upper)))
+        m_contourBoundsUserSet = true;
+    if (s.levelMode == vc::LevelMode::Sigma && !(s.sigma > 0.0)) {
+        if (vtkImageData *data = contourDataOf(layer)) {
+            s.sigma = ContourLayer::noiseOf(data);
+            m_contourPanel->setSettings(s);
+        }
     }
-    m_contourFilter->GenerateValues(m_contourLevel, m_contourLower, m_contourUpper);
-    m_contourFilter->Modified();
-    m_contourFilter->Update();
-    if (m_contourActor && m_contourActor->GetMapper()) {
-        static_cast<vtkPolyDataMapper *>(m_contourActor->GetMapper())
-                ->SetScalarRange(m_contourLower, m_contourUpper);
-    }
+    const QString problem = layer->setSettings(s);
+    m_contourPanel->setProblem(problem);
     if (ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::estimateContourNoise()
+{
+    ContourLayer *layer = editedContourLayer();
+    if (!layer || !m_contourPanel)
+        return;
+    const bool own = layer == m_contourLayer.get();
+    vtkImageData *data = contourDataOf(layer);
+    // The result may land after the layer is gone (Clear All Contours): look it
+    // up again by address before touching it.
+    const auto apply = [this, layer](double sigma, const QString &how) {
+        const bool known = layer == m_contourLayer.get()
+                || std::any_of(m_externalContourLayers.begin(), m_externalContourLayers.end(),
+                               [layer](const ExternalContourLayer &e) { return e.layer.get() == layer; });
+        if (!known)
+            return;
+        if (!(sigma > 0.0)) {
+            statusBar()->showMessage(u"The noise could not be measured: type it."_s, 6000);
+            return;
+        }
+        vc::Settings s = layer->settings();
+        const bool shown = m_contourPanel && editedContourLayer() == layer;
+        // The panel may hold edits not applied yet.
+        if (shown)
+            s = m_contourPanel->settings();
+        s.sigma = sigma;
+        if (shown)
+            m_contourPanel->setSettings(s);
+        const QString problem = layer->setSettings(s);
+        if (shown)
+            m_contourPanel->setProblem(problem);
+        statusBar()->showMessage(u"Noise σ = %1 (%2)"_s.arg(sigma, 0, 'g', 6).arg(how), 8000);
+        if (ui->vtk->renderWindow())
+            ui->vtk->renderWindow()->Render();
+    };
+
+    // The image's own noise is the one Tools > Estimate Noise reports: the
+    // backend's sigma-clipped RMS of the whole image, so that 3, 5, 10 sigma
+    // match it. Without a backend dataset (or for another file's pixels) it is
+    // 1.4826 x the median absolute deviation of what is on screen.
+    if (own && !this->remoteDatasetId.isEmpty()) {
+        statusBar()->showMessage(u"Estimating the noise of the image…"_s, 0);
+        auto *watcher = new QFutureWatcher<BackendImageNoiseResult>(this);
+        QObject::connect(watcher, &QFutureWatcherBase::finished, this,
+                         [this, watcher, apply]() {
+            watcher->deleteLater();
+            const BackendImageNoiseResult r = watcher->result();
+            statusBar()->clearMessage();
+            if (r.valid && r.rms > 0.0) {
+                apply(r.rms, u"sigma-clipped RMS of the whole image"_s);
+            } else {
+                vtkImageData *shown = this->layers
+                        ? this->layers->getImageData(this->layers->getMasterIndex())
+                        : nullptr;
+                apply(shown ? ContourLayer::noiseOf(shown) : 0.0,
+                      u"1.4826 × MAD of the pixels shown"_s);
+            }
+        });
+        const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+        const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
+        watcher->setFuture(QtConcurrent::run([url, token, session, dataset]() {
+            BackendClient client(url, token);
+            client.setSessionId(session);
+            return client.imageNoise(dataset, QJsonArray());
+        }));
+        return;
+    }
+    apply(data ? ContourLayer::noiseOf(data) : 0.0, u"1.4826 × MAD of the pixels"_s);
+}
+
+void vtkWindowImage::exportContours()
+{
+    // A hidden layer may still hold the preview the full image replaced.
+    if (m_contourPipelineDirty && (!m_contourTarget || m_contourTarget->currentIndex() <= 0))
+        setupContourPipeline();
+    ContourLayer *layer = editedContourLayer();
+    if (!layer || !layer->hasInput()) {
+        statusBar()->showMessage(u"Show the contours first: there is nothing to export."_s, 5000);
+        return;
+    }
+    // The world of this window is the image's pixels (0-based), as the regions'.
+    const auto lines = layer->lines(
+            [](double x, double y) { return std::array<double, 2>{ x, y }; });
+    const QString frame = ui->actionGalactic->isChecked()
+            ? u"galactic"_s
+            : (ui->actionEcliptic->isChecked() ? u"ecliptic"_s : u"fk5"_s);
+    vc::exportContours(this, lines, layer->settings().lineWidth,
+                       { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
+                         this->remoteDatasetId, this->filepath },
+                       frame);
 }
 
 void vtkWindowImage::setContoursVisible(bool vis)
@@ -231,21 +346,45 @@ void vtkWindowImage::setContoursVisible(bool vis)
         setupContourPipeline();
     }
     m_contoursVisible = vis;
-    if (m_contourActor) {
-        m_contourActor->SetVisibility(vis);
-    }
+    if (m_contourLayer)
+        m_contourLayer->setVisible(vis);
     // The tool's parameters appear with the tool and leave with it.
     // The panel follows the tools that are on: this one claims it while it is
     // shown (and the tab is revealed, or the settings would appear where nobody
     // is looking), and hands it back to whichever tool is still on when it goes.
-    if (vis && m_contourSettingsBlock)
+    // Contours of other files keep it: their style is edited there too.
+    if (vis && m_contourSettingsBlock) {
+        refreshContourTargets();
         claimToolSettings(u"Contours"_s, m_contourSettingsBlock);
-    else {
+    } else if (m_externalContourLayers.isEmpty()) {
         releaseToolSettings(u"Contours"_s);
         refreshToolSettingsPanel(/*reveal=*/false);
     }
     if (ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
+}
+
+void vtkWindowImage::refreshContourTargets()
+{
+    if (!m_contourTarget)
+        return;
+    const int keep = m_contourTarget->currentIndex();
+    {
+        const QSignalBlocker b(m_contourTarget);
+        m_contourTarget->clear();
+        m_contourTarget->addItem(u"This image"_s);
+        for (const auto &ext : std::as_const(m_externalContourLayers))
+            m_contourTarget->addItem(ext.label);
+        m_contourTarget->setCurrentIndex(
+                std::clamp(keep, 0, int(m_externalContourLayers.size())));
+    }
+    if (m_contourTargetRow)
+        m_contourTargetRow->setVisible(!m_externalContourLayers.isEmpty());
+    // The panel shows the layer that is picked.
+    if (ContourLayer *layer = editedContourLayer(); layer && m_contourPanel) {
+        m_contourPanel->setSettings(layer->settings());
+        m_contourPanel->setProblem(QString());
+    }
 }
 
 void vtkWindowImage::addExternalContours()
@@ -266,26 +405,10 @@ void vtkWindowImage::addExternalContours()
     if (path.isEmpty())
         return;
 
-    bool ok = false;
-    const QString levelsStr = QInputDialog::getText(
-            this, u"Contour Levels"_s,
-            u"Enter contour levels (comma-separated):"_s,
-            QLineEdit::Normal,
-            u"0.1, 0.5, 1.0, 2.0, 5.0"_s, &ok);
-    if (!ok || levelsStr.trimmed().isEmpty()) return;
-
-    QVector<double> levels;
-    for (const auto &s : levelsStr.split(u','))  {
-        bool lok = false;
-        const double v = s.trimmed().toDouble(&lok);
-        if (lok && std::isfinite(v)) levels.append(v);
-    }
-    if (levels.isEmpty()) return;
-
     this->showPersistentStatusMessage(
             u"Loading contours of %1..."_s.arg(QFileInfo(path).fileName()));
     auto *watcher = new QFutureWatcher<ImageLayerLoadResult>(this);
-    QObject::connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path, levels]() {
+    QObject::connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, path]() {
         watcher->deleteLater();
         this->statusBar()->clearMessage();
         const ImageLayerLoadResult result = watcher->result();
@@ -296,7 +419,7 @@ void vtkWindowImage::addExternalContours()
                                          QString::fromStdString(result.errorMessage)));
             return;
         }
-        this->applyExternalContours(QFileInfo(path).fileName(), result, levels);
+        this->applyExternalContours(QFileInfo(path).fileName(), result);
     });
     watcher->setFuture(QtConcurrent::run(
             &vtkWindowImage::loadAlignedLayer, this->layerGoesThroughBackend(path),
@@ -305,12 +428,9 @@ void vtkWindowImage::addExternalContours()
 }
 
 void vtkWindowImage::applyExternalContours(const QString &label,
-                                           const ImageLayerLoadResult &result,
-                                           const QVector<double> &levels)
+                                           const ImageLayerLoadResult &result)
 {
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                : nullptr;
+    auto *ren = rendererOf(ui->vtk->renderWindow());
     if (!ren || !result.imageData)
         return;
     // Placed as a layer is: the image in master pixels (its own decimation
@@ -319,63 +439,78 @@ void vtkWindowImage::applyExternalContours(const QString &label,
     data->SetSpacing(result.spacing[0], result.spacing[1], result.spacing[2]);
     data->SetOrigin(result.origin[0], result.origin[1], result.origin[2]);
 
-    vtkNew<vtkContourFilter> contour;
-    contour->SetInputData(data);
-    contour->SetNumberOfContours(levels.size());
-    for (int i = 0; i < levels.size(); ++i)
-        contour->SetValue(i, levels[i]);
-    contour->Update();
-
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputConnection(contour->GetOutputPort());
-    mapper->ScalarVisibilityOff();
-
-    auto actor = vtkSmartPointer<vtkActor>::New();
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(1.0, 0.4, 0.2);
-    actor->GetProperty()->SetLineWidth(1.5);
+    auto layer = std::make_shared<ContourLayer>();
+    layer->attach(ren);
     vtkNew<vtkTransform> transform;
     transform->Translate(result.origin[0], result.origin[1], 0.);
     transform->RotateWXYZ(result.rotationDegrees, 0., 0., 1.);
     transform->Translate(-result.origin[0], -result.origin[1], 0.);
-    actor->SetUserTransform(transform);
-    actor->VisibilityOn();
+    layer->setUserTransform(transform);
+    layer->setInputData(data);
+    layer->setPixelScale(1.0, contourArcsecPerPixel());
 
-    ren->AddActor(actor);
-    m_externalContourLayers.append({ label, actor });
+    // Radio contours are multiples of the noise: start from 3, 5, 10 and 20
+    // sigma of this file's pixels, in one colour; the panel changes all of it.
+    vc::Settings s;
+    s.levelMode = vc::LevelMode::Sigma;
+    s.sigma = ContourLayer::noiseOf(data);
+    s.colourMode = vc::ColourMode::Single;
+    double range[2];
+    data->GetScalarRange(range);
+    if (std::isfinite(range[0]) && std::isfinite(range[1]) && range[0] < range[1]) {
+        s.lower = range[0];
+        s.upper = range[1];
+    }
+    const QString problem = layer->setSettings(s);
+    layer->setVisible(true);
+
+    m_externalContourLayers.append({ label, layer, data });
+    if (m_contourTarget) {
+        // Show the new layer's settings, and the panel itself: the file was
+        // loaded to be styled.
+        refreshContourTargets();
+        const QSignalBlocker b(m_contourTarget);
+        m_contourTarget->setCurrentIndex(int(m_externalContourLayers.size()));
+        if (m_contourPanel) {
+            m_contourPanel->setSettings(s);
+            m_contourPanel->setProblem(problem);
+        }
+    }
+    if (m_contourSettingsBlock)
+        claimToolSettings(u"Contours"_s, m_contourSettingsBlock);
+    if (!problem.isEmpty())
+        statusBar()->showMessage(problem, 6000);
     ui->vtk->renderWindow()->Render();
 }
 
 void vtkWindowImage::overlayExternalContourData(const QString &label, vtkImageData *data)
 {
     if (!data || data->GetNumberOfPoints() == 0) return;
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer() : nullptr;
+    auto *ren = rendererOf(ui->vtk->renderWindow());
     if (!ren) return;
 
     double range[2];
     data->GetScalarRange(range);
     if (range[1] <= range[0]) return;
 
-    constexpr int nLevels = 8;
-    vtkNew<vtkFlyingEdges2D> contour;
-    contour->SetInputData(data);
-    contour->GenerateValues(nLevels, range[0] + (range[1] - range[0]) * 0.1,
-                            range[0] + (range[1] - range[0]) * 0.9);
-    contour->Update();
+    // Eight levels between a tenth and nine tenths of the range, in green: the
+    // cube's current slice, which is on its own grid and so is not aligned.
+    vc::Settings s;
+    s.levelMode = vc::LevelMode::Count;
+    s.count = 8;
+    s.lower = range[0] + (range[1] - range[0]) * 0.1;
+    s.upper = range[0] + (range[1] - range[0]) * 0.9;
+    s.colourMode = vc::ColourMode::Single;
+    s.colour = u"#33ff66"_s;
+    auto layer = std::make_shared<ContourLayer>();
+    layer->attach(ren);
+    layer->setInputData(data);
+    layer->setPixelScale(1.0, contourArcsecPerPixel());
+    layer->setSettings(s);
+    layer->setVisible(true);
 
-    vtkNew<vtkPolyDataMapper> mapper;
-    mapper->SetInputConnection(contour->GetOutputPort());
-    mapper->ScalarVisibilityOff();
-
-    auto actor = vtkSmartPointer<vtkActor>::New();
-    actor->SetMapper(mapper);
-    actor->GetProperty()->SetColor(0.2, 1.0, 0.4);
-    actor->GetProperty()->SetLineWidth(1.5);
-    actor->VisibilityOn();
-
-    ren->AddActor(actor);
-    m_externalContourLayers.append({ label, actor });
+    m_externalContourLayers.append({ label, layer, data });
+    refreshContourTargets();
     statusBar()->showMessage(
             QStringLiteral("Contour overlay from cube: %1").arg(label), 3000);
     ui->vtk->renderWindow()->Render();
@@ -383,19 +518,20 @@ void vtkWindowImage::overlayExternalContourData(const QString &label, vtkImageDa
 
 void vtkWindowImage::clearAllContours()
 {
-    auto *ren = ui->vtk->renderWindow()
-                ? ui->vtk->renderWindow()->GetRenderers()->GetFirstRenderer()
-                : nullptr;
-    for (auto &layer : m_externalContourLayers) {
-        if (ren && layer.actor) ren->RemoveActor(layer.actor);
-    }
-    m_externalContourLayers.clear();
+    m_externalContourLayers.clear();   // the layers take their actors off with them
+    refreshContourTargets();
     // Through the action, so the Tools entry and the left dock's checkbox both
     // follow; calling setContoursVisible() directly left them showing "on".
     if (m_actToggleContours)
         m_actToggleContours->setChecked(false);
     else
         setContoursVisible(false);
-    if (ren && ui->vtk->renderWindow())
+    // With the own contours already off nothing was toggled, and the settings
+    // of the files just cleared would stay in the Parameters tab.
+    if (!m_contoursVisible) {
+        releaseToolSettings(u"Contours"_s);
+        refreshToolSettingsPanel(/*reveal=*/false);
+    }
+    if (ui->vtk->renderWindow())
         ui->vtk->renderWindow()->Render();
 }

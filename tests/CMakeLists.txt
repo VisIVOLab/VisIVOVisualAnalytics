@@ -183,6 +183,8 @@ add_executable(VisIVOTests
     ${VISIVO_ROOT}/src/gui/RenderSessionCalls.cpp
     TestRegionFullRes.h
     test_region_full_res.cpp
+    TestContourSettings.h
+    test_contour_settings.cpp
     TestRegionModel.h
     test_region_model.cpp
     TestRegionFlux.h

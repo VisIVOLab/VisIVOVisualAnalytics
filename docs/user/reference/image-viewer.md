@@ -248,15 +248,44 @@ fitting in [SED fitting](sed-fitting.md).
 
 ### Tools ▸ Contours
 
-- *Show Contours*: contours of the image itself. *Level* (number of lines),
-  *Lower* and *Upper* (value range) are in *Inspector ▸ Parameters*.
+- *Show Contours*: contours of the image itself. Their settings are in
+  *Inspector ▸ Parameters* while the tool is on (see below).
 - *Load Contour from FITS…*: contours from another FITS file (for example a
-  radio moment 0 over an optical image), with levels you enter. Several can be
-  stacked.
+  radio moment 0 over an optical image), drawn where its WCS puts it on this
+  image. They start at 3, 5, 10 and 20 σ of that file, in one colour. Several
+  can be stacked; the *Contours of* box at the top of the Parameters tab
+  chooses which set the settings below are for, so another file's contours take
+  the same controls as the image's own.
+- *Export Contours…*: saves the contours of the selected set (see below).
 - *Clear All Contours*: removes every contour layer.
 
 From a cube viewer, *Tools ▸ Overlay Slice on an Open Image* sends the current
-slice here as a contour overlay.
+slice here as a contour overlay (eight green levels, editable the same way).
+
+The contour settings are the same in the image viewer, for contours from
+another file, and in the cube viewer's slice (*Show Contours* there):
+
+| Setting | What it does |
+| --- | --- |
+| *Levels* | How the levels are chosen. *Count, Lower to Upper*: *Count* levels from *Lower* to *Upper*, both included. *n × σ of the noise*: multiples of the noise *σ* (default 3, 5, 10, 20), with *Also -n σ* for the negative levels. *Logarithmic*: *Count* levels spaced geometrically from *Lower* to *Upper* (both above 0). *List*: the levels you type, separated by commas. |
+| *Noise σ* | The noise for the σ levels, in the unit of the data. *Estimate* fills it. For the image's own contours it is the sigma-clipped RMS of the whole image, the number *Tools ▸ Estimate Noise* reports; for another file, or when the image is not open on the backend, it is 1.4826 × the median absolute deviation of the pixels, which bright sources hardly move. In the cube viewer it is the noise of the channel on screen. |
+| *Smooth* | A Gaussian smoothing of the pixels before they are contoured, with its σ in pixels or in arcsec. The image itself is not changed, and blanked pixels stay blank. *Off* leaves the pixels as they are. |
+| *Colour* | *One colour* (a picker), *Colour map over the levels* (a map spread over the levels, lowest to highest), or *Colour per level* (colours typed lowest first, repeated when there are more levels than colours). |
+| *Line width* | In pixels. |
+| *Dash negative levels* | Draws the levels below zero as dashed lines. |
+
+If the settings give no levels (an unknown noise, a list that is empty, a
+logarithmic range that reaches 0) the reason is shown under the settings and
+nothing is drawn.
+
+*Export Contours…* writes the lines as a DS9 region file, a polygon for each
+closed contour and a segment for one that leaves the image, each with its
+colour, width, dash and its level as a tag; or as a table of vertices (CSV: level,
+line number, whether it closes, vertex, and the two coordinates). The
+coordinates are in the sky frame you pick (the frame of the window comes first)
+or in image pixels (1-based); sky positions use the dataset's WCS on the
+backend, so they need the image to be open there. The file loads in DS9 on top
+of the same image.
 
 ### Tools ▸ Measure
 
