@@ -15,11 +15,16 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../..');
 
 function schemaFields(cls) {
+  // A model's own fields and those of a base other than BaseModel (the
+  // spectral choice the moment and PV requests share, issue #496).
   const src = readFileSync(path.join(REPO, 'backend/app/schemas.py'), 'utf8');
-  const start = src.indexOf(`class ${cls}(BaseModel):`);
-  assert.ok(start >= 0, cls);
+  const head = src.match(new RegExp(`^class ${cls}\\((\\w+)\\):`, 'm'));
+  assert.ok(head, cls);
+  const start = head.index;
   const end = src.indexOf('\nclass ', start + 10);
-  return new Set([...src.slice(start, end).matchAll(/^ {4}(\w+): /gm)].map((m) => m[1]));
+  const own = [...src.slice(start, end).matchAll(/^ {4}(\w+): /gm)].map((m) => m[1]);
+  const inherited = head[1] === 'BaseModel' ? [] : [...schemaFields(head[1])];
+  return new Set([...inherited, ...own]);
 }
 
 test('the moment request is the desktop\'s, under the route\'s field names', () => {
@@ -28,7 +33,9 @@ test('the moment request is the desktop\'s, under the route\'s field names', () 
   const fields = schemaFields('MomentProductRequest');
   for (const k of Object.keys(req)) assert.ok(fields.has(k), k);
   // What the desktop sends (BackendClient::requestMoment): these seven keys, not moment2_variance.
-  assert.deepEqual([...fields].filter((k) => !(k in req)).sort(), ['dataset_id', 'moment2_variance']);
+  // The spectral axis choice (#496) is the desktop's: the page computes on the file's axis.
+  assert.deepEqual([...fields].filter((k) => !(k in req)).sort(),
+    ['dataset_id', 'moment2_variance', 'rest_freq_hz', 'spectral_frame', 'spectral_quantity']);
 });
 
 test('the Provenance uses the desktop\'s labels; the replay isolates, then measures the new cube', () => {

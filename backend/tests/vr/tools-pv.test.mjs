@@ -28,9 +28,12 @@ test('a box point is the fractional pixel the desktop\'s path takes (pixel centr
 
 test('the PV request uses the route\'s fields; origin and labels are the desktop\'s', () => {
   const src = readFileSync(path.join(REPO, 'backend/app/schemas.py'), 'utf8');
-  const start = src.indexOf('class CubePvRequest(BaseModel):');
+  const start = src.indexOf('class CubePvRequest(');
+  assert.ok(start >= 0, 'CubePvRequest');
   const fields = new Set([...src.slice(start, src.indexOf('\nclass ', start + 5)).matchAll(/^ {4}(\w+): /gm)].map((m) => m[1]));
   const req = TP.pvRequest([[443.45, 287.57], [487.45, 307.57]], 1.4);
+  // Its own fields; the spectral axis choice it inherits (#496) is the desktop's,
+  // the page draws the PV on the file's axis.
   assert.deepEqual([...Object.keys(req), 'dataset_id'].sort(), [...fields].sort());
   assert.equal(req.width_pixels, 1);
   assert.equal(TP.pvRequest([[0, 0], [1, 1]], 0).width_pixels, 1);
