@@ -1508,7 +1508,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                      [this]() { this->exportRegionsToFile(); });
     this->setupRegionListActions();
 
-    // Contour overlay — same approach as the cube viewer: toggle + Level/Lower/Upper
+    // Contour overlay — same settings as the cube viewer's: levels, smoothing, colours
     ui->menuTools->addSeparator();
     m_actToggleContours = ui->menuTools->addAction(u"Show Contours"_s);
     m_actToggleContours->setCheckable(true);
@@ -1526,6 +1526,14 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     m_actClearAllContours = ui->menuTools->addAction(u"Clear All Contours"_s);
     QObject::connect(m_actClearAllContours, &QAction::triggered, this,
                      &vtkWindowImage::clearAllContours);
+
+    m_actExportContours = ui->menuTools->addAction(u"Export Contours…"_s);
+    m_actExportContours->setToolTip(
+            u"Save the contours as a ds9 region file (a polygon per line, with its colour "
+            u"and width) or as a table of vertices, in the sky frame of the window or in "
+            u"pixels."_s);
+    QObject::connect(m_actExportContours, &QAction::triggered, this,
+                     &vtkWindowImage::exportContours);
 
     // ── Measurement tools ─────────────────────────────────────────────────
     ui->menuTools->addSeparator();

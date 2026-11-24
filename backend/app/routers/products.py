@@ -321,13 +321,14 @@ async def isosurface_product(
         entry = _require_dataset(session, request.dataset_id)
         if entry["kind"] != "cube":
             raise HTTPException(422, "Isosurface requires a cube dataset.")
-        # "budget": a surface cached before it was bounded (ISO_MAX_POLYS) is
-        # not served again.
-        iso_cache_params = {"threshold": float(request.threshold), "budget": 1}
+        levels = request.resolved_levels()
+        # "budget": a surface cached before it was bounded (ISO_MAX_POLYS), or
+        # before an answer carried one surface per level (2), is not served again.
+        iso_cache_params = {"levels": levels, "budget": 2}
         cache_key, param_hash = PRODUCT_CACHE.make_key(entry["path"], "isosurface", iso_cache_params)
         cached = PRODUCT_CACHE.get(cache_key)
         if cached is not None:
-            logger.debug("[isosurface] cache hit dataset_id=%s threshold=%s", request.dataset_id, request.threshold)
+            logger.debug("[isosurface] cache hit dataset_id=%s levels=%s", request.dataset_id, levels)
             return IsosurfaceProductResponse(valid=True, error="", **cached.payload)
         # Heavy task — gated by the heavy-task semaphore so it leaves at
         # least one worker pool slot free for interactive slice / probe /
@@ -339,7 +340,7 @@ async def isosurface_product(
             int(entry["width"]),
             int(entry["height"]),
             int(entry["depth"]),
-            float(request.threshold),
+            levels,
         )
         dataset = ScientificFitsDataset(entry["path"])
         PRODUCT_CACHE.put(
@@ -348,7 +349,13 @@ async def isosurface_product(
             dataset_path=entry["path"],
             parameter_hash=param_hash,
             payload=dict(result),
-            scientific_metadata={"threshold": float(request.threshold)},
+            scientific_metadata={
+                "threshold": levels[0] if len(levels) == 1 else None,
+                "levels": levels,
+                "spacing": request.spacing if request.n_levels is not None and not request.levels else None,
+                "skipped_levels": result.get("skipped_levels", []),
+                "stride": result.get("stride", []),
+            },
             provenance_metadata=dataset.provenance_context(),
         )
     except HTTPException:

@@ -2,6 +2,9 @@
 #include "BackendLocality.h"
 #include "app/BackendWording.h"
 #include "CameraPresetActions.h"
+#include "ColourBarTicks.h"
+#include "SaveViewDialog.h"
+#include "VolumeColorbar.h"
 #include "WindowCloseShortcut.h"
 #include "app/BackendClient.h"
 #include "app/ThemeManager.h"
@@ -55,6 +58,12 @@
 
 #include <algorithm>
 #include <cmath>
+
+#include <QDir>
+#include <QFontInfo>
+#include <QFontMetrics>
+#include <QPainter>
+#include <QStatusBar>
 #include <QSysInfo>
 #include <array>
 #include <cstring>
@@ -182,6 +191,12 @@ void vtkWindowVbtVolume::setupUi()
         visivo::applyCameraPreset(this->renderer, azimuth, elevation);
         this->renderWindow->Render();
     });
+    auto *saveView = viewMenu->addAction(u"Save View As…"_s);
+    saveView->setToolTip(u"Save the volume as a PNG (any size, optionally with a transparent "
+                         u"background), or as a PDF or SVG with the axes, colour bar and "
+                         u"title as vectors over the render."_s);
+    QObject::connect(saveView, &QAction::triggered, this, &vtkWindowVbtVolume::saveViewAs3d);
+    viewMenu->addSeparator();
     this->m_actionSessionPanel = new QAction(u"Session Data Panel"_s, this);
     this->m_actionSessionPanel->setCheckable(true);
     this->m_actionSessionPanel->setChecked(true);
@@ -1241,4 +1256,51 @@ void vtkWindowVbtVolume::showVbtHeaderDialog()
     QObject::connect(buttons, &QDialogButtonBox::rejected, dlg, &QDialog::reject);
     layout->addWidget(buttons);
     dlg->show();
+}
+
+// Save View As… (#528). The bar and the axes box are drawn by VTK in this view: a PNG
+// keeps them as they are on screen; a PDF or SVG redraws them as vectors.
+void vtkWindowVbtVolume::saveViewAs3d()
+{
+    visivo::SaveViewSource source;
+    source.name = QFileInfo(this->m_headerPath).completeBaseName();
+    source.view = this->vtkWidget;
+    source.window = this->renderWindow;
+    source.renderer = this->renderer;
+    source.axes = this->boxActor;
+    source.colourbarInScene = true;
+    source.hideInScene = visivo::renderexport::sceneHider(
+            { this->boxActor.Get(), this->scalarBar.Get() }, this->axesWidget.Get());
+    if (this->scalarBar->GetVisibility()) {
+        // The bar's own title is the field's name; its colours are the LUT's.
+        const double *range = this->scalarBarLut->GetTableRange();
+        const bool log = this->scalarBarLut->GetScale() == VTK_SCALE_LOG10;
+        if (range[1] > range[0] && (!log || range[0] > 0.0)) {
+            VolumeColorbar::Look look;
+            for (int i = 0; i < 256; ++i) {
+                double rgb[4];
+                this->scalarBarLut->GetTableValue(i, rgb);
+                look.colours << QColor::fromRgbF(rgb[0], rgb[1], rgb[2]);
+            }
+            QVector<double> values;
+            const QVector<double> positions{ 0.0, 0.25, 0.5, 0.75, 1.0 };
+            for (const double u : positions)
+                values << (log ? range[0] * std::pow(range[1] / range[0], u)
+                               : range[0] + (range[1] - range[0]) * u);
+            const QStringList labels = visivo::tickLabels(values);
+            for (int i = 0; i < positions.size(); ++i)
+                look.ticks << qMakePair(positions[i], labels[i]);
+            look.title = this->comboScalarField ? this->comboScalarField->currentText() : QString();
+            source.colourbar = [look](QPainter &painter, const QSize &view) {
+                QFont font = VolumeColorbar::barFont();
+                font.setPixelSize(QFontInfo(font).pixelSize());   // as large as on screen
+                painter.setFont(font);
+                const QFontMetrics fm(font);
+                VolumeColorbar::paint(painter, VolumeColorbar::placement(view, fm, look), fm, look);
+            };
+        }
+    }
+    const QString saved = visivo::saveViewAs(source);
+    if (!saved.isEmpty())
+        this->statusBar()->showMessage(QStringLiteral("Saved %1").arg(QDir::toNativeSeparators(saved)), 8000);
 }

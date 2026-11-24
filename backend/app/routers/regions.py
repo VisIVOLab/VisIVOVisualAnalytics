@@ -15,6 +15,7 @@ in (and back), or moves it to another sky frame.
 """
 import asyncio
 import logging
+import math
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -134,6 +135,26 @@ def _resolve_to_frame(to_frame: str, wcs) -> str:
         raise HTTPException(422, str(exc)) from exc
 
 
+def _require_finite_points(regions: list[dict[str, Any]]) -> None:
+    """422 naming the region and the vertex when a point is not a number.
+
+    A client that writes NaN into JSON sends null (a contour that runs along
+    the blanked edge of an image has such vertices); without this the export
+    failed on it as a bare "Internal Server Error", or "Unprocessable
+    Entity" with no reason when the regions were moved to a sky frame.
+    """
+    for i, r in enumerate(regions, 1):
+        pts = r.get("points")
+        if not isinstance(pts, list):
+            continue
+        for j, p in enumerate(pts, 1):
+            ok = (isinstance(p, (list, tuple)) and len(p) >= 2
+                  and all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                          and math.isfinite(v) for v in p[:2]))
+            if not ok:
+                raise HTTPException(422, f"Region {i}, vertex {j} is not a number (a blanked pixel?): {p!r}.")
+
+
 def _maybe_convert(regions, to_frame, session, dataset_id):
     """Reframe regions for export (1-based pixels, as in region files).
 
@@ -209,6 +230,7 @@ async def export_regions(
     session: Session = Depends(get_session),
 ):
     """Serialize canonical region dicts to CRTF or DS9 text (optionally reframed)."""
+    _require_finite_points(request.regions)
     regions = _maybe_convert(request.regions, request.to_frame, session, request.dataset_id)
     try:
         text = R.export_regions(regions, request.format)
@@ -261,6 +283,7 @@ async def convert_regions(
         raise HTTPException(422, "Image-frame regions are converted to pixel sizes.")
     if not request.regions:
         return {"valid": True, "error": "", "frame": to_frame, "native_frame": native, "regions": []}
+    _require_finite_points(request.regions)
     def _needs_wcs(r: dict[str, Any]) -> bool:
         src = r.get("frame", "image")
         if (src == "image") != (to_frame == "image"):

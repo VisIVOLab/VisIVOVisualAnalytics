@@ -54,6 +54,8 @@ the window loads an even sample of the table:
   ellipsoid, sphere and cross glyphs of object catalogues are not offered.
 - *Ray-traced light*: draws every row as a continuous medium on this machine's
   GPU, for figures and movies. See [Ray-traced particles](raytraced-particles.md).
+- *View ▸ Save View As…*: a PNG (any size, optionally with a transparent background),
+  PDF or SVG of the view. See [Figures, movies and linked views](publication-output.md#save-view-as).
 - *FILTERS*: restrict the rows by value or by a named 3-D region; several
   filters combine. *Tools ▸ Selection Diagnostics…* and *Tools ▸ Compare
   Quantity…* work as for [Gadget snapshots](gadget-snapshots.md).
@@ -91,6 +93,10 @@ FITS cube. Each field is read in place from the `.bin`, without a copy.
   lasso, export). The 0th moment is the projection along Z; *Extract Spectrum*
   and *Extract PV Diagram* run along Z. Tools that need a spectral axis or sky
   coordinates are hidden.
+
+*View ▸ Save View As…* in the volume window, or *Tools ▸ Export ▸ Save View As…* in the cube
+viewer, saves the volume as a PNG, PDF or SVG; see
+[Figures, movies and linked views](publication-output.md#save-view-as).
 
 On a remote backend a volume behaves like any cube: it is read in place there
 and a large field can be rendered on the backend.

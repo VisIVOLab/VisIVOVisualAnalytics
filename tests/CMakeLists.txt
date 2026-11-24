@@ -185,6 +185,8 @@ add_executable(VisIVOTests
     ${VISIVO_ROOT}/src/gui/RenderSessionCalls.cpp
     TestRegionFullRes.h
     test_region_full_res.cpp
+    TestContourSettings.h
+    test_contour_settings.cpp
     TestLiveRegionSpectra.h
     test_live_region_spectra.cpp
     TestRegionModel.h
@@ -204,6 +206,8 @@ add_executable(VisIVOTests
     TestThresholdShare.h
     test_threshold_share.cpp
     TestColourBarTicks.h
+    TestIsoLevels.h
+    test_iso_levels.cpp
     test_colour_bar_ticks.cpp
     TestSequentialColors.h
     test_sequential_colors.cpp
@@ -225,6 +229,8 @@ add_executable(VisIVOTests
     test_orbit_path.cpp
     TestParticleFrame.h
     test_particle_frame.cpp
+    TestRenderExportPlan.h
+    test_render_export_plan.cpp
     TestProductRecipe.h
     test_product_recipe.cpp
     TestLassoReplay.h
@@ -317,6 +323,7 @@ target_include_directories(VisIVOTests PRIVATE
 target_link_libraries(VisIVOTests PRIVATE
     visivo_test_support
     Qt::Test
+    Qt::Gui          # QColor (the isosurface levels, IsoLevels.h); no window is made
     Qt::Concurrent   # the quit drain's test of a worker waiting on a queued job
 )
 # Let the contract test locate the shared header manifest in both build layouts.
@@ -384,4 +391,32 @@ if (TARGET Qt6::Widgets)
     add_test(NAME VisIVOStatusMessageRoom COMMAND VisIVOStatusMessageRoomTest)
     set_tests_properties(VisIVOStatusMessageRoom PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+endif()
+
+# ── Save View As render test (issue #528) ────────────────────────────────────
+# Needs VTK, QtGui and QtSvg, so it is a process of its own and only built where
+# they are found (the main build has them; the standalone CI build skips it). It
+# renders a small scene offscreen and skips itself, with a message, when no GL
+# context can be made.
+if (NOT TARGET VTK::RenderingOpenGL2)
+    find_package(VTK QUIET COMPONENTS CommonCore FiltersSources InteractionWidgets
+                 RenderingAnnotation RenderingCore RenderingOpenGL2)
+endif()
+find_package(Qt6 QUIET COMPONENTS Gui Svg)
+if (TARGET VTK::RenderingOpenGL2 AND TARGET Qt6::Gui AND TARGET Qt6::Svg)
+    add_executable(VisIVORenderExportTest
+        test_render_export_render.cpp
+        ${VISIVO_ROOT}/src/vtk/RenderExport.cpp
+    )
+    set_target_properties(VisIVORenderExportTest PROPERTIES AUTOMOC ON)
+    target_include_directories(VisIVORenderExportTest PRIVATE ${VISIVO_ROOT}/src)
+    target_link_libraries(VisIVORenderExportTest PRIVATE
+        Qt::Gui Qt::Svg Qt::Test
+        VTK::CommonCore VTK::FiltersSources VTK::InteractionWidgets
+        VTK::RenderingAnnotation VTK::RenderingCore VTK::RenderingOpenGL2)
+    vtk_module_autoinit(TARGETS VisIVORenderExportTest
+        MODULES VTK::RenderingOpenGL2 VTK::InteractionWidgets VTK::RenderingAnnotation)
+    add_test(NAME VisIVORenderExport COMMAND VisIVORenderExportTest)
+    set_tests_properties(VisIVORenderExport PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120 SKIP_REGULAR_EXPRESSION "SKIP")
 endif()

@@ -539,7 +539,17 @@ set(PROJECT_SOURCES
         src/gui/RaytraceViewport.h
         src/gui/ColourBarTicks.h
         src/gui/VolumeColorbar.cpp
+        src/gui/IsoLegend.cpp
+        src/gui/IsoLegend.h
+        src/gui/IsoLevels.h
+        src/gui/IsoLevelsDialog.cpp
+        src/gui/IsoLevelsDialog.h
         src/gui/VolumeColorbar.h
+        src/gui/RenderExportPlan.h
+        src/gui/SaveViewDialog.cpp
+        src/gui/SaveViewDialog.h
+        src/vtk/RenderExport.cpp
+        src/vtk/RenderExport.h
         src/gui/BusyStatus.cpp
         src/gui/BusyStatus.h
         src/gui/BusyTracker.h
@@ -692,6 +702,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Kinematic.cpp
         src/gui/vtkWindowCube_Lasso.cpp
         src/gui/vtkWindowCube_Movie.cpp
+        src/gui/vtkWindowCube_IsoLevels.cpp
         src/gui/vtkWindowCube_Link.cpp
         src/gui/vtkWindowCube_VrHeadset.cpp
         src/gui/vtkWindowCube_VrActivity.cpp
@@ -748,6 +759,14 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Dynspec.cpp
         src/gui/vtkWindowImage_Measurement.cpp
         src/gui/vtkWindowImage_Contours.cpp
+        src/gui/ContourLayer.cpp
+        src/gui/vtkWindowCube_Contours.cpp
+        src/gui/ContourLayer.h
+        src/gui/ContourSettings.h
+        src/gui/ContourSettingsPanel.cpp
+        src/gui/ContourSettingsPanel.h
+        src/gui/ContourExport.cpp
+        src/gui/ContourExport.h
         src/gui/vtkWindowImage_Annotations.cpp
         src/gui/vtkWindowImage_Products.cpp
         src/gui/vtkWindowImage_Cosmology.cpp

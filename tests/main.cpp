@@ -46,12 +46,14 @@
 #include "TestRemoteRenderQueue.h"
 #include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
+#include "TestContourSettings.h"
 #include "TestLiveRegionSpectra.h"
 #include "TestDatasetName.h"
 #include "TestVbtByteOrder.h"
 #include "TestCubeStatRows.h"
 #include "TestRecentReopen.h"
 #include "TestColourBarTicks.h"
+#include "TestIsoLevels.h"
 #include "TestSequentialColors.h"
 #include "TestImageLayerContext.h"
 #include "TestProductPaneDisplay.h"
@@ -87,6 +89,7 @@
 #include "TestPvPathGeometry.h"
 #include "TestOrbitPath.h"
 #include "TestParticleFrame.h"
+#include "TestRenderExportPlan.h"
 #include "TestProductRecipe.h"
 #include "TestLassoReplay.h"
 #include "TestSharedSelection.h"
@@ -155,6 +158,7 @@ int main(int argc, char *argv[])
     { TestRemoteRenderQueue t; status |= QTest::qExec(&t, argc, argv); }
     { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestContourSettings  t; status |= QTest::qExec(&t, argc, argv); }
     { TestLiveRegionSpectra t; status |= QTest::qExec(&t, argc, argv); }
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
     { TestVbtByteOrder     t; status |= QTest::qExec(&t, argc, argv); }
@@ -162,6 +166,7 @@ int main(int argc, char *argv[])
     { TestRecentReopen     t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }
     { TestColourBarTicks   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestIsoLevels        t; status |= QTest::qExec(&t, argc, argv); }
     { TestSequentialColors t; status |= QTest::qExec(&t, argc, argv); }
     { TestImageLayerContext t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductPaneDisplay t; status |= QTest::qExec(&t, argc, argv); }
@@ -211,6 +216,7 @@ int main(int argc, char *argv[])
     { TestCopilotChoice    t; status |= QTest::qExec(&t, argc, argv); }
     { TestVelocityLodGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestSolidSplats      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRenderExportPlan t; status |= QTest::qExec(&t, argc, argv); }
     { TestRaytraceViewRules t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

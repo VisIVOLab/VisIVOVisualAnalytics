@@ -16,12 +16,18 @@
 #include "RemotePointView.h"
 #include "RemoteRenderWidget.h"
 #include "LUTCustomizerDialog.h"
+#include "SaveViewDialog.h"
 #include "VolumeColorbar.h"
 #include "Catalogue3DParser.h"
 #include "ColorMaps.h"
 #include "LutScale.h"
 
 #include <QActionGroup>
+#include <QDir>
+#include <QFileInfo>
+#include <QFontInfo>
+#include <QFontMetrics>
+#include <QPainter>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -49,6 +55,8 @@
 #include <cmath>
 
 #include <vtkCamera.h>
+#include <vtkCubeAxesActor.h>
+#include <vtkOrientationMarkerWidget.h>
 #include <vtkColorTransferFunction.h>
 #include <vtkGenericOpenGLRenderWindow.h>
 #include <vtkFloatArray.h>
@@ -1077,4 +1085,49 @@ void vtkWindowCatalogue3D::enablePointOnlyControls(bool enabled)
         ui->chkLabels->setEnabled(enabled);
     if (this->m_sceneCard)
         this->m_sceneCard->setEnabled(enabled);
+}
+
+// Save View As… (#528). The local render is read back at the size asked for; the axes
+// box is VTK's in this view, so a PNG keeps it as on screen and a PDF or SVG redraws it
+// as vectors. The colour bar is a Qt overlay, drawn over the picture. A view rendered
+// on the server gives the frame it last streamed.
+void vtkWindowCatalogue3D::saveViewAs3d()
+{
+    const QWidget *page = this->m_renderStack ? this->m_renderStack->currentWidget() : nullptr;
+    if (page && page == this->m_rtView) {
+        QMessageBox::information(this, u"Save View As"_s,
+                                 u"The ray-traced view saves its pictures from its own "
+                                 u"output controls, at up to 8K."_s);
+        return;
+    }
+    const bool remote = page && page == this->m_remoteWidget;
+
+    visivo::SaveViewSource source;
+    source.name = QFileInfo(this->filepath).completeBaseName();
+    if (remote) {
+        source.view = this->m_remoteWidget;
+        source.frame = this->m_remoteWidget->currentFrame();
+    } else {
+        source.view = ui->vtk;
+        source.window = this->renderWindow.Get();
+        source.renderer = this->renderer.Get();
+        source.axes = this->cubeAxesActor.Get();
+        source.hideInScene = visivo::renderexport::sceneHider({ this->cubeAxesActor.Get() },
+                                                              this->axesWidget.Get());
+    }
+    if (this->m_colorbar && !this->m_colorbar->isHidden()) {
+        const VolumeColorbar::Look look = this->m_colorbar->look();
+        if (!look.colours.isEmpty()) {
+            source.colourbar = [look](QPainter &painter, const QSize &view) {
+                QFont font = VolumeColorbar::barFont();
+                font.setPixelSize(QFontInfo(font).pixelSize());   // as large as on screen
+                painter.setFont(font);
+                const QFontMetrics fm(font);
+                VolumeColorbar::paint(painter, VolumeColorbar::placement(view, fm, look), fm, look);
+            };
+        }
+    }
+    const QString saved = visivo::saveViewAs(source);
+    if (!saved.isEmpty())
+        this->statusBar()->showMessage(u"Saved %1"_s.arg(QDir::toNativeSeparators(saved)), 8000);
 }

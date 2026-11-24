@@ -9,7 +9,7 @@ import subprocess  # noqa: F401
 import warnings  # noqa: F401
 import zlib  # noqa: F401
 from pathlib import Path  # noqa: F401
-from typing import Any  # noqa: F401
+from typing import Any, Sequence  # noqa: F401
 
 import numpy as np
 
@@ -69,15 +69,21 @@ def _coarser(shape: tuple[int, ...], strides: tuple[int, ...]) -> tuple[int, ...
     return None if out == tuple(strides) else out
 
 
-def worker_isosurface(path: str, width: int, height: int, depth: int, threshold: float) -> dict[str, Any]:
+def worker_isosurface(path: str, width: int, height: int, depth: int,
+                      threshold: float | Sequence[float]) -> dict[str, Any]:
     """
-    Compute a VTK isosurface (vtkFlyingEdges3D) from a FITS cube.
+    Compute VTK isosurfaces (vtkFlyingEdges3D) from a FITS cube, at one level
+    (``threshold``) or at several (a list of levels, issue #526).
 
     The cube is loaded with memmap=True and materialised only in the worker
     process; the main FastAPI process never touches the large array. A large
     cube is sampled with per-axis strides (ISO_MAX_VOXELS), coarsened while the
-    surface exceeds ISO_MAX_POLYS; the points stay in the full cube's voxel
-    coordinates.
+    surfaces together exceed ISO_MAX_POLYS; the points stay in the full cube's
+    voxel coordinates. A level that cuts no voxels has no surface and is listed
+    in ``skipped_levels``; none having one is an error.
+
+    The result's first-surface keys (``points_base64``…) are those of the lowest
+    level with a surface, as when there was one level; ``levels`` holds each.
     """
     try:
         import vtk  # noqa: PLC0415
@@ -85,6 +91,8 @@ def worker_isosurface(path: str, width: int, height: int, depth: int, threshold:
     except ImportError as exc:
         raise RuntimeError(f"VTK Python bindings are required: {exc}") from exc
 
+    values = sorted({float(v) for v in np.atleast_1d(threshold)})
+    several = len(values) > 1
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
@@ -107,38 +115,64 @@ def worker_isosurface(path: str, width: int, height: int, depth: int, threshold:
         while True:
             sz, sy, sx = stride
             cube = np.ascontiguousarray(data[::sz, ::sy, ::sx], dtype=np.float32)
-            mesh = _flying_edges(vtk, cube, stride, float(threshold))
-            num_points = int(mesh.GetNumberOfPoints())
-            num_polys = int(mesh.GetNumberOfPolys())
-            if num_polys <= ISO_MAX_POLYS:
+            meshes: list[tuple[float, Any]] = []
+            total = 0
+            for value in values:
+                mesh = _flying_edges(vtk, cube, stride, value)
+                if mesh.GetNumberOfPolys() > 0:
+                    meshes.append((value, mesh))
+                    total += int(mesh.GetNumberOfPolys())
+                if total > ISO_MAX_POLYS:
+                    break   # over budget already: the next stride, not the rest
+            if total <= ISO_MAX_POLYS:
                 break
             coarser = _coarser(data.shape, stride)
             if coarser is None:
+                listed = ", ".join(f"{v:g}" for v in values)
+                subject = (f"The surfaces at levels {listed} have" if several
+                           else f"The surface at threshold {listed} has")
                 raise ValueError(
-                    f"The surface at threshold {threshold:g} has too many triangles to draw "
-                    f"({num_polys:,} on a grid sampled every {stride} voxels (z, y, x)): "
-                    f"raise the threshold.")
+                    f"{subject} too many triangles to draw "
+                    f"({total:,} on a grid sampled every {stride} voxels (z, y, x)): "
+                    f"raise the {'lowest level' if several else 'threshold'}.")
             stride = coarser
     finally:
         hdul.close()
     if stride != (1, 1, 1):
-        logger.info("[isosurface] path=%s threshold=%g sampled every %s voxels (z, y, x): %d triangles",
-                    dataset.path, threshold, stride, num_polys)
+        logger.info("[isosurface] path=%s levels=%s sampled every %s voxels (z, y, x): %d triangles",
+                    dataset.path, values, stride, total)
 
-    if num_points == 0 or num_polys == 0:
-        raise ValueError(f"Empty isosurface mesh for threshold {threshold}.")
+    if not meshes:
+        raise ValueError("Empty isosurface mesh for " + (
+            f"levels {', '.join(f'{v:g}' for v in values)}." if several
+            else f"threshold {values[0]}."))
 
-    pts = vtk_to_numpy(mesh.GetPoints().GetData()).astype(np.float32).reshape(-1)
-    polys = vtk_to_numpy(mesh.GetPolys().GetData()).astype(np.int32)
-    pts_compression, pts_b64 = _b64f32_compressed(pts)
-    polys_compression, polys_b64 = _b64i32_compressed(polys)
-
+    encoded: list[dict[str, Any]] = []
+    for value, mesh in meshes:
+        pts = vtk_to_numpy(mesh.GetPoints().GetData()).astype(np.float32).reshape(-1)
+        polys = vtk_to_numpy(mesh.GetPolys().GetData()).astype(np.int32)
+        pts_compression, pts_b64 = _b64f32_compressed(pts)
+        _polys_compression, polys_b64 = _b64i32_compressed(polys)
+        encoded.append({
+            "value": value,
+            "compression": pts_compression,
+            "points_base64": pts_b64,
+            "polys_base64": polys_b64,
+            "num_points": int(mesh.GetNumberOfPoints()),
+            "num_polys": int(mesh.GetNumberOfPolys()),
+        })
+    first = encoded[0]
+    # A level absent from a sampled grid may be a small peak the sampling lost.
     return {
-        "compression": pts_compression,
-        "points_base64": pts_b64,
-        "polys_base64": polys_b64,
-        "num_points": num_points,
-        "num_polys": num_polys,
+        "compression": first["compression"],
+        "points_base64": first["points_base64"],
+        "polys_base64": first["polys_base64"],
+        "num_points": first["num_points"],
+        "num_polys": first["num_polys"],
+        "levels": encoded,
+        "skipped_levels": [v for v in values if v not in {m[0] for m in meshes}],
+        "stride": [int(s) for s in stride],
+        "num_polys_total": int(total),
     }
 
 

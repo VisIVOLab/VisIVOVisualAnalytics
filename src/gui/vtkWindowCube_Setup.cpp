@@ -1482,14 +1482,7 @@ void vtkWindowCube::setupSliceRenderer()
                                      this->dprFor(/*slice=*/true));
 
     // Contours
-    this->contours->SetInputConnection(this->remoteSliceDisplaySource->GetOutputPort());
-    this->contours->GenerateValues(this->level, this->lowerBound, this->upperBound);
-    vtkNew<vtkPolyDataMapper> contoursMapper;
-    contoursMapper->SetInputConnection(this->contours->GetOutputPort());
-    contoursMapper->SetScalarRange(this->lowerBound, this->upperBound);
-    this->contoursActor->SetMapper(contoursMapper);
-    this->contoursActor->VisibilityOff();
-    ren->AddViewProp(this->contoursActor);
+    this->setupContours(ren);
 
     // Legend: local AstroUtils-based legend not used in backend mode; remote WCS overlay actors are used instead.
     ren->AddViewProp(this->sliceOverlayXAxis);

@@ -125,6 +125,23 @@ from a sample, so Min and Max may lie inside the true range.
 - *Isosurface*: a closed surface at the threshold, computed on the backend.
   A large cube is sampled to at most 256³ voxels; a surface still too large is
   refused with a request for a higher threshold.
+- *Isosurface, several levels*: *Levels…* beside *Surface color* opens the
+  levels editor. Give a count between two values, *Linear* or *Log* spaced (log
+  suits a simulation's density over many decades; it needs both values above
+  zero), or type the levels (`0.01, 0.1, 1`); at most 8. Each level has its
+  own colour (by default the colour map's at that value) and opacity (by
+  default 30 % for the lowest level, the outermost shell of an emission peak,
+  rising to 100 % for the highest, the innermost), so the nested shells read
+  through each other (depth peeling). *Apply* draws them without closing the
+  editor; changing only colours or opacities needs no new extraction. A legend
+  at the right edge lists each level highest first with its value and
+  opacity. With levels in use the threshold no longer moves the surfaces (it
+  still drives the volume); *One surface at the threshold* goes back. A level
+  above the data's maximum has no surface and is named in the status bar; the
+  surfaces together are bounded to 4 M triangles, sampling the cube as for one
+  surface. Levels are drawn by the window's own 3-D view, so in a view rendered
+  on the server (*Auto* on a GPU node, *Remote*) switch the 3-D view to local
+  rendering; the backend can be local or remote.
 - *Ray-traced light*: draws the cube as light graded by a tone curve, for
   figures and movies. See [Ray-traced volumes](raytraced-volumes.md).
 
@@ -179,7 +196,7 @@ and validation: [Cube viewer: methods](../../technical/methods/cube-viewer.md).
   first colour, above Max the last. It is independent of the threshold.
 - Colour bar (right edge of the 3-D view): spans Min to Max, titled with
   `BUNIT`, with a notch at the threshold and the part below it dimmed. Hidden
-  for the isosurface.
+  for the isosurface (the isosurface levels have their own legend).
 
 ### Colour maps
 
@@ -326,6 +343,22 @@ read as regions. See [Catalogues and HiPS](catalogues-hips.md).
   with the kernel. See [Image viewer](image-viewer.md).
 - *Export Movie…*: an MP4 or PNG sequence. See
   [Figures, movies and linked views](publication-output.md).
+- *Save View As…*: the 3-D view as a PNG (any size, optionally with a transparent
+  background), PDF or SVG. See [Figures, movies and linked views](publication-output.md#save-view-as).
+
+### Contours
+
+- *Show Contours* (the left dock's *Contours* card, or the *Layers* row) draws
+  the current 2-D slice as contours, and follows the channel. This also holds
+  for the slices of simulation cubes. The settings appear in *Inspector ▸
+  Parameters* while the tool is on: levels by count, by n × σ of the noise of
+  the channel, logarithmic or a typed list; an optional Gaussian smoothing;
+  one colour, a colour map or a colour per level; the line width; dashed
+  negative levels. They are the same as for the image viewer's contours and
+  are described with them in [Image viewer](image-viewer.md).
+- *Export Contours…* in that panel saves the contours of the channel on screen
+  as a DS9 region file or a table of vertices, in the sky frame of the window or
+  in cube pixels.
 
 ### Views
 

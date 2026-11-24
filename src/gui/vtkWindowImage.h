@@ -2,6 +2,7 @@
 #define vtkWindowImage_h
 
 #include "CatalogueOverlayUtils.h"
+#include "ContourLayer.h"
 #include "ImageLayerLoadTask.h"
 #include "LinkedCameraSync.h"
 #include "ProductRegistry.h"   // ReplayStep
@@ -66,6 +67,8 @@ class vtkAxisActor2D;
 class vtkCoordinate;
 class vtkActor2D;
 class vtkInteractorObserver;
+class QComboBox;
+class ContourSettingsPanel;
 class QLineEdit;
 class QSpinBox;
 class vtkFlyingEdges2D;
@@ -502,41 +505,54 @@ private:
     QPointer<QAction> m_actToggleContours;
     QPointer<QAction> m_actLoadExternalContour;
     QPointer<QAction> m_actClearAllContours;
+    QPointer<QAction> m_actExportContours;
     QPointer<QAction> m_actFilterFits;
     QPointer<QAction> m_actExportToWorkspace;
     QPointer<QAction> m_actExportRegions;
     QPointer<QAction> m_actImportRegions;
-    vtkSmartPointer<vtkFlyingEdges2D> m_contourFilter;
-    vtkSmartPointer<vtkActor>         m_contourActor;
+    /// The image's own contours: a pipeline on the master image (ContourLayer),
+    /// drawn with the settings of Inspector > Parameters.
+    std::unique_ptr<ContourLayer> m_contourLayer;
     bool                     m_contoursVisible{ false };
-    /// True when the contour filter still points at stale data (placeholder
+    /// True when the contour layer still points at stale data (placeholder
     /// or a previous master image). `setupContourPipeline()` clears it.
-    /// Used so we can defer the expensive vtkFlyingEdges2D rebuild until the
-    /// user actually asks for contours, instead of paying its 10–20 s cost
-    /// on every preview→full swap of a large image.
+    /// Used so we can defer the expensive scalar-range read until the
+    /// user actually asks for contours, instead of paying its 10-20 s cost
+    /// on every preview->full swap of a large image.
     bool                     m_contourPipelineDirty{ true };
-    int                      m_contourLevel{ 15 };
-    double                   m_contourLower{ 0.0 };
-    double                   m_contourUpper{ 1.0 };
     /// True once the user has typed a bound. Until then the bounds follow the
     /// image's scalar range on every pipeline rebuild (there is one after each
     /// preview -> full swap); afterwards the user's numbers are kept.
     bool                     m_contourBoundsUserSet{ false };
     void setupContourPipeline();
-    void updateContours();
     void setContoursVisible(bool vis);
-    /// Accept a pair of contour bounds if it is usable, otherwise keep the last
-    /// accepted pair and put it back in the fields.
-    void commitContourBounds(double lower, double upper);
-    /// Write the accepted bounds into the Lower / Upper fields (signal-blocked).
-    void syncContourBoundFields();
-    /// The CONTOURS block in the left dock: re-homes the already-wired Level /
-    /// Lower / Upper widgets, which otherwise live only in the Tools page that
-    /// the Inspector's Analysis tab superseded (and which is never shown).
+    /// The layer the contour panel edits: the image's own, or the external one
+    /// picked in the panel's "Contours of" box.
+    ContourLayer *editedContourLayer();
+    /// The image's own contour layer, made on first use.
+    ContourLayer *ownContourLayer();
+    /// The pixels a contour layer draws: the master image's or an external file's.
+    vtkImageData *contourDataOf(const ContourLayer *layer) const;
+    /// A change in the panel: apply it to the edited layer and show why nothing
+    /// is drawn, if so.
+    void onContourPanelChanged();
+    /// Fill the noise of the edited layer's settings: from the backend's
+    /// estimate of the whole image for the image's own contours (the number
+    /// Tools > Estimate Noise reports), from the pixels otherwise.
+    void estimateContourNoise();
+    /// Save the contours of the edited layer as a ds9 file or a vertex table.
+    void exportContours();
+    /// Sky size of one pixel of the image in arcsec; 0 when unknown.
+    double contourArcsecPerPixel() const;
+    /// The CONTOURS block of the Inspector's Parameters tab: the shared
+    /// contour panel, the layer picker and the export button.
     QWidget *buildContourControlsBlock();
     /// Built once, parked hidden, mounted in the Inspector's Parameters tab for
     /// as long as the contour tool is on.
     QPointer<QWidget> m_contourSettingsBlock;
+    QPointer<ContourSettingsPanel> m_contourPanel;
+    QPointer<QComboBox> m_contourTarget;
+    QPointer<QWidget> m_contourTargetRow;
     /// Same for the polarisation-vector overlay: grid step, SNR threshold and
     /// length scale, shown while the vectors are on.
     QWidget *buildPolVectorSettingsBlock();
@@ -553,20 +569,24 @@ private:
     void releaseToolSettings(const QString &toolName);
     void refreshToolSettingsPanel(bool reveal);
     QPointer<QCheckBox> m_contourShowCheck;
-    QPointer<QLineEdit> m_contourLowerEdit;
-    QPointer<QLineEdit> m_contourUpperEdit;
-    QPointer<QSpinBox>  m_contourLevelSpin;
 
     // External FITS contour layers
     struct ExternalContourLayer {
         QString label;
-        vtkSmartPointer<vtkActor> actor;
+        std::shared_ptr<ContourLayer> layer;
+        vtkSmartPointer<vtkImageData> data;   ///< kept: the layer's input, and its noise
+        QString note;                         ///< why its levels are not the usual ones
     };
     QVector<ExternalContourLayer> m_externalContourLayers;
     void addExternalContours();
-    /// Draws the contours of a layer already aligned to the master (issue #500).
-    void applyExternalContours(const QString &label, const ImageLayerLoadResult &result,
-                               const QVector<double> &levels);
+    /// What the panel says about @p layer: why the levels of an external file are
+    /// not the usual ones, and what the layer reports itself (ContourLayer::problem).
+    QString noteOfContourLayer(const ContourLayer *layer) const;
+    /// Draws the contours of a layer already aligned to the master (issue #500),
+    /// with the levels and style of the contour panel (3, 5, 10, 20 sigma to start).
+    void applyExternalContours(const QString &label, const ImageLayerLoadResult &result);
+    /// Rebuild the panel's "Contours of" box from the layers there are.
+    void refreshContourTargets();
     void clearAllContours();
     RegionMode regionMode{ RegionMode::None };
     bool useSexagesimalWcsFormat{ false };
