@@ -326,6 +326,8 @@ read as regions. See [Catalogues and HiPS](catalogues-hips.md).
   with the kernel. See [Image viewer](image-viewer.md).
 - *Export Movie…*: an MP4 or PNG sequence. See
   [Figures, movies and linked views](publication-output.md).
+- *Save View As…*: the 3-D view as a PNG (any size, optionally with a transparent
+  background), PDF or SVG. See [Figures, movies and linked views](publication-output.md#save-view-as).
 
 ### Views
 

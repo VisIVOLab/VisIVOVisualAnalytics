@@ -85,6 +85,7 @@
 #include "TestPvPathGeometry.h"
 #include "TestOrbitPath.h"
 #include "TestParticleFrame.h"
+#include "TestRenderExportPlan.h"
 #include "TestProductRecipe.h"
 #include "TestLassoReplay.h"
 #include "TestSharedSelection.h"
@@ -207,6 +208,7 @@ int main(int argc, char *argv[])
     { TestCopilotChoice    t; status |= QTest::qExec(&t, argc, argv); }
     { TestVelocityLodGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestSolidSplats      t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRenderExportPlan t; status |= QTest::qExec(&t, argc, argv); }
     { TestRaytraceViewRules t; status |= QTest::qExec(&t, argc, argv); }
     return status;
 }

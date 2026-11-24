@@ -1197,6 +1197,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
 
         // ── Diagnostics + Command Palette (replicated across windows) ────────
         ui->menuView->addSeparator();
+        auto *actionSaveView = ui->menuView->addAction(u"Save View As…"_s);
+        actionSaveView->setToolTip(
+                u"Save the 3-D view as a PNG (any size, optionally with a transparent "
+                u"background), or as a PDF or SVG with the axes, colour bar and title as "
+                u"vectors over the render."_s);
+        QObject::connect(actionSaveView, &QAction::triggered, this,
+                         &vtkWindowCatalogue3D::saveViewAs3d);
+        ui->menuView->addSeparator();
         auto *actionDiagnostics = new QAction(u"Diagnostics"_s, this);
         actionDiagnostics->setToolTip(u"Open the application-wide diagnostics log window."_s);
         ui->menuView->addAction(actionDiagnostics);
