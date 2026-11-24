@@ -1,6 +1,5 @@
 #include "vtkWindowImage.h"
 #include "ImageLayerContext.h"
-#include "app/BackendClient.h"
 #include "ui_vtkWindowImage.h"
 
 #include "ImageLayerController.h"
@@ -310,7 +309,8 @@ void vtkWindowImage::setupLayerBlend()
             u"and blend them additively. Each layer's range and stretch stay on its own card."_s);
     this->m_actSaveBlend = new QAction(u"Save Blended Image as PNG…"_s, this);
     this->m_actSaveBlend->setToolTip(
-            u"Write the additive blend at the full resolution of the base image."_s);
+            u"Write the additive blend at the full resolution of the base image: the pixels "
+            u"only, without axes, grid or colour bar (the publication figure draws one image)."_s);
     this->m_actSaveBlend->setEnabled(false);
 
     ui->menuView->addAction(this->m_actBlendAdditive);
@@ -503,16 +503,7 @@ double vtkWindowImage::layerWavelengthMetres(int row)
     const QString path = this->layers ? this->layers->layerFilepath(row) : QString();
     if (path.isEmpty())
         return std::numeric_limits<double>::quiet_NaN();
-    QStringList cards;
-    auto cached = this->m_layerCards.constFind(path);
-    if (cached != this->m_layerCards.constEnd()) {
-        cards = cached.value();
-    } else {
-        BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
-        const auto header = client.fileHeader(path);
-        cards = header.valid ? header.cards : QStringList();
-        this->m_layerCards.insert(path, cards);
-    }
+    const QStringList cards = this->layerCardsForPath(path);
     const auto number = [&cards](const QString &key) {
         bool ok = false;
         const double v = visivo::layerctx::headerKeyword(cards, key).toDouble(&ok);

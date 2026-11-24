@@ -1203,6 +1203,9 @@ private:
     /// the unit and the beam of a selected layer come from them.
     QHash<QString, QStringList> m_layerCards;
     QStringList selectedLayerCards();
+    /// A layer file's header cards, read once per file and cached (also when the
+    /// read failed): the one reader for the unit, beam and wavelength of layers.
+    QStringList layerCardsForPath(const QString &path);
     /// A layer's wavelength in metres from its header (WAVELENG…, or a FREQ/WAVE
     /// axis), NaN when it gives none: orders the RGB composite's channels.
     double layerWavelengthMetres(int row);
