@@ -1959,7 +1959,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 this->m_momentProvenanceParams.insert(
                         u"Mask"_s, MomentMapController::describeMask(config));
                 this->m_momentProvenanceParams.insert(u"Scope"_s,
-                                                      MomentMapController::describeMomentScope());
+                                                      MomentMapController::describeMomentScope(this->remoteBackendUrl));
                 this->m_momentProvenanceParams.insert(
                         u"Unit"_s, result.momentUnit.isEmpty() ? u"-"_s : result.momentUnit);
 
@@ -4603,6 +4603,7 @@ void vtkWindowCube::setPvModeActive(bool active)
         // A finished path whose diagram is still being computed is kept too: the
         // result is about to open a diagram for it, and that diagram must find
         // its path (to show and to resume editing).
+        this->statusBar()->clearMessage();   // the "click to add points…" hint is over
         const bool pathAwaitingDiagram = this->pvValid && this->pvPolylineVertices.size() >= 2
                 && this->pvController && this->pvController->isBusy();
         if (pathAwaitingDiagram) {
@@ -4658,6 +4659,7 @@ void vtkWindowCube::setPvModeActive(bool active)
     } else {
         this->pvValid = false;
         this->clearPv();
+        this->statusBar()->showMessage(pvpath::drawingHint(0));
     }
     this->setInteractorStyleRegion();
     this->refreshPvOverlay();
@@ -6344,8 +6346,7 @@ void vtkWindowCube::startNewPvPath()
     if (this->actionExtractPvDiagram && !this->actionExtractPvDiagram->isChecked())
         this->actionExtractPvDiagram->setChecked(true);   // → setPvModeActive(true)
     this->statusBar()->showMessage(
-            u"Click on the image to place the vertices of a new path; double-click or "
-            u"right-click to finish it."_s, 5000);
+            pvpath::drawingHint(0));
     if (auto *win = this->active2dWin())
         win->Render();
 }

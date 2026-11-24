@@ -259,7 +259,7 @@ void MomentMapController::dispatch(const Config &config)
                         .arg(unitLabel)
                         .arg(formatMomentChannelRange(config))
                         .arg(maskSummary)
-                        .arg(describeMomentScope());
+                        .arg(describeMomentScope(self->m_backendUrl));
 
         // The caller (vtkWindowCube) appends "\nAxis 3 semantics: …\nWCS frame: …"
         // to complete the tooltip, using spectralAxisTitle() / currentWcsFrameLabel().
@@ -291,7 +291,7 @@ void MomentMapController::dispatch(const Config &config)
                                                 ? u"auto (≈ 3σ, from MAD)"_s
                                                 : QString::number(config.thresholdValue, 'g', 8))
                                      : u"n/a"_s)
-                        .arg(describeMomentScope());
+                        .arg(describeMomentScope(self->m_backendUrl));
 
         if (self->m_onCompleted) {
             self->m_onCompleted(result, config, summary, details);
@@ -554,7 +554,7 @@ void MomentMapController::openMomentDialog(int defaultOrder, Config config,
 
     auto *contextLabel = new QLabel(
             u"NaN / blanked voxels are excluded automatically · %1"_s
-                    .arg(describeMomentScope()), dlg);
+                    .arg(describeMomentScope(m_backendUrl)), dlg);
     contextLabel->setStyleSheet(ToolDialogStyle::helperCss());
     contextLabel->setWordWrap(true);
     layout->addWidget(contextLabel);
@@ -663,9 +663,9 @@ QString MomentMapController::describeMomentOrder(int order)
     }
 }
 
-QString MomentMapController::describeMomentScope()
+QString MomentMapController::describeMomentScope(const QString &backendUrl)
 {
-    return u"Remote full dataset"_s;
+    return visivo::momentScopeLabel(visivo::backendIsLocal(backendUrl));
 }
 
 QString MomentMapController::formatMomentChannelRange(const Config &config)

@@ -587,20 +587,9 @@ QString vtkWindowCube::remoteOverlayAxisTitle(int axis) const
 
 QString vtkWindowCube::formatDegreeCoordinate(double value, double axisSpan) const
 {
-    // (b) Adaptive precision: over an axis span S with ~5 ticks the spacing is ~S/4, so pick
-    // enough decimals that adjacent ticks differ — otherwise a 0.007° field prints "47.21"
-    // on every tick. Default (span ≤ 0, e.g. the hover readout) keeps the old 2 decimals.
-    int decimals = 2;
-    if (axisSpan > 0.0 && std::isfinite(axisSpan)) {
-        const double spacing = axisSpan / 4.0;
-        if (spacing > 0.0)
-            decimals = std::clamp(static_cast<int>(std::ceil(-std::log10(spacing))) + 1, 2, 8);
-    }
-    QString text = QString::number(value, 'f', decimals);
-    // A tiny negative longitude rounds to "-0.000": the tick at the origin.
-    if (text.startsWith(u'-') && text.mid(1).toDouble() == 0.0)
-        text.remove(0, 1);
-    return text;
+    // Precision follows the axis span (WcsAxisTicks.h): a 0.007° field must not print
+    // "47.21" on every tick. A span ≤ 0 (the hover readout) keeps two decimals.
+    return visivo::formatDegreeTick(value, axisSpan);
 }
 
 QString vtkWindowCube::currentWcsFrameLabel() const
@@ -957,6 +946,7 @@ void vtkWindowCube::updateSliceWcsOverlay()
                                         - this->remoteFrameCoordinate(0, rxMin, ryMin));
     const double sliceSpanY = std::fabs(this->remoteFrameCoordinate(1, rxMin, ryMax)
                                         - this->remoteFrameCoordinate(1, rxMin, ryMin));
+    int sliceYLabelChars = 0;
     for (int i = 0; i < overlayTickCount; ++i) {
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
@@ -977,13 +967,20 @@ void vtkWindowCube::updateSliceWcsOverlay()
                 && (xRight - axisX) / (overlayTickCount - 1) < 62. * dpr;
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(
                 i != 0 && (!crowded || i % 2 == 0));
+        const QString yLabel = this->formatRemoteOverlayCoordinate(1, frameY, sliceSpanY);
+        sliceYLabelChars = std::max(sliceYLabelChars, int(yLabel.size()));
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(1, frameY, sliceSpanY).toStdString().c_str());
+                yLabel.toStdString().c_str());
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX - 10. * dpr),
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
+    // The y title clears the tick labels, whatever their precision.
+    this->sliceOverlayYTitleActor->SetDisplayPosition(
+            static_cast<int>(visivo::yAxisTitleX(axisX, axisX - 74. * dpr, 12. * dpr,
+                                                 sliceYLabelChars, 7.5 * dpr, 10. * dpr)),
+            static_cast<int>((bottomMargin + yTop) / 2.));
     qDebug().noquote()
             << QStringLiteral("[wcs-overlay] updated ticks for slice x=%1..%2 y=%3..%4 size=%5x%6 actor=%7 endpoints=(%8,%9)->(%10,%11) outer=%12")
                        .arg(visible.xmin, 0, 'g', 12)
@@ -1109,6 +1106,11 @@ void vtkWindowCube::updateMomentWcsOverlay()
     this->momentOverlayYAxis->VisibilityOn();
     this->momentOverlayXTitleActor->VisibilityOn();
     this->momentOverlayYTitleActor->VisibilityOn();
+    const double momentSpanX = visivo::angularAxisSpan(this->remoteFrameCoordinate(0, rxMin, ryMin),
+                                                       this->remoteFrameCoordinate(0, rxMax, ryMin));
+    const double momentSpanY = std::fabs(this->remoteFrameCoordinate(1, rxMin, ryMax)
+                                         - this->remoteFrameCoordinate(1, rxMin, ryMin));
+    int momentYLabelChars = 0;
     for (int i = 0; i < overlayTickCount; ++i) {
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
@@ -1119,19 +1121,25 @@ void vtkWindowCube::updateMomentWcsOverlay()
         const double frameX = this->remoteFrameCoordinate(0, atX.x, atX.y);
         const double frameY = this->remoteFrameCoordinate(1, atY.x, atY.y);
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());
+                this->formatRemoteOverlayCoordinate(0, frameX, momentSpanX).toStdString().c_str());
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX + t * (xRight - axisX)),
                 static_cast<int>(bottomMargin - 18. * dpr));
         // Drop the leftmost x label — corner collision with the bottom y label.
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(i != 0);
+        const QString yLabel = this->formatRemoteOverlayCoordinate(1, frameY, momentSpanY);
+        momentYLabelChars = std::max(momentYLabelChars, int(yLabel.size()));
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(1, frameY).toStdString().c_str());
+                yLabel.toStdString().c_str());
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX - 10. * dpr),
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
+    this->momentOverlayYTitleActor->SetDisplayPosition(
+            static_cast<int>(visivo::yAxisTitleX(axisX, axisX - 74. * dpr, 12. * dpr,
+                                                 momentYLabelChars, 7.5 * dpr, 10. * dpr)),
+            static_cast<int>((bottomMargin + yTop) / 2.));
     qDebug().noquote()
             << QStringLiteral("[wcs-overlay] updated ticks for moment x=%1..%2 y=%3..%4 size=%5x%6 actor=%7 endpoints=(%8,%9)->(%10,%11) outer=%12")
                        .arg(visible.xmin, 0, 'g', 12)

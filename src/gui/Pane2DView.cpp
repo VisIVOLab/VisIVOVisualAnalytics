@@ -963,6 +963,7 @@ void Pane2DView::updateWcsOverlay()
             spanY = std::fabs(fy1 - fy0);
         }
     }
+    int yLabelChars = 0;
     for (int i = 0; i < kOverlayTickCount; ++i) {
         const double t = kOverlayTickCount == 1
                 ? 0.0
@@ -1000,12 +1001,19 @@ void Pane2DView::updateWcsOverlay()
         // In a narrow pane the five labels collide: keep every other one.
         const bool crowded = (xRight - axisX) / (kOverlayTickCount - 1) < 62. * d;
         m_overlayXTicks[x]->SetVisibility(i != 0 && (!crowded || i % 2 == 0));
-        m_overlayYTicks[x]->SetInput(m_wcs.formatCoord(1, frameY, spanY).toStdString().c_str());
+        const QString yLabel = m_wcs.formatCoord(1, frameY, spanY);
+        yLabelChars = std::max(yLabelChars, int(yLabel.size()));
+        m_overlayYTicks[x]->SetInput(yLabel.toStdString().c_str());
         m_overlayYTicks[x]->SetDisplayPosition(
                 static_cast<int>(axisX - 10. * d),
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         m_overlayYTicks[x]->VisibilityOn();
     }
+    // The y title clears the tick labels, whatever their precision.
+    m_overlayYTitle->SetDisplayPosition(
+            static_cast<int>(visivo::yAxisTitleX(axisX, axisX - 74. * d, 12. * d, yLabelChars,
+                                                 7.5 * d, 10. * d)),
+            static_cast<int>((bottomMargin + yTop) / 2.));
 }
 
 void Pane2DView::setOverlayPath(const std::vector<std::array<double, 2>> &pixels)

@@ -2,6 +2,8 @@
 
 #include "FilterFitsDialog.h"
 
+#include "app/DatasetBeam.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -51,7 +53,8 @@ void FilterFitsDialog::buildUi()
             u"%1\n%2 × %3 pixels%4"_s.arg(QFileInfo(m_path).fileName())
                     .arg(m_width)
                     .arg(m_height)
-                    .arg(m_pixelArcsec > 0 ? u", %1″/pixel"_s.arg(m_pixelArcsec, 0, 'f', 2)
+                    .arg(m_pixelArcsec > 0 ? u", %1/pixel"_s.arg(visivo::beam::formatAngularSize(
+                                                                       m_pixelArcsec / 3600.0))
                                            : QString()),
             this);
     source->setWordWrap(true);
@@ -132,13 +135,15 @@ void FilterFitsDialog::updateSummary()
 
     QStringList parts;
     if (smooth && m_pixelArcsec > 0) {
-        parts << u"kernel %1″ FWHM"_s.arg(m_fwhm->value() * m_pixelArcsec, 0, 'f', 1);
+        parts << u"kernel %1 FWHM"_s.arg(visivo::beam::formatAngularSize(
+                m_fwhm->value() * m_pixelArcsec / 3600.0));
     }
     if (regrid) {
         const int factor = m_factor->value();
         parts << u"%1 × %2 pixels"_s.arg(m_width / factor).arg(m_height / factor);
         if (m_pixelArcsec > 0)
-            parts << u"%1″/pixel"_s.arg(m_pixelArcsec * factor, 0, 'f', 2);
+            parts << u"%1/pixel"_s.arg(
+                    visivo::beam::formatAngularSize(m_pixelArcsec * factor / 3600.0));
     }
     if (!smooth && !regrid)
         parts << u"Nothing selected."_s;
@@ -193,8 +198,8 @@ void FilterFitsDialog::onFinished()
     QStringList done;
     if (result.smoothFwhmPixels > 0) {
         done << (result.smoothFwhmArcsec > 0
-                         ? u"smoothed with a %1″ FWHM kernel"_s.arg(result.smoothFwhmArcsec, 0,
-                                                                    'f', 1)
+                         ? u"smoothed with a %1 FWHM kernel"_s.arg(
+                                   visivo::beam::formatAngularSize(result.smoothFwhmArcsec / 3600.0))
                          : u"smoothed with a %1 px FWHM kernel"_s.arg(result.smoothFwhmPixels, 0,
                                                                       'f', 2));
     }

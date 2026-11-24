@@ -1,4 +1,6 @@
 #include "vtkWindowCube.h"
+#include "BackendLocality.h"
+#include "app/BackendWording.h"
 #include "ui_vtkWindowCube.h"
 
 #include "qcustomplot.h"
@@ -185,7 +187,7 @@ void vtkWindowCube::setupViewerToolbar()
                               .arg(this->remoteDatasetWidth)
                               .arg(this->remoteDatasetHeight)
                               .arg(this->remoteDatasetDepth);
-    spec.secondaryTag = QStringLiteral("remote · full-res");
+    spec.secondaryTag = visivo::fullResolutionTag(visivo::backendIsLocal(this->remoteBackendUrl));
 
     VisivoTheme::ViewerToolbarWidgets w;
     QWidget *bar = VisivoTheme::makeViewerToolbar(spec, &w, this);

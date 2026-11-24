@@ -14,6 +14,7 @@
 #include <QJsonValue>
 #include <QString>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
@@ -89,14 +90,75 @@ inline bool canSetBeam(const QString &source)
     return source == QLatin1String("user") || source == QLatin1String("none");
 }
 
+/// A number with three significant digits, written in fixed notation: 22.8,
+/// 0.0228, 1.23, 15.0, 120.
+inline QString threeSignificant(double value)
+{
+    if (!(value > 0.0) || !std::isfinite(value))
+        return QStringLiteral("0");
+    const int magnitude = int(std::floor(std::log10(value)));
+    const int decimals = std::max(0, 2 - magnitude);
+    QString text = QString::number(value, 'f', decimals);
+    // Rounding can carry into the next decade (9.996 → "10.00"): one digit too
+    // many then, so write it with one decimal fewer.
+    if (decimals > 0 && text.toDouble() >= std::pow(10.0, magnitude + 1))
+        text = QString::number(value, 'f', decimals - 1);
+    return text;
+}
+
+/// The unit an angle of @p deg degrees is written in: milliarcseconds below
+/// 1″, arcseconds up to 60″, arcminutes up to 1°, degrees above. @p perDegree is
+/// how many of that unit make a degree. The edges are read with a hair of
+/// tolerance, so 1″ computed as 1/3600 × 3600 is not 999.99 mas.
+struct AngularUnit
+{
+    double perDegree;
+    const char *suffix;
+};
+
+inline AngularUnit angularUnitFor(double deg)
+{
+    const double arcsec = deg * 3600.0 * (1.0 + 1e-9);
+    if (arcsec < 1.0)
+        return { 3600.0 * 1000.0, " mas" };
+    if (arcsec < 60.0)
+        return { 3600.0, "\xE2\x80\xB3" };   // ″
+    if (arcsec < 3600.0)
+        return { 60.0, "\xE2\x80\xB2" };      // ′
+    return { 1.0, "\xC2\xB0" };                // °
+}
+
+/// An angular size given in degrees, in the unit that fits it. A beam of
+/// 22.8 × 18.4 mas must not read 0.02″ × 0.02″ (issue #502), so the digits
+/// follow the size, not a fixed number of decimals.
+inline QString formatAngularSize(double deg)
+{
+    if (!std::isfinite(deg) || deg <= 0.0)
+        return QStringLiteral("0″");
+    const AngularUnit unit = angularUnitFor(deg);
+    return threeSignificant(deg * unit.perDegree) + QString::fromUtf8(unit.suffix);
+}
+
+/// "22.8 mas × 18.4 mas": both axes in the unit of the larger one, so the pair
+/// reads as one measurement ("1.20″ × 0.800″" never mixes mas with ″).
+inline QString formatBeamSize(double majorDeg, double minorDeg)
+{
+    const double larger = std::max(majorDeg, minorDeg);
+    if (!std::isfinite(larger) || larger <= 0.0)
+        return QStringLiteral("0″ × 0″");
+    const AngularUnit unit = angularUnitFor(larger);
+    const QString suffix = QString::fromUtf8(unit.suffix);
+    return threeSignificant(majorDeg * unit.perDegree) + suffix + QStringLiteral(" × ")
+            + threeSignificant(minorDeg * unit.perDegree) + suffix;
+}
+
 /// "15.0″ × 15.0″, PA 0° (set by user)", "none in the header", …
 inline QString summary(double majorDeg, double minorDeg, double paDeg, const QString &source)
 {
     if (!hasBeam(majorDeg, minorDeg))
         return QStringLiteral("none in the header");
-    QString text = QStringLiteral("%1″ × %2″, PA %3°")
-                           .arg(majorDeg * 3600.0, 0, 'f', 1)
-                           .arg(minorDeg * 3600.0, 0, 'f', 1)
+    QString text = QStringLiteral("%1, PA %2°")
+                           .arg(formatBeamSize(majorDeg, minorDeg))
                            .arg(paDeg, 0, 'f', 0);
     if (source == QLatin1String("user"))
         text += QStringLiteral(" (set by user)");

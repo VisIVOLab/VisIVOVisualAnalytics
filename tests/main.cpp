@@ -53,6 +53,7 @@
 #include "TestProductPaneDisplay.h"
 #include "TestProbeSpectrumFetch.h"
 #include "TestWcsAxisTicks.h"
+#include "TestRadioDisplay.h"
 #include "TestOpenJobMerge.h"
 #include "TestTaskQuitDrain.h"
 #include "TestVelocityLodGeometry.h"
@@ -157,6 +158,7 @@ int main(int argc, char *argv[])
     { TestProductPaneDisplay t; status |= QTest::qExec(&t, argc, argv); }
     { TestProbeSpectrumFetch t; status |= QTest::qExec(&t, argc, argv); }
     { TestWcsAxisTicks     t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRadioDisplay     t; status |= QTest::qExec(&t, argc, argv); }
     { TestOpenJobMerge     t; status |= QTest::qExec(&t, argc, argv); }
     { TestTaskQuitDrain    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSystemQuitRedirect t; status |= QTest::qExec(&t, argc, argv); }

@@ -5,6 +5,7 @@
 #include "CubeViewportGeometry.h"
 
 #include "app/BackendClient.h"
+#include "app/DatasetBeam.h"
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "CatalogueTableModel.h"
@@ -207,13 +208,9 @@ void vtkWindowImage::refreshMeasurementOverlay()
 
         const double angDeg = angularSeparationDeg(a[0], a[1], b[0], b[1]);
         if (angDeg >= 0.0) {
-            const double arcsec = angDeg * 3600.0;
-            if (arcsec < 60.0)
-                label += QStringLiteral("  (%1\")").arg(arcsec, 0, 'f', 2);
-            else if (arcsec < 3600.0)
-                label += QStringLiteral("  (%1')").arg(arcsec / 60.0, 0, 'f', 2);
-            else
-                label += QStringLiteral("  (%1°)").arg(angDeg, 0, 'f', 4);
+            label += QStringLiteral("  (%1)").arg(angDeg < 1.0
+                                                          ? visivo::beam::formatAngularSize(angDeg)
+                                                          : QStringLiteral("%1°").arg(angDeg, 0, 'f', 4));
         }
 
         if (m_measLabelActor) {

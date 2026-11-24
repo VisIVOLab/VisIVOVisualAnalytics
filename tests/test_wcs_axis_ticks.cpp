@@ -48,3 +48,39 @@ void TestWcsAxisTicks::aRotatedFrameLabelsTheLeftEdgeNotTheDiagonal()
         previous = b;
     }
 }
+
+void TestWcsAxisTicks::aSmallFieldKeepsEveryTickLabelDistinct()
+{
+    // A 2 arcsec field of the Galactic continuum: five ticks 0.5 arcsec apart at
+    // l = 230.7512. Two decimals printed "230.75" on every one of them.
+    const double span = 2.0 / 3600.0;
+    QVERIFY(visivo::degreeTickDecimals(span) >= 5);
+    QSet<QString> labels;
+    for (int i = 0; i < 5; ++i)
+        labels.insert(visivo::formatDegreeTick(230.7512 + i * span / 4.0, span));
+    QCOMPARE(labels.size(), 5);
+    // A wide field and an unknown span (the hover readout) keep two decimals.
+    QCOMPARE(visivo::degreeTickDecimals(2.0), 2);
+    QCOMPARE(visivo::degreeTickDecimals(-1.0), 2);
+    QCOMPARE(visivo::formatDegreeTick(29.5312, -1.0), QStringLiteral("29.53"));
+    // The origin never reads "-0.000".
+    QCOMPARE(visivo::formatDegreeTick(-1e-9, 0.01), QStringLiteral("0.0000"));
+}
+
+void TestWcsAxisTicks::aSpanAcrossZeroIsTheShortWayRound()
+{
+    QVERIFY(std::abs(visivo::angularAxisSpan(359.99, 0.01) - 0.02) < 1e-9);
+    QCOMPARE(visivo::angularAxisSpan(10.0, 30.0), 20.0);
+}
+
+void TestWcsAxisTicks::theYTitleClearsLongLabels()
+{
+    // Short labels leave the title where it was.
+    QCOMPARE(visivo::yAxisTitleX(136.0, 56.0, 8.0, 5, 7.5, 10.0), 56.0);
+    // "230.751234" (10 characters) would run under it: it moves left, clear of them.
+    const double x = visivo::yAxisTitleX(136.0, 56.0, 8.0, 10, 7.5, 10.0);
+    QVERIFY(x < 56.0);
+    QVERIFY(x + 9.0 <= 136.0 - 10.0 - 10 * 7.5);
+    // ...but never off the window.
+    QCOMPARE(visivo::yAxisTitleX(136.0, 56.0, 8.0, 40, 7.5, 10.0), 8.0);
+}

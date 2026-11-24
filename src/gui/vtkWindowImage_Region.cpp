@@ -4,6 +4,7 @@
 #include "CubeViewportGeometry.h"
 
 #include "app/BackendClient.h"
+#include "app/DatasetBeam.h"
 #include "app/DiagnosticsManager.h"
 #include "app/ThemeManager.h"
 #include "CatalogueTableModel.h"
@@ -323,9 +324,7 @@ QList<QPair<QString, QString>> regionFluxRows(const RegionStatistics &stats, con
     const double pixelAreaDeg2 = std::abs(c.cdelt1Deg * c.cdelt2Deg);
     if (omega > 0.0) {
         rows.append({ u"Beam (BMAJ × BMIN)"_s,
-                      QStringLiteral("%1\" × %2\"")
-                              .arg(c.bmajDeg * 3600.0, 0, 'f', 2)
-                              .arg(c.bminDeg * 3600.0, 0, 'f', 2) });
+                      visivo::beam::formatBeamSize(c.bmajDeg, c.bminDeg) });
         rows.append({ u"Beam area (pixels)"_s, QStringLiteral("%1").arg(omega, 0, 'f', 2) });
     }
     const auto appendSnr = [&rows, &stats]() {

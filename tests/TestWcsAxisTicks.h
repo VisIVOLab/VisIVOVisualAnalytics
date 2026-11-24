@@ -13,4 +13,7 @@ private slots:
     void theXAxisIsReadAlongTheBottomEdge();
     void theYAxisIsReadAlongTheLeftEdge();
     void aRotatedFrameLabelsTheLeftEdgeNotTheDiagonal();
+    void aSmallFieldKeepsEveryTickLabelDistinct();
+    void aSpanAcrossZeroIsTheShortWayRound();
+    void theYTitleClearsLongLabels();
 };

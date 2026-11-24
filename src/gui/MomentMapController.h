@@ -30,6 +30,8 @@
 //   - setMomentOrder() as a thin wrapper (adds the cross-system isBusy guard)
 // ---------------------------------------------------------------------------
 
+#include "app/BackendWording.h"
+#include "BackendLocality.h"
 #include "MomentMapComputeTask.h"
 
 #include <QObject>
@@ -113,7 +115,7 @@ public:
     // Stateless provenance-string formatters (used by the Inspector › Provenance
     // params too, so exposed publicly — §3.0b).
     static QString describeMomentOrder(int order);
-    static QString describeMomentScope();
+    static QString describeMomentScope(const QString &backendUrl);
     /// The mask, as provenance says it: none, auto, or the threshold and its source.
     static QString describeMask(const Config &config);
 

@@ -23,6 +23,7 @@
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
+#include "PvPathGeometry.h"
 #include "PvDiagramWidget.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
@@ -260,6 +261,8 @@ void vtkWindowCube::toggleProbeFreeze()
                                                1500);
             }
             this->pvValid = this->pvPolylineVertices.size() >= 1;
+            // No timeout: it stays until the path is finished (finalizePvInteraction).
+            this->statusBar()->showMessage(pvpath::drawingHint(this->pvPolylineVertices.size()));
             this->refreshPvOverlay();
             this->active2dWin()->Render();
         }

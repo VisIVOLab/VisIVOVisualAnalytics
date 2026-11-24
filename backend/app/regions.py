@@ -923,7 +923,7 @@ def export_ds9(regions: list[dict[str, Any]]) -> str:
 
             def S(v):  # noqa: E306,N802
                 return _ds9_size_str(v, unit, frame)
-            ang = _fmt_num(r.get("angle_deg", 0.0))
+            ang = _fmt_num(_export_angle(r.get("angle_deg", 0.0)))
             prefix = ""
             if shape == "circle":
                 line = f"circle({c},{S(r['radius'])})"
@@ -1313,9 +1313,9 @@ def export_crtf(regions: list[dict[str, Any]]) -> str:
             body = f"circle[{C(r['center'])}, {Z(r['radius'])}]"
         elif shape == "ellipse":
             a, b = r["semi_axes"]           # CASA: [b1, b2] with b1 along the angle from north
-            body = f"ellipse[{C(r['center'])}, [{Z(b)}, {Z(a)}], {_fmt_num(r.get('angle_deg', 0.0))}deg]"
+            body = f"ellipse[{C(r['center'])}, [{Z(b)}, {Z(a)}], {_fmt_num(_export_angle(r.get('angle_deg', 0.0)))}deg]"
         elif shape == "box":
-            w, h = r["size"]; ang = r.get("angle_deg", 0.0)
+            w, h = r["size"]; ang = _export_angle(r.get("angle_deg", 0.0))
             if ang:
                 body = f"rotbox[{C(r['center'])}, [{Z(w)}, {Z(h)}], {_fmt_num(ang)}deg]"
             else:
@@ -1811,6 +1811,17 @@ def _convert_one(r, to_frame, want_image, dst, pf, no_wcs_reason, pre=None) -> d
     if has_angle:
         nr["angle_deg"] = _wrap_angle(angle)
     return nr
+
+
+def _export_angle(a: float) -> float:
+    """An angle for a region file: in [0, 360), and 0 for what is only the
+    float noise of a pixel-to-sky round trip (359.999972818 → 0, issue #502).
+    Within 1e-4° (0.4″, far below what a drawn region can show) of the axis
+    the angle is the axis; elsewhere it keeps six decimals."""
+    a = float(a) % 360.0
+    if a < 1e-4 or a > 360.0 - 1e-4:
+        return 0.0
+    return round(a, 6)
 
 
 def _wrap_angle(a: float) -> float:
