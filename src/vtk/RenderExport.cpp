@@ -1,4 +1,6 @@
 #include "RenderExport.h"
+#include <vector>
+#include <vtkRendererCollection.h>
 
 #include <vtkCubeAxesActor.h>
 #include <vtkImageData.h>
@@ -115,7 +117,24 @@ QImage renderScene(vtkRenderWindow *window, vtkRenderer *renderer, const QSize &
     const double backgroundAlpha = renderer->GetBackgroundAlpha();
     const bool gradient = renderer->GetGradientBackground();
     const bool textured = renderer->GetTexturedBackground();
+    // Above the view's size the picture is read back in tiles, and the
+    // orientation marker (a renderer of its own in a corner viewport) does not
+    // tile: its X/Y/Z captions came out tens of times too large. It is left
+    // out of a tiled picture; the scene's own renderer is drawn as always.
+    std::vector<vtkRenderer *> hiddenRenderers;
+    if (scale > 1) {
+        vtkRendererCollection *all = window->GetRenderers();
+        all->InitTraversal();
+        while (vtkRenderer *other = all->GetNextItem()) {
+            if (other != renderer && other->GetDraw()) {
+                other->DrawOff();
+                hiddenRenderers.push_back(other);
+            }
+        }
+    }
     const auto restore = qScopeGuard([&] {
+        for (vtkRenderer *other : hiddenRenderers)
+            other->DrawOn();
         renderer->SetBackground(background);
         renderer->SetBackgroundAlpha(backgroundAlpha);
         renderer->SetGradientBackground(gradient);
