@@ -1203,6 +1203,9 @@ private:
     /// the unit and the beam of a selected layer come from them.
     QHash<QString, QStringList> m_layerCards;
     QStringList selectedLayerCards();
+    /// A layer's wavelength in metres from its header (WAVELENG…, or a FREQ/WAVE
+    /// axis), NaN when it gives none: orders the RGB composite's channels.
+    double layerWavelengthMetres(int row);
     /// The Dataset card's two fields that follow the selected layer.
     QPointer<QLabel> m_activeLayerValueLabel;
     QPointer<QLabel> m_layerCountValueLabel;

@@ -1,4 +1,6 @@
 #include "vtkWindowImage.h"
+#include "ImageLayerContext.h"
+#include "app/BackendClient.h"
 #include "ui_vtkWindowImage.h"
 
 #include "ImageLayerController.h"
@@ -31,6 +33,7 @@
 #include <vtkRenderWindow.h>
 
 #include <algorithm>
+#include <limits>
 #include <cmath>
 #include <cstring>
 
@@ -181,10 +184,22 @@ void blendBand(const std::vector<const float *> &values, const std::vector<vtkLo
 {
     acc.assign(pixels, Accum{});
     rgba.resize(pixels * 4);
+    std::vector<float> clamped(pixels);
     for (std::size_t k = 0; k < values.size(); ++k) {
         // The table maps with the layer's range, stretch and colour map, so the
         // blend is made of exactly the colours the layer shows on its own.
-        luts[k]->MapScalarsThroughTable(const_cast<float *>(values[k]), rgba.data(), VTK_FLOAT,
+        // Values are clamped to the range first: a saturated pixel takes the
+        // top colour whatever the table's out-of-range settings, which a copy
+        // made for the worker did not keep (saved PNGs showed 0 where the
+        // screen showed the brightest colour).
+        const double *range = luts[k]->GetRange();
+        const float lo = static_cast<float>(std::min(range[0], range[1]));
+        const float hi = static_cast<float>(std::max(range[0], range[1]));
+        for (std::size_t p = 0; p < pixels; ++p) {
+            const float v = values[k][p];
+            clamped[p] = std::isnan(v) ? v : std::clamp(v, lo, hi);
+        }
+        luts[k]->MapScalarsThroughTable(clamped.data(), rgba.data(), VTK_FLOAT,
                                         static_cast<int>(pixels), 1, VTK_RGBA);
         for (std::size_t p = 0; p < pixels; ++p) {
             if (!std::isnan(values[k][p]))
@@ -483,6 +498,45 @@ void vtkWindowImage::onBlendRenderStart()
     b.actor->SetVisibility(true);
 }
 
+double vtkWindowImage::layerWavelengthMetres(int row)
+{
+    const QString path = this->layers ? this->layers->layerFilepath(row) : QString();
+    if (path.isEmpty())
+        return std::numeric_limits<double>::quiet_NaN();
+    QStringList cards;
+    auto cached = this->m_layerCards.constFind(path);
+    if (cached != this->m_layerCards.constEnd()) {
+        cards = cached.value();
+    } else {
+        BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+        const auto header = client.fileHeader(path);
+        cards = header.valid ? header.cards : QStringList();
+        this->m_layerCards.insert(path, cards);
+    }
+    const auto number = [&cards](const QString &key) {
+        bool ok = false;
+        const double v = visivo::layerctx::headerKeyword(cards, key).toDouble(&ok);
+        return ok && std::isfinite(v) && v > 0.0 ? v : std::numeric_limits<double>::quiet_NaN();
+    };
+    for (const char *key : { "WAVELENG", "WAVELEN", "WAVELNTH" }) {
+        const double v = number(QString::fromLatin1(key));
+        if (std::isfinite(v))
+            return v;
+    }
+    // A spectral axis of a 2-D image (degenerate third axis).
+    for (int axis = 3; axis <= 4; ++axis) {
+        const QString ctype = visivo::layerctx::headerKeyword(cards, u"CTYPE%1"_s.arg(axis)).trimmed().toUpper();
+        const double crval = number(u"CRVAL%1"_s.arg(axis));
+        if (!std::isfinite(crval))
+            continue;
+        if (ctype.startsWith(u"FREQ"_s))
+            return 299792458.0 / crval;
+        if (ctype.startsWith(u"WAVE"_s))
+            return crval;
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
 void vtkWindowImage::makeRgbComposite()
 {
     if (!this->layers || this->layers->rowCount() < 2) {
@@ -496,9 +550,10 @@ void vtkWindowImage::makeRgbComposite()
     dialog.setWindowTitle(u"Make RGB Composite"_s);
     auto *layout = new QVBoxLayout(&dialog);
     auto *help = new QLabel(
-            u"Tick the images to combine. They get a black-to-colour map in list order: with three, "
-            u"red, green and blue; with more, red through blue by hue. The blend is additive. "
-            u"Afterwards each layer's range and stretch are set on its own card."_s,
+            u"Tick the images to combine and drag them into order: the top one is red, then green "
+            u"and blue (with more, red through blue by hue). When the headers give a wavelength "
+            u"the list starts sorted with the longest on top. The blend is additive. Afterwards "
+            u"each layer's range and stretch are set on its own card."_s,
             &dialog);
     help->setWordWrap(true);
     layout->addWidget(help);
@@ -511,8 +566,23 @@ void vtkWindowImage::makeRgbComposite()
         item->setCheckState(Qt::Checked);
         item->setData(Qt::UserRole, row);
     };
-    for (int row = 0; row < this->layers->rowCount(); ++row)
-        addRow(row);
+    // Longest wavelength first when every header says it (WAVELENG/WAVELEN/
+    // WAVELNTH in metres, or a FREQ/WAVE axis); otherwise the layer order.
+    std::vector<std::pair<double, int>> byWavelength;
+    for (int row = 0; row < this->layers->rowCount(); ++row) {
+        const double lambda = this->layerWavelengthMetres(row);
+        byWavelength.emplace_back(lambda, row);
+    }
+    const bool allKnown = std::all_of(byWavelength.begin(), byWavelength.end(),
+                                      [](const auto &w) { return std::isfinite(w.first); });
+    if (allKnown)
+        std::stable_sort(byWavelength.begin(), byWavelength.end(),
+                         [](const auto &a, const auto &b) { return a.first > b.first; });
+    for (const auto &w : byWavelength)
+        addRow(w.second);
+    // The order is the colour assignment: rows can be dragged.
+    list->setDragDropMode(QAbstractItemView::InternalMove);
+    list->setDefaultDropAction(Qt::MoveAction);
     layout->addWidget(list);
 
     // A file that is not a layer yet: it joins the list when it has loaded.
