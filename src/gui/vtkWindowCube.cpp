@@ -3135,6 +3135,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(m_actExportMovie, &QAction::triggered,
                      this, &vtkWindowCube::showExportMovieDialog);
 
+    // Save View As… (#528): the 3-D view as an image, with the options a figure needs.
+    m_actSaveView = ui->menuTools->addAction(u"Save View As…"_s);
+    m_actSaveView->setToolTip(
+            u"Save the 3-D view as a PNG (any size, optionally with a transparent "
+            u"background), or as a PDF or SVG with the axes, colour bar and title as "
+            u"vectors over the render."_s);
+    QObject::connect(m_actSaveView, &QAction::triggered, this, &vtkWindowCube::saveViewAs3d);
+
     // Linked views (F3): sync camera / channel / colour-scale with other open
     // cube viewers that also have linking enabled.
     // "Link Views", with the rest in the tooltip. The full sentence measured
@@ -8298,6 +8306,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Export"_s, self->m_actExportSelected);
     add(u"Export"_s, self->m_actFilterFits);
     add(u"Export"_s, self->m_actExportMovie);
+    add(u"Export"_s, self->m_actSaveView);
 
     add(u"Views"_s, self->m_actSendSliceToImage);
     add(u"Views"_s, self->m_actLinkViews);

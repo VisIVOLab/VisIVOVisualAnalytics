@@ -82,6 +82,10 @@ public:
                      fitted);
     }
 
+    /// The last frame the stream showed (null before the first), as decoded:
+    /// what Save View As keeps of a view drawn on the server.
+    QImage currentFrame() const { return m_currentFrame; }
+
     /// Open a session channel. The branch — JPEG-WS vs H.264-WebRTC
     /// — is chosen by the current :c:`transport` setting at the time
     /// of this call. Both branches share the same paint pipeline so

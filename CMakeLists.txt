@@ -540,6 +540,11 @@ set(PROJECT_SOURCES
         src/gui/ColourBarTicks.h
         src/gui/VolumeColorbar.cpp
         src/gui/VolumeColorbar.h
+        src/gui/RenderExportPlan.h
+        src/gui/SaveViewDialog.cpp
+        src/gui/SaveViewDialog.h
+        src/vtk/RenderExport.cpp
+        src/vtk/RenderExport.h
         src/gui/BusyStatus.cpp
         src/gui/BusyStatus.h
         src/gui/BusyTracker.h

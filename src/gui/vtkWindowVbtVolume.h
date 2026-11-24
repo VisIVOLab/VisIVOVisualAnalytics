@@ -82,6 +82,8 @@ private:
     void updateSummary();
     void updateBoundsContext();
     void updateScalarBar();
+    /// Save View As… (#528): the volume as PNG, PDF or SVG.
+    void saveViewAs3d();
     void resetView();
     void applyBackground();
     void applyBoxActorColors(bool darkBackground);

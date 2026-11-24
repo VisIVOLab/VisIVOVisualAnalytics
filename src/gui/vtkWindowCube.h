@@ -1792,6 +1792,7 @@ protected:
     QPointer<QAction> m_actSendSliceToImage;
     QPointer<QAction> m_actKinematicModel;
     QPointer<QAction> m_actExportMovie;
+    QPointer<QAction> m_actSaveView;   ///< Save View As… (#528): the 3-D view as PNG, PDF or SVG
     QPointer<QAction> m_actChannelMaps;
 
     // Beam ellipse overlay (synthesised beam indicator in the 2D slice view).
@@ -2649,6 +2650,9 @@ protected:
     bool m_exportMovieInProgress{ false };
     /// Prompt for movie options and run the capture/encode (vtkWindowCube_Movie.cpp).
     void showExportMovieDialog();
+    /// Save the 3-D view as an image: PNG (size, transparent background), PDF or SVG
+    /// (vectors for the axes, colour bar and title over the render). vtkWindowCube_Movie.cpp.
+    void saveViewAs3d();
 
     // Linked views (F3): sync camera / channel / colour-scale across all open
     // cube viewers that have "Link views" enabled (vtkWindowCube_Link.cpp).

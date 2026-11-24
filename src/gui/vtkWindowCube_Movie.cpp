@@ -17,9 +17,20 @@
 #include "ui_vtkWindowCube.h"
 
 #include "app/BackendClient.h"
+#include "RaytraceViewport.h"
+#include "RemoteRenderWidget.h"
+#include "SaveViewDialog.h"
 #include "SliceDetailPlan.h"
+#include "VolumeColorbar.h"
 
 #include <vtkCamera.h>
+#include <vtkCubeAxesActor.h>
+#include <vtkOrientationMarkerWidget.h>
+#include <QFontInfo>
+#include <QFontMetrics>
+#include <QPainter>
+#include <QStatusBar>
+#include <QStackedWidget>
 #include <vtkImageData.h>
 #include <vtkRenderWindow.h>
 #include <vtkRenderer.h>
@@ -369,4 +380,63 @@ void vtkWindowCube::showExportMovieDialog()
     this->statusBar()->showMessage(
             u"Movie exported: %1 (%2 frames @ %3 fps)."_s.arg(outputMp4).arg(written).arg(fpsVal),
             8000);
+}
+
+// Save View As… (#528). What the 3-D view shows, as a figure: the render is read back
+// at the size asked for, with a transparent background if wanted; a PDF or SVG gets
+// the axes box, the colour bar and the title as vectors over it. Remote: the frame
+// the server last streamed, as it is.
+void vtkWindowCube::saveViewAs3d()
+{
+    if (!this->view3dVisible()) {
+        QMessageBox::information(this, u"Save View As"_s,
+                                 u"The 3-D view is not shown. Show it in the pane layout first."_s);
+        return;
+    }
+    const bool remote = this->m_renderStack && this->m_renderStack->currentIndex() == 1
+            && this->m_remoteRenderWidget;
+    if (this->m_renderStack && this->m_renderStack->currentWidget() == this->m_rtView) {
+        QMessageBox::information(this, u"Save View As"_s,
+                                 u"The ray-traced view saves its pictures from its own "
+                                 u"output controls, at up to 8K."_s);
+        return;
+    }
+
+    visivo::SaveViewSource source;
+    source.name = QFileInfo(this->filepath).completeBaseName();
+    if (remote) {
+        source.view = this->m_remoteRenderWidget;
+        source.frame = this->m_remoteRenderWidget->currentFrame();
+    } else {
+        source.view = ui->vtkCube;
+        source.window = ui->vtkCube->renderWindow();
+        source.renderer = source.window ? source.window->GetRenderers()->GetFirstRenderer()
+                                        : nullptr;
+        // Turning the axes off removes the actor from the renderer and leaves it
+        // "visible", so only an actor that is in the scene is a box to draw.
+        if (source.renderer && this->wcs3dAxesActor
+            && source.renderer->HasViewProp(this->wcs3dAxesActor))
+            source.axes = this->wcs3dAxesActor;
+        std::vector<vtkProp *> props;
+        if (this->wcs3dAxesActor)
+            props.push_back(this->wcs3dAxesActor);
+        source.hideInScene = visivo::renderexport::sceneHider(std::move(props),
+                                                              this->axesWidget.Get());
+    }
+    // The colour bar is a Qt overlay in both views, so it is never in the pixels.
+    if (this->m_volumeColorbar && !this->m_volumeColorbar->isHidden()) {
+        const VolumeColorbar::Look look = this->m_volumeColorbar->look();
+        if (!look.colours.isEmpty()) {
+            source.colourbar = [look](QPainter &painter, const QSize &view) {
+                QFont font = VolumeColorbar::barFont();
+                font.setPixelSize(QFontInfo(font).pixelSize());   // as large as on screen
+                painter.setFont(font);
+                const QFontMetrics fm(font);
+                VolumeColorbar::paint(painter, VolumeColorbar::placement(view, fm, look), fm, look);
+            };
+        }
+    }
+    const QString saved = visivo::saveViewAs(source);
+    if (!saved.isEmpty())
+        this->statusBar()->showMessage(u"Saved %1"_s.arg(QDir::toNativeSeparators(saved)), 8000);
 }

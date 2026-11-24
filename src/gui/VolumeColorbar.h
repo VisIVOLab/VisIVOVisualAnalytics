@@ -53,6 +53,8 @@ public:
     /// bar; none hides both.
     void setThreshold(std::optional<double> position, const QString &caption = {});
 
+    /// What the bar shows now (a saved picture draws the same bar).
+    Look look() const { return m_look; }
     /// The bar's font.
     static QFont barFont();
     /// Where a bar showing `look` sits in a view of `host` size.

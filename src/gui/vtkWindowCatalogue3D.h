@@ -910,6 +910,8 @@ private:
     /// there, as it reports it (the rows loaded here are only a page).
     double m_colorRemoteRange[2]{ 0.0, 0.0 };
     void refreshColorbar();
+    /// Save View As… (#528): the particle view as PNG, PDF or SVG.
+    void saveViewAs3d();
     void showLutEditor();
     void applyRenderMode(RenderMode mode);
     void updateRenderBadge();
