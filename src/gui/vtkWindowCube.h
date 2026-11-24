@@ -147,6 +147,7 @@ class vtkLegendScaleActorWCS;
 class vtkLineSource;
 class vtkLookupTable;
 class vtkOrientationMarkerWidget;
+class vtkBillboardTextActor3D;
 class vtkPlaneSource;
 class vtkPiecewiseFunction;
 class vtkPoints;
@@ -2077,6 +2078,25 @@ protected:
     // screen is the band it averaged, also on skewed grids. Until the first
     // result: diag(|CDELT1|, |CDELT2|).
     std::array<double, 4> m_pvSkyMatrix{ 0.0, 0.0, 0.0, 0.0 };
+    double m_pvStepArcsec{ 0.0 };   ///< what one pixel of width is on the sky, from the last result
+    // The part of the band the diagram covers (issue #520), as typed in the
+    // panel: channels counted from 1, or values of the spectral axis; NaN = open.
+    bool m_pvRangeByValue{ false };
+    double m_pvRangeFrom{ std::numeric_limits<double>::quiet_NaN() };
+    double m_pvRangeTo{ std::numeric_limits<double>::quiet_NaN() };
+    /// Where each vertex of the shown diagram lies on its offset axis, and the
+    /// step of the width on the sky, from its result.
+    std::array<double, 4> pvSkyMatrixOrHeader() const;
+    /// The range as the backend takes it (channels 0-based); nothing set: the whole band.
+    BackendSpectralRange pvSpectralRange() const;
+    /// Numbers 1..N beside the vertices of the path on the slice view.
+    std::vector<vtkSmartPointer<vtkBillboardTextActor3D>> m_pvVertexLabels;
+    void refreshPvVertexLabels(const std::vector<std::array<double, 2>> &vertices, bool shown);
+    /// Put the shown path (and optionally its width polygon) in the region list
+    /// and write it as a ds9 / CRTF file.
+    void exportPvPathAsRegions();
+    /// Take the selected line / polyline region as the PV path.
+    void usePathFromSelectedRegion();
     RemoteCubeDisplayState remoteCubeDisplayState{ RemoteCubeDisplayState::Preview };
     // Pattern B: backend-driven size-aware loading policy.
     // ``preview_only`` suppresses the auto requestHighResCube() call that

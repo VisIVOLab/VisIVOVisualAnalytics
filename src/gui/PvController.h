@@ -92,6 +92,13 @@ public slots:
     void startExtraction(const std::vector<std::array<double, 2>> &vertices,
                          int widthPixels, bool interactive = false);
 
+    /// The part of the band the diagram covers (issue #520), asked of the window
+    /// each time a run starts. Without one: the whole band.
+    void setSpectralRangeProvider(std::function<BackendSpectralRange()> provider)
+    {
+        m_spectralRange = std::move(provider);
+    }
+
     /// The spectral axis the diagram's coordinates are given in (issue #496),
     /// asked of the window each time a run starts. Without one: the file's own.
     void setSpectralChoiceProvider(std::function<BackendSpectralChoice()> provider)
@@ -108,6 +115,7 @@ private:
     std::function<void()> m_onRunFinished;
     std::function<void(const RemotePvFetchResult &)> m_onCompleted;
     std::function<BackendSpectralChoice()> m_spectralChoice;
+    std::function<BackendSpectralRange()> m_spectralRange;
 
     bool m_busy{ false };
     // The run under way: shared with its worker, which follows the backend

@@ -54,6 +54,44 @@ Path smoothed(const Path &control, int samplesPerSegment = 8);
 /// Polyline length.
 double length(const Path &path);
 
+/// Pixel -> sky matrix, row-major [a, b, c, d] (any one unit): a pixel offset
+/// (dx, dy) is (a dx + b dy, c dx + d dy) on the sky.
+using SkyMatrix = std::array<double, 4>;
+
+/// The sample step the backend cuts with, in the matrix's unit: the shorter
+/// pixel side on the sky.
+double sampleStep(const SkyMatrix &m);
+
+/// The two edges of the band a cut of @p widthPixels averages over, in the
+/// backend's convention (issue #3's geometry): the band is widthPixels sample
+/// steps wide, measured on the SKY along each vertex's normal (the mean of its
+/// adjacent segments'), so it is right for pixels that are not square. Both
+/// edges have as many vertices as @p path; a single-pixel width has none.
+struct Band
+{
+    Path upper;
+    Path lower;
+};
+Band bandEdges(const Path &path, int widthPixels, const SkyMatrix &m);
+
+/// The polygon of the band: the upper edge along, the lower one back. Empty for
+/// a width of one pixel or fewer than two vertices.
+Path bandPolygon(const Path &path, int widthPixels, const SkyMatrix &m);
+
+/// A width in pixels as angular width, @p stepArcsec being what one pixel of
+/// width is on the sky (the response's pixel_scale_arcsec_per_pixel).
+inline double widthArcsec(int widthPixels, double stepArcsec) { return widthPixels * stepArcsec; }
+/// The pixel width nearest to @p arcsec, at least 1; 1 when the step is unknown.
+int widthPixelsForArcsec(double arcsec, double stepArcsec);
+/// "3 px (3.00 arcsec)", or "3 px" when the scale is unknown.
+QString widthText(int widthPixels, double stepArcsec);
+
+/// How vertex @p index (0-based) is named on the display and everywhere the
+/// path is described: counted from 1.
+inline QString vertexName(std::size_t index) { return QString::number(index + 1); }
+/// "1 (12.0, 4.5); 2 (30.0, 8.0)": every vertex under its number, in cube pixels.
+QString vertexListText(const Path &vertices);
+
 /// A PV diagram (row-major, @p ny rows of @p nx, one row per channel in CHANNEL
 /// order) laid out for a plot whose rows are EQUALLY spaced from the lowest to the
 /// highest spectral value — what QCPColorMap draws. @p spectral = each channel's

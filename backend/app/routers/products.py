@@ -151,7 +151,7 @@ async def moment_save_fits(
 # Same path parameters as /v1/cube/pv. Axis 1 = offset along the path
 # (arcsec), axis 2 = the cube's spectral axis; written to Workspace Exports.
 
-class PvSaveFitsRequest(SpectralChoice):
+class PvSaveFitsRequest(SpectralRangeChoice):
     dataset_id: str
     vertices: list[list[float]]
     width_pixels: int = 1
@@ -194,6 +194,7 @@ async def pv_save_fits(
             max(1, int(request.width_pixels)),
             None,
             request.spectral_choice(),
+            request.spectral_range(),
         )
     except HTTPException:
         raise

@@ -287,7 +287,7 @@ def _fake_worker_moment(path, order, z0, z1, mask, thr, auto=False, var=False, s
             "moment_threads_used": 1, "threshold_used": None, "data_base64": ""}
 
 
-def _fake_worker_pv(path, vertices, width, stop_file=None, spectral_choice=None):
+def _fake_worker_pv(path, vertices, width, stop_file=None, spectral_choice=None, spectral_range=None):
     GIVEN.append(("pv", stop_file))
     return {"depth": 1, "num_samples": 1}
 

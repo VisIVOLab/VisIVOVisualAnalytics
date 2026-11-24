@@ -177,18 +177,19 @@ BackendSavePvFitsResult BackendClient::savePvFits(const QString &datasetId,
                                                   const std::vector<std::array<double, 2>> &vertices,
                                                   int widthPixels,
                                                   const QString &outputBasename,
-                                                  const BackendSpectralChoice &spectral)
+                                                  const BackendSpectralChoice &spectral,
+                                                  const BackendSpectralRange &range)
 {
     BackendSavePvFitsResult result;
     QString error;
     QJsonArray vertexArray;
     for (const auto &v : vertices)
         vertexArray.append(QJsonArray{ v[0], v[1] });
-    const QJsonDocument body(spectral.applyTo(
+    const QJsonDocument body(range.applyTo(spectral.applyTo(
             QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                          { QStringLiteral("vertices"), vertexArray },
                          { QStringLiteral("width_pixels"), widthPixels },
-                         { QStringLiteral("output_basename"), outputBasename } }));
+                         { QStringLiteral("output_basename"), outputBasename } })));
     const QByteArray raw =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/pv_fits")), body, error);
     if (!error.isEmpty()) {
@@ -726,7 +727,8 @@ QString BackendClient::decompressForOpen(const QString &path) const
 BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
                                                     const std::vector<std::array<double, 2>> &vertices,
                                                     int widthPixels,
-                                                    const BackendSpectralChoice &spectral) const
+                                                    const BackendSpectralChoice &spectral,
+                                                    const BackendSpectralRange &range) const
 {
     BackendTaskCreateResult result;
     // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
@@ -737,10 +739,10 @@ BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
     for (const auto &v : vertices) {
         vertexArray.append(QJsonArray{ v[0], v[1] });
     }
-    const QJsonDocument body(spectral.applyTo(
+    const QJsonDocument body(range.applyTo(spectral.applyTo(
             QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                          { QStringLiteral("vertices"), vertexArray },
-                         { QStringLiteral("width_pixels"), widthPixels } }));
+                         { QStringLiteral("width_pixels"), widthPixels } })));
     // The status tells an older backend with no task route (404/405) from a
     // refusal: only the first may fall back to the synchronous route.
     const QByteArray payload =

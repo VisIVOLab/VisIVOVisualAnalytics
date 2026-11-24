@@ -232,10 +232,13 @@ Serialise canonical regions to CRTF or DS9 text.
 
 `format` (`crtf` or `ds9`) is required. Response:
 `{valid, error, format, text}`. A region that cannot be written is 422; CRTF
-has no elliptical or box annulus and no line of more than two vertices. ds9
+has no elliptical or box annulus. ds9
 text and vector regions are written behind `#`, as ds9 writes them, and a
-line of more than two vertices as a ds9 `segment`; a vector becomes a CRTF
-`vector` between its two ends.
+line of more than two vertices (a PV path, issue #520) as a ds9 `segment`; a
+vector becomes a CRTF `vector` between its two ends. CRTF has no polyline: a
+line of more than two vertices is written as one `line` per segment, in order,
+each with the properties of the whole. The polygon of a PV path's width is an
+ordinary polygon.
 
 ### `POST /v1/regions/convert`
 Move canonical regions to another frame with the dataset's WCS, for a client

@@ -1293,8 +1293,9 @@ def export_crtf(regions: list[dict[str, Any]]) -> str:
     """Serialize canonical regions to CASA CRTF text.
 
     A vector becomes a CRTF ``vector`` between its two ends. Elliptical and
-    box annuli, and lines of more than two vertices, have no CRTF form and
-    are refused."""
+    box annuli have no CRTF form and are refused. CRTF has no polyline either:
+    a line of more than two vertices (a PV path) is written as one ``line``
+    per segment, in order, each with the properties of the whole."""
     out = ["#CRTF"]
     for r in regions:
         shape, frame = r["shape"], r.get("frame", "image")
@@ -1309,6 +1310,7 @@ def export_crtf(regions: list[dict[str, Any]]) -> str:
         def C(p):  # noqa: E306,N802
             return f"[{P(p[0], True)}, {P(p[1], False)}]"
         props = dict(r.get("props") or {})
+        bodies = None
         if shape == "circle":
             body = f"circle[{C(r['center'])}, {Z(r['radius'])}]"
         elif shape == "ellipse":
@@ -1326,9 +1328,9 @@ def export_crtf(regions: list[dict[str, Any]]) -> str:
         elif shape == "polygon":
             body = "poly[" + ", ".join(C(p) for p in r["points"]) + "]"
         elif shape == "line":
-            if len(r["points"]) != 2:
-                raise RegionParseError("CRTF has no line of more than two vertices.")
-            body = "line[" + ", ".join(C(p) for p in r["points"]) + "]"
+            pts = r["points"]
+            bodies = ["line[" + ", ".join(C(p) for p in pair) + "]"
+                      for pair in (zip(pts[:-1], pts[1:]) if len(pts) > 2 else [pts])]
         elif shape == "vector":
             body = f"vector[{C(r['center'])}, {C(_vector_end(r, frame, unit))}]"
         elif shape == "point":
@@ -1340,10 +1342,8 @@ def export_crtf(regions: list[dict[str, Any]]) -> str:
             props.pop("text", None)
         else:
             raise RegionParseError(f"CRTF has no '{shape}' region.")
-        if props.get("annotation"):
-            body = "ann " + body
-        if props.get("include") is False:
-            body = "-" + body
+        if bodies is None:
+            bodies = [body]
         extra = ""
         if "color" in props:
             extra += f", color={props['color']}"
@@ -1353,7 +1353,12 @@ def export_crtf(regions: list[dict[str, Any]]) -> str:
             extra += ", linestyle=--"
         if props.get("text"):
             extra += ", label='" + str(props["text"]).replace("'", "’") + "'"
-        out.append(body + coord + extra)
+        for body in bodies:
+            if props.get("annotation"):
+                body = "ann " + body
+            if props.get("include") is False:
+                body = "-" + body
+            out.append(body + coord + extra)
     return "\n".join(out) + "\n"
 
 

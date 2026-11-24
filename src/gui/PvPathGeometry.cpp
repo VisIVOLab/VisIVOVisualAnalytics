@@ -4,6 +4,8 @@
 #include <cmath>
 #include <limits>
 
+#include <QStringList>
+
 namespace pvpath {
 
 namespace {
@@ -162,6 +164,77 @@ double length(const Path &path)
     for (std::size_t i = 1; i < path.size(); ++i)
         total += dist(path[i - 1], path[i]);
     return total;
+}
+
+double sampleStep(const SkyMatrix &m)
+{
+    return std::min(std::hypot(m[0], m[2]), std::hypot(m[1], m[3]));
+}
+
+Band bandEdges(const Path &path, int widthPixels, const SkyMatrix &m)
+{
+    Band band;
+    const double det = m[0] * m[3] - m[1] * m[2];
+    if (widthPixels <= 1 || path.size() < 2 || !(std::abs(det) > 0.0) || !std::isfinite(det))
+        return band;
+    const SkyMatrix inv{ m[3] / det, -m[1] / det, -m[2] / det, m[0] / det };
+    const double step = sampleStep(m);
+    const double half = 0.5 * static_cast<double>(widthPixels - 1);
+    const auto segNormal = [&](std::size_t i) -> Vertex {   // on the sky
+        const double dx = path[i + 1][0] - path[i][0];
+        const double dy = path[i + 1][1] - path[i][1];
+        const double tx = m[0] * dx + m[1] * dy;
+        const double ty = m[2] * dx + m[3] * dy;
+        const double len = std::hypot(tx, ty);
+        return len > 0.0 ? Vertex{ -ty / len, tx / len } : Vertex{ 0.0, 0.0 };
+    };
+    for (std::size_t i = 0; i < path.size(); ++i) {
+        Vertex n{ 0.0, 0.0 };
+        if (i > 0) { const Vertex a = segNormal(i - 1); n[0] += a[0]; n[1] += a[1]; }
+        if (i + 1 < path.size()) { const Vertex b = segNormal(i); n[0] += b[0]; n[1] += b[1]; }
+        const double len = std::hypot(n[0], n[1]);
+        if (len > 0.0) { n[0] /= len; n[1] /= len; }
+        // Sky offset (half steps along n) back to pixels.
+        const double su = half * step * n[0];
+        const double sv = half * step * n[1];
+        const double ox = inv[0] * su + inv[1] * sv;
+        const double oy = inv[2] * su + inv[3] * sv;
+        band.upper.push_back({ path[i][0] + ox, path[i][1] + oy });
+        band.lower.push_back({ path[i][0] - ox, path[i][1] - oy });
+    }
+    return band;
+}
+
+Path bandPolygon(const Path &path, int widthPixels, const SkyMatrix &m)
+{
+    Band band = bandEdges(path, widthPixels, m);
+    Path polygon = std::move(band.upper);
+    polygon.insert(polygon.end(), band.lower.rbegin(), band.lower.rend());
+    return polygon;
+}
+
+int widthPixelsForArcsec(double arcsec, double stepArcsec)
+{
+    if (!(stepArcsec > 0.0) || !std::isfinite(arcsec))
+        return 1;
+    return std::max(1, static_cast<int>(std::lround(arcsec / stepArcsec)));
+}
+
+QString widthText(int widthPixels, double stepArcsec)
+{
+    QString text = QStringLiteral("%1 px").arg(widthPixels);
+    if (stepArcsec > 0.0)
+        text += QStringLiteral(" (%1 arcsec)").arg(widthArcsec(widthPixels, stepArcsec), 0, 'g', 4);
+    return text;
+}
+
+QString vertexListText(const Path &vertices)
+{
+    QStringList parts;
+    for (std::size_t i = 0; i < vertices.size(); ++i)
+        parts << QStringLiteral("%1 (%2, %3)").arg(vertexName(i))
+                         .arg(vertices[i][0], 0, 'f', 1).arg(vertices[i][1], 0, 'f', 1);
+    return parts.join(QStringLiteral("; "));
 }
 
 UniformRows rowsOnUniformSpectralGrid(const std::vector<double> &values, int nx, int ny,

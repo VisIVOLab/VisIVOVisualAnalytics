@@ -513,6 +513,42 @@ struct BackendCubeSubvolumeResult
     QList<QByteArray> slabs;
 };
 
+/// The part of the band a PV diagram covers (issue #520): channels (0-based,
+/// inclusive) and/or values of the chosen spectral axis, every bound optional.
+/// Nothing set: the whole band, and the request carries no extra field.
+struct BackendSpectralRange
+{
+    int channelStart{ -1 };   ///< < 0: not set
+    int channelEnd{ -1 };
+    std::optional<double> valueMin;   ///< in the axis' unit (km/s, Hz, ...)
+    std::optional<double> valueMax;
+
+    bool isSet() const
+    {
+        return channelStart >= 0 || channelEnd >= 0 || valueMin.has_value() || valueMax.has_value();
+    }
+    bool operator==(const BackendSpectralRange &o) const
+    {
+        return channelStart == o.channelStart && channelEnd == o.channelEnd
+                && valueMin == o.valueMin && valueMax == o.valueMax;
+    }
+
+    /// @p body with channel_start / channel_end / spectral_min / spectral_max
+    /// added for the bounds that are set.
+    QJsonObject applyTo(QJsonObject body) const
+    {
+        if (channelStart >= 0)
+            body.insert(QStringLiteral("channel_start"), channelStart);
+        if (channelEnd >= 0)
+            body.insert(QStringLiteral("channel_end"), channelEnd);
+        if (valueMin)
+            body.insert(QStringLiteral("spectral_min"), *valueMin);
+        if (valueMax)
+            body.insert(QStringLiteral("spectral_max"), *valueMax);
+        return body;
+    }
+};
+
 struct BackendCubePvResult
 {
     bool valid{ false };
@@ -527,6 +563,12 @@ struct BackendCubePvResult
     QByteArray data;
     QString computedOn;
     int widthPixels{ 1 };
+    double widthArcsec{ 0. };    ///< the band's width on the sky; 0 from an older backend
+    /// Where each vertex lies on the offset axis (arcsec from the first); empty
+    /// from an older backend.
+    QVector<double> vertexOffsetsArcsec;
+    int channelStart{ 0 };       ///< the channels covered (0-based, inclusive)
+    int channelEnd{ -1 };        ///< -1: not reported (an older backend: the whole band)
     int vertexCount{ 0 };
     double totalLength{ 0. };
     int validSamples{ 0 };
@@ -2652,7 +2694,8 @@ public:
     BackendCubePvResult requestPv(const QString &datasetId,
                                   const std::vector<std::array<double, 2>> &vertices,
                                   int widthPixels,
-                                  const BackendSpectralChoice &spectral = {}) const;
+                                  const BackendSpectralChoice &spectral = {},
+                                  const BackendSpectralRange &range = {}) const;
     BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
                                         int channelStart, int channelEnd) const;
     BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
@@ -2990,7 +3033,8 @@ public:
     BackendTaskCreateResult createPvTask(const QString &datasetId,
                                          const std::vector<std::array<double, 2>> &vertices,
                                          int widthPixels,
-                                         const BackendSpectralChoice &spectral = {}) const;
+                                         const BackendSpectralChoice &spectral = {},
+                                         const BackendSpectralRange &range = {}) const;
     /** GET /v1/finders — the source finders this backend offers. */
     BackendFindersResult listFinders() const;
     /** POST /v1/tasks/sourcefind — run ``finder`` on a dataset as a cancellable
@@ -3320,7 +3364,8 @@ public:
                                        const std::vector<std::array<double, 2>> &vertices,
                                        int widthPixels,
                                        const QString &outputBasename = {},
-                                       const BackendSpectralChoice &spectral = {});
+                                       const BackendSpectralChoice &spectral = {},
+                                       const BackendSpectralRange &range = {});
 
     BackendSaveMomentFitsResult saveMomentFits(const QString &datasetId,
                                                 int order,

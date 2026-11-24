@@ -183,6 +183,25 @@ class SpectralChoice(BaseModel):
         return normalize_choice(self.spectral_quantity, self.spectral_frame, self.rest_freq_hz)
 
 
+class SpectralRangeChoice(SpectralChoice):
+    """A spectral axis choice and the part of the band a PV diagram covers
+    (issue #520). The range is optional and open-ended: a bound left out is
+    the band's end. Channels are 0-based and inclusive; ``spectral_min`` and
+    ``spectral_max`` are values of the chosen axis (a velocity in km/s, a
+    frequency in Hz, or the file's own unit), in either order. Both kinds
+    given: the channels that satisfy both."""
+    channel_start: int | None = None
+    channel_end: int | None = None
+    spectral_min: float | None = None
+    spectral_max: float | None = None
+
+    def spectral_range(self) -> dict[str, Any] | None:
+        """What the PV workers take as ``spectral_range``; None for the whole band."""
+        rng = {"channel_start": self.channel_start, "channel_end": self.channel_end,
+               "value_min": self.spectral_min, "value_max": self.spectral_max}
+        return rng if any(v is not None for v in rng.values()) else None
+
+
 class MomentProductRequest(SpectralChoice):
     dataset_id: str
     moment_order: int
@@ -385,7 +404,7 @@ class CubeSubvolumeResponse(BaseModel):
     data_base64: str = ""
 
 
-class CubePvRequest(SpectralChoice):
+class CubePvRequest(SpectralRangeChoice):
     dataset_id: str
     # 0-based cube pixel (x, y); fractional values are honoured (an edited path
     # is not snapped to the grid).
@@ -407,6 +426,15 @@ class CubePvResponse(BaseModel):
     data_base64: str = ""
     computed_on: str = ""
     width_pixels: int = 1
+    # The band's width on the sky, arcsec (width_pixels x the sample step).
+    width_arcsec: float = 0.0
+    # Where each vertex sits on the offset axis (arcsec from the first vertex),
+    # so the display's numbered vertices can be found on the diagram.
+    vertex_offsets_arcsec: list[float] = []
+    # The channels the diagram covers (0-based, inclusive): the whole band
+    # unless a spectral range was asked for.
+    channel_start: int = 0
+    channel_end: int = 0
     vertex_count: int = 0
     total_length: float = 0.0
     valid_samples: int = 0

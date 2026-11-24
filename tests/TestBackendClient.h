@@ -15,6 +15,10 @@ private slots:
     void noLocalBackend_aTunnelKeepsItsToken();
     void parseKinematicFit_readsFitsAndNullsAsNaN();
     void parseKinematicFit_rejectsMapsOfTheWrongSize();
+    // PV tool (#520): the spectral range in the request, the width in arcsec,
+    // the vertex offsets and the channels covered in the result.
+    void pvRange_addsOnlyTheBoundsThatAreSet();
+    void pvResult_readsWidthVertexOffsetsAndChannels();
     // Diagnostics "Operation" column — derived from the request path.
     void operationTag_stripsVersionAndTransportSuffix();
     void operationTag_keepsTwoSegments();

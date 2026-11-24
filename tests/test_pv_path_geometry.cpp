@@ -10,6 +10,54 @@
 using pvpath::Path;
 using pvpath::Vertex;
 
+void TestPvPathGeometry::widthInArcsecAndBackToPixels()
+{
+    QCOMPARE(pvpath::widthArcsec(3, 1.5), 4.5);
+    QCOMPARE(pvpath::widthPixelsForArcsec(4.5, 1.5), 3);
+    QCOMPARE(pvpath::widthPixelsForArcsec(4.0, 1.5), 3);    // the nearest whole width
+    QCOMPARE(pvpath::widthPixelsForArcsec(0.2, 1.5), 1);    // never below one pixel
+    QCOMPARE(pvpath::widthPixelsForArcsec(10.0, 0.0), 1);   // scale unknown
+    QCOMPARE(pvpath::widthText(3, 1.5), QStringLiteral("3 px (4.5 arcsec)"));
+    QCOMPARE(pvpath::widthText(3, 0.0), QStringLiteral("3 px"));
+}
+
+void TestPvPathGeometry::bandEdgesAreTheBackendsBand()
+{
+    const pvpath::SkyMatrix square{ 1.0, 0.0, 0.0, 1.0 };
+    const Path along{ { 0, 0 }, { 10, 0 } };
+    QVERIFY(pvpath::bandEdges(along, 1, square).upper.empty());   // one pixel: no band
+    // Three samples across: one step to each side of the path, along the normal.
+    const auto band = pvpath::bandEdges(along, 3, square);
+    QCOMPARE(band.upper.size(), std::size_t(2));
+    QCOMPARE(band.upper[0], (Vertex{ 0.0, 1.0 }));
+    QCOMPARE(band.lower[1], (Vertex{ 10.0, -1.0 }));
+    // Pixels twice as tall as wide on the sky: the band is measured on the sky,
+    // so a 1-step offset across a horizontal path is half a pixel in y.
+    const pvpath::SkyMatrix tall{ 1.0, 0.0, 0.0, 2.0 };
+    QCOMPARE(pvpath::sampleStep(tall), 1.0);
+    const auto b2 = pvpath::bandEdges(along, 3, tall);
+    QVERIFY(std::abs(b2.upper[0][1] - 0.5) < 1e-12);
+}
+
+void TestPvPathGeometry::bandPolygonGoesAlongAndBack()
+{
+    const pvpath::SkyMatrix square{ 1.0, 0.0, 0.0, 1.0 };
+    const auto poly = pvpath::bandPolygon({ { 0, 0 }, { 10, 0 }, { 10, 8 } }, 3, square);
+    QCOMPARE(poly.size(), std::size_t(6));        // three on each edge
+    QCOMPARE(poly.front()[0], 0.0);               // starts at the first vertex's upper edge
+    QCOMPARE(poly[2], (Vertex{ 9.0, 8.0 }));      // last vertex, upper edge ...
+    QCOMPARE(poly[3], (Vertex{ 11.0, 8.0 }));     // ... and straight back along the lower one
+    QVERIFY(pvpath::bandPolygon({ { 0, 0 }, { 10, 0 } }, 1, square).empty());
+}
+
+void TestPvPathGeometry::verticesAreNumberedFromOne()
+{
+    QCOMPARE(pvpath::vertexName(0), QStringLiteral("1"));
+    QCOMPARE(pvpath::vertexName(4), QStringLiteral("5"));
+    QCOMPARE(pvpath::vertexListText({ { 12.0, 4.5 }, { 30.0, 8.0 } }),
+             QStringLiteral("1 (12.0, 4.5); 2 (30.0, 8.0)"));
+}
+
 void TestPvPathGeometry::hitVertexPicksTheNearestWithinTolerance()
 {
     const Path pts{ { 0, 0 }, { 10, 0 }, { 12, 0 } };

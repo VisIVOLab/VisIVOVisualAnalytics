@@ -314,16 +314,51 @@ def _require_spectral_last(dataset: ScientificFitsDataset) -> None:
         )
 
 
+def resolve_channel_range(values: np.ndarray, channel_start: int | None, channel_end: int | None,
+                          value_min: float | None, value_max: float | None) -> tuple[int, int]:
+    """First and last channel (0-based, inclusive) a PV request keeps.
+
+    ``channel_start``/``channel_end`` bound the channels, either may be absent;
+    ``value_min``/``value_max`` bound the spectral coordinate (``values``, one
+    per channel, in the axis the product is computed on: a velocity or a
+    frequency, in either order whatever the sign of CDELT). Both given: the
+    channels that satisfy both. The kept channels are the span from the first to
+    the last that qualify, so the output axis stays contiguous."""
+    n = int(values.size)
+    c0 = 0 if channel_start is None else int(channel_start)
+    c1 = n - 1 if channel_end is None else int(channel_end)
+    if channel_start is not None and channel_end is not None and c0 > c1:
+        c0, c1 = c1, c0
+    if c0 > n - 1 or c1 < 0 or c0 > c1:
+        raise ValueError(f"The channel range lies outside the cube's {n} channels.")
+    c0, c1 = max(0, c0), min(n - 1, c1)
+    if value_min is not None or value_max is not None:
+        lo = -np.inf if value_min is None else float(value_min)
+        hi = np.inf if value_max is None else float(value_max)
+        if lo > hi:
+            lo, hi = hi, lo
+        inside = np.flatnonzero((values >= lo) & (values <= hi))
+        inside = inside[(inside >= c0) & (inside <= c1)]
+        if inside.size == 0:
+            raise ValueError("No channel lies in the requested spectral range.")
+        c0, c1 = int(inside[0]), int(inside[-1])
+    return c0, c1
+
+
 def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
                stop_file: str | None = None,
-               spectral_choice: dict[str, Any] | None = None) -> dict[str, Any]:
+               spectral_choice: dict[str, Any] | None = None,
+               spectral_range: dict[str, Any] | None = None) -> dict[str, Any]:
     """The PV diagram as arrays: ``pv`` (depth, n_samples), sample geometry, and
     the spectral axis (coordinates + linear WCS) and cube metadata. With a
     ``stop_file`` (app/compute/abort.py) an aborted task ends within one block
     of channels, raising ``ComputationAborted``. ``spectral_choice``
     (``spectral_axis.normalize_choice``, issue #496) gives the spectral
     coordinates in another quantity and frame; the diagram itself, one row
-    per channel, is the same."""
+    per channel, is the same. ``spectral_range`` (``channel_start``,
+    ``channel_end``, ``value_min``, ``value_max``, all optional; see
+    ``resolve_channel_range``) keeps only those channels, so the diagram, its
+    spectral axis and the work cover the line and not the whole band."""
     check_abort(stop_file)
     verts = _clean_vertices(vertices)
     width_pixels = max(1, int(width_pixels))
@@ -360,27 +395,31 @@ def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
         if x0 > x1 or y0 > y1:
             raise ValueError("The PV path lies outside the cube.")
         n_samples = points.shape[0]
+        from ..spectral_axis import axis_provenance, spectral_axis  # noqa: PLC0415
+        spectral = dataset.spectral_axis_metadata(0, depth - 1)
+        if spectral_choice:
+            axis = spectral_axis(dataset.path, spectral_choice["quantity"], spectral_choice["frame"],
+                                 spectral_choice["rest_freq_hz"])
+            spectral = {**spectral, "coordinates": np.asarray(axis["values"], dtype=np.float64),
+                        "axis_unit": axis["unit"], "axis_type": axis["ctype"]}
+            axis_note = axis_provenance(dataset, spectral_choice, axis, axis["ctype"])
+        else:
+            axis_note = axis_provenance(dataset, None, None, str(spectral["axis_type"]))
+        full_coordinates = np.asarray(spectral["coordinates"], dtype=np.float64)
+        rng = spectral_range or {}
+        c0, c1 = resolve_channel_range(full_coordinates, rng.get("channel_start"), rng.get("channel_end"),
+                                       rng.get("value_min"), rng.get("value_max"))
         # The slab view stays lazy (memmap): _bilinear_mean reads it a block of
         # channels at a time, so a long diagonal never materialises the cube.
-        pv = _bilinear_mean(data[:, y0 : y1 + 1, x0 : x1 + 1], (sx - x0).ravel(), (sy - y0).ravel(),
+        pv = _bilinear_mean(data[c0 : c1 + 1, y0 : y1 + 1, x0 : x1 + 1], (sx - x0).ravel(), (sy - y0).ravel(),
                             n_samples, width_pixels, width - x0, height - y0, stop_file)
-        spectral = dataset.spectral_axis_metadata(0, depth - 1)
     finally:
         hdul.close()
     valid_samples = int(np.isfinite(pv).sum())
     if valid_samples <= 0:
         raise ValueError("No valid data found along the PV cut.")
 
-    from ..spectral_axis import axis_provenance, spectral_axis  # noqa: PLC0415
-    if spectral_choice:
-        axis = spectral_axis(dataset.path, spectral_choice["quantity"], spectral_choice["frame"],
-                             spectral_choice["rest_freq_hz"])
-        spectral = {**spectral, "coordinates": np.asarray(axis["values"], dtype=np.float64),
-                    "axis_unit": axis["unit"], "axis_type": axis["ctype"]}
-        axis_note = axis_provenance(dataset, spectral_choice, axis, axis["ctype"])
-    else:
-        axis_note = axis_provenance(dataset, None, None, str(spectral["axis_type"]))
-    coordinates = np.asarray(spectral["coordinates"], dtype=np.float64)
+    coordinates = full_coordinates[c0 : c1 + 1]
     if coordinates.size >= 2:
         crval, cdelt = float(coordinates[0]), float(coordinates[1] - coordinates[0])
     else:
@@ -397,6 +436,11 @@ def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
         "step_pixels": PV_STEP_PIXELS,
         "pixel_scale_arcsec": float(step_arcsec),
         "sky_matrix_arcsec": m,
+        # Where each vertex lies on the offset axis (arcsec from the first).
+        "vertex_offsets_arcsec": np.concatenate(
+            [[0.0], np.cumsum(np.hypot(*np.diff(verts @ m.T, axis=0).T))]),
+        "channel_start": c0,
+        "channel_end": c1,
         "vertices": verts,
         "width_pixels": width_pixels,
         "total_length": total_length,
@@ -414,8 +458,9 @@ def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
 
 def worker_pv(path: str, vertices: list[list[float]], width_pixels: int,
               stop_file: str | None = None,
-              spectral_choice: dict[str, Any] | None = None) -> dict[str, Any]:
-    r = compute_pv(path, vertices, width_pixels, stop_file, spectral_choice)
+              spectral_choice: dict[str, Any] | None = None,
+              spectral_range: dict[str, Any] | None = None) -> dict[str, Any]:
+    r = compute_pv(path, vertices, width_pixels, stop_file, spectral_choice, spectral_range)
     pv = r["pv"]
     dataset = r["dataset"]
     positions = r["positions"].astype(np.float32)
@@ -435,6 +480,11 @@ def worker_pv(path: str, vertices: list[list[float]], width_pixels: int,
         "data_base64": data_b64,
         "computed_on": "spatial_slab",
         "width_pixels": r["width_pixels"],
+        # The band is width_pixels steps wide, a step being the finer pixel.
+        "width_arcsec": float(r["width_pixels"] * r["pixel_scale_arcsec"]),
+        "vertex_offsets_arcsec": [float(v) for v in r["vertex_offsets_arcsec"]],
+        "channel_start": r["channel_start"],
+        "channel_end": r["channel_end"],
         "vertex_count": int(r["vertices"].shape[0]),
         "total_length": float(r["total_length"]),
         "valid_samples": r["valid_samples"],
@@ -458,9 +508,11 @@ def worker_pv(path: str, vertices: list[list[float]], width_pixels: int,
     }
 
 
-def _copy_spectral_axis(dataset: ScientificFitsDataset, hdr, out_axis: int) -> None:
-    """The cube's own spectral-axis WCS, renumbered to ``out_axis``. Every channel
-    is kept and in order, so CRPIX carries over unchanged; copying the
+def _copy_spectral_axis(dataset: ScientificFitsDataset, hdr, out_axis: int,
+                        first_channel: int = 0) -> None:
+    """The cube's own spectral-axis WCS, renumbered to ``out_axis``. The channels
+    are kept in order, from ``first_channel``, so CRPIX only moves by that many
+    channels (0 for the whole band); copying the
     algorithm (e.g. ``VOPT-F2W``), its parameters and the PC/CD scale keeps a
     non-linear axis exact, which a CRVAL/CDELT pair taken from two channels
     would not."""
@@ -473,7 +525,7 @@ def _copy_spectral_axis(dataset: ScientificFitsDataset, hdr, out_axis: int) -> N
     hdr[f"CTYPE{out_axis}"] = str(get(f"CTYPE{n}", "SPECTRAL"))
     if get(f"CUNIT{n}") is not None:
         hdr[f"CUNIT{out_axis}"] = str(get(f"CUNIT{n}"))
-    hdr[f"CRPIX{out_axis}"] = float(get(f"CRPIX{n}", 1.0))
+    hdr[f"CRPIX{out_axis}"] = float(get(f"CRPIX{n}", 1.0)) - int(first_channel)
     hdr[f"CRVAL{out_axis}"] = float(get(f"CRVAL{n}", 0.0))
     if get(f"CD{n}_{n}") is not None:
         cdelt = float(get(f"CD{n}_{n}"))
@@ -531,7 +583,8 @@ def _linear_spectral_rows(pv: np.ndarray, values: np.ndarray
 
 def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]],
                         width_pixels: int, stop_file: str | None = None,
-                        spectral_choice: dict[str, Any] | None = None) -> dict[str, Any]:
+                        spectral_choice: dict[str, Any] | None = None,
+                        spectral_range: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute the PV diagram and write it as a 2-D FITS image with WCS.
 
     Axis 1 is the offset along the path (CTYPE1 ``OFFSET``, arcsec, 0 at the first
@@ -540,7 +593,7 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
     """
     from astropy.io import fits  # noqa: PLC0415
 
-    r = compute_pv(path, vertices, width_pixels, stop_file, spectral_choice)
+    r = compute_pv(path, vertices, width_pixels, stop_file, spectral_choice, spectral_range)
     check_abort(stop_file)   # not a byte of an aborted job's product is written
     dataset = r["dataset"]
     src = dataset.header
@@ -563,7 +616,7 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
         hdr["CDELT2"] = cdelt
         resampled = (worst, cdelt) if was_resampled else None
     else:
-        _copy_spectral_axis(dataset, hdr, out_axis=2)
+        _copy_spectral_axis(dataset, hdr, out_axis=2, first_channel=r["channel_start"])
     for key in ("RESTFRQ", "RESTFREQ", "RESTWAV", "RESTWAVE", "SPECSYS", "SSYSOBS", "VELOSYS",
                 "VELREF", "ZSOURCE", "OBJECT", "TELESCOP", "EQUINOX", "RADESYS", "MJD-OBS", "DATE-OBS"):
         if key in src:
@@ -595,6 +648,9 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
         hdr["BMIN"] = float(beam.minor)
         hdr["BPA"] = float(beam.pa or 0.0)
     hdr["PVWIDTH"] = (int(r["width_pixels"]), "PV path width (cube pixels)")
+    hdr["PVWIDARC"] = (float(r["width_pixels"] * r["pixel_scale_arcsec"]), "PV path width (arcsec)")
+    hdr["PVCHAN1"] = (int(r["channel_start"]), "First cube channel kept (0-based)")
+    hdr["PVCHAN2"] = (int(r["channel_end"]), "Last cube channel kept (0-based)")
     hdr["PVSTEP"] = (float(r["step_pixels"] * r["pixel_scale_arcsec"]), "Sample step along the path (arcsec)")
     hdr["HISTORY"] = f"VisIVO PV diagram of {Path(dataset.path).name}"
     sky = None
@@ -607,7 +663,8 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
     # longer line is wrapped by astropy in the middle of a number.
     hdr["HISTORY"] = "PV vertices: 0-based pixel (x, y); world (deg) in the cube's frame"
     for i, (x, y) in enumerate(r["vertices"]):
-        line = f"PV vertex {i}: pix {x:.3f} {y:.3f}"
+        # Numbered from 1 as on the display.
+        line = f"PV vertex {i + 1}: pix {x:.3f} {y:.3f}"
         if sky is not None:
             line += f" world {float(sky[0][i]):.6f} {float(sky[1][i]):.6f}"
         hdr["HISTORY"] = line

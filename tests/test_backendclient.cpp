@@ -587,6 +587,57 @@ void TestBackendClient::parseKinematicFit_rejectsMapsOfTheWrongSize()
 }
 
 
+void TestBackendClient::pvRange_addsOnlyTheBoundsThatAreSet()
+{
+    BackendSpectralRange none;
+    QVERIFY(!none.isSet());
+    QVERIFY(none.applyTo(QJsonObject{}).isEmpty());   // the whole band: no extra field
+
+    BackendSpectralRange channels;
+    channels.channelStart = 10;
+    channels.channelEnd = 19;
+    QVERIFY(channels.isSet());
+    const QJsonObject c = channels.applyTo(QJsonObject{ { QStringLiteral("dataset_id"), QStringLiteral("d") } });
+    QCOMPARE(c.value(QStringLiteral("channel_start")).toInt(), 10);
+    QCOMPARE(c.value(QStringLiteral("channel_end")).toInt(), 19);
+    QVERIFY(!c.contains(QStringLiteral("spectral_min")));
+    QCOMPARE(c.value(QStringLiteral("dataset_id")).toString(), QStringLiteral("d"));
+
+    BackendSpectralRange values;
+    values.valueMax = -20.5;   // open on the other side
+    const QJsonObject v = values.applyTo(QJsonObject{});
+    QVERIFY(!v.contains(QStringLiteral("spectral_min")));
+    QCOMPARE(v.value(QStringLiteral("spectral_max")).toDouble(), -20.5);
+    QVERIFY(!v.contains(QStringLiteral("channel_start")));
+    // Channel 0 is a bound like any other.
+    BackendSpectralRange first;
+    first.channelEnd = 0;
+    QVERIFY(first.isSet());
+    QCOMPARE(first.applyTo(QJsonObject{}).value(QStringLiteral("channel_end")).toInt(-1), 0);
+}
+
+void TestBackendClient::pvResult_readsWidthVertexOffsetsAndChannels()
+{
+    const auto obj = fromLiteral(R"({
+        "valid": true, "error": "", "num_samples": 16, "depth": 10,
+        "width_pixels": 3, "width_arcsec": 4.5, "pixel_scale_arcsec_per_pixel": 1.5,
+        "vertex_offsets_arcsec": [0.0, 15.0, 24.0],
+        "channel_start": 10, "channel_end": 19
+    })");
+    const auto r = BackendClient::parsePvResultObject(obj);
+    QCOMPARE(r.widthPixels, 3);
+    QCOMPARE(r.widthArcsec, 4.5);
+    QCOMPARE(r.vertexOffsetsArcsec, (QVector<double>{ 0.0, 15.0, 24.0 }));
+    QCOMPARE(r.channelStart, 10);
+    QCOMPARE(r.channelEnd, 19);
+    // An older backend says none of it.
+    const auto old = BackendClient::parsePvResultObject(fromLiteral(R"({"valid": true, "width_pixels": 2})"));
+    QCOMPARE(old.widthArcsec, 0.0);
+    QVERIFY(old.vertexOffsetsArcsec.isEmpty());
+    QCOMPARE(old.channelEnd, -1);
+}
+
+
 // ── The local backend is one URL, not every loopback service ──────────────────
 
 namespace {

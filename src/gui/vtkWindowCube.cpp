@@ -50,6 +50,7 @@
 #include "ProfileWidget.h"
 #include "PvController.h"
 #include "PvPathGeometry.h"
+#include "RegionListExport.h"
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
 #include "ThresholdShare.h"
@@ -114,6 +115,7 @@
 #include <vtkRendererCollection.h>
 #include <vtkRenderWindow.h>
 #include <vtkScalarBarActor.h>
+#include <vtkBillboardTextActor3D.h>
 #include <vtkTextActor.h>
 #include <vtkTransform.h>
 #include <vtkTransformPolyDataFilter.h>
@@ -2149,6 +2151,35 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                         ? u"pixels"_s : result.spatialUnit;
                 pvInfo.pixelScaleArcsecPerPixel = result.pixelScaleArcsecPerPixel;
                 pvInfo.bunit = result.bunit;
+                // The width on the sky next to pixels; the backend's own number, so
+                // the panel, the provenance and the FITS header say the same.
+                pvInfo.stepArcsec = result.pixelScaleArcsecPerPixel;
+                this->m_pvStepArcsec = result.pixelScaleArcsecPerPixel;
+                pvInfo.spectralUnit = result.spectralAxisUnit;
+                const bool offsetsArcsec = !result.positionsArcsec.isEmpty()
+                        && result.positionsArcsec.size() == result.positions.size();
+                // The vertices' marks on the offset axis: only for the cube's own
+                // vertices (a smooth curve is cut along a dense path, whose vertices
+                // are not the ones numbered on the image).
+                if (result.vertexOffsetsArcsec.size() == int(verts.size())) {
+                    QStringList marks;
+                    for (int i = 0; i < result.vertexOffsetsArcsec.size(); ++i) {
+                        const double arcsec = result.vertexOffsetsArcsec[i];
+                        pvInfo.vertexOffsets.push_back(
+                                offsetsArcsec || !(result.pixelScaleArcsecPerPixel > 0.0)
+                                        ? arcsec : arcsec / result.pixelScaleArcsecPerPixel);
+                        marks << u"%1 at %2\""_s.arg(pvpath::vertexName(std::size_t(i)))
+                                         .arg(arcsec, 0, 'f', 1);
+                    }
+                    pvInfo.vertexOffsetsText = marks.join(u", "_s);
+                }
+                const bool partialBand = result.channelEnd >= 0
+                        && (result.channelStart > 0 || result.channelEnd < this->remoteDatasetDepth - 1);
+                if (partialBand) {
+                    pvInfo.channelsText = u"%1 - %2 of %3"_s.arg(result.channelStart + 1)
+                                                  .arg(result.channelEnd + 1)
+                                                  .arg(this->remoteDatasetDepth);
+                }
                 if (result.skyMatrixArcsec.size() == 4)
                     this->m_pvSkyMatrix = { result.skyMatrixArcsec[0], result.skyMatrixArcsec[1],
                                             result.skyMatrixArcsec[2], result.skyMatrixArcsec[3] };
@@ -2183,6 +2214,20 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                                              win->Render();
                                          this->schedulePvLiveUpdate(0);
                                      });
+                    // The part of the band to cut (issue #520): a change recomputes.
+                    QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::spectralRangeChanged,
+                                     this, [this](bool byValue, double from, double to) {
+                                         this->m_pvRangeByValue = byValue;
+                                         this->m_pvRangeFrom = from;
+                                         this->m_pvRangeTo = to;
+                                         this->schedulePvLiveUpdate(0);
+                                     });
+                    QObject::connect(this->pvDiagramWidget,
+                                     &PvDiagramWidget::exportPathAsRegionRequested, this,
+                                     &vtkWindowCube::exportPvPathAsRegions);
+                    QObject::connect(this->pvDiagramWidget,
+                                     &PvDiagramWidget::pathFromRegionRequested, this,
+                                     &vtkWindowCube::usePathFromSelectedRegion);
                     QObject::connect(this->pvDiagramWidget, &PvDiagramWidget::smoothChanged, this,
                                      [this](bool smooth) {
                                          this->m_pvSmooth = smooth;
@@ -2261,7 +2306,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 const QVariantMap pvOrigin = visivo::encodePvPathOrigin(pvVerts, pvWidth);
                 QVariantMap pvParams;
                 pvParams.insert(u"Path"_s, u"%1 points"_s.arg(pvVerts.size()));
-                pvParams.insert(u"Width"_s, u"%1 px"_s.arg(pvWidth));
+                pvParams.insert(u"Width"_s,
+                                pvpath::widthText(pvWidth, result.pixelScaleArcsecPerPixel));
+                if (!this->m_pvSmooth && pvVerts.size() > 2)
+                    pvParams.insert(u"Vertices"_s, pvpath::vertexListText(pvVerts));
+                if (result.channelEnd >= 0
+                    && (result.channelStart > 0 || result.channelEnd < this->remoteDatasetDepth - 1))
+                    pvParams.insert(u"Channels"_s, u"%1 - %2 of %3"_s.arg(result.channelStart + 1)
+                                                           .arg(result.channelEnd + 1)
+                                                           .arg(this->remoteDatasetDepth));
                 if (!pvVerts.empty()) {
                     const auto &a = pvVerts.front();
                     const auto &b = pvVerts.back();
@@ -2322,6 +2375,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 qDebug().noquote()
                         << QStringLiteral("[pv] updating widget (hosted in pane)");
                 this->pvDiagramWidget->setPathControls(this->pvWidthPixels, this->m_pvSmooth);
+                this->pvDiagramWidget->setRangeControls(
+                        { this->m_pvRangeByValue, this->m_pvRangeFrom, this->m_pvRangeTo },
+                        result.spectralAxisUnit);
                 this->pvDiagramWidget->setPvData(pvPositions, spectral, result.values,
                                                  result.numSamples, result.depth,
                                                  xLabel, yLabel,
@@ -2334,6 +2390,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
             this);
     this->pvController->setSpectralChoiceProvider(
             [this]() { return this->spectralChoiceForProducts(); });
+    this->pvController->setSpectralRangeProvider([this]() { return this->pvSpectralRange(); });
 
     QObject::connect(&this->isosurfaceWatcher, &QFutureWatcher<AsyncIsosurfaceResult>::finished,
                      this, [this]() {
@@ -4798,6 +4855,22 @@ void vtkWindowCube::setBeamInfo(double majorDeg, double minorDeg, double paDeg)
 // ─────────────────────────────────────────────────────────────────────────────
 
 
+std::array<double, 4> vtkWindowCube::pvSkyMatrixOrHeader() const
+{
+    // The backend's pixel -> sky matrix after the first result, else the header's
+    // CDELTs (normals and offsets live on the sky; pixels need not be square).
+    std::array<double, 4> M = this->m_pvSkyMatrix;
+    const double det = M[0] * M[3] - M[1] * M[2];
+    if (!(std::abs(det) > 0.0) || !std::isfinite(det)) {
+        double ax = std::abs(this->remoteDatasetCdelt[0]);
+        double ay = std::abs(this->remoteDatasetCdelt[1]);
+        if (!(ax > 0.0) || !(ay > 0.0) || !std::isfinite(ax) || !std::isfinite(ay))
+            ax = ay = 1.0;
+        M = { ax, 0.0, 0.0, ay };
+    }
+    return M;
+}
+
 void vtkWindowCube::refreshPvOverlay()
 {
     // Drawn in world coordinates where cube pixel (x, y) sits at (x, y).
@@ -4842,52 +4915,23 @@ void vtkWindowCube::refreshPvOverlay()
             return;
         }
         // The two edges of the band the cut averages over, in the backend's
-        // convention: normals and spacing on the sky (pixels need not be square),
-        // one sample per FINER pixel; each path vertex offset along the mean of
-        // its adjacent segment normals. Square pixels: plain pixel offsets.
-        // Pixel → sky matrix M (row-major a b / c d): the backend's after the first
-        // result, else the header's CDELTs. Normals and offsets live on the sky.
-        std::array<double, 4> M = this->m_pvSkyMatrix;
-        double det = M[0] * M[3] - M[1] * M[2];
-        if (!(std::abs(det) > 0.0) || !std::isfinite(det)) {
-            double ax = std::abs(this->remoteDatasetCdelt[0]);
-            double ay = std::abs(this->remoteDatasetCdelt[1]);
-            if (!(ax > 0.0) || !(ay > 0.0) || !std::isfinite(ax) || !std::isfinite(ay))
-                ax = ay = 1.0;
-            M = { ax, 0.0, 0.0, ay };
-            det = ax * ay;
+        // convention (pvpath::bandEdges): normals and spacing on the sky.
+        const pvpath::Band band = pvpath::bandEdges(path, this->pvWidthPixels,
+                                                    this->pvSkyMatrixOrHeader());
+        if (band.upper.size() != path.size()) {
+            upperActor->VisibilityOff();
+            lowerActor->VisibilityOff();
+            return;
         }
-        const std::array<double, 4> Minv{ M[3] / det, -M[1] / det, -M[2] / det, M[0] / det };
-        const double step = std::min(std::hypot(M[0], M[2]), std::hypot(M[1], M[3]));
-        const double halfWidth = 0.5 * static_cast<double>(this->pvWidthPixels - 1);
         upperPoints->Reset();
         upperCells->Reset();
         lowerPoints->Reset();
         lowerCells->Reset();
         upperCells->InsertNextCell(static_cast<vtkIdType>(path.size()));
         lowerCells->InsertNextCell(static_cast<vtkIdType>(path.size()));
-        const auto segNormal = [&](std::size_t i) -> std::array<double, 2> {   // on the sky
-            const double dx = path[i + 1][0] - path[i][0];
-            const double dy = path[i + 1][1] - path[i][1];
-            const double tx = M[0] * dx + M[1] * dy;
-            const double ty = M[2] * dx + M[3] * dy;
-            const double len = std::hypot(tx, ty);
-            return len > 0.0 ? std::array<double, 2>{ -ty / len, tx / len }
-                             : std::array<double, 2>{ 0.0, 0.0 };
-        };
         for (std::size_t i = 0; i < path.size(); ++i) {
-            std::array<double, 2> n{ 0.0, 0.0 };
-            if (i > 0) { const auto a = segNormal(i - 1); n[0] += a[0]; n[1] += a[1]; }
-            if (i + 1 < path.size()) { const auto b = segNormal(i); n[0] += b[0]; n[1] += b[1]; }
-            const double len = std::hypot(n[0], n[1]);
-            if (len > 0.0) { n[0] /= len; n[1] /= len; }
-            // Sky offset (halfWidth steps along n) back to pixels.
-            const double su = halfWidth * step * n[0];
-            const double sv = halfWidth * step * n[1];
-            const double ox = Minv[0] * su + Minv[1] * sv;
-            const double oy = Minv[2] * su + Minv[3] * sv;
-            upperPoints->InsertNextPoint(path[i][0] + ox, path[i][1] + oy, 0.0);
-            lowerPoints->InsertNextPoint(path[i][0] - ox, path[i][1] - oy, 0.0);
+            upperPoints->InsertNextPoint(band.upper[i][0], band.upper[i][1], 0.0);
+            lowerPoints->InsertNextPoint(band.lower[i][0], band.lower[i][1], 0.0);
             upperCells->InsertCellPoint(static_cast<vtkIdType>(i));
             lowerCells->InsertCellPoint(static_cast<vtkIdType>(i));
         }
@@ -4922,6 +4966,11 @@ void vtkWindowCube::refreshPvOverlay()
     this->slicePvHandlePoints->Modified();
     this->slicePvHandleData->Modified();
     this->slicePvHandleActor->SetVisibility(editing);
+    // The vertices numbered, while the path is on view (editing or not): the
+    // numbers are how the path is followed against the diagram's offset axis.
+    this->refreshPvVertexLabels(this->pvPolylineVertices,
+                                (this->pvModeActive || keepingForPlotWindow)
+                                        && !this->pvPolylineVertices.empty());
 
     // The same path on the map panes of this field (channels, moments): the cut
     // is seen against every view of the data, as in kpvslice.
@@ -4950,6 +4999,7 @@ void vtkWindowCube::clearPv()
     this->slicePvUpperActor->VisibilityOff();
     this->slicePvLowerActor->VisibilityOff();
     this->slicePvHandleActor->VisibilityOff();
+    this->refreshPvVertexLabels({}, false);
     this->refreshPaneOverlayPaths({});
     this->m_pvEdit = PvEdit::None;
     this->momentPvActor->VisibilityOff();
@@ -6380,6 +6430,133 @@ void vtkWindowCube::startNewPvPath()
         win->Render();
 }
 
+BackendSpectralRange vtkWindowCube::pvSpectralRange() const
+{
+    BackendSpectralRange range;
+    const bool from = std::isfinite(this->m_pvRangeFrom);
+    const bool to = std::isfinite(this->m_pvRangeTo);
+    if (this->m_pvRangeByValue) {
+        if (from)
+            range.valueMin = this->m_pvRangeFrom;
+        if (to)
+            range.valueMax = this->m_pvRangeTo;
+    } else {
+        // Typed as channels counted from 1, as everywhere in the window.
+        if (from)
+            range.channelStart = std::max(0, int(std::lround(this->m_pvRangeFrom)) - 1);
+        if (to)
+            range.channelEnd = std::max(0, int(std::lround(this->m_pvRangeTo)) - 1);
+    }
+    return range;
+}
+
+void vtkWindowCube::refreshPvVertexLabels(const std::vector<std::array<double, 2>> &vertices,
+                                          bool shown)
+{
+    auto *renderer = this->sliceWin ? this->sliceWin->GetRenderers()->GetFirstRenderer() : nullptr;
+    if (!renderer)
+        return;
+    const std::size_t want = shown ? vertices.size() : 0;
+    while (this->m_pvVertexLabels.size() > want) {
+        renderer->RemoveViewProp(this->m_pvVertexLabels.back());
+        this->m_pvVertexLabels.pop_back();
+    }
+    while (this->m_pvVertexLabels.size() < want) {
+        auto actor = vtkSmartPointer<vtkBillboardTextActor3D>::New();
+        actor->GetTextProperty()->SetFontSize(15);
+        actor->GetTextProperty()->SetBold(true);
+        actor->GetTextProperty()->SetColor(1.0, 0.85, 0.3);
+        actor->GetTextProperty()->SetShadow(true);
+        // A few pixels off the handle, so the number does not cover it.
+        actor->SetDisplayOffset(9, 9);
+        renderer->AddViewProp(actor);
+        this->m_pvVertexLabels.push_back(actor);
+    }
+    for (std::size_t i = 0; i < want; ++i) {
+        const QByteArray name = pvpath::vertexName(i).toUtf8();
+        this->m_pvVertexLabels[i]->SetInput(name.constData());
+        this->m_pvVertexLabels[i]->SetPosition(vertices[i][0], vertices[i][1], 0.0);
+    }
+}
+
+void vtkWindowCube::exportPvPathAsRegions()
+{
+    const auto &path = this->m_pvShownVertices;
+    if (path.size() < 2) {
+        QMessageBox::warning(this, u"Path as region"_s, u"There is no PV path yet."_s);
+        return;
+    }
+    // The polygon of the band the cut averages over, when it has a width.
+    const auto band = pvpath::bandPolygon(path, this->m_pvShownWidth, this->pvSkyMatrixOrHeader());
+    bool withBand = false;
+    if (!band.empty()) {
+        QMessageBox ask(QMessageBox::Question, u"Path as region"_s,
+                        u"Write the path as a polyline region. The cut is %1 wide: also write "
+                        u"the polygon of that width?"_s.arg(this->m_pvShownWidth > 0
+                                ? pvpath::widthText(this->m_pvShownWidth, this->m_pvStepArcsec)
+                                : QString{}),
+                        QMessageBox::NoButton, this);
+        auto *both = ask.addButton(u"Path and width polygon"_s, QMessageBox::AcceptRole);
+        auto *only = ask.addButton(u"Path only"_s, QMessageBox::AcceptRole);
+        ask.addButton(QMessageBox::Cancel);
+        ask.exec();
+        if (ask.clickedButton() != both && ask.clickedButton() != only)
+            return;
+        withBand = ask.clickedButton() == both;
+    }
+    // Regions of the window's list (pixels, 0-based like the path): the file
+    // dialog of Tools > Regions > Export then writes them in ds9 or CRTF, in
+    // pixels or the sky frame. ds9 takes the path as a segment; CRTF, which has
+    // no polyline, as one line per segment.
+    std::vector<visivo::regions::Region> regions;
+    visivo::regions::Region line;
+    line.shape = visivo::regions::Shape::Line;
+    line.name = u"PV path"_s;
+    line.color = u"#ffb833"_s;
+    for (const auto &v : path)
+        line.points.push_back({ v[0], v[1] });
+    regions.push_back(line);
+    if (withBand) {
+        visivo::regions::Region poly;
+        poly.shape = visivo::regions::Shape::Polygon;
+        poly.name = u"PV path width"_s;
+        poly.color = u"#ffb833"_s;
+        for (const auto &v : band)
+            poly.points.push_back({ v[0], v[1] });
+        regions.push_back(poly);
+    }
+    const std::vector<int> ids = this->m_regions.addAll(regions);
+    this->onRegionListChanged();
+    visivo::regions::exportRegionList(
+            this, this->m_regions,
+            { this->remoteBackendUrl, this->remoteBackendToken, this->remoteSessionId,
+              this->remoteDatasetId, this->filepath },
+            ids);
+}
+
+void vtkWindowCube::usePathFromSelectedRegion()
+{
+    const auto *region = this->m_regions.find(this->m_regions.selectedId());
+    if (!region || region->shape != visivo::regions::Shape::Line || region->points.size() < 2) {
+        this->statusBar()->showMessage(
+                u"Select a line or polyline region in the region list first (a ds9 segment, a "
+                u"CRTF line)."_s, 5000);
+        return;
+    }
+    std::vector<std::array<double, 2>> path;
+    for (const auto &p : region->points)
+        path.push_back({ p[0], p[1] });
+    // PV mode first (it clears the path of a closed diagram), then the path.
+    if (this->actionExtractPvDiagram && !this->actionExtractPvDiagram->isChecked())
+        this->actionExtractPvDiagram->setChecked(true);
+    this->pvPolylineVertices = std::move(path);
+    this->pvValid = true;
+    this->refreshPvOverlay();
+    if (auto *win = this->active2dWin())
+        win->Render();
+    this->extractCurrentPvDiagram();
+}
+
 void vtkWindowCube::exportPvAsFits()
 {
     if (this->m_pvShownVertices.size() < 2 || this->remoteDatasetId.isEmpty()) {
@@ -6430,11 +6607,12 @@ void vtkWindowCube::exportPvAsFits()
                          QMessageBox::information(self, u"Save PV as FITS"_s, msg);
                      });
     const BackendSpectralChoice spectral = this->spectralChoiceForProducts();
+    const BackendSpectralRange range = this->pvSpectralRange();
     watcher->setFuture(QtConcurrent::run([url, token, sessionId, datasetId, vertices, width,
-                                          basename, spectral]() {
+                                          basename, spectral, range]() {
         BackendClient client(url, token);
         client.setSessionId(sessionId);
-        return client.savePvFits(datasetId, vertices, width, basename.trimmed(), spectral);
+        return client.savePvFits(datasetId, vertices, width, basename.trimmed(), spectral, range);
     }));
 }
 

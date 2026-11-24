@@ -130,7 +130,7 @@ def test_fits_export_has_wcs_and_matches_the_diagram(descending_cube, tmp_path):
     assert h["PVWIDTH"] == 3
     assert h["PVSTEP"] == pytest.approx(1.0, rel=1e-6)                 # arcsec per sample
     history = "\n".join(str(x) for x in h["HISTORY"])
-    assert "PV vertex 0: pix 2.000 10.000 world" in history
+    assert "PV vertex 1: pix 2.000 10.000 world" in history
     assert all(len(str(card)) <= 72 for card in h["HISTORY"])
 
 

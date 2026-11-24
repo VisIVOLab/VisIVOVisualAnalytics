@@ -2845,17 +2845,18 @@ BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                              const std::vector<std::array<double, 2>> &vertices,
                                              int widthPixels,
-                                             const BackendSpectralChoice &spectral) const
+                                             const BackendSpectralChoice &spectral,
+                                             const BackendSpectralRange &range) const
 {
     QString error;
     QJsonArray vertexArray;
     for (const auto &v : vertices) {
         vertexArray.append(QJsonArray{ v[0], v[1] });
     }
-    const QJsonDocument body(spectral.applyTo(
+    const QJsonDocument body(range.applyTo(spectral.applyTo(
             QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                          { QStringLiteral("vertices"), vertexArray },
-                         { QStringLiteral("width_pixels"), widthPixels } }));
+                         { QStringLiteral("width_pixels"), widthPixels } })));
     const QByteArray payload =
             performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/cube/pv")), body, error);
     if (!error.isEmpty()) {
@@ -3874,6 +3875,11 @@ BackendCubePvResult BackendClient::parsePvResultObject(const QJsonObject &object
     result.scalarType = object.value(QStringLiteral("scalar_type")).toString();
     result.computedOn = object.value(QStringLiteral("computed_on")).toString();
     result.widthPixels = object.value(QStringLiteral("width_pixels")).toInt(1);
+    result.widthArcsec = object.value(QStringLiteral("width_arcsec")).toDouble(0.);
+    for (const QJsonValue &v : object.value(QStringLiteral("vertex_offsets_arcsec")).toArray())
+        result.vertexOffsetsArcsec.push_back(v.toDouble());
+    result.channelStart = object.value(QStringLiteral("channel_start")).toInt(0);
+    result.channelEnd = object.value(QStringLiteral("channel_end")).toInt(-1);
     result.vertexCount = object.value(QStringLiteral("vertex_count")).toInt();
     result.totalLength = object.value(QStringLiteral("total_length")).toDouble();
     result.validSamples = object.value(QStringLiteral("valid_samples")).toInt();
