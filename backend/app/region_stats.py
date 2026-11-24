@@ -7,8 +7,9 @@ block (averaged), and neither gives the image's statistics: a sampled sum is
 short by the block's area, an averaged σ by its side. Here the region is read
 from the file in blocks of rows, never whole, and every statistic is exact:
 
-* count, blanks, minimum, maximum, sum and the mean, with the variance combined
-  block by block (Chan et al.), so that a sum of 10⁹ pixels keeps its digits;
+* count, blanks, minimum, maximum (with the pixel of the first maximum), sum,
+  sum of squares and the mean, with the variance combined block by block
+  (Chan et al.), so that a sum of 10⁹ pixels keeps its digits;
 * the median and the MAD, from the values themselves when the region has at
   most ``_IN_MEMORY_VALUES`` of them. Otherwise a random sample drawn in the
   first pass brackets each rank, and one more pass counts the values below the
@@ -61,6 +62,8 @@ _SAMPLE_VALUES = 1 << 22
 _BRACKET_SIGMAS = 8.0
 #: σ from the median absolute deviation of a Gaussian.
 _MAD_TO_SIGMA = 1.4826
+#: Bounds of the "image" region (the whole plane), beyond any plane's size.
+_FAR = 2 ** 31 - 1
 
 
 class Region:
@@ -71,7 +74,9 @@ class Region:
     def __init__(self, spec: dict) -> None:
         self.spec = spec
         self.shape = str(spec.get("shape", "")).lower()
-        if self.shape == "polygon":
+        if self.shape == "image":
+            pass        # the whole plane: the noise of an image (app.image_noise)
+        elif self.shape == "polygon":
             self.points = [(float(x), float(y)) for x, y in spec.get("points", ())]
             if len(self.points) < 3:
                 raise ValueError("A polygon needs at least three points.")
@@ -85,6 +90,8 @@ class Region:
     def bounds(self) -> tuple[int, int, int, int]:
         """The pixels to scan, ``(x_min, x_max, y_min, y_max)`` inclusive."""
         s = self.spec
+        if self.shape == "image":
+            return 0, _FAR, 0, _FAR      # the readers clip it to the plane
         if self.shape == "polygon":
             xs = [p[0] for p in self.points]
             ys = [p[1] for p in self.points]
@@ -112,6 +119,8 @@ class Region:
     def mask(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         """Whether pixels ``(x, y)`` (broadcast arrays of integers) are inside."""
         s = self.spec
+        if self.shape == "image":
+            return np.ones(np.broadcast(x, y).shape, dtype=bool)
         if self.shape == "polygon":
             return self._polygon_mask(x, y)
         if self.shape == "point":
@@ -254,10 +263,15 @@ def _value_blocks(path: str, hdu: int, region: Region, channel: int) -> Callable
                 # Whole rows of the file are paged in, whatever the region's width.
                 mapped += (y1 - y0) * nx * 4
                 inside = region.mask(xs, np.arange(y0, y1)[:, np.newaxis])
+                # Where the yielded values are, for a statistic that reports a
+                # position (the peak): values come in the order of the mask's
+                # True pixels, row by row.
+                read.block = (inside, x_min, y0)
                 yield block[inside]
         finally:
             cube.close()
     read.bound_pixels = 0       # the clipped bounding box, known once read
+    read.block = None           # (inside mask, x_min, y0) of the block being yielded
     return read
 
 
@@ -502,8 +516,9 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
     read = _value_blocks(path, hdu, region, channel)
     total = blank = n = 0
     mean = m2 = 0.0
-    total_sum = 0.0
+    total_sum = total_sq = 0.0
     vmin, vmax = math.inf, -math.inf
+    peak_pixel: list[int] | None = None
     kept: list[np.ndarray] = []
     # Past _IN_MEMORY_VALUES the valid values go to a copy on local disk, for
     # the histogram passes; None once there is none (no room, or a value the
@@ -529,7 +544,15 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
             m2 += b_m2 + delta * delta * n * k / (n + k)
             n += k
             total_sum += float(finite.sum())
-            vmin, vmax = min(vmin, float(finite.min())), max(vmax, float(finite.max()))
+            total_sq += float(np.dot(finite, finite))
+            fmin, fmax = float(finite.min()), float(finite.max())
+            if fmax > vmax:
+                # The first pixel of the region (row by row) holding the maximum.
+                inside, x_min, y0 = read.block
+                ys, xs = np.nonzero(inside)
+                at = int(np.flatnonzero(values == fmax)[0])
+                peak_pixel = [int(x_min + xs[at]), int(y0 + ys[at])]
+            vmin, vmax = min(vmin, fmin), max(vmax, fmax)
             # Each value drawn with probability _SAMPLE_VALUES / (the region's
             # pixels), the number of draws rounded at random.
             rate = k * _SAMPLE_VALUES / max(read.bound_pixels, 1)
@@ -570,6 +593,11 @@ def region_statistics(path: str, region: Region, hdu: int, channel: int = 0) -> 
     result.update({
         "min": vmin, "max": vmax, "sum": total_sum, "mean": mean,
         "stddev": math.sqrt(max(0.0, m2 / n)),
+        # √⟨x²⟩ about zero: what CASA calls rms, not the standard deviation
+        # (the two differ by the mean). From the sum of squares itself, not
+        # from variance + mean², which loses the digits when mean ≫ σ.
+        "rms_unweighted": math.sqrt(total_sq / n), "sum_sq": total_sq,
+        "peak_pixel": peak_pixel,
         "median": median, "mad_sigma": _MAD_TO_SIGMA * mad,
     })
     return result

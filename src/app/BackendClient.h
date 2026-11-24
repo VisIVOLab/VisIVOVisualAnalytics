@@ -2130,6 +2130,62 @@ struct BackendRegionStatsResult
     bool hasFlux{ false };
     double fluxJy{ 0.0 };         ///< valid only when hasFlux (Jy/beam + beam)
     QString bunit;
+    /// Standard deviation (the backend's "stddev"; "rms", read into `rms` above,
+    /// is the same number under its older name) and the unweighted RMS
+    /// sqrt(<x^2>), which is not the same thing unless the mean is zero
+    /// (issue #503). hasRmsUnweighted is false for a backend that predates them.
+    double stddev{ 0.0 };
+    bool hasRmsUnweighted{ false };
+    double rmsUnweighted{ 0.0 };
+    /// The first pixel holding the maximum, 0-based source pixels (issue #503).
+    bool hasPeak{ false };
+    double peakX{ 0.0 };
+    double peakY{ 0.0 };
+};
+
+/// POST /v1/regions/profile/{dataset_id}: the values along a line (issue #503).
+struct BackendRegionProfileResult
+{
+    bool valid{ false };
+    QString error;
+    QVector<double> offsets;      ///< from the line's start: arcsec, or pixels (offsetUnit)
+    QVector<double> values;       ///< NaN where the sample is blank or off the image
+    QVector<double> x, y;         ///< 0-based source pixels of the samples
+    QString offsetUnit;           ///< "arcsec" or "pix"
+    QString bunit;
+    int widthPix{ 1 };
+    int validSamples{ 0 };
+    double lengthPix{ 0.0 };
+};
+
+/// POST /v1/regions/noise/{dataset_id}: the noise of an image over its
+/// source-free pixels (issue #503).
+struct BackendImageNoiseResult
+{
+    struct PerRegion
+    {
+        QString name;
+        qint64 validCount{ 0 };
+        bool measured{ false };   ///< false when the region held fewer than two valid pixels
+        double rms{ 0.0 };
+        double madSigma{ 0.0 };
+    };
+    bool valid{ false };
+    QString error;
+    QString mode;                 ///< "auto" or "regions"
+    double rms{ 0.0 };            ///< sqrt(<x^2>) over the source-free pixels
+    double madSigma{ 0.0 };
+    double rmsScatter{ std::numeric_limits<double>::quiet_NaN() };   ///< between regions
+    qint64 validCount{ 0 };
+    qint64 usedCount{ 0 };        ///< auto: pixels inside the clipping window
+    double clipSigma{ 0.0 };
+    bool exact{ false };          ///< auto: the clip ran on every pixel, not on a sample
+    qint64 sampleCount{ 0 };
+    QString bunit;
+    double beamAreaPix{ 0.0 };    ///< 0 unless Jy/beam with a beam
+    double rmsPerPixel{ 0.0 };    ///< rms / beamAreaPix, in Jy/pixel
+    double madSigmaPerPixel{ 0.0 };
+    QList<PerRegion> regions;
 };
 
 struct BackendLineFitResult
@@ -2866,6 +2922,19 @@ public:
     BackendRegionStatsResult regionStats(const QString &datasetId,
                                          const QJsonObject &region,
                                          int channel = -1) const;
+
+    /** POST /v1/regions/profile/{dataset_id} — the values along a line region
+     *  (canonical image-frame dict), @p widthPix wide (issue #503). */
+    BackendRegionProfileResult regionProfile(const QString &datasetId,
+                                             const QJsonObject &line,
+                                             int channel = -1, int widthPix = 1) const;
+
+    /** POST /v1/regions/noise/{dataset_id} — the noise of the image over the
+     *  background @p regions (canonical image-frame dicts), or sigma-clipped
+     *  over the whole plane when there are none (issue #503). */
+    BackendImageNoiseResult imageNoise(const QString &datasetId,
+                                       const QJsonArray &regions = {},
+                                       int channel = -1, double clipSigma = 3.0) const;
 
     /** POST /v1/spectral/linefit — Gaussian fit of an extracted 1-D spectrum. */
     /// @p xMin / @p xMax restrict the fit to a window in axis units (NaN for

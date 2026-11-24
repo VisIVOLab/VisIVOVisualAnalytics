@@ -107,7 +107,8 @@ void RegionSessionController::showRowMenu(int id, const QPoint &globalPos)
     menu.setTitle(r->name);
     QAction *props = menu.addAction(u"Properties…"_s);
     QAction *analyse = menu.addAction(u"Analyse"_s);
-    analyse->setEnabled(visivo::regions::hasArea(r->shape));
+    analyse->setEnabled(m_hooks.canAnalyse ? m_hooks.canAnalyse(*r)
+                                           : visivo::regions::hasArea(r->shape));
     menu.addSeparator();
     QAction *rename = menu.addAction(u"Rename…"_s);
     QAction *toggle = menu.addAction(visible ? u"Hide"_s : u"Show"_s);

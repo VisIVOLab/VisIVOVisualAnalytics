@@ -76,6 +76,7 @@
 #include "TestRegionReadout.h"
 #include "TestRegionModel.h"
 #include "TestRegionFlux.h"
+#include "TestRegionMeasure.h"
 #include "TestBackendUrlLocality.h"
 #include "TestSkavaClient.h"
 #include "TestPvPathGeometry.h"
@@ -176,6 +177,7 @@ int main(int argc, char *argv[])
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionModel      t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFlux       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestRegionMeasure    t; status |= QTest::qExec(&t, argc, argv); }
     { TestBackendUrlLocality t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkavaClient      t; status |= QTest::qExec(&t, argc, argv); }
     { TestPvPathGeometry   t; status |= QTest::qExec(&t, argc, argv); }

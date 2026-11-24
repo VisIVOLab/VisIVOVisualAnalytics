@@ -244,6 +244,10 @@ def _counting_reads(monkeypatch) -> list[int]:
         def bound_pixels(self):                 # what the copy sizes itself on
             return self._read.bound_pixels
 
+        @property
+        def block(self):                        # where the yielded values are
+            return self._read.block
+
     monkeypatch.setattr(region_stats, "_value_blocks", lambda *args: Counted(original(*args)))
     return calls
 

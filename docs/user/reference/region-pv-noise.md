@@ -22,6 +22,9 @@ and a press on empty image draws a new one.
 - *Annulus Region Analysis*: drag the outer radius, then type the inner one
   (drawn in amber as you type). Use it for the local background around a
   source.
+- *Point Region* and *Line Region* (image viewer): click a pixel, or drag a
+  line, for the value at a pixel or the profile along a line; see the
+  [Image viewer](image-viewer.md#tools-regions).
 
 Releasing the shape measures it (see [Region spectrum and statistics](#region-spectrum-and-statistics))
 and adds it to the window's region list.
@@ -115,7 +118,9 @@ The spectrum pane works as for a probed pixel (stats bar, smoothing,
 
 The 2-D statistics are in the product's provenance (*Inspector ▸
 Parameters*): *Valid pixels*, *Blanked / NaN*, *Min*, *Max*, *Mean*, *Median*,
-*Std Dev*, measured on the plane the region was drawn on, and on a channel or a
+*Sum*, *Std dev* and *RMS (√⟨x²⟩)* (the standard deviation is about the mean,
+the RMS about zero), *Peak* and its pixel, measured on the plane the region was
+drawn on, and on a channel or a
 moment-0 map the flux (see [Region flux and HI mass](#region-flux-and-hi-mass)).
 In the image viewer a *Region Analysis* window shows them and adds σ (MAD)
 (1.4826 × median absolute deviation), the flux (*Flux*) with the peak
@@ -322,6 +327,10 @@ The median of the per-channel σ is then used by *Compute Moment…* (*3σ of th
 noise estimate*), the *Line-width Map…* mask (3σ) and the *Kinematic Lasso*
 threshold, and each records it in its provenance. Without an estimate each tool
 uses its own σ over the whole cube.
+
+For an image the same noise is one action in the image viewer: *Tools ▸ Regions ▸
+Estimate Noise…* (background regions averaged, or the whole image sigma-clipped;
+[Image viewer](image-viewer.md#tools-regions)).
 
 Details: [Regions, PV, noise: methods](../../technical/methods/region-pv-noise.md),
 [Cube API](../../technical/backend-api/cube.md),

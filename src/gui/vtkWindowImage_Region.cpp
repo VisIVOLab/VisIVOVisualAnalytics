@@ -24,6 +24,7 @@
 #include "theme/VisivoTheme.h"
 #include "ProductOrigin.h"
 #include "RegionFlux.h"
+#include "RegionMeasure.h"
 #include "RegionFluxUi.h"
 #include "RegionFullRes.h"
 #include "RegionImport.h"
@@ -137,6 +138,10 @@ struct RegionStatistics
     double stddev{ 0. };
     double sum{ 0. };       ///< Sum of valid pixels (for Jy = sum / Ω_beam_px)
     double madSigma{ 0. };  ///< 1.4826 × MAD — robust σ estimate
+    double rmsUnweighted{ 0. };   ///< √⟨x²⟩, not the standard deviation (issue #503)
+    bool hasRmsUnweighted{ true };   ///< false from a backend that predates it
+    bool hasPeak{ false };        ///< the first pixel holding the maximum, 0-based source pixels
+    double peakX{ 0. }, peakY{ 0. };
     /// Full-resolution pixels each counted pixel stands for: 1, or the block
     /// area for the displayed pixels below full resolution (issue #401).
     double pixelsPerSample{ 1. };
@@ -154,6 +159,10 @@ QString regionModeLabel(vtkWindowImage::RegionMode mode)
         return u"Polygon"_s;
     case vtkWindowImage::RegionMode::Annulus:
         return u"Annulus"_s;
+    case vtkWindowImage::RegionMode::Point:
+        return u"Point"_s;
+    case vtkWindowImage::RegionMode::Line:
+        return u"Line"_s;
     case vtkWindowImage::RegionMode::None:
     default:
         return u"Region"_s;
@@ -261,6 +270,11 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData,
             ++stats.validCount;
             if (value == 0.0)
                 ++stats.zeroCount;
+            if (!stats.hasPeak || value > stats.maxValue) {
+                stats.hasPeak = true;
+                stats.peakX = grid.sourceX(x);
+                stats.peakY = grid.sourceY(y);
+            }
             stats.minValue = std::min(stats.minValue, value);
             stats.maxValue = std::max(stats.maxValue, value);
             sum += value;
@@ -274,6 +288,7 @@ RegionStatistics computeRegionStatistics2D(vtkImageData *imageData,
     }
 
     stats.sum = sum;
+    stats.rmsUnweighted = visivo::measure::rmsFromSumSq(sumSq, stats.validCount);
     stats.mean = sum / static_cast<double>(stats.validCount);
     if (grid.reduced())
         stats.pixelsPerSample = std::max(1.0, grid.spacingX) * std::max(1.0, grid.spacingY);
@@ -599,6 +614,12 @@ void vtkWindowImage::setRegionMode(RegionMode mode, bool active)
     if (mode != RegionMode::Annulus && this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
         this->actionAnnulusRegion->setChecked(false);
     }
+    if (mode != RegionMode::Point && this->actionPointRegion && this->actionPointRegion->isChecked()) {
+        this->actionPointRegion->setChecked(false);
+    }
+    if (mode != RegionMode::Line && this->actionLineRegion && this->actionLineRegion->isChecked()) {
+        this->actionLineRegion->setChecked(false);
+    }
     this->regionMode = mode;
     this->regionDragging = false;
     this->regionValid = false;
@@ -638,6 +659,8 @@ bool vtkWindowImage::updateRegionFromDisplayPosition(int displayX, int displayY)
     }
 
     this->regionCurrentVoxel = { voxelX, voxelY };
+    // The renderer's world is source pixels: kept unrounded for a point or a line.
+    this->regionCurrentWorld = { worldCoord[0], worldCoord[1] };
     this->refreshRegionOverlay();
     return true;
 }
@@ -659,7 +682,8 @@ void vtkWindowImage::updateRegionReadout()
         shown = *this->m_regions.selected();
         shapeLabel = shown->name;
     }
-    if (!shown) {
+    // A line has no pixels to sum: its numbers are the profile, on release.
+    if (!shown || !visivo::regions::hasArea(shown->shape)) {
         this->hideRegionReadout();
         return;
     }
@@ -766,7 +790,10 @@ void vtkWindowImage::refreshRegionOverlay()
     const bool showCircle = this->regionMode == RegionMode::Circle;
     const bool showAnnulus = this->regionMode == RegionMode::Annulus;
     const bool showPolygon = this->regionMode == RegionMode::Polygon;
-    this->regionTopActor->SetVisibility(showBox);
+    const bool showLine = this->regionMode == RegionMode::Line;
+    // The line's preview is one edge of the box's actors: no new actor for a
+    // segment that lives only while it is dragged.
+    this->regionTopActor->SetVisibility(showBox || showLine);
     this->regionBottomActor->SetVisibility(showBox);
     this->regionLeftActor->SetVisibility(showBox);
     this->regionRightActor->SetVisibility(showBox);
@@ -777,7 +804,10 @@ void vtkWindowImage::refreshRegionOverlay()
     this->regionPolygonActor->SetVisibility(showPolygon);
     this->regionPolygonFillActor->SetVisibility(showPolygon);
 
-    if (showBox) {
+    if (showLine) {
+        this->regionTopLine->SetPoint1(this->regionAnchorVoxel[0], this->regionAnchorVoxel[1], 0.0);
+        this->regionTopLine->SetPoint2(this->regionCurrentVoxel[0], this->regionCurrentVoxel[1], 0.0);
+    } else if (showBox) {
         this->regionTopLine->SetPoint1(xmin, ymax, 0.0);
         this->regionTopLine->SetPoint2(xmax, ymax, 0.0);
         this->regionBottomLine->SetPoint1(xmin, ymin, 0.0);
@@ -919,6 +949,10 @@ void vtkWindowImage::analyzeRegion(int id)
     }
     // A copy: the list may change while the backend computes.
     const visivo::regions::Region region = *found;
+    if (region.shape == visivo::regions::Shape::Line) {
+        this->analyzeLineRegion(region);
+        return;
+    }
     if (!visivo::regions::hasArea(region.shape)) {
         this->statusBar()->showMessage(
                 u"%1 is a %2: it has no pixels to measure."_s.arg(region.name,
@@ -967,28 +1001,59 @@ void vtkWindowImage::analyzeRegion(int id)
         const QString subtitle =
                 QStringLiteral("%1  ·  computed on %2").arg(region.name, scope);
 
-        if (!stats.valid) {
+        if (!stats.valid && region.shape == visivo::regions::Shape::Point) {
+            sections.append({ u"Point"_s,
+                              visivo::measure::pointRows(
+                                      0.0, region.center[0], region.center[1],
+                                      this->worldLabelAtPixel(region.center[0], region.center[1]),
+                                      this->remoteDatasetBunit, true) });
+        } else if (!stats.valid) {
             sections.append({ u"Statistics"_s,
                             { { u"Result"_s, u"No valid pixels in the selected region."_s },
                               { u"Note"_s,   u"Blanked / NaN pixels are ignored."_s } } });
         } else {
-            sections.append({ u"Statistics"_s,
-                            { { u"Valid pixels"_s,
-                                QStringLiteral("%1 / %2").arg(QLocale(QLocale::English).toString(stats.validCount),
-                                                              QLocale(QLocale::English).toString(stats.totalCount)) },
-                              { u"Blanked / NaN"_s, QLocale(QLocale::English).toString(stats.blankedCount) },
-                              { u"Min"_s,    QStringLiteral("%1").arg(stats.minValue, 0, 'g', 8) },
-                              { u"Max"_s,    QStringLiteral("%1").arg(stats.maxValue, 0, 'g', 8) },
-                              { u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8) },
-                              { u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8) },
-                              { u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8) },
-                              { u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8) } } });
+            // The numbers of the region, named so that the RMS (√⟨x²⟩) and the
+            // standard deviation cannot be taken for each other (issue #503).
+            visivo::measure::Numbers numbers;
+            numbers.validCount = stats.validCount;
+            numbers.totalCount = stats.totalCount;
+            numbers.blankedCount = stats.blankedCount;
+            numbers.minValue = stats.minValue;
+            numbers.maxValue = stats.maxValue;
+            numbers.sum = stats.sum;
+            numbers.mean = stats.mean;
+            numbers.median = stats.median;
+            numbers.stddev = stats.stddev;
+            numbers.rmsUnweighted = stats.rmsUnweighted;
+            numbers.hasRmsUnweighted = stats.hasRmsUnweighted;
+            numbers.madSigma = stats.madSigma;
+            numbers.hasPeak = stats.hasPeak;
+            numbers.peakX = stats.peakX;
+            numbers.peakY = stats.peakY;
+            const QString unit = this->remoteDatasetBunit;
+            if (region.shape == visivo::regions::Shape::Point) {
+                // One pixel: its value and where it is, not a table of statistics.
+                sections.clear();
+                sections.append({ u"Point"_s,
+                                  visivo::measure::pointRows(
+                                          stats.mean, stats.peakX, stats.peakY,
+                                          this->worldLabelAtPixel(stats.peakX, stats.peakY), unit,
+                                          false) });
+            } else {
+                sections.append({ u"Statistics"_s, visivo::measure::statisticsRows(numbers, unit) });
+                // The peak of an unresolved source is its flux density.
+                sections.append({ u"Peak"_s,
+                                  visivo::measure::peakRows(
+                                          numbers, unit,
+                                          stats.hasPeak ? this->worldLabelAtPixel(stats.peakX, stats.peakY)
+                                                        : QString()) });
+            }
 
             // ── Flux, in whatever the image's unit allows ────────────────────
             // Not gated on a beam any more: a Jy/pixel, MJy/sr or K map has a
             // measure without one, and a Jy/beam map without one says why not.
             // A dynamic spectrum's axes are time and frequency: no sky area.
-            if (!this->m_dynamicSpectrumMode) {
+            if (!this->m_dynamicSpectrumMode && region.shape != visivo::regions::Shape::Point) {
                 FluxContext flux;
                 if (this->hasBeamInfo()) {
                     flux.bmajDeg = this->m_beamMajorDeg;
@@ -1073,10 +1138,19 @@ void vtkWindowImage::analyzeRegion(int id)
         if (stats.valid) {
             params.insert(u"Valid pixels"_s,
                           u"%1 / %2"_s.arg(stats.validCount).arg(stats.totalCount));
+            params.insert(u"Sum"_s, visivo::measure::withUnit(stats.sum, this->remoteDatasetBunit));
             params.insert(u"Mean"_s,   QStringLiteral("%1").arg(stats.mean,     0, 'g', 8));
             params.insert(u"Median"_s, QStringLiteral("%1").arg(stats.median,   0, 'g', 8));
-            params.insert(u"Std Dev"_s,QStringLiteral("%1").arg(stats.stddev,   0, 'g', 8));
+            params.insert(visivo::measure::stdLabel(),
+                          QStringLiteral("%1").arg(stats.stddev, 0, 'g', 8));
+            if (stats.hasRmsUnweighted)
+                params.insert(visivo::measure::rmsLabel(),
+                              QStringLiteral("%1").arg(stats.rmsUnweighted, 0, 'g', 8));
             params.insert(u"σ (MAD)"_s,QStringLiteral("%1").arg(stats.madSigma, 0, 'g', 8));
+            params.insert(u"Peak"_s, visivo::measure::withUnit(stats.maxValue, this->remoteDatasetBunit));
+            if (stats.hasPeak)
+                params.insert(u"Peak pixel"_s, u"%1, %2"_s.arg(std::llround(stats.peakX))
+                                                         .arg(std::llround(stats.peakY)));
         }
         // …with the geometry it was measured on, so opening the row puts that very
         // region back in the list. Full-resolution pixels: no voxel-grid stamp needed.
@@ -1166,7 +1240,12 @@ void vtkWindowImage::analyzeRegion(int id)
             stats.sum = r.sum;
             stats.mean = r.mean;
             stats.median = r.median;
-            stats.stddev = r.rms;
+            stats.stddev = r.stddev;
+            stats.rmsUnweighted = r.hasRmsUnweighted ? r.rmsUnweighted : 0.0;
+            stats.hasRmsUnweighted = r.hasRmsUnweighted;
+            stats.hasPeak = r.hasPeak;
+            stats.peakX = r.peakX;
+            stats.peakY = r.peakY;
             stats.madSigma = r.madSigma;
             stats.valid = r.validCount > 0;
             return stats;

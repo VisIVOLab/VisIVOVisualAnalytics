@@ -217,6 +217,8 @@ public:
         Circle,
         Polygon,
         Annulus,
+        Point,   ///< a click: the value at the pixel (issue #503)
+        Line,    ///< a drag: the profile along it (issue #503)
     };
 
     enum class MeasurementMode
@@ -315,6 +317,9 @@ private:
     QPointer<QAction> actionCircleRegion;
     QPointer<QAction> actionPolygonRegion;
     QPointer<QAction> actionAnnulusRegion;
+    QPointer<QAction> actionPointRegion;
+    QPointer<QAction> actionLineRegion;
+    QPointer<QAction> m_actEstimateNoise;   ///< Tools > Estimate Noise: the image's RMS (issue #503)
     QPointer<QAction> actionLoadCatalogueOverlay;
     QPointer<QAction> actionCrossmatch;
     QPointer<QAction> actionShowCatalogueOverlay;
@@ -573,6 +578,11 @@ private:
     std::array<int, 2> m_probeFullPixel{ -1, -1 };
     std::array<int, 2> regionAnchorVoxel{ -1, -1 };
     std::array<int, 2> regionCurrentVoxel{ -1, -1 };
+    /// The press and the cursor in source pixels, not rounded to a displayed
+    /// voxel: a point or a line drawn on a decimated image keeps its position
+    /// at the pixel (issue #503).
+    std::array<double, 2> regionAnchorWorld{ 0.0, 0.0 };
+    std::array<double, 2> regionCurrentWorld{ 0.0, 0.0 };
     std::vector<std::array<int, 2>> regionPolygonVertices;
     std::vector<std::array<double, 2>> savedLinearDisplayRanges;
     std::vector<CatalogueOverlayEntry> catalogueOverlayEntries;
@@ -672,6 +682,15 @@ private:
     void clearRegion();
     /// Statistics of region `id` of the list (the selected one by default).
     void analyzeRegion(int id = -1);
+    /// The values along a line region, from the file (issue #503).
+    void analyzeLineRegion(const visivo::regions::Region &line);
+    int m_noiseGeneration{ 0 };   ///< supersedes an estimate still running
+    /// Tools > Estimate Noise: the RMS of the image over its source-free
+    /// pixels, from the background regions or automatically (issue #503).
+    void estimateImageNoise();
+    /// The sky position of source pixel (x, y) as the probe readout formats it,
+    /// or empty without celestial axes.
+    QString worldLabelAtPixel(double x, double y) const;
     // Region export (CRTF / DS9) — save the regions of the list, all or the
     // selected one. Loading region files (incl. CRTF) is handled by
     // loadCatalogueOverlay (single loader).

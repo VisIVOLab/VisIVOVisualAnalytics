@@ -48,9 +48,12 @@ def worker_region_stats(
     """Pixel statistics inside a 2-D region (image-frame, 0-based pixels), on the
     file at full resolution, read in blocks (``app.region_stats``, issue #95).
 
-    Returns counts and mean/rms/sum/min/max/median/mad_sigma over the finite
-    pixels in the region, plus ``flux_jy`` when the data is Jy/beam and a beam
-    is defined (integrated intensity = sum / beam-area-in-pixels).
+    Returns counts and mean/sum/min/max/median/mad_sigma over the finite
+    pixels in the region, the standard deviation (``stddev``; ``rms`` is the
+    same number under its older name) and the unweighted RMS √⟨x²⟩
+    (``rms_unweighted``), the ``peak_pixel`` (0-based ``[x, y]`` of the first
+    maximum), plus ``flux_jy`` when the data is Jy/beam and a beam is defined
+    (integrated intensity = sum / beam-area-in-pixels).
     """
     from ..brick_pyramid import source_shape  # noqa: PLC0415
     from ..region_stats import Region, region_statistics  # noqa: PLC0415
@@ -68,7 +71,8 @@ def worker_region_stats(
         # All blank: an answer, with nothing to average.
         return {"shape": region["shape"], "total_count": stats["total_count"], "valid_count": 0,
                 "blanked_count": stats["blank_count"], "min": None, "max": None, "mean": None,
-                "rms": None, "sum": 0.0, "median": None, "mad_sigma": None,
+                "rms": None, "stddev": None, "rms_unweighted": None, "peak_pixel": None,
+                "sum": 0.0, "median": None, "mad_sigma": None,
                 "bunit": dataset.intensity_unit, "flux_jy": None, "channel": ch}
 
     result: dict[str, Any] = {
@@ -80,6 +84,9 @@ def worker_region_stats(
         "max": stats["max"],
         "mean": stats["mean"],
         "rms": stats["stddev"],
+        "stddev": stats["stddev"],
+        "rms_unweighted": stats["rms_unweighted"],
+        "peak_pixel": stats["peak_pixel"],
         "sum": stats["sum"],
         "median": stats["median"],
         "mad_sigma": stats["mad_sigma"],
@@ -94,15 +101,62 @@ def worker_region_stats(
     # multi-beam cube carries one beam per plane in a BEAMS table, and the
     # primary-header beam (when present at all) is only a representative one, so
     # using it would scale the flux by the ratio of the two beam areas.
+    beam_area_px = _beam_area_pixels(dataset, ch)
+    if beam_area_px:
+        result["flux_jy"] = float(stats["sum"] / beam_area_px)
+        result["beam_area_pix"] = float(beam_area_px)
+    return result
+
+
+def _beam_area_pixels(dataset, ch: int) -> float | None:
+    """The selected channel's beam area in pixels for a Jy/beam image with a
+    beam, else None."""
     from ._common import beam_area_pixels, is_per_beam_bunit  # noqa: PLC0415
+
     beam = dataset.beam_for_channel(ch)
     bmaj, bmin = beam.major, beam.minor
     if is_per_beam_bunit(dataset.bunit) and bmaj and bmin:
-        beam_area_px = beam_area_pixels(bmaj, bmin, dataset.spatial_pixel_scale_arcsec(),
-                                        dataset.spatial_pixel_area_arcsec2())
-        if beam_area_px and beam_area_px > 0:
-            result["flux_jy"] = float(stats["sum"] / beam_area_px)
-            result["beam_area_pix"] = float(beam_area_px)
+        area = beam_area_pixels(bmaj, bmin, dataset.spatial_pixel_scale_arcsec(),
+                                dataset.spatial_pixel_area_arcsec2())
+        if area and area > 0:
+            return float(area)
+    return None
+
+
+def worker_image_noise(
+    path: str,
+    regions: list[dict[str, Any]] | None = None,
+    channel: int | None = None,
+    clip_sigma: float = 3.0,
+) -> dict[str, Any]:
+    """The noise of an image (or of one channel of a cube) over its source-free
+    pixels, in one action (``app.image_noise``, issue #503): the average over
+    the background ``regions`` (image-frame, 0-based pixels) when there are any,
+    else sigma-clipped over the whole plane. For a Jy/beam image the noise is
+    also given per pixel: Jy/beam divided by the beam area in pixels."""
+    from ..brick_pyramid import source_shape  # noqa: PLC0415
+    from ..image_noise import auto_noise, region_noise  # noqa: PLC0415
+
+    for r in regions or ():
+        if r.get("frame", "image") != "image":
+            raise ValueError(
+                "Regions must be in image (pixel) frame; convert with to_frame='image' first.")
+    dataset = ScientificFitsDataset(path)
+    nz = source_shape(path, dataset.hdu_index)[0]
+    ch = 0 if channel is None else max(0, min(int(channel), nz - 1))
+    if regions:
+        result = region_noise(path, regions, dataset.hdu_index, ch)
+    else:
+        result = auto_noise(path, dataset.hdu_index, ch, clip_sigma)
+    if not result.get("valid_count"):
+        raise ValueError("The image holds no valid pixel to measure.")
+    result.update({"bunit": dataset.intensity_unit, "channel": ch,
+                   "beam_area_pix": None, "rms_per_pixel": None, "mad_sigma_per_pixel": None})
+    area = _beam_area_pixels(dataset, ch)
+    if area:
+        result["beam_area_pix"] = area
+        result["rms_per_pixel"] = result["rms"] / area
+        result["mad_sigma_per_pixel"] = result["mad_sigma"] / area
     return result
 
 

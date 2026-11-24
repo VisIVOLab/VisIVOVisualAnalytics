@@ -748,6 +748,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Cosmology.cpp
         src/gui/vtkWindowImage_Region.cpp
         src/gui/vtkWindowImage_RegionList.cpp
+        src/gui/vtkWindowImage_RegionMeasure.cpp
         src/gui/vtkWindowImage_Setup.cpp
         src/gui/vtkWindowVbt.cpp
         src/gui/vtkWindowVbt.h

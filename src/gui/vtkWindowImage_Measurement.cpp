@@ -132,7 +132,8 @@ void vtkWindowImage::setMeasurementMode(MeasurementMode mode)
         ui->actionProfile->setChecked(false);
     if (this->regionMode != RegionMode::None) {
         QAction *actions[] = { actionBoxRegion, actionCircleRegion,
-                               actionPolygonRegion, actionAnnulusRegion };
+                               actionPolygonRegion, actionAnnulusRegion,
+                               actionPointRegion, actionLineRegion };
         for (auto *a : actions) {
             if (a && a->isChecked()) a->setChecked(false);
         }

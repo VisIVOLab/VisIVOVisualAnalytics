@@ -312,8 +312,13 @@ read from its decompressed copy in the workspace cache (see
 whole that is read directly has its plane read whole. The
 image viewer asks for them when it displays a reduced level, or when a region
 reaches beyond the pixels it has loaded (issue #95). Response: `valid`, `error`, `shape`, `total_count`,
-`valid_count`, `blanked_count`, `min`, `max`, `mean`, `rms` (standard
-deviation), `sum`, `median`, `mad_sigma` (1.4826 × MAD), `bunit`, `channel`,
+`valid_count`, `blanked_count`, `min`, `max`, `mean`, `stddev` (standard
+deviation about the mean; `rms` is the same number under its older name, kept
+for clients that read it), `rms_unweighted` (√⟨x²⟩ about zero, from the sum of
+squares, not from the variance), `sum`, `median`, `mad_sigma` (1.4826 × MAD),
+`peak_pixel` (0-based `[x, y]` of the first pixel holding `max`, scanning row
+by row), `peak_world` (`{lon, lat, frame}` in degrees, the dataset's own frame;
+`null` without a celestial WCS), `bunit`, `channel`,
 `flux_jy`, and `beam_area_pix` when a flux was computed. `flux_jy` is the sum
 divided by the beam area in pixels, set only for per-beam data with a known
 beam (otherwise `null`). The beam is the selected channel's: on a cube with a
@@ -321,3 +326,62 @@ CASA `BEAMS` table (one beam per plane) that table's entry for `channel`, and
 the primary-header `BMAJ`/`BMIN` only when there is no table entry. A region of blank pixels only is an answer:
 `valid_count` 0, `sum` 0, and the other statistics and `flux_jy` `null`. A region with no pixel of the
 image at all is 422.
+
+A `point` region is the pixel nearest it: `valid_count` 1, `mean` the value,
+`peak_pixel` the pixel.
+
+### `POST /v1/regions/profile/{dataset_id}`
+The values along a `line` region (`app/line_profile.py`, issue #503).
+
+```json
+{ "region": { "shape": "line", "frame": "image", "unit": "pix",
+              "points": [[10, 20], [110, 70]] },
+  "channel": null, "width": 1 }
+```
+
+The region is converted to 0-based pixels like the statistics' (a line in a sky
+frame is accepted). Two or more points: a polyline is sampled along its whole
+length. Samples lie one pixel apart or less (`ceil(length) + 1` of them, the
+last at the end of the line), by bilinear interpolation; `width` (1 to 255,
+default 1) averages that many parallel lines one pixel apart, centred on the
+line. Only windows of about 256 samples around the line are read, so a line
+across a 10^4 x 10^4 image reads a few megabytes. A sample outside the image,
+or whose four pixels include a blank, is `null`. Response: `valid`, `error`,
+`offsets` (from the first sample: arcsec on the sky, the summed great-circle
+separation of successive samples; pixels when the dataset has no celestial WCS),
+`offset_unit` (`arcsec` or `pix`), `values`, `x` and `y` (the samples, 0-based
+pixels), `n_samples`, `n_valid`, `length_pix`, `width_pix`, `min`, `max`, `mean`,
+`bunit`, `channel`. A region that is not a line, or a `width` out of range, is
+422.
+
+### `POST /v1/regions/noise/{dataset_id}`
+The noise of an image, or of one channel of a cube, over source-free pixels
+(`app/image_noise.py`, issue #503).
+
+```json
+{ "regions": [ { "shape": "box", "frame": "image", "unit": "pix",
+                 "center": [60, 60], "size": [80, 80], "name": "north" } ],
+  "channel": null, "clip_sigma": 3.0 }
+```
+
+With `regions` (background regions, as for the statistics, an optional `name`
+each) the answer is `mode: "regions"`: each region is measured on the file
+(`rms` = √⟨x²⟩, `stddev`, `mad_sigma`, `mean`, `median`, `valid_count`, listed
+in `regions`; a region with fewer than two valid pixels is listed without
+values and not used), and `rms` and `mad_sigma` are the averages of the used
+regions' values, with `rms_scatter` and `mad_sigma_scatter` (sample standard
+deviation between them; `null` for one region). Without `regions` the answer is
+`mode: "auto"`: the whole plane read in blocks, sigma-clipped about the median
+at `clip_sigma` (default 3) with the standard deviation, iterating until the
+kept pixels stop changing (`iterations`). A random sample of at most 4 M valid
+pixels (all of them for a smaller plane, `exact: true`) fixes the clip window;
+one more pass over the file then measures the window exactly (`rms`, `stddev`,
+`mean` over the `used_count` pixels inside it), and `mad_sigma` and `median`
+are those of the kept sample. Memory is the sample plus one block of rows, whatever
+the plane's size. Both modes give `valid_count`, `bunit`, `channel`, and for a
+`Jy/beam` image with a beam `beam_area_pix`, `rms_per_pixel` and
+`mad_sigma_per_pixel` (the RMS in Jy/beam divided by the beam area in pixels,
+that is, Jy per pixel); without a beam they are `null`. An image with no valid
+pixel, or background regions with none, is 422, as is a `clip_sigma` that is not
+positive. A 10368 x 10368 ALMA continuum image (64 M valid pixels) takes under a
+second with the file cached.

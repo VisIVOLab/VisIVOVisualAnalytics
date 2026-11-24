@@ -187,6 +187,8 @@ add_executable(VisIVOTests
     test_region_model.cpp
     TestRegionFlux.h
     test_region_flux.cpp
+    TestRegionMeasure.h
+    test_region_measure.cpp
     TestDatasetName.h
     test_dataset_name.cpp
     TestVbtByteOrder.h
