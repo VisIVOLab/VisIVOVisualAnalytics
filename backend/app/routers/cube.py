@@ -68,7 +68,7 @@ async def cube_preview(
         if request.source == "auto" and request.downsample > 1:
             pyramid_path = await asyncio.to_thread(ready_pyramid, path)
         result = await _run_with_limit(session, worker_cube_preview, path,
-                                       request.downsample, pyramid_path)
+                                       request.downsample, pyramid_path, request.value_scale)
     except HTTPException:
         raise
     except Exception as exc:
@@ -84,8 +84,8 @@ async def cube_slice(
     from ..compute import worker_cube_slice
     try:
         path = _require_cube_path(session, request.dataset_id)
-        if request.axis.lower() != "z":
-            raise HTTPException(422, "Only axis='z' is currently supported.")
+        if request.axis.lower() not in ("x", "y", "z"):
+            raise HTTPException(422, "axis must be 'x', 'y' or 'z'.")
         corners = (request.x0, request.x1, request.y0, request.y1)
         if any(v is None for v in corners) and any(v is not None for v in corners):
             raise HTTPException(422, "A slice region needs all of x0, x1, y0 and y1.")
@@ -97,7 +97,9 @@ async def cube_slice(
         # max_longest_side for wide planes (issue #381) — it runs comfortably
         # in the local ProcessPoolExecutor.
         result = await _run_interactive(worker_cube_slice, path, request.index,
-                                        request.max_longest_side, region)
+                                        request.max_longest_side, region,
+                                        request.axis.lower(), request.coordinate,
+                                        request.value_scale)
     except HTTPException:
         raise
     except Exception as exc:
@@ -120,6 +122,7 @@ async def cube_subvolume(
             request.x0, request.x1,
             request.y0, request.y1,
             request.z0, request.z1,
+            request.value_scale,
         )
     except HTTPException:
         raise
@@ -158,6 +161,7 @@ async def cube_subvolume_bin(
             request.x0, request.x1,
             request.y0, request.y1,
             request.z0, request.z1,
+            request.value_scale,
         )
     except HTTPException:
         raise
@@ -243,7 +247,7 @@ async def cube_region_level_bin(
                             media_type="text/plain", status_code=409)
     try:
         result = await _run(worker_cube_region_level_raw, path, request.level, *box,
-                            request.ghost, pyramid_path, request.source)
+                            request.ghost, pyramid_path, request.source, request.value_scale)
     except NoPyramid as exc:
         return Response(content=str(exc).encode("utf-8"), media_type="text/plain",
                         status_code=409)
@@ -1485,6 +1489,12 @@ class CubeSaveChannel2dRequest(BaseModel):
     dataset_id: str
     channel: int  # 0-indexed
     output_basename: str = ""
+    #: The plane's axis: "z" (a channel); "x" or "y" on a simulation volume.
+    axis: Literal["x", "y", "z"] = "z"
+    #: A simulation volume in physical units (issue #524): the values are
+    #: multiplied by the variable's factor, BUNIT and the axes' unit are the
+    #: physical ones, and the header records the factors.
+    physical: bool = False
 
 
 class CubeSaveChannel2dResponse(BaseModel):
@@ -1532,6 +1542,8 @@ async def cube_save_channel_2d(
             entry["path"],
             output_path,
             request.channel,
+            request.axis,
+            request.physical,
         )
     except HTTPException:
         raise

@@ -76,7 +76,14 @@ FITS cube. Each field is read in place from the `.bin`, without a copy.
   *Session Data* as *Field: name*, and opening one opens that field. Windows
   and exported files are named `volume · field`.
 - Axes: X, Y and Z, in voxels times the header's spacing, starting at 0.
-  *LAYERS ▸ 3D axes* labels the box; the 2-D slice steps along Z.
+  *LAYERS ▸ 3D axes* labels the box. The 2-D slice is a plane of constant X,
+  Y or Z, picked in the Inspector (*Slice ▸ Along*), stepped with the slider or
+  put at a typed coordinate (*At*); the bar reads `Z 12 ── z = 0.6`, not
+  `CH 12`. Tools that read cube pixels work on Z slices, as for a
+  [PLUTO output](pluto-output.md#slices-along-x-y-or-z).
+- Units: *Units…* in the Inspector takes a factor and a unit for a field's
+  values and for the coordinates, kept with the file, as for
+  [PLUTO](pluto-output.md#physical-units).
 - Colours: a positive field spanning three decades or more opens on a Log
   scale. Set the scale and range with *Edit* next to the colour map.
 - Threshold: starts at the field's 99th percentile, so 1 % of the voxels are

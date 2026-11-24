@@ -692,6 +692,7 @@ set(PROJECT_SOURCES
         src/gui/CubeLodStatus.h
         src/gui/vtkWindowCube_Samp.cpp
         src/gui/vtkWindowCube_RemoteSlice.cpp
+        src/gui/vtkWindowCube_Simulation.cpp
         src/gui/vtkWindowCube_Probe.cpp
         src/gui/vtkWindowCube_Polarisation.cpp
         src/gui/vtkWindowCube_Lte.cpp
@@ -745,6 +746,10 @@ set(PROJECT_SOURCES
         src/gui/ArepoExtractDialog.h
         src/gui/DatasetBeamControl.cpp
         src/gui/DatasetBeamControl.h
+        src/gui/PhysicalUnitsControl.cpp
+        src/gui/PhysicalUnitsControl.h
+        src/app/SimulationVolume.h
+        src/app/PhysicalUnits.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h
         src/gui/SedBuilder.h

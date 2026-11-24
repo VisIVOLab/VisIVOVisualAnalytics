@@ -29,6 +29,11 @@ public:
     void setRange(int minChannel, int maxChannel);
     void setChannel(int channel);                    // 1-based, like ui->spinSlice
     void setSpectralLabel(const QString &textWithUnit);
+    /// A simulation volume's slice (issue #524): the bar names the axis the
+    /// plane is normal to ("X", "Y", "Z") instead of "CH", and the readout is
+    /// the coordinate ("x = 0.15 pc") with no ν/λ/v symbol. An empty
+    /// @p axisLetter is the spectral bar again.
+    void setSimulationAxis(const QString &axisLetter);
 
     int channel() const;
 
@@ -56,6 +61,7 @@ private:
     void applyStyle();
     void refreshSpectralLabel();
     QString m_spectralFull;
+    QString m_simulationAxis;   // "X"/"Y"/"Z" on a simulation volume, empty for a cube
     void repositionOverParent();
 
     QLabel  *m_chLabel   { nullptr };   // "CH"

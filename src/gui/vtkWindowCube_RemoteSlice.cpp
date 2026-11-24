@@ -170,7 +170,8 @@ namespace {
 void refitParallelSliceCamera(vtkRenderer *renderer, vtkImageData *sliceImage, vtkRenderWindow *win);
 RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString &datasetId,
                                        int index, const QString &sessionId,
-                                       const QString &backendToken, std::optional<QRect> region);
+                                       const QString &backendToken, std::optional<QRect> region,
+                                       const QString &axis);
 
 void refitParallelSliceCamera(vtkRenderer *renderer, vtkImageData *sliceImage, vtkRenderWindow *win)
 {
@@ -209,14 +210,17 @@ void refitParallelSliceCamera(vtkRenderer *renderer, vtkImageData *sliceImage, v
 
 RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString &datasetId,
                                        int index, const QString &sessionId,
-                                       const QString &backendToken, std::optional<QRect> region)
+                                       const QString &backendToken, std::optional<QRect> region,
+                                       const QString &axis)
 {
     RemoteCubeSliceResult result;
     result.index = index;
+    result.axis = visivo::simvol::axisFromLetter(axis);
+    result.valueScale = BackendClient::displayValueScale(datasetId);
 
     BackendClient client(backendUrl, backendToken);
     client.setSessionId(sessionId);
-    const auto response = client.requestSlice(datasetId, QStringLiteral("z"), index,
+    const auto response = client.requestSlice(datasetId, axis, index,
                                               visivo::kRemoteSliceLongestSide, region);
     if (!response.valid) {
         result.errorMessage = response.error.isEmpty() ? u"Remote slice request failed."_s
@@ -429,12 +433,16 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     // provenance) must read this, not the control.
     this->m_displayedSliceIndex = result.index;
     this->m_sliceErrorOnStatusBar = false;   // a slice arrived; the error is stale now
-    ui->lineSpectral->setText(this->formatSpectralAxisValue(result.index));
+    ui->lineSpectral->setText(this->m_simulationVolume
+                                      ? this->sliceCoordinateText(result.index)
+                                      : this->formatSpectralAxisValue(result.index));
     // The floating channel scrubber is normally driven by spinSlice::valueChanged,
     // which we just blocked — update it explicitly so it tracks every displayed
     // slice (cached / fetched / linked).
     if (this->channelOverlay) {
         for (ChannelOverlay *co : this->channelOverlays()) {
+            if (this->m_simulationVolume)
+                co->setSimulationAxis(visivo::simvol::axisLetter(this->m_sliceAxis));
             co->setChannel(result.index + 1);
             co->setSpectralLabel(ui->lineSpectral->text());
         }
@@ -522,14 +530,17 @@ void vtkWindowCube::updateRemoteSliceDragFeedback(int sliceIndex)
 {
     const int clampedSlice = this->clampRemoteSliceIndex(sliceIndex);
     this->currentRequestedRemoteSliceIndex = clampedSlice;
-    ui->lineSpectral->setText(this->formatSpectralAxisValue(clampedSlice));
+    ui->lineSpectral->setText(this->m_simulationVolume
+                                      ? this->sliceCoordinateText(clampedSlice)
+                                      : this->formatSpectralAxisValue(clampedSlice));
     this->updateRemoteCuttingPlane(clampedSlice);
     ui->vtkCube->renderWindow()->Render();
 }
 
 int vtkWindowCube::remoteSliceCount() const
 {
-    return std::max(1, this->remoteDatasetDepth);
+    return visivo::simvol::planeCount(m_sliceAxis, this->remoteDatasetWidth,
+                                      this->remoteDatasetHeight, this->remoteDatasetDepth);
 }
 
 int vtkWindowCube::clampRemoteSliceIndex(int sliceIndex) const
@@ -545,10 +556,10 @@ double vtkWindowCube::remoteSliceCoordinate(int sliceIndex) const
     return ok ? axisValue : static_cast<double>(clampedSlice);
 }
 
-QString vtkWindowCube::remoteSliceCacheKey(int sliceIndex) const
+QString vtkWindowCube::remoteSliceCacheKey(int sliceIndex, visivo::simvol::SliceAxis axis) const
 {
-    return QStringLiteral("%1|z|%2")
-            .arg(this->remoteDatasetId)
+    return QStringLiteral("%1|%2|%3")
+            .arg(this->remoteDatasetId, visivo::simvol::axisLetter(axis))
             .arg(this->clampRemoteSliceIndex(sliceIndex));
 }
 
@@ -556,7 +567,7 @@ void vtkWindowCube::cacheRemoteSliceResult(const RemoteCubeSliceResult &result)
 {
     // Delegate to RemoteSliceCache (E-04 step 1): it applies the valid/imageData
     // guard, refreshes recency, and evicts past capacity — verbatim behaviour.
-    this->remoteSliceCache.insert(this->remoteSliceCacheKey(result.index), result);
+    this->remoteSliceCache.insert(this->remoteSliceCacheKey(result.index, result.axis), result);
 }
 
 bool vtkWindowCube::tryApplyCachedRemoteSlice(int sliceIndex)
@@ -632,10 +643,18 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                              return;
                          }
 
+                         // Asked in the units shown before a switch of units: neither
+                         // cached nor shown (issue #524); the switch asked again.
+                         if (result.valueScale != BackendClient::displayValueScale(
+                                     this->remoteDatasetId))
+                             return;
                          this->cacheRemoteSliceResult(result);
 
+                         // A plane of the axis the slice was taken along before is
+                         // cached, never shown (issue #524).
                          const bool requestedSliceMatches = this->clampRemoteSliceIndex(result.index)
-                                 == this->currentRequestedRemoteSliceIndex;
+                                         == this->currentRequestedRemoteSliceIndex
+                                 && result.axis == this->m_sliceAxis;
                          if (!isPrefetch && requestId != this->currentRemoteSliceRequestId) {
                              if (this->activeRemoteSliceRequests == 0
                                  && !this->m_sliceErrorOnStatusBar) {
@@ -660,7 +679,8 @@ void vtkWindowCube::startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int r
                      });
     watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
                                          this->remoteDatasetId, sliceIndex, this->remoteSessionId,
-                                         this->remoteBackendToken, std::optional<QRect>()));
+                                         this->remoteBackendToken, std::optional<QRect>(),
+                                         visivo::simvol::axisLetter(this->m_sliceAxis)));
 }
 
 void vtkWindowCube::prefetchNeighborRemoteSlices(int sliceIndex)
@@ -766,7 +786,9 @@ void vtkWindowCube::fetchExactProbeValue()
     watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
                                          this->remoteDatasetId, voxel[2], this->remoteSessionId,
                                          this->remoteBackendToken,
-                                         std::optional<QRect>(QRect(voxel[0], voxel[1], 1, 1))));
+                                         std::optional<QRect>(QRect(voxel[0], voxel[1], 1, 1)),
+                                         // One cube voxel (x, y, z): always a z plane.
+                                         u"z"_s));
 }
 
 void vtkWindowCube::scheduleSliceDetail()
@@ -861,5 +883,6 @@ void vtkWindowCube::refreshSliceDetail()
     watcher->setFuture(QtConcurrent::run(&fetchRemoteSlice, this->remoteBackendUrl,
                                          this->remoteDatasetId, this->m_displayedSliceIndex,
                                          this->remoteSessionId, this->remoteBackendToken,
-                                         std::optional<QRect>(want->region)));
+                                         std::optional<QRect>(want->region),
+                                         visivo::simvol::axisLetter(this->m_sliceAxis)));
 }

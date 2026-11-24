@@ -37,10 +37,67 @@ The other variables of the output are listed in *Session Data* as
 variables whose files are present are listed. Face-centred magnetic fields of
 a constrained-transport run (`Bx1s` …) are not listed.
 
+## Slices along x, y or z
+
+A simulation volume is not a spectral cube, so its slice is not a channel. In
+the Inspector, *Slice*:
+
+- *Along* picks the axis the plane is normal to: X, Y or Z. The 2-D view then
+  shows the other two axes (a Y slice is x by z), the cutting plane in the 3-D
+  view follows, and the bar under the view reads `X 13 ── x = 0.05 pc` in the
+  grid's coordinates instead of `CH 13`.
+- *At* takes a coordinate in the units shown: type `0` and press *Enter* and
+  the slice goes to the nearest plane. A value off the grid says so on the
+  status bar and shows the nearest edge plane.
+
+Changing the axis starts at the middle plane. The tools that read cube pixels
+(*Extract Spectrum*, *Extract PV Diagram*, the region tools) work on Z slices
+and are greyed out with the reason on X and Y slices. Moment maps, channel maps
+and exports are unchanged. Along X or Y, a remote rendering session keeps its
+own cutting plane at the last Z channel.
+
+## Physical units
+
+PLUTO writes values, coordinates and time in code units. The run's units are
+three numbers in `definitions.h`:
+
+| Name | Unit |
+|---|---|
+| `UNIT_DENSITY` | g/cm³ |
+| `UNIT_LENGTH` | cm |
+| `UNIT_VELOCITY` | cm/s |
+
+When `definitions.h` is next to the data (or one or two directories above it),
+VisIVO reads them and shows the variable in physical units: density in g/cm³,
+velocities in cm/s, pressure (ρV²) in dyn/cm², the magnetic field (V√(4πρ)) in
+G, coordinates in cm and the time (L/V) in s. Tracers stay as they are.
+Expressions such as `(1.0e-24*CONST_mp)` are evaluated with PLUTO's constants.
+A grid shown in cell indices (see below) has no coordinates to convert.
+
+*Units* in the Inspector shows what is in force and where it came from.
+
+- *Physical* switches between physical and code units. The colour bars, slice
+  and probe values, statistics, histogram, isosurface and threshold levels, the
+  axes of the 2-D view and the time all follow; the data in the file do not
+  change.
+- *Units…* takes the run's three units, or a factor and a unit for this
+  variable (for example `Msun/pc^3`) and for the coordinates (for example `pc`).
+  A field left empty keeps what the file gives; *Forget typed* goes back to
+  `definitions.h`. What you type is kept with the run, so every variable of it
+  and a later session use it, and it replaces `definitions.h` for that number.
+
+*Export Current Channel as 2-D FITS* writes the plane being shown, along X, Y
+or Z, with its axes (`CTYPE`, `CDELT`, `CUNIT`) and position (`SLICEAX`,
+`SLICEIDX`, `SLICEPOS`). With *Physical* on, the values are multiplied by the
+factor, `BUNIT` is the physical unit, and the header records `CODEUNIT`,
+`UNITFAC`, `LENFAC` and `UNITSRC` so the file says what was done to the data.
+Moment maps and other derived products are computed on the file's code units.
+
 ## Axes and header
 
-- Uniform Cartesian grid: the axes are X, Y and Z (x1, x2, x3) in code units,
-  with the cell width as spacing and the first cell's centre as origin.
+- Uniform Cartesian grid: the axes are X, Y and Z (x1, x2, x3) in code units
+  (physical when [`definitions.h`](#physical-units) gives them), with the cell
+  width as spacing and the first cell's centre as origin.
 - Stretched grid, or a polar, cylindrical or spherical run: the axes count
   cells, starting at 1 as in `grid.out`. The header says why (`PLUTOGRD =
   'INDEX'` and `PLUTOWHY`, for example *non-uniform cells along x1*). The array

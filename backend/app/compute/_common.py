@@ -54,6 +54,18 @@ def clamped_sqrt(x: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
     return np.sqrt(out, out=out)
 
 
+def scaled_f32(array: np.ndarray, scale: float) -> np.ndarray:
+    """``array * scale`` as float32: the values of a simulation volume in
+    physical units (issue #524: ``app.physical_units``). ``scale`` 1 returns
+    ``array`` itself; a scale too small or large for float32 is applied in
+    float64 so the product is rounded once, not the factor."""
+    if scale == 1.0:
+        return array
+    if 1e-30 < abs(scale) < 1e30:
+        return np.multiply(array, np.float32(scale), dtype=np.float32)
+    return (np.asarray(array, dtype=np.float64) * float(scale)).astype(np.float32)
+
+
 def _finite_range(array: np.ndarray) -> tuple[float, float]:
     """Min/max over the FINITE values, for display ranges and LUT limits.
 

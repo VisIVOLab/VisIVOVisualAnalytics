@@ -4,6 +4,7 @@
 #include "ContourLayer.h"
 #include "RemoteSessionRecovery.h"
 #include "BackendClient.h"
+#include "app/SimulationVolume.h"
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "CubeStatRows.h"
@@ -100,6 +101,9 @@ class QDockWidget;
 class QFrame;
 class QLabel;
 class DatasetBeamControl;
+class PhysicalUnitsControl;
+class QComboBox;
+class QLineEdit;
 class QPushButton;
 class QSlider;
 class QSplitter;
@@ -224,6 +228,12 @@ struct RemoteCubeSliceResult
     int fullHeight{ 0 };
     int stride{ 1 };
     QRect region;
+    /// The axis the plane is normal to (issue #524): a result that comes back
+    /// after the slice axis changed belongs to the old axis.
+    visivo::simvol::SliceAxis axis{ visivo::simvol::SliceAxis::Z };
+    /// The display scale of the values (BackendClient::displayValueScale) when
+    /// they were asked: a result in the units shown before a toggle is dropped.
+    double valueScale{ 1.0 };
 };
 
 /// A /v1/cube/slice answer as an image on the plane's pixel frame (origin the
@@ -471,6 +481,24 @@ public:
     /// The other fields of the VBT volume this cube is a field of (issue #83),
     /// as (name, path): rows of Session Data that open each as a cube.
     void setSiblingFields(const QList<QPair<QString, QString>> &fields);
+
+    // ── Simulation volumes (issue #524; vtkWindowCube_Simulation.cpp) ────────
+    /// The backend's physical units for this variable (null units: none known).
+    /// Called once by MainWindow after construction; turns the display on when
+    /// there are any.
+    void setPhysicalUnits(const visivo::units::PhysicalUnits &units);
+    /// A volume of a simulation (axes X, Y, Z): its slice may be taken along x,
+    /// y or z, and the bar shows coordinates, not channels.
+    bool isSimulationVolume() const { return m_simulationVolume; }
+    visivo::simvol::SliceAxis sliceAxis() const { return m_sliceAxis; }
+    /// The slice along @p axis (the middle plane when the axis changes).
+    void setSliceAxis(visivo::simvol::SliceAxis axis);
+    /// The plane nearest to @p typed, in the units the coordinates are shown in
+    /// (physical when on); false, with the reason on the status bar, when it is
+    /// off the grid.
+    bool goToSliceCoordinate(double typed);
+    /// Show values, coordinates and time in physical units (or code units).
+    void setPhysicalDisplay(bool physical);
 
     /// Build a product id scoped to THIS window: "<stem>@<datasetKey>#<windowScope>". The
     /// parentKey stays datasetPersistKey() (so the tree still nests under the dataset), but the
@@ -2961,6 +2989,9 @@ protected:
     void applySpectralAxisChange();
     bool remoteHasWcsAxis(int axis) const;
     double remoteVoxelToWcs(int axis, double voxelIndex, bool *ok = nullptr) const;
+    /// The same in the file's own units (what the header says), before the
+    /// axis-unit table.
+    double remoteVoxelToNative(int axis, double voxelIndex, bool *ok = nullptr) const;
     QString remoteFormatAxisCoordinate(int axis, double voxelIndex) const;
     QString remoteAxisTitle(int axis) const;
     void updateWcsStatusIndicator();
@@ -3218,7 +3249,11 @@ protected:
     void requestRemoteSlice(int sliceIndex);
     void setSlice2dPlaceholder(const QString &text);  ///< text in the empty 2-D pane ("" hides it)
     void applyRemoteSliceResult(const RemoteCubeSliceResult &result);
-    QString remoteSliceCacheKey(int sliceIndex) const;
+    QString remoteSliceCacheKey(int sliceIndex) const
+    {
+        return this->remoteSliceCacheKey(sliceIndex, m_sliceAxis);
+    }
+    QString remoteSliceCacheKey(int sliceIndex, visivo::simvol::SliceAxis axis) const;
     void cacheRemoteSliceResult(const RemoteCubeSliceResult &result);
     bool tryApplyCachedRemoteSlice(int sliceIndex);
     void startRemoteSliceFetch(int sliceIndex, bool isPrefetch, int requestId = 0);
@@ -3385,6 +3420,48 @@ protected:
     QPointer<QLabel> m_unitValueLabel;
     QPointer<DatasetBeamControl> m_beamControl;
     void refreshUnitAndBeamRows();
+
+    // ── Simulation volumes (issue #524; vtkWindowCube_Simulation.cpp) ────────
+    bool m_simulationVolume{ false };
+    visivo::simvol::SliceAxis m_sliceAxis{ visivo::simvol::SliceAxis::Z };
+    visivo::units::PhysicalUnits m_physicalUnits;
+    bool m_showPhysical{ true };
+    QString m_codeBunit;   ///< the header's own unit, shown when physical units are off
+    QPointer<QComboBox> m_sliceAxisCombo;
+    QPointer<QLineEdit> m_sliceCoordEdit;
+    QPointer<PhysicalUnitsControl> m_unitsControl;
+    QPointer<QLabel> m_simTimeLabel;
+    /// Three axes named X, Y and Z: a simulation's grid, not a spectral cube.
+    bool detectSimulationVolume() const;
+    /// The cube axes the slice plane shows horizontally and vertically.
+    std::array<int, 2> slicePlaneAxes() const;
+    bool sliceAlongZ() const { return m_sliceAxis == visivo::simvol::SliceAxis::Z; }
+    /// The unit each of the grid's three axes is shown in, as the spectral
+    /// axis has its table (m_spectralAxis, issue #496): the backend's "x", "y"
+    /// and "z" columns while physical units are on. Every coordinate reader
+    /// goes through remoteVoxelToWcs and axisUnitLabel, which read it; a
+    /// spectral cube keeps the file's own axes.
+    struct AxisUnitsChoice
+    {
+        std::array<double, 3> factor{ 1.0, 1.0, 1.0 };   ///< file coordinate -> shown
+        std::array<QString, 3> unit;                      ///< empty: the file's own CUNIT
+    };
+    AxisUnitsChoice m_axisUnits;
+    /// Rebuild the table from the units and the display switch.
+    void refreshAxisUnits();
+    QString axisUnitLabel(int cubeAxis) const;
+    /// "x = 0.15 pc": the coordinate of plane @p index along the slice axis.
+    QString sliceCoordinateText(int index) const;
+    /// The bar, the sidebar slider, the Inspector rows and the overlays as the
+    /// slice axis and the units now say.
+    void syncSliceAxisUi();
+    void refreshSimulationRows();
+    void addSimulationInspectorRows(class InspectorPanel *panel);
+    /// Ask the backend again for everything shown in the units now in force
+    /// (preview, slices): the values the data routes return change with them.
+    void reloadForDisplayUnits();
+    /// The launch of the preview fetch, as the constructor starts it.
+    void startRemotePreviewLoad();
 
     /// Aspect-preserving gutter fit + colorbar placement for the currently-visible
     /// 2-D pane. Cheap and idempotent: returns immediately unless the viewport

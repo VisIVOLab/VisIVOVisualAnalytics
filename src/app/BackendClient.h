@@ -2,6 +2,7 @@
 #define BackendClient_h
 
 #include "DatasetBeam.h"
+#include "PhysicalUnits.h"
 #include "FilePreview.h"
 #include "ParticleProfiles.h"
 #include "VbtByteOrder.h"
@@ -253,6 +254,10 @@ struct BackendOpenDatasetResult
     QString byteOrder;
     QString byteOrderDeclared;
     visivo::VbtByteOrderWarning byteOrderWarning;
+    /// A volume of a simulation (issue #524): its slice may be taken along x, y
+    /// or z, and its values and coordinates may have physical units.
+    bool simulationVolume{ false };
+    visivo::units::PhysicalUnits physicalUnits;
 };
 
 struct BackendFileHeaderResult
@@ -490,6 +495,12 @@ struct BackendCubeSliceResult
     int x0{ 0 };
     int y0{ 0 };
     int stride{ 1 };
+    /// The plane served (issue #524): its axis ("x", "y" or "z"), its index
+    /// along it and the number of planes the axis has. 0 planes: an older
+    /// backend, which only serves z planes.
+    QString axis;
+    int index{ 0 };
+    int planes{ 0 };
 };
 
 struct BackendCubeSubvolumeResult
@@ -2677,6 +2688,16 @@ public:
     /// POST /v1/datasets/beam: type the beam of a dataset whose header has
     /// none, or forget it (issue #416).
     visivo::beam::BeamResult setDatasetBeam(const visivo::beam::BeamRequest &request) const;
+    /// POST /v1/datasets/units: type the physical units of a simulation
+    /// volume, or forget them (issue #524).
+    visivo::units::UnitsResult setDatasetUnits(const QString &datasetId,
+                                                const visivo::units::UnitsRequest &request) const;
+    /// The factor the values of @p datasetId are asked in from every cube data
+    /// route (slice, preview, subvolume, level of detail): physical units
+    /// (issue #524). Process-wide and thread-safe, since the requests are made
+    /// from worker threads on clients of their own; 1 is the file's own units.
+    static void setDisplayValueScale(const QString &datasetId, double scale);
+    static double displayValueScale(const QString &datasetId);
     BackendSampImportResult importSampUrl(const QString &url,
                                           const QString &filename = QString()) const;
     BackendSampImportResult uploadFileToSampStorage(const QString &localPath,
@@ -3303,9 +3324,14 @@ public:
             const QStringList &history = {},
             const QPoint &regionOrigin = {});
 
+    /** @p axis "z" (a channel) or, on a simulation volume (issue #524), "x" or
+     *  "y"; @p physical writes the values and axes in physical units, the
+     *  factors recorded in the header. */
     BackendSaveChannel2dResult saveCubeChannelAs2dFits(const QString &datasetId,
                                                         int channel,
-                                                        const QString &outputBasename = {});
+                                                        const QString &outputBasename = {},
+                                                        const QString &axis = QStringLiteral("z"),
+                                                        bool physical = false);
 
     // ── Dynamic-spectrum analysis ────────────────────────────────────────────
     /** POST /v1/dynspec/dedisperse — incoherent dedispersion at the given

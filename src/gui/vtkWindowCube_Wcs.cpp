@@ -251,7 +251,8 @@ double vtkWindowCube::spectralAxisValue(double datasetVoxelIndex, bool *ok) cons
         return datasetVoxelIndex;
     }
 
-    return this->remoteVoxelToWcs(2, datasetVoxelIndex, ok);
+    // A profile along z of a grid is in the file's units, as labelled.
+    return this->remoteVoxelToNative(2, datasetVoxelIndex, ok);
 }
 
 BackendSpectralChoice vtkWindowCube::spectralChoiceForProducts() const
@@ -475,7 +476,7 @@ bool vtkWindowCube::remoteHasWcsAxis(int axis) const
             && std::abs(this->remoteDatasetCdelt[axis]) > 1e-12;
 }
 
-double vtkWindowCube::remoteVoxelToWcs(int axis, double voxelIndex, bool *ok) const
+double vtkWindowCube::remoteVoxelToNative(int axis, double voxelIndex, bool *ok) const
 {
     const bool valid = this->remoteHasWcsAxis(axis);
     if (ok) {
@@ -489,6 +490,14 @@ double vtkWindowCube::remoteVoxelToWcs(int axis, double voxelIndex, bool *ok) co
             + ((voxelIndex + 1.0) - this->remoteDatasetCrpix[axis]) * this->remoteDatasetCdelt[axis];
 }
 
+double vtkWindowCube::remoteVoxelToWcs(int axis, double voxelIndex, bool *ok) const
+{
+    const double native = this->remoteVoxelToNative(axis, voxelIndex, ok);
+    // The axis-unit table: 1 unless a simulation grid is shown in physical units.
+    const bool shown = axis >= 0 && axis < 3 && this->remoteHasWcsAxis(axis);
+    return shown ? native * m_axisUnits.factor[std::size_t(axis)] : native;
+}
+
 QString vtkWindowCube::remoteFormatAxisCoordinate(int axis, double voxelIndex) const
 {
     bool ok = false;
@@ -497,7 +506,7 @@ QString vtkWindowCube::remoteFormatAxisCoordinate(int axis, double voxelIndex) c
         return QString::number(voxelIndex, 'g', 12);
     }
 
-    const QString unit = (axis >= 0 && axis < 3) ? this->remoteDatasetCunit[axis].trimmed() : QString();
+    const QString unit = (axis >= 0 && axis < 3) ? this->axisUnitLabel(axis) : QString();
     if (unit.isEmpty()) {
         return QString::number(world, 'g', 12);
     }
@@ -508,7 +517,7 @@ QString vtkWindowCube::remoteAxisTitle(int axis) const
 {
     const QString base = axis == 0 ? u"X"_s : (axis == 1 ? u"Y"_s : u"Z"_s);
     const QString ctype = (axis >= 0 && axis < 3) ? this->remoteDatasetCtype[axis].trimmed() : QString();
-    const QString cunit = (axis >= 0 && axis < 3) ? this->remoteDatasetCunit[axis].trimmed() : QString();
+    const QString cunit = (axis >= 0 && axis < 3) ? this->axisUnitLabel(axis) : QString();
     const QString label = ctype.isEmpty() ? base : ctype;
     return cunit.isEmpty() ? label : u"%1 (%2)"_s.arg(label, cunit);
 }
@@ -550,8 +559,11 @@ double vtkWindowCube::remoteFrameCoordinate(int axis, double voxelX, double voxe
 {
     bool okX = false;
     bool okY = false;
-    const double nativeX = this->remoteVoxelToWcs(0, voxelX, &okX);
-    const double nativeY = this->remoteVoxelToWcs(1, voxelY, &okY);
+    // The slice plane's own axes: x and y, but a simulation volume sliced along
+    // x or y shows another pair (issue #524).
+    const std::array<int, 2> plane = this->slicePlaneAxes();
+    const double nativeX = this->remoteVoxelToWcs(plane[0], voxelX, &okX);
+    const double nativeY = this->remoteVoxelToWcs(plane[1], voxelY, &okY);
     double frameX = nativeX;
     double frameY = nativeY;
     if (okX && okY && this->remoteHasCelestialAxes())
@@ -860,6 +872,7 @@ void vtkWindowCube::updateSliceWcsOverlay()
         return;
     }
 
+    const std::array<int, 2> pa = this->slicePlaneAxes();   // x and y, unless sliced along x or y
     const auto visible = computeVisibleImageBounds2D(renderer, imageData);
     if (!visible.valid) {
         this->sliceOverlayXAxis->VisibilityOff();
@@ -901,13 +914,13 @@ void vtkWindowCube::updateSliceWcsOverlay()
     configureAxisActor(this->sliceOverlayXAxis, axisX, bottomMargin, xRight, bottomMargin);
     configureAxisActor(this->sliceOverlayYAxis, axisX, yTop, axisX, bottomMargin);
     this->sliceOverlayXAxis->SetTitle("");
-    this->sliceOverlayXTitleActor->SetInput(this->remoteOverlayAxisTitle(0).toStdString().c_str());
+    this->sliceOverlayXTitleActor->SetInput(this->remoteOverlayAxisTitle(pa[0]).toStdString().c_str());
     // Titles travel with their axis (§2.7): centred under the tick row (data.y-18),
     // and left of the tick column (data.x-10); floored so they stay on screen.
     this->sliceOverlayXTitleActor->SetDisplayPosition(static_cast<int>((axisX + xRight) / 2.),
                                                       static_cast<int>(std::max(bottomMargin - 38. * dpr, 10. * dpr)));
     this->sliceOverlayYAxis->SetTitle("");
-    this->sliceOverlayYTitleActor->SetInput(this->remoteOverlayAxisTitle(1).toStdString().c_str());
+    this->sliceOverlayYTitleActor->SetInput(this->remoteOverlayAxisTitle(pa[1]).toStdString().c_str());
     this->sliceOverlayYTitleActor->SetDisplayPosition(static_cast<int>(std::max(axisX - 74. * dpr, 12. * dpr)),
                                                       static_cast<int>((bottomMargin + yTop) / 2.));
 
@@ -919,10 +932,10 @@ void vtkWindowCube::updateSliceWcsOverlay()
     const double ryMax = visible.ymax;
     bool xOk = false;
     bool yOk = false;
-    const double xMin = this->remoteVoxelToWcs(0, rxMin, &xOk);
-    const double xMax = this->remoteVoxelToWcs(0, rxMax, &xOk);
-    const double yMin = this->remoteVoxelToWcs(1, ryMin, &yOk);
-    const double yMax = this->remoteVoxelToWcs(1, ryMax, &yOk);
+    const double xMin = this->remoteVoxelToWcs(pa[0], rxMin, &xOk);
+    const double xMax = this->remoteVoxelToWcs(pa[0], rxMax, &xOk);
+    const double yMin = this->remoteVoxelToWcs(pa[1], ryMin, &yOk);
+    const double yMax = this->remoteVoxelToWcs(pa[1], ryMax, &yOk);
     this->sliceOverlayXAxis->SetRange(xOk ? xMin : rxMin, xOk ? xMax : rxMax);
     this->sliceOverlayYAxis->SetRange(yOk ? yMax : ryMax, yOk ? yMin : ryMin);
     this->sliceOverlayXAxis->LabelVisibilityOff();

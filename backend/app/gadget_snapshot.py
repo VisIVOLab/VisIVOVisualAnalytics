@@ -1868,7 +1868,9 @@ class Component:
     def physical(self) -> dict[str, dict]:
         """Per column, the factor that makes it physical and the unit then:
         lengths in kpc (x a / h), masses in Msun (/ h), velocities in km/s
-        peculiar (see _velocity_convention), density in g/cm^3."""
+        peculiar (see _velocity_convention), density in g/cm^3. What the user
+        typed for a column (``app.physical_units``) replaces it, marked
+        ``"source": "user"``."""
         units, hh = self.snapshot.units, self.snapshot.hubble
         a = self.snapshot.scale_factor          # never 0: 1 when not comoving
         length = units.length_cm / KPC_CM * a / hh
@@ -1906,8 +1908,12 @@ class Component:
             convention = self._velocity_convention(n)
             if convention is not None:
                 table[n] = (kms * a ** convention[0], "km/s")
-        return {n: {"factor": float(table[n][0]), "unit": table[n][1]}
-                for n in self.names if n in table}
+        from . import physical_units  # noqa: PLC0415
+        return physical_units.with_typed(
+            self.snapshot.path,
+            {n: {"factor": float(table[n][0]), "unit": table[n][1]}
+             for n in self.names if n in table},
+            columns=tuple(self.names))
 
     def _radius_definitions(self) -> dict[str, str]:
         """What each SubFind overdensity radius encloses. An HDF5 catalogue

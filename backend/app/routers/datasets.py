@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any
 import io
 import uuid
@@ -209,6 +209,9 @@ async def open_dataset(
         session.session_id[:8] + "…", dataset_id, kind, path,
     )
     response = _build_open_response(dataset_id, session.session_id, kind, geometry)
+    response.simulation_volume = _is_simulation_volume(registered_path, kind, geometry)
+    if response.simulation_volume:
+        response.physical_units = await asyncio.to_thread(_physical_units_info, registered_path)
     if orders:
         response.byte_order = orders["byte_order"]
         response.byte_order_declared = orders["byte_order_declared"]
@@ -275,6 +278,113 @@ async def pixel_to_sky(
                                        request.z)
     except Exception as exc:
         return PixelToSkyResponse(valid=False, error=str(exc))
+
+
+# ── Simulation volumes: slice axes and physical units (issue #524) ──────────
+
+def _is_simulation_volume(path: str, kind: str, geometry: dict[str, Any]) -> bool:
+    from .. import physical_units as pu  # noqa: PLC0415
+    return pu.is_simulation_volume(path, kind, geometry.get("ctype", []))
+
+
+def _is_gadget_component(path: str) -> bool:
+    from ..point_table import component_format  # noqa: PLC0415
+    return component_format(path) == "gadget"
+
+
+def _physical_units_info(path: str) -> PhysicalUnitsInfo:
+    from .. import physical_units as pu  # noqa: PLC0415
+    from .. import pluto_source  # noqa: PLC0415
+    table = pu.scales(path)
+    run = pu.merged_run_units(path)
+    name = pluto_source.split_ref(path)[1]
+    code_time = None
+    if name is not None:
+        try:
+            code_time = float(pluto_source.resolve(path).record.time)
+        except (OSError, ValueError, AttributeError):
+            code_time = None
+    sources = [e.get("source", "") for e in table.values()]
+    return PhysicalUnitsInfo(
+        active=any(sources),
+        source="user" if "user" in sources else (run.source if any(sources) else "none"),
+        origin=run.origin, variable=name or "",
+        unit_density=run.density, unit_length=run.length, unit_velocity=run.velocity,
+        value_quantity=pu.variable_quantity(name) if name is not None else "",
+        time_code=code_time,
+        columns={c: ColumnScaleInfo(**e) for c, e in table.items()})
+
+
+class ColumnUnitRequest(BaseModel):
+    factor: float
+    unit: str = ""
+
+
+class DatasetUnitsRequest(BaseModel):
+    dataset_id: str
+    #: The run's code units, cgs (PLUTO's UNIT_DENSITY, UNIT_LENGTH,
+    #: UNIT_VELOCITY); pressure, time and the magnetic field follow from them.
+    unit_density: float | None = None
+    unit_length: float | None = None
+    unit_velocity: float | None = None
+    #: A factor and a unit for any column by name, replacing what the reader
+    #: gives: a Gadget column such as ``mass`` or ``hsml``; a volume's ``value``
+    #: (this variable's values, any format), ``x``, ``y``, ``z`` (the run's
+    #: coordinates): ``{"mass": {"factor": 1e10, "unit": "Msun"}}``.
+    columns: dict[str, ColumnUnitRequest] = Field(default_factory=dict)
+    #: Forget everything typed for this variable and run (before applying the rest).
+    clear: bool = False
+
+
+class DatasetUnitsResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    physical_units: PhysicalUnitsInfo | None = None
+
+
+@router.post("/v1/datasets/units", response_model=DatasetUnitsResponse, tags=["datasets"])
+async def set_dataset_units(
+    request: DatasetUnitsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> DatasetUnitsResponse:
+    """Type the physical units of a simulation volume: the run's UNIT_DENSITY /
+    UNIT_LENGTH / UNIT_VELOCITY (cgs), or a factor and unit for this variable
+    and for the coordinates, or ``clear`` them. They are kept with the file
+    (``app.physical_units``), shared by every variable of a PLUTO run, so a
+    later open reports them. Values are never rewritten: viewers show
+    ``value * columns["value"].factor``."""
+    entry = _require_dataset(session, request.dataset_id)
+    gadget = _is_gadget_component(entry["path"])
+    if not gadget and not _is_simulation_volume(entry["path"], entry.get("kind", ""),
+                                                {"ctype": entry.get("ctype", [])}):
+        return DatasetUnitsResponse(
+            valid=False, error="Physical units apply to a simulation volume or a particle "
+                               "snapshot.")
+    from .. import physical_units as pu  # noqa: PLC0415
+    run = {k: v for k, v in (("unit_density", request.unit_density),
+                             ("unit_length", request.unit_length),
+                             ("unit_velocity", request.unit_velocity)) if v is not None}
+    columns = {c: (e.factor, e.unit) for c, e in request.columns.items()}
+    try:
+        await asyncio.to_thread(
+            pu.set_user, entry["path"], run=run or None, columns=columns or None,
+            clear=request.clear, by=f"session {session.session_id[:8]}")
+        info = await asyncio.to_thread(_physical_units_info, entry["path"])
+        if gadget:
+            # The table the profile and total routes read was taken at open: refresh
+            # it for every open particle type of this snapshot (they share the typed
+            # columns).
+            key = pu.dataset_key(entry["path"])
+            for other in list(session.datasets.values()):
+                if (isinstance(other.get("component"), dict) and other.get("path")
+                        and _is_gadget_component(other["path"])
+                        and pu.dataset_key(other["path"]) == key):
+                    other["component"]["physical"] = await asyncio.to_thread(
+                        pu.scales, other["path"])
+    except (ValueError, OSError) as exc:
+        return DatasetUnitsResponse(valid=False, error=str(exc))
+    return DatasetUnitsResponse(valid=True, physical_units=info)
 
 
 # ── Typed beam for a header without one (issue #416) ────────────────────────

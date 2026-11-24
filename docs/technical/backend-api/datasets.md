@@ -15,7 +15,7 @@ cube of its first field, or a PLUTO binary output (see *PLUTO output* below). A 
 (see *Compressed FITS* below). Any other file type is answered with
 `valid: false` ("Unsupported file type. Expected FITS (.fits, .fit, also
 compressed: .fits.gz, .fz) or HDF5 (.h5, .hdf5, .bfdata).").
-Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa` in degrees, `beam_per_channel`: true when a `BEAMS` table gives one beam per channel, the beam fields then being the header's, and `beam_source`: `header`, `user` for a beam typed with [`/v1/datasets/beam`](#post-v1datasetsbeam), `none`, or `not_applicable` for data without celestial axes such as VBT fields and raw simulation fields, where no beam can be set), `bunit` (the header's `BUNIT`, possibly empty), `intensity_unit` and `intensity_unit_note` (the unit of the values when `BUNIT` is missing: `K` when `TEMPSCAL` names a temperature scale, as on JCMT/ACSIS cubes with `TEMPSCAL = 'TA*'`, or when `BTYPE` or `LABEL` names a temperature; empty when nothing says; the note says which keyword gave it), and:
+Response includes `dataset_id`, `session_id`, `kind` (`image`|`cube`), dimensions, WCS metadata (`wcs_status`, `wcs_warning_message`, `wcs_sanitized_axes`, `spacing`, `origin`, `ctype[]`, `cunit[]`, `crval[]`, `crpix[]`, `cdelt[]`), the spectral-axis summary (`spectral_axis_type` = the spectral `CTYPE`, `spectral_axis_unit`), beam (`beam_major`, `beam_minor`, `beam_pa` in degrees, `beam_per_channel`: true when a `BEAMS` table gives one beam per channel, the beam fields then being the header's, and `beam_source`: `header`, `user` for a beam typed with [`/v1/datasets/beam`](#post-v1datasetsbeam), `none`, or `not_applicable` for data without celestial axes such as VBT fields and raw simulation fields, where no beam can be set), `bunit` (the header's `BUNIT`, possibly empty), `simulation_volume` and `physical_units` (see [`/v1/datasets/units`](#post-v1datasetsunits)), `intensity_unit` and `intensity_unit_note` (the unit of the values when `BUNIT` is missing: `K` when `TEMPSCAL` names a temperature scale, as on JCMT/ACSIS cubes with `TEMPSCAL = 'TA*'`, or when `BTYPE` or `LABEL` names a temperature; empty when nothing says; the note says which keyword gave it), and:
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -167,6 +167,58 @@ holds (a catalogue's table, a VBT's memory map) is dropped. The desktop sends
 it when the last window showing a 3-D catalogue closes. Answers
 `{"valid": true, "error": "", "closed": true}`, or `closed: false` when the
 session has no such dataset (already closed or expired), which is not an error.
+
+### `POST /v1/datasets/units`
+
+Physical units of a dataset (issue #524), one table for every reader in
+`app/physical_units.py`: `{column: {factor, unit[, source]}}`, the factor that
+makes the column physical and the unit it is then in. Each reader states its
+own columns (a Gadget snapshot through its unit system, `Component.physical()`;
+a PLUTO output through the run's code units; a VBT field or a FITS cube has
+none of its own), `scales(path)` lays what the user typed over them, and every
+route, export and client reads that. What was typed is kept with the file
+(`$VISIVO_PHYSICAL_UNITS`, else `.physical-units.json` in the workspace; under
+the cross-process lock of the other stores). Data are never rewritten: a viewer
+shows `value * factor` in `unit` and asks the data routes for `value_scale`
+(see [`/v1/cube/slice`](cube.md)).
+
+A volume has the columns `value` (the variable's values), `x`, `y`, `z` (its
+coordinates) and, for PLUTO, `time`; a Gadget snapshot its own (`x`, `mass`,
+`hsml`, `vx`, ...). A column that is absent has no known conversion (code
+units).
+
+Request (`DatasetUnitsRequest`): `dataset_id`; `unit_density` (g/cm³),
+`unit_length` (cm), `unit_velocity` (cm/s), the run's units, shared by every
+variable and output of a PLUTO run; `columns`, `{column: {factor, unit}}`, a
+typed conversion for any column of the dataset (the coordinates and the time
+of a PLUTO run are shared by its variables; a Gadget column is shared by the
+snapshot's particle types); `clear` (forget everything typed for this dataset
+and run, then apply the rest). A factor must be a positive finite number
+(`valid: false`). For a simulation volume or a particle snapshot (`valid:
+false` otherwise). After a change on a Gadget dataset the profile and total
+routes use the new factors.
+
+Response (`DatasetUnitsResponse`): `valid`, `error`, `physical_units`. The
+same object is in the open response of a volume, with `simulation_volume`
+(true for a VBT field, a PLUTO variable, or a cube whose three axes are `X`,
+`Y`, `Z`): `columns`, `active` (a column was stated by the run or typed),
+`source` (`definitions`, `user`, `none`), `origin` (the `definitions.h` it was
+read from), `variable`, `unit_density`, `unit_length`, `unit_velocity` (cgs,
+null when unknown), `value_quantity` (`density`, `velocity`, `pressure`,
+`magnetic`, or empty) and `time_code` (the output's time in code units,
+PLUTO). Each column carries `source`: `definitions`, `user`, or empty for a
+reader's own table.
+
+Priority: what was typed, then the producer: for PLUTO the `UNIT_*` of the
+run's `definitions.h` (or a `pluto.ini` that sets them) in the data directory
+or up to two above it; for Gadget the snapshot's unit system (header,
+parameter file, `VISIVO_GADGET_UNITS`); then nothing (code units).
+Expressions are evaluated with PLUTO's `CONST_*` (`(1.0e-24*CONST_mp)`);
+anything else in a definition is ignored. Derived as PLUTO does: time = L/V,
+pressure = ρV², magnetic field = V√(4πρ) (Gaussian). Variables are matched by
+name (`rho`; `vx1`…, `vr`, `vphi`; `prs`; `Bx1`…; `tr1`… are dimensionless
+and stay unconverted); another variable gets a factor only if typed. A grid
+shown in cell indices (`PLUTOGRD = INDEX`) has no coordinate columns.
 
 ### `POST /v1/datasets/open_url`
 Download a FITS or HDF5 file from an `http(s)` URL into the backend's cache and

@@ -316,6 +316,12 @@ void vtkWindowCube::toggleProbeFreeze()
 
 bool vtkWindowCube::updateProbeFromDisplayPosition(int displayX, int displayY)
 {
+    // The probe is a spectrum along z at a cube (x, y): an x or y slice (issue
+    // #524) has no such pixel under the cursor.
+    if (this->viewingSlice() && !this->sliceAlongZ()) {
+        this->clearProbe();
+        return false;
+    }
     auto *renderer = this->active2dWin() ? this->active2dWin()->GetRenderers()->GetFirstRenderer()
                                                   : nullptr;
     auto *imageData = this->viewingSlice()

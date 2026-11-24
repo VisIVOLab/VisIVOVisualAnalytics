@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import math
 import textwrap
 import concurrent.futures as _cf  # noqa: F401
 import logging  # noqa: F401
@@ -25,6 +26,7 @@ from ._common import (  # noqa: F401
     _b64i32_compressed,
     _finite_range,
     _integrated_spacing,
+    scaled_f32,
 )
 
 
@@ -55,11 +57,65 @@ def plane_view(
     return x0, x1, y0, y1, stride
 
 
+SLICE_AXES = ("x", "y", "z")
+
+
+def axis_plane_index(coordinate: float, crpix: float, crval: float, cdelt: float,
+                     n: int) -> int:
+    """The 0-based plane of an ``n``-plane axis nearest to ``coordinate``, in the
+    axis' own world units (``crval`` at 1-based pixel ``crpix``, ``cdelt`` per
+    plane: the linear axes of a simulation grid). A coordinate beyond the first
+    or last plane by more than half a plane is an error, not a clamp: a typed
+    ``x = 12`` on a grid that ends at 1 must not silently show the last plane.
+    """
+    if not (math.isfinite(coordinate) and math.isfinite(cdelt)) or cdelt == 0.0:
+        raise ValueError("The axis has no usable spacing for a coordinate.")
+    pixel = (coordinate - crval) / cdelt + crpix - 1.0
+    index = int(round(pixel))
+    if pixel < -0.5 or pixel > n - 0.5:
+        lo, hi = sorted((crval + (0 - (crpix - 1.0)) * cdelt,
+                         crval + (n - 1 - (crpix - 1.0)) * cdelt))
+        raise ValueError(f"Coordinate {coordinate:g} is outside the axis ({lo:g} to {hi:g}).")
+    return min(max(index, 0), n - 1)
+
+
+def slice_plane_dims(shape: tuple[int, int, int], axis: str) -> tuple[int, int, int]:
+    """``(planes, width, height)`` of the slices along ``axis`` of a ``(z, y, x)``
+    cube: z planes are x by y, y planes x by z, x planes y by z (the plane's
+    horizontal axis first, as the other two axes follow the cube's order)."""
+    depth, height, width = (int(n) for n in shape)
+    if axis == "z":
+        return depth, width, height
+    if axis == "y":
+        return height, width, depth
+    if axis == "x":
+        return width, height, depth
+    raise ValueError(f"Unknown slice axis {axis!r}; expected x, y or z.")
+
+
+def axis_plane(data, axis: str, index: int, rows: slice, cols: slice) -> np.ndarray:
+    """The ``rows`` x ``cols`` window of plane ``index`` along ``axis`` of a
+    ``(z, y, x)`` cube, read through the memory map so only that window is
+    touched (a strided x plane reads one sample per row, not the cube)."""
+    if axis == "z":
+        return data[index, rows, cols]
+    if axis == "y":
+        return data[rows, index, cols]
+    return data[rows, cols, index]
+
+
 def worker_cube_slice(
-    path: str, z_index: int, max_longest_side: int = 0,
+    path: str, index: int, max_longest_side: int = 0,
     region: tuple[int, int, int, int] | None = None,
+    axis: str = "z", coordinate: float | None = None, value_scale: float = 1.0,
 ) -> dict[str, Any]:
-    """One Z plane of a cube, or the strided part of it a view needs.
+    """One plane of a cube along ``axis`` (z: a channel, x or y: a section of a
+    simulation volume), or the strided part of it a view needs.
+
+    A plane is ``width`` x ``height`` with the horizontal axis first among the
+    two left: z planes are x by y, y planes x by z, x planes y by z. With
+    ``coordinate`` (the axis' world unit) the plane is the nearest one to it
+    and ``index`` is ignored.
 
     With memmap=True astropy reads only the bytes of the samples asked for: a
     stride skips whole rows, so a view-sized answer of a wide channel reads a
@@ -69,18 +125,25 @@ def worker_cube_slice(
     """
     import time as _time
     t0 = _time.perf_counter()
+    axis = axis.lower()
     dataset = ScientificFitsDataset(path)
     hdul, raw = dataset.open_memmap()
     try:
         data = dataset.squeeze_to_3d(raw)
         if data.ndim != 3:
             raise ValueError("Slice endpoint requires a 3D cube.")
-        if z_index < 0 or z_index >= data.shape[0]:
-            raise ValueError(f"Slice index {z_index} out of range [0, {data.shape[0] - 1}].")
-        full_h, full_w = int(data.shape[1]), int(data.shape[2])
+        planes, full_w, full_h = slice_plane_dims(data.shape, axis)
+        if coordinate is not None:
+            geo = dataset.geometry_metadata()
+            k = SLICE_AXES.index(axis)
+            index = axis_plane_index(coordinate, geo["crpix"][k], geo["crval"][k],
+                                     geo["cdelt"][k], planes)
+        if index < 0 or index >= planes:
+            raise ValueError(f"Slice index {index} out of range [0, {planes - 1}].")
         x0, x1, y0, y1, stride = plane_view(full_w, full_h, max_longest_side, region)
-        plane = np.asarray(data[z_index, y0:y1 + 1:stride, x0:x1 + 1:stride],
-                           dtype=np.float32)
+        plane = np.asarray(axis_plane(data, axis, index, slice(y0, y1 + 1, stride),
+                                      slice(x0, x1 + 1, stride)), dtype=np.float32)
+        plane = scaled_f32(plane, value_scale)
         t_read = _time.perf_counter()
     finally:
         hdul.close()
@@ -91,9 +154,9 @@ def worker_cube_slice(
     compression, data_b64 = _b64f32_compressed(plane, level=1)
     t_encode = _time.perf_counter()
     print(
-        "[slice-timing] z={} shape=({},{}) stride={} raw_kB={:.0f} wire_kB={:.0f} "
+        "[slice-timing] {}={} shape=({},{}) stride={} raw_kB={:.0f} wire_kB={:.0f} "
         "stages_s: read={:.3f} encode={:.3f} total={:.3f}".format(
-            z_index, int(plane.shape[0]), int(plane.shape[1]), stride,
+            axis, index, int(plane.shape[0]), int(plane.shape[1]), stride,
             plane.nbytes / 1024.0, len(data_b64) / 1024.0,
             t_read - t0, t_encode - t_read, t_encode - t0,
         ),
@@ -112,6 +175,74 @@ def worker_cube_slice(
         "x0": x0,
         "y0": y0,
         "stride": stride,
+        "axis": axis,
+        "index": int(index),
+        "planes": int(planes),
+    }
+
+
+def _save_simulation_plane(src_path: str, output_path: str, plane: np.ndarray, axis: str,
+                           index: int, geometry: dict[str, Any], src_header,
+                           physical: bool) -> dict[str, Any]:
+    """The plane of a simulation volume as a 2-D FITS image: linear axes in the
+    grid's units (physical when asked and known), the plane's position and,
+    with ``physical``, the values scaled by the variable's factor."""
+    from astropy.io import fits as _fits  # noqa: PLC0415
+    from ..physical_units import VALUE, scales  # noqa: PLC0415
+
+    table = scales(src_path) if physical else {}
+    value = table.get(VALUE)
+    value_factor = value["factor"] if value else 1.0
+    lengths = [table.get(c) for c in ("x", "y", "z")]       # one conversion per axis
+    factors = [e["factor"] if e else 1.0 for e in lengths]
+    units = [e["unit"] if e else "" for e in lengths]
+    if value_factor != 1.0:
+        plane = scaled_f32(plane, value_factor)
+    k = SLICE_AXES.index(axis)
+    horizontal, vertical = ({"z": (0, 1), "y": (0, 2), "x": (1, 2)})[axis]
+    header = _fits.Header()
+    header["NAXIS"] = 2
+    header["NAXIS1"] = int(plane.shape[1])
+    header["NAXIS2"] = int(plane.shape[0])
+    for number, cube_axis in ((1, horizontal), (2, vertical)):
+        header[f"CTYPE{number}"] = SLICE_AXES[cube_axis].upper()
+        header[f"CRPIX{number}"] = float(geometry["crpix"][cube_axis])
+        header[f"CRVAL{number}"] = float(geometry["crval"][cube_axis]) * factors[cube_axis]
+        header[f"CDELT{number}"] = float(geometry["cdelt"][cube_axis]) * factors[cube_axis]
+        if units[cube_axis]:
+            header[f"CUNIT{number}"] = units[cube_axis]
+    position = (float(geometry["crval"][k])
+                + (index + 1 - float(geometry["crpix"][k])) * float(geometry["cdelt"][k]))
+    header["SLICEAX"] = (axis, "axis the plane is normal to")
+    header["SLICEIDX"] = (index, "0-based plane along that axis")
+    header["SLICEPOS"] = (position * factors[k],
+                          f"plane position{(' [' + units[k] + ']') if units[k] else ''}")
+    bunit = value["unit"] if value and value_factor != 1.0 else str(src_header.get("BUNIT", ""))
+    if bunit:
+        header["BUNIT"] = bunit
+    for key in ("OBJECT", "PLUTOVAR", "PLUTOTIM", "PLUTOGEO", "VBTFIELD"):
+        if key in src_header:
+            header[key] = (src_header[key], src_header.comments[key])
+    if physical and (value_factor != 1.0 or any(f != 1.0 for f in factors)):
+        known = next((e for e in lengths if e), None)
+        header["CODEUNIT"] = ("code units", "the file's own values and axes")
+        header["UNITFAC"] = (value_factor, "values multiplied by this (code -> physical)")
+        header["LENFAC"] = (factors[k], "plane-normal axis coordinates multiplied by this")
+        header["UNITSRC"] = ((value if value_factor != 1.0 else known).get("source", ""),
+                             "where the factors came from")
+    header.add_history(
+        f"VisIVO plane export from {Path(src_path).name}: {axis} plane {index} (0-indexed)"
+        + (", physical units" if physical else ""))
+    _fits.HDUList([_fits.PrimaryHDU(data=plane, header=header)]).writeto(output_path,
+                                                                        overwrite=True)
+    range_min, range_max = _finite_range(plane)
+    return {
+        "width": int(plane.shape[1]),
+        "height": int(plane.shape[0]),
+        "channel": int(index),
+        "range_min": float(range_min),
+        "range_max": float(range_max),
+        "output_path": output_path,
     }
 
 
@@ -119,7 +250,8 @@ def worker_cube_slice(
 
 
 def worker_cube_subvolume_raw(
-    path: str, x0: int, x1: int, y0: int, y1: int, z0: int, z1: int
+    path: str, x0: int, x1: int, y0: int, y1: int, z0: int, z1: int,
+    value_scale: float = 1.0,
 ) -> dict[str, Any]:
     """Binary-streaming variant of :func:`worker_cube_subvolume`.
 
@@ -155,7 +287,8 @@ def worker_cube_subvolume_raw(
         z0, z1 = max(0, z0), min(z1, depth - 1)
         if x0 > x1 or y0 > y1 or z0 > z1:
             raise ValueError("Invalid subvolume ROI.")
-        sub = np.asarray(data[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1], dtype=np.float32)
+        sub = scaled_f32(np.asarray(data[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1],
+                                    dtype=np.float32), value_scale)
         t_read = _time.perf_counter()
     finally:
         hdul.close()
@@ -200,7 +333,8 @@ def worker_cube_subvolume_raw(
 
 
 def worker_cube_subvolume(
-    path: str, x0: int, x1: int, y0: int, y1: int, z0: int, z1: int
+    path: str, x0: int, x1: int, y0: int, y1: int, z0: int, z1: int,
+    value_scale: float = 1.0,
 ) -> dict[str, Any]:
     # Stage-by-stage timing so we can prove (or disprove) the
     # "transport is the bottleneck" hypothesis. The result is logged
@@ -225,7 +359,8 @@ def worker_cube_subvolume(
         # On BeeGFS this is the dominant I/O cost; if it dwarfs the
         # encoding/transport stages below the bottleneck is the
         # filesystem, not the wire.
-        sub = np.asarray(data[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1], dtype=np.float32)
+        sub = scaled_f32(np.asarray(data[z0 : z1 + 1, y0 : y1 + 1, x0 : x1 + 1],
+                                    dtype=np.float32), value_scale)
         t_read = _time.perf_counter()
     finally:
         hdul.close()
@@ -497,6 +632,8 @@ def worker_cube_save_channel_2d(
     src_path: str,
     output_path: str,
     channel: int,
+    axis: str = "z",
+    physical: bool = False,
 ) -> dict[str, Any]:
     """Extract a single spectral channel from a 3-D cube and write it as a
     **standalone 2-D FITS image** at ``output_path``.
@@ -510,26 +647,45 @@ def worker_cube_save_channel_2d(
     The output header inherits ``BUNIT``, ``OBJECT``, the **celestial** WCS
     of the source cube (axes 1 and 2 only) and a HISTORY card recording the
     source file and the channel that was extracted.
+
+    A simulation volume (issue #524) may be cut along ``axis`` x or y as well,
+    and with ``physical`` written in physical units: the values multiplied by
+    the variable's factor (``app.physical_units``), BUNIT and the axes' unit
+    the physical ones, and the factors recorded in the header (UNITFAC,
+    CODEUNIT, LENFAC, UNITSRC) so the file says what was done to the data.
     """
     from astropy.io import fits as _fits  # noqa: PLC0415
     from astropy.wcs import WCS as _WCS   # noqa: PLC0415
 
+    axis = axis.lower()
     dataset = ScientificFitsDataset(src_path)
+    from ..physical_units import is_simulation_volume  # noqa: PLC0415
+    sim = is_simulation_volume(src_path, "cube",
+                               [dataset.header.get(f"CTYPE{i}", "") for i in (1, 2, 3)])
+    if (axis != "z" or physical) and not sim:
+        raise ValueError("A slice along x or y, or in physical units, applies to a "
+                         "simulation volume.")
     hdul, raw = dataset.open_memmap()
     try:
         data = dataset.squeeze_to_3d(raw)
         if data.ndim != 3:
             raise ValueError("Channel extraction requires a 3-D cube dataset.")
-        depth, height, width = data.shape
+        planes, _w, _h = slice_plane_dims(data.shape, axis)
         ch = int(channel)
-        if ch < 0 or ch >= depth:
+        if ch < 0 or ch >= planes:
             raise ValueError(
-                f"Channel {ch} is out of range (cube has {depth} channels)."
+                f"Plane {ch} is out of range (the {axis} axis has {planes} planes)."
             )
-        plane = np.asarray(data[ch, :, :], dtype=np.float32).copy()
+        plane = np.asarray(axis_plane(data, axis, ch, slice(None), slice(None)),
+                           dtype=np.float32).copy()
         src_header = dataset.header.copy()
+        sim_geometry = dataset.geometry_metadata() if sim else None
     finally:
         hdul.close()
+
+    if sim:
+        return _save_simulation_plane(src_path, output_path, plane, axis, ch, sim_geometry,
+                                      src_header, physical)
 
     # Build a clean 2-D header from the source WCS by projecting away the
     # spectral / Stokes axes. This is the same trick used by
@@ -897,7 +1053,8 @@ def _image_tile_from_pyramid(pyramid: str, level: int, tile_x: int, tile_y: int,
 
 
 def worker_cube_preview(path: str, downsample: int,
-                        pyramid_path: str | None = None) -> dict[str, Any]:
+                        pyramid_path: str | None = None,
+                        value_scale: float = 1.0) -> dict[str, Any]:
     """The cube seen every ``downsample`` voxels along each axis, for the
     desktop's first view of a large cube.
 
@@ -910,7 +1067,7 @@ def worker_cube_preview(path: str, downsample: int,
     stride = max(1, int(downsample))
     if pyramid_path and stride > 1:
         try:
-            return _cube_preview_from_pyramid(path, stride, pyramid_path)
+            return _cube_preview_from_pyramid(path, stride, pyramid_path, value_scale)
         except Exception as exc:  # noqa: BLE001 - e.g. the file changed since the check
             logger.warning("[preview] the brick pyramid of %s was not used: %s", path, exc)
     dataset = ScientificFitsDataset(path)
@@ -934,10 +1091,11 @@ def worker_cube_preview(path: str, downsample: int,
     threshold = default_threshold(sample, n_voxels) if np.isfinite(sample).any() else None
     return _preview_answer(preview, threshold, {
         "source": "strided", "level": None, "levels": None, "level_factors": None,
-        "factors": [stride] * 3, "voxel_offset": 0.0})
+        "factors": [stride] * 3, "voxel_offset": 0.0}, value_scale)
 
 
-def _cube_preview_from_pyramid(path: str, stride: int, pyramid_path: str) -> dict[str, Any]:
+def _cube_preview_from_pyramid(path: str, stride: int, pyramid_path: str,
+                               value_scale: float = 1.0) -> dict[str, Any]:
     """:func:`worker_cube_preview` from the cube's brick pyramid: refused
     (StalePyramid) when the cube's file changed since it was built."""
     from ..brick_pyramid import BrickPyramid  # noqa: PLC0415
@@ -961,12 +1119,13 @@ def _cube_preview_from_pyramid(path: str, stride: int, pyramid_path: str) -> dic
         sample = level0_sample(pyr)
         threshold = default_threshold(sample, int(np.prod(shape0))) if sample.size else None
         info = describe(level, stride, pyr.levels)
-    return _preview_answer(preview, threshold, info)
+    return _preview_answer(preview, threshold, info, value_scale)
 
 
 def worker_cube_region_level_raw(path: str, level: int, x0: int, x1: int, y0: int, y1: int,
                                  z0: int, z1: int, ghost: int, pyramid_path: str | None,
-                                 source: str = "auto") -> dict[str, Any]:
+                                 source: str = "auto",
+                                 value_scale: float = 1.0) -> dict[str, Any]:
     """A box of one level of detail of the cube with ``ghost`` samples on every
     side, as raw little-endian float32 (z, y, x) bytes (issue #321; the rules
     are in ``app.region_level``). The box is inclusive and in voxels of the
@@ -1030,6 +1189,7 @@ def worker_cube_region_level_raw(path: str, level: int, x0: int, x1: int, y0: in
             block = strided_region(data, level, region, ghost)
         finally:
             hdul.close()
+    block = scaled_f32(np.asarray(block, dtype=np.float32), value_scale)
     range_min, range_max = _finite_range(block)
     raw_bytes = np.ascontiguousarray(block, dtype="<f4").tobytes()
     print("[region-level-timing] level={} source={} box=({},{},{},{},{},{}) ghost={} "
@@ -1052,7 +1212,12 @@ def worker_cube_region_level_raw(path: str, level: int, x0: int, x1: int, y0: in
     }
 
 
-def _preview_answer(preview: np.ndarray, threshold, info: dict[str, Any]) -> dict[str, Any]:
+def _preview_answer(preview: np.ndarray, threshold, info: dict[str, Any],
+                    value_scale: float = 1.0) -> dict[str, Any]:
+    if value_scale != 1.0:
+        # The values and the threshold chosen on them, in the unit the viewer shows.
+        preview = scaled_f32(preview, value_scale)
+        threshold = None if threshold is None else float(threshold) * value_scale
     range_min, range_max = _finite_range(preview)
     # zlib level 1 — same speed-vs-ratio rationale as worker_cube_subvolume.
     # For a 10 GB cube + downsample 4 the preview is ~170 MB; compression

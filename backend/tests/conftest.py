@@ -35,6 +35,9 @@ os.environ["VISIVO_VBT_BYTE_ORDERS"] = os.path.join(
 # Beams typed for headers without one (issue #416): same reason.
 os.environ["VISIVO_BEAM_OVERRIDES"] = os.path.join(
     __import__("tempfile").mkdtemp(prefix="visivo-beams-"), "beams.json")
+# Physical units typed for a simulation volume (issue #524): same reason.
+os.environ["VISIVO_PHYSICAL_UNITS"] = os.path.join(
+    __import__("tempfile").mkdtemp(prefix="visivo-units-"), "units.json")
 
 
 @pytest.fixture(autouse=True)

@@ -27,8 +27,27 @@ Single 2-D slice, or the part of it a view needs.
 { "dataset_id": "...", "axis": "z", "index": 42,
   "max_longest_side": 2048, "x0": 1000, "x1": 2999, "y0": 500, "y1": 1499 }
 ```
-Only `axis: "z"` is supported (422 otherwise); an `index` outside the cube is
-`valid: false`.
+`axis` is `z` (a channel, the default of every cube), or on a simulation
+volume (a VBT field, a PLUTO variable, a cube whose axes are `X`, `Y`, `Z`,
+see `simulation_volume` of [`/v1/datasets/open`](datasets.md)) also `x` or `y`;
+anything else is 422. The plane is `width` x `height` with its horizontal axis
+first: z planes are x by y, y planes x by z, x planes y by z, read through the
+memory map like a channel. An `index` outside the axis is `valid: false`.
+
+- `coordinate` (optional): the plane nearest to this value along `axis`, in the
+  cube's world unit (code units for a simulation), instead of `index`. Half a
+  plane beyond the first or last plane is still that plane; further is
+  `valid: false` with the axis' range.
+- `value_scale` (optional, default `1`, positive): the values come back
+  multiplied by it, `range_min`/`range_max` included: a simulation volume in
+  physical units (`physical_units.columns.value.factor` of the open response). The
+  same field is taken by `/v1/cube/preview` (its `default_threshold` too),
+  `/v1/cube/subvolume`, `/v1/cube/subvolume_bin` and
+  `/v1/cube/region_level_bin`. Everything else (moments, isosurface levels,
+  noise, masks) reads and answers in the file's own units.
+
+The answer also carries `axis`, `index` (the plane served, after a
+`coordinate`) and `planes` (how many the axis has).
 
 - `max_longest_side` (optional, default `0`): the plane, or the region, is read
   every `stride` pixels, the smallest integer stride that keeps both sides
@@ -975,7 +994,17 @@ exist, and a `HISTORY` card.
 
 Request (`CubeSaveChannel2dRequest`): `dataset_id`, `channel` (0-indexed),
 `output_basename` (default `""`, giving `<stem>_ch<NNNN>.fits` with a
-four-digit channel number).
+four-digit channel number), `axis` (`z`, or `x`/`y` on a simulation volume;
+`channel` is then the plane along it) and `physical` (default `false`).
+
+A simulation volume is written with linear axes instead of a celestial WCS:
+`CTYPE1`/`CTYPE2` the two axes of the plane, `CRPIX`/`CRVAL`/`CDELT` in the
+grid's units, and `SLICEAX`, `SLICEIDX` and `SLICEPOS` for the plane. With
+`physical` the values are multiplied by the variable's factor
+([`/v1/datasets/units`](datasets.md)), `BUNIT` and `CUNIT1`/`CUNIT2` are the
+physical units, and `CODEUNIT`, `UNITFAC`, `LENFAC` (the factor of the axis the plane is normal to; each in-plane axis is scaled by its own) and `UNITSRC` record what
+was applied. `axis` other than `z`, or `physical`, on a spectral cube is 422
+(`valid: false`).
 
 Response (`CubeSaveChannel2dResponse`): `valid`, `error`, `new_dataset_id`,
 `output_path`, `workspace_filename`, `width`, `height`, `channel`,

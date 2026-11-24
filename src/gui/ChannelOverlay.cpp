@@ -156,11 +156,21 @@ void ChannelOverlay::setSpectralLabel(const QString &textWithUnit)
     refreshSpectralLabel();
 }
 
+void ChannelOverlay::setSimulationAxis(const QString &axisLetter)
+{
+    m_simulationAxis = axisLetter.toUpper();
+    m_chLabel->setText(m_simulationAxis.isEmpty() ? u"CH"_s : m_simulationAxis);
+    // The readout already says "x = ...": no symbol in front of it.
+    m_vLabel->setVisible(m_simulationAxis.isEmpty());
+    refreshSpectralLabel();
+}
+
 void ChannelOverlay::refreshSpectralLabel()
 {
     // The symbol follows the quantity the axis is in: ν for a frequency, λ for
     // a wavelength, v otherwise (a velocity, or a bare channel index).
-    m_vLabel->setText(spectralSymbol(m_spectralFull));
+    if (m_simulationAxis.isEmpty())
+        m_vLabel->setText(spectralSymbol(m_spectralFull));
     static_cast<SpectralReadout *>(m_vValue)->setFull(m_spectralFull);
 }
 

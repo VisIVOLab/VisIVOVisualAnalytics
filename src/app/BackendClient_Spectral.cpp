@@ -133,6 +133,13 @@ BackendCubeStatsResult BackendClient::fetchCubeStats(const QString &datasetId)
     result.sum          = obj.value(QStringLiteral("sum")).toDouble();
     result.medianExact  = obj.value(QStringLiteral("median_exact")).toBool();
     result.bunit        = obj.value(QStringLiteral("bunit")).toString();
+    // A simulation volume shown in physical units (issue #524): the statistics
+    // are linear in the values.
+    if (const double scale = displayValueScale(datasetId); scale != 1.0) {
+        for (double *v : { &result.min, &result.max, &result.mean, &result.median, &result.std,
+                           &result.rms, &result.sum })
+            *v *= scale;
+    }
     return result;
 }
 
