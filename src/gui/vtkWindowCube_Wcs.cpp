@@ -254,7 +254,18 @@ double vtkWindowCube::spectralAxisValue(double datasetVoxelIndex, bool *ok) cons
     return this->remoteVoxelToWcs(2, datasetVoxelIndex, ok);
 }
 
-QString vtkWindowCube::formatSpectralAxisValue(double datasetVoxelIndex) const
+BackendSpectralChoice vtkWindowCube::spectralChoiceForProducts() const
+{
+    BackendSpectralChoice choice;
+    if (this->m_spectralAxis.tableActive) {
+        choice.quantity = this->m_spectralAxis.quantity;
+        choice.frame = this->m_spectralAxis.frame;
+        choice.restFreqHz = this->m_spectralAxis.restFreqHz;
+    }
+    return choice;
+}
+
+QString vtkWindowCube::formatSpectralAxisValue(double datasetVoxelIndex, int precision) const
 {
     const auto descriptor = this->spectralAxisDescriptor();
     bool ok = false;
@@ -268,9 +279,9 @@ QString vtkWindowCube::formatSpectralAxisValue(double datasetVoxelIndex) const
                                                            : this->m_spectralAxis.nativeFrame;
     const QString suffix = frame.isEmpty() ? QString() : u" "_s + frame;
     if (descriptor.unit.isEmpty()) {
-        return QString::number(value, 'g', 12) + suffix;
+        return QString::number(value, 'g', precision) + suffix;
     }
-    return u"%1 %2"_s.arg(QString::number(value, 'g', 12), descriptor.unit) + suffix;
+    return u"%1 %2"_s.arg(QString::number(value, 'g', precision), descriptor.unit) + suffix;
 }
 
 QString vtkWindowCube::spectralAxisTitle() const

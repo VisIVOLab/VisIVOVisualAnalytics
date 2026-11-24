@@ -179,6 +179,9 @@ void MomentMapController::dispatch(const Config &config)
     const QString sessionId    = m_sessionId;
     const QString backendToken = m_backendToken;
     const std::shared_ptr<visivo::BackendTaskControl> control = m_taskControl;
+    // The window's spectral axis now (issue #496), read on the UI thread.
+    const BackendSpectralChoice spectral = m_spectralChoice ? m_spectralChoice()
+                                                            : BackendSpectralChoice{};
 
     QPointer<MomentMapController> self(this);
     auto *watcher = new QFutureWatcher<MomentMapComputeResult>();
@@ -274,8 +277,11 @@ void MomentMapController::dispatch(const Config &config)
                         .arg(describeMomentOrder(config.order))
                         .arg(unitLabel)
                         .arg(result.bunit.isEmpty() ? u"-"_s : result.bunit)
-                        .arg(result.spectralAxisType.isEmpty() ? u"-"_s
-                                                               : result.spectralAxisType)
+                        .arg((result.spectralAxisType.isEmpty() ? u"-"_s
+                                                                : result.spectralAxisType)
+                             + (result.spectralFrame.isEmpty()
+                                        ? QString()
+                                        : u" (%1)"_s.arg(result.spectralFrame)))
                         .arg(result.spectralAxisUnit.isEmpty() ? u"-"_s
                                                                : result.spectralAxisUnit)
                         .arg(formatMomentChannelRange(config))
@@ -305,7 +311,8 @@ void MomentMapController::dispatch(const Config &config)
                                      config.maskEnabled,
                                      config.thresholdValue,
                                      config.thresholdAuto,
-                                     control }));
+                                     control,
+                                     spectral }));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -117,6 +117,16 @@ of the gradient gives the kinematic major axis. Moment 2 is the velocity
 dispersion. It is not the line's FWHM; for that, use *Tools ▸ Spectral ▸
 Line-width Map…*.
 
+Moments and PV diagrams follow *WCS ▸ Spectral Axis*. With a radio or optical
+velocity in a chosen reference frame (and, if you set one, your own rest
+frequency), moment 1 and 2 are in km/s on that axis, moment 0 is the sum of
+intensity times channel width in km/s (for example Jy/beam km/s), and the
+PV diagram's vertical axis and the channel-map panel titles are in the same
+quantity and frame. A moment or PV saved as FITS states the quantity
+(`SPECQNT`), the frame (`SPECSYS`) and the rest frequency (`RESTFRQ`). A saved
+PV of an optical velocity is resampled to a linear axis, and its `HISTORY`
+says so. The channel range stays in channel numbers.
+
 The threshold mask keeps noise pixels out of M1 and M2, where they would
 give velocities far outside the band. VisIVO Visual Analytics also blanks any
 M1 value outside the cube's velocity range, even without a mask.

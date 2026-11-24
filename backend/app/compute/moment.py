@@ -717,6 +717,34 @@ def _moment0_unit(bunit: str, spectral_unit: str) -> str:
     return f"{UNKNOWN_INTENSITY_UNIT} × {spectral_unit}"
 
 
+#: Moments that use no spectral axis: peak, RMS, minimum.
+_AXIS_FREE_ORDERS = (6, 8, 10)
+
+
+def _choose_spectral_axis(dataset, spectral: dict[str, Any], z0: int, z1: int,
+                          choice: dict[str, Any] | None,
+                          order: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The spectral axis a moment is computed on (issue #496).
+
+    Returns ``spectral`` with its coordinates, unit and type replaced by the
+    chosen quantity/frame (the per-channel values of ``spectral_axis`` for
+    channels ``z0..z1``: a velocity is not linear in frequency, so they
+    weigh the moments one by one, and the channel width of M0 is the width of
+    each channel in that axis), and the provenance the product states
+    (``spectral_quantity``, ``spectral_frame``, ``rest_freq_hz``,
+    ``spectral_note``). Without a choice, the file's own axis, unchanged; the
+    same for the moments that use no axis (``_AXIS_FREE_ORDERS``), which a
+    choice the cube cannot satisfy must not refuse."""
+    from ..spectral_axis import axis_provenance, spectral_axis  # noqa: PLC0415
+    if not choice or int(order) in _AXIS_FREE_ORDERS:
+        return spectral, axis_provenance(dataset, None, None, str(spectral["axis_type"]))
+    axis = spectral_axis(dataset.path, choice["quantity"], choice["frame"], choice["rest_freq_hz"])
+    values = np.asarray(axis["values"], dtype=np.float64)[z0:z1 + 1]
+    chosen = {**spectral, "coordinates": values, "axis_unit": axis["unit"],
+              "axis_type": axis["ctype"]}
+    return chosen, axis_provenance(dataset, choice, axis, axis["ctype"])
+
+
 def _moment_result_unit(order: int, bunit: str, spectral_unit: str) -> str:
     bunit = (bunit or "").strip()
     spectral_unit = (spectral_unit or "").strip()
@@ -1169,6 +1197,7 @@ def _moment_map_dask(
     threshold_auto: bool = False,
     moment2_variance: bool = False,
     stop_file: str | None = None,
+    spectral_choice: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Out-of-core moment computation via Dask arrays.
 
@@ -1196,7 +1225,8 @@ def _moment_map_dask(
         effective_threshold = float(mask_threshold)
         if mask_enabled and threshold_auto:
             effective_threshold = _auto_mask_threshold(data, z0, z1)
-        spectral = dataset.spectral_axis_metadata(z0, z1)
+        spectral, axis_note = _choose_spectral_axis(
+            dataset, dataset.spectral_axis_metadata(z0, z1), z0, z1, spectral_choice, order)
         # Wrap the memmap slice in a Dask array — data is NOT loaded yet.
         check_abort(stop_file)
         source = _FitsCubeSource(fits_path, dataset.hdu_index, z0,
@@ -1307,6 +1337,7 @@ def _moment_map_dask(
         "range_max": range_max,
         "spectral_axis_type": str(spectral["axis_type"]),
         "spectral_axis_unit": str(spectral["axis_unit"]),
+        **axis_note,
         "moment_unit": moment_unit,
         "bunit": bunit,
         "intensity_unit_note": intensity_unit_note,
@@ -1348,11 +1379,18 @@ def worker_moment(
     threshold_auto: bool = False,
     moment2_variance: bool = False,
     stop_file: str | None = None,
+    spectral_choice: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Compute a moment map reading only [channel_start:channel_end] planes.
     With memmap=True the slice read is O(nchannels * ny * nx) – not the
     full cube size.
+
+    ``spectral_choice`` (``spectral_axis.normalize_choice``; issue #496) puts
+    the moments on another spectral axis: frequency or radio/optical velocity
+    in another frame. M1 and M2 are then in km/s (Hz), M0 is the sum of
+    I·|Δv| over the channels (``BUNIT`` e.g. "Jy/beam km/s"), and the answer
+    says which axis it used. Channel ranges stay channel indices.
 
     When ``mask_enabled`` and ``threshold_auto`` are both set, the mask
     threshold is derived from the data (median + 3·σ via MAD) instead of using
@@ -1378,7 +1416,8 @@ def worker_moment(
         if mask_enabled and threshold_auto:
             effective_threshold = _auto_mask_threshold(data, z0, z1)
         check_abort(stop_file)
-        spectral = dataset.spectral_axis_metadata(z0, z1)
+        spectral, axis_note = _choose_spectral_axis(
+            dataset, dataset.spectral_axis_metadata(z0, z1), z0, z1, spectral_choice, order)
         # Out-of-core path for the big/OOM-prone orders: if the channel range would
         # materialise to more than the stream threshold, stream slabs from disk
         # instead of loading it all. Small cubes keep the in-memory GPU/Numba path.
@@ -1399,7 +1438,7 @@ def worker_moment(
             # dict (range guard + dispersion applied); the finally: closes hdul.
             return _moment_map_dask(
                 path, order, z0, z1, effective_threshold, mask_enabled,
-                64, None, False, moment2_variance, stop_file,
+                64, None, False, moment2_variance, stop_file, spectral_choice,
             )
         else:
             subset = np.asarray(data[z0 : z1 + 1, :, :], dtype=np.float32)
@@ -1442,6 +1481,7 @@ def worker_moment(
         "range_max": range_max,
         "spectral_axis_type": str(spectral["axis_type"]),
         "spectral_axis_unit": str(spectral["axis_unit"]),
+        **axis_note,
         "moment_unit": moment_unit,
         "bunit": bunit,
         "intensity_unit_note": intensity_unit_note,
@@ -1462,6 +1502,7 @@ def worker_moment_save_fits(
     threshold_auto: bool = False,
     moment2_variance: bool = False,
     stop_file: str | None = None,
+    spectral_choice: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compute a moment map and persist it as a standalone 2-D FITS file at
     ``output_path``.
@@ -1486,7 +1527,7 @@ def worker_moment_save_fits(
     payload = worker_moment(
         src_path, int(order), int(channel_start), int(channel_end),
         bool(mask_enabled), float(threshold_value), bool(threshold_auto),
-        bool(moment2_variance), stop_file,
+        bool(moment2_variance), stop_file, spectral_choice,
     )
     return write_moment_fits(src_path, output_path, payload, order, channel_start,
                              channel_end, mask_enabled, threshold_value, threshold_auto,
@@ -1525,6 +1566,33 @@ def _moment_beam_cards(src_path: str, channel_start: int, channel_end: int
         return {}, None
     pa = float(beam.pa) if beam.pa is not None and np.isfinite(beam.pa) else 0.0
     return {"BMAJ": float(major), "BMIN": float(minor), "BPA": pa}, note
+
+
+def _spectral_axis_cards(header, payload: dict[str, Any]) -> None:
+    """The spectral axis the moment was computed on, as header cards (issue
+    #496): ``SPECQNT`` (frequency, vrad, vopt), ``SPECSYS`` (the frame the
+    axis values are in), ``RESTFRQ`` (Hz, what the velocities refer to) and a
+    comment saying so in words. Absent from a payload computed before the
+    axis was recorded, which then writes nothing."""
+    quantity = str(payload.get("spectral_quantity") or "")
+    if not quantity:
+        return
+    frame = str(payload.get("spectral_frame") or "")
+    rest = payload.get("rest_freq_hz")
+    header["SPECQNT"] = (quantity, "Spectral quantity of the moment axis")
+    if frame:
+        header["SPECSYS"] = (frame, "Reference frame of the spectral axis")
+    if rest:
+        header["RESTFRQ"] = (float(rest), "[Hz] Rest frequency of the velocities")
+    words = {"vrad": "radio velocity", "vopt": "optical velocity",
+             "frequency": "frequency"}.get(quantity, quantity)
+    from .cube import _fits_ascii  # noqa: PLC0415
+    header.add_comment(_fits_ascii(
+        f"Spectral axis: {words}, frame {frame or 'not stated'}"
+        + (f", rest frequency {float(rest):.9g} Hz" if rest else "")
+        + f", in {payload.get('spectral_axis_unit') or 'channel units'}."))
+    if payload.get("spectral_note"):
+        header.add_comment(_fits_ascii(str(payload["spectral_note"])))
 
 
 def write_moment_fits(
@@ -1588,6 +1656,8 @@ def write_moment_fits(
         copy_intensity_provenance(src_header, out_header,
                                   skip_note=moment_unit.startswith(UNKNOWN_INTENSITY_UNIT))
     out_header["OBJECT"] = src_header.get("OBJECT", out_header.get("OBJECT", ""))
+    if int(order) not in (6, 8, 10):
+        _spectral_axis_cards(out_header, payload)
     beam_cards, beam_note = _moment_beam_cards(src_path, channel_start, channel_end)
     for key, value in beam_cards.items():
         out_header[key] = value

@@ -33,6 +33,7 @@
 // ---------------------------------------------------------------------------
 
 #include "PvTypes.h"
+#include "app/BackendClient.h"
 
 #include <QObject>
 
@@ -91,6 +92,13 @@ public slots:
     void startExtraction(const std::vector<std::array<double, 2>> &vertices,
                          int widthPixels, bool interactive = false);
 
+    /// The spectral axis the diagram's coordinates are given in (issue #496),
+    /// asked of the window each time a run starts. Without one: the file's own.
+    void setSpectralChoiceProvider(std::function<BackendSpectralChoice()> provider)
+    {
+        m_spectralChoice = std::move(provider);
+    }
+
 private:
     const QString m_backendUrl;
     const QString m_datasetId;
@@ -99,6 +107,7 @@ private:
     QWidget *m_parentWindow;
     std::function<void()> m_onRunFinished;
     std::function<void(const RemotePvFetchResult &)> m_onCompleted;
+    std::function<BackendSpectralChoice()> m_spectralChoice;
 
     bool m_busy{ false };
     // The run under way: shared with its worker, which follows the backend

@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QString>
+#include <QStringList>
 
 class QComboBox;
 class QLabel;
@@ -15,6 +16,10 @@ struct ChannelMapsConfig
     int columns{ 8 };
     QString lutName;
     bool sharedRange{ true };
+    /// The spectral value of channel channelStart + i, with unit and frame
+    /// ("32.1534 km/s LSRK"), as the cube window shows its axis; empty when
+    /// the axis is the channel number (issue #496).
+    QStringList channelCaptions;
 };
 
 class ChannelMapsDialog : public QDialog

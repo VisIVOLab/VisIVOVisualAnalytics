@@ -50,7 +50,7 @@ MomentMapComputeResult computeMomentMap(const MomentMapComputeRequest &request)
                             request.sessionId, request.backendToken,
                             request.momentOrder, request.channelStart, request.channelEnd,
                             request.maskEnabled, request.thresholdValue,
-                            request.thresholdAuto, request.control });
+                            request.thresholdAuto, request.control, request.spectral });
     qDebug().noquote()
             << QStringLiteral("[perf][moment] backend compute: %1 ms").arg(computeTimer.elapsed());
     if (!processed.valid || !processed.image) {
@@ -67,6 +67,9 @@ MomentMapComputeResult computeMomentMap(const MomentMapComputeRequest &request)
     result.bunit = processed.bunit;
     result.spectralAxisType = processed.spectralAxisType;
     result.spectralAxisUnit = processed.spectralAxisUnit;
+    result.spectralQuantity = processed.spectralQuantity;
+    result.spectralFrame = processed.spectralFrame;
+    result.restFreqHz = processed.restFreqHz;
     result.wcsStatus = processed.wcsStatus;
     result.wcsWarningMessage = processed.wcsWarningMessage;
     qDebug().noquote()

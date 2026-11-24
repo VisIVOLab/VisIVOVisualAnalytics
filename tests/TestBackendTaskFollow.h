@@ -29,6 +29,7 @@ private slots:
     void aCachedDecompressionNeedsNoFollowing();
     void theSheetShowsOnTimeCountedFromTheRequest();
     void everyTaskCreateGetsTheShortTimeout();
+    void productRequestsCarryTheSpectralChoice();
 };
 
 #endif // TestBackendTaskFollow_h

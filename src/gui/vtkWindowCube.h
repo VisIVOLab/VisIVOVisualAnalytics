@@ -2758,7 +2758,7 @@ protected:
     double remoteSliceCoordinate(int sliceIndex) const;
     SpectralAxisDescriptor spectralAxisDescriptor() const;
     double spectralAxisValue(double datasetVoxelIndex, bool *ok = nullptr) const;
-    QString formatSpectralAxisValue(double datasetVoxelIndex) const;
+    QString formatSpectralAxisValue(double datasetVoxelIndex, int precision = 12) const;
     QString spectralAxisTitle() const;
     /// Give @p plot the spectral-axis context the line overlay needs (CTYPE,
     /// unit, rest frequency).
@@ -2789,6 +2789,9 @@ protected:
         quint64 requestSeq{ 0 };
     };
     SpectralAxisChoice m_spectralAxis;
+    /// The axis the window shows, as products computed on the backend (moments,
+    /// PV) are asked for it: the file's own unless Spectral Axis changed it.
+    BackendSpectralChoice spectralChoiceForProducts() const;
     QPointer<QMenu> m_menuSpectralAxis;
     void setupSpectralAxisMenu();
     void requestSpectralAxis(const QString &quantity, const QString &frame, double restFreqHz,

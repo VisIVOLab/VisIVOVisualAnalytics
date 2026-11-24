@@ -279,14 +279,15 @@ async def test_uws_abort_ends_the_worker_within_one_slab(client, auth_headers, s
 GIVEN: list[tuple[str, str | None]] = []
 
 
-def _fake_worker_moment(path, order, z0, z1, mask, thr, auto=False, var=False, stop_file=None):
+def _fake_worker_moment(path, order, z0, z1, mask, thr, auto=False, var=False, stop_file=None,
+                        spectral_choice=None):
     GIVEN.append(("moment", stop_file))
     return {"width": 1, "height": 1, "scalar_type": "float32", "range_min": 0.0, "range_max": 0.0,
             "spectral_axis_type": "VRAD", "spectral_axis_unit": "m/s", "moment_unit": "", "bunit": "",
             "moment_threads_used": 1, "threshold_used": None, "data_base64": ""}
 
 
-def _fake_worker_pv(path, vertices, width, stop_file=None):
+def _fake_worker_pv(path, vertices, width, stop_file=None, spectral_choice=None):
     GIVEN.append(("pv", stop_file))
     return {"depth": 1, "num_samples": 1}
 

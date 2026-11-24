@@ -40,6 +40,7 @@ struct RemotePvFetchResult
     double pixelScaleArcsecPerPixel{ 0. };
     QString spectralAxisType;
     QString spectralAxisUnit;
+    QString spectralFrame;            // SPECSYS of the coordinates ("" from an older backend)
     QVector<double> spectralCoordinates;  // channel 0 first, in spectralAxisUnit (may decrease)
     QString bunit;
     QVector<double> skyMatrixArcsec;      // [a, b, c, d] pixel → sky arcsec (may be empty)

@@ -176,17 +176,19 @@ BackendSaveChannel2dResult BackendClient::saveMap2dToWorkspace(
 BackendSavePvFitsResult BackendClient::savePvFits(const QString &datasetId,
                                                   const std::vector<std::array<double, 2>> &vertices,
                                                   int widthPixels,
-                                                  const QString &outputBasename)
+                                                  const QString &outputBasename,
+                                                  const BackendSpectralChoice &spectral)
 {
     BackendSavePvFitsResult result;
     QString error;
     QJsonArray vertexArray;
     for (const auto &v : vertices)
         vertexArray.append(QJsonArray{ v[0], v[1] });
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("vertices"), vertexArray },
-                                          { QStringLiteral("width_pixels"), widthPixels },
-                                          { QStringLiteral("output_basename"), outputBasename } });
+    const QJsonDocument body(spectral.applyTo(
+            QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                         { QStringLiteral("vertices"), vertexArray },
+                         { QStringLiteral("width_pixels"), widthPixels },
+                         { QStringLiteral("output_basename"), outputBasename } }));
     const QByteArray raw =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/pv_fits")), body, error);
     if (!error.isEmpty()) {
@@ -215,11 +217,12 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
         bool maskEnabled,
         double thresholdValue,
         const QString &outputBasename,
-        bool thresholdAuto)
+        bool thresholdAuto,
+        const BackendSpectralChoice &spectral)
 {
     BackendSaveMomentFitsResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{
+    const QJsonDocument body(spectral.applyTo(QJsonObject{
             { QStringLiteral("dataset_id"),       datasetId },
             { QStringLiteral("moment_order"),     order },
             { QStringLiteral("channel_start"),    channelStart },
@@ -227,7 +230,7 @@ BackendSaveMomentFitsResult BackendClient::saveMomentFits(
             { QStringLiteral("mask_enabled"),     maskEnabled },
             { QStringLiteral("threshold_value"),  thresholdValue },
             { QStringLiteral("threshold_auto"),   thresholdAuto },
-            { QStringLiteral("output_basename"),  outputBasename } });
+            { QStringLiteral("output_basename"),  outputBasename } }));
     const QByteArray raw =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/products/moment_fits")),
                         body, error);
@@ -243,14 +246,15 @@ BackendTaskCreateResult BackendClient::createMomentFitsTask(const QString &datas
                                                             bool maskEnabled,
                                                             double thresholdValue,
                                                             const QString &outputBasename,
-                                                            bool thresholdAuto) const
+                                                            bool thresholdAuto,
+                                                            const BackendSpectralChoice &spectral) const
 {
     BackendTaskCreateResult result;
     // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
     if (visivo::refuseTaskWhileQuitting(result.error))
         return result;
     QString error;
-    const QJsonDocument body(QJsonObject{
+    const QJsonDocument body(spectral.applyTo(QJsonObject{
             { QStringLiteral("dataset_id"),       datasetId },
             { QStringLiteral("moment_order"),     order },
             { QStringLiteral("channel_start"),    channelStart },
@@ -258,7 +262,7 @@ BackendTaskCreateResult BackendClient::createMomentFitsTask(const QString &datas
             { QStringLiteral("mask_enabled"),     maskEnabled },
             { QStringLiteral("threshold_value"),  thresholdValue },
             { QStringLiteral("threshold_auto"),   thresholdAuto },
-            { QStringLiteral("output_basename"),  outputBasename } });
+            { QStringLiteral("output_basename"),  outputBasename } }));
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/moment_fits")), body, error,
                         nullptr, &result.httpStatus);
@@ -278,11 +282,11 @@ BackendTaskCreateResult BackendClient::createMomentFitsTask(const QString &datas
 BackendSaveMomentFitsResult BackendClient::exportMomentFitsFollowingTask(
         const QString &datasetId, int order, int channelStart, int channelEnd, bool maskEnabled,
         double thresholdValue, const QString &outputBasename, bool thresholdAuto,
-        visivo::BackendTaskControl *control)
+        visivo::BackendTaskControl *control, const BackendSpectralChoice &spectral)
 {
     const BackendTaskCreateResult created =
             createMomentFitsTask(datasetId, order, channelStart, channelEnd, maskEnabled,
-                                 thresholdValue, outputBasename, thresholdAuto);
+                                 thresholdValue, outputBasename, thresholdAuto, spectral);
     const visivo::TaskFollowResult followed = visivo::followBackendTask(
             *this, created, QStringLiteral("[moment_fits][task]"), control);
     if (followed.outcome == visivo::TaskOutcome::Completed)
@@ -300,7 +304,7 @@ BackendSaveMomentFitsResult BackendClient::exportMomentFitsFollowingTask(
                                "request timeout)."),
                 datasetId, m_sessionId, QStringLiteral("moment"));
         return saveMomentFits(datasetId, order, channelStart, channelEnd, maskEnabled,
-                              thresholdValue, outputBasename, thresholdAuto);
+                              thresholdValue, outputBasename, thresholdAuto, spectral);
     }
     BackendSaveMomentFitsResult result;
     result.error = followed.error;
@@ -539,21 +543,22 @@ BackendTaskCreateResult BackendClient::createMomentTask(const QString &datasetId
                                                         int channelStart, int channelEnd,
                                                         bool maskEnabled,
                                                         double thresholdValue,
-                                                        bool thresholdAuto) const
+                                                        bool thresholdAuto,
+                                                        const BackendSpectralChoice &spectral) const
 {
     BackendTaskCreateResult result;
     // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
     if (visivo::refuseTaskWhileQuitting(result.error))
         return result;
     QString error;
-    const QJsonDocument body(
+    const QJsonDocument body(spectral.applyTo(
             QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                          { QStringLiteral("moment_order"), order },
                          { QStringLiteral("channel_start"), channelStart },
                          { QStringLiteral("channel_end"), channelEnd },
                          { QStringLiteral("mask_enabled"), maskEnabled },
                          { QStringLiteral("threshold_value"), thresholdValue },
-                         { QStringLiteral("threshold_auto"), thresholdAuto } });
+                         { QStringLiteral("threshold_auto"), thresholdAuto } }));
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/tasks/moment")), body, error,
                         nullptr, &result.httpStatus);
@@ -720,7 +725,8 @@ QString BackendClient::decompressForOpen(const QString &path) const
 
 BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
                                                     const std::vector<std::array<double, 2>> &vertices,
-                                                    int widthPixels) const
+                                                    int widthPixels,
+                                                    const BackendSpectralChoice &spectral) const
 {
     BackendTaskCreateResult result;
     // Not while quitting: the quit would have to cancel it (TaskQuitDrain.h).
@@ -731,9 +737,10 @@ BackendTaskCreateResult BackendClient::createPvTask(const QString &datasetId,
     for (const auto &v : vertices) {
         vertexArray.append(QJsonArray{ v[0], v[1] });
     }
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("vertices"), vertexArray },
-                                          { QStringLiteral("width_pixels"), widthPixels } });
+    const QJsonDocument body(spectral.applyTo(
+            QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                         { QStringLiteral("vertices"), vertexArray },
+                         { QStringLiteral("width_pixels"), widthPixels } }));
     // The status tells an older backend with no task route (404/405) from a
     // refusal: only the first may fall back to the synchronous route.
     const QByteArray payload =

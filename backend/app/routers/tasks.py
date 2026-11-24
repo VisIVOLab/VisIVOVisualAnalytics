@@ -62,7 +62,10 @@ async def create_moment_task(
                         "mask_enabled": request.mask_enabled,
                         "threshold_value": request.threshold_value,
                         "threshold_auto": getattr(request, "threshold_auto", False),
-                        "moment2_variance": getattr(request, "moment2_variance", False)})
+                        "moment2_variance": getattr(request, "moment2_variance", False),
+                        "spectral_quantity": request.spectral_quantity,
+                        "spectral_frame": request.spectral_frame,
+                        "rest_freq_hz": request.rest_freq_hz})
         except asyncio.CancelledError:
             ticker.cancel()
             TASKS.update(task.task_id, status="cancelled", progress=0.0, error="Cancelled by client.")
