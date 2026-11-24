@@ -284,6 +284,35 @@ void ChannelMapsWindow::relayoutCells()
         plot->axisRect()->setMargins(
                 QMargins(size.marginLeft, 0, size.marginRight, size.marginBottom));
         plot->setFixedSize(size.width, size.height);
+        // The caption fits the panel: a smaller font first (down to 7 px), then
+        // the middle elided; the whole text stays in the tooltip. Twelve
+        // columns cut "268.291623e+11 Hz BARYCENT" at both ends (issue #502).
+        if (auto *title = qobject_cast<QCPTextElement *>(plot->plotLayout()->element(0, 0))) {
+            const QStringList lines = title->property("fullTitle").toStringList();
+            if (!lines.isEmpty()) {
+                const int avail = std::max(20, size.width - 4);
+                QFont font = title->font();
+                int px = 10;
+                const auto widest = [&lines](const QFontMetrics &fm) {
+                    int w = 0;
+                    for (const QString &l : lines)
+                        w = std::max(w, fm.horizontalAdvance(l));
+                    return w;
+                };
+                for (; px > 7; --px) {
+                    font.setPixelSize(px);
+                    if (widest(QFontMetrics(font)) <= avail)
+                        break;
+                }
+                font.setPixelSize(px);
+                const QFontMetrics fm(font);
+                QStringList fitted;
+                for (const QString &l : lines)
+                    fitted << fm.elidedText(l, Qt::ElideMiddle, avail);
+                title->setFont(font);
+                title->setText(fitted.join(u"\n"_s));
+            }
+        }
     }
 }
 
@@ -389,6 +418,9 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
         plot->plotLayout()->insertRow(0);
         const QStringList titleLines = panelTitleLines(absChannel);
         auto *titleEl = new QCPTextElement(plot, titleLines.join(u"\n"_s));
+        // The full caption: relayoutCells() fits it to the panel's width.
+        titleEl->setProperty("fullTitle", titleLines);
+        plot->setToolTip(titleLines.join(u"  ·  "_s));
         titleEl->setTextColor(labelColor);
         QFont titleFont;
         titleFont.setPixelSize(10);

@@ -344,10 +344,25 @@ void vtkWindowImage::updateWcsOverlay()
                 static_cast<int>(bottomMargin + t * ((size[1] - topMargin) - bottomMargin)));
         this->overlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
-    // The y title clears the tick labels, whatever their precision.
+    // The y title clears the tick labels, whatever their precision: their
+    // width measured as drawn (font 16, and in device pixels on a HiDPI
+    // screen), not estimated from a character count, which left it over them.
+    double labelWidth = 0.0;
+    for (auto &tick : this->overlayYTickActors) {
+        if (!tick || !tick->GetVisibility())
+            continue;
+        double bbox[4] = { 0.0, 0.0, 0.0, 0.0 };
+        tick->GetBoundingBox(renderer, bbox);
+        labelWidth = std::max(labelWidth, bbox[1] - bbox[0]);
+    }
+    double titleBox[4] = { 0.0, 0.0, 0.0, 0.0 };
+    this->overlayYTitleActor->GetBoundingBox(renderer, titleBox);
+    const double titleHalf = std::max(9.0, 0.5 * (titleBox[1] - titleBox[0]));
+    const double clearX = labelWidth > 0.0
+            ? axisX - 10.0 - labelWidth - 6.0 - titleHalf
+            : visivo::yAxisTitleX(axisX, leftMargin / 3.0, 8.0, yLabelChars, 7.5, 10.0);
     this->overlayYTitleActor->SetDisplayPosition(
-            static_cast<int>(visivo::yAxisTitleX(axisX, leftMargin / 3.0, 8.0, yLabelChars, 7.5, 10.0)),
-            size[1] / 2);
+            static_cast<int>(std::max(8.0, std::min(leftMargin / 3.0, clearX))), size[1] / 2);
     qDebug().noquote()
             << QStringLiteral("[wcs-overlay] updated ticks x=%1..%2 y=%3..%4 size=%5x%6 renderer=%7 renderWindow=%8 xAxis=%9 yAxis=%10 xTitle=%11 yTitle=%12 endpoints=(%13,%14)->(%15,%16) outer=%17")
                        .arg(visible.xmin, 0, 'g', 12)
