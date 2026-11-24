@@ -539,6 +539,11 @@ set(PROJECT_SOURCES
         src/gui/RaytraceViewport.h
         src/gui/ColourBarTicks.h
         src/gui/VolumeColorbar.cpp
+        src/gui/IsoLegend.cpp
+        src/gui/IsoLegend.h
+        src/gui/IsoLevels.h
+        src/gui/IsoLevelsDialog.cpp
+        src/gui/IsoLevelsDialog.h
         src/gui/VolumeColorbar.h
         src/gui/BusyStatus.cpp
         src/gui/BusyStatus.h
@@ -691,6 +696,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Kinematic.cpp
         src/gui/vtkWindowCube_Lasso.cpp
         src/gui/vtkWindowCube_Movie.cpp
+        src/gui/vtkWindowCube_IsoLevels.cpp
         src/gui/vtkWindowCube_Link.cpp
         src/gui/vtkWindowCube_VrHeadset.cpp
         src/gui/vtkWindowCube_VrActivity.cpp

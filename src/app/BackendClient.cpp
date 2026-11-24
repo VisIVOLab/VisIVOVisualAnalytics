@@ -3492,18 +3492,37 @@ BackendImageTileResult BackendClient::parseImageTileObject(const QJsonObject &ob
 BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetId,
                                                          double threshold) const
 {
+    return requestIsosurfaceLevels(datasetId, QVector<double>{ threshold });
+}
+
+BackendIsosurfaceResult BackendClient::requestIsosurfaceLevels(const QString &datasetId,
+                                                               const QVector<double> &levels) const
+{
     BackendIsosurfaceResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("threshold"), threshold } });
+    QJsonObject request{ { QStringLiteral("dataset_id"), datasetId } };
+    if (levels.size() == 1) {
+        request.insert(QStringLiteral("threshold"), levels.first());   // as before levels existed
+    } else {
+        QJsonArray values;
+        for (const double v : levels)
+            values.append(v);
+        request.insert(QStringLiteral("levels"), values);
+    }
     const QByteArray payload =
             performPostRetryingBackpressure(
-                    QUrl(m_baseUrl + QStringLiteral("/v1/products/isosurface")), body, error);
+                    QUrl(m_baseUrl + QStringLiteral("/v1/products/isosurface")),
+                    QJsonDocument(request), error);
     if (!error.isEmpty()) {
         result.error = error;
         return result;
     }
-    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    return parseIsosurfaceResultObject(QJsonDocument::fromJson(payload).object());
+}
+
+BackendIsosurfaceResult BackendClient::parseIsosurfaceResultObject(const QJsonObject &object)
+{
+    BackendIsosurfaceResult result;
     result.valid = object.value(QStringLiteral("valid")).toBool(false);
     result.error = object.value(QStringLiteral("error")).toString();
     result.numPoints = object.value(QStringLiteral("num_points")).toInt();
@@ -3514,6 +3533,27 @@ BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetI
         result.polysData = decodePayload(object, QStringLiteral("polys_base64"),
                                          QStringLiteral("compression"), result.error);
     }
+    const QJsonArray surfaces = object.value(QStringLiteral("levels")).toArray();
+    for (const QJsonValue &entry : surfaces) {
+        if (!result.error.isEmpty())
+            break;
+        const QJsonObject o = entry.toObject();
+        BackendIsosurfaceSurface surface;
+        surface.value = o.value(QStringLiteral("value")).toDouble();
+        surface.numPoints = o.value(QStringLiteral("num_points")).toInt();
+        surface.numPolys = o.value(QStringLiteral("num_polys")).toInt();
+        surface.pointsData = decodePayload(o, QStringLiteral("points_base64"),
+                                           QStringLiteral("compression"), result.error);
+        if (result.error.isEmpty()) {
+            surface.polysData = decodePayload(o, QStringLiteral("polys_base64"),
+                                              QStringLiteral("compression"), result.error);
+        }
+        result.surfaces.append(surface);
+    }
+    for (const QJsonValue &v : object.value(QStringLiteral("skipped_levels")).toArray())
+        result.skippedLevels.append(v.toDouble());
+    for (const QJsonValue &v : object.value(QStringLiteral("stride")).toArray())
+        result.stride.append(v.toInt());
     if (!result.error.isEmpty()) {
         result.valid = false;
     }

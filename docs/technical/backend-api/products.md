@@ -87,17 +87,34 @@ A non-cube dataset or a non-finite pixel is 422; a pixel outside the cube is
 `bunit`, `x`, `y`, `radius`, `n_pix`, `range_min`, `range_max`.
 
 ### `POST /v1/products/isosurface`
+One surface at a threshold, or several levels (issue #526):
 ```json
 { "dataset_id": "...", "threshold": 0.05 }
+{ "dataset_id": "...", "levels": [0.01, 0.1, 1.0] }
+{ "dataset_id": "...", "n_levels": 4, "level_min": 1e-3, "level_max": 1.0, "spacing": "log" }
 ```
+The levels are `levels` if given, else `n_levels` evenly spaced between
+`level_min` and `level_max` (`spacing` `linear`, default, or `log`, which needs
+both ends above zero), else `threshold`. They are sorted, without duplicates,
+finite, at most 8. A request naming none, a bad log range or more than 8 levels
+is 422.
+
 Returns `{valid, error, compression: "qt-zlib", points_base64, polys_base64,
-num_points, num_polys}`: float32 xyz points in the cube's voxel coordinates
-and the int32 VTK polygon connectivity, each zlib-compressed in Qt's
-`qCompress` framing, then base64. A large cube is sampled with per-axis
-strides (at most 256³ voxels) and coarsened while the surface has more than
-4 M triangles. A non-cube dataset is 422; an empty surface, a surface still
-too large at the coarsest stride, or a server without the VTK Python
-bindings is `valid: false`.
+num_points, num_polys, levels, skipped_levels, stride, num_polys_total}`.
+`levels` has one entry per surface, ascending by value: `{value, compression,
+points_base64, polys_base64, num_points, num_polys}`; the top-level mesh fields
+are those of the first (lowest) level, as when there was one level. Points are
+float32 xyz in the cube's voxel coordinates, polygons the int32 VTK
+connectivity, each zlib-compressed in Qt's `qCompress` framing, then base64.
+A level that cuts no voxels has no surface and is listed in `skipped_levels`;
+none having one is `valid: false`. A large cube is sampled with per-axis
+strides (at most 256³ voxels), coarsened while the surfaces together have more
+than 4 M triangles; `stride` is the (z, y, x) stride used, `[1, 1, 1]` the
+cube's own grid. A non-cube dataset is 422; a surface still too large at the
+coarsest stride, or a server without the VTK Python bindings, is `valid:
+false`. The product cache keys on the levels; its record carries them, the
+spacing and the stride. A field of a VBT volume or a PLUTO variable is a cube
+for this route.
 
 ### `POST /v1/products/moment_fits`
 Compute a moment and save it as a 2-D FITS file in the Workspace Exports. The
