@@ -8,6 +8,7 @@
 #include "RegionFullRes.h"
 #include "RegionModel.h"
 #include "RegionListExport.h"
+#include "RegionMeasure.h"
 #include "RegionPropertiesDialog.h"
 #include "RegionSessionController.h"
 #include "WorkspaceChrome.h"
@@ -85,12 +86,21 @@ std::optional<Region> vtkWindowImage::draftRegion() const
 {
     if (this->regionMode == RegionMode::None || !this->regionValid)
         return std::nullopt;
+    // A point or a line is where the cursor was, in source pixels (not the
+    // displayed voxel's), so that a drawing on a decimated image keeps its place.
+    if (this->regionMode == RegionMode::Point)
+        return visivo::measure::pointRegion(this->regionAnchorWorld[0], this->regionAnchorWorld[1]);
+    if (this->regionMode == RegionMode::Line)
+        return visivo::measure::lineRegion(this->regionAnchorWorld[0], this->regionAnchorWorld[1],
+                                           this->regionCurrentWorld[0], this->regionCurrentWorld[1]);
     QString shape;
     switch (this->regionMode) {
     case RegionMode::Box:     shape = u"box"_s; break;
     case RegionMode::Circle:  shape = u"circle"_s; break;
     case RegionMode::Polygon: shape = u"polygon"_s; break;
     case RegionMode::Annulus: shape = u"annulus"_s; break;
+    case RegionMode::Point:
+    case RegionMode::Line:
     case RegionMode::None:    return std::nullopt;
     }
     auto vertices = this->regionPolygonVertices;
@@ -229,6 +239,10 @@ void vtkWindowImage::refreshRegionSession()
         hooks.changed = [this]() { this->onRegionListChanged(); };
         hooks.properties = [this](int id) { this->openRegionProperties(id); };
         hooks.analyse = [this](int id) { this->analyzeRegion(id); };
+        // A line is read from the file: its profile.
+        hooks.canAnalyse = [](const Region &r) {
+            return visivo::regions::hasArea(r.shape) || r.shape == visivo::regions::Shape::Line;
+        };
         hooks.exportRegions = [this](const std::vector<int> &ids) {
             visivo::regions::exportRegionList(
                     this, this->m_regions,

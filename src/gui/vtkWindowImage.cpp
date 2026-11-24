@@ -1339,6 +1339,15 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->actionCircleRegion = ui->menuTools->addAction(u"Circle Region Stats"_s);
     this->actionPolygonRegion = ui->menuTools->addAction(u"Polygon Region Analysis"_s);
     this->actionAnnulusRegion = ui->menuTools->addAction(u"Annulus Region Analysis"_s);
+    this->actionPointRegion = ui->menuTools->addAction(u"Point Region (value at a pixel)"_s);
+    this->actionLineRegion = ui->menuTools->addAction(u"Line Region (profile along it)"_s);
+    this->actionPointRegion->setToolTip(
+            u"Click a pixel: its value and its position, kept as a point region of the list."_s);
+    this->actionLineRegion->setToolTip(
+            u"Drag a line: the values along it against the offset in arcsec, kept as a line "
+            u"region of the list."_s);
+    this->actionPointRegion->setCheckable(true);
+    this->actionLineRegion->setCheckable(true);
     this->actionBoxRegion->setCheckable(true);
     this->actionCircleRegion->setCheckable(true);
     this->actionPolygonRegion->setCheckable(true);
@@ -1349,6 +1358,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     regionGroup->addAction(this->actionCircleRegion);
     regionGroup->addAction(this->actionPolygonRegion);
     regionGroup->addAction(this->actionAnnulusRegion);
+    regionGroup->addAction(this->actionPointRegion);
+    regionGroup->addAction(this->actionLineRegion);
     QObject::connect(this->actionBoxRegion, &QAction::toggled, this,
                      [this](bool checked) { this->setRegionMode(RegionMode::Box, checked); });
     QObject::connect(this->actionCircleRegion, &QAction::toggled, this,
@@ -1357,6 +1368,17 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                      [this](bool checked) { this->setRegionMode(RegionMode::Polygon, checked); });
     QObject::connect(this->actionAnnulusRegion, &QAction::toggled, this,
                      [this](bool checked) { this->setRegionMode(RegionMode::Annulus, checked); });
+    QObject::connect(this->actionPointRegion, &QAction::toggled, this,
+                     [this](bool checked) { this->setRegionMode(RegionMode::Point, checked); });
+    QObject::connect(this->actionLineRegion, &QAction::toggled, this,
+                     [this](bool checked) { this->setRegionMode(RegionMode::Line, checked); });
+    this->m_actEstimateNoise = ui->menuTools->addAction(u"Estimate Noise\u2026"_s);
+    this->m_actEstimateNoise->setToolTip(
+            u"The RMS and \u03c3 (MAD) of the image over its source-free pixels: the background "
+            u"regions marked in the list, or the whole image sigma-clipped; for Jy/beam also per "
+            u"pixel."_s);
+    QObject::connect(this->m_actEstimateNoise, &QAction::triggered, this,
+                     &vtkWindowImage::estimateImageNoise);
     ui->menuTools->addSeparator();
     this->actionLoadCatalogueOverlay = ui->menuTools->addAction(u"Load Catalogue Overlay…"_s);
     this->actionCrossmatch = ui->menuTools->addAction(u"Cross-match with Catalogue…"_s);

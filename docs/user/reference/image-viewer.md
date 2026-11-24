@@ -119,6 +119,11 @@ groups.
 - *Box Region Stats*, *Circle Region Stats*, *Polygon Region Analysis*,
   *Annulus Region Analysis*: arm a region shape. Drag on the image (polygon:
   click the vertices, double-click to close).
+- *Point Region*, *Line Region*: click a pixel for its value and position, or
+  drag a line for the profile along it (below). Both are kept in the region list
+  and written to region files.
+- *Estimate Noise…*: the RMS and σ_MAD of the image over its source-free
+  pixels (below).
 - *Region Properties…*, *Analyse Region*, *Delete Region*, *Undo Region Edit*,
   *Redo Region Edit*: act on the selected region.
 - *HI Mass Distance…*: the distance for the HI mass of a region on a
@@ -129,8 +134,16 @@ groups.
 While you drag, a box in the bottom-left corner shows the running sum (Σ) and
 mean (μ); on regions over about 200 000 pixels these are sampled and marked
 `≈`. On release, the *Region Analysis* window gives count, minimum, maximum,
-sum, mean, median, standard deviation and σ_MAD (1.4826 × the median absolute
-deviation). When the view is reduced, or the region reaches beyond the loaded
+*Sum* (the plain sum of the pixel values, in the image's unit, for example
+Jy/beam; the flux is that sum divided by the beam area, see *Flux* below), mean, median, *Std dev*
+(about the mean), *RMS (√⟨x²⟩)* (about zero, what CASA `imstat` calls rms; the
+two differ by the mean, so a region on a source with a pedestal has an RMS
+well above its standard deviation) and σ_MAD (1.4826 × the median absolute
+deviation). A *Peak* section gives the maximum and its position: the pixel
+(0-based, as in the probe readout) and the sky position in the frame and format
+set in the WCS menu. For an unresolved source the peak in Jy/beam is its flux
+density. The same figures are in the product's parameters in Session Data.
+When the view is reduced, or the region reaches beyond the loaded
 part of the image, these are computed on the full-resolution file, and the
 subtitle says what they were computed on. Quote these figures, not the live
 readout. *Flux* gives the beam size and area Ω = π·BMAJ·BMIN/(4 ln 2) in
@@ -147,6 +160,29 @@ carries no rest frequency). On a moment-0 map, *HI mass* follows at the
 distance set in *Tools ▸ Regions ▸ HI Mass Distance…*. With Stokes layers
 loaded, per-Stokes values follow (integrated Jy over the same beam area, mean PA in degrees, mean
 P/I in percent).
+
+**Point and line regions.** A *point* is read at once: the window gives the
+value at the pixel (or says it is blank) and its position, pixel and sky. A
+*line* is drawn by dragging from one end to the other; on release a *Line
+Profile* window plots the value along it against the offset from its start in
+arcsec (pixels when the image has no sky coordinates). The profile is sampled
+every pixel along the line, by bilinear interpolation, one pixel wide, from the
+file at full resolution whatever the view's level; a sample off the image or
+touching a blank pixel is left out. The window's *Save CSV* writes it. Lines are
+listed, moved, reshaped and deleted like the other regions; *Region Properties…*
+sets the ends by numbers.
+
+**Estimate Noise.** *Tools ▸ Regions ▸ Estimate Noise…* gives the RMS (√⟨x²⟩)
+and σ_MAD of the image over pixels with no source in them, from the file at full
+resolution. With regions marked as *background* in *Region Properties…* it
+averages their values and lists each region's own beside the average and the
+scatter between them, so that a region sitting on faint emission shows as the
+odd one out; with none (or if you choose it) it clips the whole image at 3σ
+about the median, iterating, in blocks (memory stays bounded on a 10⁴ × 10⁴
+image; a sample of at most 4 million pixels fixes the window, and every pixel
+is then measured inside it). For a Jy/beam image the window also gives the beam
+area in pixels and the same noise per pixel, in Jy/pixel (Jy/beam divided by
+the beam area): for an image in another unit the conversion is not shown.
 
 The regions are also listed in *Session Data*, under a *Regions* node, where
 each can be selected, hidden, renamed, deleted or exported

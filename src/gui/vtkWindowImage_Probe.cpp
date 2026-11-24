@@ -258,8 +258,20 @@ void vtkWindowImage::toggleProbeFreeze()
                     this->ignoreNextPolygonRelease = true;
                 }
                 this->regionValid = !this->regionPolygonVertices.empty();
+            } else if (this->regionMode == RegionMode::Point) {
+                // A click, not a drag: the point joins the list and is read at once.
+                this->regionAnchorVoxel = this->regionCurrentVoxel;
+                this->regionAnchorWorld = this->regionCurrentWorld;
+                this->regionDragging = false;
+                this->regionValid = true;
+                const int id = this->commitDraftRegion();
+                if (id > 0)
+                    this->analyzeRegion(id);
+                ui->vtk->renderWindow()->Render();
+                return;
             } else {
                 this->regionAnchorVoxel = this->regionCurrentVoxel;
+                this->regionAnchorWorld = this->regionCurrentWorld;
                 this->regionDragging = true;
                 this->regionValid = true;
             }
@@ -440,6 +452,12 @@ void vtkWindowImage::setProbeModeActive(bool active)
         }
         if (this->actionAnnulusRegion && this->actionAnnulusRegion->isChecked()) {
             this->actionAnnulusRegion->setChecked(false);
+        }
+        if (this->actionPointRegion && this->actionPointRegion->isChecked()) {
+            this->actionPointRegion->setChecked(false);
+        }
+        if (this->actionLineRegion && this->actionLineRegion->isChecked()) {
+            this->actionLineRegion->setChecked(false);
         }
     }
     ui->vtk->setCursor(active ? Qt::CrossCursor : Qt::ArrowCursor);

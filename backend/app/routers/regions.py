@@ -9,6 +9,9 @@ in (and back), or moves it to another sky frame.
   * POST /v1/regions/parse   {format?, text, dataset_id?, to_frame?}
   * POST /v1/regions/export  {format, regions, dataset_id?, to_frame?}
   * POST /v1/regions/convert {regions, to_frame, dataset_id?, origin?, unit?}
+  * POST /v1/regions/stats/{dataset_id}    {region, channel?}
+  * POST /v1/regions/profile/{dataset_id}  {region (a line), channel?, width?}
+  * POST /v1/regions/noise/{dataset_id}    {regions?, channel?, clip_sigma?}
 """
 import asyncio
 import logging
@@ -52,6 +55,18 @@ class RegionConvertRequest(BaseModel):
 class RegionStatsRequest(BaseModel):
     region: dict[str, Any]        # canonical region dict
     channel: int | None = None    # for cubes; defaults to 0
+
+
+class RegionProfileRequest(BaseModel):
+    region: dict[str, Any]        # a canonical ``line`` region (two or more points)
+    channel: int | None = None    # for cubes; defaults to 0
+    width: int = 1                # sampling width across the line, pixels
+
+
+class ImageNoiseRequest(BaseModel):
+    regions: list[dict[str, Any]] = []   # background regions; none = the whole plane, clipped
+    channel: int | None = None           # for cubes; defaults to 0
+    clip_sigma: float = 3.0              # the clip of the automatic estimate, in σ
 
 
 #: Diagnostics returned by one parse; a file of garbage would otherwise echo
@@ -296,6 +311,97 @@ async def region_stats(
         raise HTTPException(422, str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.warning("[regions/stats] failed dataset_id=%s error=%s", dataset_id, exc)
+        raise HTTPException(500, str(exc)) from exc
+    result.update(_peak_world(entry["path"], result.get("peak_pixel")))
+    return {"valid": True, "error": "", **result}
+
+
+def _peak_world(path: str, pixel) -> dict[str, Any]:
+    """``peak_world``: the sky position of the peak pixel (0-based ``[x, y]``)
+    in the dataset's own frame, degrees; None without a celestial WCS."""
+    out: dict[str, Any] = {"peak_world": None}
+    wcs = _celestial_wcs_or_none(path) if pixel else None
+    if wcs is None:
+        return out
+    try:
+        lon, lat = (float(v) for v in wcs.pixel_to_world_values(pixel[0], pixel[1]))
+        frame = R.native_frame_name(wcs)
+    except (ValueError, TypeError):
+        return out
+    if lon == lon and lat == lat:
+        out["peak_world"] = {"lon": lon % 360.0, "lat": lat, "frame": frame}
+    return out
+
+
+@router.post("/v1/regions/profile/{dataset_id}", tags=["regions"])
+async def region_profile(
+    dataset_id: str,
+    request: RegionProfileRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """The profile along a ``line`` region: the value at samples one pixel
+    apart (bilinear, ``width`` pixels wide) against the offset from the start
+    in arcsec (pixels when the dataset has no celestial WCS). Works on an image
+    or on one channel of a cube, read in small windows along the line."""
+    entry = _require_dataset(session, dataset_id)
+    region = request.region
+    if str(region.get("shape", "")).lower() != "line":
+        raise HTTPException(422, "A profile needs a line region.")
+    wcs = _celestial_wcs_or_none(entry["path"])
+    if region.get("frame", "image") != "image" or region.get("unit", "pix") != "pix":
+        region = _convert([region], "image", _celestial_wcs(entry["path"]), origin=0)[0]
+    from ..fits_dataset import ScientificFitsDataset  # noqa: PLC0415
+    from ..line_profile import line_profile  # noqa: PLC0415
+
+    def run():
+        dataset = ScientificFitsDataset(entry["path"])
+        from ..brick_pyramid import source_shape  # noqa: PLC0415
+        nz = source_shape(entry["path"], dataset.hdu_index)[0]
+        ch = 0 if request.channel is None else max(0, min(int(request.channel), nz - 1))
+        points = [(float(x), float(y)) for x, y in region.get("points", ())]
+        out = line_profile(entry["path"], dataset.hdu_index, ch, points, request.width, wcs)
+        out.update({"channel": ch, "bunit": dataset.intensity_unit})
+        return out
+
+    try:
+        result = await asyncio.to_thread(run)
+    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[regions/profile] failed dataset_id=%s error=%s", dataset_id, exc)
+        raise HTTPException(500, str(exc)) from exc
+    return {"valid": True, "error": "", **result}
+
+
+@router.post("/v1/regions/noise/{dataset_id}", tags=["regions"])
+async def image_noise(
+    dataset_id: str,
+    request: ImageNoiseRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+):
+    """The noise of an image (or one channel of a cube) over its source-free
+    pixels: RMS √⟨x²⟩ and σ(MAD), averaged over the background ``regions``
+    given (each region's own values listed) or, with none, sigma-clipped over
+    the whole plane in blocks. A Jy/beam image also gets the noise per pixel
+    and the beam area in pixels."""
+    entry = _require_dataset(session, dataset_id)
+    wcs = None
+    regions = []
+    for r in request.regions:
+        if r.get("frame", "image") != "image" or r.get("unit", "pix") != "pix":
+            wcs = wcs or _celestial_wcs(entry["path"])
+            r = _convert([r], "image", wcs, origin=0)[0]
+        regions.append(r)
+    from ..compute import worker_image_noise  # noqa: PLC0415
+    try:
+        result = await asyncio.to_thread(
+            worker_image_noise, entry["path"], regions, request.channel, request.clip_sigma)
+    except (ValueError, KeyError, TypeError, IndexError) as exc:   # incl. a malformed region
+        raise HTTPException(422, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[regions/noise] failed dataset_id=%s error=%s", dataset_id, exc)
         raise HTTPException(500, str(exc)) from exc
     return {"valid": True, "error": "", **result}
 

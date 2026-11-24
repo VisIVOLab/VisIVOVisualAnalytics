@@ -672,6 +672,8 @@ void vtkWindowImage::setupModeStrip()
     m_regionShapeStrip->addItem(u"Circle"_s, u"Circular region."_s);
     m_regionShapeStrip->addItem(u"Poly"_s, u"Polygon region: click the vertices."_s);
     m_regionShapeStrip->addItem(u"Annulus"_s, u"Annular region: inner and outer radius."_s);
+    m_regionShapeStrip->addItem(u"Point"_s, u"Point region: click a pixel for its value and position."_s);
+    m_regionShapeStrip->addItem(u"Line"_s, u"Line region: drag for the profile along it."_s);
     m_regionShapeStrip->setCurrentIndex(0);
     // Only meaningful while Region is armed — a shape picker for a mode you are
     // not in is a control that does nothing.
@@ -698,8 +700,9 @@ void vtkWindowImage::setupModeStrip()
                          static const RegionMode shapes[] = {
                              RegionMode::Box, RegionMode::Circle,
                              RegionMode::Polygon, RegionMode::Annulus,
+                             RegionMode::Point, RegionMode::Line,
                          };
-                         if (index < 0 || index >= 4)
+                         if (index < 0 || index >= 6)
                              return;
                          m_lastRegionShape = shapes[index];
                          this->applyViewerMode(ViewerMode::Region);
@@ -749,6 +752,8 @@ void vtkWindowImage::applyViewerMode(ViewerMode mode)
         uncheck(this->actionCircleRegion);
         uncheck(this->actionPolygonRegion);
         uncheck(this->actionAnnulusRegion);
+        uncheck(this->actionPointRegion);
+        uncheck(this->actionLineRegion);
     }
     if (mode != ViewerMode::Ruler) {
         uncheck(this->m_actRuler);
@@ -776,6 +781,8 @@ void vtkWindowImage::applyViewerMode(ViewerMode mode)
         case RegionMode::Circle:  shape = this->actionCircleRegion;  break;
         case RegionMode::Polygon: shape = this->actionPolygonRegion; break;
         case RegionMode::Annulus: shape = this->actionAnnulusRegion; break;
+        case RegionMode::Point:   shape = this->actionPointRegion;   break;
+        case RegionMode::Line:    shape = this->actionLineRegion;    break;
         case RegionMode::Box:
         case RegionMode::None:    shape = this->actionBoxRegion;     break;
         }
@@ -812,6 +819,8 @@ void vtkWindowImage::syncModeStrip()
         case RegionMode::Circle:  shapeIndex = 1; break;
         case RegionMode::Polygon: shapeIndex = 2; break;
         case RegionMode::Annulus: shapeIndex = 3; break;
+        case RegionMode::Point:   shapeIndex = 4; break;
+        case RegionMode::Line:    shapeIndex = 5; break;
         case RegionMode::Box:
         case RegionMode::None:    shapeIndex = 0; break;
         }
@@ -834,6 +843,8 @@ void vtkWindowImage::syncModeStrip()
     case ViewerMode::Region:
         m_modeHint->setText(this->regionMode == RegionMode::Polygon
                                     ? u"click each vertex · double-click to close"_s
+                            : this->regionMode == RegionMode::Point
+                                    ? u"click a pixel"_s
                                     : u"drag on the image"_s);
         break;
     case ViewerMode::Ruler:
@@ -1308,6 +1319,9 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Regions"_s, self->actionCircleRegion);
     add(u"Regions"_s, self->actionPolygonRegion);
     add(u"Regions"_s, self->actionAnnulusRegion);
+    add(u"Regions"_s, self->actionPointRegion);
+    add(u"Regions"_s, self->actionLineRegion);
+    add(u"Regions"_s, self->m_actEstimateNoise);
     add(u"Regions"_s, self->m_actRegionProperties);
     add(u"Regions"_s, self->m_actAnalyseRegion);
     add(u"Regions"_s, self->m_actDeleteRegion);
@@ -1490,6 +1504,9 @@ void vtkWindowImage::setupSidebar()
         cl->addWidget(makeToolBtn(this->actionCircleRegion,   card));
         cl->addWidget(makeToolBtn(this->actionPolygonRegion,  card));
         cl->addWidget(makeToolBtn(this->actionAnnulusRegion,  card));
+        cl->addWidget(makeToolBtn(this->actionPointRegion,    card));
+        cl->addWidget(makeToolBtn(this->actionLineRegion,     card));
+        cl->addWidget(makeToolBtn(this->m_actEstimateNoise,   card));
         toolsLayout->addWidget(card);
     }
 

@@ -39,6 +39,8 @@ public:
         std::function<void()> changed;
         std::function<void(int id)> properties;
         std::function<void(int id)> analyse;
+        /// Whether Analyse applies to this region; absent: when it has pixels.
+        std::function<bool(const visivo::regions::Region &)> canAnalyse;
         /// Write these regions to a file (the export dialogs).
         std::function<void(const std::vector<int> &ids)> exportRegions;
     };
