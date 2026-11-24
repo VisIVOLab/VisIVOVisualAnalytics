@@ -64,8 +64,11 @@ void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, d
     axis->GetPoint2Coordinate()->SetCoordinateSystemToDisplay();
     axis->GetPoint1Coordinate()->SetValue(x1, y1);
     axis->GetPoint2Coordinate()->SetValue(x2, y2);
+    // Five ticks evenly spaced, where every caller writes its five labels
+    // (t = 0, 1/4, … 1). AdjustLabels moved the ticks to round values of the
+    // axis range, so each label stood beside its tick, not on it (#516).
     axis->SetNumberOfLabels(5);
-    axis->AdjustLabelsOn();
+    axis->AdjustLabelsOff();
     axis->SetLabelFormat("%-#6.4g");
     axis->SetFontFactor(0.6);
     axis->SetTickLength(6);

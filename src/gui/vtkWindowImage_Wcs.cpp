@@ -330,6 +330,13 @@ void vtkWindowImage::updateWcsOverlay()
 
         this->overlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
                 this->formatRemoteOverlayCoordinate(0, frameX, spanX).toStdString().c_str());
+        // The last x label ends at its tick: centred there, 34 px from the
+        // window's edge, it was cut off (#516).
+        auto *xProp = this->overlayXTickActors[static_cast<std::size_t>(i)]->GetTextProperty();
+        if (i == overlayTickCount - 1)
+            xProp->SetJustificationToRight();
+        else
+            xProp->SetJustificationToCentered();
         this->overlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX + t * ((size[0] - rightMargin) - axisX)),
                 static_cast<int>(bottomMargin - 18));
@@ -339,9 +346,17 @@ void vtkWindowImage::updateWcsOverlay()
         yLabelChars = std::max(yLabelChars, int(yLabel.size()));
         this->overlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
                 yLabel.toStdString().c_str());
+        // The lowest y label sits on the x axis, not across it: centred there,
+        // its lower half met the first x label in the corner (issue #516).
+        auto *yProp = this->overlayYTickActors[static_cast<std::size_t>(i)]->GetTextProperty();
+        if (i == 0)
+            yProp->SetVerticalJustificationToBottom();
+        else
+            yProp->SetVerticalJustificationToCentered();
         this->overlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX - 10),
-                static_cast<int>(bottomMargin + t * ((size[1] - topMargin) - bottomMargin)));
+                static_cast<int>(bottomMargin + t * ((size[1] - topMargin) - bottomMargin))
+                        + (i == 0 ? 2 : 0));
         this->overlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
     // The y title clears the tick labels, whatever their precision: their
@@ -363,6 +378,27 @@ void vtkWindowImage::updateWcsOverlay()
             : visivo::yAxisTitleX(axisX, leftMargin / 3.0, 8.0, yLabelChars, 7.5, 10.0);
     this->overlayYTitleActor->SetDisplayPosition(
             static_cast<int>(std::max(8.0, std::min(leftMargin / 3.0, clearX))), size[1] / 2);
+
+    // The x title goes below the tick labels as they are drawn (issue #516):
+    // at a fixed height it sat over them once the labels grew (font 16, and in
+    // device pixels on a HiDPI screen).
+    double labelsBottom = bottomMargin;
+    for (auto &tick : this->overlayXTickActors) {
+        if (!tick || !tick->GetVisibility())
+            continue;
+        double bbox[4] = { 0.0, 0.0, 0.0, 0.0 };
+        tick->GetBoundingBox(renderer, bbox);
+        if (bbox[3] > bbox[2])
+            labelsBottom = std::min(labelsBottom, bbox[2]);
+    }
+    double xTitleBox[4] = { 0.0, 0.0, 0.0, 0.0 };
+    this->overlayXTitleActor->GetBoundingBox(renderer, xTitleBox);
+    const double xTitleHalf = std::max(6.0, 0.5 * (xTitleBox[3] - xTitleBox[2]));
+    const double xTitleY = std::max(xTitleHalf + 1.0,
+                                    std::min(bottomMargin / 2.0 - 2.0, labelsBottom - 4.0 - xTitleHalf));
+    this->overlayXTitleActor->SetDisplayPosition((axisX + (size[0] - rightMargin)) / 2,
+                                                 static_cast<int>(xTitleY));
+
     qDebug().noquote()
             << QStringLiteral("[wcs-overlay] updated ticks x=%1..%2 y=%3..%4 size=%5x%6 renderer=%7 renderWindow=%8 xAxis=%9 yAxis=%10 xTitle=%11 yTitle=%12 endpoints=(%13,%14)->(%15,%16) outer=%17")
                        .arg(visible.xmin, 0, 'g', 12)
