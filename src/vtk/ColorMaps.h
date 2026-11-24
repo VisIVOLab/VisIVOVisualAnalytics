@@ -73,6 +73,9 @@ private:
     static void SetPureRed(vtkLookupTable *lut);
     static void SetPureGreen(vtkLookupTable *lut);
     static void SetPureBlue(vtkLookupTable *lut);
+    static void SetPureCyan(vtkLookupTable *lut);
+    static void SetPureMagenta(vtkLookupTable *lut);
+    static void SetPureYellow(vtkLookupTable *lut);
     static void SetAllRed(vtkLookupTable *lut);
     static void SetAllGreen(vtkLookupTable *lut);
     static void SetAllBlue(vtkLookupTable *lut);

@@ -759,6 +759,8 @@ set(PROJECT_SOURCES
         src/gui/ContourExport.h
         src/gui/vtkWindowImage_Annotations.cpp
         src/gui/vtkWindowImage_Products.cpp
+        src/gui/vtkWindowImage_Blend.cpp
+        src/gui/LayerBlend.h
         src/gui/vtkWindowImage_Cosmology.cpp
         src/gui/vtkWindowImage_Region.cpp
         src/gui/vtkWindowImage_RegionList.cpp

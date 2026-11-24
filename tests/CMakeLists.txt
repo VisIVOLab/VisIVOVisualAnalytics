@@ -213,6 +213,8 @@ add_executable(VisIVOTests
     test_product_pane_display.cpp
     TestLayerCardGeometry.h
     test_layer_card_geometry.cpp
+    TestLayerBlend.h
+    test_layer_blend.cpp
     TestRegionReadout.h
     test_region_readout.cpp
     TestBackendUrlLocality.h

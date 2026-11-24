@@ -93,6 +93,12 @@ the cube viewer):
 - *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges.
 - *Blink Layers*: alternates layers 0 and 1 (default every 250 ms; the *Blink
   / Compare* card sets the interval, 50 to 1000 ms). Needs two layers.
+- *Additive Blend*: sums the colours of the visible layers instead of
+  painting each over the one below (see *RGB composite and additive blend*
+  below). The same switch is the *Additive* box above the layer list.
+- *Make RGB Composite…*: gives the layers you pick black-to-colour maps and
+  turns the additive blend on. The *RGB…* button above the layer list does the
+  same.
 - *Inspector Panel*: shows or hides the Inspector.
 - *Diagnostics*: the application log, including load errors and WCS repairs.
 
@@ -118,6 +124,44 @@ sequential schemes, the ones most often used for simulation output on a light
 background. The cube, point-cloud and VR pickers list them too.
 
 Blank (NaN) pixels are transparent.
+
+## RGB composite and additive blend
+
+By default a layer is painted over the ones below it, weighted by its
+opacity. A red, a green and a blue layer drawn that way wash each other out,
+and where all three are bright the result is never white. With *Additive* on
+(the box above the layer list, or *View ▸ Additive Blend*) the colours of the
+visible layers are added per pixel and clipped at full brightness, and a
+layer's opacity is its weight in the sum. Layers keep their own colour map,
+range and stretch; those are the channel controls of the composite, and
+changing any of them on a layer's card updates the picture. Hide a layer with
+its box to take it out of the sum. Switching *Additive* off goes back to
+normal blending; no layer is changed.
+
+The sum is made on the base image's grid, from the layers as they are placed
+over it (scale and rotation from their WCSs), with bilinear resampling. Pixels
+where no visible layer has data stay transparent. A base image of more than
+about 2.5 million pixels is blended at a reduced size for display; the saved
+PNG is always at the base image's full size.
+
+*Make RGB Composite…* (*View* menu, *Tools ▸ Layers*, or the *RGB…* button)
+lists the layers; tick the ones to combine. They get a black-to-colour map in
+list order and full opacity, and the blend is switched on. With three images
+the maps are *PureRed*, *PureGreen* and *PureBlue*; with two, red and blue;
+with four or five, red, yellow, green, cyan and blue by hue; beyond five the
+hues repeat, starting with magenta (*PureMagenta*). Put the longest wavelength
+first. *Add image file…* in the dialog adds another image as a layer first.
+Layers you leave unticked are hidden. Afterwards set each layer's range and
+stretch on its card (select the layer, then *Edit* or drag on the image); you
+can change a map by hand at any time, for example to use a different hue for
+one band.
+
+*Tools ▸ Layers ▸ Save Blended Image as PNG…* writes the blend at full
+resolution, with transparency where there is no data. The publication figure
+does not include the blend: it is rendered by the backend from one image.
+
+The single-hue maps that run from black to the hue, for composites, are
+*PureRed*, *PureGreen*, *PureBlue*, *PureCyan*, *PureMagenta* and *PureYellow*.
 
 ## Overlays list
 
@@ -380,6 +424,12 @@ Each computed map is a new layer, usable with contours, regions and export.
 Multi-channel Stokes cubes must first be reduced to 2-D maps in the cube
 viewer (a single channel, or a moment 0 over a channel range); the procedure
 is on [Polarimetry](polarimetry.md).
+
+### Tools ▸ Layers
+
+*Make RGB Composite…*, *Additive Blend* and *Save Blended Image as PNG…*
+(enabled while *Additive* is on); see *RGB composite and additive blend*
+above.
 
 ### Tools ▸ Products
 
