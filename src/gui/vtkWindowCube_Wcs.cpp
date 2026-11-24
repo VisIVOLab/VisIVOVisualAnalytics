@@ -251,9 +251,8 @@ double vtkWindowCube::spectralAxisValue(double datasetVoxelIndex, bool *ok) cons
         return datasetVoxelIndex;
     }
 
-    if (this->m_simulationVolume)   // a profile along z of a grid: code units, as labelled
-        return this->remoteVoxelToWcs(2, datasetVoxelIndex, ok) / this->displayLengthScale();
-    return this->remoteVoxelToWcs(2, datasetVoxelIndex, ok);
+    // A profile along z of a grid is in the file's units, as labelled.
+    return this->remoteVoxelToNative(2, datasetVoxelIndex, ok);
 }
 
 BackendSpectralChoice vtkWindowCube::spectralChoiceForProducts() const
@@ -477,7 +476,7 @@ bool vtkWindowCube::remoteHasWcsAxis(int axis) const
             && std::abs(this->remoteDatasetCdelt[axis]) > 1e-12;
 }
 
-double vtkWindowCube::remoteVoxelToWcs(int axis, double voxelIndex, bool *ok) const
+double vtkWindowCube::remoteVoxelToNative(int axis, double voxelIndex, bool *ok) const
 {
     const bool valid = this->remoteHasWcsAxis(axis);
     if (ok) {
@@ -487,9 +486,16 @@ double vtkWindowCube::remoteVoxelToWcs(int axis, double voxelIndex, bool *ok) co
         return voxelIndex;
     }
 
-    return (this->remoteDatasetCrval[axis]
-            + ((voxelIndex + 1.0) - this->remoteDatasetCrpix[axis]) * this->remoteDatasetCdelt[axis])
-            * this->displayLengthScale();   // 1 unless a simulation grid in physical units
+    return this->remoteDatasetCrval[axis]
+            + ((voxelIndex + 1.0) - this->remoteDatasetCrpix[axis]) * this->remoteDatasetCdelt[axis];
+}
+
+double vtkWindowCube::remoteVoxelToWcs(int axis, double voxelIndex, bool *ok) const
+{
+    const double native = this->remoteVoxelToNative(axis, voxelIndex, ok);
+    // The axis-unit table: 1 unless a simulation grid is shown in physical units.
+    const bool shown = axis >= 0 && axis < 3 && this->remoteHasWcsAxis(axis);
+    return shown ? native * m_axisUnits.factor[std::size_t(axis)] : native;
 }
 
 QString vtkWindowCube::remoteFormatAxisCoordinate(int axis, double voxelIndex) const
@@ -500,7 +506,7 @@ QString vtkWindowCube::remoteFormatAxisCoordinate(int axis, double voxelIndex) c
         return QString::number(voxelIndex, 'g', 12);
     }
 
-    const QString unit = (axis >= 0 && axis < 3) ? this->displayLengthUnit(axis) : QString();
+    const QString unit = (axis >= 0 && axis < 3) ? this->axisUnitLabel(axis) : QString();
     if (unit.isEmpty()) {
         return QString::number(world, 'g', 12);
     }
@@ -511,7 +517,7 @@ QString vtkWindowCube::remoteAxisTitle(int axis) const
 {
     const QString base = axis == 0 ? u"X"_s : (axis == 1 ? u"Y"_s : u"Z"_s);
     const QString ctype = (axis >= 0 && axis < 3) ? this->remoteDatasetCtype[axis].trimmed() : QString();
-    const QString cunit = (axis >= 0 && axis < 3) ? this->displayLengthUnit(axis) : QString();
+    const QString cunit = (axis >= 0 && axis < 3) ? this->axisUnitLabel(axis) : QString();
     const QString label = ctype.isEmpty() ? base : ctype;
     return cunit.isEmpty() ? label : u"%1 (%2)"_s.arg(label, cunit);
 }

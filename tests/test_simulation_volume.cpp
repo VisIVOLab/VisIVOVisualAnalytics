@@ -2,11 +2,13 @@
 
 #include "TestSimulationVolume.h"
 #include "app/SimulationVolume.h"
+#include "app/PhysicalUnits.h"
 
 #include <QJsonDocument>
 #include <QTest>
 
 using namespace visivo::simvol;
+using namespace visivo::units;
 
 void TestSimulationVolume::planeCount_followsTheAxis()
 {
@@ -73,10 +75,13 @@ QJsonObject sample()
     return QJsonDocument::fromJson(R"({
         "active": true, "source": "definitions", "origin": "definitions.h", "variable": "rho",
         "unit_density": 1.67e-24, "unit_length": 3.0857e18, "unit_velocity": 1.0e5,
-        "value_factor": 1.67e-24, "value_unit": "g/cm^3", "value_quantity": "density",
-        "value_source": "definitions",
-        "length_factor": 3.0857e18, "length_unit": "cm", "length_source": "definitions",
-        "time_factor": 3.0857e13, "time_unit": "s", "time_code": 2.0})").object();
+        "value_quantity": "density", "time_code": 2.0,
+        "columns": {
+          "value": {"factor": 1.67e-24, "unit": "g/cm^3", "source": "definitions"},
+          "x": {"factor": 3.0857e18, "unit": "cm", "source": "definitions"},
+          "y": {"factor": 3.0857e18, "unit": "cm", "source": "definitions"},
+          "z": {"factor": 3.0857e18, "unit": "cm", "source": "definitions"},
+          "time": {"factor": 3.0857e13, "unit": "s", "source": "definitions"}}})").object();
 }
 }   // namespace
 
@@ -84,7 +89,7 @@ void TestSimulationVolume::physicalUnits_parseWhatTheBackendSends()
 {
     const PhysicalUnits u = parsePhysicalUnits(sample());
     QVERIFY(u.active);
-    QCOMPARE(u.valueUnit, QStringLiteral("g/cm^3"));
+    QCOMPARE(u.columns.value(valueColumn()).unit, QStringLiteral("g/cm^3"));
     QCOMPARE(u.valueQuantity, QStringLiteral("density"));
     QCOMPARE(u.unitVelocity, 1.0e5);
     QVERIFY(u.hasValue() && u.hasLength() && u.hasTime());
@@ -97,18 +102,20 @@ void TestSimulationVolume::physicalUnits_parseWhatTheBackendSends()
 void TestSimulationVolume::physicalUnits_scaleOnlyWhenOnAndKnown()
 {
     const PhysicalUnits u = parsePhysicalUnits(sample());
-    QCOMPARE(valueScale(u, true), 1.67e-24);
-    QCOMPARE(valueScale(u, false), 1.0);
-    QCOMPARE(lengthScale(u, true), 3.0857e18);
-    QCOMPARE(lengthScale(u, false), 1.0);
-    QCOMPARE(valueUnitLabel(u, true, QString()), QStringLiteral("g/cm^3"));
-    QCOMPARE(valueUnitLabel(u, false, QStringLiteral("code")), QStringLiteral("code"));
-    QCOMPARE(lengthUnitLabel(u, true, QString()), QStringLiteral("cm"));
-    // A variable the run gives nothing for (a tracer): code units, factor 1.
-    PhysicalUnits tracer = parsePhysicalUnits(QJsonDocument::fromJson(
-            R"({"active": true, "value_factor": 1.0, "value_source": "none"})").object());
-    QCOMPARE(valueScale(tracer, true), 1.0);
-    QCOMPARE(valueUnitLabel(tracer, true, QStringLiteral("")), QString());
+    QCOMPARE(columnScale(u, valueColumn(), true), 1.67e-24);
+    QCOMPARE(columnScale(u, valueColumn(), false), 1.0);
+    QCOMPARE(columnScale(u, axisColumn(1), true), 3.0857e18);
+    QCOMPARE(columnScale(u, axisColumn(1), false), 1.0);
+    QCOMPARE(columnUnitLabel(u, valueColumn(), true, QString()), QStringLiteral("g/cm^3"));
+    QCOMPARE(columnUnitLabel(u, valueColumn(), false, QStringLiteral("code")),
+             QStringLiteral("code"));
+    QCOMPARE(columnUnitLabel(u, axisColumn(2), true, QString()), QStringLiteral("cm"));
+    // A variable the run gives nothing for (a tracer): no column, code units, factor 1.
+    const PhysicalUnits tracer = parsePhysicalUnits(QJsonDocument::fromJson(
+            R"({"active": true, "columns": {"x": {"factor": 2.0, "unit": "pc"}}})").object());
+    QVERIFY(!tracer.hasValue() && tracer.hasLength());
+    QCOMPARE(columnScale(tracer, valueColumn(), true), 1.0);
+    QCOMPARE(columnUnitLabel(tracer, valueColumn(), true, QStringLiteral("")), QString());
 }
 
 void TestSimulationVolume::timeLabel_isCodeOrPhysical()
@@ -123,16 +130,40 @@ void TestSimulationVolume::unitsRequest_sendsOnlyWhatIsSet()
 {
     UnitsRequest r;
     r.unitDensity = 1.0e-22;
-    r.lengthFactor = 1.0;
-    r.lengthUnit = QStringLiteral("pc");
+    r.columns.insert(axisColumn(0), { 1.0, QStringLiteral("pc"), QString() });
     const QJsonObject body = unitsRequestBody(QStringLiteral("ds_1"), r);
     QCOMPARE(body.value("dataset_id").toString(), QStringLiteral("ds_1"));
     QCOMPARE(body.value("unit_density").toDouble(), 1.0e-22);
     QVERIFY(!body.contains("unit_length"));
-    QVERIFY(!body.contains("value_factor"));
-    QCOMPARE(body.value("length_unit").toString(), QStringLiteral("pc"));
+    QVERIFY(!body.value("columns").toObject().contains("value"));
+    QCOMPARE(body.value("columns").toObject().value("x").toObject().value("unit").toString(),
+             QStringLiteral("pc"));
     QCOMPARE(body.value("clear").toBool(), false);
     UnitsRequest clear;
     clear.clear = true;
     QCOMPARE(unitsRequestBody(QStringLiteral("d"), clear).value("clear").toBool(), true);
+}
+
+void TestSimulationVolume::columns_serveAnyReaderThroughTheSameTable()
+{
+    // A Gadget snapshot's columns arrive the same way a volume's do, with the
+    // reader's own table (empty source) or what the user typed.
+    const PhysicalUnits u = parsePhysicalUnits(QJsonDocument::fromJson(R"({
+        "columns": {"mass": {"factor": 1.0e10, "unit": "Msun", "source": "user"},
+                    "hsml": {"factor": 0.5, "unit": "kpc"},
+                    "junk": {"factor": 0, "unit": "x"}}})").object());
+    QCOMPARE(columnScale(u, QStringLiteral("mass"), true), 1.0e10);
+    QCOMPARE(columnScale(u, QStringLiteral("mass"), false), 1.0);
+    QCOMPARE(columnScale(u, QStringLiteral("nope"), true), 1.0);
+    QCOMPARE(columnUnitLabel(u, QStringLiteral("hsml"), true, QStringLiteral("code")),
+             QStringLiteral("kpc"));
+    QCOMPARE(columnUnitLabel(u, QStringLiteral("hsml"), false, QStringLiteral("code")),
+             QStringLiteral("code"));
+    QVERIFY(!u.columns.contains(QStringLiteral("junk")));
+    UnitsRequest r;
+    r.columns.insert(QStringLiteral("mass"), { 2.0, QStringLiteral("Msun"), QString() });
+    r.columns.insert(QStringLiteral("bad"), { -1.0, QString(), QString() });
+    const QJsonObject columns = unitsRequestBody(QStringLiteral("d"), r).value("columns").toObject();
+    QCOMPARE(columns.value("mass").toObject().value("unit").toString(), QStringLiteral("Msun"));
+    QVERIFY(!columns.contains("bad"));
 }

@@ -7,10 +7,10 @@
 // definitions.h, or what the user typed, or the file's code units), a switch
 // between physical and code units, and "Units…" to type UNIT_DENSITY,
 // UNIT_LENGTH, UNIT_VELOCITY or a factor and unit per variable
-// (POST /v1/datasets/units). The rules live in app/SimulationVolume.h; this is
+// (POST /v1/datasets/units). The rules live in app/PhysicalUnits.h; this is
 // the widget around them.
 
-#include "app/SimulationVolume.h"
+#include "app/PhysicalUnits.h"
 
 #include <QPointer>
 #include <QString>
@@ -29,27 +29,27 @@ public:
 
     void setDataset(const QString &backendUrl, const QString &token, const QString &sessionId,
                     const QString &datasetId);
-    void setUnits(const visivo::simvol::PhysicalUnits &units, bool physical);
+    void setUnits(const visivo::units::PhysicalUnits &units, bool physical);
 
-    const visivo::simvol::PhysicalUnits &units() const { return m_units; }
+    const visivo::units::PhysicalUnits &units() const { return m_units; }
     bool physical() const { return m_physical; }
 
 signals:
     /// The user turned physical units on or off.
     void displayChanged(bool physical);
     /// The backend accepted typed units (or forgot them).
-    void unitsChanged(const visivo::simvol::PhysicalUnits &units);
+    void unitsChanged(const visivo::units::PhysicalUnits &units);
 
 private:
     void refresh();
     void askForUnits();
-    void send(const visivo::simvol::UnitsRequest &request);
+    void send(const visivo::units::UnitsRequest &request);
 
     QString m_backendUrl;
     QString m_token;
     QString m_sessionId;
     QString m_datasetId;
-    visivo::simvol::PhysicalUnits m_units;
+    visivo::units::PhysicalUnits m_units;
     bool m_physical{ true };
     bool m_busy{ false };
 

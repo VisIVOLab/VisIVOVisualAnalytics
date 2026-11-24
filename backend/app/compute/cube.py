@@ -188,12 +188,14 @@ def _save_simulation_plane(src_path: str, output_path: str, plane: np.ndarray, a
     grid's units (physical when asked and known), the plane's position and,
     with ``physical``, the values scaled by the variable's factor."""
     from astropy.io import fits as _fits  # noqa: PLC0415
-    from ..physical_units import dataset_units  # noqa: PLC0415
+    from ..physical_units import VALUE, scales  # noqa: PLC0415
 
-    units = dataset_units(src_path)
-    value_factor = units.value.factor if physical and units.value.source != "none" else 1.0
-    length_factor = units.length.factor if physical and units.length.source != "none" else 1.0
-    length_unit = units.length.unit if length_factor != 1.0 or physical else ""
+    table = scales(src_path) if physical else {}
+    value = table.get(VALUE)
+    value_factor = value["factor"] if value else 1.0
+    lengths = [table.get(c) for c in ("x", "y", "z")]       # one conversion per axis
+    factors = [e["factor"] if e else 1.0 for e in lengths]
+    units = [e["unit"] if e else "" for e in lengths]
     if value_factor != 1.0:
         plane = scaled_f32(plane, value_factor)
     k = SLICE_AXES.index(axis)
@@ -205,27 +207,28 @@ def _save_simulation_plane(src_path: str, output_path: str, plane: np.ndarray, a
     for number, cube_axis in ((1, horizontal), (2, vertical)):
         header[f"CTYPE{number}"] = SLICE_AXES[cube_axis].upper()
         header[f"CRPIX{number}"] = float(geometry["crpix"][cube_axis])
-        header[f"CRVAL{number}"] = float(geometry["crval"][cube_axis]) * length_factor
-        header[f"CDELT{number}"] = float(geometry["cdelt"][cube_axis]) * length_factor
-        if length_unit:
-            header[f"CUNIT{number}"] = length_unit
+        header[f"CRVAL{number}"] = float(geometry["crval"][cube_axis]) * factors[cube_axis]
+        header[f"CDELT{number}"] = float(geometry["cdelt"][cube_axis]) * factors[cube_axis]
+        if units[cube_axis]:
+            header[f"CUNIT{number}"] = units[cube_axis]
     position = (float(geometry["crval"][k])
                 + (index + 1 - float(geometry["crpix"][k])) * float(geometry["cdelt"][k]))
     header["SLICEAX"] = (axis, "axis the plane is normal to")
     header["SLICEIDX"] = (index, "0-based plane along that axis")
-    header["SLICEPOS"] = (position * length_factor,
-                          f"plane position{(' [' + length_unit + ']') if length_unit else ''}")
-    bunit = units.value.unit if value_factor != 1.0 else str(src_header.get("BUNIT", ""))
+    header["SLICEPOS"] = (position * factors[k],
+                          f"plane position{(' [' + units[k] + ']') if units[k] else ''}")
+    bunit = value["unit"] if value and value_factor != 1.0 else str(src_header.get("BUNIT", ""))
     if bunit:
         header["BUNIT"] = bunit
     for key in ("OBJECT", "PLUTOVAR", "PLUTOTIM", "PLUTOGEO", "VBTFIELD"):
         if key in src_header:
             header[key] = (src_header[key], src_header.comments[key])
-    if physical and (value_factor != 1.0 or length_factor != 1.0):
+    if physical and (value_factor != 1.0 or any(f != 1.0 for f in factors)):
+        known = next((e for e in lengths if e), None)
         header["CODEUNIT"] = ("code units", "the file's own values and axes")
         header["UNITFAC"] = (value_factor, "values multiplied by this (code -> physical)")
-        header["LENFAC"] = (length_factor, "axis coordinates multiplied by this")
-        header["UNITSRC"] = (units.value.source if value_factor != 1.0 else units.length.source,
+        header["LENFAC"] = (factors[k], "plane-normal axis coordinates multiplied by this")
+        header["UNITSRC"] = ((value if value_factor != 1.0 else known).get("source", ""),
                              "where the factors came from")
     header.add_history(
         f"VisIVO plane export from {Path(src_path).name}: {axis} plane {index} (0-indexed)"

@@ -9,17 +9,28 @@ viewers, which show ``value * factor`` in the unit named here, so a slice, a
 probe or a colour bar can be read in g/cm^3 while every computation on the
 file stays in code units.
 
+One shape serves every reader: ``{column: {"factor", "unit"[, "source"]}}``,
+the factor that makes the column physical and the unit it is then in, as
+Gadget's ``Component.physical()`` has always given it. A producer states its
+own columns (Gadget through its ``UnitSystem``; a PLUTO or VBT volume through
+the run's code units below) and :func:`scales` adds what the user typed, so
+every consumer (a route, a slice, an export, a client) reads one table. A
+volume has one data column, ``"value"``, its coordinates ``"x"``, ``"y"``,
+``"z"`` and, for PLUTO, ``"time"``; a column that is absent has no known
+conversion (code units).
+
 The factors come from, in this order of priority:
 
 1. what the user typed (:func:`set_user`), kept in a small JSON file that every
-   process of the backend reads, so it survives reopening and is shared by
-   all the variables of a run;
-2. the run's ``definitions.h`` (or a ``pluto.ini`` that carries the same
-   ``UNIT_*`` names) found next to the data, up to two directories above it;
+   process of the backend reads, so it survives reopening; the coordinates and
+   the time of a PLUTO run are shared by all its variables;
+2. the producer: for a PLUTO run, its ``definitions.h`` (or a ``pluto.ini`` that
+   carries the same ``UNIT_*`` names) found next to the data, up to two
+   directories above it; for a Gadget snapshot, its unit system;
 3. nothing: the values and coordinates stay in code units.
 
-A user-typed per-variable factor and unit (any quantity, any format: a VBT
-field, a FITS cube) replaces what a run would give for that one variable.
+A typed factor and unit replaces what the producer gives for that one column
+(any format: a Gadget column, a PLUTO variable, a VBT field, a FITS cube).
 """
 from __future__ import annotations
 
@@ -31,7 +42,7 @@ import operator
 import os
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from .vbt_byte_order_store import _exclusive, _write
@@ -83,28 +94,15 @@ class RunUnits:
         return self.velocity * math.sqrt(4.0 * math.pi * self.density)
 
 
-@dataclass(frozen=True)
-class Scale:
-    """``value * factor`` is the value in ``unit``; factor 1 and unit "" when
-    nothing is known (the values are then in code units)."""
-    factor: float = 1.0
-    unit: str = ""
-    quantity: str = ""            # "density", "velocity", ... or ""
-    source: str = "none"          # "none", "definitions", "user"
-
-
-@dataclass
-class DatasetUnits:
-    """What a viewer needs to show one variable in physical units."""
-    run: RunUnits = field(default_factory=RunUnits)
-    value: Scale = field(default_factory=Scale)
-    length: Scale = field(default_factory=Scale)
-    time: Scale = field(default_factory=Scale)
-    variable: str = ""
-
-    @property
-    def active(self) -> bool:
-        return self.value.source != "none" or self.length.source != "none"
+#: One column's conversion: ``value * factor`` is the value in ``unit``;
+#: ``source`` ("definitions" or "user") is present when the producer or the
+#: user stated it rather than a reader's own table.
+ColumnScale = dict
+VALUE = "value"
+COORDINATES = ("x", "y", "z")
+TIME = "time"
+#: Columns shared by every variable of a PLUTO run.
+RUN_COLUMNS = COORDINATES + (TIME,)
 
 
 # ── definitions.h ───────────────────────────────────────────────────────────
@@ -219,6 +217,11 @@ def _pluto_split(path: str | os.PathLike) -> tuple[str, str | None]:
     return pluto_source.split_ref(path)
 
 
+def _gadget_split(path: str | os.PathLike) -> tuple[str, int | None]:
+    from . import gadget_snapshot  # noqa: PLC0415
+    return gadget_snapshot.split_ref(path)
+
+
 def run_key(path: str | os.PathLike) -> str:
     """What the run-wide units are kept under: the directory of a PLUTO run
     (every variable and every output of it shares them), else the file."""
@@ -228,10 +231,21 @@ def run_key(path: str | os.PathLike) -> str:
 
 
 def dataset_key(path: str | os.PathLike) -> str:
-    """What one variable's own factor is kept under: its reference, symlinks
-    resolved in the file part."""
+    """What one dataset's own columns are kept under: its reference, symlinks
+    resolved in the file part; every particle type of a Gadget snapshot shares
+    the snapshot's, as its columns do."""
+    base, ptype = _gadget_split(path)
+    if ptype is not None:
+        return os.path.realpath(base)
     base, name = _pluto_split(path)
     return os.path.realpath(base) + (f"::{name}" if name is not None else "")
+
+
+def _scope(path: str | os.PathLike, column: str) -> str:
+    """Where a typed column is kept: the coordinates and the time of a PLUTO
+    run are the run's; every other column is its dataset's."""
+    return run_key(path) if column in RUN_COLUMNS and _pluto_split(path)[1] is not None \
+        else dataset_key(path)
 
 
 def _positive(value, what: str) -> float:
@@ -242,13 +256,14 @@ def _positive(value, what: str) -> float:
 
 
 def set_user(path: str | os.PathLike, *, run: dict[str, float] | None = None,
-             value: tuple[float, str] | None = None, length: tuple[float, str] | None = None,
+             columns: dict[str, tuple[float, str]] | None = None,
              clear: bool = False, by: str = "") -> None:
     """Keep what the user typed for the dataset ``path``: ``run`` the cgs code
-    units of the run (keys of :data:`RUN_UNIT_KEYS`, merged into those already
-    kept), ``value`` and ``length`` a factor and a unit for this variable's
-    values and for the run's coordinates. ``clear`` forgets everything kept for
-    this variable and run first. A factor must be a positive finite number."""
+    units of the PLUTO run (keys of :data:`RUN_UNIT_KEYS`, merged into those
+    already kept), ``columns`` a factor and a unit per column (``"value"``, the
+    coordinates ``"x"``, ``"y"``, ``"z"``, or a Gadget column), merged into
+    those already kept. ``clear`` forgets everything kept for this dataset and
+    run first. A factor must be a positive finite number."""
     global _cache
     rk, dk = run_key(path), dataset_key(path)
     clean_run = {}
@@ -256,9 +271,10 @@ def set_user(path: str | os.PathLike, *, run: dict[str, float] | None = None,
         if key not in RUN_UNIT_KEYS:
             raise ValueError(f"Unknown run unit {key!r}.")
         clean_run[key] = _positive(v, key)
-    for what, pair in (("value", value), ("length", length)):
-        if pair is not None:
-            _positive(pair[0], f"The {what} factor")
+    clean_columns = {}
+    for column, (factor, unit) in (columns or {}).items():
+        clean_columns[column] = {"factor": _positive(factor, f"The {column} factor"),
+                                 "unit": str(unit).strip()}
     store = store_path()
     with _exclusive(store):
         try:
@@ -268,17 +284,15 @@ def set_user(path: str | os.PathLike, *, run: dict[str, float] | None = None,
         except (OSError, ValueError):
             entries = {}
         runs = entries.setdefault("runs", {})
-        datasets = entries.setdefault("datasets", {})
+        typed = entries.setdefault("columns", {})
         if clear:
             runs.pop(rk, None)
-            datasets.pop(dk, None)
-        if clean_run or length is not None:
-            slot = runs.setdefault(rk, {})
-            slot.update(clean_run)
-            if length is not None:
-                slot["length"] = {"factor": float(length[0]), "unit": str(length[1]).strip()}
-        if value is not None:
-            datasets[dk] = {"factor": float(value[0]), "unit": str(value[1]).strip()}
+            typed.pop(rk, None)
+            typed.pop(dk, None)
+        if clean_run:
+            runs.setdefault(rk, {}).update(clean_run)
+        for column, entry in clean_columns.items():
+            typed.setdefault(_scope(path, column), {})[column] = entry
         _write(store, entries)
         with _LOCK:
             _cache = None
@@ -355,26 +369,16 @@ def merged_run_units(path: str | os.PathLike) -> RunUnits:
                     over.get("velocity", run.velocity), "user", run.origin)
 
 
-def dataset_units(path: str | os.PathLike, variable: str = "") -> DatasetUnits:
-    """How the values, coordinates and time of the dataset ``path`` (a PLUTO
-    variable reference, or any file) are shown in physical units. ``variable``
-    is the PLUTO variable name when ``path`` does not carry it."""
-    base, name = _pluto_split(path)
-    variable = name or variable
+def _volume_scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
+    """The producer of a volume (PLUTO output, VBT field, FITS cube): its
+    columns from the run's code units, as Gadget's ``UnitSystem`` gives its."""
+    _, name = _pluto_split(path)
     run = merged_run_units(path)
-    store = _load()
-    typed_run = store.get("runs", {}).get(run_key(path), {})
-    typed_value = store.get("datasets", {}).get(dataset_key(path))
-    out = DatasetUnits(run=run, variable=variable)
-
-    quantity = variable_quantity(variable) if name is not None else ""
+    out: dict[str, ColumnScale] = {}
+    quantity = variable_quantity(name) if name is not None else ""
     factor = _quantity_factor(run, quantity) if quantity else None
     if factor is not None and quantity != "tracer":
-        out.value = Scale(factor, _QUANTITY_UNIT[quantity], quantity, run.source)
-    if isinstance(typed_value, dict) and typed_value.get("factor", 0) > 0:
-        out.value = Scale(float(typed_value["factor"]), str(typed_value.get("unit", "")),
-                          quantity, "user")
-
+        out[VALUE] = {"factor": factor, "unit": _QUANTITY_UNIT[quantity], "source": run.source}
     # A grid shown in cell indices (polar, spherical, non-uniform) has no
     # coordinates to convert.
     index_grid = False
@@ -384,15 +388,44 @@ def dataset_units(path: str | os.PathLike, variable: str = "") -> DatasetUnits:
             index_grid = bool(pluto_source.resolve(path).grid.index_reason())
         except (OSError, ValueError, AttributeError):
             index_grid = False
-
-    typed_length = typed_run.get("length")
-    if index_grid:
-        pass
-    elif isinstance(typed_length, dict) and typed_length.get("factor", 0) > 0:
-        out.length = Scale(float(typed_length["factor"]), str(typed_length.get("unit", "")),
-                           "length", "user")
-    elif name is not None and run.length:
-        out.length = Scale(run.length, "cm", "length", run.source)
+    if name is not None and run.length and not index_grid:
+        for column in COORDINATES:
+            out[column] = {"factor": run.length, "unit": "cm", "source": run.source}
     if run.time:
-        out.time = Scale(run.time, "s", "time", run.source)
+        out[TIME] = {"factor": run.time, "unit": "s", "source": run.source}
     return out
+
+
+def with_typed(path: str | os.PathLike, table: dict[str, ColumnScale],
+               columns: tuple[str, ...] | None = None) -> dict[str, ColumnScale]:
+    """``table`` (a producer's columns) with what the user typed for the
+    dataset ``path`` laid over it, each typed column marked ``"source": "user"``.
+    ``columns`` limits the typed ones to those the dataset has (None: any, a
+    volume's columns)."""
+    typed = _load().get("columns", {})
+    out = dict(table)
+    own, shared = typed.get(dataset_key(path), {}), typed.get(_scope(path, "x"), {})
+    for column in (columns if columns is not None else (VALUE,) + RUN_COLUMNS):
+        entry = (shared if column in RUN_COLUMNS else own).get(column)
+        if (isinstance(entry, dict) and isinstance(entry.get("factor"), (int, float))
+                and math.isfinite(entry["factor"]) and entry["factor"] > 0):
+            out[column] = {"factor": float(entry["factor"]), "unit": str(entry.get("unit", "")),
+                           "source": "user"}
+    return out
+
+
+def scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
+    """Every column of the dataset ``path`` that can be shown in physical units,
+    ``{column: {"factor", "unit"[, "source"]}}``: the one function every
+    reader feeds and every consumer reads. A Gadget component answers from its
+    unit system (``Component.physical()``), a PLUTO or VBT volume from the
+    run's code units; what the user typed replaces either."""
+    if _gadget_split(path)[1] is not None:
+        from . import gadget_snapshot  # noqa: PLC0415
+        return gadget_snapshot.resolve(path).physical()
+    return with_typed(path, _volume_scales(path))
+
+
+def column_scale(path: str | os.PathLike, column: str) -> ColumnScale | None:
+    """One column of :func:`scales`; None when its unit is not known."""
+    return scales(path).get(column)

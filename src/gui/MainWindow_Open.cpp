@@ -1173,7 +1173,9 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
         // them (issue #524): every cube data route answers in them from the
         // first request, so the scale is set before the window asks.
         BackendClient::setDisplayValueScale(
-                opened.datasetId, visivo::simvol::valueScale(opened.physicalUnits, true));
+                opened.datasetId,
+                visivo::units::columnScale(opened.physicalUnits, visivo::units::valueColumn(),
+                                           true));
         auto *cubeWin = new vtkWindowCube(path, client.baseUrl(), opened.datasetId, opened.width,
                                           opened.height, opened.depth, opened.spacing,
                                           opened.origin, opened.ctype, opened.cunit, opened.crval,

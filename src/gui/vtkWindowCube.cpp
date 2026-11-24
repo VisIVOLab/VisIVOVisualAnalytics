@@ -3404,6 +3404,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // A simulation's grid (axes X, Y, Z) is sliced along any axis and shown in
     // coordinates, not channels (issue #524).
     this->m_simulationVolume = this->detectSimulationVolume();
+    this->refreshAxisUnits();   // the file's own axes until the backend's units arrive
     // Backend-authoritative: statistics fields show "-" until populated.
     ui->lineCubeMin->clear();
     ui->lineCubeMax->clear();
@@ -4757,8 +4758,9 @@ void vtkWindowCube::setIntensityUnit(const QString &unit, const QString &note)
     // A simulation volume in physical units shows the unit its factor is in
     // (issue #524); the header's own is kept for code units.
     m_codeBunit = unit;
-    m_brightnessUnit = visivo::simvol::valueUnitLabel(
-            m_physicalUnits, m_simulationVolume && m_showPhysical, unit);
+    m_brightnessUnit = visivo::units::columnUnitLabel(
+            m_physicalUnits, visivo::units::valueColumn(), m_simulationVolume && m_showPhysical,
+            unit);
     m_intensityUnitNote = note;
     this->refreshUnitAndBeamRows();
 }

@@ -19,4 +19,5 @@ private slots:
     void physicalUnits_scaleOnlyWhenOnAndKnown();
     void timeLabel_isCodeOrPhysical();
     void unitsRequest_sendsOnlyWhatIsSet();
+    void columns_serveAnyReaderThroughTheSameTable();
 };

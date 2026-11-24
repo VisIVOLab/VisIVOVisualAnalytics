@@ -4,22 +4,22 @@
 // The rules of a simulation volume in the cube viewer (issue #524), as pure
 // logic: which plane is shown when the slice is taken along x, y or z, how a
 // coordinate typed in the grid's units picks a plane, how a plane is labelled,
-// and the physical units (UNIT_DENSITY, UNIT_LENGTH, UNIT_VELOCITY) the backend
-// reports for a run. No widgets, no VTK: tests/test_simulation_volume.cpp.
+// and how a coordinate is written. The physical units a run is shown in are
+// the shared mechanism of PhysicalUnits.h. No widgets, no VTK:
+// tests/test_simulation_volume.cpp.
 //
 // A spectral cube steps through channels along its third axis only. A volume of
 // a simulation (a PLUTO variable, a VBT field) has no spectrum: any of its
 // three axes can be the one the slice is normal to, and every axis is a
-// coordinate in the grid's units. Data stay in the file's code units; a viewer
-// shows value * factor in the unit the backend names.
+// coordinate in the grid's units.
 
-#include <QJsonObject>
+#include "PhysicalUnits.h"
+
 #include <QString>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <limits>
 
 namespace visivo::simvol {
 
@@ -85,175 +85,13 @@ inline int nearestPlane(double coordinate, double crval, double crpix, double cd
     return std::clamp(static_cast<int>(std::lround(pixel)), 0, n - 1);
 }
 
-/// A number the way a coordinate or value is read on screen: five significant
-/// digits, scientific when the magnitude needs it ("1.5e+18", "0.15").
-inline QString formatNumber(double value)
-{
-    if (!std::isfinite(value))
-        return QStringLiteral("-");
-    if (value == 0.0)
-        return QStringLiteral("0");
-    return QString::number(value, 'g', 5);
-}
-
 /// "x = 0.15 pc", or "x = 0.15" without a unit.
 inline QString coordinateLabel(SliceAxis axis, double world, const QString &unit)
 {
-    const QString value = formatNumber(world);
+    const QString value = visivo::units::formatNumber(world);
     return unit.trimmed().isEmpty()
             ? QStringLiteral("%1 = %2").arg(axisLetter(axis), value)
             : QStringLiteral("%1 = %2 %3").arg(axisLetter(axis), value, unit.trimmed());
-}
-
-/// The physical units of one simulation variable, as /v1/datasets/open and
-/// /v1/datasets/units report them: value * valueFactor is in valueUnit, a
-/// coordinate * lengthFactor in lengthUnit, a time * timeFactor in timeUnit.
-/// Each *Source is "definitions" (the run's definitions.h), "user" or "none".
-struct PhysicalUnits
-{
-    bool active{ false };
-    QString source{ QStringLiteral("none") };
-    QString origin;          ///< the definitions file the factors came from
-    QString variable;
-    double unitDensity{ std::numeric_limits<double>::quiet_NaN() };
-    double unitLength{ std::numeric_limits<double>::quiet_NaN() };
-    double unitVelocity{ std::numeric_limits<double>::quiet_NaN() };
-    double valueFactor{ 1.0 };
-    QString valueUnit;
-    QString valueQuantity;
-    QString valueSource{ QStringLiteral("none") };
-    double lengthFactor{ 1.0 };
-    QString lengthUnit;
-    QString lengthSource{ QStringLiteral("none") };
-    double timeFactor{ 1.0 };
-    QString timeUnit;
-    double timeCode{ std::numeric_limits<double>::quiet_NaN() };
-
-    bool hasValue() const { return valueSource != QLatin1String("none") && valueFactor > 0.0; }
-    bool hasLength() const { return lengthSource != QLatin1String("none") && lengthFactor > 0.0; }
-    bool hasTime() const { return timeFactor > 0.0 && !timeUnit.isEmpty() && std::isfinite(timeCode); }
-};
-
-inline PhysicalUnits parsePhysicalUnits(const QJsonObject &o)
-{
-    PhysicalUnits u;
-    if (o.isEmpty())
-        return u;
-    const auto number = [&o](const char *key, double fallback) {
-        const QJsonValue v = o.value(QLatin1String(key));
-        return v.isDouble() ? v.toDouble() : fallback;
-    };
-    const auto text = [&o](const char *key, const QString &fallback = QString()) {
-        const QJsonValue v = o.value(QLatin1String(key));
-        return v.isString() ? v.toString() : fallback;
-    };
-    const double nan = std::numeric_limits<double>::quiet_NaN();
-    u.active = o.value(QLatin1String("active")).toBool(false);
-    u.source = text("source", u.source);
-    u.origin = text("origin");
-    u.variable = text("variable");
-    u.unitDensity = number("unit_density", nan);
-    u.unitLength = number("unit_length", nan);
-    u.unitVelocity = number("unit_velocity", nan);
-    u.valueFactor = number("value_factor", 1.0);
-    u.valueUnit = text("value_unit");
-    u.valueQuantity = text("value_quantity");
-    u.valueSource = text("value_source", u.valueSource);
-    u.lengthFactor = number("length_factor", 1.0);
-    u.lengthUnit = text("length_unit");
-    u.lengthSource = text("length_source", u.lengthSource);
-    u.timeFactor = number("time_factor", 1.0);
-    u.timeUnit = text("time_unit");
-    u.timeCode = number("time_code", nan);
-    return u;
-}
-
-/// What the viewer multiplies the file's values by: the factor when physical
-/// units are on and known, else 1 (the file's code units).
-inline double valueScale(const PhysicalUnits &u, bool physical)
-{
-    return physical && u.hasValue() ? u.valueFactor : 1.0;
-}
-
-inline double lengthScale(const PhysicalUnits &u, bool physical)
-{
-    return physical && u.hasLength() ? u.lengthFactor : 1.0;
-}
-
-/// The unit the values are shown in; @p codeUnit (the header's BUNIT, usually
-/// empty for a simulation) when physical units are off or unknown.
-inline QString valueUnitLabel(const PhysicalUnits &u, bool physical, const QString &codeUnit)
-{
-    return physical && u.hasValue() ? u.valueUnit : codeUnit;
-}
-
-inline QString lengthUnitLabel(const PhysicalUnits &u, bool physical, const QString &codeUnit)
-{
-    return physical && u.hasLength() ? u.lengthUnit : codeUnit;
-}
-
-/// The output's time, "t = 3 (code units)" or, with physical units on and the
-/// run's length and velocity known, "t = 9.5e+12 s". Empty when there is none.
-inline QString timeLabel(const PhysicalUnits &u, bool physical)
-{
-    if (!std::isfinite(u.timeCode))
-        return QString();
-    if (physical && u.hasTime())
-        return QStringLiteral("t = %1 %2").arg(formatNumber(u.timeCode * u.timeFactor), u.timeUnit);
-    return QStringLiteral("t = %1 (code units)").arg(formatNumber(u.timeCode));
-}
-
-/// The body of POST /v1/datasets/units. Fields left at NaN (or empty) are not
-/// sent; @p clear forgets everything typed first.
-struct UnitsRequest
-{
-    double unitDensity{ std::numeric_limits<double>::quiet_NaN() };
-    double unitLength{ std::numeric_limits<double>::quiet_NaN() };
-    double unitVelocity{ std::numeric_limits<double>::quiet_NaN() };
-    double valueFactor{ std::numeric_limits<double>::quiet_NaN() };
-    QString valueUnit;
-    double lengthFactor{ std::numeric_limits<double>::quiet_NaN() };
-    QString lengthUnit;
-    bool clear{ false };
-};
-
-inline QJsonObject unitsRequestBody(const QString &datasetId, const UnitsRequest &r)
-{
-    QJsonObject body{ { QStringLiteral("dataset_id"), datasetId },
-                      { QStringLiteral("clear"), r.clear } };
-    const auto put = [&body](const char *key, double v) {
-        if (std::isfinite(v))
-            body.insert(QLatin1String(key), v);
-    };
-    put("unit_density", r.unitDensity);
-    put("unit_length", r.unitLength);
-    put("unit_velocity", r.unitVelocity);
-    if (std::isfinite(r.valueFactor)) {
-        body.insert(QStringLiteral("value_factor"), r.valueFactor);
-        body.insert(QStringLiteral("value_unit"), r.valueUnit);
-    }
-    if (std::isfinite(r.lengthFactor)) {
-        body.insert(QStringLiteral("length_factor"), r.lengthFactor);
-        body.insert(QStringLiteral("length_unit"), r.lengthUnit);
-    }
-    return body;
-}
-
-/// The answer of POST /v1/datasets/units.
-struct UnitsResult
-{
-    bool valid{ false };
-    QString error;
-    PhysicalUnits units;
-};
-
-inline UnitsResult parseUnitsResult(const QJsonObject &o)
-{
-    UnitsResult r;
-    r.valid = o.value(QStringLiteral("valid")).toBool(false);
-    r.error = o.value(QStringLiteral("error")).toString();
-    r.units = parsePhysicalUnits(o.value(QStringLiteral("physical_units")).toObject());
-    return r;
 }
 
 }   // namespace visivo::simvol

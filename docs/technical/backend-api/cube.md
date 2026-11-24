@@ -40,7 +40,7 @@ memory map like a channel. An `index` outside the axis is `valid: false`.
   `valid: false` with the axis' range.
 - `value_scale` (optional, default `1`, positive): the values come back
   multiplied by it, `range_min`/`range_max` included: a simulation volume in
-  physical units (`physical_units.value_factor` of the open response). The
+  physical units (`physical_units.columns.value.factor` of the open response). The
   same field is taken by `/v1/cube/preview` (its `default_threshold` too),
   `/v1/cube/subvolume`, `/v1/cube/subvolume_bin` and
   `/v1/cube/region_level_bin`. Everything else (moments, isosurface levels,
@@ -1002,7 +1002,7 @@ A simulation volume is written with linear axes instead of a celestial WCS:
 grid's units, and `SLICEAX`, `SLICEIDX` and `SLICEPOS` for the plane. With
 `physical` the values are multiplied by the variable's factor
 ([`/v1/datasets/units`](datasets.md)), `BUNIT` and `CUNIT1`/`CUNIT2` are the
-physical units, and `CODEUNIT`, `UNITFAC`, `LENFAC` and `UNITSRC` record what
+physical units, and `CODEUNIT`, `UNITFAC`, `LENFAC` (the factor of the axis the plane is normal to; each in-plane axis is scaled by its own) and `UNITSRC` record what
 was applied. `axis` other than `z`, or `physical`, on a spectral cube is 422
 (`valid: false`).
 

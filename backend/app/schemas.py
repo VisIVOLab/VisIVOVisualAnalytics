@@ -105,30 +105,34 @@ class DatasetField(BaseModel):
     path: str      # what /v1/datasets/open takes to open it
 
 
+class ColumnScaleInfo(BaseModel):
+    """One column's conversion to physical units: ``value * factor`` in ``unit``;
+    ``source`` is "definitions" (the run's definitions.h), "user" (typed with
+    /v1/datasets/units) or empty (the reader's own unit system)."""
+    factor: float
+    unit: str = ""
+    source: str = ""
+
+
 class PhysicalUnitsInfo(BaseModel):
-    """How a simulation variable is shown in physical units (issue #524): a
-    viewer shows ``value * value_factor`` in ``value_unit`` and a coordinate
-    ``* length_factor`` in ``length_unit``; the data itself stays in code
-    units. Each ``*_source`` is "definitions" (the run's definitions.h),
-    "user" (typed with /v1/datasets/units) or "none" (code units, factor 1)."""
+    """How a dataset is shown in physical units (issue #524): ``columns`` is the
+    one table every reader fills (``app.physical_units.scales``), a viewer shows
+    ``value * factor`` in ``unit``; the data itself stays in code units. A
+    simulation volume has the columns ``value`` (its values), ``x``, ``y``,
+    ``z`` (its coordinates) and ``time`` (the code time unit in seconds); a
+    Gadget snapshot its own columns. A column that is absent has no known
+    conversion (code units)."""
     active: bool = False
-    source: str = "none"
+    source: str = "none"                # "definitions", "user" or "none"
     origin: str = ""                    # the definitions file the factors came from
     variable: str = ""
     # The run's code units in cgs, when known (UNIT_DENSITY, UNIT_LENGTH, UNIT_VELOCITY).
     unit_density: float | None = None
     unit_length: float | None = None
     unit_velocity: float | None = None
-    value_factor: float = 1.0
-    value_unit: str = ""
     value_quantity: str = ""            # density, velocity, pressure, magnetic or ""
-    value_source: str = "none"
-    length_factor: float = 1.0
-    length_unit: str = ""
-    length_source: str = "none"
-    time_factor: float = 1.0            # the code time unit in seconds
-    time_unit: str = ""
     time_code: float | None = None      # the output's time in code units (PLUTO)
+    columns: dict[str, ColumnScaleInfo] = Field(default_factory=dict)
 
 
 class OpenDatasetResponse(BaseModel):
@@ -284,7 +288,7 @@ class CubePreviewRequest(BaseModel):
     #: voxel whatever exists.
     source: Literal["auto", "strided"] = "auto"
     #: Physical units of a simulation volume (issue #524): the values come back
-    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: multiplied by this factor (``PhysicalUnitsInfo.columns["value"].factor``); 1 is the
     #: file's own (code) units.
     value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 
@@ -345,7 +349,7 @@ class CubeRegionLevelRequest(BaseModel):
     #: every ``2^level``-th voxel of the cube. Level 0 is always the cube.
     source: Literal["auto", "pyramid", "strided"] = "auto"
     #: Physical units of a simulation volume (issue #524): the values come back
-    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: multiplied by this factor (``PhysicalUnitsInfo.columns["value"].factor``); 1 is the
     #: file's own (code) units.
     value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 
@@ -401,7 +405,7 @@ class CubeSliceRequest(BaseModel):
     y0: int | None = None
     y1: int | None = None
     #: Physical units of a simulation volume (issue #524): the values come back
-    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: multiplied by this factor (``PhysicalUnitsInfo.columns["value"].factor``); 1 is the
     #: file's own (code) units.
     value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 
@@ -439,7 +443,7 @@ class CubeSubvolumeRequest(BaseModel):
     z0: int
     z1: int
     #: Physical units of a simulation volume (issue #524): the values come back
-    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: multiplied by this factor (``PhysicalUnitsInfo.columns["value"].factor``); 1 is the
     #: file's own (code) units.
     value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 

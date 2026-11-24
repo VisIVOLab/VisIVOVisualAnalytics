@@ -22,8 +22,11 @@
 #include <limits>
 
 using namespace Qt::Literals::StringLiterals;
-using visivo::simvol::PhysicalUnits;
-using visivo::simvol::UnitsRequest;
+using visivo::units::PhysicalUnits;
+using visivo::units::UnitsRequest;
+using visivo::units::ColumnScale;
+using visivo::units::axisColumn;
+using visivo::units::valueColumn;
 
 namespace {
 
@@ -51,11 +54,13 @@ QString summary(const PhysicalUnits &u, bool physical)
     if (!physical)
         return u"code units (physical available)"_s;
     QStringList parts;
+    const ColumnScale value = u.columns.value(valueColumn());
+    const ColumnScale length = u.columns.value(axisColumn(0));
     if (u.hasValue())
-        parts << u"values in %1"_s.arg(u.valueUnit.isEmpty() ? u"(dimensionless)"_s : u.valueUnit);
+        parts << u"values in %1"_s.arg(value.unit.isEmpty() ? u"(dimensionless)"_s : value.unit);
     if (u.hasLength())
-        parts << u"lengths in %1"_s.arg(u.lengthUnit.isEmpty() ? u"?"_s : u.lengthUnit);
-    const QString from = (u.valueSource == u"user"_s || u.lengthSource == u"user"_s)
+        parts << u"lengths in %1"_s.arg(length.unit.isEmpty() ? u"?"_s : length.unit);
+    const QString from = (value.source == u"user"_s || length.source == u"user"_s)
             ? u"typed"_s : (u.origin.isEmpty() ? u"run"_s : u.origin);
     return u"%1 (%2)"_s.arg(parts.join(u", "_s), from);
 }
@@ -158,8 +163,10 @@ void PhysicalUnitsControl::askForUnits()
 
     auto *valueFactor = new QLineEdit(dialog);
     auto *valueUnit = new QLineEdit(dialog);
-    valueFactor->setPlaceholderText(u.hasValue() ? shown(u.valueFactor) : u"factor"_s);
-    valueUnit->setPlaceholderText(u.hasValue() ? u.valueUnit : u"unit, e.g. Msun/pc^3"_s);
+    const ColumnScale shownValue = u.columns.value(valueColumn());
+    const ColumnScale shownLength = u.columns.value(axisColumn(0));
+    valueFactor->setPlaceholderText(u.hasValue() ? shown(shownValue.factor) : u"factor"_s);
+    valueUnit->setPlaceholderText(u.hasValue() ? shownValue.unit : u"unit, e.g. Msun/pc^3"_s);
     auto *valueRow = new QHBoxLayout();
     valueRow->addWidget(valueFactor);
     valueRow->addWidget(valueUnit);
@@ -167,8 +174,8 @@ void PhysicalUnitsControl::askForUnits()
 
     auto *lengthFactor = new QLineEdit(dialog);
     auto *lengthUnit = new QLineEdit(dialog);
-    lengthFactor->setPlaceholderText(u.hasLength() ? shown(u.lengthFactor) : u"factor"_s);
-    lengthUnit->setPlaceholderText(u.hasLength() ? u.lengthUnit : u"unit, e.g. pc"_s);
+    lengthFactor->setPlaceholderText(u.hasLength() ? shown(shownLength.factor) : u"factor"_s);
+    lengthUnit->setPlaceholderText(u.hasLength() ? shownLength.unit : u"unit, e.g. pc"_s);
     auto *lengthRow = new QHBoxLayout();
     lengthRow->addWidget(lengthFactor);
     lengthRow->addWidget(lengthUnit);
@@ -205,10 +212,17 @@ void PhysicalUnitsControl::askForUnits()
         take(density, request.unitDensity);
         take(length, request.unitLength);
         take(velocity, request.unitVelocity);
-        take(valueFactor, request.valueFactor);
-        take(lengthFactor, request.lengthFactor);
-        request.valueUnit = valueUnit->text().trimmed();
-        request.lengthUnit = lengthUnit->text().trimmed();
+        double typedValue = std::numeric_limits<double>::quiet_NaN();
+        double typedLength = std::numeric_limits<double>::quiet_NaN();
+        take(valueFactor, typedValue);
+        take(lengthFactor, typedLength);
+        if (std::isfinite(typedValue))
+            request.columns.insert(valueColumn(),
+                                   { typedValue, valueUnit->text().trimmed(), QString() });
+        if (std::isfinite(typedLength))
+            for (int axis = 0; axis < 3; ++axis)   // one length unit for the grid's three axes
+                request.columns.insert(axisColumn(axis),
+                                       { typedLength, lengthUnit->text().trimmed(), QString() });
     }
     delete dialog;
     if (answer != QDialog::Accepted)
@@ -242,11 +256,11 @@ void PhysicalUnitsControl::send(const UnitsRequest &request)
     const QString token = m_token;
     const QString session = m_sessionId;
     const QString dataset = m_datasetId;
-    auto *watcher = new QFutureWatcher<visivo::simvol::UnitsResult>(this);
+    auto *watcher = new QFutureWatcher<visivo::units::UnitsResult>(this);
     QPointer<PhysicalUnitsControl> self(this);
-    connect(watcher, &QFutureWatcher<visivo::simvol::UnitsResult>::finished, this,
+    connect(watcher, &QFutureWatcher<visivo::units::UnitsResult>::finished, this,
             [self, watcher]() {
-                const visivo::simvol::UnitsResult result = watcher->result();
+                const visivo::units::UnitsResult result = watcher->result();
                 watcher->deleteLater();
                 if (!self)
                     return;

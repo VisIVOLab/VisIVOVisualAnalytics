@@ -2,7 +2,7 @@
 #define BackendClient_h
 
 #include "DatasetBeam.h"
-#include "SimulationVolume.h"
+#include "PhysicalUnits.h"
 #include "FilePreview.h"
 #include "ParticleProfiles.h"
 #include "VbtByteOrder.h"
@@ -257,7 +257,7 @@ struct BackendOpenDatasetResult
     /// A volume of a simulation (issue #524): its slice may be taken along x, y
     /// or z, and its values and coordinates may have physical units.
     bool simulationVolume{ false };
-    visivo::simvol::PhysicalUnits physicalUnits;
+    visivo::units::PhysicalUnits physicalUnits;
 };
 
 struct BackendFileHeaderResult
@@ -2690,8 +2690,8 @@ public:
     visivo::beam::BeamResult setDatasetBeam(const visivo::beam::BeamRequest &request) const;
     /// POST /v1/datasets/units: type the physical units of a simulation
     /// volume, or forget them (issue #524).
-    visivo::simvol::UnitsResult setDatasetUnits(const QString &datasetId,
-                                                const visivo::simvol::UnitsRequest &request) const;
+    visivo::units::UnitsResult setDatasetUnits(const QString &datasetId,
+                                                const visivo::units::UnitsRequest &request) const;
     /// The factor the values of @p datasetId are asked in from every cube data
     /// route (slice, preview, subvolume, level of detail): physical units
     /// (issue #524). Process-wide and thread-safe, since the requests are made

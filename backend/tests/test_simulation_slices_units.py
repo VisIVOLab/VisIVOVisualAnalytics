@@ -125,54 +125,67 @@ def test_definitions_are_parsed_with_pluto_constants():
 
 def test_a_run_gives_its_derived_units(tmp_path):
     first, _ = _run(tmp_path)
-    rho = pu.dataset_units(pluto_ref(first, "rho"))
+    rho = pu.scales(pluto_ref(first, "rho"))
     d, l, v = 1.67262171e-24, 3.0856775807e18, 1.0e5
-    assert (rho.value.unit, rho.value.source) == ("g/cm^3", "definitions")
-    assert rho.value.factor == pytest.approx(d)
-    assert rho.length.factor == pytest.approx(l) and rho.length.unit == "cm"
-    assert rho.time.factor == pytest.approx(l / v) and rho.time.unit == "s"
-    vel = pu.dataset_units(pluto_ref(first, "vx1"))
-    assert (vel.value.unit, vel.value.factor) == ("cm/s", pytest.approx(v))
-    prs = pu.dataset_units(pluto_ref(first, "prs"))
-    assert (prs.value.unit, prs.value.factor) == ("dyn/cm^2", pytest.approx(d * v * v))
-    assert prs.run.magnetic == pytest.approx(v * math.sqrt(4 * math.pi * d))
+    assert (rho["value"]["unit"], rho["value"]["source"]) == ("g/cm^3", "definitions")
+    assert rho["value"]["factor"] == pytest.approx(d)
+    assert rho["x"]["factor"] == pytest.approx(l) and rho["x"]["unit"] == "cm"
+    assert rho["time"]["factor"] == pytest.approx(l / v) and rho["time"]["unit"] == "s"
+    vel = pu.column_scale(pluto_ref(first, "vx1"), "value")
+    assert (vel["unit"], vel["factor"]) == ("cm/s", pytest.approx(v))
+    prs = pu.column_scale(pluto_ref(first, "prs"), "value")
+    assert (prs["unit"], prs["factor"]) == ("dyn/cm^2", pytest.approx(d * v * v))
+    assert pu.merged_run_units(pluto_ref(first, "prs")).magnetic == pytest.approx(
+        v * math.sqrt(4 * math.pi * d))
     # A tracer is dimensionless: nothing to convert.
-    assert pu.dataset_units(pluto_ref(first, "tr1")).value.source == "none"
+    assert pu.column_scale(pluto_ref(first, "tr1"), "value") is None
     # A file that is no PLUTO output has no units of its own.
-    assert not pu.dataset_units(str(tmp_path / "unrelated.fits")).active
+    assert pu.scales(str(tmp_path / "unrelated.fits")) == {}
 
 
 def test_no_definitions_means_code_units(tmp_path):
     first, _ = _run(tmp_path, definitions=None)
-    units = pu.dataset_units(pluto_ref(first, "rho"))
-    assert not units.active and units.value.factor == 1.0
+    assert pu.scales(pluto_ref(first, "rho")) == {}
 
 
 def test_definitions_are_found_above_the_data_directory(tmp_path):
     first, _ = _run(tmp_path / "output", definitions=None)
     (tmp_path / "definitions.h").write_text(DEFINITIONS)
-    assert pu.dataset_units(pluto_ref(first, "rho")).value.source == "definitions"
+    assert pu.column_scale(pluto_ref(first, "rho"), "value")["source"] == "definitions"
 
 
 def test_typed_units_replace_the_file_and_are_shared_by_the_run(tmp_path):
     first, _ = _run(tmp_path)
     rho, prs = pluto_ref(first, "rho"), pluto_ref(first, "prs")
     pu.set_user(rho, run={"unit_density": 2.0e-20, "unit_velocity": 1.0e6})
-    got = pu.dataset_units(prs)
-    assert got.value.factor == pytest.approx(2.0e-20 * 1.0e12) and got.value.source == "user"
-    assert got.run.length == pytest.approx(3.0856775807e18)      # the file's, still
-    pu.set_user(rho, value=(7.0, "Msun/pc^3"), length=(1.0, "pc"))
-    own = pu.dataset_units(rho)
-    assert (own.value.factor, own.value.unit) == (7.0, "Msun/pc^3")
-    assert (own.length.factor, own.length.unit) == (1.0, "pc")
-    assert pu.dataset_units(prs).length.unit == "pc"             # the run's coordinates
+    got = pu.column_scale(prs, "value")
+    assert got["factor"] == pytest.approx(2.0e-20 * 1.0e12) and got["source"] == "user"
+    assert pu.merged_run_units(prs).length == pytest.approx(3.0856775807e18)   # the file's, still
+    pu.set_user(rho, columns={"value": (7.0, "Msun/pc^3"), "x": (1.0, "pc"),
+                              "y": (1.0, "pc"), "z": (1.0, "pc")})
+    own = pu.scales(rho)
+    assert (own["value"]["factor"], own["value"]["unit"]) == (7.0, "Msun/pc^3")
+    assert (own["x"]["factor"], own["x"]["unit"]) == (1.0, "pc")
+    assert pu.column_scale(prs, "x")["unit"] == "pc"             # the run's coordinates
+    assert pu.column_scale(prs, "value")["source"] == "user"     # derived from the typed run units
     pu.set_user(rho, clear=True)
-    back = pu.dataset_units(rho)
-    assert (back.value.unit, back.value.source) == ("g/cm^3", "definitions")
+    back = pu.column_scale(rho, "value")
+    assert (back["unit"], back["source"]) == ("g/cm^3", "definitions")
     with pytest.raises(ValueError):
         pu.set_user(rho, run={"unit_density": -1.0})
     with pytest.raises(ValueError):
-        pu.set_user(rho, value=(0.0, "x"))
+        pu.set_user(rho, columns={"value": (0.0, "x")})
+
+
+def test_a_typed_column_replaces_a_volume_that_has_no_run_units(tmp_path):
+    """A FITS cube or VBT field has no producer of its own: typed factors are
+    its whole table."""
+    cube = str(tmp_path / "field.fits")
+    assert pu.scales(cube) == {}
+    pu.set_user(cube, columns={"value": (3.0, "K"), "x": (2.0, "kpc")})
+    got = pu.scales(cube)
+    assert got["value"] == {"factor": 3.0, "unit": "K", "source": "user"}
+    assert got["x"]["unit"] == "kpc" and "y" not in got
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -192,9 +205,9 @@ async def test_open_reports_the_units_and_the_slice_route_takes_axis_and_coordin
     assert cube["simulation_volume"] is True
     info = cube["physical_units"]
     assert info["active"] and info["source"] == "definitions"
-    assert info["value_unit"] == "g/cm^3" and info["length_unit"] == "cm"
+    assert info["columns"]["value"]["unit"] == "g/cm^3" and info["columns"]["y"]["unit"] == "cm"
     assert info["time_code"] == pytest.approx(3.0)
-    assert info["time_factor"] == pytest.approx(3.0856775807e18 / 1.0e5)
+    assert info["columns"]["time"]["factor"] == pytest.approx(3.0856775807e18 / 1.0e5)
     assert info["unit_velocity"] == pytest.approx(1.0e5)
 
     ask = {"dataset_id": cube["dataset_id"], "axis": "x"}
@@ -226,10 +239,18 @@ async def test_the_units_route_types_and_clears_and_survives_reopening(
     body = resp.json()
     assert body["valid"], body["error"]
     got = body["physical_units"]
-    assert got["source"] == "user" and got["value_unit"] == "g/cm^3"
-    assert got["value_factor"] == pytest.approx(1.0e-22)
+    assert got["source"] == "user" and got["columns"]["value"]["unit"] == "g/cm^3"
+    assert got["columns"]["value"]["factor"] == pytest.approx(1.0e-22)
     again = await _open(client, auth_headers, tmp_path / "dbl.out")
-    assert again["physical_units"]["value_factor"] == pytest.approx(1.0e-22)
+    assert again["physical_units"]["columns"]["value"]["factor"] == pytest.approx(1.0e-22)
+    resp = await client.post("/v1/datasets/units", headers=again["headers"], json={
+        "dataset_id": again["dataset_id"],
+        "columns": {"value": {"factor": 7.0, "unit": "Msun/pc^3"},
+                    "x": {"factor": 1.0, "unit": "pc"}, "y": {"factor": 1.0, "unit": "pc"},
+                    "z": {"factor": 1.0, "unit": "pc"}}})
+    columns = resp.json()["physical_units"]["columns"]
+    assert columns["value"] == {"factor": 7.0, "unit": "Msun/pc^3", "source": "user"}
+    assert columns["y"]["unit"] == "pc" and columns["time"]["source"] == "user"
     resp = await client.post("/v1/datasets/units", headers=again["headers"],
                              json={"dataset_id": again["dataset_id"], "clear": True})
     assert resp.json()["physical_units"]["active"] is False
@@ -304,8 +325,8 @@ def test_a_grid_in_cell_indices_has_no_length_to_convert(tmp_path):
     uneven = tuple(np.cumsum(np.r_[0.0, np.linspace(1.0, 2.0, n)]) for n in (8, 6, 4))
     first = write_pluto(tmp_path, {"rho": 1.0 + i}, edges=uneven)
     (tmp_path / "definitions.h").write_text(DEFINITIONS)
-    units = pu.dataset_units(pluto_ref(first, "rho"))
-    assert units.length.source == "none" and units.value.source == "definitions"
+    table = pu.scales(pluto_ref(first, "rho"))
+    assert "x" not in table and table["value"]["source"] == "definitions"
 
 
 # ── Exports ──────────────────────────────────────────────────────────────────

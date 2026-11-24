@@ -973,7 +973,7 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     result.byteOrderWarning =
             visivo::parseVbtByteOrderWarning(object.value(QStringLiteral("byte_order_warning")));
     result.simulationVolume = object.value(QStringLiteral("simulation_volume")).toBool(false);
-    result.physicalUnits = visivo::simvol::parsePhysicalUnits(
+    result.physicalUnits = visivo::units::parsePhysicalUnits(
             object.value(QStringLiteral("physical_units")).toObject());
     return result;
 }
@@ -1484,24 +1484,24 @@ visivo::beam::BeamResult BackendClient::setDatasetBeam(
     return visivo::beam::parseResponse(QJsonDocument::fromJson(payload).object());
 }
 
-visivo::simvol::UnitsResult BackendClient::setDatasetUnits(
-        const QString &datasetId, const visivo::simvol::UnitsRequest &request) const
+visivo::units::UnitsResult BackendClient::setDatasetUnits(
+        const QString &datasetId, const visivo::units::UnitsRequest &request) const
 {
     QString error;
     int status = 0;
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/units")),
-                        QJsonDocument(visivo::simvol::unitsRequestBody(datasetId, request)),
+                        QJsonDocument(visivo::units::unitsRequestBody(datasetId, request)),
                         error, nullptr, &status);
     if (!error.isEmpty()) {
-        visivo::simvol::UnitsResult result;
+        visivo::units::UnitsResult result;
         const QString why = status >= 400 ? visivo::replyErrorText(payload) : QString();
         result.error = visivo::isMissingRouteReply(status, payload)
                 ? QStringLiteral("This backend cannot keep physical units; update it.")
                 : (why.isEmpty() ? error : why);
         return result;
     }
-    return visivo::simvol::parseUnitsResult(QJsonDocument::fromJson(payload).object());
+    return visivo::units::parseUnitsResult(QJsonDocument::fromJson(payload).object());
 }
 
 namespace {

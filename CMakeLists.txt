@@ -749,6 +749,7 @@ set(PROJECT_SOURCES
         src/gui/PhysicalUnitsControl.cpp
         src/gui/PhysicalUnitsControl.h
         src/app/SimulationVolume.h
+        src/app/PhysicalUnits.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h
         src/gui/SedBuilder.h

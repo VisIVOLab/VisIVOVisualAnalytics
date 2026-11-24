@@ -48,18 +48,26 @@ std::array<int, 2> vtkWindowCube::slicePlaneAxes() const
     return visivo::simvol::planeAxes(m_sliceAxis);
 }
 
-double vtkWindowCube::displayLengthScale() const
+void vtkWindowCube::refreshAxisUnits()
 {
-    return m_simulationVolume ? visivo::simvol::lengthScale(m_physicalUnits, m_showPhysical) : 1.0;
+    m_axisUnits = AxisUnitsChoice();
+    if (!m_simulationVolume)
+        return;
+    for (int axis = 0; axis < 3; ++axis) {
+        const QString column = visivo::units::axisColumn(axis);
+        m_axisUnits.factor[std::size_t(axis)] =
+                visivo::units::columnScale(m_physicalUnits, column, m_showPhysical);
+        m_axisUnits.unit[std::size_t(axis)] = visivo::units::columnUnitLabel(
+                m_physicalUnits, column, m_showPhysical, this->remoteDatasetCunit[axis].trimmed());
+    }
 }
 
-QString vtkWindowCube::displayLengthUnit(int cubeAxis) const
+QString vtkWindowCube::axisUnitLabel(int cubeAxis) const
 {
-    const QString code = (cubeAxis >= 0 && cubeAxis < 3) ? this->remoteDatasetCunit[cubeAxis].trimmed()
-                                                         : QString();
-    return m_simulationVolume
-            ? visivo::simvol::lengthUnitLabel(m_physicalUnits, m_showPhysical, code)
-            : code;
+    if (cubeAxis < 0 || cubeAxis >= 3)
+        return QString();
+    return m_simulationVolume ? m_axisUnits.unit[std::size_t(cubeAxis)]
+                              : this->remoteDatasetCunit[cubeAxis].trimmed();
 }
 
 QString vtkWindowCube::sliceCoordinateText(int index) const
@@ -71,15 +79,17 @@ QString vtkWindowCube::sliceCoordinateText(int index) const
     const double world = this->remoteVoxelToWcs(axis, double(clamped), &ok);
     if (!ok)
         return u"%1 = %2"_s.arg(visivo::simvol::axisLetter(m_sliceAxis)).arg(clamped + 1);
-    return visivo::simvol::coordinateLabel(m_sliceAxis, world, this->displayLengthUnit(axis));
+    return visivo::simvol::coordinateLabel(m_sliceAxis, world, this->axisUnitLabel(axis));
 }
 
-void vtkWindowCube::setPhysicalUnits(const visivo::simvol::PhysicalUnits &units)
+void vtkWindowCube::setPhysicalUnits(const visivo::units::PhysicalUnits &units)
 {
     m_physicalUnits = units;
     m_showPhysical = units.hasValue() || units.hasLength();
-    BackendClient::setDisplayValueScale(this->remoteDatasetId,
-                                        visivo::simvol::valueScale(units, m_showPhysical));
+    this->refreshAxisUnits();
+    BackendClient::setDisplayValueScale(
+            this->remoteDatasetId,
+            visivo::units::columnScale(units, visivo::units::valueColumn(), m_showPhysical));
     // The unit the values carry follows (the header's own is kept for code units).
     this->setIntensityUnit(m_codeBunit, m_intensityUnitNote);
     this->refreshSimulationRows();
@@ -120,10 +130,9 @@ bool vtkWindowCube::goToSliceCoordinate(double typed)
     if (!m_simulationVolume)
         return false;
     const int axis = static_cast<int>(m_sliceAxis);
-    const double scale = this->displayLengthScale();
     // The file's coordinates are in code units; the number typed is in the
-    // units shown.
-    const double code = typed / scale;
+    // units shown (this axis's entry of the axis-unit table).
+    const double code = typed / m_axisUnits.factor[std::size_t(axis)];
     bool inside = false;
     const int index = visivo::simvol::nearestPlane(code, this->remoteDatasetCrval[axis],
                                                    this->remoteDatasetCrpix[axis],
@@ -139,8 +148,8 @@ bool vtkWindowCube::goToSliceCoordinate(double typed)
         const double b = this->remoteVoxelToWcs(axis, double(this->remoteSliceCount() - 1));
         this->statusBar()->showMessage(
                 u"%1 is outside the grid (%2 to %3): showing the nearest plane."_s.arg(
-                        visivo::simvol::formatNumber(typed), visivo::simvol::formatNumber(std::min(a, b)),
-                        visivo::simvol::formatNumber(std::max(a, b))),
+                        visivo::units::formatNumber(typed), visivo::units::formatNumber(std::min(a, b)),
+                        visivo::units::formatNumber(std::max(a, b))),
                 6000);
     }
     ui->spinSlice->setValue(index + 1);   // through the debounce, as the slider does
@@ -181,7 +190,7 @@ void vtkWindowCube::refreshSimulationRows()
     if (m_unitsControl)
         m_unitsControl->setUnits(m_physicalUnits, m_showPhysical);
     if (m_simTimeLabel) {
-        const QString text = visivo::simvol::timeLabel(m_physicalUnits, m_showPhysical);
+        const QString text = visivo::units::timeLabel(m_physicalUnits, m_showPhysical);
         m_simTimeLabel->setText(text.isEmpty() ? u"-"_s : text);
     }
 }
@@ -191,6 +200,7 @@ void vtkWindowCube::setPhysicalDisplay(bool physical)
     if (!m_simulationVolume || physical == m_showPhysical)
         return;
     m_showPhysical = physical;
+    this->refreshAxisUnits();
     // The value unit on the colour bars, probe and spectra axes.
     this->setIntensityUnit(m_codeBunit, m_intensityUnitNote);
     this->refreshSimulationRows();
@@ -203,7 +213,9 @@ void vtkWindowCube::reloadForDisplayUnits()
         return;
     // Every data route now answers in the units asked for.
     BackendClient::setDisplayValueScale(
-            this->remoteDatasetId, visivo::simvol::valueScale(m_physicalUnits, m_showPhysical));
+            this->remoteDatasetId,
+            visivo::units::columnScale(m_physicalUnits, visivo::units::valueColumn(),
+                                       m_showPhysical));
     this->remoteSliceCache.clear();
     this->hideSliceDetail();
     this->syncSliceAxisUi();
@@ -258,11 +270,12 @@ void vtkWindowCube::addSimulationInspectorRows(InspectorPanel *panel)
     QObject::connect(m_unitsControl, &PhysicalUnitsControl::displayChanged, this,
                      [this](bool physical) { this->setPhysicalDisplay(physical); });
     QObject::connect(m_unitsControl, &PhysicalUnitsControl::unitsChanged, this,
-                     [this](const visivo::simvol::PhysicalUnits &units) {
+                     [this](const visivo::units::PhysicalUnits &units) {
                          // Units typed for a dataset that had none: shown at once.
                          if (!(m_physicalUnits.hasValue() || m_physicalUnits.hasLength()))
                              m_showPhysical = units.hasValue() || units.hasLength();
                          m_physicalUnits = units;
+                         this->refreshAxisUnits();
                          this->setIntensityUnit(m_codeBunit, m_intensityUnitNote);
                          this->refreshSimulationRows();
                          this->reloadForDisplayUnits();

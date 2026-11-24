@@ -4,6 +4,7 @@
 #include "ContourLayer.h"
 #include "RemoteSessionRecovery.h"
 #include "BackendClient.h"
+#include "app/SimulationVolume.h"
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "CubeStatRows.h"
@@ -485,7 +486,7 @@ public:
     /// The backend's physical units for this variable (null units: none known).
     /// Called once by MainWindow after construction; turns the display on when
     /// there are any.
-    void setPhysicalUnits(const visivo::simvol::PhysicalUnits &units);
+    void setPhysicalUnits(const visivo::units::PhysicalUnits &units);
     /// A volume of a simulation (axes X, Y, Z): its slice may be taken along x,
     /// y or z, and the bar shows coordinates, not channels.
     bool isSimulationVolume() const { return m_simulationVolume; }
@@ -2988,6 +2989,9 @@ protected:
     void applySpectralAxisChange();
     bool remoteHasWcsAxis(int axis) const;
     double remoteVoxelToWcs(int axis, double voxelIndex, bool *ok = nullptr) const;
+    /// The same in the file's own units (what the header says), before the
+    /// axis-unit table.
+    double remoteVoxelToNative(int axis, double voxelIndex, bool *ok = nullptr) const;
     QString remoteFormatAxisCoordinate(int axis, double voxelIndex) const;
     QString remoteAxisTitle(int axis) const;
     void updateWcsStatusIndicator();
@@ -3420,7 +3424,7 @@ protected:
     // ── Simulation volumes (issue #524; vtkWindowCube_Simulation.cpp) ────────
     bool m_simulationVolume{ false };
     visivo::simvol::SliceAxis m_sliceAxis{ visivo::simvol::SliceAxis::Z };
-    visivo::simvol::PhysicalUnits m_physicalUnits;
+    visivo::units::PhysicalUnits m_physicalUnits;
     bool m_showPhysical{ true };
     QString m_codeBunit;   ///< the header's own unit, shown when physical units are off
     QPointer<QComboBox> m_sliceAxisCombo;
@@ -3432,9 +3436,20 @@ protected:
     /// The cube axes the slice plane shows horizontally and vertically.
     std::array<int, 2> slicePlaneAxes() const;
     bool sliceAlongZ() const { return m_sliceAxis == visivo::simvol::SliceAxis::Z; }
-    /// Factors the coordinates are shown with (1 for a spectral cube).
-    double displayLengthScale() const;
-    QString displayLengthUnit(int cubeAxis) const;
+    /// The unit each of the grid's three axes is shown in, as the spectral
+    /// axis has its table (m_spectralAxis, issue #496): the backend's "x", "y"
+    /// and "z" columns while physical units are on. Every coordinate reader
+    /// goes through remoteVoxelToWcs and axisUnitLabel, which read it; a
+    /// spectral cube keeps the file's own axes.
+    struct AxisUnitsChoice
+    {
+        std::array<double, 3> factor{ 1.0, 1.0, 1.0 };   ///< file coordinate -> shown
+        std::array<QString, 3> unit;                      ///< empty: the file's own CUNIT
+    };
+    AxisUnitsChoice m_axisUnits;
+    /// Rebuild the table from the units and the display switch.
+    void refreshAxisUnits();
+    QString axisUnitLabel(int cubeAxis) const;
     /// "x = 0.15 pc": the coordinate of plane @p index along the slice axis.
     QString sliceCoordinateText(int index) const;
     /// The bar, the sidebar slider, the Inspector rows and the overlays as the
