@@ -82,7 +82,7 @@ void vtkWindowCube::applyImportedRegions(const visivo::regions::ImportResult &re
         const auto *r = this->m_regions.find(id);
         if (r && visivo::regions::hasArea(r->shape)) {
             if (vtkRenderWindow *win = this->regionAnalysisWin())
-                this->analyzeRegion(id, win);
+                this->measureNewRegion(id, win);
             break;
         }
     }

@@ -49,6 +49,7 @@ class vtkCallbackCommand;
 #include "CubeViewportGeometry.h"
 #include "CubeLodAuto.h"
 #include "CubeLodGeometry.h"
+#include "LiveRegionSpectra.h"
 #include "RegionFullRes.h"
 #include "RegionImportResult.h"
 #include "RegionListOverlay.h"
@@ -613,6 +614,9 @@ private:
     QPushButton   *m_specInspSaveCsv   { nullptr };
     QPushButton   *m_specInspSavePng   { nullptr };
     QPointer<class ProfileWidget> m_specInspTarget;   ///< the pane widget the controls drive
+    QWidget       *m_specInspLiveRegion{ nullptr };   ///< Keep / overlay row, for the live region spectrum only
+    QPushButton   *m_specInspKeep      { nullptr };
+    QCheckBox     *m_specInspOverlayAll{ nullptr };
 
     // Full-resolution 3-D cube statistics from the backend (the local block is only the decimated
     // preview). Fetched once per open; the Inspector "3D cube" rows are refreshed when it lands.
@@ -1307,6 +1311,68 @@ protected:
     /// The region spectrum product probePlotWidget shows last, so a
     /// full-resolution answer arriving later updates it only if it still does.
     QString m_probePlotProductId;
+    // ── Live region spectrum (issue #521; vtkWindowCube_LiveRegionSpectrum.cpp) ──
+    // The spectrum of the SELECTED region in one transitory pane: it follows a
+    // region being moved or resized (from the 3-D view's samples, throttled),
+    // and the backend's full-resolution mean replaces it once the region is let
+    // go. Nothing is added to Session Data until Keep (= Analyse Region).
+    /// The mean spectrum of @p region over the cube shown in 3-D (each sample
+    /// inside it counts once); false when no channel has a valid sample.
+    bool regionPreviewSpectrum(const visivo::regions::Region &region, QVector<double> *spectral,
+                               QVector<double> *meanValues, int *samples) const;
+    /// The 3-D view already shows every pixel of the file: its spectrum is the full one.
+    bool previewIsFullResolution() const;
+    /// The spectral axis of the file's @p channels channels, in the window's
+    /// own convention and unit (the axis a full-resolution answer is drawn on).
+    QVector<double> fullResolutionSpectralAxis(qsizetype channels) const;
+    /// A region just drawn or imported: measured as a product when the live
+    /// spectrum is off, shown live (and kept by Keep) when it is on.
+    void measureNewRegion(int id, vtkRenderWindow *win);
+    /// The region list or a region changed: follow the selection. @p dragging:
+    /// a move or resize is running (preview only, throttled); otherwise the
+    /// answer is instant and the full-resolution spectrum is asked for.
+    void updateLiveRegionSpectrum(bool dragging = false);
+    void runLiveRegionSpectrum(bool allowFullRes, bool force = false);
+    void applyLiveRegionSpectrum(const visivo::regions::Region &region, const QVector<double> &key,
+                                 const QVector<double> &values, bool fullResolution,
+                                 const QString &meta, bool reshow = false);
+    void requestLiveFullResolution(const visivo::regions::Region &region, const QString &signature);
+    void ensureLiveRegionProduct(bool reshow);
+    void keepSourcePaneActive();
+    QString liveRegionCacheKey(const QString &signature) const;
+    void stopLiveRegionSpectrum();
+    void updateLiveRegionHeader();
+    /// Lay the other regions' spectra over the live one on @p plot (or take
+    /// them off, when the overlay is switched off).
+    void applyLiveRegionOverlay(class ProfileWidget *plot);
+    void pushLiveRegionOverlay();   ///< ...on every pane showing the live spectrum
+    QString liveRegionCubeKey() const;
+    void keepLiveRegionSpectrum();
+    void setLiveRegionSpectra(bool on);
+    void setLiveRegionOverlayAll(bool on);
+    bool m_liveRegionSpectra{ true };      ///< Tools ▸ Regions ▸ Live Region Spectrum
+    bool m_liveRegionOverlayAll{ false };  ///< Tools ▸ Regions ▸ Overlay All Region Spectra
+    QString m_regionLiveId;                ///< the transitory product (empty: none)
+    int m_regionLiveRegionId{ -1 };        ///< the region it shows
+    QString m_regionLiveSignature;         ///< the geometry it was measured on
+    QString m_regionLiveRequestedSignature;   ///< the geometry the backend was asked for
+    QString m_regionLiveCubeKey;           ///< the 3-D cube it was measured on
+    QString m_regionLiveMeta;              ///< "full resolution, 195 pixels" for the header
+    bool m_regionLiveFullRes{ false };     ///< the spectrum shown is the backend's
+    visivo::liveregion::Throttle m_regionLiveThrottle{ 150 };
+    visivo::liveregion::LatestWins m_regionLiveTicket;
+    visivo::liveregion::SpectrumCache m_regionFullResCache;
+    /// Preview spectra of the regions laid over the live one, by region id.
+    struct LiveOverlayMemo
+    {
+        QString signature, cubeKey;
+        QVector<double> key, values;
+    };
+    QHash<int, LiveOverlayMemo> m_regionOverlayMemo;
+    QElapsedTimer m_regionLiveClock;
+    QPointer<QTimer> m_regionLiveTimer;
+    QPointer<QAction> m_actLiveRegionSpectra;
+    QPointer<QAction> m_actOverlayRegionSpectra;
     /// Replaces a region spectrum drawn from the 3-D view's samples with the
     /// backend's mean over every pixel of the region (issue #499).
     void requestFullResolutionRegionSpectrum(const QString &productId,

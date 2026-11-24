@@ -530,6 +530,29 @@ void vtkWindowCube::setupRegionListActions()
     m_actHiDistance->setStatusTip(m_actHiDistance->toolTip());
     QObject::connect(m_actHiDistance, &QAction::triggered, this,
                      [this]() { visivo::flux::askHiDistance(this); });
+
+    // The live region spectrum (#521): two settings, always available (they
+    // act on no region in particular, like the HI distance).
+    m_liveRegionSpectra = QSettings().value(u"regions/liveSpectrum"_s, true).toBool();
+    m_actLiveRegionSpectra = new QAction(u"Live Region Spectrum"_s, this);
+    m_actLiveRegionSpectra->setCheckable(true);
+    m_actLiveRegionSpectra->setChecked(m_liveRegionSpectra);
+    m_actLiveRegionSpectra->setToolTip(
+            u"The spectrum of the selected region in one pane, following it while it is moved or "
+            u"resized; Analyse Region keeps it as a product. Off: every region drawn is measured "
+            u"as a product, as before."_s);
+    m_actLiveRegionSpectra->setStatusTip(m_actLiveRegionSpectra->toolTip());
+    QObject::connect(m_actLiveRegionSpectra, &QAction::toggled, this,
+                     [this](bool on) { this->setLiveRegionSpectra(on); });
+    m_actOverlayRegionSpectra = new QAction(u"Overlay All Region Spectra"_s, this);
+    m_actOverlayRegionSpectra->setCheckable(true);
+    m_actOverlayRegionSpectra->setChecked(m_liveRegionOverlayAll);
+    m_actOverlayRegionSpectra->setToolTip(
+            u"Lay the spectra of all the other regions over the live one, each in its region's "
+            u"colour and under its name."_s);
+    m_actOverlayRegionSpectra->setStatusTip(m_actOverlayRegionSpectra->toolTip());
+    QObject::connect(m_actOverlayRegionSpectra, &QAction::toggled, this,
+                     [this](bool on) { this->setLiveRegionOverlayAll(on); });
 }
 
 // ── Drawing the list ─────────────────────────────────────────────────────────
@@ -565,6 +588,9 @@ void vtkWindowCube::onRegionListChanged()
         && ui->vtkCube->isVisible())
         ui->vtkCube->renderWindow()->Render();
     this->refreshRegionSession();
+    // The live spectrum follows the selection (and a typed or undone change);
+    // a drag still running only previews, throttled.
+    this->updateLiveRegionSpectrum(/*dragging=*/m_regionDrag.active);
 }
 
 void vtkWindowCube::refreshRegionSession()
@@ -821,6 +847,7 @@ bool vtkWindowCube::handleRegionEditEvent(vtkRenderWindow *win, unsigned long ev
         if (m_regionPropertiesDialog)
             m_regionPropertiesDialog->setRegion(next);
         win->Render();
+        this->updateLiveRegionSpectrum(/*dragging=*/true);
         return true;
     }
     if (!this->regionEditingAllowed(win))
@@ -1094,57 +1121,10 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
     // samples it (RegionCubeSampling.h). Each sample whose cube position is in
     // the region counts once: with a preview the spectrum is the mean of the
     // samples the preview has inside the region, not of every pixel of it.
-    auto *cubeImage = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
     QVector<double> spectral, meanValues;
     int samples = 0;
-    bool haveSpectrum = false;
-    if (cubeImage && stats.valid) {
-        int extent[6];
-        double o[3], sp[3];
-        cubeImage->GetExtent(extent);
-        cubeImage->GetOrigin(o);
-        cubeImage->GetSpacing(sp);
-        const int zCount = extent[5] - extent[4] + 1;
-        spectral.resize(zCount);
-        meanValues.fill(0.0, zCount);
-        QVector<int> counts(zCount, 0);
-        // Every channel keeps its spectral coordinate, blank or not: a fully
-        // NaN plane must plot as a gap (NaN value), and QCustomPlot only gaps
-        // on NaN VALUES — a NaN key broke the line into a spike instead.
-        for (int i = 0; i < zCount; ++i) {
-            const double datasetZ = this->displayToCube(o[2] + i * sp[2]);
-            bool ok = false;
-            spectral[i] = this->spectralAxisValue(datasetZ, &ok);
-            if (!ok)
-                spectral[i] = datasetZ;
-        }
-        const visivo::regions::AxisGrid gx{ extent[0], extent[1], o[0], sp[0] };
-        const visivo::regions::AxisGrid gy{ extent[2], extent[3], o[1], sp[1] };
-        const auto inside =
-                visivo::regions::samplesInRegion(region, gx, gy, this->m_displaySampling);
-        samples = int(inside.size());
-        // Blanks were replaced by a finite sentinel below the visible minimum
-        // when the cube was sanitised; averaging it turned a fully blank
-        // channel into a deep negative spike.
-        const double blankBelow = this->currentCubeVisibleRange[0];
-        for (const auto &k : inside) {
-            for (int z = extent[4]; z <= extent[5]; ++z) {
-                const double v = cubeImage->GetScalarComponentAsDouble(k[0], k[1], z, 0);
-                if (!std::isfinite(v) || v < blankBelow)
-                    continue;
-                meanValues[z - extent[4]] += v;
-                counts[z - extent[4]] += 1;
-            }
-        }
-        for (int i = 0; i < zCount; ++i) {
-            if (counts[i] > 0) {
-                meanValues[i] /= counts[i];
-                haveSpectrum = true;
-            } else {
-                meanValues[i] = std::numeric_limits<double>::quiet_NaN();
-            }
-        }
-    }
+    const bool haveSpectrum = stats.valid
+            && this->regionPreviewSpectrum(region, &spectral, &meanValues, &samples);
 
     QVariantMap params;
     params.insert(u"Region"_s, label);
@@ -1237,14 +1217,7 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
         // A spectrum from the 3-D view's samples (a preview, or a box of the
         // cube that does not hold the whole region) is a first answer: the
         // backend's mean over every pixel of the region replaces it.
-        const bool wholeCubeShown = cubeImage && scale <= 1.0
-                && [&]() {
-                       int e[6];
-                       cubeImage->GetExtent(e);
-                       return e[1] - e[0] + 1 == this->remoteDatasetWidth
-                               && e[3] - e[2] + 1 == this->remoteDatasetHeight
-                               && e[5] - e[4] + 1 == this->remoteDatasetDepth;
-                   }();
+        const bool wholeCubeShown = this->previewIsFullResolution();
         if (!wholeCubeShown && !this->remoteDatasetId.isEmpty())
             this->requestFullResolutionRegionSpectrum(pid, region, plotTitle, label, params,
                                                       origin, stats.validCount,
@@ -1449,12 +1422,7 @@ void vtkWindowCube::requestFullResolutionRegionSpectrum(
         // Every channel of the file: a preview may show fewer (its sampling is
         // along z too), so the axis is rebuilt, in the viewer's own spectral
         // convention and unit, from the file's channel indices.
-        sp.key.resize(r.values.size());
-        for (qsizetype i = 0; i < r.values.size(); ++i) {
-            bool okAxis = false;
-            const double v = this->spectralAxisValue(double(i), &okAxis);
-            sp.key[i] = okAxis ? v : double(i);
-        }
+        sp.key = this->fullResolutionSpectralAxis(r.values.size());
         sp.values = r.values;
         const QString scope = u"full resolution, %1 pixels (from the file)"_s.arg(r.nPix);
         params.insert(u"Spectrum from"_s, scope);

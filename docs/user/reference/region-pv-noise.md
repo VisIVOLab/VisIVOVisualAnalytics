@@ -26,8 +26,12 @@ and a press on empty image draws a new one.
   line, for the value at a pixel or the profile along a line; see the
   [Image viewer](image-viewer.md#tools-regions).
 
-Releasing the shape measures it (see [Region spectrum and statistics](#region-spectrum-and-statistics))
-and adds it to the window's region list.
+Releasing the shape adds it to the window's region list. In the image viewer
+it is measured at once (see [Region spectrum and statistics](#region-spectrum-and-statistics)).
+In the cube viewer its spectrum appears in the live pane (see
+[Live region spectrum](#live-region-spectrum)) and nothing is added to Session
+Data until you keep it; with *Live Region Spectrum* off, the cube viewer
+measures every released shape as a product, as the image viewer does.
 
 ### The region list
 
@@ -106,10 +110,43 @@ Sky sizes are in arcseconds; the angle is counter-clockwise from the longitude
 axis, as in ds9. Sky frames need a celestial WCS. *Apply* moves the region to
 the typed values.
 
+### Live region spectrum
+
+In the cube viewer the spectrum of the selected region is shown in one pane
+(*Region spectrum (live)*) and follows the region:
+
+- While you move or resize the region, the spectrum updates about six times a
+  second, from the samples of the 3-D view, so it is instant. The pane's header
+  says *preview* and how many samples of the view are inside the region.
+- When you let go, or select a region in the list or on the slice, the
+  backend's mean over every pixel of the file replaces it (the header then says
+  *full resolution* and the pixel count). If the region moves again before the
+  answer arrives, the answer is dropped: the pane always shows the region as it
+  is now. A region seen before at full resolution is not asked for again.
+  When the 3-D view already shows the whole cube at full resolution, the live
+  spectrum is the full one from the start.
+- The spectrum uses the spectral axis chosen for the window (*Spectral axis*
+  menu: quantity and frame) and is drawn again when you change it.
+- Clicking the empty slice to pan lets go of the selection but leaves the
+  spectrum; deleting the region closes it.
+- Nothing is added to Session Data while you drag. *Keep as product* in the
+  Inspector (shown with the live spectrum) or *Analyse Region* turns the
+  current region into a permanent SPEC product, as described below.
+- *Overlay all regions* (Inspector, or *Tools ▸ Regions ▸ Overlay All Region
+  Spectra*) lays the spectra of the other visible regions over the live one,
+  each in its region's colour and named in the legend; the live region's own
+  curve takes its region's colour too. The other curves come from the 3-D
+  view's samples, or from the file if that region was already shown at full
+  resolution.
+
+*Tools ▸ Regions ▸ Live Region Spectrum* switches the whole behaviour off
+(it is on by default and remembered). The live pane takes a free pane, or
+borrows one that is not the slice, and gives it back when the spectrum ends.
+
 ### Region spectrum and statistics
 
-Releasing a shape, or *Analyse Region*, produces a SPEC product (*Box 1
-spectrum*) in Session Data, shown in a pane: the mean per channel over the
+*Analyse Region* (or *Keep as product* on the live spectrum) produces a SPEC
+product (*Box 1 spectrum*) in Session Data, shown in a pane: the mean per channel over the
 region, over all channels. On a preview it is the mean of the preview's
 samples inside the region; the provenance's *Spectrum from* line says which.
 The spectrum pane works as for a probed pixel (stats bar, smoothing,

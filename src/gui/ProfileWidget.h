@@ -117,6 +117,24 @@ public:
     void pinCurrentSpectrum(const QString &label = QString());
     /// Drop all pinned comparison curves and hide the legend.
     void clearPinnedSpectra();
+
+    /// One curve laid over the current spectrum by the host (the cube window's
+    /// live region spectra, #521): unlike a pin it is set from outside, in a
+    /// colour and under a name the host chose, and replaced as a whole.
+    struct OverlayCurve
+    {
+        QString name;
+        QColor colour;
+        QVector<double> key;
+        QVector<double> values;
+    };
+    /// Replace the host's overlay curves (an empty list takes them all off).
+    /// While there are any, the legend is shown and the main curve is drawn in
+    /// @p primaryColour under @p primaryName. They survive updateSpectrumPlot()
+    /// and are not part of the CSV export, which is the main curve.
+    void setOverlaySpectra(const QVector<OverlayCurve> &curves, const QString &primaryName = QString(),
+                           const QColor &primaryColour = QColor());
+    int overlaySpectrumCount() const { return static_cast<int>(m_overlayGraphs.size()); }
     int  pinnedSpectrumCount() const { return static_cast<int>(m_pinnedGraphs.size()); }
 
     // ── Pane migration (the spectrum controls move to Inspector › Analysis) ────
@@ -212,7 +230,10 @@ private:
     // spectra so they can be compared. graph(0) is always the live/current
     // series; pinned graphs are appended after it and survive live updates.
     QVector<QCPGraph *> m_pinnedGraphs;
-    QString m_lastSpectrumTitle;   ///< last title passed to updateSpectrumPlot (pin label default)
+    QVector<QCPGraph *> m_overlayGraphs;   ///< the host's curves (setOverlaySpectra)
+    QString m_overlayPrimaryName;          ///< the main curve's legend entry while they are on
+    QColor m_overlayPrimaryColour;
+    QString m_lastSpectrumTitle;  ///< last title passed to updateSpectrumPlot (pin label default)
     QPushButton *m_btnPin       { nullptr };
     QPushButton *m_btnClearPins { nullptr };
     void refreshPinButtons();
