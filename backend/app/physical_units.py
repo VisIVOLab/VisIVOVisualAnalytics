@@ -212,9 +212,17 @@ def _load() -> dict:
     return entries
 
 
+def pluto_ref_of(path: str | os.PathLike) -> str:
+    """The PLUTO reference whose units ``path`` is shown in: a Cartesian view
+    of a variable (issue #527) is that variable's, in the run's code units;
+    any other path is its own."""
+    from . import pluto_source  # noqa: PLC0415
+    return pluto_source.view_source(path) or str(path)
+
+
 def _pluto_split(path: str | os.PathLike) -> tuple[str, str | None]:
     from . import pluto_source  # noqa: PLC0415
-    return pluto_source.split_ref(path)
+    return pluto_source.split_ref(pluto_ref_of(path))
 
 
 def _gadget_split(path: str | os.PathLike) -> tuple[str, int | None]:
@@ -385,7 +393,9 @@ def _volume_scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
     if name is not None:
         from . import pluto_source  # noqa: PLC0415
         try:
-            index_grid = bool(pluto_source.resolve(path).grid.index_reason())
+            # A Cartesian view is made of coordinates, whatever its source grid.
+            index_grid = (pluto_source.view_source(path) is None
+                          and bool(pluto_source.resolve(path).grid.index_reason()))
         except (OSError, ValueError, AttributeError):
             index_grid = False
     if name is not None and run.length and not index_grid:

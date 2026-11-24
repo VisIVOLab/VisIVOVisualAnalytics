@@ -93,6 +93,43 @@ factor, `BUNIT` is the physical unit, and the header records `CODEUNIT`,
 `UNITFAC`, `LENFAC` and `UNITSRC` so the file says what was done to the data.
 Moment maps and other derived products are computed on the file's code units.
 
+## Cartesian view
+
+A polar, cylindrical or spherical run, or a Cartesian run on cells of growing
+width, is stored on the cells of its own coordinates, so the as-stored view is
+a table of cell indices. *Data ▸ Cartesian View of a PLUTO Output…* picks the
+output on the backend and resamples it onto a uniform grid in space; the result
+opens like any other volume, with the same variables, [physical
+units](#physical-units), slices along X, Y or Z, isosurfaces and VR. The
+as-stored view is untouched and opens as before.
+
+| Run | Result |
+|---|---|
+| 3-D polar, cylindrical or spherical | a Cartesian cube (x, y, z) |
+| 2-D polar (R, φ) | the x-y image |
+| 2-D axisymmetric, (R, z) or (r, θ) | the meridional x-z image; x is the cylindrical radius. *Mirror* also draws the negative-x half |
+| spherical, one θ cell and many φ cells | the equatorial x-y image |
+| Cartesian with stretched cells | the same axes on uniform cells |
+
+The grid is as fine as the finest cell along the run's length directions
+(angles are left out: their arc length shrinks to nothing at the centre) and
+is coarsened to stay under the *Resolution* limit, 64 million voxels by
+default. The dialog shows the grid, voxel size and file size before anything
+is written. Each variable is interpolated linearly in the native coordinates
+between cell centres (half-way between the edges), wrapping across the φ seam
+of a full circle; voxels outside the domain (the hole inside the inner radius,
+the corners of the box, the part a wedge does not cover) are empty. A vector
+component keeps its native basis: `vx1` of a spherical run is still the radial
+velocity, not the x component.
+
+The cube is a FITS file in the backend's exports directory, one per variable
+(*Every variable of the output* writes them all in one pass). Its header
+records where it came from: `PLUTOSRC` (the source variable), `PLUTOGEO`
+(source geometry), `PLUTOVEW = 'CARTESIAN'`, `PLUTOMOD` (`cube`, `plane`,
+`meridional` or `grid`), `PLUTOINT = 'trilinear'` and `PLUTOMIR`. The axes are
+in the run's length unit, so *Physical* converts them exactly as for the
+source.
+
 ## Axes and header
 
 - Uniform Cartesian grid: the axes are X, Y and Z (x1, x2, x3) in code units
@@ -101,7 +138,8 @@ Moment maps and other derived products are computed on the file's code units.
 - Stretched grid, or a polar, cylindrical or spherical run: the axes count
   cells, starting at 1 as in `grid.out`. The header says why (`PLUTOGRD =
   'INDEX'` and `PLUTOWHY`, for example *non-uniform cells along x1*). The array
-  is shown as stored, not resampled.
+  is shown as stored, not resampled; [*Cartesian View*](#cartesian-view) makes
+  the picture in space.
 - The header also gives the time (`PLUTOTIM`), step (`PLUTOSTP`), output
   number (`PLUTONUM`) and geometry (`PLUTOGEO`). Click the *CUBE · …* tag in
   the cube viewer's toolbar to see the header.

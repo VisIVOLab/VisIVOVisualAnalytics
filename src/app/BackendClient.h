@@ -3,6 +3,7 @@
 
 #include "DatasetBeam.h"
 #include "PhysicalUnits.h"
+#include "PlutoCartesianView.h"
 #include "FilePreview.h"
 #include "ParticleProfiles.h"
 #include "VbtByteOrder.h"
@@ -3553,6 +3554,16 @@ public:
                                                 const QStringList &fields,
                                                 const QVector<double> &windowKpc,
                                                 const QVector<double> &offsetKpc) const;
+
+    /** POST /v1/simulations/pluto/cartesian/plan — the grid the Cartesian view of a
+     *  PLUTO output (polar, cylindrical, spherical, stretched) would have (#527). */
+    visivo::plutoview::Plan planPlutoCartesian(const QString &path, qint64 maxVoxels,
+                                               bool mirror) const;
+
+    /** POST /v1/simulations/pluto/cartesian — resample the output onto a uniform
+     *  Cartesian grid, one FITS per variable (all of them when @p allVariables). */
+    visivo::plutoview::Result extractPlutoCartesian(const QString &path, qint64 maxVoxels,
+                                                    bool mirror, bool allVariables) const;
 
     // ── SED fitting ──────────────────────────────────────────────────────────
     /** POST /v1/sed/fit — greybody fit of a source's photometry. */

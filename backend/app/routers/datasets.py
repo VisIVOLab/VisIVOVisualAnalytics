@@ -297,11 +297,12 @@ def _physical_units_info(path: str) -> PhysicalUnitsInfo:
     from .. import pluto_source  # noqa: PLC0415
     table = pu.scales(path)
     run = pu.merged_run_units(path)
-    name = pluto_source.split_ref(path)[1]
+    ref = pu.pluto_ref_of(path)
+    name = pluto_source.split_ref(ref)[1]
     code_time = None
     if name is not None:
         try:
-            code_time = float(pluto_source.resolve(path).record.time)
+            code_time = float(pluto_source.resolve(ref).record.time)
         except (OSError, ValueError, AttributeError):
             code_time = None
     sources = [e.get("source", "") for e in table.values()]

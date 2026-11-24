@@ -1,5 +1,7 @@
 // BackendClient_Arepo.cpp
-// AREPO snapshot transport: browse one, cost an extraction, run it.
+// AREPO snapshot transport: browse one, cost an extraction, run it. The PLUTO
+// Cartesian view (#527) is the same kind of call and sits at the end of this
+// section: cost it, run it.
 //
 // An AREPO snapshot is a moving-mesh simulation — an unstructured set of cells
 // that no viewer can display. The backend resamples a window of it onto a
@@ -220,6 +222,51 @@ BackendArepoExtractResult BackendClient::extractArepoCubes(
         return result;
     }
     result.valid = true;
+    return result;
+}
+
+// ── PLUTO: the Cartesian view of a curvilinear or stretched grid (#527) ───────
+
+visivo::plutoview::Plan BackendClient::planPlutoCartesian(const QString &path, qint64 maxVoxels,
+                                                          bool mirror) const
+{
+    namespace pv = visivo::plutoview;
+    pv::Plan plan;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/simulations/pluto/cartesian/plan")),
+            QJsonDocument(pv::requestBody(path, maxVoxels, mirror, false)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        plan.error = describeFailure(payload, transportError,
+                                     QStringLiteral("Could not plan the Cartesian view."));
+        return plan;
+    }
+    return pv::parsePlan(object);
+}
+
+visivo::plutoview::Result BackendClient::extractPlutoCartesian(const QString &path,
+                                                               qint64 maxVoxels, bool mirror,
+                                                               bool allVariables) const
+{
+    namespace pv = visivo::plutoview;
+    pv::Result result;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/simulations/pluto/cartesian")),
+            QJsonDocument(pv::requestBody(path, maxVoxels, mirror, allVariables)),
+            transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        result.error = describeFailure(payload, transportError,
+                                       QStringLiteral("The Cartesian view could not be made."));
+        return result;
+    }
+    result.plan = pv::parsePlan(object);
+    result.outputs = pv::parseCubes(object);
+    result.valid = !result.outputs.isEmpty();
+    if (!result.valid)
+        result.error = QStringLiteral("The backend produced no cube.");
     return result;
 }
 

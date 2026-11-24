@@ -154,3 +154,35 @@ backend.
 |----------|---------|--------|
 | `VISIVO_AREPO_MAX_CELLS` | 600,000,000 | Largest grid an extraction may materialise |
 | `VISIVO_AREPO_MAX_LEVEL` | 14 | Highest refinement level accepted |
+
+### `POST /v1/simulations/pluto/cartesian/plan`
+`{path, shape?, max_voxels?, mirror?}` → `{valid, error, path, plan,
+index_reason}`; `path` is a PLUTO variable reference, a data file or the run's
+`.out`. `plan` is `{geometry, mode, axes, lower, upper, shape, cell, mirror,
+interpolation, voxels, bytes_estimate}`: the Cartesian view of a polar,
+cylindrical, spherical or stretched output. `mode` is `cube` (x, y, z), `plane`
+(x, y), `meridional` (x, z; axisymmetric) or `grid` (a stretched Cartesian
+run); `shape` is in FITS axis order. Without `shape` the voxel is the finest
+cell along the run's length directions, coarsened to `max_voxels` (default
+2^26; an explicit `shape` may go to 2^30). `mirror` applies to `meridional`
+only. Reads `grid.out` only. 422 for a 1-D run, an unknown geometry or a bad
+`shape`.
+
+### `POST /v1/simulations/pluto/cartesian`
+`{path, fields?, shape?, max_voxels?, mirror?}` → `{valid, error, plan,
+outputs: [{field, path, shape}], source_geometry}`. `fields` omitted: the
+variable `path` names; `["*"]`: every cell variable on disk. One FITS per
+variable (`<var>.pluto-cartesian.fits`) in a directory of its own under the
+exports directory. The resampling is trilinear in the native coordinates (cell
+centres half-way between the edges; periodic across a full φ circle; constant
+within the half cell at the domain edge), computed in chunks of 2^20 voxels
+straight into the file with the source memory-mapped, so memory does not
+depend on the output size. Voxels outside the domain are NaN. The header
+carries `PLUTOSRC`, `PLUTOGEO`, `PLUTOVEW`, `PLUTOMOD`, `PLUTOINT`, `PLUTOMIR`
+and the variable's `PLUTOVAR`, `PLUTOTIM`, `PLUTOSTP`, `PLUTONUM`.
+
+A file named `*.pluto-cartesian.fits` whose `PLUTOSRC` names a PLUTO variable
+takes that variable's physical units (`app.physical_units.pluto_ref_of`): the
+run's `definitions.h` or what the user typed for it, with coordinates in
+length. Heavy-task throttle, as AREPO's. Implementation:
+`app/compute/pluto_cartesian.py`.

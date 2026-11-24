@@ -186,6 +186,9 @@ private slots:
     void openConeSearch();
     /// Browse an AREPO snapshot on the backend and extract a uniform cube.
     void openArepoSnapshot();
+    /// Resample a PLUTO output on polar, cylindrical, spherical or stretched
+    /// cells onto a uniform Cartesian grid (issue #527) and open the cube.
+    void openPlutoCartesianView();
     void openSettingsDialog();
     void openAboutDialog();
     void loadPanoramicView();
