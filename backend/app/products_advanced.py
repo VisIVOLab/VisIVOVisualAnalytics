@@ -408,59 +408,30 @@ def worker_mosaic(
 # ── UC 1.3: publication-quality figure ──────────────────────────────────────
 
 
-def worker_publication_figure(
-    output_path: str,
-    *,
-    path: str,
-    cmap: str = "inferno",
-    stretch: str = "linear",
-    percent: float = 99.5,
-    title: str = "",
-    add_grid: bool = True,
-    add_colorbar: bool = True,
-    dpi: int = 200,
-) -> dict[str, Any]:
-    """Render a 2-D image as a publication-quality figure with a WCS sky grid,
-    a labelled colorbar (BUNIT) and a configurable stretch. Output format is
-    inferred from the path extension (.png/.pdf/.svg)."""
-    import matplotlib  # noqa: PLC0415
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt  # noqa: PLC0415
-    from astropy.visualization import simple_norm  # noqa: PLC0415
+def worker_publication_figure(output_path: str | None, *, path: str, req) -> dict[str, Any]:
+    """Render a 2-D image as a publication-quality figure: a WCS sky grid, a
+    labelled colour bar (BUNIT), a configurable stretch and, on request, text in
+    the fonts and sizes asked for, contours, regions and annotations, the beam,
+    a scale bar and a compass. ``req`` is the route's request. The format follows
+    the extension of ``output_path`` (.png/.pdf/.svg/.eps); with None the PNG
+    comes back in the result (the preview). Drawing is in ``publication_figure``."""
+    from . import publication_figure as pf  # noqa: PLC0415
 
     data, header, wcs = load_image2d(path)
-    has_celestial = bool(wcs.has_celestial)
-
-    norm = simple_norm(data, stretch=stretch, percent=percent)
-    fig = plt.figure(figsize=(8.0, 6.5), dpi=dpi)
-    if has_celestial:
-        ax = fig.add_subplot(1, 1, 1, projection=wcs)
-        ax.set_xlabel("Right Ascension")
-        ax.set_ylabel("Declination")
-        if add_grid:
-            ax.coords.grid(True, color="white", ls=":", alpha=0.5)
-    else:
-        ax = fig.add_subplot(1, 1, 1)
-        ax.set_xlabel("X (pixels)")
-        ax.set_ylabel("Y (pixels)")
-
-    im = ax.imshow(data, origin="lower", cmap=cmap, norm=norm)
-    if title:
-        ax.set_title(title)
-    if add_colorbar:
-        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.set_label(str(header.get("BUNIT", "")).strip() or "value")
-
-    fig.savefig(output_path, bbox_inches="tight", dpi=dpi)
-    plt.close(fig)
-    return {
-        "output_path": output_path,
-        "width": int(data.shape[1]),
-        "height": int(data.shape[0]),
-        "stretch": stretch,
-        "has_wcs": has_celestial,
-    }
+    beam = None
+    if req.beam:
+        # The header's beam, or the one typed for the dataset (/v1/datasets/beam):
+        # the same the statistics use, read here only when the figure draws it.
+        from .fits_dataset import ScientificFitsDataset  # noqa: PLC0415
+        try:
+            beam = ScientificFitsDataset(path).beam_for_channel(0)
+        except Exception:  # noqa: BLE001 - not a FITS the dataset class reads: no beam
+            beam = None
+    out = pf.render(data, header, wcs, beam, req, output_path=output_path,
+                    preview=output_path is None)
+    out["output_path"] = output_path or ""
+    out["stretch"] = req.stretch
+    return out
 
 
 # ── UC 4.2: image-quality / artifact metrics ────────────────────────────────

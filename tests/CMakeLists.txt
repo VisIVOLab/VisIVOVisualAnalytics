@@ -160,6 +160,8 @@ add_executable(VisIVOTests
     test_molecular_line_client.cpp
     TestLteCoRequest.h
     test_lte_co_request.cpp
+    TestPublicationFigure.h
+    test_publication_figure.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h

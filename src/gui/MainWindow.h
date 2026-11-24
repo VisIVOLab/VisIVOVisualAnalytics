@@ -31,6 +31,7 @@ class DiagnosticsWindow;
 class HiPSWindow;
 class SampClient;
 class SampMessageHandler;
+namespace visivo::figure { struct Context; }
 class QAction;
 class QLabel;
 class QMenu;
@@ -378,9 +379,12 @@ private:
     /// Action handlers for the advanced 2-D product use cases.
     /// @p onDone, when given, receives the rendered file's path so the calling
     /// viewer can record the figure as a product of its own.
+    /// @p context is what the viewer that asks shows (its colour map and range,
+    /// its contours, regions and annotations): the dialog starts from it.
     void runPublicationFigure(const QString &backendUrl, const QString &backendToken,
                               const QString &sessionId, const QString &datasetId,
-                              std::function<void(const QString &outputPath)> onDone = {});   ///< UC 1.3
+                              const visivo::figure::Context &context,
+                              std::function<void(const QString &outputPath)> onDone = {});   ///< UC 1.3, #41
     /// @p onDone receives the metrics so the calling viewer can record them.
     void runImageQuality(const QString &backendUrl, const QString &backendToken,
                          const QString &sessionId, const QString &datasetId,

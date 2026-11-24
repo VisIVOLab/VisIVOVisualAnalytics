@@ -217,21 +217,35 @@ than two datasets is 422. The response has the same shape as `map_math`, with
 pixels covered by at least one input).
 
 ### `POST /v1/products/publication_figure`
-Render an image as a figure file with a WCS sky grid and a colour bar labelled
-with `BUNIT`.
+Render an image as a figure file, or, with `preview`, as a small PNG in the
+response (issue #41). Only `dataset_id` is required; every other field has the
+value the one-click figure always had.
 
 ```json
-{ "dataset_id": "...", "cmap": "inferno", "stretch": "asinh", "percent": 99.5,
+{ "dataset_id": "...", "cmap": "Inferno", "stretch": "asinh", "percent": 99.5,
   "title": "", "add_grid": true, "add_colorbar": true, "dpi": 200,
   "output_basename": "field.pdf" }
 ```
 
-`stretch` is `linear`, `log`, `sqrt`, `asinh` or `power` (astropy
-`simple_norm`, clipped at `percent`). The format follows the extension of
-`output_basename` (`.png`, `.pdf`, `.svg`; anything else gets `.png`
-appended); the default name is `<stem>_figure.png`. Without a celestial WCS the
-axes are in pixels. Response: `valid`, `error`, `output_path`,
-`workspace_filename`, `width`, `height` (image pixels), `has_wcs`.
+| Group | Fields |
+|---|---|
+| Colours | `cmap`: a matplotlib name in any case (`Inferno`, `CoolWarm`, `Purples_r`); unknown is `valid: false`. `stretch`: `linear`, `sqrt`, `squared`, `log`, `asinh`, `sinh`, `power` (astropy stretches; `gamma` is the power exponent). `vmin`/`vmax` give the range; without them `percent` clips (default 99.5). |
+| Text | `title`, `xlabel`, `ylabel` (empty: the sky axes' names, or X/Y in pixels), `colorbar_label` (empty: `BUNIT`). `font_family`: `sans-serif`, `serif`, `monospace` or an installed family (a missing one is refused, not replaced). `title_size`, `label_size`, `tick_size`, `colorbar_label_size` in points (4 to 72). |
+| Axes | `add_grid`; `frame` `native`, `fk5`, `icrs` or `galactic` (another frame than the image's is drawn as astropy's coordinate overlay, on the bottom and left edges); `tick_format` `auto`, `sexagesimal` or `degrees`. |
+| Colour bar | `add_colorbar`; `colorbar_position` `right`, `left`, `top` or `bottom`. |
+| Size | `width_in` and `height_in` (1 to 40 inches, 8 x 6.5 by default), `dpi` (30 to 1200); more than 120 megapixels is refused. `crop` (default true) trims the white margin, so the file is a little smaller than asked; false gives exactly the size. |
+| Marks | `beam` (BMAJ/BMIN/BPA of the header, or the beam typed for the dataset, as an ellipse of true size and orientation), `scale_bar` with `scale_bar_length` (in `scale_bar_unit` `arcsec`, `arcmin` or `deg`; 0 is a 1, 2 or 5 x 10^n length near a fifth of the width), `compass` (north and east of the pixel grid; b and l for a Galactic grid). Each has a `*_position`: `bottom-left`, `bottom-right`, `top-left` or `top-right`. `overlay_color` (default `auto`: white over a dark map, black over a light one). |
+| Overlays | `regions`: canonical regions of [Regions](regions.md), in 1-based image pixels or any sky frame (converted with the dataset's WCS). A contour line is a `polygon` or `line` with `props.color`, `props.width` and `props.dash`; an annotation a `text` or a `vector`; any region is drawn as it is. Lines of one style are one artist, so tens of thousands of contour lines are fine; more than 3 million vertices are refused. A malformed region is left out and counted. |
+| Output | `output_basename`: the format follows its extension `.png`, `.pdf`, `.svg` or `.eps` (anything else gets `.png`); the default is `<stem>_figure.png`. `preview` (true: no file, the PNG comes back in `png_base64`, its longest side `preview_px`, 800 by default, and the image decimated when it is very large). |
+
+Response: `valid`, `error`, `output_path`, `workspace_filename` (what
+`GET /v1/exports/download` takes), `format`, `width`, `height` (image pixels),
+`has_wcs`, `notes` (what was asked for and could not be drawn: no beam in the
+header, no sky grid, a scale bar longer than the image, overlays left out),
+`regions_drawn`, and for a preview `png_base64`, `png_width`, `png_height`.
+A request with a value out of range or not one of the listed words is 422.
+The figure is drawn off the event loop and renders are serialised.
+
 
 ### `POST /v1/products/image_quality`
 Quality and artefact metrics for an image. Request: `{dataset_id}`.

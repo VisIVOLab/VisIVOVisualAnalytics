@@ -43,7 +43,9 @@
 #include <QUrl>
 #include <vtkImageData.h>
 #include "ProfileWidget.h"
+#include "PublicationFigureDialog.h"
 #include "LteCoDialog.h"
+#include <vtkLookupTable.h>
 #include "RegionModel.h"
 #include "app/LteCoRequest.h"
 
@@ -246,11 +248,81 @@ void vtkWindowImage::recordPublicationFigure(const QString &outputPath)
     // figure used to be announced in a message box and nowhere else.
     QVariantMap params;
     params.insert(u"Output path"_s, outputPath);
-    params.insert(u"Format"_s, u"PNG (matplotlib, rendered on the backend)"_s);
+    params.insert(u"Format"_s, u"%1 (matplotlib, rendered on the backend)"_s.arg(
+            QFileInfo(outputPath).suffix().toUpper()));
     params.insert(u"Storage"_s, u"Workspace Exports"_s);
     this->registerAnalysisProduct(u"figure"_s,
                                   u"Publication figure: %1"_s.arg(QFileInfo(outputPath).fileName()),
                                   params, this->scopedProductId(u"pubfig"_s));
+}
+
+visivo::figure::Context vtkWindowImage::publicationFigureContext()
+{
+    namespace vf = visivo::figure;
+    vf::Context ctx;
+    ctx.overlays = std::make_shared<vf::Overlays>();
+    ctx.fileStem = QFileInfo(this->filepath).completeBaseName() + u"_figure"_s;
+    vf::Options &o = ctx.defaults;
+
+    // The colours as the window shows them. A map the backend has not (the
+    // viewer's Rainbow, Glow…) stays the one-click Inferno.
+    const int master = this->layers ? this->layers->getMasterIndex() : -1;
+    if (master >= 0 && master < this->layers->rowCount()) {
+        if (auto *lut = this->layers->getLookupTable(master)) {
+            o.cmap = vf::colourMapFor(QString::fromStdString(lut->GetObjectName()));
+            const double *r = lut->GetTableRange();
+            if (r && std::isfinite(r[0]) && std::isfinite(r[1]) && r[0] < r[1]) {
+                o.useRange = true;
+                o.vmin = r[0];
+                o.vmax = r[1];
+            }
+        }
+        switch (this->layers->scaleMode(master)) {
+        case LutScale::Mode::Log: o.stretch = u"log"_s; break;
+        case LutScale::Mode::Sqrt: o.stretch = u"sqrt"_s; break;
+        case LutScale::Mode::Square: o.stretch = u"squared"_s; break;
+        case LutScale::Mode::Power:
+            o.stretch = u"power"_s;
+            o.gamma = this->layers->scaleGamma(master);
+            break;
+        case LutScale::Mode::Linear: break;
+        }
+    }
+    if (ui->actionGalactic->isChecked())
+        o.frame = u"galactic"_s;
+
+    // Over the image. The lines of a contour layer are taken here, on the GUI
+    // thread, as the export does; they are joined later, off it.
+    constexpr std::size_t kMaxFigureSegments = 1'000'000;
+    const auto identity = [](double x, double y) { return std::array<double, 2>{ x, y }; };
+    bool tooMany = false;
+    const auto take = [&](ContourLayer *layer) {
+        if (!layer || !layer->hasInput() || !layer->visible())
+            return;
+        bool big = false;
+        auto src = layer->lineSource(identity, kMaxFigureSegments, &big);
+        if (big)
+            tooMany = true;
+        else if (!src.segments.empty())
+            ctx.overlays->contourSources.push_back(std::move(src));
+    };
+    if (m_contoursVisible)
+        take(m_contourLayer.get());
+    for (const auto &ext : std::as_const(m_externalContourLayers))
+        take(ext.layer.get());
+    if (tooMany)
+        statusBar()->showMessage(u"Some contours have too many segments for a figure and are "
+                                 u"left out: raise the lowest level or smooth the image."_s, 8000);
+    ctx.overlays->regions = vf::regionRegions(m_regions.regions());
+    std::vector<vf::Note> notes;
+    for (const auto &a : m_annotations)
+        notes.push_back({ a.type == Annotation::Arrow, a.text, a.worldX, a.worldY, a.arrowEndX,
+                          a.arrowEndY });
+    ctx.overlays->annotations = vf::noteRegions(notes);
+    o.contours = ctx.overlays->hasContours();
+    o.regions = !ctx.overlays->regions.isEmpty();
+    o.annotations = !ctx.overlays->annotations.isEmpty();
+    return ctx;
 }
 
 void vtkWindowImage::recordImageQuality(const QVariantMap &metrics)

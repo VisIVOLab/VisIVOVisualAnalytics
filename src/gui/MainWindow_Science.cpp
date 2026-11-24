@@ -24,6 +24,7 @@
 #include "vtkWindowCatalogue3D.h"
 #include "vtkWindowCube.h"
 #include "vtkWindowImage.h"
+#include "PublicationFigureDialog.h"
 
 #include <QLabel>
 #include <QStatusBar>
@@ -81,6 +82,7 @@ using namespace Qt::StringLiterals;
 
 void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &backendToken,
                                       const QString &sessionId, const QString &datasetId,
+                                      const visivo::figure::Context &context,
                                       std::function<void(const QString &)> onDone)
 {
     // Context passed in, not read from "the last dataset opened": these are
@@ -93,36 +95,17 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
                                  u"No dataset to render: open an image or a cube first."_s);
         return;
     }
-    QDialog dlg(this);
-    dlg.setWindowTitle(u"Publication Figure"_s);
-    auto *form = new QFormLayout(&dlg);
-    auto *stretch = new QComboBox(&dlg);
-    stretch->addItems(QStringList{ u"linear"_s, u"log"_s, u"sqrt"_s, u"asinh"_s, u"power"_s });
-    auto *cmap = new QComboBox(&dlg);
-    // matplotlib names, which the backend hands to matplotlib as they are; the white-to-hue
-    // maps (and their reverses) are the ones that print well on paper.
-    cmap->addItems(QStringList{ u"inferno"_s, u"viridis"_s, u"magma"_s, u"gray"_s, u"hot"_s,
-                                u"cubehelix"_s, u"Purples"_s, u"Blues"_s, u"Greens"_s, u"Reds"_s,
-                                u"Greys"_s, u"Oranges"_s, u"Purples_r"_s, u"Blues_r"_s,
-                                u"Greens_r"_s, u"Reds_r"_s, u"Greys_r"_s, u"Oranges_r"_s });
-    auto *title = new QLineEdit(&dlg);
-    auto *grid = new QCheckBox(u"WCS sky grid"_s, &dlg); grid->setChecked(true);
-    auto *cbar = new QCheckBox(u"Colorbar (BUNIT)"_s, &dlg); cbar->setChecked(true);
-    form->addRow(u"Stretch"_s, stretch);
-    form->addRow(u"Colormap"_s, cmap);
-    form->addRow(u"Title"_s, title);
-    form->addRow(QString(), grid);
-    form->addRow(QString(), cbar);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    buttons->button(QDialogButtonBox::Ok)->setText(u"Render"_s);
-    form->addRow(buttons);
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    // The options, with a live preview of the backend's own figure (#41).
+    visivo::figure::Context ctx = context;
+    ctx.backendUrl = backendUrl;
+    ctx.token = backendToken;
+    ctx.sessionId = sessionId;
+    ctx.datasetId = datasetId;
+    visivo::figure::PublicationFigureDialog dlg(ctx, this);
     if (dlg.exec() != QDialog::Accepted) return;
 
-    const QString url = backendUrl, token = backendToken, ds = datasetId;
-    const QString s = stretch->currentText(), cm = cmap->currentText(), t = title->text();
-    const bool g = grid->isChecked(), c = cbar->isChecked();
+    const auto makeBody = dlg.bodyMaker();
+    const QString url = backendUrl, token = backendToken;
     // The render can take a while: the busy indicator of the window that
     // asked, besides the cursor (#159).
     auto busy = std::make_shared<visivo::BusyStatus>(
@@ -130,7 +113,7 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
             visivo::BusyStatus::Scope::Detached);
     auto *watcher = new QFutureWatcher<BackendPublicationFigureResult>(this);
     QObject::connect(watcher, &QFutureWatcher<BackendPublicationFigureResult>::finished, this,
-                     [this, watcher, onDone, busy]() {
+                     [this, watcher, onDone, busy, url, token, sessionId]() {
         QApplication::restoreOverrideCursor();
         watcher->deleteLater();
         const auto r = watcher->result();
@@ -144,19 +127,42 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
         // products rather than leaving it only in this message box.
         if (onDone && !r.outputPath.isEmpty())
             onDone(r.outputPath);
-        const auto choice = QMessageBox::information(
-                this, u"Publication Figure"_s,
-                u"Figure saved on the backend:\n%1\n\nOpen it now? (works when the "
-                u"backend shares this machine's filesystem)"_s.arg(r.outputPath),
-                QMessageBox::Open | QMessageBox::Close, QMessageBox::Open);
-        if (choice == QMessageBox::Open)
+        QString text = u"Figure saved on the backend:\n%1"_s.arg(r.outputPath);
+        if (!r.notes.isEmpty())
+            text += u"\n\nNot everything asked for could be drawn:\n- "_s + r.notes.join(u"\n- "_s);
+        QMessageBox box(QMessageBox::Information, u"Publication Figure"_s, text,
+                        QMessageBox::NoButton, this);
+        auto *open = box.addButton(u"Open"_s, QMessageBox::AcceptRole);
+        auto *copy = box.addButton(u"Save a Copy…"_s, QMessageBox::ActionRole);
+        box.addButton(QMessageBox::Close);
+        box.setDefaultButton(open);
+        box.exec();
+        if (box.clickedButton() == open) {
+            // Works when the backend shares this machine's filesystem.
             QDesktopServices::openUrl(QUrl::fromLocalFile(r.outputPath));
+        } else if (box.clickedButton() == copy && !r.workspaceFilename.isEmpty()) {
+            // Streamed back from the backend, so it works for a remote one too.
+            const QString local = QFileDialog::getSaveFileName(
+                    this, u"Save the Figure"_s,
+                    QDir(QDir::homePath()).filePath(r.workspaceFilename));
+            if (local.isEmpty())
+                return;
+            QApplication::setOverrideCursor(Qt::WaitCursor);
+            BackendClient bc(url, token);
+            bc.setSessionId(sessionId);
+            QString error;
+            const bool ok = bc.downloadExport(r.workspaceFilename, local, error);
+            QApplication::restoreOverrideCursor();
+            if (!ok)
+                QMessageBox::warning(this, u"Publication Figure"_s,
+                                     error.isEmpty() ? u"The copy could not be saved."_s : error);
+        }
     });
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    watcher->setFuture(QtConcurrent::run([url, token, sessionId, ds, s, cm, t, g, c]() {
+    watcher->setFuture(QtConcurrent::run([url, token, sessionId, makeBody]() {
         BackendClient bc(url, token);
         bc.setSessionId(sessionId);
-        return bc.publicationFigure(ds, s, t, g, c, cm, 200);
+        return bc.publicationFigure(makeBody(false));
     }));
 }
 

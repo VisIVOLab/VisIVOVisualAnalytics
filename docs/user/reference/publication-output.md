@@ -6,7 +6,7 @@ compare them.
 
 | Task | Command | Viewer |
 |---|---|---|
-| A figure with colour bar and sky grid | *Tools ▸ Products ▸ Publication Figure…* | image |
+| A figure with preview, fonts, titles, overlays, beam, scale bar and compass: PNG, PDF, SVG or EPS | *Tools ▸ Products ▸ Publication Figure…* | image |
 | An animation | *Tools ▸ Export ▸ Export Movie…* | cube |
 | A still of a 3-D view: PNG (also with a transparent background), PDF or SVG | *Tools ▸ Export ▸ Save View As…* (cube), *View ▸ Save View As…* (volume table, point viewer) | cube, volume table, points |
 | Labels and arrows | *Tools ▸ Annotations ▸ Add Text Annotation…*, *Add Arrow Annotation…* | image |
@@ -15,22 +15,34 @@ compare them.
 
 ## Publication Figure
 
-*Tools ▸ Products ▸ Publication Figure…* renders the current dataset on the
-backend.
+*Tools ▸ Products ▸ Publication Figure…* renders the current image on the
+backend. The dialog has the options on the left and a preview on the right. The
+preview is the backend's own figure at low resolution and is redrawn a moment
+after each change, so what you see is what *Render* writes. The dialog starts
+from the window: its colour map, stretch and colour range, its contours,
+regions and annotations. With no change it makes the figure it always made.
 
-| Field | Values |
+| Tab | Options |
 |---|---|
-| *Stretch* | `linear`, `log`, `sqrt`, `asinh`, `power` |
-| *Colormap* | `inferno`, `viridis`, `magma`, `gray`, `hot`, `cubehelix`, and the white-to-hue maps `Purples`, `Blues`, `Greens`, `Reds`, `Greys`, `Oranges` (each also reversed with `_r`) |
-| *Title* | optional |
-| *WCS sky grid* | on by default |
-| *Colorbar (BUNIT)* | colour bar labelled with the data's `BUNIT`; on by default |
+| *Image* | *Colour map* (`Inferno`, `Viridis`, `Magma`, `Plasma`, `Cividis`, `CoolWarm`, `Gray`, and the white-to-hue maps `Purples`, `Blues`, `Greens`, `Reds`, `Greys`, `Oranges`, each also reversed with `_r`). *Stretch*: `linear`, `sqrt`, `squared`, `log`, `asinh`, `sinh`, `power` with its exponent. *Minimum* and *Maximum* as the window shows them, or *Clip at* a percentile of the pixels. |
+| *Text* | *Title*, *X axis title* and *Y axis title* (the sky axes' names by default), the font (`sans-serif`, `serif`, `monospace`, or a family installed on the backend) and the sizes in points of the title, the axis titles, the tick labels and the colour bar label. |
+| *Axes* | *WCS sky grid*; *Coordinate frame* of ticks and grid (`native`, `fk5`, `icrs`, `galactic`); *Tick format* (`auto`, `sexagesimal`, `degrees`); the colour bar on or off, on the right, left, top or bottom, with its label (the data's `BUNIT` by default). |
+| *Overlays* | *Beam*, the header's (or the one typed for the dataset) as an ellipse of its true size and orientation; *Scale bar*, angular, with a length in arcsec, arcmin or degrees (a round length by default); *Compass*, north and east as the grid has them. Each goes in the corner you pick. *Contours of the window* (the image's own and the external ones, with the levels, colours, widths and dashes you see), *Regions* and *Text and arrow annotations* are drawn when the window has them. |
+| *Output* | *Format* `png`, `pdf`, `svg` or `eps` (vector for the last three); width and height in inches; resolution in dpi (200 by default); *Trim the white margin* (on by default, so the file is a little smaller than the size asked for). |
 
-*Render* writes a 200 dpi PNG into the backend's Workspace Exports, lists it
-among the image's products and offers to open it (this works when the backend
-shares your machine's file system). For data a reader will judge
-quantitatively, prefer a perceptually uniform colormap (`viridis`, `inferno`,
-`magma`).
+Anything that is asked for and cannot be drawn is said, not skipped: a beam
+needs `BMAJ` and `BMIN` in the header, the scale bar and the compass need a sky
+grid, and a font that is not installed on the backend is refused rather than
+replaced. The preview shows these notes under the picture, and *Render* repeats
+them.
+
+*Render* writes the file into the backend's Workspace Exports and lists it among
+the image's products. The message that follows offers to open it (this works
+when the backend shares your machine's file system) and to save a copy
+anywhere, which also works for a remote backend. For data a reader will judge
+quantitatively, prefer a perceptually uniform colour map (`viridis`, `inferno`,
+`magma`). A `log` stretch is astropy's, not the viewer's pure logarithm, so the
+colours of a very deep range differ a little from the window.
 
 A figure does not record how it was made. Note in the caption the channel range
 of a moment map and any mask, the stretch and a hand-set colour range, the beam,

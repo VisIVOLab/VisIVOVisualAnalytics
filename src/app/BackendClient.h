@@ -1099,10 +1099,15 @@ struct BackendPublicationFigureResult
 {
     bool valid{ false };
     QString error;
-    QString outputPath;           ///< Backend-side path of the rendered PNG/PDF/SVG
-    int width{ 0 };
+    QString outputPath;           ///< Backend-side path of the rendered PNG/PDF/SVG/EPS; empty for a preview
+    QString workspaceFilename;    ///< Its name within Workspace Exports (what downloadExport() takes)
+    QString format;               ///< png | pdf | svg | eps
+    int width{ 0 };               ///< of the image, in pixels
     int height{ 0 };
     bool hasWcs{ false };
+    QStringList notes;            ///< what was asked for and could not be drawn, and why
+    int regionsDrawn{ 0 };
+    QByteArray png;               ///< a preview's picture (the decoded PNG)
 };
 
 /// Result of POST /v1/products/image_quality (UC 4.2). ``metrics`` carries the
@@ -3019,12 +3024,11 @@ public:
     BackendProductFitsResult mosaic(const QStringList &datasetIds,
                                     const QString &weightMode = QStringLiteral("noise")) const;
 
-    /** POST /v1/products/publication_figure — WCS-gridded, colorbar-labelled
-     *  figure (UC 1.3). ``stretch`` ∈ {linear,log,sqrt,asinh,power}. */
-    BackendPublicationFigureResult publicationFigure(
-            const QString &datasetId, const QString &stretch, const QString &title,
-            bool addGrid, bool addColorbar,
-            const QString &cmap = QStringLiteral("inferno"), int dpi = 200) const;
+    /** POST /v1/products/publication_figure — the figure of UC 1.3 and issue #41:
+     *  WCS grid, colour bar, text, overlays, beam, scale bar, compass. @p body is
+     *  the request (visivo::figure::requestBody, gui/PublicationFigureSpec.h); with
+     *  ``preview`` in it the answer carries a small PNG and no file is written. */
+    BackendPublicationFigureResult publicationFigure(const QJsonObject &body) const;
 
     /** POST /v1/products/image_quality — quality/artifact metrics (UC 4.2). */
     BackendImageQualityResult imageQuality(const QString &datasetId) const;
