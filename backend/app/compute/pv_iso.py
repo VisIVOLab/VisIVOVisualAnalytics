@@ -315,11 +315,15 @@ def _require_spectral_last(dataset: ScientificFitsDataset) -> None:
 
 
 def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
-               stop_file: str | None = None) -> dict[str, Any]:
+               stop_file: str | None = None,
+               spectral_choice: dict[str, Any] | None = None) -> dict[str, Any]:
     """The PV diagram as arrays: ``pv`` (depth, n_samples), sample geometry, and
     the spectral axis (coordinates + linear WCS) and cube metadata. With a
     ``stop_file`` (app/compute/abort.py) an aborted task ends within one block
-    of channels, raising ``ComputationAborted``."""
+    of channels, raising ``ComputationAborted``. ``spectral_choice``
+    (``spectral_axis.normalize_choice``, issue #496) gives the spectral
+    coordinates in another quantity and frame; the diagram itself, one row
+    per channel, is the same."""
     check_abort(stop_file)
     verts = _clean_vertices(vertices)
     width_pixels = max(1, int(width_pixels))
@@ -367,6 +371,15 @@ def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
     if valid_samples <= 0:
         raise ValueError("No valid data found along the PV cut.")
 
+    from ..spectral_axis import axis_provenance, spectral_axis  # noqa: PLC0415
+    if spectral_choice:
+        axis = spectral_axis(dataset.path, spectral_choice["quantity"], spectral_choice["frame"],
+                             spectral_choice["rest_freq_hz"])
+        spectral = {**spectral, "coordinates": np.asarray(axis["values"], dtype=np.float64),
+                    "axis_unit": axis["unit"], "axis_type": axis["ctype"]}
+        axis_note = axis_provenance(dataset, spectral_choice, axis, axis["ctype"])
+    else:
+        axis_note = axis_provenance(dataset, None, None, str(spectral["axis_type"]))
     coordinates = np.asarray(spectral["coordinates"], dtype=np.float64)
     if coordinates.size >= 2:
         crval, cdelt = float(coordinates[0]), float(coordinates[1] - coordinates[0])
@@ -393,13 +406,16 @@ def compute_pv(path: str, vertices: list[list[float]], width_pixels: int,
         "spectral_cdelt": cdelt,
         "spectral_ctype": str(spectral["axis_type"]),
         "spectral_cunit": str(spectral["axis_unit"]),
+        "spectral_choice": spectral_choice,
+        "axis_note": axis_note,
         "dataset": dataset,
     }
 
 
 def worker_pv(path: str, vertices: list[list[float]], width_pixels: int,
-              stop_file: str | None = None) -> dict[str, Any]:
-    r = compute_pv(path, vertices, width_pixels, stop_file)
+              stop_file: str | None = None,
+              spectral_choice: dict[str, Any] | None = None) -> dict[str, Any]:
+    r = compute_pv(path, vertices, width_pixels, stop_file, spectral_choice)
     pv = r["pv"]
     dataset = r["dataset"]
     positions = r["positions"].astype(np.float32)
@@ -434,6 +450,7 @@ def worker_pv(path: str, vertices: list[list[float]], width_pixels: int,
             np.ascontiguousarray(r["spectral_coordinates"], dtype="<f8").tobytes()).decode("ascii"),
         "spectral_crval": r["spectral_crval"],
         "spectral_cdelt": r["spectral_cdelt"],
+        **r["axis_note"],
         "bunit": dataset.intensity_unit,
         "beam_major": dataset.beam.major,
         "beam_minor": dataset.beam.minor,
@@ -471,8 +488,50 @@ def _copy_spectral_axis(dataset: ScientificFitsDataset, hdr, out_axis: int) -> N
         hdr[f"CNAME{out_axis}"] = get(f"CNAME{n}")
 
 
+#: A spectral axis is written as a linear FITS axis when no channel is further
+#: than this fraction of a channel width from the straight line through the
+#: first and last ones.
+_LINEAR_AXIS_TOLERANCE = 1e-3
+
+
+def _linear_spectral_rows(pv: np.ndarray, values: np.ndarray
+                          ) -> tuple[np.ndarray, float, float, float, bool]:
+    """``pv`` (one row per channel) on a linear axis, for a FITS header.
+
+    ``values`` are the channel values in the chosen quantity and frame. A
+    radio velocity or a frequency, also in another frame, is linear in the
+    channel number (a frame change multiplies every frequency by one factor),
+    so the rows are returned as they are, with CRVAL = ``values[0]`` and CDELT
+    the channel step. An optical velocity is not (v = c(ν0/ν − 1)); its rows
+    are then interpolated linearly, per column, onto ``len(values)`` evenly
+    spaced values from the first to the last channel. Returns
+    ``(rows, crval, cdelt, worst, resampled)``; ``worst`` is the largest
+    distance of a channel from the linear axis, in channel widths (what the
+    interpolation moves a feature by at most, for a smooth line)."""
+    n = int(values.size)
+    if n < 2:
+        return pv, float(values[0]) if n else 0.0, 1.0, 0.0, False
+    cdelt = float(values[-1] - values[0]) / (n - 1)
+    line = float(values[0]) + cdelt * np.arange(n)
+    worst = float(np.max(np.abs(values - line)) / abs(cdelt)) if cdelt else 0.0
+    if worst <= _LINEAR_AXIS_TOLERANCE:
+        return pv, float(values[0]), cdelt, worst, False
+    if not (np.all(np.diff(values) > 0) or np.all(np.diff(values) < 0)):
+        raise ValueError("The spectral axis is not monotonic: it cannot be written as a PV axis.")
+    # Fractional channel of each evenly spaced value (np.interp wants increasing x).
+    order = slice(None) if values[-1] > values[0] else slice(None, None, -1)
+    where = np.interp(line, values[order], np.arange(n, dtype=np.float64)[order])
+    lo = np.minimum(np.floor(where).astype(np.intp), n - 2)
+    t = (where - lo)[:, None]
+    with np.errstate(invalid="ignore"):
+        rows = np.where(t == 0.0, pv[lo],
+                        np.where(t == 1.0, pv[lo + 1], pv[lo] * (1.0 - t) + pv[lo + 1] * t))
+    return rows.astype(pv.dtype, copy=False), float(values[0]), cdelt, worst, True
+
+
 def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]],
-                        width_pixels: int, stop_file: str | None = None) -> dict[str, Any]:
+                        width_pixels: int, stop_file: str | None = None,
+                        spectral_choice: dict[str, Any] | None = None) -> dict[str, Any]:
     """Compute the PV diagram and write it as a 2-D FITS image with WCS.
 
     Axis 1 is the offset along the path (CTYPE1 ``OFFSET``, arcsec, 0 at the first
@@ -481,7 +540,7 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
     """
     from astropy.io import fits  # noqa: PLC0415
 
-    r = compute_pv(path, vertices, width_pixels, stop_file)
+    r = compute_pv(path, vertices, width_pixels, stop_file, spectral_choice)
     check_abort(stop_file)   # not a byte of an aborted job's product is written
     dataset = r["dataset"]
     src = dataset.header
@@ -491,11 +550,40 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
     hdr["CRPIX1"] = 1.0
     hdr["CRVAL1"] = 0.0
     hdr["CDELT1"] = r["step_pixels"] * r["pixel_scale_arcsec"]
-    _copy_spectral_axis(dataset, hdr, out_axis=2)
+    pv_rows = r["pv"]
+    resampled = None
+    if spectral_choice:
+        # The chosen axis (issue #496): a linear axis in that quantity and frame.
+        pv_rows, crval, cdelt, worst, was_resampled = _linear_spectral_rows(
+            r["pv"], r["spectral_coordinates"])
+        hdr["CTYPE2"] = r["spectral_ctype"]
+        hdr["CUNIT2"] = r["spectral_cunit"]
+        hdr["CRPIX2"] = 1.0
+        hdr["CRVAL2"] = crval
+        hdr["CDELT2"] = cdelt
+        resampled = (worst, cdelt) if was_resampled else None
+    else:
+        _copy_spectral_axis(dataset, hdr, out_axis=2)
     for key in ("RESTFRQ", "RESTFREQ", "RESTWAV", "RESTWAVE", "SPECSYS", "SSYSOBS", "VELOSYS",
                 "VELREF", "ZSOURCE", "OBJECT", "TELESCOP", "EQUINOX", "RADESYS", "MJD-OBS", "DATE-OBS"):
         if key in src:
             hdr[key] = src[key]
+    if spectral_choice:
+        note = r["axis_note"]
+        hdr["SPECQNT"] = (note["spectral_quantity"], "Spectral quantity of axis 2")
+        for key in ("SPECSYS", "RESTFRQ"):
+            hdr.remove(key, ignore_missing=True)
+        if note["spectral_frame"]:
+            hdr["SPECSYS"] = (note["spectral_frame"], "Reference frame of axis 2")
+        if note["rest_freq_hz"]:
+            hdr["RESTFRQ"] = (float(note["rest_freq_hz"]), "[Hz] Rest frequency of the velocities")
+        if resampled:
+            hdr["HISTORY"] = ("Spectral axis resampled to a linear grid: the axis is not "
+                              "linear in the channel number")
+            hdr["HISTORY"] = (f"(largest departure {resampled[0]:.3g} channel widths); rows "
+                              "interpolated linearly")
+        if note["spectral_note"]:
+            hdr["HISTORY"] = str(note["spectral_note"])[:70]
     if dataset.intensity_unit:
         hdr["BUNIT"] = dataset.intensity_unit
     copy_intensity_provenance(src, hdr)
@@ -523,12 +611,12 @@ def worker_pv_save_fits(path: str, output_path: str, vertices: list[list[float]]
         if sky is not None:
             line += f" world {float(sky[0][i]):.6f} {float(sky[1][i]):.6f}"
         hdr["HISTORY"] = line
-    fits.PrimaryHDU(data=r["pv"], header=hdr).writeto(output_path, overwrite=False)
-    finite = r["pv"][np.isfinite(r["pv"])]
+    fits.PrimaryHDU(data=pv_rows, header=hdr).writeto(output_path, overwrite=False)
+    finite = pv_rows[np.isfinite(pv_rows)]
     return {
         "output_path": output_path,
-        "width": int(r["pv"].shape[1]),
-        "height": int(r["pv"].shape[0]),
+        "width": int(pv_rows.shape[1]),
+        "height": int(pv_rows.shape[0]),
         "range_min": float(finite.min()) if finite.size else 0.0,
         "range_max": float(finite.max()) if finite.size else 0.0,
         "bunit": dataset.intensity_unit or "",

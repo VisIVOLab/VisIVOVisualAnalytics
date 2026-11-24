@@ -474,3 +474,79 @@ void TestBackendTaskFollow::everyTaskCreateGetsTheShortTimeout()
     QCOMPARE(visivo::taskRequestTimeoutMs(u"/v1/tasks/3f2a9c"_s), 300000);   // a status read
     QCOMPARE(visivo::taskRequestTimeoutMs(u"/v1/tasks/3f2a9c/extra"_s), 10000);
 }
+
+void TestBackendTaskFollow::productRequestsCarryTheSpectralChoice()
+{
+    // Moments and PV follow the window's spectral axis (issue #496): the three
+    // fields go with the request, and only when the axis is not the file's own.
+    QMap<QString, QJsonObject> bodies;   // request path -> JSON body
+    QTcpServer server;
+    QVERIFY(server.listen(QHostAddress::LocalHost));
+    QObject::connect(&server, &QTcpServer::newConnection, &server, [&server, &bodies]() {
+        QTcpSocket *socket = server.nextPendingConnection();
+        auto *buffer = new QByteArray;
+        QObject::connect(socket, &QTcpSocket::disconnected, socket, [buffer]() { delete buffer; });
+        QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, buffer, &bodies]() {
+            buffer->append(socket->readAll());
+            const int end = buffer->indexOf("\r\n\r\n");
+            if (end < 0)
+                return;
+            const QRegularExpressionMatch length =
+                    QRegularExpression(u"content-length:\\s*(\\d+)"_s,
+                                       QRegularExpression::CaseInsensitiveOption)
+                            .match(QString::fromLatin1(buffer->left(end)));
+            const int expected = length.hasMatch() ? length.captured(1).toInt() : 0;
+            if (buffer->size() < end + 4 + expected)
+                return;
+            const QString path = QString::fromLatin1(buffer->split(' ').value(1));
+            bodies.insert(path, QJsonDocument::fromJson(buffer->mid(end + 4, expected)).object());
+            const QByteArray reply = R"({"detail":"Not Found"})";
+            socket->write("HTTP/1.1 404 Nope\r\nContent-Type: application/json\r\n"
+                          "Connection: close\r\nContent-Length: "
+                          + QByteArray::number(reply.size()) + "\r\n\r\n" + reply);
+            socket->disconnectFromHost();
+        });
+    });
+    const BackendClient client(u"http://127.0.0.1:%1"_s.arg(server.serverPort()));
+
+    BackendSpectralChoice lsrk;
+    lsrk.quantity = u"vrad"_s;
+    lsrk.frame = u"LSRK"_s;
+    lsrk.restFreqHz = 268.4e9;
+    const std::vector<std::array<double, 2>> path{ { 0., 0. }, { 5., 5. } };
+
+    client.createMomentTask(u"d1"_s, 1, 0, 9, true, 0., true, lsrk);
+    client.createPvTask(u"d1"_s, path, 1, lsrk);
+    const QJsonObject moment = bodies.value(u"/v1/tasks/moment"_s);
+    const QJsonObject pv = bodies.value(u"/v1/tasks/pv"_s);
+    for (const QJsonObject &body : { moment, pv }) {
+        QCOMPARE(body.value(u"spectral_quantity"_s).toString(), u"vrad"_s);
+        QCOMPARE(body.value(u"spectral_frame"_s).toString(), u"LSRK"_s);
+        QCOMPARE(body.value(u"rest_freq_hz"_s).toDouble(), 268.4e9);
+        QCOMPARE(body.value(u"dataset_id"_s).toString(), u"d1"_s);
+    }
+    QCOMPARE(moment.value(u"moment_order"_s).toInt(), 1);   // the rest of the body is untouched
+    QCOMPARE(pv.value(u"width_pixels"_s).toInt(), 1);
+
+    // The file's own axis: the same body as before #496, no new field.
+    bodies.clear();
+    client.createMomentTask(u"d1"_s, 1, 0, 9, true, 0., true);
+    client.createPvTask(u"d1"_s, path, 1, BackendSpectralChoice{});
+    for (const QJsonObject &body : { bodies.value(u"/v1/tasks/moment"_s),
+                                     bodies.value(u"/v1/tasks/pv"_s) }) {
+        QVERIFY(!body.isEmpty());
+        QVERIFY(!body.contains(u"spectral_quantity"_s));
+        QVERIFY(!body.contains(u"spectral_frame"_s));
+        QVERIFY(!body.contains(u"rest_freq_hz"_s));
+    }
+
+    // A frame change alone is a choice; a rest frequency alone, on the native axis, is not.
+    BackendSpectralChoice frameOnly;
+    frameOnly.frame = u"BARYCENT"_s;
+    QVERIFY(!frameOnly.isNative());
+    QCOMPARE(frameOnly.applyTo({}).value(u"spectral_quantity"_s).toString(), u"native"_s);
+    BackendSpectralChoice restOnly;
+    restOnly.restFreqHz = 1e9;
+    QVERIFY(restOnly.isNative());
+    QVERIFY(restOnly.applyTo({}).isEmpty());
+}

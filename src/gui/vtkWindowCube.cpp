@@ -2021,6 +2021,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 }
             },
             this);
+    // Moments and PV are computed on the axis the window shows (issue #496).
+    this->momentController->setSpectralChoiceProvider(
+            [this]() { return this->spectralChoiceForProducts(); });
     // ── Noise estimation – delegated to NoiseController ───────────────────────
     this->noiseController = new NoiseController(
             this->remoteBackendUrl, this->remoteDatasetId,
@@ -2118,12 +2121,15 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 }
 
                 // Y-axis label: prefer backend-reported type, fall back to local descriptor.
-                const QString yLabel = !result.spectralAxisType.isEmpty()
+                QString yLabel = !result.spectralAxisType.isEmpty()
                         ? (!result.spectralAxisUnit.isEmpty()
                                    ? u"%1 (%2)"_s.arg(result.spectralAxisType,
                                                        result.spectralAxisUnit)
                                    : result.spectralAxisType)
                         : this->spectralAxisTitle();
+                // The frame the coordinates are in, as on every other spectral axis.
+                if (!result.spectralFrame.isEmpty())
+                    yLabel += u" [%1]"_s.arg(result.spectralFrame);
 
                 // Build the path-info struct shown in the PV diagram header.
                 const auto &verts = result.capturedVertices;
@@ -2326,6 +2332,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                 refreshPaneChrome();
             },
             this);
+    this->pvController->setSpectralChoiceProvider(
+            [this]() { return this->spectralChoiceForProducts(); });
 
     QObject::connect(&this->isosurfaceWatcher, &QFutureWatcher<AsyncIsosurfaceResult>::finished,
                      this, [this]() {
@@ -2829,8 +2837,14 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                               ui->spinSlice->value() - 1,
                               this->m_activeSliceLutName, this);
         if (dlg.exec() != QDialog::Accepted) return;
-        const auto cfg = dlg.config();
+        auto cfg = dlg.config();
         if (cfg.channelStart > cfg.channelEnd) return;
+        // Each panel names its channel's value on the axis the window shows,
+        // with its unit and frame (issue #496).
+        if (this->spectralAxisDescriptor().physical) {
+            for (int z = cfg.channelStart; z <= cfg.channelEnd; ++z)
+                cfg.channelCaptions.append(this->formatSpectralAxisValue(z, 8));
+        }
         auto *win = new ChannelMapsWindow(
                 cfg,
                 this->remoteBackendUrl, this->remoteBackendToken,
@@ -6027,14 +6041,16 @@ void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
                          QMessageBox::information(self,
                                  u"Export Moment as FITS"_s, msg);
                      });
+    // The file carries the axis the window shows (issue #496).
+    const BackendSpectralChoice spectral = this->spectralChoiceForProducts();
     watcher->setFuture(QtConcurrent::run(
             [url, token, sessionId, datasetId, order, chStart, chEnd,
-             maskEnabled, thresholdValue, thresholdAuto, basename, control]() {
+             maskEnabled, thresholdValue, thresholdAuto, basename, control, spectral]() {
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
                 return c.exportMomentFitsFollowingTask(datasetId, order, chStart, chEnd,
                                                        maskEnabled, thresholdValue, basename,
-                                                       thresholdAuto, control.get());
+                                                       thresholdAuto, control.get(), spectral);
             }));
 }
 
@@ -6383,11 +6399,12 @@ void vtkWindowCube::exportPvAsFits()
                                 u"cube's spectral axis."_s;
                          QMessageBox::information(self, u"Save PV as FITS"_s, msg);
                      });
+    const BackendSpectralChoice spectral = this->spectralChoiceForProducts();
     watcher->setFuture(QtConcurrent::run([url, token, sessionId, datasetId, vertices, width,
-                                          basename]() {
+                                          basename, spectral]() {
         BackendClient client(url, token);
         client.setSessionId(sessionId);
-        return client.savePvFits(datasetId, vertices, width, basename.trimmed());
+        return client.savePvFits(datasetId, vertices, width, basename.trimmed(), spectral);
     }));
 }
 

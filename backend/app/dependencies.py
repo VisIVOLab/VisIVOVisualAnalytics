@@ -1714,6 +1714,8 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
     stop_file = TASKS.stop_file(task_id) if task_id else None
 
     dataset = ScientificFitsDataset(entry["path"])
+    # The peak, RMS and minimum maps use no spectral axis: one product whatever the choice.
+    choice = None if request.moment_order in (6, 8, 10) else request.spectral_choice()
     cache_params = {
         "moment_order": request.moment_order,
         "channel_start": request.channel_start,
@@ -1723,6 +1725,8 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
         "threshold_auto": request.threshold_auto,
         # R-03: dispersion (default) vs variance changes the order-2 output.
         "moment2_variance": bool(getattr(request, "moment2_variance", False)),
+        # Issue #496: the axis the moments are computed on.
+        "spectral": choice,
     }
     cache_key, param_hash = PRODUCT_CACHE.make_key(dataset.path, "moment", cache_params)
     cached = PRODUCT_CACHE.get(cache_key)
@@ -1759,6 +1763,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.threshold_auto,
             bool(getattr(request, "moment2_variance", False)),
             stop_file,              # seen by workers that share its file system
+            choice,
             task_id=task_id,
             dispatch=lambda f, *a: loop.run_in_executor(None, f, *a),
             throttle=False, bounded=False,
@@ -1788,6 +1793,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.threshold_auto,
             bool(getattr(request, "moment2_variance", False)),
             stop_file,  # a cancelled task stops within one block
+            choice,
             task_id=task_id,
             dispatch=_run_in_pool,
         )
@@ -1804,6 +1810,7 @@ async def _moment_product_payload(entry: dict[str, Any], request: MomentProductR
             request.threshold_auto,
             bool(getattr(request, "moment2_variance", False)),
             stop_file,
+            choice,
             task_id=task_id,
         )
     PRODUCT_CACHE.put(
@@ -1841,6 +1848,8 @@ async def _moment_fits_export(entry: dict[str, Any], request: Any, output_path: 
         threshold_value=float(request.threshold_value),
         threshold_auto=bool(request.threshold_auto),
         moment2_variance=bool(getattr(request, "moment2_variance", False)),
+        spectral_quantity=request.spectral_quantity, spectral_frame=request.spectral_frame,
+        rest_freq_hz=request.rest_freq_hz,
     )
     payload, _cache_hit = await _moment_product_payload(entry, product_request, task_id)
     stop_file = TASKS.stop_file(task_id) if task_id else None
@@ -1867,8 +1876,11 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest,
     dataset = ScientificFitsDataset(entry["path"])
     # The SAME canonical vertices key the cache and feed the worker.
     vertices = canonical_pv_vertices(request.vertices)
+    choice = request.spectral_choice()
     cache_params = {
         "vertices": vertices,
+        # Issue #496: the axis of the output's spectral coordinates.
+        "spectral": choice,
         "width_pixels": max(1, int(request.width_pixels)),
         "beam": [dataset.beam_source, dataset.beam.major, dataset.beam.minor, dataset.beam.pa],
     }
@@ -1885,6 +1897,7 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest,
         vertices,
         max(1, int(request.width_pixels)),
         stop_file,
+        choice,
         task_id=task_id,
     )
     PRODUCT_CACHE.put(

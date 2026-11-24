@@ -48,7 +48,12 @@ QString backendSource(const QString &relative)
 QSet<QString> requestModelFields(const QString &relative, const QString &className)
 {
     const QString src = backendSource(relative);
-    const qsizetype start = src.indexOf(u"class %1(BaseModel):"_s.arg(className));
+    // The fields the class itself declares: a model may extend another one
+    // (the spectral-axis fields of issue #496 come from SpectralChoice).
+    const QRegularExpressionMatch declared =
+            QRegularExpression(u"^class %1\\(\\w+\\):"_s.arg(className),
+                               QRegularExpression::MultilineOption).match(src);
+    const qsizetype start = declared.hasMatch() ? declared.capturedStart() : -1;
     if (start < 0)
         return {};
     const qsizetype end = src.indexOf(u"\n\n\n"_s, start);

@@ -35,7 +35,8 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
                                          int widthPixels,
                                          const QString &sessionId,
                                          const QString &backendToken,
-                                         visivo::BackendTaskControl *control)
+                                         visivo::BackendTaskControl *control,
+                                         const BackendSpectralChoice &spectral)
 {
     RemotePvFetchResult result;
 
@@ -49,14 +50,14 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
     // user's back.
     BackendCubePvResult response;
     const visivo::TaskFollowResult followed = visivo::followBackendTask(
-            client, client.createPvTask(datasetId, vertices, widthPixels),
+            client, client.createPvTask(datasetId, vertices, widthPixels, spectral),
             QStringLiteral("[pv][task]"), control);
     if (followed.outcome == visivo::TaskOutcome::Completed) {
         response = BackendClient::parsePvResultObject(followed.status.resultObject);
     } else if (followed.fallBackToSync()) {
         qWarning().noquote() << QStringLiteral("[pv][task] no task route on this backend, "
                                                "using the synchronous request");
-        response = client.requestPv(datasetId, vertices, widthPixels);
+        response = client.requestPv(datasetId, vertices, widthPixels, spectral);
     } else {
         result.errorMessage = followed.error;
         result.cancelled = followed.stoppedByUser();
@@ -123,6 +124,7 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
     result.pixelScaleArcsecPerPixel = response.pixelScaleArcsecPerPixel;
     result.spectralAxisType = response.spectralAxisType;
     result.spectralAxisUnit = response.spectralAxisUnit;
+    result.spectralFrame = response.spectralFrame;
     if (response.spectralCoordinates.size() == response.depth)
         result.spectralCoordinates = response.spectralCoordinates;
     result.bunit = response.bunit;
@@ -262,11 +264,14 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
         }
     });
 
+    // The window's spectral axis now, taken here on the UI thread.
+    const BackendSpectralChoice spectral = m_spectralChoice ? m_spectralChoice()
+                                                            : BackendSpectralChoice{};
     watcher->setFuture(QtConcurrent::run(
             [backendUrl, datasetId, sessionId, backendToken,
-             vertices, widthPixels, control]() -> RemotePvFetchResult {
+             vertices, widthPixels, control, spectral]() -> RemotePvFetchResult {
                 auto result = fetchRemotePv(backendUrl, datasetId, vertices, widthPixels,
-                                            sessionId, backendToken, control.get());
+                                            sessionId, backendToken, control.get(), spectral);
                 // Embed the original request context so the callback can build
                 // provenance strings without touching shared mutable state.
                 result.capturedVertices    = vertices;

@@ -125,6 +125,14 @@ public:
         m_noiseWhere = where;
     }
 
+    /// The spectral axis M1/M2 are computed on (issue #496: WCS > Spectral
+    /// Axis), asked of the window each time a run starts. Without one: the
+    /// file's own axis.
+    void setSpectralChoiceProvider(std::function<BackendSpectralChoice()> provider)
+    {
+        m_spectralChoice = std::move(provider);
+    }
+
 signals:
     /// A computation has actually STARTED (Compute pressed and validated), with
     /// the accepted config. The settings window is non-modal now, so the caller
@@ -145,6 +153,7 @@ public slots:
     void startComputationHeadless(Config config);
 
 private:
+    std::function<BackendSpectralChoice()> m_spectralChoice;
     double m_noiseSigma{ 0.0 };   ///< 0: no estimate this session
     QString m_noiseWhere;
     void dispatch(const Config &config);   ///< async compute for a resolved Config (shared)

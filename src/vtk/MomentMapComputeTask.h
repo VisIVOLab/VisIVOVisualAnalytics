@@ -3,6 +3,8 @@
 
 #include <vtkSmartPointer.h>
 
+#include "app/BackendClient.h"
+
 #include <QString>
 
 #include <array>
@@ -26,6 +28,8 @@ struct MomentMapComputeRequest
     bool thresholdAuto{ false };
     /// Abort + phase shared with the progress sheet (may be null).
     std::shared_ptr<visivo::BackendTaskControl> control;
+    /// The spectral axis M1/M2 are computed on (issue #496); default: the file's own.
+    BackendSpectralChoice spectral;
 };
 
 struct MomentMapComputeResult
@@ -39,6 +43,9 @@ struct MomentMapComputeResult
     QString bunit;            // raw BUNIT from the FITS header
     QString spectralAxisType; // CTYPE3 value
     QString spectralAxisUnit; // CUNIT3 value
+    QString spectralQuantity; // axis the moment was computed on: frequency, vrad, vopt
+    QString spectralFrame;    // its SPECSYS ("" from a backend before #496)
+    double restFreqHz{ 0.0 }; // rest frequency of the velocities, Hz
     QString wcsStatus{ QStringLiteral("ok") }; // "ok", "sanitized", or "degraded"
     QString wcsWarningMessage;                  // human-readable WCS warning, empty when ok
     bool cancelled{ false };   // the user stopped it: report quietly, not as an error

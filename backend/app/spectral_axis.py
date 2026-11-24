@@ -211,3 +211,50 @@ def spectral_axis(path: str, quantity: str = "native", frame: str = "native",
         "header_rest_freq_hz": float(header_rest) if header_rest else None,
         "note": "; ".join(note),
     }
+
+
+def normalize_choice(quantity: str | None, frame: str | None,
+                     rest_freq_hz: float | None) -> dict[str, Any] | None:
+    """The spectral-axis choice of a request, in one canonical form, or None
+    when it asks for the file's own axis (quantity and frame both native).
+
+    Products computed from the axis (moments, PV) take the same three fields
+    as ``spectral_axis`` and, when this is not None, use its per-channel table
+    instead of the file's linear WCS. The dict is what the product cache keys
+    on and what ``spectral_axis`` takes as keywords.
+    """
+    q = (quantity or "native").strip().lower()
+    f = (frame or "native").strip()
+    f = "native" if f.lower() == "native" else f.upper()
+    rest = float(rest_freq_hz) if rest_freq_hz and rest_freq_hz > 0 else None
+    if q not in QUANTITIES:
+        raise ValueError(f"Unknown spectral quantity '{quantity}'.")
+    if f != "native" and f not in FRAMES:
+        raise ValueError(f"Unknown spectral frame '{frame}'; one of {', '.join(FRAMES)}.")
+    if q == "native" and f == "native":
+        return None
+    return {"quantity": q, "frame": f, "rest_freq_hz": rest}
+
+
+#: What a CTYPE prefix says the file's own axis is, in ``spectral_axis`` names.
+_QUANTITY_OF_CTYPE = {"FREQ": "frequency", "VRAD": "vrad", "VOPT": "vopt", "VELO": "velocity"}
+
+
+def axis_provenance(dataset, choice: dict[str, Any] | None, axis: dict[str, Any] | None,
+                    ctype: str) -> dict[str, Any]:
+    """What a product says about the spectral axis it was computed on:
+    ``spectral_quantity`` (``frequency``, ``vrad``, ``vopt``, ...),
+    ``spectral_frame`` (SPECSYS, "" when the file has none), ``rest_freq_hz``
+    (None when unknown) and ``spectral_note``. ``axis`` is the answer of
+    ``spectral_axis`` for a ``choice``; without them, the file's own axis."""
+    if axis is not None:
+        quantity = choice["quantity"]
+        if quantity == "native":
+            quantity = _QUANTITY_OF_CTYPE.get(str(axis["ctype"])[:4].upper(), "native")
+        return {"spectral_quantity": quantity,
+                "spectral_frame": "" if axis["frame"] == "unknown" else axis["frame"],
+                "rest_freq_hz": axis["rest_freq_hz"], "spectral_note": axis["note"]}
+    rest = dataset._rest_freq_hz()
+    return {"spectral_quantity": _QUANTITY_OF_CTYPE.get(str(ctype)[:4].upper(), "native"),
+            "spectral_frame": str(dataset.header.get("SPECSYS", "") or "").strip().upper(),
+            "rest_freq_hz": float(rest) if rest else None, "spectral_note": ""}

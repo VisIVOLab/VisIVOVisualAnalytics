@@ -224,6 +224,17 @@ void keepSquarePixels(QCustomPlot *plot, int w, int h, bool interactive)
 
 // ── Grid population ─────────────────────────────────────────────────────────
 
+QString ChannelMapsWindow::panelTitle(int absChannel) const
+{
+    // The channel as on the channel bar, and its value on the axis the cube
+    // window shows, with its unit and frame (issue #496).
+    const QString channel = u"CH %1"_s.arg(absChannel + 1);
+    const int i = absChannel - m_config.channelStart;
+    if (i < 0 || i >= m_config.channelCaptions.size() || m_config.channelCaptions.at(i).isEmpty())
+        return channel;
+    return channel + u"  ·  "_s + m_config.channelCaptions.at(i);
+}
+
 void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
 {
     const int stride  = std::max(1, m_config.stride);
@@ -314,7 +325,7 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
         // Title element: "CH 42"
         plot->plotLayout()->insertRow(0);
         auto *titleEl = new QCPTextElement(plot,
-                u"CH %1"_s.arg(absChannel + 1));
+                panelTitle(absChannel));
         titleEl->setTextColor(labelColor);
         QFont titleFont;
         titleFont.setPixelSize(13);
@@ -410,7 +421,7 @@ void ChannelMapsWindow::showEnlargedCell(int cellIdx, int absChannel,
     // Title
     plot->plotLayout()->insertRow(0);
     auto *title = new QCPTextElement(plot,
-            u"CH %1"_s.arg(absChannel + 1));
+            panelTitle(absChannel));
     title->setTextColor(lbl);
     QFont titleFont;
     titleFont.setPixelSize(14);
@@ -552,7 +563,7 @@ void ChannelMapsWindow::saveMosaicPng()
         painter.setPen(QColor(QString::fromLatin1(VisivoTheme::kOnSurface())));
         painter.drawText(QRect(cellX, cellY, cellW, labelH),
                          Qt::AlignCenter,
-                         u"CH %1"_s.arg(slice.channel + 1));
+                         panelTitle(slice.channel));
 
         // Rasterise at full source resolution × scale factor.
         // Source data is row-major [y][x] with origin at bottom-left

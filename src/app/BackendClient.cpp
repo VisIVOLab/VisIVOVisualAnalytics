@@ -2844,16 +2844,18 @@ BackendVelocityDensityResult BackendClient::fetchVelocityDensity(const QString &
 
 BackendCubePvResult BackendClient::requestPv(const QString &datasetId,
                                              const std::vector<std::array<double, 2>> &vertices,
-                                             int widthPixels) const
+                                             int widthPixels,
+                                             const BackendSpectralChoice &spectral) const
 {
     QString error;
     QJsonArray vertexArray;
     for (const auto &v : vertices) {
         vertexArray.append(QJsonArray{ v[0], v[1] });
     }
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("vertices"), vertexArray },
-                                          { QStringLiteral("width_pixels"), widthPixels } });
+    const QJsonDocument body(spectral.applyTo(
+            QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
+                         { QStringLiteral("vertices"), vertexArray },
+                         { QStringLiteral("width_pixels"), widthPixels } }));
     const QByteArray payload =
             performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/cube/pv")), body, error);
     if (!error.isEmpty()) {
@@ -3520,17 +3522,18 @@ BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetI
 BackendMomentResult BackendClient::requestMoment(const QString &datasetId, int order,
                                                  int channelStart, int channelEnd,
                                                  bool maskEnabled, double thresholdValue,
-                                                 bool thresholdAuto) const
+                                                 bool thresholdAuto,
+                                                 const BackendSpectralChoice &spectral) const
 {
     QString error;
-    const QJsonDocument body(
+    const QJsonDocument body(spectral.applyTo(
             QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
                          { QStringLiteral("moment_order"), order },
                          { QStringLiteral("channel_start"), channelStart },
                          { QStringLiteral("channel_end"), channelEnd },
                          { QStringLiteral("mask_enabled"), maskEnabled },
                          { QStringLiteral("threshold_value"), thresholdValue },
-                         { QStringLiteral("threshold_auto"), thresholdAuto } });
+                         { QStringLiteral("threshold_auto"), thresholdAuto } }));
     const QByteArray payload =
             performPostRetryingBackpressure(
                     QUrl(m_baseUrl + QStringLiteral("/v1/products/moment")), body, error);
@@ -3846,6 +3849,9 @@ BackendMomentResult BackendClient::parseMomentResultObject(const QJsonObject &ob
     result.rangeMax = object.value(QStringLiteral("range_max")).toDouble();
     result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
+    result.spectralQuantity = object.value(QStringLiteral("spectral_quantity")).toString();
+    result.spectralFrame = object.value(QStringLiteral("spectral_frame")).toString();
+    result.restFreqHz = object.value(QStringLiteral("rest_freq_hz")).toDouble(0.0);
     result.momentUnit = object.value(QStringLiteral("moment_unit")).toString();
     result.bunit = object.value(QStringLiteral("bunit")).toString();
     result.wcsStatus = object.value(QStringLiteral("wcs_status")).toString(QStringLiteral("ok"));
@@ -3871,6 +3877,7 @@ BackendCubePvResult BackendClient::parsePvResultObject(const QJsonObject &object
     result.vertexCount = object.value(QStringLiteral("vertex_count")).toInt();
     result.totalLength = object.value(QStringLiteral("total_length")).toDouble();
     result.validSamples = object.value(QStringLiteral("valid_samples")).toInt();
+    result.spectralFrame = object.value(QStringLiteral("spectral_frame")).toString();
     result.spectralAxisType = object.value(QStringLiteral("spectral_axis_type")).toString();
     result.spectralAxisUnit = object.value(QStringLiteral("spectral_axis_unit")).toString();
     result.bunit = object.value(QStringLiteral("bunit")).toString();

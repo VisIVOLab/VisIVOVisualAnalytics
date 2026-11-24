@@ -36,6 +36,7 @@ private:
     void buildUi();
     void fetchAndRender();
     void populateGrid(const BackendCubeSubvolumeResult &vol);
+    QString panelTitle(int absChannel) const;
     void showEnlargedCell(int cellIdx, int absChannel,
                           double rangeMin, double rangeMax,
                           const QCPColorGradient &gradient);

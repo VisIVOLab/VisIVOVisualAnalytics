@@ -76,6 +76,7 @@ Position-velocity diagram along a polyline.
   (rounded to 1/1000 pixel, the same values key the product cache and feed the
   computation). At least two distinct vertices.
 - `width_pixels` — samples across the path, one pixel apart, averaged.
+- `spectral_quantity` (`native` by default, `frequency`, `vrad`, `vopt`), `spectral_frame` (`native` by default, or `BARYCENT`, `LSRK`, `LSRD`, `GEOCENTR`, `TOPOCENT`, `GALACTOC`) and `rest_freq_hz` (replaces the header's) — the spectral axis the product is computed on, with the meaning they have in `POST /v1/spectral/axis`. Left at `native` the file's own axis is used, as before. A choice the axis cannot give (no rest frequency, no `SPECSYS`, no date or observatory for a topocentric frame) is `valid: false` with the reason.
 
 Sampling: one sample per step along the path's arc length, in **angular** space
 (the full pixel→sky matrix, so non-square and skewed pixels are handled; one
@@ -89,7 +90,9 @@ Response: `valid`, `error`, `num_samples`, `depth`, `scalar_type`, `compression`
 `vertex_count`, `total_length` (pixels), `valid_samples`, `step_pixels`,
 `spectral_axis_type`, `spectral_axis_unit`,
 `spectral_coordinates_base64` (float64 little-endian, **channel 0 first**, may
-decrease), `spectral_crval`, `spectral_cdelt`, `sky_matrix_arcsec`
+decrease; in the chosen quantity and frame, one exact value per channel),
+`spectral_crval`, `spectral_cdelt` (first two channels), `spectral_quantity`,
+`spectral_frame`, `rest_freq_hz`, `spectral_note`, `sky_matrix_arcsec`
 (row-major 2×2, pixel offset → projection-plane arcsec), `bunit`,
 `beam_major`, `beam_minor`, `beam_pa`, `computed_on`. A non-cube dataset is
 422; a compute failure is `valid: false`.

@@ -64,6 +64,9 @@ async def moment_product(
             "mask_enabled": request.mask_enabled,
             "threshold_value": request.threshold_value,
             "threshold_auto": request.threshold_auto,
+            "spectral_quantity": request.spectral_quantity,
+            "spectral_frame": request.spectral_frame,
+            "rest_freq_hz": request.rest_freq_hz,
         },
     )
     return MomentProductResponse(valid=True, error="", **result)
@@ -75,7 +78,7 @@ async def moment_product(
 # a session dataset (it's a 2-D image, not a cube) — the client receives
 # the on-disk path and may re-open it via the Data Hub or share it.
 
-class MomentSaveFitsRequest(BaseModel):
+class MomentSaveFitsRequest(SpectralChoice):
     dataset_id: str
     moment_order: int
     channel_start: int = 0
@@ -148,7 +151,7 @@ async def moment_save_fits(
 # Same path parameters as /v1/cube/pv. Axis 1 = offset along the path
 # (arcsec), axis 2 = the cube's spectral axis; written to Workspace Exports.
 
-class PvSaveFitsRequest(BaseModel):
+class PvSaveFitsRequest(SpectralChoice):
     dataset_id: str
     vertices: list[list[float]]
     width_pixels: int = 1
@@ -189,6 +192,8 @@ async def pv_save_fits(
             output_path,
             [list(v) for v in request.vertices],
             max(1, int(request.width_pixels)),
+            None,
+            request.spectral_choice(),
         )
     except HTTPException:
         raise

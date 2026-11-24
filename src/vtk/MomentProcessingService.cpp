@@ -47,7 +47,8 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
             client,
             client.createMomentTask(datasetId, request.order, request.channelStart,
                                     request.channelEnd, request.maskEnabled,
-                                    request.thresholdValue, request.thresholdAuto),
+                                    request.thresholdValue, request.thresholdAuto,
+                                    request.spectral),
             QStringLiteral("[moment][task]"), request.control.get());
     if (followed.outcome == visivo::TaskOutcome::Completed) {
         response = BackendClient::parseMomentResultObject(followed.status.resultObject);
@@ -58,7 +59,8 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
             request.control->setPhase(visivo::TaskPhase::Synchronous);
         response = client.requestMoment(datasetId, request.order, request.channelStart,
                                         request.channelEnd, request.maskEnabled,
-                                        request.thresholdValue, request.thresholdAuto);
+                                        request.thresholdValue, request.thresholdAuto,
+                                        request.spectral);
     } else {
         MomentResult stopped;
         stopped.error = followed.error;
@@ -94,6 +96,9 @@ MomentResult MomentProcessingService::computeMomentRemote(const MomentRequest &r
     result.bunit = response.bunit;
     result.spectralAxisType = response.spectralAxisType;
     result.spectralAxisUnit = response.spectralAxisUnit;
+    result.spectralQuantity = response.spectralQuantity;
+    result.spectralFrame = response.spectralFrame;
+    result.restFreqHz = response.restFreqHz;
     result.wcsStatus = response.wcsStatus;
     result.wcsWarningMessage = response.wcsWarningMessage;
     return result;

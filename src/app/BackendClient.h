@@ -262,6 +262,35 @@ struct BackendFileHeaderResult
     QStringList cards;
 };
 
+/// The spectral axis a product (moment, PV) is computed on (issue #496): the
+/// window's choice from WCS > Spectral Axis. The default is the file's own
+/// axis, and a request for it carries no extra field.
+struct BackendSpectralChoice
+{
+    QString quantity{ QStringLiteral("native") };   ///< native, frequency, vrad, vopt
+    QString frame{ QStringLiteral("native") };      ///< native or a SPECSYS name
+    double restFreqHz{ 0.0 };                       ///< 0: the header's
+
+    bool isNative() const
+    {
+        return (quantity.isEmpty() || quantity == QLatin1String("native"))
+                && (frame.isEmpty() || frame == QLatin1String("native"));
+    }
+
+    /// @p body with spectral_quantity / spectral_frame / rest_freq_hz added,
+    /// for a choice that is not the file's own axis.
+    QJsonObject applyTo(QJsonObject body) const
+    {
+        if (isNative())
+            return body;
+        body.insert(QStringLiteral("spectral_quantity"), quantity);
+        body.insert(QStringLiteral("spectral_frame"), frame);
+        if (restFreqHz > 0.0)
+            body.insert(QStringLiteral("rest_freq_hz"), restFreqHz);
+        return body;
+    }
+};
+
 struct BackendMomentResult
 {
     bool valid{ false };
@@ -273,6 +302,10 @@ struct BackendMomentResult
     double rangeMax{ 0. };
     QString spectralAxisType; // CTYPE3 value, e.g. "FREQ", "VRAD"
     QString spectralAxisUnit; // CUNIT3 value, e.g. "Hz", "km/s"
+    /// The axis the moment was computed on (a backend before #496 leaves them empty).
+    QString spectralQuantity; // frequency, vrad, vopt
+    QString spectralFrame;    // SPECSYS name
+    double restFreqHz{ 0.0 }; // rest frequency of the velocities, Hz
     QString momentUnit;       // e.g. "Jy/beam Hz", "km/s", "km^2/s^2"
     QString bunit;            // raw BUNIT from the FITS header
     QString wcsStatus{ QStringLiteral("ok") }; // "ok", "sanitized", or "degraded"
@@ -499,6 +532,7 @@ struct BackendCubePvResult
     int validSamples{ 0 };
     QString spectralAxisType;
     QString spectralAxisUnit;
+    QString spectralFrame;       ///< SPECSYS of the coordinates (empty from an older backend)
     /// Channel coordinates in spectralAxisUnit, channel 0 first (may DEcrease:
     /// CDELT < 0). Empty from a backend that predates them.
     QVector<double> spectralCoordinates;
@@ -2561,7 +2595,8 @@ public:
     /// @p vertices are 0-based cube pixels (x, y); fractional values are honoured.
     BackendCubePvResult requestPv(const QString &datasetId,
                                   const std::vector<std::array<double, 2>> &vertices,
-                                  int widthPixels) const;
+                                  int widthPixels,
+                                  const BackendSpectralChoice &spectral = {}) const;
     BackendCubeNoiseResult requestNoise(const QString &datasetId, int x0, int x1, int y0, int y1,
                                         int channelStart, int channelEnd) const;
     BackendCatalogueSubset requestCatalogueSubset(const QString &datasetId, int maxRows) const;
@@ -2877,13 +2912,16 @@ public:
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;
     BackendMomentResult requestMoment(const QString &datasetId, int order, int channelStart,
                                       int channelEnd, bool maskEnabled,
-                                      double thresholdValue, bool thresholdAuto = false) const;
+                                      double thresholdValue, bool thresholdAuto = false,
+                                      const BackendSpectralChoice &spectral = {}) const;
     BackendTaskCreateResult createMomentTask(const QString &datasetId, int order, int channelStart,
                                              int channelEnd, bool maskEnabled,
-                                             double thresholdValue, bool thresholdAuto = false) const;
+                                             double thresholdValue, bool thresholdAuto = false,
+                                             const BackendSpectralChoice &spectral = {}) const;
     BackendTaskCreateResult createPvTask(const QString &datasetId,
                                          const std::vector<std::array<double, 2>> &vertices,
-                                         int widthPixels) const;
+                                         int widthPixels,
+                                         const BackendSpectralChoice &spectral = {}) const;
     /** GET /v1/finders — the source finders this backend offers. */
     BackendFindersResult listFinders() const;
     /** POST /v1/tasks/sourcefind — run ``finder`` on a dataset as a cancellable
@@ -3212,7 +3250,8 @@ public:
     BackendSavePvFitsResult savePvFits(const QString &datasetId,
                                        const std::vector<std::array<double, 2>> &vertices,
                                        int widthPixels,
-                                       const QString &outputBasename = {});
+                                       const QString &outputBasename = {},
+                                       const BackendSpectralChoice &spectral = {});
 
     BackendSaveMomentFitsResult saveMomentFits(const QString &datasetId,
                                                 int order,
@@ -3220,14 +3259,16 @@ public:
                                                 bool maskEnabled,
                                                 double thresholdValue,
                                                 const QString &outputBasename = {},
-                                                bool thresholdAuto = false);
+                                                bool thresholdAuto = false,
+                                                const BackendSpectralChoice &spectral = {});
     /** POST /v1/tasks/moment_fits — the same request as saveMomentFits(), as a
      *  task; its result is the /v1/products/moment_fits payload. */
     BackendTaskCreateResult createMomentFitsTask(const QString &datasetId, int order,
                                                  int channelStart, int channelEnd,
                                                  bool maskEnabled, double thresholdValue,
                                                  const QString &outputBasename,
-                                                 bool thresholdAuto) const;
+                                                 bool thresholdAuto,
+                                                 const BackendSpectralChoice &spectral = {}) const;
     /** Export a moment as FITS through the task route, followed to its end
      *  (no time limit; @p control aborts it and cancels the task). Falls back
      *  to the synchronous saveMomentFits() only on a backend without the task
@@ -3235,7 +3276,8 @@ public:
     BackendSaveMomentFitsResult exportMomentFitsFollowingTask(
             const QString &datasetId, int order, int channelStart, int channelEnd,
             bool maskEnabled, double thresholdValue, const QString &outputBasename,
-            bool thresholdAuto, visivo::BackendTaskControl *control);
+            bool thresholdAuto, visivo::BackendTaskControl *control,
+            const BackendSpectralChoice &spectral = {});
 
     // ── Workspace Exports management ──────────────────────────────────────────
     /** POST /v1/exports/copy_dataset — copy a dataset's FITS file into

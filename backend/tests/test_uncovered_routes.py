@@ -530,7 +530,7 @@ async def test_moment_fits_task_hands_its_worker_a_stop_file(
     given = {}
 
     def fake_moment(*args):
-        given["compute_stop_file"] = args[-1]
+        given["compute_stop_file"] = args[-2]   # then the spectral choice
         return dict(_FAKE_MOMENT)
 
     def fake_write(src, out, payload, *args):

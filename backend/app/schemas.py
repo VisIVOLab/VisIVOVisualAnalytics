@@ -168,7 +168,22 @@ class OpenDatasetResponse(BaseModel):
     server_side_rendering_available: bool = False
 
 
-class MomentProductRequest(BaseModel):
+class SpectralChoice(BaseModel):
+    """The spectral axis a product is computed on (issue #496), as in
+    POST /v1/spectral/axis. All absent (or ``native``): the file's own axis."""
+    # native, frequency (Hz), vrad or vopt (km/s).
+    spectral_quantity: str = "native"
+    # native or a SPECSYS name: BARYCENT, LSRK, LSRD, GEOCENTR, TOPOCENT, GALACTOC.
+    spectral_frame: str = "native"
+    # Replaces the header's rest frequency for the velocities (Hz).
+    rest_freq_hz: float | None = None
+
+    def spectral_choice(self) -> dict[str, Any] | None:
+        from .spectral_axis import normalize_choice  # noqa: PLC0415
+        return normalize_choice(self.spectral_quantity, self.spectral_frame, self.rest_freq_hz)
+
+
+class MomentProductRequest(SpectralChoice):
     dataset_id: str
     moment_order: int
     channel_start: int = 0
@@ -194,6 +209,12 @@ class MomentProductResponse(BaseModel):
     range_max: float = 0.0
     spectral_axis_type: str = ""
     spectral_axis_unit: str = ""
+    # The axis the moment was computed on: quantity (frequency, vrad, vopt),
+    # frame (SPECSYS), rest frequency (Hz), and a note when it was changed.
+    spectral_quantity: str = ""
+    spectral_frame: str = ""
+    rest_freq_hz: float | None = None
+    spectral_note: str = ""
     moment_unit: str = ""
     bunit: str = ""
     # Echo of the mask threshold actually applied (resolved value when
@@ -364,7 +385,7 @@ class CubeSubvolumeResponse(BaseModel):
     data_base64: str = ""
 
 
-class CubePvRequest(BaseModel):
+class CubePvRequest(SpectralChoice):
     dataset_id: str
     # 0-based cube pixel (x, y); fractional values are honoured (an edited path
     # is not snapped to the grid).
@@ -396,6 +417,12 @@ class CubePvResponse(BaseModel):
     spectral_coordinates_base64: str = ""
     spectral_crval: float = 0.0
     spectral_cdelt: float = 0.0
+    # The axis of the coordinates above: quantity, frame (SPECSYS), rest
+    # frequency (Hz), and a note when it was changed.
+    spectral_quantity: str = ""
+    spectral_frame: str = ""
+    rest_freq_hz: float | None = None
+    spectral_note: str = ""
     step_pixels: float = 1.0
     sky_matrix_arcsec: list[float] = []
     bunit: str = ""
