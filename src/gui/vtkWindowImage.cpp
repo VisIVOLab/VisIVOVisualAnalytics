@@ -3522,15 +3522,25 @@ QString vtkWindowImage::selectedLayerBunit()
     if (cached != this->m_layerBunit.constEnd())
         return cached.value();
     // Another layer has its own unit (a model in Jy/pixel over a map in Jy/beam):
-    // the base image's would label its values wrongly. Its header is read once.
-    BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
-    const auto header = client.fileHeader(path);
-    // Remembered even when it failed: with the backend unreachable, every
-    // selection would otherwise wait for the timeout again.
-    const QString bunit = header.valid ? visivo::layerctx::headerKeyword(header.cards, u"BUNIT"_s)
-                                       : QString();
+    // the base image's would label its values wrongly.
+    const QString bunit = visivo::layerctx::headerKeyword(this->selectedLayerCards(), u"BUNIT"_s);
     this->m_layerBunit.insert(path, bunit);
     return bunit;
+}
+
+QStringList vtkWindowImage::selectedLayerCards()
+{
+    const QString path = this->selectedLayerPath();
+    auto cached = this->m_layerCards.constFind(path);
+    if (cached != this->m_layerCards.constEnd())
+        return cached.value();
+    // Read once. Remembered even when it failed: with the backend unreachable,
+    // every selection would otherwise wait for the timeout again.
+    BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+    const auto header = client.fileHeader(path);
+    const QStringList cards = header.valid ? header.cards : QStringList();
+    this->m_layerCards.insert(path, cards);
+    return cards;
 }
 
 void vtkWindowImage::refreshUnitAndBeamRows()
@@ -3548,10 +3558,43 @@ void vtkWindowImage::refreshUnitAndBeamRows()
                                         : u"BUNIT of the selected layer: %1"_s.arg(
                                                 visivo::datasetDisplayName(this->selectedLayerPath()))));
     }
+    const QString selected = this->selectedLayerPath();
+    const bool baseSelected = selected == this->filepath;
     if (m_beamControl) {
-        const double pa = std::isfinite(m_beamPaDeg) ? m_beamPaDeg : 0.0;
-        m_beamControl->setBeam(m_beamMajorDeg, m_beamMinorDeg, pa, m_beamSource);
+        if (baseSelected) {
+            const double pa = std::isfinite(m_beamPaDeg) ? m_beamPaDeg : 0.0;
+            m_beamControl->setBeam(m_beamMajorDeg, m_beamMinorDeg, pa, m_beamSource);
+        } else {
+            // The selected layer's own beam, from its header (a map at another
+            // resolution has another beam); none when the header has none.
+            const QStringList cards = this->selectedLayerCards();
+            const auto deg = [&cards](const QString &key) {
+                bool ok = false;
+                const double v = visivo::layerctx::headerKeyword(cards, key).toDouble(&ok);
+                return ok ? v : std::numeric_limits<double>::quiet_NaN();
+            };
+            const double bmaj = deg(u"BMAJ"_s), bmin = deg(u"BMIN"_s), bpa = deg(u"BPA"_s);
+            const bool has = std::isfinite(bmaj) && std::isfinite(bmin) && bmaj > 0.0 && bmin > 0.0;
+            m_beamControl->setBeam(has ? bmaj : std::numeric_limits<double>::quiet_NaN(),
+                                   has ? bmin : std::numeric_limits<double>::quiet_NaN(),
+                                   std::isfinite(bpa) ? bpa : 0.0,
+                                   has ? u"header"_s : u"none"_s);
+        }
+        // Setting a beam writes the base image's: not offered while another
+        // layer's beam is on show, which it would not change.
+        m_beamControl->setEnabled(baseSelected);
+        m_beamControl->setToolTip(baseSelected
+                                          ? QString()
+                                          : u"The selected layer's beam, from its header. Select "
+                                            u"the base image to set a beam."_s);
     }
+    if (m_activeLayerValueLabel) {
+        m_activeLayerValueLabel->setText(visivo::datasetDisplayName(selected));
+        m_activeLayerValueLabel->setToolTip(QFileInfo(selected).absoluteFilePath());
+    }
+    if (m_layerCountValueLabel)
+        m_layerCountValueLabel->setText(
+                QString::number(this->layers ? this->layers->rowCount() : 1));
 }
 
 void vtkWindowImage::setBeamInfo(double majorDeg, double minorDeg, double paDeg)

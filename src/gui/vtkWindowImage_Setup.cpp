@@ -2300,8 +2300,11 @@ void vtkWindowImage::setupSidebar()
 
         addField(u"Active Layer"_s, visivo::datasetDisplayName(this->filepath),
                  fi.absoluteFilePath(), /*wrap=*/true);
+        // Kept: they follow the selected layer (refreshUnitAndBeamRows).
+        m_activeLayerValueLabel = qobject_cast<QLabel *>(cl->itemAt(cl->count() - 1)->widget());
         cl->addSpacing(5);
         addField(u"Layers"_s, QString::number(nLayers));
+        m_layerCountValueLabel = qobject_cast<QLabel *>(cl->itemAt(cl->count() - 1)->widget());
         cl->addSpacing(5);
         addField(u"Directory"_s, compactDirPath(fi.absolutePath()), fi.absolutePath(), /*wrap=*/true);
         cl->addSpacing(5);

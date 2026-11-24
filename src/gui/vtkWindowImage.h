@@ -1156,6 +1156,13 @@ private:
     /// layer's from its FITS header, read once per file.
     QString selectedLayerBunit();
     QHash<QString, QString> m_layerBunit;   ///< layer file -> BUNIT ("" when it has none)
+    /// Layer file -> its header cards (empty when the read failed), read once:
+    /// the unit and the beam of a selected layer come from them.
+    QHash<QString, QStringList> m_layerCards;
+    QStringList selectedLayerCards();
+    /// The Dataset card's two fields that follow the selected layer.
+    QPointer<QLabel> m_activeLayerValueLabel;
+    QPointer<QLabel> m_layerCountValueLabel;
 
     // Polarization vector overlay
     vtkNew<vtkPoints> m_polVecPoints;
