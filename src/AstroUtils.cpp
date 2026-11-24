@@ -180,6 +180,65 @@ void AstroUtils::sky2xy(const double *pos, double *pix, int syswcs)
     wcs2pix(this->wcs, pos[0], pos[1], &pix[0], &pix[1], &offscale);
 }
 
+bool AstroUtils::hasSky() const
+{
+    return !this->isSimulation();
+}
+
+bool AstroUtils::pixelToPixel(AstroUtils &to, double px, double py, double &tx, double &ty)
+{
+    if (!this->hasSky() || !to.hasSky())
+        return false;
+    // The same J2000 on both sides: whatever frame an image is in, the position
+    // is compared in one.
+    char coorsys[80];
+    wcscstr(coorsys, WCS_J2000, 0., 0.);
+    wcsoutinit(this->wcs, coorsys);
+    double lon = 0.0, lat = 0.0;
+    // libwcs counts pixels from 1; the viewers' worlds from 0.
+    pix2wcs(this->wcs, px + 1.0, py + 1.0, &lon, &lat);
+    if (this->wcs->offscl == 1 || !std::isfinite(lon) || !std::isfinite(lat))
+        return false;
+    wcsininit(to.wcs, coorsys);
+    int offscale = 0;
+    double x = 0.0, y = 0.0;
+    wcs2pix(to.wcs, lon, lat, &x, &y, &offscale);
+    // 1 is off the projection (the far side of a tangent plane); 2 is only off
+    // the image, and a view panned past an edge is still a view.
+    if (offscale == 1 || !std::isfinite(x) || !std::isfinite(y))
+        return false;
+    tx = x - 1.0;
+    ty = y - 1.0;
+    return true;
+}
+
+bool AstroUtils::pixelJacobian(AstroUtils &to, double px, double py, std::array<double, 4> &m)
+{
+    constexpr double h = 0.5;
+    double xp, yp, xm, ym, xq, yq, xr, yr;
+    if (!this->pixelToPixel(to, px + h, py, xp, yp) || !this->pixelToPixel(to, px - h, py, xm, ym)
+        || !this->pixelToPixel(to, px, py + h, xq, yq) || !this->pixelToPixel(to, px, py - h, xr, yr))
+        return false;
+    m = { (xp - xm) / (2.0 * h), (xq - xr) / (2.0 * h), (yp - ym) / (2.0 * h), (yq - yr) / (2.0 * h) };
+    return true;
+}
+
+bool AstroUtils::matchView(AstroUtils &to, const View &v, View &out)
+{
+    std::array<double, 4> m{};
+    double tx = 0.0, ty = 0.0;
+    if (!(v.height > 0.0) || !this->pixelToPixel(to, v.cx, v.cy, tx, ty)
+        || !this->pixelJacobian(to, v.cx, v.cy, m))
+        return false;
+    // A pixel of this image is sqrt|det| pixels of @p to, whichever way each is
+    // turned or stretched: its height in pixels changes by that.
+    const double scale = std::sqrt(std::abs(m[0] * m[3] - m[1] * m[2]));
+    if (!(scale > 0.0) || !std::isfinite(scale))
+        return false;
+    out = { tx, ty, v.height * scale };
+    return true;
+}
+
 double AstroUtils::getSecPix() const
 {
     return this->secpix;

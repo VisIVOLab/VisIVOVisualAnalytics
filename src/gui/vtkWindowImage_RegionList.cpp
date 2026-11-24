@@ -200,6 +200,8 @@ void vtkWindowImage::setupRegionListActions()
             u"on a moment-0 map."_s);
     QObject::connect(m_actHiDistance, &QAction::triggered, this,
                      [this]() { visivo::flux::askHiDistance(this); });
+    // Link Views with a cube (issue #522): regions and paths drawn here, used there.
+    this->setupLinkCubeActions();
 }
 
 bool vtkWindowImage::measurementDeletable() const
@@ -230,6 +232,7 @@ void vtkWindowImage::onRegionListChanged()
         m_actUndoRegion->setEnabled(this->m_regions.canUndo());
         m_actRedoRegion->setEnabled(this->m_regions.canRedo());
     }
+    this->refreshLinkCubeActions();
 
     // The properties dialog follows the selection, and goes when its region does.
     if (m_regionPropertiesDialog) {
@@ -423,16 +426,17 @@ bool vtkWindowImage::handleRegionEditEvent(unsigned long eventId)
         this->onRegionListChanged();
         // Out of the VTK callback: a menu runs its own event loop.
         QPointer<vtkWindowImage> self(this);
-        QTimer::singleShot(0, this, [self, id]() {
+        const Vec2 at = p;
+        QTimer::singleShot(0, this, [self, id, at]() {
             if (self)
-                self->showRegionContextMenu(id);
+                self->showRegionContextMenu(id, at);
         });
         return true;
     }
     return false;
 }
 
-void vtkWindowImage::showRegionContextMenu(int id)
+void vtkWindowImage::showRegionContextMenu(int id, const Vec2 &at)
 {
     const Region *r = this->m_regions.find(id);
     if (!r)
@@ -449,6 +453,28 @@ void vtkWindowImage::showRegionContextMenu(int id)
     background->setEnabled(visivo::regions::hasArea(r->shape));
     background->setToolTip(u"Analyse subtracts the mean of the nearest background region from a "
                            u"region's flux and takes its scatter as the noise."_s);
+    // A path is drawn as a segment and bent here, where the cut has to turn: the
+    // PV along it in a linked cube follows every vertex.
+    QAction *addVertex = nullptr;
+    QAction *removeVertex = nullptr;
+    int nearVertex = -1;
+    if (r->shape == visivo::regions::Shape::Line) {
+        menu.addSeparator();
+        addVertex = menu.addAction(u"Add Vertex Here"_s);
+        removeVertex = menu.addAction(u"Remove This Vertex"_s);
+        const double reach = kPickPx * this->worldPerDisplayPixel();
+        double best = reach;
+        for (std::size_t i = 0; i < r->points.size(); ++i) {
+            const double d = std::hypot(r->points[i][0] - at[0], r->points[i][1] - at[1]);
+            if (d <= best) {
+                best = d;
+                nearVertex = static_cast<int>(i);
+            }
+        }
+        // On a vertex the click is for that vertex; elsewhere it is for the line.
+        addVertex->setEnabled(nearVertex < 0);
+        removeVertex->setEnabled(nearVertex >= 0 && r->points.size() > 2);
+    }
     menu.addSeparator();
     QAction *remove = menu.addAction(u"Delete"_s);
     menu.setTitle(r->name);
@@ -465,6 +491,17 @@ void vtkWindowImage::showRegionContextMenu(int id)
     } else if (chosen == analyse) {
         this->onRegionListChanged();
         this->analyzeRegion(id);
+    } else if (addVertex && chosen == addVertex) {
+        if (!m_regionDrag.active) {
+            this->m_regions.replace(visivo::regions::withVertexInserted(*this->m_regions.find(id), at));
+            this->onRegionListChanged();
+        }
+    } else if (removeVertex && chosen == removeVertex) {
+        if (!m_regionDrag.active && nearVertex >= 0) {
+            this->m_regions.replace(
+                    visivo::regions::withVertexRemoved(*this->m_regions.find(id), nearVertex));
+            this->onRegionListChanged();
+        }
     } else if (chosen == remove) {
         this->deleteSelectedRegion();
     }

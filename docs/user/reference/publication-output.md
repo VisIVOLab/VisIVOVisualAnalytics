@@ -99,10 +99,38 @@ not the camera when the cubes cover different areas).
 | Linked | How |
 |---|---|
 | Camera | Relative to each cube's data bounds, so cubes of different sizes on the same sky frame the same region. Rotation, pan, zoom, camera presets and reset are followed. |
-| 2-D pan and zoom | Shared by the 2-D slice and product panes in the window and in linked windows on the same sky grid. Changing channel or resizing a pane is not shared. |
+| 2-D pan and zoom | Shared by the 2-D slice and product panes in the window and in linked windows on the same sky grid; an image window in the group follows by sky (see below). Changing channel or resizing a pane is not shared. |
 | Channel | Matched by spectral value, not channel index, so cubes with different channel widths show the same velocity. Both cubes need a trustworthy spectral axis; with one in frequency and one in velocity, check a known line first. |
 | Colour | Colormap and stretch, adopted at the next change. |
 | Representation and blend | Volume or isosurface; Composite, MIP or MinIP. |
+
+## Link an image and a cube
+
+An image and a cube of the same sky share the cube viewers' *Link Views*: switch
+*Link Views* on in the image viewer (*Tools ▸ Views*) and in the cube window, and
+the two follow each other in sky coordinates, as CARTA's XY matching does. There
+is one link, the same one that keeps cubes in step; the image is another kind of
+peer in it. Turn *Link Views* off in either window to leave the group.
+
+| Linked | How |
+|---|---|
+| Pan and zoom | By sky centre and angular height, not by pixels: the cube's slice (and the map panes of that cube window) shows the same patch of sky as the image, however different their pixel size, projection or sky frame. North is not turned, so two images rotated against each other keep their own orientation. The cube's *camera* chip gates it. |
+| Cursor | An orange crosshair in each window at the other's cursor position. |
+| Regions | *Send Selected Region to Linked Cube* and *Send All Regions to Linked Cube* in the image viewer (*… to Linked Image* in the cube viewer) copy regions to the windows in the group, placed on the same sky. |
+| PV path | In the image viewer, select a line region and use *Extract PV in Linked Cube*: the cube cuts a PV diagram along its vertices. |
+
+Both datasets need a celestial WCS; a window whose dataset has none does not
+follow, and regions cannot be sent to it. The view and the cursor are those of the
+cube's 2-D slice, so the slice must be on screen. A region sent across keeps its shape and its sky
+position: the backend places it on the sky with the first image's WCS and back on
+the pixels with the second's, the same conversion as the region properties
+editor, so a circle stays a circle and a box turns with the other grid. Regions
+the other image does not cover are listed in the report that opens.
+
+A path is a line region drawn with the Line tool; right-click it and choose *Add
+Vertex Here* where the cut has to bend, or *Remove This Vertex*. In the cube, the PV
+diagram is the one of *Extract PV Diagram…*: width, spectral range and the path
+editing work as usual, and the path stays editable.
 
 ## Regions in and out
 

@@ -15,6 +15,11 @@
 #include "VrHeadsetHub.h"
 #include "LinkedCameraSync.h"
 #include "LinkedWindowRegistry.h"
+#include "SkyCursorOverlay.h"
+#include "LinkedDatasetSky.h"
+#include "AstroUtils.h"
+#include "LinkedViewFrame.h"
+#include "RegionImport.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
 #include "ProbeSpectrumFetch.h"
@@ -2316,9 +2321,6 @@ protected:
     void exportRegionsToFile();
     /// Tools ▸ Regions ▸ Import Region; @p path skips the file dialog.
     void importRegionsFromFile(const QString &path = QString(), const QString &note = QString());
-    /// Put the regions read from a file in the list as one change, select
-    /// the first, and analyse the first with an area.
-    void applyImportedRegions(const visivo::regions::ImportResult &result);
 
     // ── The region list (issue #341, vtkWindowCube_RegionList.cpp) ───────────
     // Regions drawn, imported, restored or typed in are kept in m_regions until
@@ -2717,6 +2719,10 @@ protected:
     // camera too — it uses the SAME CubeGeom letterbox, so the gutter-independent math transfers.
     int  sliceSlot() const;                    // the visible slot showing Slice2D, or -1
     bool sliceCameraNormalized(double dataCenterXY[2], double &worldHeight) const;
+    // The viewport and data area of 2-D pane @p slot (-1: the slice, else the first visible 2-D
+    // pane), the frame that turns the gutter-independent view into the viewport's, which is
+    // what an image window shares (LinkedViewFrame.h).
+    bool linkFrame(int slot, visivo::linkview::Frame &frame) const;
     // refit: the shared view is being put back after this slice's own letterbox, not taken
     // from another view, so a send the user's move left waiting is kept (#358).
     void applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
@@ -2790,7 +2796,7 @@ protected:
     // STEP6-P4: cross-window 2-D camera sync. The 2-D view is copied GUTTER-INDEPENDENTLY (world
     // point at the data-area centre + world height, STEP6-P3) — this only makes sense between cubes
     // that share the spatial WORLD grid, so it is gated on sameSpatialGrid2D (D1: same-grid only).
-    void broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight);
+    void broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight, int srcSlot = -1);
     void applyLinked2DCamera(const double dataCenterXY[2], double worldHeight);
     // STEP6-P4: cross-window 2-D SLICE colour sync — colormap name + stretch (scale mode + gamma)
     // + invert. Like broadcastLinkedColour (the 3-D volume path) the table RANGE is NOT shared
@@ -2821,6 +2827,45 @@ protected:
     // gated only by the Link-views master (no per-facet chip).
     void broadcastLinkedRenderMode();
     void applyLinkedRenderMode(bool isosurface);
+
+public:
+    // ── Link Views with an image window (issue #522, vtkWindowCube_LinkImage.cpp) ──
+    // An image window joins the same Link Views group as an "other-kind" peer:
+    // its pan and zoom and the cube slice's follow each other by sky centre and
+    // angular scale (through AstroUtils, whatever the two grids), the cursor of
+    // one is a crosshair in the other, and regions and PV paths go across.
+    /// The cube windows that have Link Views on (the peers an image window reaches).
+    static QList<QPointer<vtkWindowCube>> linkedPeers();
+    /// A window opened or closed: re-gate Link Views on every cube window.
+    static void refreshLinkTargets();
+    /// Every open cube window, linked or not: an image's Link Views needs a target.
+    static int openCount();
+    /// The context of this window's dataset for the region routes.
+    visivo::regions::ExportContext regionContext() const;
+    /// An image's view, in its own pixels (@p from is its sky), on this slice.
+    void applyLinkedImageView(AstroUtils &from, const AstroUtils::View &view);
+    /// The cursor of an image, at pixel (px, py) of @p from, as a crosshair here.
+    void showLinkedCursor(AstroUtils &from, double px, double py);
+    void hideLinkedCursor();
+    /// Regions read from a file or sent from an image: put in the list as one change, select
+    /// the first, and analyse the first with an area.
+    void applyImportedRegions(const visivo::regions::ImportResult &result);
+    /// Cut a PV along a path in this cube's pixels (a line drawn on an image).
+    bool startPvAlongPath(const std::vector<std::array<double, 2>> &path);
+    /// This cube's sky; null without a celestial WCS.
+    AstroUtils *linkSky();
+
+protected:
+    void setupLinkImageActions();
+    /// The linked images' list of cursors: the slice cursor at display (x, y).
+    void sendLinkedCursor(int displayX, int displayY);
+    /// Send the selected region (with its rings) or all of them to the linked images.
+    void sendRegionsToImages(bool selectedOnly);
+    LinkedDatasetSky m_linkSky;
+    SkyCursorOverlay m_linkCursor;
+    QElapsedTimer m_linkCursorClock;
+    QPointer<QAction> m_actSendSelectedRegion;
+    QPointer<QAction> m_actSendAllRegions;
 
     // ── Copilot actions ─────────────────────────────────────────────────────
     // Apply the scientific copilot's visualisation directives (from the Copilot

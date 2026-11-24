@@ -670,6 +670,21 @@ bool Pane2DView::cameraStateNormalized(double dataCenterXY[2], double &worldHeig
     return CubeGeom::readNormalizedCamera(m_renderer, data, dataCenterXY, worldHeight);
 }
 
+bool Pane2DView::viewFrame(int size[2], CubeGeom::ImageRect &area) const
+{
+    if (!m_window || !m_renderer || !m_source)
+        return false;
+    const int *rs = m_renderer->GetSize();
+    if (!rs || rs[0] <= 0 || rs[1] <= 0)
+        return false;
+    auto *image = vtkImageData::SafeDownCast(m_source->GetOutputDataObject(0));
+    area = CubeGeom::dataAreaFor(rs, image,
+                                 computeGutter(m_window, m_lut, m_showWcsAxes, dpr(), m_bottomReserve));
+    size[0] = rs[0];
+    size[1] = rs[1];
+    return area.valid;
+}
+
 void Pane2DView::setCameraStateNormalized(const double dataCenterXY[2], double worldHeight)
 {
     // STEP6-P3: inverse of cameraStateNormalized — convert the gutter-independent (data-centre,

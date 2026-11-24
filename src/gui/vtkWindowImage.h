@@ -10,6 +10,11 @@
 #include "RegionFullRes.h"
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
+#include "SkyCursorOverlay.h"
+#include "AstroUtils.h"
+#include "LinkedDatasetSky.h"
+#include "LinkedWindowRegistry.h"
+#include "RegionImport.h"
 
 #include <vtkInteractorStyleImage.h>
 #include <vtkNew.h>
@@ -773,6 +778,55 @@ private:
     /// actions after any change to it.
     void onRegionListChanged();
     void refreshRegionListOverlay();
+
+public:
+    // ── Link Views with a cube window (issue #522, vtkWindowImage_LinkCube.cpp) ──
+    // The image joins the cube viewers' Link Views group as a peer of another
+    // kind: its pan and zoom and the cube slice's follow each other by sky
+    // centre and angular scale (AstroUtils::matchView, whatever the two grids),
+    // the cursor of one is a crosshair in the other, regions and a PV path drawn
+    // here go to the cube. Both windows must have Link Views on.
+    /// The image windows that have Link Views on (the peers a cube window reaches).
+    static QList<QPointer<vtkWindowImage>> linkedPeers();
+    /// Every open image window, linked or not: a cube's Link Views needs a target.
+    static int openCount();
+    /// A window opened or closed: re-gate Link Views on every image window.
+    static void refreshLinkTargets();
+    /// The context of this window's dataset for the region routes.
+    visivo::regions::ExportContext regionContext() const;
+    /// A cube's view, in its own pixels (@p from is its sky), on this image.
+    void applyLinkedView(AstroUtils &from, const AstroUtils::View &view);
+    /// The cursor of a cube, at pixel (px, py) of @p from, as a crosshair here.
+    void showLinkedCursor(AstroUtils &from, double px, double py);
+    void hideLinkedCursor();
+    /// Regions read from a file or sent from a cube: put in the list as one change.
+    void applyImportedRegions(const visivo::regions::ImportResult &result);
+    /// This image's sky; null without a celestial WCS.
+    AstroUtils *linkSky();
+
+private:
+    static LinkedWindowRegistry<vtkWindowImage> s_registry;
+    void setLinkViews(bool on);
+    void setupLinkCubeActions();
+    void refreshLinkCubeActions();
+    /// After every frame: send the view to the linked cubes when the user moved it.
+    void onLinkedCameraFrame();
+    void broadcastLinkedView();
+    /// The cursor at display position (x, y), to the linked cubes.
+    void sendLinkedCursor(int displayX, int displayY);
+    void sendRegionsToCubes(bool selectedOnly);
+    /// Cut a PV along the selected line in every linked cube.
+    void extractPvInCubes();
+    bool m_linkViews{ false };
+    bool m_applyingLinkedView{ false };
+    LinkedDatasetSky m_linkSky;
+    SkyCursorOverlay m_linkCursor;
+    QElapsedTimer m_linkCursorClock;
+    LinkedCameraSync::Tracker m_linkCameraTracker;
+    QPointer<QAction> m_actLinkViews;
+    QPointer<QAction> m_actSendSelectedRegion;
+    QPointer<QAction> m_actSendAllRegions;
+    QPointer<QAction> m_actExtractPvInCube;
     void onRegionCameraChanged();
     /// Image pixels per screen pixel at the current zoom (for pick tolerances).
     double worldPerDisplayPixel() const;
@@ -783,7 +837,8 @@ private:
     /// True when it was consumed (the camera and the drawing tools never see it).
     bool handleRegionEditEvent(unsigned long eventId);
     bool regionEditingAllowed() const;
-    void showRegionContextMenu(int id);
+    /// @p at is where the click was, in world pixels: a line gets and loses vertices there.
+    void showRegionContextMenu(int id, const visivo::regions::Vec2 &at = { 0.0, 0.0 });
     void openRegionProperties(int id = -1);
     void deleteSelectedRegion();
     /// A ruler or angle measurement is on the image: Delete takes it when no region is selected.

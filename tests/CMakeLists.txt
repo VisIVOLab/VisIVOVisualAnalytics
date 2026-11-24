@@ -332,6 +332,14 @@ target_compile_definitions(VisIVOTests PRIVATE
     VISIVO_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 
+# The sky matcher of AstroUtils (issue #522) needs libwcs and CFITSIO, which the
+# standalone CI configuration does not have: its test is built with the main project only.
+if (TARGET visivo_shared_core)
+    target_sources(VisIVOTests PRIVATE TestAstroMatch.h test_astro_match.cpp)
+    target_link_libraries(VisIVOTests PRIVATE visivo_shared_core)
+    target_compile_definitions(VisIVOTests PRIVATE VISIVO_TEST_ASTRO_MATCH)
+endif()
+
 # ── CTest registration ───────────────────────────────────────────────────────
 # Both test classes live in the same binary; run them all in a single CTest entry.
 # Verbose output is opt-in: CTEST_OUTPUT_ON_FAILURE=1  or  ctest -V

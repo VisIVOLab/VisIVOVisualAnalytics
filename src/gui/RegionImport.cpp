@@ -8,6 +8,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QMap>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMainWindow>
@@ -84,6 +85,118 @@ void importRegionFile(QMainWindow *window, const ExportContext &ctx,
         BackendClient c(url, token);
         c.setSessionId(session);
         return c.parseRegions(text, u"auto"_s, dsId, u"image"_s);
+    }));
+}
+
+namespace {
+
+/// Each of @p in moved to @p toFrame by @p client with the dataset's WCS: in one
+/// call, and when the backend refuses that (one region off the projection fails
+/// the lot) region by region, so the others still arrive. @p index has the
+/// position in @p in of each region in @p out; @p reasons, by position in @p in,
+/// why the others did not go.
+void convertEach(const BackendClient &client, const QJsonArray &in, const QString &toFrame,
+                 const QString &datasetId, QVector<int> &index, QJsonArray &out,
+                 QMap<int, QString> &reasons)
+{
+    if (in.size() > 1) {
+        const BackendRegionConvertResult r = client.convertRegions(in, toFrame, datasetId, 1);
+        if (r.valid && r.regions.size() == in.size()) {
+            for (int i = 0; i < in.size(); ++i)
+                index.append(i);
+            out = r.regions;
+            return;
+        }
+        // Only a region off the projection is worth trying one by one; a backend
+        // that is down or a dataset with no sky would fail them all again.
+        if (!r.error.contains(u"projection"_s, Qt::CaseInsensitive)) {
+            for (int i = 0; i < in.size(); ++i)
+                reasons.insert(i, r.error);
+            return;
+        }
+    }
+    for (int i = 0; i < in.size(); ++i) {
+        const BackendRegionConvertResult r =
+                client.convertRegions(QJsonArray{ in.at(i) }, toFrame, datasetId, 1);
+        if (r.valid && r.regions.size() == 1) {
+            index.append(i);
+            out.append(r.regions.first());
+        } else {
+            reasons.insert(i, r.error);
+        }
+    }
+}
+
+}   // namespace
+
+void sendRegionsToDataset(QMainWindow *window, const std::vector<Region> &regions,
+                          const ExportContext &from, const ExportContext &to, const QString &label,
+                          std::function<void(const ImportResult &)> apply)
+{
+    if (!window || regions.empty())
+        return;
+    QJsonArray canonical;
+    for (const Region &r : regions)
+        canonical.append(toCanonical(r, 1.0));
+    const QPointer<QMainWindow> guard(window);
+    window->statusBar()->showMessage(u"Placing %1 region(s) on the sky…"_s.arg(regions.size()), 0);
+    auto *watcher = new QFutureWatcher<ImportResult>(window);
+    QObject::connect(watcher, &QFutureWatcher<ImportResult>::finished, window,
+                     [guard, watcher, apply]() {
+                         const ImportResult result = watcher->result();
+                         watcher->deleteLater();
+                         if (!guard)
+                             return;
+                         guard->statusBar()->clearMessage();
+                         if (!result.regions.empty())
+                             apply(result);
+                         if (guard && (!result.diagnostics.empty() || result.regions.empty()))
+                             showImportReport(guard, result.fileName, result);
+                     });
+    watcher->setFuture(QtConcurrent::run([regions, canonical, from, to, label]() {
+        BackendClient a(from.backendUrl, from.token), b(to.backendUrl, to.token);
+        a.setSessionId(from.sessionId);
+        b.setSessionId(to.sessionId);
+        // Pixels to the sky on the first dataset, the sky to pixels on the second.
+        QVector<int> onSky, placed;
+        QJsonArray sky, pixels;
+        QMap<int, QString> reasons;   // by position in `regions`
+        convertEach(a, canonical, u"icrs"_s, from.datasetId, onSky, sky, reasons);
+        QMap<int, QString> offSecond;   // by position in `sky`
+        convertEach(b, sky, u"image"_s, to.datasetId, placed, pixels, offSecond);
+        for (auto it = offSecond.cbegin(); it != offSecond.cend(); ++it)
+            reasons.insert(onSky.at(it.key()), it.value());
+
+        ImportResult result;
+        result.fileName = label;
+        for (int k = 0; k < pixels.size(); ++k) {
+            const Region &src = regions.at(static_cast<std::size_t>(onSky.at(placed.at(k))));
+            // One at a time, so each stays tied to the region it came from.
+            ImportResult one = importFromParse(QJsonArray{ pixels.at(k) }, {}, false, 0, QString());
+            if (one.regions.empty()) {
+                reasons.insert(onSky.at(placed.at(k)),
+                               one.diagnostics.empty() ? QString() : one.diagnostics.front().reason);
+                continue;
+            }
+            // What the backend does not carry: the name, colour and file properties.
+            Region r = one.regions.front();
+            r.name = src.name;
+            r.color = src.color;
+            r.props = src.props;
+            r.sourceLine = src.sourceLine;
+            if (src.shape == Shape::Text)
+                r.text = src.text;
+            result.regions.push_back(r);
+        }
+        for (auto it = reasons.cbegin(); it != reasons.cend(); ++it) {
+            const Region &src = regions.at(static_cast<std::size_t>(it.key()));
+            result.diagnostics.push_back(
+                    { 0, src.name.isEmpty() ? shapeLabel(src.shape) : src.name,
+                      it.value().isEmpty() ? u"it is not on the sky the other image covers"_s
+                                           : it.value() });
+            ++result.rejectedHere;
+        }
+        return result;
     }));
 }
 

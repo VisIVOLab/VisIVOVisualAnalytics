@@ -134,6 +134,7 @@ void vtkWindowImage::mouseCallback()
     }
     this->refreshCatalogueOverlayInteraction(position[0], position[1], false);
     this->updateProbeFromDisplayPosition(position[0], position[1]);
+    this->sendLinkedCursor(position[0], position[1]);
     if (this->regionMode != RegionMode::None && this->regionDragging) {
         if (this->updateRegionFromDisplayPosition(position[0], position[1])) {
             ui->vtk->renderWindow()->Render();

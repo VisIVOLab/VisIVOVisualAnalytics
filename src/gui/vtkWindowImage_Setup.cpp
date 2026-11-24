@@ -1357,6 +1357,14 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Regions"_s, self->m_actImportRegions);
     add(u"Regions"_s, self->m_actExportRegions);
 
+    // Issue #522: the regions and the PV path of this image go to the linked cube.
+    add(u"Regions"_s, self->m_actSendSelectedRegion);
+    add(u"Regions"_s, self->m_actSendAllRegions);
+    add(u"Regions"_s, self->m_actExtractPvInCube);
+
+    // The cube viewers' Link Views group, joined as an image.
+    add(u"Views"_s, self->m_actLinkViews);
+
     add(u"Catalogue"_s, self->actionLoadCatalogueOverlay);
     add(u"Catalogue"_s, self->actionCrossmatch);
     add(u"Catalogue"_s, self->actionShowCatalogueOverlay);

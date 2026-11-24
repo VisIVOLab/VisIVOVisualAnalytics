@@ -122,6 +122,7 @@
 #include <QtConcurrentRun>
 
 #include "AstroUtils.h"
+#include "vtkWindowCube.h"
 #include "vtk/ImageLod.h"
 
 #include <algorithm>
@@ -1869,6 +1870,13 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
 vtkWindowImage::~vtkWindowImage()
 {
+    // Leave the Link Views group: the cubes linked to this image stop showing its
+    // cursor, and lose a target (issue #522).
+    vtkWindowImage::s_registry.remove(this);
+    for (const auto &cube : vtkWindowCube::linkedPeers())
+        if (cube)
+            cube->hideLinkedCursor();
+    vtkWindowCube::refreshLinkTargets();
     // Its hooks reach into the region list, a member that goes before the
     // children are deleted.
     delete this->m_regionSession;
@@ -2629,6 +2637,7 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result, 
         renderer->ResetCameraClippingRange();
         // The view of a fresh load is the one just loaded: nothing to stream for it.
         this->m_lodCameraWatch.adopt(this->imageCameraPose());
+        this->m_linkCameraTracker.adopt(this->imageCameraPose());
     }
     this->invalidateWcsOverlayCache();
     if (!validExtent) {
@@ -2756,6 +2765,7 @@ void vtkWindowImage::onImageCameraFrame()
     if (this->m_lodCameraWatch.moved(pose)) {
         this->onImageInteractionSettled();
     }
+    this->onLinkedCameraFrame();
 }
 
 void vtkWindowImage::onImageInteractionSettled()

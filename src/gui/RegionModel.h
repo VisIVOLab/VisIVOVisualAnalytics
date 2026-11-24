@@ -546,6 +546,50 @@ inline Region moved(Region r, double dx, double dy)
     return r;
 }
 
+/// A line or polygon with a new vertex on the segment nearest to `p`, at the
+/// point of that segment closest to `p` (a polygon's closing segment included).
+/// How a path gets more than its two ends: drawn as a segment, then given
+/// vertices where it has to bend. Other shapes come back unchanged.
+inline Region withVertexInserted(Region r, const Vec2 &p)
+{
+    if (!isPointList(r.shape) || r.points.size() < 2)
+        return r;
+    const std::size_t n = r.points.size();
+    const std::size_t segments = r.shape == Shape::Polygon ? n : n - 1;
+    double best = std::numeric_limits<double>::infinity();
+    std::size_t at = 0;
+    Vec2 foot = p;
+    for (std::size_t i = 0; i < segments; ++i) {
+        const Vec2 &a = r.points[i], &b = r.points[(i + 1) % n];
+        const double dx = b[0] - a[0], dy = b[1] - a[1];
+        const double len2 = dx * dx + dy * dy;
+        const double t = len2 > 0.0
+                ? std::clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len2, 0.0, 1.0)
+                : 0.0;
+        const Vec2 q{ a[0] + t * dx, a[1] + t * dy };
+        const double d = std::hypot(p[0] - q[0], p[1] - q[1]);
+        if (d < best) {
+            best = d;
+            at = i;
+            foot = q;
+        }
+    }
+    r.points.insert(r.points.begin() + static_cast<std::ptrdiff_t>(at) + 1, foot);
+    return r;
+}
+
+/// A line or polygon without vertex `index`; a line keeps two, a polygon
+/// three, so what is left is still the shape.
+inline Region withVertexRemoved(Region r, int index)
+{
+    const std::size_t minimum = r.shape == Shape::Polygon ? 3 : 2;
+    if (!isPointList(r.shape) || index < 0 || index >= static_cast<int>(r.points.size())
+        || r.points.size() <= minimum)
+        return r;
+    r.points.erase(r.points.begin() + index);
+    return r;
+}
+
 /// The region with handle `h` dragged to `p`. A box corner moves while the
 /// opposite corner stays put (in the box's own axes, so a rotated box stays
 /// rotated); radii and semi-axes follow the distance from the centre along

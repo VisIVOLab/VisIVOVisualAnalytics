@@ -137,3 +137,42 @@ not by raw coordinates/indices:
   arrives, the model/LUT update but the dialog's controls may show stale values
   until reopened.
 - Sync is peer-to-peer across open viewers; there is no single "grid" container.
+
+## Image windows in the Link Views group (issue #522)
+
+An image window joins the same *Link Views* group as the cube windows, as a peer
+of another kind: one flag (`m_linkViews`), one menu entry (*Link Views*), one
+peer list per kind (`vtkWindowCube::linkedPeers`, `vtkWindowImage::linkedPeers`,
+both over `LinkedWindowRegistry`). The cube's camera facet gates the view and
+the cursor; the cube-to-cube paths are unchanged.
+
+- **Grids.** Cubes on the same spatial grid share the normalised 2-D view as
+  before (`broadcastLinked2DCamera`, `sameSpatialGrid2D`). An image is another
+  grid, so the same view goes through the sky: `AstroUtils::matchView` (libwcs,
+  both datasets through J2000) maps the centre with `pixelToPixel` and scales the
+  height by sqrt|det J| of the local Jacobian of the two pixel grids (finite
+  differences of half a pixel). North is not turned. The WCS of each dataset is
+  built once from the header cards the backend serves (`LinkedDatasetSky`), so it
+  works for a file on another machine.
+- **Sending.** The cube's slice sends through the existing tracker and
+  `propagate2DCamera`. The image sends from `onImageCameraFrame` through a
+  `LinkedCameraSync::Tracker`, coalesced to one send per event-loop turn; a
+  window that applies a peer's view adopts the camera first, so it never sends it
+  back.
+- **Cursor.** The window under the mouse sends its world position
+  (throttled to 25 ms); the other kind places it with `pixelToPixel` and draws a
+  crosshair (`SkyCursorOverlay`, orange). It is not the probe's crosshair: that
+  one belongs to the window's own pixel readout and spectrum, which a peer's
+  cursor must not overwrite.
+- **Regions.** Canonical regions of one dataset are placed on the other's pixels
+  by the backend, as the region properties editor does: `POST /v1/regions/convert`
+  with `to_frame: icrs` on the first dataset (image pixels to the sky), then
+  `to_frame: image` on the second (the sky to pixels), each on the backend that
+  holds the dataset (`sendRegionsToDataset` in `RegionImport.cpp`). The backend
+  carries sizes and angles along each region's own axes, so a circle stays a
+  circle and a box turns with the other grid. A region off the other projection
+  is reported in the import report, as an import's skipped lines are. They
+  arrive through the same path as an imported file (`applyImportedRegions`).
+- **PV.** The image's selected line is sent the same way as a region; its
+  vertices in the cube's pixels are the PV path (`startPvAlongPath`), which then
+  behaves like a path drawn there.

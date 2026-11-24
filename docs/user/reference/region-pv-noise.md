@@ -49,7 +49,7 @@ selected region is drawn thicker, lightly filled, with white handles.
 | Drag a region | moves it |
 | Drag a handle | reshapes it (box corner, radius, annulus radii, ellipse semi-axis, polygon vertex); the knob above a box or ellipse rotates it |
 | Double-click a region | opens *Region Properties…* |
-| Right-click a region | *Properties…*, *Analyse*, *Background Region*, *Delete* |
+| Right-click a region | *Properties…*, *Analyse*, *Background Region*, *Delete*; a line (image viewer) also *Add Vertex Here* and *Remove This Vertex* |
 | Delete or Backspace | deletes the selected region, or the PV path when no region is selected and PV mode is on (a 2-D pane must have the focus) |
 | ⌘Z, ⇧⌘Z | undo and redo region changes (a 2-D pane must have the focus) |
 
@@ -363,6 +363,9 @@ Footer controls:
 - *Path from region*: takes the selected line or polyline region (a ds9
   `segment`, a CRTF `line`) as the PV path and cuts along it. A CRTF file of
   several lines gives several line regions: select one of them.
+- *Extract PV in Cube…* (image viewer): a line drawn on a 2-D image of the same
+  sky, with as many vertices as you give it, becomes the path here. See
+  [Link an image and a cube](publication-output.md#link-an-image-and-a-cube).
 - *Smooth curve*: a smooth curve through the vertices instead of straight
   segments, for a warp or spiral arm.
 - *New path*: discards the path and starts a new one.

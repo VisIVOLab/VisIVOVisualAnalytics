@@ -49,6 +49,7 @@
 #include "ToolResultDialog.h"
 #include "ProfileWidget.h"
 #include "PvController.h"
+#include "vtkWindowImage.h"
 #include "PvPathGeometry.h"
 #include "RegionListExport.h"
 #include "PvDiagramWidget.h"
@@ -3209,6 +3210,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     for (const auto &w : vtkWindowCube::s_registry.snapshot())
         if (w && w != this)
             w->refreshLinkedFacetChips();
+    // ...and an image window can now link to this cube (issue #522).
+    vtkWindowImage::refreshLinkTargets();
 
     // REGIONS group
     ui->menuTools->addSeparator();
@@ -3473,6 +3476,11 @@ vtkWindowCube::~vtkWindowCube()
     for (const auto &w : vtkWindowCube::s_registry.snapshot())
         if (w)
             w->refreshLinkedFacetChips();
+    // The images linked to this cube stop showing its cursor and lose a target.
+    for (const auto &img : vtkWindowImage::linkedPeers())
+        if (img)
+            img->hideLinkedCursor();
+    vtkWindowImage::refreshLinkTargets();
     if (this->m_cubeCameraRenderWindow && this->m_cubeCameraFrameTag != 0)
         this->m_cubeCameraRenderWindow->RemoveObserver(this->m_cubeCameraFrameTag);
     this->m_cubeCameraFrameTag = 0;
@@ -8386,6 +8394,8 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->m_actKeepAllRegionSpectra);
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
+    add(u"Regions"_s, self->m_actSendSelectedRegion);
+    add(u"Regions"_s, self->m_actSendAllRegions);
 
     add(u"Sources & Kinematics"_s, self->m_actSourceFind);
     add(u"Sources & Kinematics"_s, self->m_actKinematicLasso);
@@ -10136,7 +10146,8 @@ void vtkWindowCube::refreshLinkedFacetChips()
     // it is gated on real targets now (the Tools ▸ Link Views action is gated
     // with it, in applyMomentToolGate, and states the reason).
     // Disabled chips keep their checked state, so re-enabling restores the choice.
-    const bool hasLinkTargets = (m_paneCount > 1 || s_registry.size() > 1);
+    const bool hasLinkTargets =
+            (m_paneCount > 1 || s_registry.size() > 1 || vtkWindowImage::openCount() > 0);
     if (m_paneLinkedBtn)
         m_paneLinkedBtn->setEnabled(hasLinkTargets);
     const bool master = m_linkViews && hasLinkTargets;
@@ -10724,7 +10735,7 @@ void vtkWindowCube::propagate2DCamera(int srcSlot)
     m_linked2DValid = true;
     this->applyNormalizedTo2DPanes(center, worldHeight, srcSlot);
     // STEP6-P4: also push to linked peer WINDOWS on the same spatial grid.
-    this->broadcastLinked2DCamera(center, worldHeight);
+    this->broadcastLinked2DCamera(center, worldHeight, srcSlot);
 }
 
 void vtkWindowCube::applyNormalizedTo2DPanes(const double dataCenterXY[2], double worldHeight,
@@ -10789,6 +10800,44 @@ bool vtkWindowCube::sliceCameraNormalized(double dataCenterXY[2], double &worldH
             this->remoteSliceDisplaySource->GetOutputDataObject(0));
     const auto data = CubeGeom::dataAreaFor(size, image, this->gutter2dFor(/*slice=*/true));
     return CubeGeom::readNormalizedCamera(renderer, data, dataCenterXY, worldHeight);
+}
+
+bool vtkWindowCube::linkFrame(int slot, visivo::linkview::Frame &frame) const
+{
+    int size[2] = { 0, 0 };
+    CubeGeom::ImageRect area;
+    const auto fromSlice = [&]() {
+        if (!this->sliceWin || !this->remoteSliceDisplaySource)
+            return false;
+        auto *rc = this->sliceWin->GetRenderers();
+        auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
+        const int *rs = renderer ? renderer->GetSize() : nullptr;
+        if (!rs || rs[0] <= 0 || rs[1] <= 0)
+            return false;
+        size[0] = rs[0];
+        size[1] = rs[1];
+        area = CubeGeom::dataAreaFor(
+                size, vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
+                this->gutter2dFor(/*slice=*/true));
+        return area.valid;
+    };
+    const auto fromPane = [&](int j) {
+        return j >= 0 && j < 4 && m_slots[j].view.kind == ViewId::Product && m_paneViews[j]
+                && m_slots[j].frame && m_slots[j].frame->isVisible()
+                && m_paneViews[j]->viewFrame(size, area);
+    };
+    bool ok = false;
+    if (slot >= 0 && slot < 4)
+        ok = m_slots[slot].view.kind == ViewId::Slice2D ? fromSlice() : fromPane(slot);
+    else {
+        ok = this->sliceSlot() >= 0 && fromSlice();
+        for (int j = 0; !ok && j < 4; ++j)
+            ok = fromPane(j);
+    }
+    if (!ok)
+        return false;
+    frame = { double(size[0]), double(size[1]), area.x, area.y, area.width, area.height };
+    return true;
 }
 
 void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
@@ -15479,7 +15528,8 @@ void vtkWindowCube::applyMomentToolGate()
     }
     // Same test refreshLinkedFacetChips() uses for the facet chips: >1 pane here
     // (intra-window sync) or >1 open cube window (cross-window sync).
-    stateIn.haveLinkTargets = (m_paneCount > 1 || s_registry.size() > 1);
+    stateIn.haveLinkTargets =
+            (m_paneCount > 1 || s_registry.size() > 1 || vtkWindowImage::openCount() > 0);
     const CubeToolGate::Decision sd = CubeToolGate::evaluate(stateIn);
 
     applyGate(m_actPinSpectrum.data(), m_cubeActionsEnabled && sd.pinSpectrum, reasonNoProbe);
