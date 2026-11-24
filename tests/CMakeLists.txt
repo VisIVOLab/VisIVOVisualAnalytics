@@ -360,4 +360,16 @@ if (TARGET Qt6::Widgets)
     add_test(NAME VisIVOSizeSliderDrag COMMAND VisIVOSizeSliderDragTest)
     set_tests_properties(VisIVOSizeSliderDrag PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
+    # Temporary status-bar messages keep their room (issue #508).
+    add_executable(VisIVOStatusMessageRoomTest
+        test_status_message_room.cpp
+        ${VISIVO_ROOT}/src/gui/StatusMessageRoom.cpp
+    )
+    set_target_properties(VisIVOStatusMessageRoomTest PROPERTIES AUTOMOC ON)
+    target_include_directories(VisIVOStatusMessageRoomTest PRIVATE ${VISIVO_ROOT}/src/gui)
+    target_link_libraries(VisIVOStatusMessageRoomTest PRIVATE Qt::Widgets Qt::Test)
+    add_test(NAME VisIVOStatusMessageRoom COMMAND VisIVOStatusMessageRoomTest)
+    set_tests_properties(VisIVOStatusMessageRoom PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
 endif()

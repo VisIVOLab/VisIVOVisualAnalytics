@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ui_MainWindow.h"
+#include "StatusMessageRoom.h"
 #include "app/TaskQuitDrain.h"
 
 #include "AboutDialog.h"
@@ -572,6 +573,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
             u"Backend currently serving compute. Click Settings → Remote "
             u"Backends to register additional SRC nodes."_s);
     this->statusBar()->addPermanentWidget(this->m_backendBadge);
+    visivo::StatusMessageRoom::attach(this->statusBar());   // messages keep their room (#508)
     this->setActiveBackendBadge(this->settings->getLocalBackend());
 
     this->setMinimumSize(1200, 840);

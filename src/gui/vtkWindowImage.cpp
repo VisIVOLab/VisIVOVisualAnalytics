@@ -2,6 +2,7 @@
 #include "WindowCloseShortcut.h"
 #include "app/DatasetName.h"
 #include "Settings.h"
+#include "StatusMessageRoom.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
@@ -1023,6 +1024,8 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     this->hoverReadoutLabel->setStyleSheet(u"QLabel { padding-left: 8px; }"_s);
     this->hoverReadoutLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     this->statusBar()->addPermanentWidget(this->hoverReadoutLabel, 1);
+    // Its stretch takes the whole gap a temporary message is drawn in (#508).
+    visivo::StatusMessageRoom::attach(this->statusBar())->yieldToMessages(this->hoverReadoutLabel);
     this->dataStateLabel = new QLabel(this);
     this->dataStateLabel->setStyleSheet(u"QLabel { padding-left: 8px; color: palette(window-text); }"_s);
     this->dataStateLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
