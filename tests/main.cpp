@@ -45,6 +45,7 @@
 #include "TestRemoteRenderQueue.h"
 #include "TestRenderSessionCalls.h"
 #include "TestRegionFullRes.h"
+#include "TestContourSettings.h"
 #include "TestLiveRegionSpectra.h"
 #include "TestDatasetName.h"
 #include "TestVbtByteOrder.h"
@@ -153,6 +154,7 @@ int main(int argc, char *argv[])
     { TestRemoteRenderQueue t; status |= QTest::qExec(&t, argc, argv); }
     { TestRenderSessionCalls t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFullRes    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestContourSettings  t; status |= QTest::qExec(&t, argc, argv); }
     { TestLiveRegionSpectra t; status |= QTest::qExec(&t, argc, argv); }
     { TestDatasetName      t; status |= QTest::qExec(&t, argc, argv); }
     { TestVbtByteOrder     t; status |= QTest::qExec(&t, argc, argv); }

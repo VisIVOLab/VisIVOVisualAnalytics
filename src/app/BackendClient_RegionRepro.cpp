@@ -32,6 +32,33 @@
 // ── BackendClient: RegionRepro domain (extracted verbatim) ──
 
 namespace {
+/// The reason in the body of a failed request: FastAPI's `detail` is a text for
+/// an error the route raised and a list of {loc, msg} for a body it could not
+/// read. @p status (Qt's text for the HTTP status) is the fallback.
+QString backendErrorDetail(const QJsonObject &body, const QString &status)
+{
+    const QJsonValue detail = body.value(QStringLiteral("detail"));
+    if (detail.isString() && !detail.toString().isEmpty())
+        return detail.toString();
+    if (detail.isArray()) {
+        QStringList parts;
+        for (const QJsonValue &v : detail.toArray()) {
+            const QJsonObject item = v.toObject();
+            QStringList where;
+            for (const QJsonValue &w : item.value(QStringLiteral("loc")).toArray())
+                if (w.toString() != QStringLiteral("body"))
+                    where << (w.isString() ? w.toString() : QString::number(w.toInt()));
+            parts << (where.join(QLatin1Char('.')) + QStringLiteral(": ")
+                      + item.value(QStringLiteral("msg")).toString());
+            if (parts.size() == 3)
+                break;
+        }
+        if (!parts.isEmpty())
+            return parts.join(QStringLiteral("; "));
+    }
+    return status;
+}
+
 // _parseSnapshotList moved here (RegionRepro-only).
 static BackendSnapshotListResult _parseSnapshotList(const QByteArray &raw)
 {
@@ -98,8 +125,13 @@ BackendRegionExportResult BackendClient::exportRegions(const QJsonArray &regions
     QString error;
     const QByteArray payload = performPost(
             QUrl(m_baseUrl + QStringLiteral("/v1/regions/export")), QJsonDocument(bodyObj), error);
-    if (!error.isEmpty()) { result.error = error; return result; }
     const QJsonObject obj = QJsonDocument::fromJson(payload).object();
+    if (!error.isEmpty()) {
+        // On an HTTP error the body says what was wrong; Qt's own text only
+        // gives the status ("Unprocessable Entity").
+        result.error = backendErrorDetail(obj, error);
+        return result;
+    }
     result.valid = obj.value(QStringLiteral("valid")).toBool();
     result.error = obj.value(QStringLiteral("error")).toString();
     result.text  = obj.value(QStringLiteral("text")).toString();
@@ -127,8 +159,7 @@ BackendRegionConvertResult BackendClient::convertRegions(const QJsonArray &regio
     if (!error.isEmpty()) {
         // On an HTTP error the body is the reason ("The region lies outside the
         // dataset's sky projection."); Qt's own text only says the status.
-        const QString detail = obj.value(QStringLiteral("detail")).toString();
-        result.error = detail.isEmpty() ? error : detail;
+        result.error = backendErrorDetail(obj, error);
         return result;
     }
     result.valid       = obj.value(QStringLiteral("valid")).toBool();

@@ -312,33 +312,6 @@
                <item row="0" column="0" rowspan="2">
                 <widget class="QCheckBox" name="checkContours"/>
                </item>
-               <item row="0" column="1">
-                <widget class="QLabel" name="labelContoursLevel">
-                 <property name="text"><string>Level</string></property>
-                 <property name="buddy"><cstring>lineLevel</cstring></property>
-                </widget>
-               </item>
-               <item row="0" column="2">
-                <widget class="QLabel" name="labelContoursLower">
-                 <property name="text"><string>Lower</string></property>
-                 <property name="buddy"><cstring>lineLowerBound</cstring></property>
-                </widget>
-               </item>
-               <item row="0" column="3">
-                <widget class="QLabel" name="labelContoursUpper">
-                 <property name="text"><string>Upper</string></property>
-                 <property name="buddy"><cstring>lineUpperBound</cstring></property>
-                </widget>
-               </item>
-               <item row="1" column="1">
-                <widget class="QLineEdit" name="lineLevel"/>
-               </item>
-               <item row="1" column="2">
-                <widget class="QLineEdit" name="lineLowerBound"/>
-               </item>
-               <item row="1" column="3">
-                <widget class="QLineEdit" name="lineUpperBound"/>
-               </item>
 
               </layout>
              </widget>
@@ -725,9 +698,6 @@
   <tabstop>spinSlice</tabstop>
   <tabstop>lineSpectral</tabstop>
   <tabstop>checkContours</tabstop>
-  <tabstop>lineLevel</tabstop>
-  <tabstop>lineLowerBound</tabstop>
-  <tabstop>lineUpperBound</tabstop>
   <tabstop>lineImgMin</tabstop>
   <tabstop>lineImgMax</tabstop>
   <tabstop>lineImgMean</tabstop>

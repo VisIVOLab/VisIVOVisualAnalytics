@@ -327,6 +327,20 @@ read as regions. See [Catalogues and HiPS](catalogues-hips.md).
 - *Export Movie…*: an MP4 or PNG sequence. See
   [Figures, movies and linked views](publication-output.md).
 
+### Contours
+
+- *Show Contours* (the left dock's *Contours* card, or the *Layers* row) draws
+  the current 2-D slice as contours, and follows the channel. This also holds
+  for the slices of simulation cubes. The settings appear in *Inspector ▸
+  Parameters* while the tool is on: levels by count, by n × σ of the noise of
+  the channel, logarithmic or a typed list; an optional Gaussian smoothing;
+  one colour, a colour map or a colour per level; the line width; dashed
+  negative levels. They are the same as for the image viewer's contours and
+  are described with them in [Image viewer](image-viewer.md).
+- *Export Contours…* in that panel saves the contours of the channel on screen
+  as a DS9 region file or a table of vertices, in the sky frame of the window or
+  in cube pixels.
+
 ### Views
 
 - *Overlay Slice on an Open Image*: sends the current 2-D slice as contours to

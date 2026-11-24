@@ -1,6 +1,7 @@
 #ifndef vtkWindowCube_H
 #define vtkWindowCube_H
 
+#include "ContourLayer.h"
 #include "RemoteSessionRecovery.h"
 #include "BackendClient.h"
 #include "CatalogueOverlayUtils.h"
@@ -106,6 +107,7 @@ class QHBoxLayout;
 class QVBoxLayout;
 class QCheckBox;
 class QComboBox;
+class ContourSettingsPanel;
 class QDoubleSpinBox;
 class QJsonObject;
 class QJsonArray;
@@ -3233,11 +3235,24 @@ protected:
     ExactProbe exactSliceProbeValue(vtkImageData *image);
     void fetchExactProbeValue();
 
-    // Contours
+    // Contours of the 2-D slice (also the simulation slices): a ContourLayer on
+    // the slice pipeline, styled by the same panel as the image viewer's
+    // contours (issue #519). The panel sits in frameContours, which the
+    // Parameters tab mounts while the tool is on.
     int level;
-    vtkNew<vtkFlyingEdges2D> contours;
-    vtkNew<vtkActor> contoursActor;
-    void updateContours();
+    std::unique_ptr<ContourLayer> m_contourLayer;
+    QPointer<ContourSettingsPanel> m_contourPanel;
+    /// Make the layer on the slice pipeline and the panel (vtkWindowCube_Contours.cpp).
+    void setupContours(vtkRenderer *renderer);
+    /// A change in the panel: apply it to the layer and say why nothing is drawn.
+    void onContourPanelChanged();
+    /// Put the slice's noise (1.4826 x MAD of its pixels) in the sigma field.
+    void estimateContourNoise();
+    /// Save the slice's contours as a ds9 file or a table of vertices.
+    void exportContours();
+    /// Tell the layer the world size of a cube pixel and its size on the sky,
+    /// which the smoothing is converted with.
+    void applyContourPixelScale();
     void updateContoursVisibility();
     /// Point the contour levels at the data once the backend reports the cube's
     /// real range. Until this runs the levels are the 0..1 placeholder set in the
