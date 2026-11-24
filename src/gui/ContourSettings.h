@@ -548,10 +548,11 @@ Chains chainSegments(const Id *segs, std::size_t nSegments, std::size_t nPoints,
         return a == p ? std::int64_t(segs[2 * std::size_t(s) + 1]) : a;
     };
     std::vector<std::int64_t> ahead, behind;
+    std::size_t lines = 0;
     for (std::size_t s0 = 0; s0 < nSegments; ++s0) {
         if (done[s0])
             continue;
-        if (cancel && (s0 & 0xFFF) == 0 && cancel->load(std::memory_order_relaxed)) {
+        if (cancel && (lines++ & 0xFF) == 0 && cancel->load(std::memory_order_relaxed)) {
             out.cancelled = true;
             break;
         }

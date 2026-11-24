@@ -120,12 +120,14 @@ void exportContours(QMainWindow *window, LineSource source,
                      [self, watcher, path, dialog, cancel]() {
                          const Written r = watcher->result();
                          watcher->deleteLater();
+                         // Closing the box emits canceled(), so ask before it.
+                         const bool cancelled = cancel->load();
                          if (dialog)
                              dialog->close();
                          if (!self)
                              return;
                          self->statusBar()->clearMessage();
-                         if (cancel->load()) {
+                         if (cancelled) {
                              self->statusBar()->showMessage(u"Export of the contours cancelled."_s, 5000);
                              return;
                          }

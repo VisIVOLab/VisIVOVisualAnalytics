@@ -897,13 +897,27 @@ void ContourLayer::schedule()
     }
     const Job job = makeJob(needGeometry, source);
     m_impl->running = true;
-    m_impl->watcher.setFuture(QtConcurrent::run([job]() { return buildContours(job); }));
+    m_impl->watcher.setFuture(QtConcurrent::run([job]() {
+        try {
+            return buildContours(job);
+        } catch (...) {   // out of memory on a huge image: draw nothing, do not end the app
+            Built none;
+            none.edges = vtkSmartPointer<vtkPolyData>::New();
+            none.solid = vtkSmartPointer<vtkPolyData>::New();
+            none.dashed = vtkSmartPointer<vtkPolyData>::New();
+            none.gen = job.gen;
+            none.styleGen = job.styleGen;
+            return none;
+        }
+    }));
 }
 
 void ContourLayer::adopt(const Built &built)
 {
-    // The input or the levels changed while it was built: it is not what was asked.
-    if (!built.solid || built.gen != m_impl->gen)
+    // One that is already out of date is shown all the same, and built again
+    // (schedule() sees the generation): while the input keeps changing, as a
+    // slice being dragged does, the lines would otherwise never appear.
+    if (!built.solid)
         return;
     m_impl->edges = built.edges;
     m_impl->edgesGen = built.gen;
