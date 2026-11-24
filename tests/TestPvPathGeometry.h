@@ -16,6 +16,11 @@ private slots:
     void smoothCurveOfTwoVerticesIsTheLine();
     void descendingSpectralAxisRowsAreReversed();
     void nonLinearSpectralAxisIsPlacedByValue();
+    // #520
+    void widthInArcsecAndBackToPixels();
+    void bandEdgesAreTheBackendsBand();
+    void bandPolygonGoesAlongAndBack();
+    void verticesAreNumberedFromOne();
 };
 
 #endif

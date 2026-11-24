@@ -37,7 +37,12 @@ together.
   linear for diagonal and curved paths.
 - Values are bilinear at sub-pixel positions; a blank (NaN) neighbour is left
   out instead of blanking the sample.
-- Across the path, *Width* samples one pixel apart are averaged.
+- Across the path, *Width* samples one pixel apart are averaged. The band is
+  that many sample steps wide on the sky, so its width in arcsec is *Width* times
+  the step; the display draws the same band (`pvpath::bandEdges`).
+- A spectral range (channels, or values of the chosen axis) is turned into
+  channels before anything is read: only those are sampled, and every spectral
+  axis written describes just them.
 - *Smooth curve* uses a centripetal Catmull-Rom spline through the vertices.
 - The spectral coordinate is placed by value, so `CDELT3 < 0` (usual for HI
   cubes) and non-linear axes (`VOPT-F2W`) are drawn where they belong. Up to
@@ -57,8 +62,9 @@ diagram:
 | `CTYPE2`, `CUNIT2`, `CRVAL2`, `CDELT2`, `CRPIX2` | the cube's own spectral axis, algorithm and parameters included |
 | `BUNIT`, `BMAJ`, `BMIN`, `BPA` | from the cube |
 | `RESTFRQ`, `SPECSYS`, … | copied when present |
-| `PVWIDTH`, `PVSTEP` | width (cube pixels) and sample step (arcsec) |
-| `HISTORY` | every vertex, in pixels and in sky coordinates |
+| `PVWIDTH`, `PVWIDARC`, `PVSTEP` | width (cube pixels and arcsec) and sample step (arcsec) |
+| `PVCHAN1`, `PVCHAN2` | first and last cube channel kept (0-based) |
+| `HISTORY` | every vertex, numbered from 1 as on the display, in pixels and in sky coordinates |
 
 See [`POST /v1/products/pv_fits`](../backend-api/products.md).
 

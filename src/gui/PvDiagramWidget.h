@@ -6,11 +6,16 @@
 
 #include "LutScale.h"
 
+#include <limits>
 #include <vector>
 
 class QCheckBox;
+class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
+class QLineEdit;
 class QSpinBox;
+class QCPAbstractItem;
 class QCustomPlot;
 class QCPColorMap;
 class QCPColorScale;
@@ -36,6 +41,25 @@ public:
         QString spatialUnit;             ///< e.g. "arcsec" or "pixels"
         double  pixelScaleArcsecPerPixel { 0.0 };
         QString bunit;                   ///< colour-bar label
+        /// What one pixel of width is on the sky (arcsec); 0 when unknown. The
+        /// width is shown, and can be typed, in arcsec next to pixels.
+        double  stepArcsec               { 0.0 };
+        /// Each vertex on the diagram's offset axis, in the axis' own unit, for
+        /// the marks numbered as on the image; empty when the path is a curve
+        /// (its vertices are not the cube's).
+        QVector<double> vertexOffsets;
+        QString vertexOffsetsText;       ///< "1 at 0.0 arcsec, 2 at ..." for the header
+        QString channelsText;            ///< the channels the diagram covers; empty: whole band
+        QString spectralUnit;            ///< unit of the range's values (km/s, Hz); empty: unknown
+    };
+
+    /// The spectral range typed in the panel (issue #520). @p byValue: the
+    /// numbers are values of the spectral axis, else 1-based channels. NaN: no
+    /// bound on that side.
+    struct SpectralRangeInput {
+        bool   byValue { false };
+        double from    { std::numeric_limits<double>::quiet_NaN() };
+        double to      { std::numeric_limits<double>::quiet_NaN() };
     };
 
     /// @p spectral: the coordinate of each channel, channel 0 first — it may
@@ -54,6 +78,8 @@ public:
 
     /// Reflect the path settings in the controls without emitting the signals.
     void setPathControls(int widthPixels, bool smooth);
+    /// ... and the spectral range, with the unit of the axis' values.
+    void setRangeControls(const SpectralRangeInput &range, const QString &valueUnit);
 
     /// The colour stretch, as on a map pane: Linear, Log or Sqrt (Square and
     /// Power through the same curve). Kept across new data, so a re-taken cut
@@ -64,6 +90,12 @@ public:
 
 signals:
     void widthChanged(int widthPixels);
+    /// A From/To bound or the unit was edited.
+    void spectralRangeChanged(bool byValue, double from, double to);
+    /// Write the path (and optionally the polygon of its width) as regions.
+    void exportPathAsRegionRequested();
+    /// Take the selected line region as the path.
+    void pathFromRegionRequested();
     void smoothChanged(bool smooth);
     void newPathRequested();
     void saveFitsRequested();
@@ -73,6 +105,8 @@ signals:
 
 private slots:
     void savePng();
+    void rangeEdited();
+    void widthArcsecEdited();
 
 private:
     void buildHeaderUi();
@@ -105,7 +139,15 @@ private:
     QCPColorScale  *colorScale   { nullptr };
     QCPTextElement *titleElement { nullptr };
     QSpinBox       *m_widthSpin  { nullptr };
+    QDoubleSpinBox *m_widthArcsecSpin { nullptr };
+    double          m_stepArcsec { 0.0 };
+    SpectralRangeInput m_lastRange;   ///< what the range controls last said
     QCheckBox      *m_smoothCheck{ nullptr };
+    QComboBox      *m_rangeMode  { nullptr };
+    QLineEdit      *m_rangeFrom  { nullptr };
+    QLineEdit      *m_rangeTo    { nullptr };
+    QLabel         *m_lblChannels { nullptr };
+    QVector<QCPAbstractItem *> m_vertexItems;   ///< the numbered marks on the offset axis
 };
 
 #endif

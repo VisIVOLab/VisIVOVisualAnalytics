@@ -78,6 +78,8 @@ Position-velocity diagram along a polyline.
 - `width_pixels` — samples across the path, one pixel apart, averaged.
 - `spectral_quantity` (`native` by default, `frequency`, `vrad`, `vopt`), `spectral_frame` (`native` by default, or `BARYCENT`, `LSRK`, `LSRD`, `GEOCENTR`, `TOPOCENT`, `GALACTOC`) and `rest_freq_hz` (replaces the header's) — the spectral axis the product is computed on, with the meaning they have in `POST /v1/spectral/axis`. Left at `native` the file's own axis is used, as before. A choice the axis cannot give (no rest frequency, no `SPECSYS`, no date or observatory for a topocentric frame) is `valid: false` with the reason.
 
+- `channel_start`, `channel_end` (0-based, inclusive), `spectral_min`, `spectral_max` (values of the chosen axis: km/s, Hz or the file's own unit, in either order) — the part of the band the diagram covers (issue #520), all optional, a bound left out being the band's end. Given together they intersect. Only those channels are read; `depth` is their number and the spectral coordinates, `spectral_crval` and `spectral_cdelt` describe only them. A range outside the cube, or with no channel in it, is `valid: false` (`spectral range`). They are part of the product cache key. `/v1/tasks/pv` and `/v1/products/pv_fits` take the same fields.
+
 Sampling: one sample per step along the path's arc length, in **angular** space
 (the full pixel→sky matrix, so non-square and skewed pixels are handled; one
 step = the finer pixel); NaN-aware bilinear interpolation. The cube must have
@@ -85,7 +87,10 @@ its spectral axis last (else 422 / `valid: false`).
 
 Response: `valid`, `error`, `num_samples`, `depth`, `scalar_type`, `compression`,
 `positions_base64` (offsets in steps), `positions_arcsec_base64`,
-`pixel_scale_arcsec_per_pixel` (= arcsec per step), `spatial_unit`,
+`pixel_scale_arcsec_per_pixel` (= arcsec per step), `width_arcsec`
+(`width_pixels` × that), `vertex_offsets_arcsec` (where each vertex lies on the
+offset axis, from the first), `channel_start` and `channel_end` (the channels
+covered, 0-based inclusive), `spatial_unit`,
 `data_base64` (`depth × num_samples` float32, channel-major), `width_pixels`,
 `vertex_count`, `total_length` (pixels), `valid_samples`, `step_pixels`,
 `spectral_axis_type`, `spectral_axis_unit`,

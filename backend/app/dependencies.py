@@ -1939,6 +1939,8 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest,
         # Issue #496: the axis of the output's spectral coordinates.
         "spectral": choice,
         "width_pixels": max(1, int(request.width_pixels)),
+        # Issue #520: the channels the diagram covers.
+        "range": request.spectral_range(),
         "beam": [dataset.beam_source, dataset.beam.major, dataset.beam.minor, dataset.beam.pa],
     }
     cache_key, param_hash = PRODUCT_CACHE.make_key(dataset.path, "pv", cache_params)
@@ -1955,6 +1957,7 @@ async def _pv_product_payload(entry: dict[str, Any], request: CubePvRequest,
         max(1, int(request.width_pixels)),
         stop_file,
         choice,
+        request.spectral_range(),
         task_id=task_id,
     )
     PRODUCT_CACHE.put(

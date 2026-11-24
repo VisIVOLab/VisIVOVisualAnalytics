@@ -36,7 +36,8 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
                                          const QString &sessionId,
                                          const QString &backendToken,
                                          visivo::BackendTaskControl *control,
-                                         const BackendSpectralChoice &spectral)
+                                         const BackendSpectralChoice &spectral,
+                                         const BackendSpectralRange &range)
 {
     RemotePvFetchResult result;
 
@@ -50,14 +51,14 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
     // user's back.
     BackendCubePvResult response;
     const visivo::TaskFollowResult followed = visivo::followBackendTask(
-            client, client.createPvTask(datasetId, vertices, widthPixels, spectral),
+            client, client.createPvTask(datasetId, vertices, widthPixels, spectral, range),
             QStringLiteral("[pv][task]"), control);
     if (followed.outcome == visivo::TaskOutcome::Completed) {
         response = BackendClient::parsePvResultObject(followed.status.resultObject);
     } else if (followed.fallBackToSync()) {
         qWarning().noquote() << QStringLiteral("[pv][task] no task route on this backend, "
                                                "using the synchronous request");
-        response = client.requestPv(datasetId, vertices, widthPixels, spectral);
+        response = client.requestPv(datasetId, vertices, widthPixels, spectral, range);
     } else {
         result.errorMessage = followed.error;
         result.cancelled = followed.stoppedByUser();
@@ -118,6 +119,10 @@ static RemotePvFetchResult fetchRemotePv(const QString &backendUrl,
     result.depth = response.depth;
     result.computedOn = response.computedOn;
     result.widthPixels = response.widthPixels;
+    result.widthArcsec = response.widthArcsec;
+    result.vertexOffsetsArcsec = response.vertexOffsetsArcsec;
+    result.channelStart = response.channelStart;
+    result.channelEnd = response.channelEnd;
     result.vertexCount = response.vertexCount;
     result.totalLength = response.totalLength;
     result.validSamples = response.validSamples;
@@ -267,11 +272,14 @@ void PvController::startExtraction(const std::vector<std::array<double, 2>> &ver
     // The window's spectral axis now, taken here on the UI thread.
     const BackendSpectralChoice spectral = m_spectralChoice ? m_spectralChoice()
                                                             : BackendSpectralChoice{};
+    const BackendSpectralRange range = m_spectralRange ? m_spectralRange()
+                                                        : BackendSpectralRange{};
     watcher->setFuture(QtConcurrent::run(
             [backendUrl, datasetId, sessionId, backendToken,
-             vertices, widthPixels, control, spectral]() -> RemotePvFetchResult {
+             vertices, widthPixels, control, spectral, range]() -> RemotePvFetchResult {
                 auto result = fetchRemotePv(backendUrl, datasetId, vertices, widthPixels,
-                                            sessionId, backendToken, control.get(), spectral);
+                                            sessionId, backendToken, control.get(), spectral,
+                                            range);
                 // Embed the original request context so the callback can build
                 // provenance strings without touching shared mutable state.
                 result.capturedVertices    = vertices;

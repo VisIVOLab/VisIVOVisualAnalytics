@@ -268,6 +268,13 @@ While the tool is on, the path can be edited and the diagram follows:
 The wheel zooms and the middle button pans. Turning the tool off freezes the
 path; turning it on again resumes editing.
 
+Each vertex of the path carries its number on the image, counted from 1, so a
+bent path can be followed against the diagram: the same numbers are marked on
+the diagram's offset axis (a dashed line at each vertex), listed with their
+offsets in the header's *Vertices* row, and recorded in the product's
+provenance and in the exported FITS. With *Smooth curve* on the cut runs along
+a dense curve, and the diagram carries no vertex marks.
+
 ### Drawing on a moment map
 
 Click the moment pane to make it active, then arm *Extract PV Diagram…* or
@@ -281,8 +288,26 @@ channels back.
 
 Footer controls:
 
-- *Width*: width of the cut across the path, in cube pixels; values across it
-  are averaged.
+- *Width*: width of the cut across the path, in cube pixels, and next to it
+  the same width in arcsec (what a pixel of width is on the sky times the
+  pixel count). Type either: a width in arcsec is rounded to the nearest whole
+  pixel width, at least one. Values across the band are averaged. The header,
+  the provenance row and the FITS (`PVWIDTH` in pixels, `PVWIDARC` in arcsec)
+  give both.
+- *Range*: the part of the spectral band to cut, as *Channels* (counted from
+  1) or as values of the spectral axis shown (km/s or Hz, in the axis and frame
+  chosen under *WCS ▸ Spectral Axis*). Leave a side empty for the end of the
+  band; *Whole band* clears it. Only those channels are read and drawn, so the
+  diagram covers the line and not the whole band. A FITS saved with a range
+  has the same channels (`PVCHAN1`, `PVCHAN2`, 0-based) and its spectral axis
+  starts at the first of them.
+- *Path as region…*: puts the path in the region list as a polyline and, if you
+  say so, the polygon of the band's width, and opens the region export (ds9 or
+  CRTF, in pixels or the sky frame). ds9 writes the path as a `segment`; CRTF
+  has no polyline, so it gets one `line` per segment, in order.
+- *Path from region*: takes the selected line or polyline region (a ds9
+  `segment`, a CRTF `line`) as the PV path and cuts along it. A CRTF file of
+  several lines gives several line regions: select one of them.
 - *Smooth curve*: a smooth curve through the vertices instead of straight
   segments, for a warp or spiral arm.
 - *New path*: discards the path and starts a new one.

@@ -33,6 +33,10 @@ struct RemotePvFetchResult
     int depth{ 0 };
     QString computedOn;
     int widthPixels{ 1 };
+    double widthArcsec{ 0. };                 // the band's width on the sky (0: not reported)
+    QVector<double> vertexOffsetsArcsec;      // each vertex on the offset axis (empty: not reported)
+    int channelStart{ 0 };                    // the channels the diagram covers, 0-based inclusive
+    int channelEnd{ -1 };                     // -1: not reported (the whole band)
     int vertexCount{ 0 };
     double totalLength{ 0. };
     int validSamples{ 0 };
