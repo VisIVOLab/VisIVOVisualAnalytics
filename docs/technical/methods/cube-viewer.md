@@ -147,3 +147,41 @@ On a cube shown as a decimated preview the probe asks the backend for the
 line of sight at full resolution (`POST /v1/spectral/probe`). One request is in
 flight at a time; only the last pixel the cursor reached is asked next, and a
 reply for a pixel the cursor has left is dropped.
+
+## Several fields of a simulation in one view
+
+User reference: [Several variables in one view](../../user/reference/pluto-output.md#several-variables-in-one-view).
+
+A PLUTO output or a VBT volume opens one variable per window, each its own
+backend dataset. *Add Field…* opens a sibling as another dataset in the window's
+session (refused unless its grid is the same) and draws it with the window's own
+field.
+
+- **Slice.** The window reads one plane of each added field with the same route
+  and the same longest side as its own (`/v1/cube/slice`, along the slice axis),
+  keeps six per field, maps each through its own lookup table (clamped to the
+  table's range first) and combines the colours on the slice's grid with
+  `FieldOverlay.h`: "over" weighted by opacity for *Layered*, the image
+  viewer's own sum (`LayerBlend.h`) for *Additive*. *Split* and *Mirrored* map
+  output columns to a field and a slice column (`splitLayout`, `splitSource`):
+  mirrored about an axis at column *s* the picture is twice as wide as the part
+  right of the axis, and its right half sits at the slice's own pixels, so
+  everything placed in plane pixels still lands; the pane is framed on the
+  picture. The picture is one RGBA image in the slice's image stack above the
+  window's slice, which it hides while it is on.
+- **3-D box.** Each field's voxels are read once with the route the cube was
+  read with: the preview at the stride in use, or the box of the full-resolution
+  cube. The result must have the dimensions of the cube drawn, or the field is
+  refused (a preview sampled another way, a cropped region); it takes the cube's
+  origin and spacing. The fields are volumes of one `vtkMultiVolume` and one
+  `vtkGPUVolumeRayCastMapper` with a port each, the window's own cube on port 0
+  with its property shared, so the window's threshold and colour map still apply.
+  VTK's multi-input cast composites front to back with each input's functions;
+  it has no MIP and no cropping, so the box shows a sum only. A field's opacity
+  curve is the window's (`fillRampOn`: the same knots, on the field's scale),
+  starting at the 95th percentile of its voxels, scaled by its opacity. When the
+  window's cube is replaced (preview to full grid) every field is read again on
+  the new grid. The headset, the refined box and the remote renderer keep the
+  window's own field only.
+- **Memory.** At most three fields in a view; planes are a few per field, voxels
+  one cube of the displayed size per field.

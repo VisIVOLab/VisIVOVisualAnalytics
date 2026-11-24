@@ -794,8 +794,9 @@ void vtkWindowCube::layout2dPaneFor(bool slice, bool force)
         return;   // same geometry — do NOT touch the camera, the user may have zoomed
     }
 
-    auto *image = slice
-            ? vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0))
+    // The slice pane frames what it draws: the combined picture of several
+    // fields when it is on (issue #525; wider than the slice when mirrored).
+    auto *image = slice ? this->sliceFrameImage()
             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
     CubeGeom::ImageRect dataArea;
     const bool fitted = CubeGeom::fitImageInGutter(renderer, image, gutter, &dataArea);
@@ -840,7 +841,7 @@ void vtkWindowCube::updateSliceWcsOverlay()
     // §3.1: this is the SLICE window's own overlay — load slice data unconditionally
     // (not gated by viewingSlice()), or at 4 panes the slice pane loses its axes
     // whenever the moment pane is the active one.
-    auto *imageData = vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0));
+    auto *imageData = this->sliceFrameImage();
     if (!renderer || !this->sliceOverlayXAxis.GetPointer() || !this->sliceOverlayYAxis.GetPointer()
         || !this->sliceOverlayXTitleActor.GetPointer() || !this->sliceOverlayYTitleActor.GetPointer()) {
         qDebug().noquote()

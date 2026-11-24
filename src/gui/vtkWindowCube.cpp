@@ -1058,6 +1058,56 @@ AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QSt
 
 } // anonymous namespace
 
+// ── Other fields of the run on this window's grid (issue #525) ───────────────
+
+RemoteFieldVolumeResult fetchRemoteFieldVolume(const QString &backendUrl, const QString &sessionId,
+                                               const QString &backendToken, const QString &name,
+                                               const QString &datasetId,
+                                               const std::array<int, 3> &shownDims,
+                                               const std::optional<std::array<int, 6>> &roi,
+                                               int stride)
+{
+    RemoteFieldVolumeResult out;
+    out.name = name;
+    out.datasetId = datasetId;
+
+    vtkSmartPointer<vtkImageData> image;
+    if (roi) {
+        const auto sub = fetchRemoteSubvolume(backendUrl, out.datasetId, *roi, sessionId,
+                                              backendToken);
+        if (!sub.valid) {
+            out.errorMessage = sub.errorMessage;
+            return out;
+        }
+        image = sub.cubeImageData;
+        out.visibleRange = sub.cubeRange;
+        out.invisibleSentinel = sub.invisibleSentinel;
+    } else {
+        const auto preview = fetchRemotePreview(backendUrl, out.datasetId, stride, sessionId,
+                                                backendToken);
+        if (!preview.valid) {
+            out.errorMessage = preview.errorMessage;
+            return out;
+        }
+        image = preview.cubeImageData;
+        const auto sanitized = sanitizeCubeScalarsInPlace(image);
+        out.visibleRange = sanitized.visibleRange;
+        out.invisibleSentinel = sanitized.invisibleSentinel;
+    }
+    int dims[3] = { 0, 0, 0 };
+    image->GetDimensions(dims);
+    if (dims[0] != shownDims[0] || dims[1] != shownDims[1] || dims[2] != shownDims[2]) {
+        out.errorMessage = u"%1 comes as %2 x %3 x %4, not the %5 x %6 x %7 the box is drawn on "
+                           u"(a sampled copy built another way, or a cropped region)."_s
+                                   .arg(name).arg(dims[0]).arg(dims[1]).arg(dims[2])
+                                   .arg(shownDims[0]).arg(shownDims[1]).arg(shownDims[2]);
+        return out;
+    }
+    out.image = image;
+    out.valid = true;
+    return out;
+}
+
 vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
                              const QString &datasetId, int remoteWidth, int remoteHeight,
                              int remoteDepth, const std::array<double, 3> &remoteSpacing,
@@ -6795,6 +6845,7 @@ void vtkWindowCube::refreshVolumeColorbar()
     const auto range = this->volumeDataRange();
     if (!range || this->m_isosurfaceDrawn || !this->m_show3dRendering) {
         this->m_volumeColorbar->hide();
+        this->refreshFieldBars3d();
         return;
     }
     // The colours over the Min..Max the volume is drawn with (volumeColourRange),
@@ -6807,24 +6858,9 @@ void vtkWindowCube::refreshVolumeColorbar()
                                  : this->m_activeColorMapName.toStdString(),
                     this->m_volumeScaleMode, lo, hi, this->m_volumeScaleGamma);
     ColorMaps::SetColorTransferFunction(lut, ctf);
-    constexpr int kColours = 256;
-    QVector<QColor> colours;
-    colours.reserve(kColours);
-    for (int i = 0; i < kColours; ++i) {
-        double rgb[3];
-        ctf->GetColor(this->volumeScaleValue(static_cast<double>(i) / (kColours - 1), lo, hi), rgb);
-        colours << QColor::fromRgbF(rgb[0], rgb[1], rgb[2]);
-    }
-    const QVector<double> at{ 0.0, 0.25, 0.5, 0.75, 1.0 };
-    QVector<double> values;
-    for (const double u : at)
-        values << this->volumeScaleValue(u, lo, hi);
-    const QStringList labels = visivo::tickLabels(values);
-    QVector<QPair<double, QString>> ticks;
-    for (int i = 0; i < at.size(); ++i)
-        ticks << qMakePair(at[i], labels[i]);
-    this->m_volumeColorbar->setColours(colours);
-    this->m_volumeColorbar->setTicks(ticks);
+    this->m_volumeColorbar->setFromScale(
+            [this, lo, hi](double u) { return this->volumeScaleValue(u, lo, hi); },
+            [&ctf](double value, double *rgb) { ctf->GetColor(value, rgb); });
     // The quantity: the cube's unit, or a VBT field's name.
     this->m_volumeColorbar->setTitle(this->volumeBarTitle());
     // Below the threshold the opacity is zero, in every blend mode (MIP and
@@ -6842,6 +6878,7 @@ void vtkWindowCube::refreshVolumeColorbar()
                                              caption);
     }
     this->m_volumeColorbar->show();
+    this->refreshFieldBars3d();   // one bar per field, beside this one (issue #525)
 }
 
 void vtkWindowCube::updateThresholdShare(double threshold)
@@ -7440,6 +7477,8 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
         this->applyHeadsetClip();
     this->remoteIsosurfaceReady = false;
     this->setCubeRenderModeLocally(false);
+    // Fields added to the box (issue #525) are read again on the grid now drawn.
+    this->fieldsFollowMainCube();
     if (result.momentImageData) {
         this->momentDisplaySource->SetOutput(result.momentImageData);
         this->momentDisplaySource->Modified();
@@ -16872,6 +16911,7 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
     cmd[u"type"_s] = u"set_cube_render_mode"_s;
     cmd[u"mode"_s] = isosurfaceMode ? u"isosurface"_s : u"volume"_s;
     this->sendRemoteRenderStateCommand(cmd);
+    this->syncFieldVolumeVisibility();   // the fields' cast goes with the volume (issue #525)
     this->refreshVolumeColorbar();
     // The isosurface replaces the volume layer: a refined box goes with it.
     this->updateRefineBoxAction();
@@ -17087,16 +17127,23 @@ void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &field
 void vtkWindowCube::fillVolumeOpacity(vtkPiecewiseFunction *f, double threshold, double lower,
                                       double upper) const
 {
-    // The ramp over [lower, upper] for a threshold, on the volume's scale; the
-    // local pipeline and a remote view's functions are built the same way.
+    fillRampOn(f, this->m_volumeScaleMode, this->m_volumeScaleGamma, threshold, lower, upper);
+}
+
+void vtkWindowCube::fillRampOn(vtkPiecewiseFunction *f, LutScale::Mode mode, double gamma,
+                               double threshold, double lower, double upper)
+{
+    // The ramp over [lower, upper] for a threshold, on a scale; the local
+    // pipeline, a remote view's functions and each field added to the box
+    // (issue #525) are built the same way.
     const double span = upper - lower;
     const bool valid = (span > 0.0) && (threshold >= lower) && (threshold <= upper);
     const bool aboveAll = (span > 0.0) && (threshold > upper);
-    if (valid && this->m_volumeScaleMode != LutScale::Mode::Linear) {
+    if (valid && mode != LutScale::Mode::Linear) {
         // The same ramp drawn on the volume's scale (issue #83): its knots
         // at scaled positions from the threshold's, sampled densely enough
         // that VTK's interpolation, linear in value, follows the curve.
-        const double ut = this->volumeScalePosition(threshold, lower, upper);
+        const double ut = scalePositionOn(mode, gamma, threshold, lower, upper);
         const std::array<std::pair<double, double>, 5> knots{ {
                 { std::max(0.0, ut - 0.01), 0.0 },
                 { ut, 0.25 },
@@ -17126,11 +17173,11 @@ void vtkWindowCube::fillVolumeOpacity(vtkPiecewiseFunction *f, double threshold,
                     // thinned. On a wide Log range the knee and the threshold
                     // can lie closer than minGap, and dropping them let
                     // sub-threshold values through.
-                    add(this->volumeScaleValue(prevU + w * (u - prevU), lower, upper),
+                    add(LutScale::valueAt(mode, prevU + w * (u - prevU), lower, upper, gamma),
                         prevA + w * (a - prevA), k == kSteps);
                 }
             } else {
-                add(this->volumeScaleValue(u, lower, upper), a, true);
+                add(LutScale::valueAt(mode, u, lower, upper, gamma), a, true);
             }
             prevU = u;
             prevA = a;
@@ -17161,9 +17208,15 @@ void vtkWindowCube::fillVolumeOpacity(vtkPiecewiseFunction *f, double threshold,
 
 double vtkWindowCube::volumeScalePosition(double value, double lo, double hi) const
 {
+    return scalePositionOn(this->m_volumeScaleMode, this->m_volumeScaleGamma, value, lo, hi);
+}
+
+double vtkWindowCube::scalePositionOn(LutScale::Mode mode, double gamma, double value, double lo,
+                                      double hi)
+{
     if (!(hi > lo))
         return 0.0;
-    if (this->m_volumeScaleMode == LutScale::Mode::Log) {
+    if (mode == LutScale::Mode::Log) {
         const auto r = LutScale::rangeFor(LutScale::Mode::Log, lo, hi);
         if (!(r[1] > r[0]))
             return 0.0;
@@ -17173,7 +17226,7 @@ double vtkWindowCube::volumeScalePosition(double value, double lo, double hi) co
     // The colour at the fraction t of the range is the map's at t^exp
     // (LutScale), so that is where a value sits on the scale.
     const double t = std::clamp((value - lo) / (hi - lo), 0.0, 1.0);
-    return std::pow(t, LutScale::exponent(this->m_volumeScaleMode, this->m_volumeScaleGamma));
+    return std::pow(t, LutScale::exponent(mode, gamma));
 }
 
 double vtkWindowCube::volumeScaleValue(double position, double lo, double hi) const
@@ -17223,8 +17276,9 @@ void vtkWindowCube::chooseDefaultScale(double minValue, double maxValue)
         return;
     this->m_defaultScaleChosen = true;
     // Linear shows only the brightest voxels of such data; a radio cube, with
-    // its noise around zero, stays linear.
-    if (!(minValue > 0.0 && maxValue / minValue >= 1e3)
+    // its noise around zero, stays linear (the rule is shared with the fields
+    // added to the view, issue #525).
+    if (!visivo::fields::prefersLog(minValue, maxValue)
         || this->m_volumeScaleMode != LutScale::Mode::Linear)
         return;
     this->m_volumeScaleMode = LutScale::Mode::Log;

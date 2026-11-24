@@ -253,6 +253,14 @@ RemoteCubeSliceResult fetchRemoteSlice(const QString &backendUrl, const QString 
 
 }  // namespace
 
+RemoteCubeSliceResult fetchRemoteFieldSlice(const QString &backendUrl, const QString &datasetId,
+                                            int index, const QString &sessionId,
+                                            const QString &backendToken, const QString &axis)
+{
+    return fetchRemoteSlice(backendUrl, datasetId, index, sessionId, backendToken, std::nullopt,
+                            axis);
+}
+
 // The samples sit on the plane's own pixel frame (origin x0/y0, spacing the
 // stride), so a reduced channel lies where the full one would and everything
 // placed in plane pixels (regions, probe, WCS, linked cameras) still lands.
@@ -463,6 +471,8 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     }
     this->refreshSpectralAxisUi();
     this->updateRemoteCuttingPlane(result.index);
+    // The other fields' planes of this slice (issue #525).
+    this->fieldsFollowSlice();
     ui->vtkCube->renderWindow()->Render();
     qDebug().noquote() << QStringLiteral("[remote-plane] render triggered");
     if (backdrop) {
@@ -794,6 +804,11 @@ void vtkWindowCube::fetchExactProbeValue()
 void vtkWindowCube::scheduleSliceDetail()
 {
     if (this->m_sliceDetailSuspended)
+        return;
+    // The combined picture of several fields is drawn at the level of the
+    // slices read for it; a finer detail of the window's own field would
+    // belong to one field only (issue #525).
+    if (this->m_fieldViews && this->m_fieldViews->compositeShown)
         return;
     if (this->m_displayedSliceGrid[2] <= 1 && !this->m_sliceDetailShown)
         return;

@@ -372,6 +372,10 @@ read as regions. See [Catalogues and HiPS](catalogues-hips.md).
   followed, including *Shift+R* and the *Camera* presets. The chips next to the
   button choose which facets are linked. See
   [Figures, movies and linked views](publication-output.md).
+- *Add Field…* (Inspector, *Fields*; simulation volumes with other variables):
+  puts a second or third variable of the same run in this window's slice and 3-D
+  box, instead of a second window. See
+  [Several variables in one view](pluto-output.md#several-variables-in-one-view).
 - *Link Views* also reaches image windows that have it on: the slice and the
   image follow each other by sky, and the cursor of one is a crosshair in the other.
   See [Link an image and a cube](publication-output.md#link-an-image-and-a-cube).

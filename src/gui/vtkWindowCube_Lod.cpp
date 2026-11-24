@@ -371,6 +371,10 @@ bool vtkWindowCube::volumeLayerShown(vtkRenderer *renderer) const
 {
     if (this->m_lod && this->m_lod->active())
         return this->m_lod->visible();
+    // With fields added to the box the one ray cast of them all stands in for
+    // the window's own volume (issue #525).
+    if (this->fieldsDrawn3d())
+        return this->fieldCastVisible();
     return renderer && renderer->HasViewProp(this->volume) && this->volume->GetVisibility() != 0;
 }
 
@@ -382,6 +386,7 @@ void vtkWindowCube::setVolumeLayerVisible(bool visible)
         return;
     }
     this->volume->SetVisibility(visible ? 1 : 0);
+    this->syncFieldVolumeVisibility();   // hides it again when the fields' cast draws
 }
 
 void vtkWindowCube::applyLodUserCrop()
@@ -881,6 +886,7 @@ void vtkWindowCube::applyLodSet()
     }
     this->applyLodUserCrop();
     this->volume->SetVisibility(0);   // the pieces and blocks draw the whole cube now
+    this->syncFieldVolumeVisibility();   // …and the fields' cast steps aside (issue #525)
     this->m_lodShownExplicit = !pending->automatic;
     this->m_lodShownSignature = pending->automatic ? pending->signature : CubeLodAuto::Signature{};
 
@@ -928,6 +934,7 @@ void vtkWindowCube::clearLod(const QString &why, bool dropCache)
         this->m_lodCache->clear();
     if (wasShown) {
         this->volume->SetVisibility(this->m_show3dRendering ? 1 : 0);
+        this->syncFieldVolumeVisibility();
         this->m_lodStatus.clear();
         this->updateDataStatePanel();
         if (!why.isEmpty())

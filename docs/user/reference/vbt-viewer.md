@@ -75,6 +75,11 @@ FITS cube. Each field is read in place from the `.bin`, without a copy.
 - One cube per field: the first field opens; the others are listed in
   *Session Data* as *Field: name*, and opening one opens that field. Windows
   and exported files are named `volume · field`.
+- Several fields in one view: *Add Field…* in the Inspector (*Fields*) puts
+  another field of the volume in the same window: in the slice (layered,
+  additive, split or mirrored about an axis) and in the 3-D box (one ray cast,
+  each field with its own colours and opacity, one colour bar per field). See
+  [Several variables in one view](pluto-output.md#several-variables-in-one-view).
 - Axes: X, Y and Z, in voxels times the header's spacing, starting at 0.
   *LAYERS ▸ 3D axes* labels the box. The 2-D slice is a plane of constant X,
   Y or Z, picked in the Inspector (*Slice ▸ Along*), stepped with the slider or

@@ -27,6 +27,8 @@
 #include "RemoteRenderQueue.h"
 #include "RemoteSliceCache.h"
 #include "SpectralAxisTypes.h"
+#include "FieldOverlay.h"
+#include "SimField.h"
 
 // Forward-declared here; full headers are included in vtkWindowCube.cpp where
 // they are constructed and their methods are called.
@@ -244,6 +246,34 @@ struct RemoteCubeSliceResult
 /// A /v1/cube/slice answer as an image on the plane's pixel frame (origin the
 /// first sample, spacing the stride); null when the payload does not match.
 vtkSmartPointer<vtkImageData> decodeRemoteSlice(const BackendCubeSliceResult &response);
+
+/// One plane of another field of the run (issue #525), read as the window's own
+/// is (the same longest side, nothing cropped).
+RemoteCubeSliceResult fetchRemoteFieldSlice(const QString &backendUrl, const QString &datasetId,
+                                            int index, const QString &sessionId,
+                                            const QString &backendToken, const QString &axis);
+
+/// Another field's voxels on the grid the window's cube is drawn on (issue
+/// #525), read as the cube is: the box \a roi (x0, x1, y0, y1, z0, z1,
+/// inclusive) of the full grid when the window shows the full-resolution cube,
+/// else reduced by \a stride as its preview is. Blank voxels are already
+/// replaced by the sentinel. Fails when what it gives is not \a shownDims.
+struct RemoteFieldVolumeResult
+{
+    bool valid{ false };
+    QString errorMessage;
+    QString name;
+    QString datasetId;
+    vtkSmartPointer<vtkImageData> image;
+    std::array<double, 2> visibleRange{ 0., 0. };
+    double invisibleSentinel{ -1.0 };
+};
+RemoteFieldVolumeResult fetchRemoteFieldVolume(const QString &backendUrl, const QString &sessionId,
+                                               const QString &backendToken, const QString &name,
+                                               const QString &datasetId,
+                                               const std::array<int, 3> &shownDims,
+                                               const std::optional<std::array<int, 6>> &roi,
+                                               int stride);
 
 struct RemoteCubeSubvolumeResult
 {
@@ -3507,6 +3537,78 @@ protected:
     void reloadForDisplayUnits();
     /// The launch of the preview fetch, as the constructor starts it.
     void startRemotePreviewLoad();
+
+    // ── Several fields of one run in one view (issue #525; vtkWindowCube_Fields.cpp) ──
+    // The window's own field keeps its look where it always was (the slice's
+    // lookup table, the volume's transfer functions); each field added has a
+    // SimField. The 2-D slice combines them in one picture (layered, additive,
+    // split or mirrored about an axis) and the 3-D box draws them in ONE ray
+    // cast, each with its own colours and opacity, one colour bar per field.
+    std::vector<std::unique_ptr<SimField>> m_fields;   ///< the fields added
+    std::unique_ptr<SimFieldViews> m_fieldViews;
+    visivo::fields::Layout m_fieldLayout{ visivo::fields::Layout::Layered };
+    std::optional<double> m_fieldSeam;   ///< typed seam / axis, in the units shown
+    bool m_mainFieldShown{ true };
+    double m_mainFieldOpacity{ 1.0 };
+    QPointer<QWidget> m_fieldsHost;          ///< the Inspector's list, rebuilt as fields change
+    QPointer<QComboBox> m_fieldLayoutCombo;
+    QPointer<QLineEdit> m_fieldSeamEdit;
+    /// The Fields rows of the Inspector (a simulation volume with siblings).
+    void addFieldInspectorRows(class InspectorPanel *panel);
+    void rebuildFieldsPanel();
+    /// The siblings of this window's field not yet added, as (name, path).
+    QList<QPair<QString, QString>> fieldsToAdd() const;
+    /// A field names a limit: why none can be added now, or empty.
+    QString whyNoFieldCanBeAdded() const;
+    void addFieldFromMenu();
+    void addField(const QString &name, const QString &path);
+    void removeField(const QString &name);
+    SimField *fieldNamed(const QString &name) const;
+    /// What a change of a field's look sets going: the picture, the bars.
+    void fieldLookChanged(SimField *field, bool rebuild3d);
+    // 2-D
+    bool fieldComposite2dWanted() const;
+    void updateFieldComposite();
+    void requestFieldSlices();
+    void applyFieldSliceResult(const QString &name, const RemoteCubeSliceResult &result);
+    void refreshFieldBars2d();
+    void setFieldCompositeVisible(bool on);
+    QString fieldSliceKey(int index) const;
+    /// The column of the slice the seam (or the axis) falls on, for a slice
+    /// drawn with the given origin and stride along the plane's horizontal axis.
+    int fieldSeamColumn(int width, double origin, double stride) const;
+    // 3-D
+    bool fieldsDrawn3d() const;
+    /// The one ray cast of the fields is on screen (not hidden by the layer toggle or a surface).
+    bool fieldCastVisible() const;
+    void fetchFieldVolume(SimField &field);
+    void applyFieldVolumeResult(const RemoteFieldVolumeResult &result);
+    void buildFieldVolume(SimField &field);
+    void rebuildFieldVolumes();
+    void syncFieldVolumeVisibility();
+    void refreshFieldBars3d();
+    void layoutFieldBars3d();
+    /// The main cube on screen changed (a new preview, the full grid): the
+    /// fields' voxels follow it, at the level it is now drawn at.
+    void fieldsFollowMainCube();
+    /// The slice on screen changed: the combined picture follows.
+    void fieldsFollowSlice();
+    /// The units shown changed: the fields' planes and voxels are read again in them.
+    void fieldsFollowUnits();
+    /// Redraws the combined picture when the window's own slice table changes (map, range, scale).
+    void watchSliceLutForFields();
+    /// Queues a redraw of the combined picture; the slice table's observer calls it.
+    void queueFieldCompositeUpdate();
+    static void sliceLutModified(class vtkObject *, unsigned long, void *clientData, void *);
+    /// The window's own field's colour bar on the slice (the combined picture
+    /// has one bar per field, this window's among them).
+    QString mainFieldName() const;
+    /// The image the slice pane is framed on: the combined picture when it is on, else the slice.
+    vtkImageData *sliceFrameImage() const;
+    static void fillRampOn(vtkPiecewiseFunction *f, LutScale::Mode mode, double gamma,
+                           double threshold, double lower, double upper);
+    static double scalePositionOn(LutScale::Mode mode, double gamma, double value, double lo,
+                                  double hi);
 
     /// Aspect-preserving gutter fit + colorbar placement for the currently-visible
     /// 2-D pane. Cheap and idempotent: returns immediately unless the viewport

@@ -231,6 +231,7 @@ void vtkWindowCube::reloadForDisplayUnits()
     this->m_cubeStatsRequested = false;
     this->m_fullCubeStats = BackendCubeStatsResult{};
     this->fetchCubeStatsAsync();
+    this->fieldsFollowUnits();
 }
 
 void vtkWindowCube::addSimulationInspectorRows(InspectorPanel *panel)
@@ -287,4 +288,5 @@ void vtkWindowCube::addSimulationInspectorRows(InspectorPanel *panel)
     m_simTimeLabel = new QLabel(u"-"_s);
     panel->addPropertyRow(u"Time"_s, m_simTimeLabel.data());
     this->refreshSimulationRows();
+    this->addFieldInspectorRows(panel);
 }
