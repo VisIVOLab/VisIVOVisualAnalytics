@@ -6,6 +6,44 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.3.2 (2026-11-24)
+
+ALMA and ATCA data, checked against an ALMA analysis tutorial for radio
+astronomers.
+
+- **CASA axis order (#498, #506).** Cubes exported with a size-1 STOKES axis
+  before FREQ (RA, DEC, STOKES, FREQ) are read as spectral cubes everywhere:
+  the viewer's spectral axis, spectra and their CSV and line fit, the brick
+  pyramid, server-side rendering and VR. One rule decides which axes form the
+  cube; a pyramid built with the old rule is rebuilt.
+- **Velocity and reference frame (#496).** *WCS ▸ Spectral Axis* shows the
+  spectral axis as frequency or radio/optical velocity, in the file's frame or
+  barycentric, LSRK, LSRD, geocentric, topocentric or galactocentric, with an
+  editable rest frequency (astropy `SpectralCoord`; date and site are needed
+  only for geocentric and topocentric). Spectra, region spectra, moments 0–5,
+  PV diagrams and channel maps follow it, and every label names the frame;
+  saved moment and PV FITS state quantity, frame and rest frequency.
+- **Region spectra at full resolution (#499).** A region's spectrum on a cube
+  is computed by the backend over every pixel of the region and every channel
+  of the file, not from the 3-D preview.
+- **Continuum measurements (#503).** Region statistics add the sum, the
+  unweighted RMS √⟨x²⟩ (beside the standard deviation) and the peak with its
+  position. Point and line regions in the image viewer (value at a pixel,
+  profile along a line in arcsec), exported as ds9 and CRTF. *Estimate Noise*
+  on images: sigma-clipped over the whole image (bounded memory) or over
+  regions flagged as background, with the Jy/beam → Jy/pixel conversion.
+- **Files and overlays (#500, #501).** FITS files without an extension are
+  recognised by their first card (listing, open, layer and contour pickers,
+  Stokes companions). Contours loaded from another FITS are placed through its
+  WCS, like layers; *Add Image Layer* says why it waits while an image loads.
+- **Display (#502, #508, #516).** Beam sizes in mas/arcsec/arcmin; channel
+  maps keep the requested columns, the image aspect and readable two-line
+  captions; Inspector values elide with a tooltip and the panel can be widened;
+  tick label precision follows the field size and axis titles clear their
+  labels; DS9/CRTF angles near 0 are written as 0; a local backend is called
+  local; the PV path says how to finish it; status-bar messages are no longer
+  hidden by the bar's permanent labels.
+
 ## 1.3.1 (2026-11-23)
 
 - **Profiles along and around an axis (#426).** *Selection Diagnostics* →
