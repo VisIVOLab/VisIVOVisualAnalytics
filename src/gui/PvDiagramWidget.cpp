@@ -183,6 +183,10 @@ PvDiagramWidget::PvDiagramWidget(QWidget *parent)
                      &PvDiagramWidget::pathFromRegionRequested);
     QObject::connect(m_widthArcsecSpin, &QDoubleSpinBox::valueChanged, this,
                      [this]() { widthArcsecEdited(); });
+    // Return commits the typed width even when it rounds to the value shown
+    // (valueChanged then does not fire).
+    QObject::connect(m_widthArcsecSpin, &QAbstractSpinBox::editingFinished, this,
+                     [this]() { widthArcsecEdited(); });
     QObject::connect(btnSave, &QPushButton::clicked, this, &PvDiagramWidget::savePng);
     QObject::connect(btnFits, &QPushButton::clicked, this, &PvDiagramWidget::saveFitsRequested);
     QObject::connect(btnNew, &QPushButton::clicked, this, &PvDiagramWidget::newPathRequested);
@@ -439,7 +443,13 @@ void PvDiagramWidget::setPvData(const QVector<double> &positions,
     if (m_widthArcsecSpin) {
         const QSignalBlocker block(m_widthArcsecSpin);
         m_widthArcsecSpin->setEnabled(m_stepArcsec > 0.0);
-        m_widthArcsecSpin->setSingleStep(std::max(m_stepArcsec, 0.01));
+        // Decimals from the pixel scale: an ALMA pixel of 0.003 arcsec read
+        // "0.00" with two (#520). Enough for one pixel to show, at most six.
+        const int decimals = m_stepArcsec > 0.0
+                ? std::clamp(int(std::ceil(-std::log10(m_stepArcsec))) + 2, 2, 6)
+                : 2;
+        m_widthArcsecSpin->setDecimals(decimals);
+        m_widthArcsecSpin->setSingleStep(m_stepArcsec > 0.0 ? m_stepArcsec : 0.01);
         m_widthArcsecSpin->setValue(m_stepArcsec > 0.0
                                             ? pvpath::widthArcsec(info.widthPixels, m_stepArcsec) : 0.0);
     }
@@ -516,7 +526,10 @@ void PvDiagramWidget::setPvData(const QVector<double> &positions,
         line->end->setTypeY(QCPItemPosition::ptAxisRectRatio);
         line->start->setCoords(x, 0.0);
         line->end->setCoords(x, 1.0);
-        line->setPen(QPen(QColor(255, 184, 51, 200), 1, Qt::DashLine));
+        // Visible over a bright PV map too: wider, opaque, a dash with gaps.
+        QPen markPen(QColor(255, 184, 51), 1.6, Qt::CustomDashLine);
+        markPen.setDashPattern({ 5.0, 3.0 });
+        line->setPen(markPen);
         auto *label = new QCPItemText(this->plot);
         label->position->setTypeY(QCPItemPosition::ptAxisRectRatio);
         label->position->setCoords(x, 0.0);
