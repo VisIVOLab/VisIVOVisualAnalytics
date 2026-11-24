@@ -700,6 +700,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Raytrace.cpp
         src/gui/vtkWindowCube_RegionIO.cpp
         src/gui/vtkWindowCube_RegionList.cpp
+        src/gui/vtkWindowCube_LiveRegionSpectrum.cpp
         src/gui/Pane2DView.cpp
         src/gui/Pane2DView.h
         src/gui/CubeViewportGeometry.cpp

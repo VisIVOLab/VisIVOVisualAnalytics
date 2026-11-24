@@ -280,7 +280,7 @@ void vtkWindowCube::finishRegionDraft()
     // map it was drawn on.
     const int added = this->commitDraftRegion();
     if (added >= 0)
-        this->analyzeRegion(added, win);
+        this->measureNewRegion(added, win);
     win->Render();
     if (this->regionMode == RegionMode::Box && this->actionBoxRegion && this->actionBoxRegion->isChecked()) {
         this->actionBoxRegion->setChecked(false);
@@ -792,7 +792,7 @@ bool vtkWindowCube::finalizePolygonRegion()
     this->regionValid = true;
     const int added = this->commitDraftRegion();
     if (added >= 0)
-        this->analyzeRegion(added, win);
+        this->measureNewRegion(added, win);
     if (this->actionPolygonRegion && this->actionPolygonRegion->isChecked()) {
         this->actionPolygonRegion->setChecked(false);
     }

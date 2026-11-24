@@ -1314,6 +1314,9 @@ void vtkWindowCube::applySpectralAxisChange()
     this->refreshSpectralAxisUi();
     this->pushSpectralAxisContext(this->probePlotWidget);
     this->updateLiveSpectrumHeader();
+    // The live region spectrum is not a record: it is drawn again on the new axis.
+    if (!m_regionLiveId.isEmpty())
+        this->runLiveRegionSpectrum(/*allowFullRes=*/true, /*force=*/true);
     const QString note = this->m_spectralAxis.note.isEmpty()
             ? QString()
             : u" (%1)"_s.arg(this->m_spectralAxis.note);
