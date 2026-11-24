@@ -10670,7 +10670,7 @@ void vtkWindowCube::propagate2DCamera(int srcSlot)
     m_linked2DValid = true;
     this->applyNormalizedTo2DPanes(center, worldHeight, srcSlot);
     // STEP6-P4: also push to linked peer WINDOWS on the same spatial grid.
-    this->broadcastLinked2DCamera(center, worldHeight);
+    this->broadcastLinked2DCamera(center, worldHeight, srcSlot);
 }
 
 void vtkWindowCube::applyNormalizedTo2DPanes(const double dataCenterXY[2], double worldHeight,
@@ -10735,6 +10735,44 @@ bool vtkWindowCube::sliceCameraNormalized(double dataCenterXY[2], double &worldH
             this->remoteSliceDisplaySource->GetOutputDataObject(0));
     const auto data = CubeGeom::dataAreaFor(size, image, this->gutter2dFor(/*slice=*/true));
     return CubeGeom::readNormalizedCamera(renderer, data, dataCenterXY, worldHeight);
+}
+
+bool vtkWindowCube::linkFrame(int slot, visivo::linkview::Frame &frame) const
+{
+    int size[2] = { 0, 0 };
+    CubeGeom::ImageRect area;
+    const auto fromSlice = [&]() {
+        if (!this->sliceWin || !this->remoteSliceDisplaySource)
+            return false;
+        auto *rc = this->sliceWin->GetRenderers();
+        auto *renderer = rc ? rc->GetFirstRenderer() : nullptr;
+        const int *rs = renderer ? renderer->GetSize() : nullptr;
+        if (!rs || rs[0] <= 0 || rs[1] <= 0)
+            return false;
+        size[0] = rs[0];
+        size[1] = rs[1];
+        area = CubeGeom::dataAreaFor(
+                size, vtkImageData::SafeDownCast(this->remoteSliceDisplaySource->GetOutputDataObject(0)),
+                this->gutter2dFor(/*slice=*/true));
+        return area.valid;
+    };
+    const auto fromPane = [&](int j) {
+        return j >= 0 && j < 4 && m_slots[j].view.kind == ViewId::Product && m_paneViews[j]
+                && m_slots[j].frame && m_slots[j].frame->isVisible()
+                && m_paneViews[j]->viewFrame(size, area);
+    };
+    bool ok = false;
+    if (slot >= 0 && slot < 4)
+        ok = m_slots[slot].view.kind == ViewId::Slice2D ? fromSlice() : fromPane(slot);
+    else {
+        ok = this->sliceSlot() >= 0 && fromSlice();
+        for (int j = 0; !ok && j < 4; ++j)
+            ok = fromPane(j);
+    }
+    if (!ok)
+        return false;
+    frame = { double(size[0]), double(size[1]), area.x, area.y, area.width, area.height };
+    return true;
 }
 
 void vtkWindowCube::applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,

@@ -21,4 +21,6 @@ private slots:
     void matchViewThereAndBackIsTheIdentity();
     void aCentreOffTheProjectionIsRefused();
     void imagesWithoutSkyAreRefused();
+    void aCubeViewKeepsItsAngularHeightOnAnImage();
+    void anImageViewKeepsItsAngularHeightOnACube();
 };

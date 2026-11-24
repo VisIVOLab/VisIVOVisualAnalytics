@@ -22,6 +22,7 @@
 
 #include <vtkSmartPointer.h>
 
+#include "CubeViewportGeometry.h"
 #include "LinkedCameraSync.h"
 #include "LutScale.h"
 
@@ -132,6 +133,9 @@ public:
     // if the geometry isn't ready (no image / zero data area). setCameraStateNormalized is
     // echo-guarded like setCameraState.
     bool cameraStateNormalized(double dataCenterXY[2], double &worldHeight) const;
+    /// The viewport size and the data area inside it (device px), for converting the normalized
+    /// view to the viewport's (LinkedViewFrame.h). False before the pane has an image.
+    bool viewFrame(int size[2], CubeGeom::ImageRect &area) const;
     void setCameraStateNormalized(const double dataCenterXY[2], double worldHeight);
 
 signals:

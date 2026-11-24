@@ -55,10 +55,18 @@ void vtkWindowCube::applyLinkedImageView(AstroUtils &from, const AstroUtils::Vie
                 4000);
         return;
     }
-    // The slice's world is the cube's 0-based pixels, as in the cube-to-cube
-    // path; the panes adopt the camera before drawing it, so none sends it back.
-    const double center[2] = { out.cx, out.cy };
-    this->applyLinked2DCamera(center, out.height);
+    // The slice's world is the cube's 0-based pixels at any preview stride, as in the
+    // cube-to-cube path, but its view is the data area's, not the viewport the image
+    // window showed: out is the viewport's, brought to the data area's here.
+    // With no 2-D view drawn yet there is no frame: the view is kept as the image's own, and
+    // the panes re-adopt it (reassertLinked2DCamera) once they have one.
+    visivo::linkview::Frame frame;
+    const auto shared = this->linkFrame(-1, frame)
+            ? visivo::linkview::normalizedOf(frame, out)
+            : visivo::linkview::Normalized{ out.cx, out.cy, out.height };
+    // The panes adopt the camera before drawing it, so none sends it back.
+    const double center[2] = { shared.cx, shared.cy };
+    this->applyLinked2DCamera(center, shared.height);
     // The slice's own frame sees no move (the camera was adopted), so the finer
     // detail for the new zoom is asked for here.
     if (this->sliceSlot() >= 0)

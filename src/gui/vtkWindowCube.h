@@ -16,6 +16,7 @@
 #include "SkyCursorOverlay.h"
 #include "LinkedDatasetSky.h"
 #include "AstroUtils.h"
+#include "LinkedViewFrame.h"
 #include "RegionImport.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
@@ -2674,6 +2675,10 @@ protected:
     // camera too — it uses the SAME CubeGeom letterbox, so the gutter-independent math transfers.
     int  sliceSlot() const;                    // the visible slot showing Slice2D, or -1
     bool sliceCameraNormalized(double dataCenterXY[2], double &worldHeight) const;
+    // The viewport and data area of 2-D pane @p slot (-1: the slice, else the first visible 2-D
+    // pane), the frame that turns the gutter-independent view into the viewport's, which is
+    // what an image window shares (LinkedViewFrame.h).
+    bool linkFrame(int slot, visivo::linkview::Frame &frame) const;
     // refit: the shared view is being put back after this slice's own letterbox, not taken
     // from another view, so a send the user's move left waiting is kept (#358).
     void applySliceCameraNormalized(const double dataCenterXY[2], double worldHeight,
@@ -2747,7 +2752,7 @@ protected:
     // STEP6-P4: cross-window 2-D camera sync. The 2-D view is copied GUTTER-INDEPENDENTLY (world
     // point at the data-area centre + world height, STEP6-P3) — this only makes sense between cubes
     // that share the spatial WORLD grid, so it is gated on sameSpatialGrid2D (D1: same-grid only).
-    void broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight);
+    void broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight, int srcSlot = -1);
     void applyLinked2DCamera(const double dataCenterXY[2], double worldHeight);
     // STEP6-P4: cross-window 2-D SLICE colour sync — colormap name + stretch (scale mode + gamma)
     // + invert. Like broadcastLinkedColour (the 3-D volume path) the table RANGE is NOT shared

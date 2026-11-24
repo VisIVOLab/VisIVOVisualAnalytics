@@ -4,6 +4,7 @@
 #include "TestAstroMatch.h"
 
 #include "AstroUtils.h"
+#include "LinkedViewFrame.h"
 
 #include <QString>
 #include <QTest>
@@ -73,6 +74,15 @@ std::vector<std::string> named(const QString &name)
     if (name == u"stg"_s)
         return header("RA---STG", "DEC--STG", 263.99589337289785, -27.61197071915682, 11.0, 7.0, true,
                       nullptr, -0.0003, 0.0003);
+    // An ALMA continuum image (1.0278e-6 deg/px, shown at a reduced level, its
+    // world the full-resolution pixels) and a cube of the same field (8.333e-7
+    // deg/px), their reference points on the same sky position.
+    if (name == u"continuum"_s)
+        return header("RA---SIN", "DEC--SIN", 150.1, 2.2, 5184.5, 5184.5, true, nullptr, -1.0278e-6,
+                      1.0278e-6);
+    if (name == u"cube"_s)
+        return header("RA---SIN", "DEC--SIN", 150.1, 2.2, 750.5, 750.5, true, nullptr, -8.333e-7,
+                      8.333e-7);
     if (name == u"far"_s)   // the far side of the sky from "tan"
         return header("RA---TAN", "DEC--TAN", 330.0, 0.0, 10.0, 10.0, true, nullptr, -0.1, 0.1);
     if (name == u"linear"_s)
@@ -188,4 +198,66 @@ void TestAstroMatch::imagesWithoutSkyAreRefused()
     double x = 0.0, y = 0.0;
     QVERIFY(!a.pixelToPixel(plain, 10.0, 10.0, x, y));
     QVERIFY(!plain.pixelToPixel(a, 10.0, 10.0, x, y));
+}
+
+namespace {
+
+// The cube's 2-D slice at preview stride 2 (1500 px, 750 samples): its world is
+// the cube's pixels at any stride, so a fitted view is 1500 world units tall.
+// The window frames it in a 900 x 700 viewport with a gutter, so the data area
+// is a fraction of the viewport (0.8 here, as measured in the app).
+const visivo::linkview::Frame kCubeFrame{ 900.0, 700.0, 40.0, 70.0, 640.0, 560.0 };
+
+double arcsec(double pixels, double cdelt)
+{
+    return pixels * cdelt * 3600.0;
+}
+
+}   // namespace
+
+void TestAstroMatch::aCubeViewKeepsItsAngularHeightOnAnImage()
+{
+    AstroUtils cube(named(u"cube"_s)), image(named(u"continuum"_s));
+    // The cube zoomed on a feature off its centre: the data area 300 pixels tall.
+    const visivo::linkview::Normalized shared{ 820.0, 700.0, 300.0 };
+    const AstroUtils::View viewport = visivo::linkview::viewportOf(kCubeFrame, shared);
+    // The viewport is what the cube shows: 300 * 700 / 560 pixels tall.
+    QVERIFY(std::abs(viewport.height - 300.0 * 700.0 / 560.0) < 1e-9);
+    AstroUtils::View onImage;
+    QVERIFY(cube.matchView(image, viewport, onImage));
+    // An image window shows the whole viewport it is given: the angular height
+    // of the cube's viewport, not of its data area.
+    const double cubeSky = arcsec(viewport.height, 8.333e-7);
+    const double imageSky = arcsec(onImage.height, 1.0278e-6);
+    QVERIFY2(std::abs(imageSky / cubeSky - 1.0) < 0.01, qPrintable(QString::number(imageSky / cubeSky)));
+    // Handing the data area's height over as it was (the bug) is 20% short.
+    AstroUtils::View naive;
+    QVERIFY(cube.matchView(image, { shared.cx, shared.cy, shared.height }, naive));
+    QVERIFY(std::abs(arcsec(naive.height, 1.0278e-6) / cubeSky - 1.0) > 0.1);
+}
+
+void TestAstroMatch::anImageViewKeepsItsAngularHeightOnACube()
+{
+    AstroUtils cube(named(u"cube"_s)), image(named(u"continuum"_s));
+    // An image window zoomed on a feature: its viewport 2000 full-resolution pixels tall.
+    const AstroUtils::View shown{ 5300.0, 5000.0, 2000.0 };
+    AstroUtils::View onCube;
+    QVERIFY(image.matchView(cube, shown, onCube));
+    const auto shared = visivo::linkview::normalizedOf(kCubeFrame, onCube);
+    // The data area is 0.8 of the viewport: the shared height is 0.8 of the viewport's.
+    QVERIFY(std::abs(shared.height / onCube.height - 560.0 / 700.0) < 1e-9);
+    // What the cube window then shows is the viewport of that shared view.
+    const AstroUtils::View cubeViewport = visivo::linkview::viewportOf(kCubeFrame, shared);
+    const double imageSky = arcsec(shown.height, 1.0278e-6);
+    const double cubeSky = arcsec(cubeViewport.height, 8.333e-7);
+    QVERIFY2(std::abs(cubeSky / imageSky - 1.0) < 0.01, qPrintable(QString::number(cubeSky / imageSky)));
+    // and its centre is the image's, on the sky.
+    double cx = 0.0, cy = 0.0;
+    QVERIFY(image.pixelToPixel(cube, shown.cx, shown.cy, cx, cy));
+    QVERIFY(std::abs(cubeViewport.cx - cx) < 1e-6 && std::abs(cubeViewport.cy - cy) < 1e-6);
+    // There and back is the identity.
+    AstroUtils::View back;
+    QVERIFY(cube.matchView(image, cubeViewport, back));
+    QVERIFY(std::abs(back.cx - shown.cx) < 1e-3 && std::abs(back.cy - shown.cy) < 1e-3
+            && std::abs(back.height / shown.height - 1.0) < 1e-6);
 }

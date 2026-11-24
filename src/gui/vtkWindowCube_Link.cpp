@@ -403,7 +403,8 @@ bool vtkWindowCube::sameSpatialGrid2D(const vtkWindowCube *peer) const
             && eq(this->remoteDatasetOrigin[1], peer->remoteDatasetOrigin[1]);
 }
 
-void vtkWindowCube::broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight)
+void vtkWindowCube::broadcastLinked2DCamera(const double dataCenterXY[2], double worldHeight,
+                                            int srcSlot)
 {
     // STEP6-P4: push the gutter-independent 2-D view to linked peer windows on the SAME spatial
     // grid. Guarded by m_applyingLinkedUpdate so a cross-window apply can't re-broadcast.
@@ -420,8 +421,14 @@ void vtkWindowCube::broadcastLinked2DCamera(const double dataCenterXY[2], double
     const auto images = vtkWindowImage::linkedPeers();
     if (images.isEmpty())
         return;
+    // An image window shares the viewport it shows, not the data area of a framed pane: the
+    // sky matcher scales that one (LinkedViewFrame.h).
+    visivo::linkview::Frame frame;
+    if (!this->linkFrame(srcSlot, frame))
+        return;
     if (AstroUtils *sky = this->linkSky()) {
-        const AstroUtils::View view{ dataCenterXY[0], dataCenterXY[1], worldHeight };
+        const AstroUtils::View view = visivo::linkview::viewportOf(
+                frame, { dataCenterXY[0], dataCenterXY[1], worldHeight });
         for (const auto &img : images)
             if (img)
                 img->applyLinkedView(*sky, view);
