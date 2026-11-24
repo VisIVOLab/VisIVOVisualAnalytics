@@ -3,6 +3,7 @@
 #include "DatasetBeamControl.h"
 
 #include "app/BackendClient.h"
+#include "ElideOnResize.h"
 #include "app/DatasetBeam.h"
 
 #include <QDialog>
@@ -27,8 +28,13 @@ DatasetBeamControl::DatasetBeamControl(QWidget *parent)
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(4);
     m_label = new QLabel(u"-"_s, this);
-    m_label->setWordWrap(true);
+    // Elided to the room the row has, the whole beam in the tooltip: a wrapped
+    // label asked the row for a width it did not have and was cut (issue #502).
+    m_label->setMinimumWidth(1);
+    m_label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    m_label->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     layout->addWidget(m_label, 1);
+    setProperty("inspectorFillRow", true);
     m_setButton = new QToolButton(this);
     m_setButton->setText(u"Set beam…"_s);
     m_setButton->setToolTip(
@@ -66,8 +72,11 @@ void DatasetBeamControl::setBeam(double majorDeg, double minorDeg, double paDeg,
 
 void DatasetBeamControl::refresh()
 {
-    if (m_label)
-        m_label->setText(visivo::beam::summary(m_majorDeg, m_minorDeg, m_paDeg, m_source));
+    if (m_label) {
+        const QString text = visivo::beam::summary(m_majorDeg, m_minorDeg, m_paDeg, m_source);
+        ElideOnResize::apply(m_label, text);
+        m_label->setToolTip(text);
+    }
     const bool connected = !m_backendUrl.isEmpty() && !m_datasetId.isEmpty();
     const bool settable = visivo::beam::canSetBeam(m_source);
     if (m_setButton) {
@@ -98,13 +107,13 @@ void DatasetBeamControl::askForBeam()
     const auto arcsecBox = [owner](double value, double minimum) {
         auto *box = new QDoubleSpinBox(owner);
         box->setRange(minimum, 36000.0);
-        box->setDecimals(2);
+        box->setDecimals(4);   // an ALMA beam is 0.0228″, not 0.02″
         box->setSuffix(u" ″"_s);
         box->setValue(value);
         return box;
     };
     const bool has = visivo::beam::hasBeam(m_majorDeg, m_minorDeg);
-    auto *major = arcsecBox(has ? m_majorDeg * 3600.0 : 15.0, 0.01);
+    auto *major = arcsecBox(has ? m_majorDeg * 3600.0 : 15.0, 0.0001);
     auto *minor = arcsecBox(has ? m_minorDeg * 3600.0 : 0.0, 0.0);
     minor->setSpecialValueText(u"same as major"_s);
     auto *pa = new QDoubleSpinBox(dialog);

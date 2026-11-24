@@ -2,6 +2,7 @@
 #include "CardClickFilter.h"
 #include "ElideOnResize.h"
 #include "app/BackendClient.h"
+#include "app/BackendWording.h"
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
 #include "app/ThumbnailCache.h"
@@ -343,7 +344,8 @@ void DataHubWidget::refreshRecentDatasets()
         textCol->addLayout(nameRowLayout);
 
         auto *metaLbl = new QLabel(
-                QStringLiteral("%1 · %2").arg(ti.label, ds.source), row);
+                QStringLiteral("%1 · %2").arg(ti.label,
+                                       visivo::recentSourceLabel(ds.source, ds.backend)), row);
         metaLbl->setStyleSheet(
                 QStringLiteral("color: %1; font-size: 10px; background: transparent; border: none;")
                         .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));

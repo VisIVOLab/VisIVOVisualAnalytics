@@ -10,6 +10,8 @@
 // zoom); edits take the cube's pixel coordinates, where vertices may be
 // fractional — an edited path is not snapped to the grid.
 
+#include <QString>
+
 #include <array>
 #include <cstddef>
 #include <vector>
@@ -68,6 +70,21 @@ struct UniformRows
 };
 UniformRows rowsOnUniformSpectralGrid(const std::vector<double> &values, int nx, int ny,
                                       const std::vector<double> &spectral);
+
+/// What the status bar tells the user while a PV path is being drawn. Nothing
+/// on the image says the path ends with a double-click (or a right-click), so
+/// the hint stays up from the first point until the path is finished (issue #502).
+inline QString drawingHint(std::size_t vertexCount)
+{
+    if (vertexCount == 0)
+        return QStringLiteral("PV path: click on the image to add the first point; "
+                              "double-click (or right-click) to finish.");
+    if (vertexCount == 1)
+        return QStringLiteral("PV path: 1 point. Click to add points, double-click (or "
+                              "right-click) to finish.");
+    return QStringLiteral("PV path: %1 points. Click to add points, double-click (or "
+                          "right-click) to finish.").arg(vertexCount);
+}
 
 }  // namespace pvpath
 

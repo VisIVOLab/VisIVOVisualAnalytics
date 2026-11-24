@@ -911,9 +911,9 @@ protected:
     bool remoteHasCelestialAxes() const;
     bool convertRemoteCelestialCoordinates(double nativeX, double nativeY, double &frameX,
                                            double &frameY) const;
-    QString formatRemoteOverlayCoordinate(int axis, double value) const;
+    QString formatRemoteOverlayCoordinate(int axis, double value, double axisSpan = -1.0) const;
     QString remoteOverlayAxisTitle(int axis) const;
-    QString formatDegreeCoordinate(double value) const;
+    QString formatDegreeCoordinate(double value, double axisSpan = -1.0) const;
 
     // ── Measurement tools (Ruler / Angle) ────────────────────────────────────
     MeasurementMode m_measMode{ MeasurementMode::None };

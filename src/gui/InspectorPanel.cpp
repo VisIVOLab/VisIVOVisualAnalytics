@@ -1,4 +1,5 @@
 #include "InspectorPanel.h"
+#include "ElideOnResize.h"
 
 #include <QPointer>
 #include <QSignalBlocker>
@@ -262,10 +263,14 @@ void InspectorPanel::applyValueStyle(QLabel *label, const QString &value)
     // Properties page: the panel is a fixed 320 px, so the page then scrolled
     // sideways and every SHORT value was pushed out of sight beyond the right
     // edge. The rows looked empty. Elided with the label's own metrics, full
-    // text in the tooltip.
-    label->setMaximumWidth(kMaxValueWidth);
-    label->ensurePolished();
-    label->setText(label->fontMetrics().elidedText(value, Qt::ElideMiddle, kMaxValueWidth));
+    // text in the tooltip. The label takes the width its row gives it (the
+    // panel can be dragged wider) and elides to that, instead of a fixed 190 px
+    // that cut "CUBE · 196×280×1920" and a unit at the same place whatever the
+    // panel's width (issue #502).
+    label->setMinimumWidth(1);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    label->setProperty("inspectorFillRow", true);
+    ElideOnResize::apply(label, value);
 }
 
 void InspectorPanel::addPropertyRow(const QString &key, const QString &value)
@@ -284,7 +289,18 @@ void InspectorPanel::addPropertyRow(const QString &key, QWidget *valueWidget)
     auto *k = new QLabel(key, row);
     k->setStyleSheet(QStringLiteral("color:%1; font-family:'Lato'; font-size:11px;")
                              .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-    h->addWidget(k, 1);
+    // A value that elides to its room (a label, the beam) takes the row's spare
+    // width, right-aligned; any other widget keeps its own size at the right.
+    // A label added before it is styled (the Unit row is styled on every refresh)
+    // is made one that fills its row here, so an Ignored policy set later cannot
+    // leave it with no width.
+    if (auto *label = qobject_cast<QLabel *>(valueWidget)) {
+        label->setMinimumWidth(1);
+        label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        label->setProperty("inspectorFillRow", true);
+    }
+    const bool fillRow = valueWidget && valueWidget->property("inspectorFillRow").toBool();
+    h->addWidget(k, fillRow ? 0 : 1);
     if (valueWidget) {
         // Detach from any previous layout first (re-hosted live widgets), so no
         // stale layout item is left behind in the parked info page.
@@ -292,7 +308,10 @@ void InspectorPanel::addPropertyRow(const QString &key, QWidget *valueWidget)
             if (auto *l = p->layout())
                 l->removeWidget(valueWidget);
         valueWidget->setParent(row);
-        h->addWidget(valueWidget, 0, Qt::AlignRight);
+        if (fillRow)
+            h->addWidget(valueWidget, 1);
+        else
+            h->addWidget(valueWidget, 0, Qt::AlignRight);
         if (auto *edit = qobject_cast<QLineEdit *>(valueWidget))
             fitLineEditToText(edit);
     }

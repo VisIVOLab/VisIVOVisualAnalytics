@@ -1,4 +1,5 @@
 #include "ChannelMapsWindow.h"
+#include "ChannelMapsLayout.h"
 #include "WindowCloseShortcut.h"
 
 #include "qcustomplot/qcustomplot.h"
@@ -18,7 +19,9 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPainter>
+#include <QGuiApplication>
 #include <QPushButton>
+#include <QScreen>
 #include <QScrollArea>
 #include <QStandardPaths>
 #include <QVBoxLayout>
@@ -74,7 +77,16 @@ ChannelMapsWindow::ChannelMapsWindow(
     setWindowFlag(Qt::Window);
     setWindowTitle(u"Channel Maps - %1"_s
             .arg(QFileInfo(filepath).fileName()));
-    resize(1200, 800);
+    // Wide enough for the columns asked for, as far as the screen allows; the
+    // panels then shrink to what is left (relayoutCells).
+    {
+        int width = 1200;
+        if (const QScreen *screen = QGuiApplication::primaryScreen()) {
+            const int wanted = visivo::cmlayout::viewportWidthFor(std::max(1, m_config.columns));
+            width = std::min(wanted + 40, int(screen->availableGeometry().width() * 0.96));
+        }
+        resize(std::max(width, 640), 800);
+    }
 
     const QString bg = QString::fromLatin1(VisivoTheme::kSurface());
     setStyleSheet(u"ChannelMapsWindow { background: %1; }"_s.arg(bg));
@@ -123,13 +135,19 @@ void ChannelMapsWindow::buildUi()
     m_scroll = new QScrollArea(central);
     m_scroll->setWidgetResizable(true);
     m_scroll->setFrameShape(QFrame::NoFrame);
+    // Always there: a scrollbar that comes and goes changes the viewport's width,
+    // and with it the panels' size.
+    m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    m_scroll->viewport()->installEventFilter(this);
     m_scroll->setStyleSheet(u"QScrollArea { background: %1; border: none; }"_s
             .arg(QString::fromLatin1(VisivoTheme::kBackground())));
     auto *container = new QWidget(m_scroll);
     container->setStyleSheet(u"background: transparent;"_s);
     m_grid = new QGridLayout(container);
-    m_grid->setContentsMargins(8, 8, 8, 8);
-    m_grid->setSpacing(4);
+    m_grid->setContentsMargins(visivo::cmlayout::kGridMargin, visivo::cmlayout::kGridMargin,
+                               visivo::cmlayout::kGridMargin, visivo::cmlayout::kGridMargin);
+    m_grid->setSpacing(visivo::cmlayout::kGridSpacing);
+    m_grid->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_scroll->setWidget(container);
     root->addWidget(m_scroll, 1);
 
@@ -224,15 +242,78 @@ void keepSquarePixels(QCustomPlot *plot, int w, int h, bool interactive)
 
 // ── Grid population ─────────────────────────────────────────────────────────
 
-QString ChannelMapsWindow::panelTitle(int absChannel) const
+QStringList ChannelMapsWindow::panelTitleLines(int absChannel) const
 {
     // The channel as on the channel bar, and its value on the axis the cube
     // window shows, with its unit and frame (issue #496).
-    const QString channel = u"CH %1"_s.arg(absChannel + 1);
+    QStringList lines{ u"CH %1"_s.arg(absChannel + 1) };
     const int i = absChannel - m_config.channelStart;
-    if (i < 0 || i >= m_config.channelCaptions.size() || m_config.channelCaptions.at(i).isEmpty())
-        return channel;
-    return channel + u"  ·  "_s + m_config.channelCaptions.at(i);
+    if (i >= 0 && i < m_config.channelCaptions.size() && !m_config.channelCaptions.at(i).isEmpty())
+        lines << m_config.channelCaptions.at(i);
+    return lines;
+}
+
+QString ChannelMapsWindow::panelTitle(int absChannel) const
+{
+    return panelTitleLines(absChannel).join(u"  ·  "_s);
+}
+
+bool ChannelMapsWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if (m_scroll && watched == m_scroll->viewport() && event->type() == QEvent::Resize)
+        relayoutCells();
+    return QMainWindow::eventFilter(watched, event);
+}
+
+void ChannelMapsWindow::relayoutCells()
+{
+    if (m_cells.isEmpty() || m_slices.isEmpty() || !m_scroll)
+        return;
+    namespace cm = visivo::cmlayout;
+    const int cols = std::max(1, m_config.columns);
+    const int nRows = (m_cells.size() + cols - 1) / cols;
+    const int imageW = cm::imageWidth(m_scroll->viewport()->width(), cols);
+    const int imageH = cm::imageHeight(imageW, m_slices[0].width, m_slices[0].height);
+    for (int idx = 0; idx < m_cells.size(); ++idx) {
+        QCustomPlot *plot = m_cells[idx];
+        if (!plot)
+            continue;
+        const cm::PanelSize size = cm::panelSize(idx % cols, idx / cols, nRows, imageW, imageH,
+                                                 m_cellTitleHeight);
+        plot->axisRect()->setAutoMargins(QCP::msNone);
+        plot->axisRect()->setMargins(
+                QMargins(size.marginLeft, 0, size.marginRight, size.marginBottom));
+        plot->setFixedSize(size.width, size.height);
+        // The caption fits the panel: a smaller font first (down to 7 px), then
+        // the middle elided; the whole text stays in the tooltip. Twelve
+        // columns cut "268.291623e+11 Hz BARYCENT" at both ends (issue #502).
+        if (auto *title = qobject_cast<QCPTextElement *>(plot->plotLayout()->element(0, 0))) {
+            const QStringList lines = title->property("fullTitle").toStringList();
+            if (!lines.isEmpty()) {
+                const int avail = std::max(20, size.width - 4);
+                QFont font = title->font();
+                int px = 10;
+                const auto widest = [&lines](const QFontMetrics &fm) {
+                    int w = 0;
+                    for (const QString &l : lines)
+                        w = std::max(w, fm.horizontalAdvance(l));
+                    return w;
+                };
+                for (; px > 7; --px) {
+                    font.setPixelSize(px);
+                    if (widest(QFontMetrics(font)) <= avail)
+                        break;
+                }
+                font.setPixelSize(px);
+                const QFontMetrics fm(font);
+                QStringList fitted;
+                for (const QString &l : lines)
+                    fitted << fm.elidedText(l, Qt::ElideMiddle, avail);
+                title->setFont(font);
+                title->setText(fitted.join(u"\n"_s));
+            }
+        }
+    }
 }
 
 void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
@@ -271,6 +352,7 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
             std::ceil(static_cast<double>(nPanels) / cols));
 
     m_cells.clear();
+    m_cellTitleHeight = 0;
     m_cells.reserve(nPanels);
     m_slices.clear();
     m_slices.reserve(nPanels);
@@ -302,8 +384,6 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
 
         // Build one QCustomPlot with a QCPColorMap
         auto *plot = new QCustomPlot();
-        plot->setMinimumSize(160, 140);
-        plot->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         plot->setBackground(bgColor);
         plot->axisRect()->setBackground(bgColor);
 
@@ -321,18 +401,36 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
         plot->yAxis->setTickLabels(leftEdge);
         plot->xAxis2->setVisible(false);
         plot->yAxis2->setVisible(false);
+        // Few, small ticks: a panel is ~140 px wide, and the default five labels
+        // ran into each other.
+        QFont tickFont;
+        tickFont.setPixelSize(9);
+        for (auto *axis : { plot->xAxis, plot->yAxis }) {
+            axis->setTickLabelFont(tickFont);
+            axis->setTickLength(3, 0);
+            axis->setSubTickLength(0, 0);
+            axis->setTickLabelPadding(2);
+            axis->ticker()->setTickCount(3);
+        }
 
-        // Title element: "CH 42"
+        // Title: the channel, and under it its value on the spectral axis. The
+        // text is as tall as its lines; the panel is sized from the same number.
         plot->plotLayout()->insertRow(0);
-        auto *titleEl = new QCPTextElement(plot,
-                panelTitle(absChannel));
+        const QStringList titleLines = panelTitleLines(absChannel);
+        auto *titleEl = new QCPTextElement(plot, titleLines.join(u"\n"_s));
+        // The full caption: relayoutCells() fits it to the panel's width.
+        titleEl->setProperty("fullTitle", titleLines);
+        plot->setToolTip(titleLines.join(u"  ·  "_s));
         titleEl->setTextColor(labelColor);
         QFont titleFont;
-        titleFont.setPixelSize(13);
+        titleFont.setPixelSize(10);
         titleFont.setWeight(QFont::DemiBold);
         titleEl->setFont(titleFont);
-        titleEl->setMargins(QMargins(4, 4, 4, 2));
+        titleEl->setMargins(QMargins(2, 3, 2, 1));
         plot->plotLayout()->addElement(0, 0, titleEl);
+        m_cellTitleHeight = std::max(m_cellTitleHeight,
+                                     QFontMetrics(titleFont).height() * int(titleLines.size()) + 4);
+        plot->plotLayout()->setRowSpacing(0);
 
         // Color map
         auto *colorMap = new QCPColorMap(plot->xAxis, plot->yAxis);
@@ -369,9 +467,10 @@ void ChannelMapsWindow::populateGrid(const BackendCubeSubvolumeResult &vol)
                          });
         plot->setCursor(Qt::PointingHandCursor);
 
-        m_grid->addWidget(plot, row, col);
+        m_grid->addWidget(plot, row, col, Qt::AlignLeft | Qt::AlignTop);
         m_cells.append(plot);
     }
+    relayoutCells();
 
     m_statusLabel->setText(
             u"%1 panels  ·  %2 × %3 px per panel  ·  range [%4, %5]"_s
@@ -518,7 +617,16 @@ void ChannelMapsWindow::saveMosaicPng()
     const int imgH    = m_slices[0].height;
     const int pad     = 4  * scale;
     const int labelH  = 20 * scale;
-    const int cellW   = imgW * scale + pad;
+    // A panel is as wide as its caption ("CH 16  ·  32.15 km/s LSRK"), so a small
+    // image does not cut it.
+    QFont captionFont;
+    captionFont.setPixelSize(11 * scale);
+    captionFont.setWeight(QFont::DemiBold);
+    int captionW = 0;
+    for (const auto &slice : std::as_const(m_slices))
+        captionW = std::max(captionW,
+                            QFontMetrics(captionFont).horizontalAdvance(panelTitle(slice.channel)));
+    const int cellW   = std::max(imgW * scale, captionW) + pad;
     const int cellH   = imgH * scale + labelH + pad;
     const int headerH = 30 * scale;
 
@@ -591,7 +699,7 @@ void ChannelMapsWindow::saveMosaicPng()
                 scanline[px] = colorTable[idx];
             }
         }
-        painter.drawImage(cellX + pad / 2, cellY + labelH + pad / 2, cellImg);
+        painter.drawImage(cellX + (cellW - outW) / 2, cellY + labelH + pad / 2, cellImg);
     }
     painter.end();
 

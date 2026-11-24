@@ -1,4 +1,6 @@
 #include "vtkWindowVbtVolume.h"
+#include "BackendLocality.h"
+#include "app/BackendWording.h"
 #include "CameraPresetActions.h"
 #include "WindowCloseShortcut.h"
 #include "app/BackendClient.h"
@@ -1095,7 +1097,9 @@ void vtkWindowVbtVolume::setupViewerChrome()
                               .arg(this->openResult.dimensions[0])
                               .arg(this->openResult.dimensions[1])
                               .arg(this->openResult.dimensions[2]);
-    spec.secondaryTag = QStringLiteral("remote · %1").arg(this->openResult.scalarType);
+    spec.secondaryTag = QStringLiteral("%1 · %2")
+                                .arg(visivo::backendKindWord(visivo::backendIsLocal(this->backendUrl)),
+                                     this->openResult.scalarType);
 
     VisivoTheme::ViewerToolbarWidgets widgets;
     this->m_workspaceChrome = WorkspaceChrome::installCommandBar(

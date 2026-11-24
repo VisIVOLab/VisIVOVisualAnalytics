@@ -1,4 +1,6 @@
 #include "vtkWindowImage.h"
+#include "BackendLocality.h"
+#include "app/BackendWording.h"
 #include "app/DatasetName.h"
 #include "ui_vtkWindowImage.h"
 #include "CubeViewportGeometry.h"
@@ -593,7 +595,7 @@ void vtkWindowImage::setupViewerToolbar()
     VisivoTheme::ViewerToolbarSpec spec;
     spec.filePath = this->filepath;
     spec.primaryTag = QStringLiteral("IMAGE");
-    spec.secondaryTag = QStringLiteral("remote · full-res");
+    spec.secondaryTag = visivo::fullResolutionTag(visivo::backendIsLocal(this->remoteBackendUrl));
 
     VisivoTheme::ViewerToolbarWidgets w;
     QWidget *bar = VisivoTheme::makeViewerToolbar(spec, &w, this);

@@ -6,10 +6,12 @@
 #include <QMainWindow>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 class QCPColorGradient;
 class QCustomPlot;
+class QEvent;
 class QGridLayout;
 class QLabel;
 class QPushButton;
@@ -29,6 +31,9 @@ public:
                                const QString &filepath,
                                QWidget *parent = nullptr);
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 private slots:
     void saveMosaicPng();
 
@@ -37,6 +42,11 @@ private:
     void fetchAndRender();
     void populateGrid(const BackendCubeSubvolumeResult &vol);
     QString panelTitle(int absChannel) const;
+    /// The panel title as one or two lines: the channel, then its spectral
+    /// value with unit and frame when the cube has them.
+    QStringList panelTitleLines(int absChannel) const;
+    /// Sizes every panel from the room the viewport has (ChannelMapsLayout.h).
+    void relayoutCells();
     void showEnlargedCell(int cellIdx, int absChannel,
                           double rangeMin, double rangeMax,
                           const QCPColorGradient &gradient);
@@ -64,6 +74,7 @@ private:
         QVector<float> data; // row-major, size = width * height
     };
     QVector<ChannelSlice> m_slices;
+    int m_cellTitleHeight{ 28 };   ///< height of the title row of a panel, px
     double m_sharedMin{ 0. };
     double m_sharedMax{ 1. };
 };

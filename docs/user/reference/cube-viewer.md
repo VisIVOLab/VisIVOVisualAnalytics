@@ -19,7 +19,9 @@ for regions, [Regions](../use-cases/04-regions.md).
   example *DISPLAY, 3D*), *LAYERS*, *INTERACTION*, *SLICE ANIMATION*.
 - *Inspector* (right): *Properties*, *Analysis* (the tools), *Parameters* (the
   armed tool's settings and the selected product's provenance) and, when
-  available, *Copilot*. *View ▸ Inspector Panel* shows or hides it.
+  available, *Copilot*. *View ▸ Inspector Panel* shows or hides it. Drag its
+  left edge to widen it when a value (the beam, the unit, a path) is cut; the
+  full text is in the tooltip.
 - *Command bar*: the dataset path (▼ for recent datasets), the ⌘K search
   field, the *CUBE · W×H×D* tag (click it for the FITS header; *Edit…* there
   writes a corrected copy) and the backend chip.
@@ -251,8 +253,11 @@ Rules that decide availability:
 - *Channel Maps…*: a grid of channels with one colour map and one data range.
   Set *Start channel*, *End channel* (default: the current channel and the 63
   after it), *Stride*, *Columns* (default 8) and the colour map, then
-  *Generate*. Double-click a panel to open it alone; *Save mosaic as PNG…*
-  saves the grid.
+  *Generate*. Every panel is titled with its channel and its value on the
+  cube window's spectral axis (for example *CH 16* over *32.15 km/s LSRK*),
+  keeps the pixel aspect of the image, and shows its axes only on the left and
+  bottom edges; the window opens wide enough for the columns asked for.
+  Double-click a panel to open it alone; *Save mosaic as PNG…* saves the grid.
 - *Angular Power Spectrum of Moment Map*, *Skeleton / Voids of Moment Map*:
   need a moment map; see [Cosmology tools](cosmology.md).
 
@@ -370,7 +375,10 @@ Spectra (probe, 3-D pick, region, stack) open in a pane; their controls are in
   ticks around the volume.
 - Beam: when the header has `BMAJ` and `BMIN` (and `BPA`), the 2-D slice shows
   the beam as a white ellipse in the bottom-left corner. Structures of about
-  the beam's size are only marginally resolved.
+  the beam's size are only marginally resolved. Beam sizes are written in the
+  unit that fits them, with three significant digits: milliarcseconds below
+  1″ (an ALMA beam reads *22.8 mas × 18.4 mas*), arcseconds, then arcminutes
+  above 60″.
 
 Details: [Cube viewer: methods](../../technical/methods/cube-viewer.md),
 [Cube API](../../technical/backend-api/cube.md),

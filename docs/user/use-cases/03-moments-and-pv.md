@@ -68,7 +68,8 @@ then cut a position-velocity diagram along the galaxy's major axis.
 9. Choose *Tools ▸ Spectral ▸ Extract PV Diagram…*. The cursor becomes a
    cross. Click on one side of the disc, then on the other, along the line
    where the velocity changes fastest (from the reddest to the bluest part of
-   the map). Double-click or right-click to finish the path.
+   the map). Double-click or right-click to finish the path; the status bar
+   reminds you while you draw.
 
 10. The diagram is computed on the backend at full resolution and opens in a
     pane. A pane that was showing the channels becomes *Channels*: it follows

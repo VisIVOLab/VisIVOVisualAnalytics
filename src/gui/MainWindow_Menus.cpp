@@ -9,6 +9,7 @@
 #include "app/BackendClientFactory.h"
 #include "app/SampClient.h"
 #include "app/SampMessageHandler.h"
+#include "app/BackendWording.h"
 #include "app/RecentDatasetsManager.h"
 #include "app/ThemeManager.h"
 #include "BaselineDialog.h"
@@ -325,8 +326,10 @@ void MainWindow::rebuildCommandPalette()
             const RecentDataset ds = recent[i];
             const QString sub =
                     ds.type.isEmpty()
-                            ? u"remote"_s
-                            : QStringLiteral("%1 · remote").arg(ds.type.toUpper());
+                            ? visivo::recentSourceLabel(ds.source, ds.backend)
+                            : QStringLiteral("%1 · %2").arg(
+                                      ds.type.toUpper(),
+                                      visivo::recentSourceLabel(ds.source, ds.backend));
             this->m_commandPalette->addAction(
                     {u"▣"_s, ds.displayName, sub, QString(),
                      u"Recent datasets"_s,

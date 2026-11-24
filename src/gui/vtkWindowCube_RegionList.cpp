@@ -27,6 +27,7 @@
 #include "RegionCubeSampling.h"
 #include <QVTKOpenGLNativeWidget.h>
 #include "RegionFlux.h"
+#include "app/DatasetBeam.h"
 #include "RegionFluxUi.h"
 #include "RegionFullRes.h"
 #include "RegionListExport.h"
@@ -1367,9 +1368,9 @@ void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *im
     params.insert(u"Flux error from"_s, noiseFrom);
     if (omega > 0.0)
         params.insert(u"Beam area"_s,
-                      u"%1 pixels (%2″ × %3″)"_s.arg(omega, 0, 'f', 2)
-                              .arg(this->m_beamMajorDeg * 3600.0, 0, 'f', 1)
-                              .arg(this->m_beamMinorDeg * 3600.0, 0, 'f', 1));
+                      u"%1 pixels (%2)"_s.arg(omega, 0, 'f', 2)
+                              .arg(visivo::beam::formatBeamSize(this->m_beamMajorDeg,
+                                                                this->m_beamMinorDeg)));
     QStringList notes;
     const QString caveat = visivo::flux::fluxCaveat(unit, omega > 0.0);
     if (!caveat.isEmpty())

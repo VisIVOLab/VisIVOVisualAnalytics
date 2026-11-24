@@ -175,7 +175,10 @@ private:
     /// Swap the stack page + pin the dock width to rail (36) or open width. Also
     /// relaxes page 0's pinned min/max while hidden (QStackedWidget::minimumSizeHint
     /// is the max over ALL pages, so a pinned page-0 would keep the rail wide).
-    void applyDockWidth(QDockWidget *dock, QStackedWidget *stack, bool collapsed, int openWidth);
+    /// @p openMaxWidth > @p openWidth lets the user drag the open dock wider (the
+    /// Inspector); 0 pins it at @p openWidth.
+    void applyDockWidth(QDockWidget *dock, QStackedWidget *stack, bool collapsed, int openWidth,
+                        int openMaxWidth = 0);
     /// Re-apply theme-token styles to the rail widgets after a dark⇄light flip
     /// (they bake token colours at build time and don't follow the global QSS).
     void restyleForTheme();

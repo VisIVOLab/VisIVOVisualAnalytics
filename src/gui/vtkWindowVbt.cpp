@@ -1,4 +1,6 @@
 #include "vtkWindowVbt.h"
+#include "BackendLocality.h"
+#include "app/BackendWording.h"
 #include "CameraPresetActions.h"
 #include "WindowCloseShortcut.h"
 
@@ -1805,7 +1807,9 @@ void vtkWindowVbt::setupViewerChrome()
     VisivoTheme::ViewerToolbarSpec spec;
     spec.filePath = this->m_headerPath;
     spec.primaryTag = QStringLiteral("VBT · %1 rows").arg(this->openResult.numRows);
-    spec.secondaryTag = QStringLiteral("remote · %1 fields").arg(this->openResult.fields.size());
+    spec.secondaryTag = QStringLiteral("%1 · %2 fields")
+                                .arg(visivo::backendKindWord(visivo::backendIsLocal(this->backendUrl)))
+                                .arg(this->openResult.fields.size());
 
     VisivoTheme::ViewerToolbarWidgets widgets;
     this->m_workspaceChrome = WorkspaceChrome::installCommandBar(

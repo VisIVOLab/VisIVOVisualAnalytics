@@ -45,6 +45,7 @@ namespace VisivoTheme {
 // so a screenshot only has to confirm them in one place.
 inline constexpr int kLeftDockWidth  = 272;   ///< Session Data / left dock (open)
 inline constexpr int kRightDockWidth = 320;   ///< Inspector / right dock (open)
+inline constexpr int kRightDockMaxWidth = 640;   ///< the Inspector can be dragged this wide
 inline constexpr int kRailWidth      = 36;    ///< collapsed dock rail (never 0)
 inline constexpr int kSectionHeaderPtSize = 10;   ///< section header font size (px)
 // Section-header CSS fragment (Lato 10px/700, letter-spacing 0.14em, muted).

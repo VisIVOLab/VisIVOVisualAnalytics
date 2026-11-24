@@ -310,6 +310,15 @@ void vtkWindowImage::updateWcsOverlay()
             this->convertRemoteCelestialCoordinates(nativeX, nativeY, fx, fy);
         return axis == 0 ? fx : fy;
     };
+    // How far each axis runs in the displayed frame, so the labels carry enough
+    // decimals for neighbouring ticks to differ.
+    const double spanX = visivo::angularAxisSpan(
+            frameAt(visivo::xAxisTickVoxel(0.0, visible.xmin, visible.xmax, visible.ymin), 0),
+            frameAt(visivo::xAxisTickVoxel(1.0, visible.xmin, visible.xmax, visible.ymin), 0));
+    const double spanY = std::fabs(
+            frameAt(visivo::yAxisTickVoxel(0.0, visible.ymin, visible.ymax, visible.xmin), 1)
+            - frameAt(visivo::yAxisTickVoxel(1.0, visible.ymin, visible.ymax, visible.xmin), 1));
+    int yLabelChars = 0;
     for (int i = 0; i < overlayTickCount; ++i) {
         const double t = overlayTickCount == 1 ? 0.0
                                                : static_cast<double>(i)
@@ -320,19 +329,40 @@ void vtkWindowImage::updateWcsOverlay()
                 frameAt(visivo::yAxisTickVoxel(t, visible.ymin, visible.ymax, visible.xmin), 1);
 
         this->overlayXTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(0, frameX).toStdString().c_str());
+                this->formatRemoteOverlayCoordinate(0, frameX, spanX).toStdString().c_str());
         this->overlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX + t * ((size[0] - rightMargin) - axisX)),
                 static_cast<int>(bottomMargin - 18));
         this->overlayXTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
 
+        const QString yLabel = this->formatRemoteOverlayCoordinate(1, frameY, spanY);
+        yLabelChars = std::max(yLabelChars, int(yLabel.size()));
         this->overlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
-                this->formatRemoteOverlayCoordinate(1, frameY).toStdString().c_str());
+                yLabel.toStdString().c_str());
         this->overlayYTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX - 10),
                 static_cast<int>(bottomMargin + t * ((size[1] - topMargin) - bottomMargin)));
         this->overlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
+    // The y title clears the tick labels, whatever their precision: their
+    // width measured as drawn (font 16, and in device pixels on a HiDPI
+    // screen), not estimated from a character count, which left it over them.
+    double labelWidth = 0.0;
+    for (auto &tick : this->overlayYTickActors) {
+        if (!tick || !tick->GetVisibility())
+            continue;
+        double bbox[4] = { 0.0, 0.0, 0.0, 0.0 };
+        tick->GetBoundingBox(renderer, bbox);
+        labelWidth = std::max(labelWidth, bbox[1] - bbox[0]);
+    }
+    double titleBox[4] = { 0.0, 0.0, 0.0, 0.0 };
+    this->overlayYTitleActor->GetBoundingBox(renderer, titleBox);
+    const double titleHalf = std::max(9.0, 0.5 * (titleBox[1] - titleBox[0]));
+    const double clearX = labelWidth > 0.0
+            ? axisX - 10.0 - labelWidth - 6.0 - titleHalf
+            : visivo::yAxisTitleX(axisX, leftMargin / 3.0, 8.0, yLabelChars, 7.5, 10.0);
+    this->overlayYTitleActor->SetDisplayPosition(
+            static_cast<int>(std::max(8.0, std::min(leftMargin / 3.0, clearX))), size[1] / 2);
     qDebug().noquote()
             << QStringLiteral("[wcs-overlay] updated ticks x=%1..%2 y=%3..%4 size=%5x%6 renderer=%7 renderWindow=%8 xAxis=%9 yAxis=%10 xTitle=%11 yTitle=%12 endpoints=(%13,%14)->(%15,%16) outer=%17")
                        .arg(visible.xmin, 0, 'g', 12)
@@ -551,13 +581,13 @@ bool vtkWindowImage::convertRemoteCelestialCoordinates(double nativeX, double na
     return true;
 }
 
-QString vtkWindowImage::formatRemoteOverlayCoordinate(int axis, double value) const
+QString vtkWindowImage::formatRemoteOverlayCoordinate(int axis, double value, double axisSpan) const
 {
     if (!this->remoteHasCelestialAxes()) {
         return QString::number(value, 'g', 8);
     }
     if (!this->useSexagesimalWcsFormat) {
-        return this->formatDegreeCoordinate(value);
+        return this->formatDegreeCoordinate(value, axisSpan);
     }
     return formatCelestialCoordinate(this->selectedWcsFrame(), axis, value);
 }
@@ -588,12 +618,9 @@ QString vtkWindowImage::remoteOverlayAxisTitle(int axis) const
     return axis == 0 ? u"Ecliptic Longitude"_s : u"Ecliptic Latitude"_s;
 }
 
-QString vtkWindowImage::formatDegreeCoordinate(double value) const
+QString vtkWindowImage::formatDegreeCoordinate(double value, double axisSpan) const
 {
-    QString text = QString::number(value, 'f', 2);
-    if (text.startsWith(u'-') && text.mid(1).toDouble() == 0.0)
-        text.remove(0, 1);   // "-0.00": a tiny negative value at the origin
-    return text;
+    return visivo::formatDegreeTick(value, axisSpan);
 }
 
 QString vtkWindowImage::selectedFrameAxisTitle(int axis) const

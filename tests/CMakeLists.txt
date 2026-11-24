@@ -248,6 +248,8 @@ add_executable(VisIVOTests
     test_probe_spectrum_fetch.cpp
     TestWcsAxisTicks.h
     test_wcs_axis_ticks.cpp
+    TestRadioDisplay.h
+    test_radio_display.cpp
     TestOpenJobMerge.h
     test_open_job_merge.cpp
     TestTaskQuitDrain.h

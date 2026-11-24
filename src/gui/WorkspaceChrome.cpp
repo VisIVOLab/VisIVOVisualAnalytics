@@ -514,7 +514,9 @@ InspectorPanel *WorkspaceChrome::installInspectorDock()
     m_inspector = new InspectorPanel(m_inspectorDock);
     // Fixed right column from the spec constant (320 px).
     m_inspector->setMinimumWidth(VisivoTheme::kRightDockWidth);
-    m_inspector->setMaximumWidth(VisivoTheme::kRightDockWidth);
+    // Wider on demand: the panel's edge can be dragged (values were cut at a fixed
+    // 320 px, issue #502).
+    m_inspector->setMaximumWidth(VisivoTheme::kRightDockMaxWidth);
 
     // Two-state: page 0 the panel, page 1 a rail carrying the three tab names as
     // clickable entries (§4.1.2). Right starts collapsed (§4.1.4).
@@ -601,10 +603,11 @@ QWidget *WorkspaceChrome::makeDockTitleBar(const QString &title, const QString &
 }
 
 void WorkspaceChrome::applyDockWidth(QDockWidget *dock, QStackedWidget *stack, bool collapsed,
-                                     int openWidth)
+                                     int openWidth, int openMaxWidth)
 {
     if (!stack)
         return;
+    openMaxWidth = std::max(openMaxWidth, openWidth);
     const int w = collapsed ? VisivoTheme::kRailWidth : openWidth;
     stack->setCurrentIndex(collapsed ? 1 : 0);
     // Relax page 0's pinned width while hidden — otherwise its 272/320 minimum
@@ -612,10 +615,19 @@ void WorkspaceChrome::applyDockWidth(QDockWidget *dock, QStackedWidget *stack, b
     // resolves min>max in favour of the minimum, keeping the rail wide.
     if (auto *page = stack->widget(0)) {
         page->setMinimumWidth(collapsed ? 0 : openWidth);
-        page->setMaximumWidth(collapsed ? QWIDGETSIZE_MAX : openWidth);
+        page->setMaximumWidth(collapsed ? QWIDGETSIZE_MAX : openMaxWidth);
     }
     stack->setMinimumWidth(w);
-    stack->setMaximumWidth(w);
+    stack->setMaximumWidth(collapsed ? w : openMaxWidth);
+    // A dock that can be dragged wider opens at its usual width.
+    if (!collapsed && openMaxWidth > openWidth && m_window && dock) {
+        // After the layout has taken the new limits, or they clamp the request.
+        QPointer<QDockWidget> dockp(dock);
+        QTimer::singleShot(0, this, [this, dockp, openWidth]() {
+            if (dockp && m_window)
+                m_window->resizeDocks({ dockp.data() }, { openWidth }, Qt::Horizontal);
+        });
+    }
 
     // Deferred so the widths are read AFTER the layout settles — an inline read here
     // reports the pre-layout geometry. Collapsed must land 36 / 36 / 36 (+ handle).
@@ -670,7 +682,8 @@ void WorkspaceChrome::setInspectorCollapsed(bool collapsed)
     if (!m_inspectorStack || !m_inspectorDock || m_inspectorCollapsed == collapsed)
         return;
     m_inspectorCollapsed = collapsed;
-    applyDockWidth(m_inspectorDock, m_inspectorStack, collapsed, VisivoTheme::kRightDockWidth);
+    applyDockWidth(m_inspectorDock, m_inspectorStack, collapsed, VisivoTheme::kRightDockWidth,
+                   VisivoTheme::kRightDockMaxWidth);
     // Swap (not hide) the title bar — see setSessionCollapsed (§4.5).
     QWidget *oldBar = m_inspectorDock->titleBarWidget();
     if (collapsed) {
