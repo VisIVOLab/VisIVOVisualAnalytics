@@ -81,6 +81,37 @@ not the camera when the cubes cover different areas).
 | Colour | Colormap and stretch, adopted at the next change. |
 | Representation and blend | Volume or isosurface; Composite, MIP or MinIP. |
 
+## Link an image and a cube
+
+An image and a cube of the same sky can be linked in sky coordinates, as CARTA's
+XY matching does. In the image viewer use *Tools ▸ Linked Cube ▸ Link to Cube…*;
+in the cube viewer, *Tools ▸ Views ▸ Link to Image…*. With several windows of the
+other kind open you pick one. The window you act in leads: the other one is put
+on its sky at once. *Unlink* ends it.
+
+| Linked | How |
+|---|---|
+| Pan and zoom | By sky centre and angular height, not by pixels: the cube's slice (and the map panes of that cube window) shows the same patch of sky as the image, however different their pixel size, projection or sky frame. North is not turned, so two images rotated against each other keep their own orientation. |
+| Cursor | An orange crosshair in each window at the other's cursor position. |
+| Regions | *Send Selected Region to Cube…* and *Send All Regions to Cube…* in the image viewer (*… to Image…* in the cube viewer) copy regions to the other window, placed on the same sky. They work without a link too, and then ask which window. |
+| PV path | In the image viewer, select a line region and use *Extract PV in Cube…*: the cube cuts a PV diagram along its vertices. |
+
+Both datasets need a celestial WCS: RA/Dec or Galactic axes with a TAN, SIN, ARC,
+STG or CAR projection (rotation, flipped axes and CD or PC matrices are read; B1950
+axes are refused). A window without one says so when you link it. A region sent
+across keeps its shape and its sky position: the centre, the vertices and the
+angle go through both WCS, a radius or a side is rescaled by the ratio of the two
+pixel sizes. Regions the other image does not cover are skipped and counted.
+
+A path is a line region drawn with the Line tool; right-click it and choose *Add
+Vertex Here* where the cut has to bend, or *Remove This Vertex*. In the cube, the PV
+diagram is the one of *Extract PV Diagram…*: width, spectral range and the path
+editing work as usual, and the path stays editable.
+
+The link is separate from *Link Views*: both can be on, and a cube that follows an
+image hands the view on to the cubes it is linked to with *Link Views*. The cursor and the
+view are those of the cube's 2-D slice, so the slice must be on screen.
+
 ## Regions in and out
 
 *Import Region (CRTF/DS9)…* and *Export Region (CRTF/DS9)…*, under

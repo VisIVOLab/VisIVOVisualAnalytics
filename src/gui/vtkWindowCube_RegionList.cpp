@@ -561,6 +561,9 @@ void vtkWindowCube::setupRegionListActions()
     m_actKeepAllRegionSpectra->setStatusTip(m_actKeepAllRegionSpectra->toolTip());
     QObject::connect(m_actKeepAllRegionSpectra, &QAction::triggered, this,
                      [this]() { this->keepAllRegionSpectra(); });
+
+    // Link to an image (issue #522): regions drawn there arrive here, and back.
+    this->setupSkyLinkActions();
 }
 
 // ── Drawing the list ─────────────────────────────────────────────────────────

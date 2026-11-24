@@ -51,6 +51,7 @@
 #include "PvController.h"
 #include "PvPathGeometry.h"
 #include "RegionListExport.h"
+#include "SkyLinkHub.h"
 #include "PvDiagramWidget.h"
 #include "RemoteLevels.h"
 #include "ThresholdShare.h"
@@ -3426,6 +3427,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
 
 vtkWindowCube::~vtkWindowCube()
 {
+    SkyLinkHub::instance().forget(this);
     // Its hooks reach into the region list, a member that goes before the
     // children are deleted.
     delete this->m_regionSession;
@@ -8336,6 +8338,8 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->m_actKeepAllRegionSpectra);
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
+    add(u"Regions"_s, self->m_actSendSelectedRegion);
+    add(u"Regions"_s, self->m_actSendAllRegions);
 
     add(u"Sources & Kinematics"_s, self->m_actSourceFind);
     add(u"Sources & Kinematics"_s, self->m_actKinematicLasso);
@@ -8359,6 +8363,8 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
 
     add(u"Views"_s, self->m_actSendSliceToImage);
     add(u"Views"_s, self->m_actLinkViews);
+    add(u"Views"_s, self->m_actSkyLink);
+    add(u"Views"_s, self->m_actSkyUnlink);
     add(u"Views"_s, self->m_actOpenInVR);
     add(u"Views"_s, self->m_actOpenInVrHeadset);
     add(u"Views"_s, self->m_actShowInHeadset);
@@ -10827,6 +10833,7 @@ void vtkWindowCube::onSliceCameraFrame()
     if (!this->m_sliceCameraTracker.lastFrameMoved())
         return;
     this->scheduleSliceDetail();
+    this->skyLinkSliceMoved();   // a linked image follows (issue #522)
     // Record the new view as the shared one on every frame of the move, not when the send goes
     // out: a slice that arrives in between (a channel scrub) refits the slice and puts the shared
     // view back, and that must be this view, not the one before the zoom.
@@ -15436,6 +15443,7 @@ void vtkWindowCube::applyMomentToolGate()
     applyGate(m_actMomentPower.data(), m_cubeActionsEnabled && haveMoment, reasonNoMoment);
     applyGate(m_actMomentSkeleton.data(), m_cubeActionsEnabled && haveMoment, reasonNoMoment);
     this->refreshMomentMapToolSources();
+    this->refreshSkyLinkActions();
     this->refreshToolMenuGateNotes();
 }
 

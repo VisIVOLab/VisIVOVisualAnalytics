@@ -45,4 +45,5 @@ private slots:
     void visibilityRenameAndDeleteAreUndoable();
     void importsGroupByFile();
     void treeFollowsTheList();
+    void aLineGetsAndLosesVertices();
 };

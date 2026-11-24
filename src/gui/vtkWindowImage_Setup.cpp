@@ -1334,6 +1334,13 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Regions"_s, self->m_actImportRegions);
     add(u"Regions"_s, self->m_actExportRegions);
 
+    // Issue #522: an image and a cube in sky coordinates.
+    add(u"Linked Cube"_s, self->m_actSkyLink);
+    add(u"Linked Cube"_s, self->m_actSkyUnlink);
+    add(u"Linked Cube"_s, self->m_actSendSelectedRegion);
+    add(u"Linked Cube"_s, self->m_actSendAllRegions);
+    add(u"Linked Cube"_s, self->m_actExtractPvInCube);
+
     add(u"Catalogue"_s, self->actionLoadCatalogueOverlay);
     add(u"Catalogue"_s, self->actionCrossmatch);
     add(u"Catalogue"_s, self->actionShowCatalogueOverlay);

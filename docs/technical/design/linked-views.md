@@ -137,3 +137,30 @@ not by raw coordinates/indices:
   arrives, the model/LUT update but the dialog's controls may show stale values
   until reopened.
 - Sync is peer-to-peer across open viewers; there is no single "grid" container.
+
+## Image and cube in sky coordinates (issue #522)
+
+Separate from the cube-to-cube *Link Views* above: an image window and a cube
+window are linked by `SkyLinkHub`, which holds the pairs and does the matching;
+the windows only implement `SkyLinkEndpoint` (what they show, in their own
+pixels).
+
+- **WCS.** `SkyWcs` reads axes 1 and 2 from the header cards the backend serves
+  (`/v1/files/header`) and does the Paper II transform (CD, PC with CDELT, or
+  CROTA2; TAN, SIN, ARC, STG, CAR; ICRS/FK5 or Galactic). It is checked against
+  astropy in `tests/test_sky_wcs.cpp`. Pixels are 0-based, the frame the region
+  list and both viewers' worlds use.
+- **View matching.** A view is the pixel at the centre of the data area and its
+  height in pixels. `matchView` maps the centre through the sky and scales the
+  height by the ratio of the two pixel scales at the centre (geometric mean of
+  the x and y steps). North is not turned.
+- **Sending.** A window sends its view after a frame shows the user moved the
+  camera (`LinkedCameraSync::Watch` in the image viewer, the slice's tracker in
+  the cube), coalesced to one update per event-loop turn. A window that takes a
+  view adopts the camera first, so its own frames never send it back.
+- **Regions.** `convertRegion` moves vertices and centres through both WCS and
+  carries sizes and angles by the local linear map of the two pixel grids at the
+  region's centre (`pixelJacobian`).
+- **PV.** The image's selected line region is converted vertex by vertex and
+  handed to the cube as the PV path (`skyRunPv`), which then behaves like a path
+  drawn there.

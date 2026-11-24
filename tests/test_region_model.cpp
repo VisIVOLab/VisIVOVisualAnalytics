@@ -1066,3 +1066,37 @@ void TestRegionModel::treeFollowsTheList()
     QCOMPARE(view.entries.back().check, TreeCheck::Unchecked);
     QCOMPARE(view.selectedId, -1);   // hidden while selected: let go
 }
+
+void TestRegionModel::aLineGetsAndLosesVertices()
+{
+    using namespace visivo::regions;
+    Region line;
+    line.shape = Shape::Line;
+    line.points = { { 0.0, 0.0 }, { 10.0, 0.0 } };
+    // A vertex lands on the segment, at the foot of the point asked for.
+    const Region bent = withVertexInserted(line, { 4.0, 3.0 });
+    QCOMPARE(bent.points.size(), std::size_t(3));
+    QCOMPARE(bent.points[1], (Vec2{ 4.0, 0.0 }));
+    // Past the end it is clamped to the end rather than extending the line.
+    QCOMPARE(withVertexInserted(line, { 15.0, 1.0 }).points[1], (Vec2{ 10.0, 0.0 }));
+    // With two segments it goes into the nearer one, between its ends.
+    const Region two = withVertexInserted(bent, { 9.0, 1.0 });
+    QCOMPARE(two.points.size(), std::size_t(4));
+    QCOMPARE(two.points[2], (Vec2{ 9.0, 0.0 }));
+    // A polygon also has its closing segment.
+    Region tri;
+    tri.shape = Shape::Polygon;
+    tri.points = { { 0.0, 0.0 }, { 10.0, 0.0 }, { 10.0, 10.0 } };
+    const Region more = withVertexInserted(tri, { 4.0, 6.0 });
+    QCOMPARE(more.points.size(), std::size_t(4));
+    QCOMPARE(more.points[3], (Vec2{ 5.0, 5.0 }));
+    // Other shapes are left alone.
+    Region box;
+    box.shape = Shape::Box;
+    QCOMPARE(withVertexInserted(box, { 1.0, 1.0 }).points.size(), std::size_t(0));
+    // Removing: a line keeps two vertices, a polygon three.
+    QCOMPARE(withVertexRemoved(two, 1).points.size(), std::size_t(3));
+    QCOMPARE(withVertexRemoved(line, 0).points.size(), std::size_t(2));
+    QCOMPARE(withVertexRemoved(tri, 0).points.size(), std::size_t(3));
+    QCOMPARE(withVertexRemoved(more, 9).points.size(), std::size_t(4));
+}

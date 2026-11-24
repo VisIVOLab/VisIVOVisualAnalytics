@@ -122,6 +122,7 @@
 #include <QtConcurrentRun>
 
 #include "AstroUtils.h"
+#include "SkyLinkHub.h"
 #include "vtk/ImageLod.h"
 
 #include <algorithm>
@@ -1861,6 +1862,7 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
 
 vtkWindowImage::~vtkWindowImage()
 {
+    SkyLinkHub::instance().forget(this);
     // Its hooks reach into the region list, a member that goes before the
     // children are deleted.
     delete this->m_regionSession;
@@ -2621,6 +2623,7 @@ void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result, 
         renderer->ResetCameraClippingRange();
         // The view of a fresh load is the one just loaded: nothing to stream for it.
         this->m_lodCameraWatch.adopt(this->imageCameraPose());
+        this->m_skyViewWatch.adopt(this->imageCameraPose());
     }
     this->invalidateWcsOverlayCache();
     if (!validExtent) {
@@ -2748,6 +2751,7 @@ void vtkWindowImage::onImageCameraFrame()
     if (this->m_lodCameraWatch.moved(pose)) {
         this->onImageInteractionSettled();
     }
+    this->skyLinkCameraFrame();
 }
 
 void vtkWindowImage::onImageInteractionSettled()

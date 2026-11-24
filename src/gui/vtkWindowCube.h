@@ -13,6 +13,8 @@
 #include "VrHeadsetHub.h"
 #include "LinkedCameraSync.h"
 #include "LinkedWindowRegistry.h"
+#include "SkyCursorOverlay.h"
+#include "SkyLinkEndpoint.h"
 #include "ProductRegistry.h"
 #include "PowerSpectrumSlope.h"
 #include "ProbeSpectrumFetch.h"
@@ -282,7 +284,7 @@ struct RemoteKinematicSelectResult
     visivo::SharedSelectionOrigin shared;
 };
 
-class vtkWindowCube : public QMainWindow
+class vtkWindowCube : public QMainWindow, public SkyLinkEndpoint
 {
     Q_OBJECT
 
@@ -2777,6 +2779,40 @@ protected:
     // gated only by the Link-views master (no per-facet chip).
     void broadcastLinkedRenderMode();
     void applyLinkedRenderMode(bool isosurface);
+
+public:
+    // ── Sky link to an image window (issue #522, vtkWindowCube_SkyLink.cpp) ──
+    // SkyLinkEndpoint: what SkyLinkHub asks of this window. The view and the
+    // cursor are those of the 2-D slice.
+    QWidget *skyLinkWidget() override { return this; }
+    bool skyLinkIsCube() const override { return true; }
+    QString skyLinkLabel() const override;
+    const visivo::skylink::SkyWcs *skyWcs() override;
+    bool skyViewRead(visivo::skylink::View &view) override;
+    void skyViewApply(const visivo::skylink::View &view) override;
+    void skyCursorShow(double px, double py) override;
+    void skyCursorHide() override;
+    std::vector<visivo::regions::Region> skyRegions(bool selectedOnly) const override;
+    int skyAddRegions(const std::vector<visivo::regions::Region> &regions,
+                      const QString &label) override;
+    bool skyRunPv(const std::vector<std::array<double, 2>> &path, const QString &label) override;
+    void skyLinkStateChanged() override { this->refreshSkyLinkActions(); }
+    void skyMessage(const QString &text) override;
+
+protected:
+    void setupSkyLinkActions();
+    void refreshSkyLinkActions();
+    /// After a frame of the slice moved by the user: tell the linked images.
+    void skyLinkSliceMoved();
+    /// The cursor at display position (x, y) of the slice, to the linked images.
+    void skyLinkCursorFromDisplay(int displayX, int displayY);
+    std::optional<visivo::skylink::SkyWcs> m_skyWcs;
+    bool m_skyWcsRead{ false };
+    SkyCursorOverlay m_skyCursor;
+    QPointer<QAction> m_actSkyLink;
+    QPointer<QAction> m_actSkyUnlink;
+    QPointer<QAction> m_actSendSelectedRegion;
+    QPointer<QAction> m_actSendAllRegions;
 
     // ── Copilot actions ─────────────────────────────────────────────────────
     // Apply the scientific copilot's visualisation directives (from the Copilot

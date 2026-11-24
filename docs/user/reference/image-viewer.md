@@ -215,6 +215,18 @@ Selecting, moving and reshaping regions, typing positions in a sky frame, the
 file formats and linked 2-D views are described in
 [Regions, PV diagrams and noise](region-pv-noise.md).
 
+### Tools ▸ Linked Cube
+
+- *Link to Cube…*, *Unlink from Cube*: link this image to a cube window in sky
+  coordinates: pan, zoom and cursor follow in both.
+- *Send Selected Region to Cube…*, *Send All Regions to Cube…*: copy regions to
+  the cube's slice, placed on the same sky.
+- *Extract PV in Cube…*: cut a PV diagram in the cube along the selected line
+  region. Right-click a line region for *Add Vertex Here* and *Remove This
+  Vertex*.
+
+See [Link an image and a cube](publication-output.md#link-an-image-and-a-cube).
+
 ### Tools ▸ Catalogue
 
 Needs a celestial WCS.

@@ -164,6 +164,8 @@ add_executable(VisIVOTests
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h
     test_sky_overlap.cpp
+    TestSkyWcs.h
+    test_sky_wcs.cpp
     TestCatalogueCosmology.h
     test_catalogue_cosmology.cpp
     TestFitsHeaderCard.h

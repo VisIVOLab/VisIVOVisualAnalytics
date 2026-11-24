@@ -9,6 +9,8 @@
 #include "RegionFullRes.h"
 #include "RegionListOverlay.h"
 #include "RegionModel.h"
+#include "SkyCursorOverlay.h"
+#include "SkyLinkEndpoint.h"
 
 #include <vtkInteractorStyleImage.h>
 #include <vtkNew.h>
@@ -94,7 +96,7 @@ class vtkWindowImage;
 }
 QT_END_NAMESPACE
 
-class vtkWindowImage : public QMainWindow
+class vtkWindowImage : public QMainWindow, public SkyLinkEndpoint
 {
     Q_OBJECT
 
@@ -753,6 +755,41 @@ private:
     /// actions after any change to it.
     void onRegionListChanged();
     void refreshRegionListOverlay();
+
+public:
+    // ── Sky link to a cube window (issue #522, vtkWindowImage_SkyLink.cpp) ──
+    // SkyLinkEndpoint: what SkyLinkHub asks of this window.
+    QWidget *skyLinkWidget() override { return this; }
+    bool skyLinkIsCube() const override { return false; }
+    QString skyLinkLabel() const override;
+    const visivo::skylink::SkyWcs *skyWcs() override;
+    bool skyViewRead(visivo::skylink::View &view) override;
+    void skyViewApply(const visivo::skylink::View &view) override;
+    void skyCursorShow(double px, double py) override;
+    void skyCursorHide() override;
+    std::vector<visivo::regions::Region> skyRegions(bool selectedOnly) const override;
+    int skyAddRegions(const std::vector<visivo::regions::Region> &regions,
+                      const QString &label) override;
+    std::vector<visivo::regions::Vec2> skyPvPath() const override;
+    void skyLinkStateChanged() override { this->refreshSkyLinkActions(); }
+    void skyMessage(const QString &text) override;
+
+private:
+    void setupSkyLinkActions();
+    void refreshSkyLinkActions();
+    /// After every frame: tell the linked cubes when the view moved.
+    void skyLinkCameraFrame();
+    /// The cursor at display position (x, y), to the linked cubes.
+    void skyLinkCursorFromDisplay(int displayX, int displayY);
+    std::optional<visivo::skylink::SkyWcs> m_skyWcs;
+    bool m_skyWcsRead{ false };
+    SkyCursorOverlay m_skyCursor;
+    LinkedCameraSync::Watch m_skyViewWatch;
+    QPointer<QAction> m_actSkyLink;
+    QPointer<QAction> m_actSkyUnlink;
+    QPointer<QAction> m_actSendSelectedRegion;
+    QPointer<QAction> m_actSendAllRegions;
+    QPointer<QAction> m_actExtractPvInCube;
     void onRegionCameraChanged();
     /// Image pixels per screen pixel at the current zoom (for pick tolerances).
     double worldPerDisplayPixel() const;
@@ -763,7 +800,8 @@ private:
     /// True when it was consumed (the camera and the drawing tools never see it).
     bool handleRegionEditEvent(unsigned long eventId);
     bool regionEditingAllowed() const;
-    void showRegionContextMenu(int id);
+    /// @p at is where the click was, in world pixels: a line gets and loses vertices there.
+    void showRegionContextMenu(int id, const visivo::regions::Vec2 &at = { 0.0, 0.0 });
     void openRegionProperties(int id = -1);
     void deleteSelectedRegion();
     /// A ruler or angle measurement is on the image: Delete takes it when no region is selected.

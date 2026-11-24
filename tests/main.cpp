@@ -36,6 +36,7 @@
 #include "TestLteCoRequest.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
+#include "TestSkyWcs.h"
 #include "TestCatalogueCosmology.h"
 #include "TestFitsHeaderCard.h"
 #include "TestViewerModeState.h"
@@ -144,6 +145,7 @@ int main(int argc, char *argv[])
     { TestLteCoRequest t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSkyWcs           t; status |= QTest::qExec(&t, argc, argv); }
     { TestCatalogueCosmology       t; status |= QTest::qExec(&t, argc, argv); }
     { TestFitsHeaderCard   t; status |= QTest::qExec(&t, argc, argv); }
     { TestViewerModeState  t; status |= QTest::qExec(&t, argc, argv); }
