@@ -36,6 +36,8 @@
 #include "ProductRegistry.h"
 #include "ToolResultDialog.h"
 #include "vtkInteractorStyleProfile.h"
+#include "ImageLayerContext.h"
+#include "LutWindowLevelStyle.h"
 #include "vtkLegendScaleActorWCS.h"
 #include "wcs.h"
 
@@ -1637,6 +1639,16 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
         this->requestWcsOverlayRender();
     });
 
+    // A left-drag changes the colour range; this is the way back. The R key does
+    // the same while the image has the focus.
+    auto *actionResetDisplay = new QAction(u"Reset Display"_s, this);
+    actionResetDisplay->setToolTip(
+            u"Back to the linear stretch and the autoscaled colour range of the selected "
+            u"layer (a left-drag on the image changes the range). Key: R."_s);
+    ui->menuView->addAction(actionResetDisplay);
+    QObject::connect(actionResetDisplay, &QAction::triggered, this,
+                     &vtkWindowImage::resetDisplay);
+
     // ── Map texture: angular power spectrum, skeleton / voids (issue #29) ─
     this->setupMapTextureTools();
 
@@ -1825,6 +1837,11 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
                      &vtkWindowImage::showCurrentLayerSettings);
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
                      &vtkWindowImage::updateLUTCustomizer);
+    // The Inspector's Unit follows the selected layer.
+    QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
+                     [this](const QModelIndex &, const QModelIndex &) {
+                         this->refreshUnitAndBeamRows();
+                     });
 
     // Inspector shell + first health poll: done last so every Analysis-tab tool
     // action (created above) is available.
@@ -1953,8 +1970,86 @@ void vtkWindowImage::addLayerFromBrowser()
 
 void vtkWindowImage::setInteractorStyleImage()
 {
-    vtkNew<vtkInteractorStyleImage> style;
-    ui->vtk->renderWindow()->GetInteractor()->SetInteractorStyle(style);
+    ui->vtk->renderWindow()->GetInteractor()->SetInteractorStyle(
+            this->makeImageInteractorStyle());
+    this->vtkRender();
+}
+
+// The plain vtkInteractorStyleImage windowed the image PROPERTY on a left-drag: a
+// post-scale of the coloured pixels that the colour bar and the layer's range never
+// showed, and that only an undocumented key took back. The drag now rewrites the
+// selected layer's LUT range, as the cube's panes do (Pane2DView), so there is one
+// display state, and Reset Display brings it back.
+vtkSmartPointer<vtkInteractorStyleImage> vtkWindowImage::makeImageInteractorStyle()
+{
+    auto style = vtkSmartPointer<LutWindowLevelStyle>::New();
+    QPointer<vtkWindowImage> self(this);
+    const auto currentLut = [self]() -> vtkLookupTable * {
+        if (!self || !self->layers)
+            return nullptr;
+        const int index = self->currentLayerIndex();
+        return index >= 0 && index < self->layers->rowCount() ? self->layers->getLookupTable(index)
+                                                              : nullptr;
+    };
+    style->getLo = [currentLut]() {
+        auto *lut = currentLut();
+        return lut ? lut->GetTableRange()[0] : 0.;
+    };
+    style->getHi = [currentLut]() {
+        auto *lut = currentLut();
+        return lut ? lut->GetTableRange()[1] : 1.;
+    };
+    style->setRange = [self](double lo, double hi) {
+        if (self)
+            self->dragDisplayRange(lo, hi);
+    };
+    style->dragFinished = [self]() {
+        if (self)
+            self->updateLUTCustomizer();   // an open range editor shows the new range
+    };
+    style->resetDisplay = [self]() {
+        if (self)
+            self->resetDisplay();
+    };
+    return style;
+}
+
+void vtkWindowImage::dragDisplayRange(double lo, double hi)
+{
+    if (!this->layers || !std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo))
+        return;   // a drag can overshoot to an empty or inverted range
+    const int index = this->currentLayerIndex();
+    if (index < 0 || index >= this->layers->rowCount())
+        return;
+    auto *lut = this->layers->getLookupTable(index);
+    if (!lut)
+        return;
+    // Through LutScale: on a log stretch a range across zero would otherwise hand
+    // VTK one it rejects.
+    LutScale::setRange(lut, this->layers->scaleMode(index), lo, hi);
+    lut->Build();
+    this->userAdjustedDisplayState = true;   // the flag only: no log line per mouse move
+    this->vtkRender();
+}
+
+void vtkWindowImage::resetDisplay()
+{
+    if (!this->layers)
+        return;
+    const int index = this->currentLayerIndex();
+    if (index < 0 || index >= this->layers->rowCount())
+        return;
+    auto *lut = this->layers->getLookupTable(index);
+    if (!lut)
+        return;
+    // Linear first: a table still on a log or square-root stretch would take the
+    // autoscale range through that stretch's own rules.
+    this->layers->setScaleMode(index, LutScale::Mode::Linear, 2.0);
+    this->applyInitialAutoscale(this->layers->getImageData(index), lut, "reset display");
+    // The stretch controls and the range editor follow the layer's new state.
+    this->showCurrentLayerSettings();
+    this->updateLUTCustomizer();
+    this->statusBar()->showMessage(u"Display reset: linear stretch, autoscaled range."_s, 3000);
     this->vtkRender();
 }
 
@@ -3407,19 +3502,99 @@ void vtkWindowImage::setUnitAndBeamSource(const QString &unitNote, const QString
     this->refreshUnitAndBeamRows();
 }
 
+QString vtkWindowImage::selectedLayerPath() const
+{
+    QStringList paths;
+    if (this->layers) {
+        const int master = this->layers->getMasterIndex();
+        for (int row = 0; row < this->layers->rowCount(); ++row)
+            paths << (row == master ? this->filepath : this->layers->layerFilepath(row));
+    }
+    return visivo::layerctx::pathOfLayer(paths, this->currentLayerIndex(), this->filepath);
+}
+
+QString vtkWindowImage::selectedLayerBunit()
+{
+    const QString path = this->selectedLayerPath();
+    if (path == this->filepath)
+        return this->remoteDatasetBunit;
+    auto cached = this->m_layerBunit.constFind(path);
+    if (cached != this->m_layerBunit.constEnd())
+        return cached.value();
+    // Another layer has its own unit (a model in Jy/pixel over a map in Jy/beam):
+    // the base image's would label its values wrongly.
+    const QString bunit = visivo::layerctx::headerKeyword(this->selectedLayerCards(), u"BUNIT"_s);
+    this->m_layerBunit.insert(path, bunit);
+    return bunit;
+}
+
+QStringList vtkWindowImage::selectedLayerCards()
+{
+    const QString path = this->selectedLayerPath();
+    auto cached = this->m_layerCards.constFind(path);
+    if (cached != this->m_layerCards.constEnd())
+        return cached.value();
+    // Read once. Remembered even when it failed: with the backend unreachable,
+    // every selection would otherwise wait for the timeout again.
+    BackendClient client(this->remoteBackendUrl, this->remoteBackendToken);
+    const auto header = client.fileHeader(path);
+    const QStringList cards = header.valid ? header.cards : QStringList();
+    this->m_layerCards.insert(path, cards);
+    return cards;
+}
+
 void vtkWindowImage::refreshUnitAndBeamRows()
 {
     if (m_unitValueLabel) {
+        // The note says how the BASE image's unit was inferred; it is not true of
+        // another layer's, which shows its own BUNIT as the header gives it.
+        const bool base = this->selectedLayerPath() == this->filepath;
+        const QString note = base ? m_intensityUnitNote : QString();
         InspectorPanel::applyValueStyle(
-                m_unitValueLabel,
-                visivo::beam::unitDisplay(this->remoteDatasetBunit, m_intensityUnitNote));
-        if (!m_intensityUnitNote.isEmpty())
-            m_unitValueLabel->setToolTip(m_intensityUnitNote);
+                m_unitValueLabel, visivo::beam::unitDisplay(this->selectedLayerBunit(), note));
+        m_unitValueLabel->setToolTip(
+                !note.isEmpty() ? note
+                                : (base ? QString()
+                                        : u"BUNIT of the selected layer: %1"_s.arg(
+                                                visivo::datasetDisplayName(this->selectedLayerPath()))));
     }
+    const QString selected = this->selectedLayerPath();
+    const bool baseSelected = selected == this->filepath;
     if (m_beamControl) {
-        const double pa = std::isfinite(m_beamPaDeg) ? m_beamPaDeg : 0.0;
-        m_beamControl->setBeam(m_beamMajorDeg, m_beamMinorDeg, pa, m_beamSource);
+        if (baseSelected) {
+            const double pa = std::isfinite(m_beamPaDeg) ? m_beamPaDeg : 0.0;
+            m_beamControl->setBeam(m_beamMajorDeg, m_beamMinorDeg, pa, m_beamSource);
+        } else {
+            // The selected layer's own beam, from its header (a map at another
+            // resolution has another beam); none when the header has none.
+            const QStringList cards = this->selectedLayerCards();
+            const auto deg = [&cards](const QString &key) {
+                bool ok = false;
+                const double v = visivo::layerctx::headerKeyword(cards, key).toDouble(&ok);
+                return ok ? v : std::numeric_limits<double>::quiet_NaN();
+            };
+            const double bmaj = deg(u"BMAJ"_s), bmin = deg(u"BMIN"_s), bpa = deg(u"BPA"_s);
+            const bool has = std::isfinite(bmaj) && std::isfinite(bmin) && bmaj > 0.0 && bmin > 0.0;
+            m_beamControl->setBeam(has ? bmaj : std::numeric_limits<double>::quiet_NaN(),
+                                   has ? bmin : std::numeric_limits<double>::quiet_NaN(),
+                                   std::isfinite(bpa) ? bpa : 0.0,
+                                   has ? u"header"_s : u"none"_s);
+        }
+        // Setting a beam writes the base image's: not offered while another
+        // layer's beam is on show, which it would not change.
+        m_beamControl->setEnabled(baseSelected);
+        m_beamControl->setToolTip(baseSelected
+                                          ? QString()
+                                          : u"The selected layer's beam, from its header. Select "
+                                            u"the base image to set a beam."_s);
     }
+    if (m_activeLayerValueLabel) {
+        m_activeLayerValueLabel->setText(visivo::datasetDisplayName(selected));
+        m_activeLayerValueLabel->setToolTip(QFileInfo(selected).absoluteFilePath());
+    }
+    if (m_layerCountValueLabel)
+        m_layerCountValueLabel->setText(
+                QString::number(this->layers ? this->layers->rowCount() : 1));
 }
 
 void vtkWindowImage::setBeamInfo(double majorDeg, double minorDeg, double paDeg)

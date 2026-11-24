@@ -46,7 +46,7 @@ selected region is drawn thicker, lightly filled, with white handles.
 | Drag a handle | reshapes it (box corner, radius, annulus radii, ellipse semi-axis, polygon vertex); the knob above a box or ellipse rotates it |
 | Double-click a region | opens *Region Properties…* |
 | Right-click a region | *Properties…*, *Analyse*, *Background Region*, *Delete* |
-| Delete or Backspace | deletes the selected region (a 2-D pane must have the focus) |
+| Delete or Backspace | deletes the selected region, or the PV path when no region is selected and PV mode is on (a 2-D pane must have the focus) |
 | ⌘Z, ⇧⌘Z | undo and redo region changes (a 2-D pane must have the focus) |
 
 The same commands are in *Tools ▸ Regions*: *Region Properties…*, *Analyse

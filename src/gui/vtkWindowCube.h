@@ -2411,6 +2411,12 @@ protected:
     void editPvVertexAt(int displayX, int displayY, bool insert);
     void schedulePvLiveUpdate(int delayMs);
     void startNewPvPath();
+    /// A PV path is on the slice (drawn or being drawn) while PV mode is on: the
+    /// Delete key removes it when no region is selected.
+    bool pvPathDeletable() const;
+    /// Remove the PV path, PV mode staying on for the next one.
+    void deletePvPath();
+    bool m_pvDeletableShown{ false };   ///< what the Delete action was last gated on
     void exportPvAsFits();
     /// isBusy() for the PV interaction handlers: the PV's OWN running
     /// computation must not freeze the path it is computing (live editing).

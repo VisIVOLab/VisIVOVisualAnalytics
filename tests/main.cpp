@@ -50,6 +50,8 @@
 #include "TestCubeStatRows.h"
 #include "TestRecentReopen.h"
 #include "TestColourBarTicks.h"
+#include "TestSequentialColors.h"
+#include "TestImageLayerContext.h"
 #include "TestProductPaneDisplay.h"
 #include "TestProbeSpectrumFetch.h"
 #include "TestWcsAxisTicks.h"
@@ -156,6 +158,8 @@ int main(int argc, char *argv[])
     { TestRecentReopen     t; status |= QTest::qExec(&t, argc, argv); }
     { TestThresholdShare   t; status |= QTest::qExec(&t, argc, argv); }
     { TestColourBarTicks   t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSequentialColors t; status |= QTest::qExec(&t, argc, argv); }
+    { TestImageLayerContext t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductPaneDisplay t; status |= QTest::qExec(&t, argc, argv); }
     { TestProbeSpectrumFetch t; status |= QTest::qExec(&t, argc, argv); }
     { TestWcsAxisTicks     t; status |= QTest::qExec(&t, argc, argv); }

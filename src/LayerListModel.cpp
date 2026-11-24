@@ -147,6 +147,14 @@ void LayerListModel::setColorMap(int index, const std::string &name)
     emit this->dataChanged(this->index(index), this->index(index));
 }
 
+QString LayerListModel::layerFilepath(int index) const
+{
+    if (index < 0 || index >= this->rowCount()) {
+        return QString();
+    }
+    return QString::fromStdString(this->layerSet->filepath(index));
+}
+
 int LayerListModel::rowCount(const QModelIndex &parent) const
 {
     if (parent.isValid()) {

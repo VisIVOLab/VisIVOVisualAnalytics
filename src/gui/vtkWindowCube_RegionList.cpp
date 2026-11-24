@@ -487,7 +487,8 @@ void vtkWindowCube::setupRegionListActions()
             u"Statistics of the selected region on the slice shown, and its mean spectrum "
             u"over the cube."_s);
     m_actDeleteRegion = make(u"Delete Region"_s,
-            u"Remove the selected region (Delete or Backspace on the slice)."_s);
+            u"Remove the selected region, or the PV path when no region is selected "
+            u"(Delete or Backspace on the slice)."_s);
     m_actUndoRegion = make(u"Undo Region Edit"_s,
             u"Undo the last change to this window's regions: draw, move, reshape, delete "
             u"(Cmd+Z on the slice)."_s);
@@ -992,8 +993,11 @@ void vtkWindowCube::deleteSelectedRegion()
     // The image side never deletes what it does not show (#388): a hidden
     // region goes from its Session Data row.
     const Region *r = this->m_regions.selectedVisible();
-    if (!r)
+    if (!r) {
+        // No region selected: the key takes the PV path, as it takes a region.
+        this->deletePvPath();
         return;
+    }
     const QString name = r->name;
     this->m_regions.remove(r->id);
     this->onRegionListChanged();

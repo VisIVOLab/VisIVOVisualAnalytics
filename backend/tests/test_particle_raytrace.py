@@ -246,6 +246,21 @@ def test_a_named_map_on_a_log_scale_spreads_the_decades():
     assert np.allclose(rgb[0], rgb[1], atol=0.02)
 
 
+def test_the_white_to_hue_maps_of_the_client_resolve_and_reverse():
+    # The client's registry names them Purples, Blues, Greens, Reds, Greys, Oranges and
+    # the same with _r; matplotlib has them under those names, so they must not fall
+    # back to Inferno.
+    from app.render_session._common import _build_color_tf
+    for name in ("Purples", "Blues", "Greens", "Reds", "Greys", "Oranges"):
+        light = _build_color_tf(name, 0.0, 1.0).GetColor(0.0)
+        dark = _build_color_tf(name, 0.0, 1.0).GetColor(1.0)
+        assert min(light) > 0.9, name           # white-ish at the low end
+        assert max(dark) < 0.75, name            # a dark hue at the high end
+        back = _build_color_tf(name + "_r", 0.0, 1.0)
+        assert np.allclose(back.GetColor(0.0), dark, atol=0.01), name
+        assert np.allclose(back.GetColor(1.0), light, atol=0.01), name
+
+
 def test_the_preview_follows_the_camera_on_particles_prepared_once(tmp_path, monkeypatch):
     from PIL import Image
 

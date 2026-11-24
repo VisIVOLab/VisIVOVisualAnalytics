@@ -1962,8 +1962,7 @@ void vtkWindowImage::endVlkbRegionSelect()
         if (this->m_vlkbPrevStyle) {
             iren->SetInteractorStyle(this->m_vlkbPrevStyle);
         } else {
-            vtkNew<vtkInteractorStyleImage> imgStyle;
-            iren->SetInteractorStyle(imgStyle);
+            iren->SetInteractorStyle(this->makeImageInteractorStyle());
         }
     }
     this->m_vlkbPrevStyle = nullptr;
