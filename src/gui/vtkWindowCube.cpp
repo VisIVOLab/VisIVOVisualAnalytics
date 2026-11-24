@@ -5490,13 +5490,23 @@ void vtkWindowCube::exportCurrentChannelAs2dFits()
         return;
     }
 
-    const int channel = std::clamp(ui->sliderSlice->value() - 1,
-                                   0, this->remoteDatasetDepth - 1);
+    // The plane shown: along the slice's own axis on a simulation volume
+    // (issue #524), with the values in the units on screen.
+    const visivo::simvol::SliceAxis axis = this->m_sliceAxis;
+    const int planes = visivo::simvol::planeCount(axis, this->remoteDatasetWidth,
+                                                  this->remoteDatasetHeight,
+                                                  this->remoteDatasetDepth);
+    const int channel = std::clamp(ui->sliderSlice->value() - 1, 0, std::max(0, planes - 1));
+    const QString axisName = visivo::simvol::axisLetter(axis).toLower();
+    const bool physical = this->m_simulationVolume && this->m_showPhysical;
 
     const QFileInfo srcInfo(visivo::datasetExportStem(this->filepath));
     const QString defaultName =
-            u"%1_ch%2.fits"_s.arg(srcInfo.completeBaseName())
-                              .arg(channel + 1, 4, 10, QChar(u'0'));   // as on the channel bar
+            axis == visivo::simvol::SliceAxis::Z
+            ? u"%1_ch%2.fits"_s.arg(srcInfo.completeBaseName())
+                              .arg(channel + 1, 4, 10, QChar(u'0'))   // as on the channel bar
+            : u"%1_%2%3.fits"_s.arg(srcInfo.completeBaseName(), axisName)
+                              .arg(channel + 1, 4, 10, QChar(u'0'));
 
     bool ok = false;
     const QString basename = QInputDialog::getText(
@@ -5543,10 +5553,10 @@ void vtkWindowCube::exportCurrentChannelAs2dFits()
                          QMessageBox::information(self, u"Export Channel"_s, msg);
                      });
     watcher->setFuture(QtConcurrent::run(
-            [url, token, sessionId, datasetId, channel, basename]() {
+            [url, token, sessionId, datasetId, channel, basename, axisName, physical]() {
                 BackendClient c(url, token);
                 c.setSessionId(sessionId);
-                return c.saveCubeChannelAs2dFits(datasetId, channel, basename);
+                return c.saveCubeChannelAs2dFits(datasetId, channel, basename, axisName, physical);
             }));
 }
 

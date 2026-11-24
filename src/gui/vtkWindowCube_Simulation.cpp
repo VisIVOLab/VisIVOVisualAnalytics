@@ -271,10 +271,13 @@ void vtkWindowCube::addSimulationInspectorRows(InspectorPanel *panel)
                      [this](bool physical) { this->setPhysicalDisplay(physical); });
     QObject::connect(m_unitsControl, &PhysicalUnitsControl::unitsChanged, this,
                      [this](const visivo::units::PhysicalUnits &units) {
-                         // Units typed for a dataset that had none: shown at once.
-                         if (!(m_physicalUnits.hasValue() || m_physicalUnits.hasLength()))
-                             m_showPhysical = units.hasValue() || units.hasLength();
+                         // Units just typed are meant to be seen: the display
+                         // switches to them (it stayed in code units when the
+                         // dataset already had some and Physical was off).
+                         m_showPhysical = units.hasValue() || units.hasLength();
                          m_physicalUnits = units;
+                         if (m_unitsControl)
+                             m_unitsControl->setUnits(units, m_showPhysical);
                          this->refreshAxisUnits();
                          this->setIntensityUnit(m_codeBunit, m_intensityUnitNote);
                          this->refreshSimulationRows();
