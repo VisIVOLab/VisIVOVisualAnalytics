@@ -200,3 +200,21 @@ void TestCubeToolGate::dataKind_hidesSpectralAndCelestialTools()
     QVERIFY(d.slice2dTools);
     QVERIFY(d.view3dTools);
 }
+
+void TestCubeToolGate::sliceAcrossXorY_disablesTheSliceFamily()
+{
+    // A simulation volume sliced along x or y (#524): Extract Spectrum, PV and
+    // the region tools read cube pixel (x, y) and have nothing to act on.
+    Inputs in = layout(true, true);
+    in.slicePaneAvailable = true;
+    QVERIFY(evaluate(in).slice2dTools);
+    in.sliceAlongZ = false;
+    Decision d = evaluate(in);
+    QVERIFY(!d.slice2dTools);
+    QVERIFY(!d.regionTools);
+    QVERIFY(d.view3dTools);   // the 3-D view is not a slice
+    // A sky map in another pane still takes the region tools.
+    in.regionMapVisible = true;
+    QVERIFY(evaluate(in).regionTools);
+    QVERIFY(!evaluate(in).slice2dTools);
+}

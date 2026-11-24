@@ -136,6 +136,8 @@ add_executable(VisIVOTests
     test_tool_result_record.cpp
     TestCubeToolGate.h
     test_cube_tool_gate.cpp
+    TestSimulationVolume.h
+    test_simulation_volume.cpp
     TestCubeLodGeometry.h
     test_cube_lod_geometry.cpp
     TestCubeLodPlan.h

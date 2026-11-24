@@ -21,6 +21,7 @@
 #include <QtEndian>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHash>
 #include <QMutex>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -971,6 +972,9 @@ static BackendOpenDatasetResult parseOpenDatasetObject(const QJsonObject &object
     result.byteOrderDeclared = object.value(QStringLiteral("byte_order_declared")).toString();
     result.byteOrderWarning =
             visivo::parseVbtByteOrderWarning(object.value(QStringLiteral("byte_order_warning")));
+    result.simulationVolume = object.value(QStringLiteral("simulation_volume")).toBool(false);
+    result.physicalUnits = visivo::simvol::parsePhysicalUnits(
+            object.value(QStringLiteral("physical_units")).toObject());
     return result;
 }
 
@@ -1480,6 +1484,61 @@ visivo::beam::BeamResult BackendClient::setDatasetBeam(
     return visivo::beam::parseResponse(QJsonDocument::fromJson(payload).object());
 }
 
+visivo::simvol::UnitsResult BackendClient::setDatasetUnits(
+        const QString &datasetId, const visivo::simvol::UnitsRequest &request) const
+{
+    QString error;
+    int status = 0;
+    const QByteArray payload =
+            performPost(QUrl(m_baseUrl + QStringLiteral("/v1/datasets/units")),
+                        QJsonDocument(visivo::simvol::unitsRequestBody(datasetId, request)),
+                        error, nullptr, &status);
+    if (!error.isEmpty()) {
+        visivo::simvol::UnitsResult result;
+        const QString why = status >= 400 ? visivo::replyErrorText(payload) : QString();
+        result.error = visivo::isMissingRouteReply(status, payload)
+                ? QStringLiteral("This backend cannot keep physical units; update it.")
+                : (why.isEmpty() ? error : why);
+        return result;
+    }
+    return visivo::simvol::parseUnitsResult(QJsonDocument::fromJson(payload).object());
+}
+
+namespace {
+QMutex &valueScaleMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+QHash<QString, double> &valueScales()
+{
+    static QHash<QString, double> scales;
+    return scales;
+}
+/// ``value_scale`` for a cube data request, only when it is not the file's own.
+void addValueScale(QJsonObject &request, const QString &datasetId)
+{
+    const double scale = BackendClient::displayValueScale(datasetId);
+    if (scale != 1.0)
+        request.insert(QStringLiteral("value_scale"), scale);
+}
+}   // namespace
+
+void BackendClient::setDisplayValueScale(const QString &datasetId, double scale)
+{
+    const QMutexLocker lock(&valueScaleMutex());
+    if (scale > 0.0 && std::isfinite(scale) && scale != 1.0)
+        valueScales().insert(datasetId, scale);
+    else
+        valueScales().remove(datasetId);
+}
+
+double BackendClient::displayValueScale(const QString &datasetId)
+{
+    const QMutexLocker lock(&valueScaleMutex());
+    return valueScales().value(datasetId, 1.0);
+}
+
 BackendSampImportResult BackendClient::importSampUrl(const QString &url,
                                                      const QString &filename) const
 {
@@ -1548,8 +1607,10 @@ BackendCubePreviewResult BackendClient::requestPreview(const QString &datasetId,
 {
     BackendCubePreviewResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("downsample"), downsample } });
+    QJsonObject previewRequest{ { QStringLiteral("dataset_id"), datasetId },
+                                { QStringLiteral("downsample"), downsample } };
+    addValueScale(previewRequest, datasetId);
+    const QJsonDocument body(previewRequest);
     const QByteArray payload =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/preview")), body, error);
     if (!error.isEmpty()) {
@@ -1592,6 +1653,7 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
     QJsonObject request{ { QStringLiteral("dataset_id"), datasetId },
                          { QStringLiteral("axis"), axis },
                          { QStringLiteral("index"), index } };
+    addValueScale(request, datasetId);
     if (maxLongestSide > 0)
         request.insert(QStringLiteral("max_longest_side"), maxLongestSide);
     if (region && region->isValid()) {
@@ -1620,6 +1682,9 @@ BackendCubeSliceResult BackendClient::requestSlice(const QString &datasetId, con
     result.x0 = object.value(QStringLiteral("x0")).toInt(0);
     result.y0 = object.value(QStringLiteral("y0")).toInt(0);
     result.stride = std::max(1, object.value(QStringLiteral("stride")).toInt(1));
+    result.axis = object.value(QStringLiteral("axis")).toString();
+    result.index = object.value(QStringLiteral("index")).toInt(index);
+    result.planes = object.value(QStringLiteral("planes")).toInt(0);
     result.data = decodePayload(object, QStringLiteral("data_base64"),
                                 QStringLiteral("compression"), result.error);
     if (!result.error.isEmpty()) {
@@ -1791,13 +1856,16 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
                                                            int z1, bool keepSlabs) const
 {
     BackendCubeSubvolumeResult result;
-    const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("x0"), x0 },
-                                          { QStringLiteral("x1"), x1 },
-                                          { QStringLiteral("y0"), y0 },
-                                          { QStringLiteral("y1"), y1 },
-                                          { QStringLiteral("z0"), z0 },
-                                          { QStringLiteral("z1"), z1 } });
+    QJsonObject subvolumeRequest{ { QStringLiteral("dataset_id"), datasetId },
+                                  { QStringLiteral("x0"), x0 },
+                                  { QStringLiteral("x1"), x1 },
+                                  { QStringLiteral("y0"), y0 },
+                                  { QStringLiteral("y1"), y1 },
+                                  { QStringLiteral("z0"), z0 },
+                                  { QStringLiteral("z1"), z1 } };
+    addValueScale(subvolumeRequest, datasetId);
+    const double slabScale = displayValueScale(datasetId);
+    const QJsonDocument body(subvolumeRequest);
     const QByteArray bodyBytes = body.toJson(QJsonDocument::Compact);
 
     // ── 1) Binary endpoint with parallel Z-slab fetches ────────────────
@@ -1860,16 +1928,18 @@ BackendCubeSubvolumeResult BackendClient::requestSubvolume(const QString &datase
         // Worker lambda: fetch a single slab through its own thread-local
         // QNAM. Captures by value the small POD-ish state it needs so the
         // lambda is safely runnable from a worker thread.
-        auto fetchSlab = [post, datasetId, x0, x1, y0, y1](int sz0, int sz1) -> SlabResult {
+        auto fetchSlab = [post, datasetId, x0, x1, y0, y1, slabScale](int sz0, int sz1) -> SlabResult {
             SlabResult r;
-            const BinaryReply reply = post(QStringLiteral("/v1/cube/subvolume_bin"),
-                                           QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                                        { QStringLiteral("x0"), x0 },
-                                                        { QStringLiteral("x1"), x1 },
-                                                        { QStringLiteral("y0"), y0 },
-                                                        { QStringLiteral("y1"), y1 },
-                                                        { QStringLiteral("z0"), sz0 },
-                                                        { QStringLiteral("z1"), sz1 } });
+            QJsonObject slabRequest{ { QStringLiteral("dataset_id"), datasetId },
+                                     { QStringLiteral("x0"), x0 },
+                                     { QStringLiteral("x1"), x1 },
+                                     { QStringLiteral("y0"), y0 },
+                                     { QStringLiteral("y1"), y1 },
+                                     { QStringLiteral("z0"), sz0 },
+                                     { QStringLiteral("z1"), sz1 } };
+            if (slabScale != 1.0)
+                slabRequest.insert(QStringLiteral("value_scale"), slabScale);
+            const BinaryReply reply = post(QStringLiteral("/v1/cube/subvolume_bin"), slabRequest);
             r.status = reply.status;
             if (!reply.ok) {
                 r.error = reply.error;
@@ -3494,8 +3564,11 @@ BackendIsosurfaceResult BackendClient::requestIsosurface(const QString &datasetI
 {
     BackendIsosurfaceResult result;
     QString error;
+    // The level is the viewer's, in physical units for a simulation volume
+    // shown so (issue #524); the file's values are in code units.
     const QJsonDocument body(QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                                          { QStringLiteral("threshold"), threshold } });
+                                          { QStringLiteral("threshold"),
+                                            threshold / displayValueScale(datasetId) } });
     const QByteArray payload =
             performPostRetryingBackpressure(
                     QUrl(m_baseUrl + QStringLiteral("/v1/products/isosurface")), body, error);

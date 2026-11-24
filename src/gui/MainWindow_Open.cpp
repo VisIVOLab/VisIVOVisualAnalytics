@@ -1169,6 +1169,11 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
                            .arg(opened.degenerateAxesSummary.isEmpty()
                                         ? QStringLiteral("no collapsed axes")
                                         : opened.degenerateAxesSummary);
+        // A simulation volume opens in physical units when the backend knows
+        // them (issue #524): every cube data route answers in them from the
+        // first request, so the scale is set before the window asks.
+        BackendClient::setDisplayValueScale(
+                opened.datasetId, visivo::simvol::valueScale(opened.physicalUnits, true));
         auto *cubeWin = new vtkWindowCube(path, client.baseUrl(), opened.datasetId, opened.width,
                                           opened.height, opened.depth, opened.spacing,
                                           opened.origin, opened.ctype, opened.cunit, opened.crval,
@@ -1191,6 +1196,8 @@ void MainWindow::openViewerFromOpenedDataset(const QString &openedPath,
         cubeWin->setBeamSource(opened.beamSource);
         cubeWin->setIntensityUnit(visivo::beam::intensityUnit(opened.bunit, opened.intensityUnit),
                                   opened.intensityUnitNote);
+        if (opened.simulationVolume)
+            cubeWin->setPhysicalUnits(opened.physicalUnits);
         cubeWin->setRestFrequency(opened.restFreqHz);
         cubeWin->setServerSideRenderingAvailable(opened.serverSideRenderingAvailable);
         // The other fields of a VBT volume, each a cube of its own.

@@ -26,4 +26,5 @@ private slots:
 
     void dataKind_spatialAxisTypes();
     void dataKind_hidesSpectralAndCelestialTools();
+    void sliceAcrossXorY_disablesTheSliceFamily();
 };

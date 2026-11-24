@@ -3362,6 +3362,9 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         });
     }
 
+    // A simulation's grid (axes X, Y, Z) is sliced along any axis and shown in
+    // coordinates, not channels (issue #524).
+    this->m_simulationVolume = this->detectSimulationVolume();
     // Backend-authoritative: statistics fields show "-" until populated.
     ui->lineCubeMin->clear();
     ui->lineCubeMax->clear();
@@ -3378,43 +3381,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     ui->actionVolume->setChecked(true);
     this->setCubeRenderModeLocally(false);
     this->setRemoteCubeDisplayState(RemoteCubeDisplayState::Preview);
-    this->showPersistentStatusMessage(u"Loading preview..."_s);
-    this->m_deferredPreview.reset();   // superseded by this request
-    this->remotePreviewWatcher.setProperty("requestId", ++this->currentRemotePreviewRequestId);
-    // Adaptive preview downsample — target the user's PreviewTargetMb
-    // setting (default 100 MB). For a small cube this comes out to
-    // factor 1 (the preview IS the full data); for an SKA-scale cube
-    // it can reach 30-60 per axis and we still hit the target. See
-    // computePreviewDownsample() docstring for the math.
-    // Use a short-lived Settings instance pointed at the canonical
-    // workDir (matches MainWindow's construction at startup); this
-    // reads from the same Cube/preview_target_mb key the dialog
-    // would write to once we wire the UI.
-    const QString workDir = QDir::home().absoluteFilePath(qApp->applicationName());
-    Settings settings(workDir);
-    const int targetMb = settings.getPreviewTargetMb();
-    const int downsample = computePreviewDownsample(
-            this->remoteDatasetWidth,
-            this->remoteDatasetHeight,
-            this->remoteDatasetDepth,
-            static_cast<double>(targetMb));
-    this->m_previewStride = std::max(1, downsample);
-    qDebug().noquote() << QStringLiteral(
-            "[preview-debug] launching fetcher requestId=%1 url=%2 dataset=%3 "
-            "cube=%4x%5x%6 target=%7MB downsample=%8")
-                                  .arg(this->currentRemotePreviewRequestId)
-                                  .arg(this->remoteBackendUrl)
-                                  .arg(this->remoteDatasetId)
-                                  .arg(this->remoteDatasetWidth)
-                                  .arg(this->remoteDatasetHeight)
-                                  .arg(this->remoteDatasetDepth)
-                                  .arg(targetMb)
-                                  .arg(downsample);
-    this->remotePreviewWatcher.setFuture(
-            QtConcurrent::run(&fetchRemotePreview, this->remoteBackendUrl, this->remoteDatasetId,
-                              downsample, this->remoteSessionId, this->remoteBackendToken));
-    qDebug().noquote() << QStringLiteral("[preview-debug] setFuture returned, isRunning=%1")
-                                  .arg(this->remotePreviewWatcher.isRunning());
+    this->startRemotePreviewLoad();
 
     // Inspector shell + first health poll: done last so every Analysis-tab tool
     // action (created above) is available and Linked is wired.
@@ -4748,7 +4715,11 @@ bool vtkWindowCube::updatePvFromDisplayPosition(int displayX, int displayY)
 
 void vtkWindowCube::setIntensityUnit(const QString &unit, const QString &note)
 {
-    m_brightnessUnit = unit;
+    // A simulation volume in physical units shows the unit its factor is in
+    // (issue #524); the header's own is kept for code units.
+    m_codeBunit = unit;
+    m_brightnessUnit = visivo::simvol::valueUnitLabel(
+            m_physicalUnits, m_simulationVolume && m_showPhysical, unit);
     m_intensityUnitNote = note;
     this->refreshUnitAndBeamRows();
 }
@@ -6123,13 +6094,13 @@ void vtkWindowCube::exportMomentMapAsFits(const QString &requestedProductId)
 
 QString vtkWindowCube::formatSpatialPointSummary(const std::array<int, 2> &voxel) const
 {
-    QString axis0 = this->remoteFormatAxisCoordinate(0, voxel[0]);
-    QString axis1 = this->remoteFormatAxisCoordinate(1, voxel[1]);
+    QString axis0 = this->remoteFormatAxisCoordinate(this->slicePlaneAxes()[0], voxel[0]);
+    QString axis1 = this->remoteFormatAxisCoordinate(this->slicePlaneAxes()[1], voxel[1]);
     if (this->remoteHasCelestialAxes()) {
         bool ok0 = false;
         bool ok1 = false;
-        double nativeX = this->remoteVoxelToWcs(0, voxel[0], &ok0);
-        double nativeY = this->remoteVoxelToWcs(1, voxel[1], &ok1);
+        double nativeX = this->remoteVoxelToWcs(this->slicePlaneAxes()[0], voxel[0], &ok0);
+        double nativeY = this->remoteVoxelToWcs(this->slicePlaneAxes()[1], voxel[1], &ok1);
         double frameX = nativeX;
         double frameY = nativeY;
         if (ok0 && ok1 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
@@ -6139,21 +6110,21 @@ QString vtkWindowCube::formatSpatialPointSummary(const std::array<int, 2> &voxel
     }
     return u"(%1, %2)  %3=%4  %5=%6"_s.arg(voxel[0])
             .arg(voxel[1])
-            .arg(this->selectedFrameAxisTitle(0))
+            .arg(this->selectedFrameAxisTitle(this->slicePlaneAxes()[0]))
             .arg(axis0)
-            .arg(this->selectedFrameAxisTitle(1))
+            .arg(this->selectedFrameAxisTitle(this->slicePlaneAxes()[1]))
             .arg(axis1);
 }
 
 QString vtkWindowCube::formatSpatialPointSummary(const std::array<double, 2> &pixel) const
 {
-    QString axis0 = this->remoteFormatAxisCoordinate(0, pixel[0]);
-    QString axis1 = this->remoteFormatAxisCoordinate(1, pixel[1]);
+    QString axis0 = this->remoteFormatAxisCoordinate(this->slicePlaneAxes()[0], pixel[0]);
+    QString axis1 = this->remoteFormatAxisCoordinate(this->slicePlaneAxes()[1], pixel[1]);
     if (this->remoteHasCelestialAxes()) {
         bool ok0 = false;
         bool ok1 = false;
-        const double nativeX = this->remoteVoxelToWcs(0, pixel[0], &ok0);
-        const double nativeY = this->remoteVoxelToWcs(1, pixel[1], &ok1);
+        const double nativeX = this->remoteVoxelToWcs(this->slicePlaneAxes()[0], pixel[0], &ok0);
+        const double nativeY = this->remoteVoxelToWcs(this->slicePlaneAxes()[1], pixel[1], &ok1);
         double frameX = nativeX;
         double frameY = nativeY;
         if (ok0 && ok1 && this->convertRemoteCelestialCoordinates(nativeX, nativeY, frameX, frameY)) {
@@ -6163,9 +6134,9 @@ QString vtkWindowCube::formatSpatialPointSummary(const std::array<double, 2> &pi
     }
     return u"(%1, %2)  %3=%4  %5=%6"_s.arg(pixel[0], 0, 'f', 1)
             .arg(pixel[1], 0, 'f', 1)
-            .arg(this->selectedFrameAxisTitle(0))
+            .arg(this->selectedFrameAxisTitle(this->slicePlaneAxes()[0]))
             .arg(axis0)
-            .arg(this->selectedFrameAxisTitle(1))
+            .arg(this->selectedFrameAxisTitle(this->slicePlaneAxes()[1]))
             .arg(axis1);
 }
 
@@ -7253,7 +7224,9 @@ void vtkWindowCube::updateRemoteCuttingPlane(int sliceIndex)
     // Mirror the slice index to the SSR backend so the textured plane
     // in the remote scene shows the same channel. Cheap; throttled
     // automatically by RemoteRenderWidget's in-flight gate.
-    {
+    // (The render session's plane is a z plane: along x or y the local plane
+    // below moves, and the session's stays at the last z channel, #524.)
+    if (this->sliceAlongZ()) {
         QVariantMap cmd;
         cmd[u"type"_s]        = u"set_cutting_plane"_s;
         cmd[u"slice_index"_s] = this->clampRemoteSliceIndex(sliceIndex);
@@ -7321,9 +7294,32 @@ void vtkWindowCube::placeCuttingPlane(int channel)
     const auto rect = visivo::regions::cuttingPlane(
             std::max(1, this->remoteDatasetWidth), std::max(1, this->remoteDatasetHeight),
             channel, this->m_displaySampling);
-    this->remoteCuttingPlaneSource->SetOrigin(rect.x0, rect.y0, rect.z);
-    this->remoteCuttingPlaneSource->SetPoint1(rect.x1, rect.y0, rect.z);
-    this->remoteCuttingPlaneSource->SetPoint2(rect.x0, rect.y1, rect.z);
+    if (this->sliceAlongZ()) {
+        this->remoteCuttingPlaneSource->SetOrigin(rect.x0, rect.y0, rect.z);
+        this->remoteCuttingPlaneSource->SetPoint1(rect.x1, rect.y0, rect.z);
+        this->remoteCuttingPlaneSource->SetPoint2(rect.x0, rect.y1, rect.z);
+    } else {
+        // A simulation volume sliced along x or y (issue #524): the plane spans
+        // the two other axes at the plane's position, texture axes as the
+        // slice image has them (horizontal first).
+        const auto &s = this->m_displaySampling;
+        const double xa = CubeLodGeometry::toWorld(-0.5, s);
+        const double xb = CubeLodGeometry::toWorld(std::max(1, this->remoteDatasetWidth) - 0.5, s);
+        const double ya = CubeLodGeometry::toWorld(-0.5, s);
+        const double yb = CubeLodGeometry::toWorld(std::max(1, this->remoteDatasetHeight) - 0.5, s);
+        const double za = CubeLodGeometry::toWorld(-0.5, s);
+        const double zb = CubeLodGeometry::toWorld(std::max(1, this->remoteDatasetDepth) - 0.5, s);
+        const double at = CubeLodGeometry::toWorld(double(channel), s);
+        if (m_sliceAxis == visivo::simvol::SliceAxis::Y) {
+            this->remoteCuttingPlaneSource->SetOrigin(xa, at, za);
+            this->remoteCuttingPlaneSource->SetPoint1(xb, at, za);
+            this->remoteCuttingPlaneSource->SetPoint2(xa, at, zb);
+        } else {
+            this->remoteCuttingPlaneSource->SetOrigin(at, ya, za);
+            this->remoteCuttingPlaneSource->SetPoint1(at, yb, za);
+            this->remoteCuttingPlaneSource->SetPoint2(at, ya, zb);
+        }
+    }
     this->m_planeChannel = channel;
     this->remoteCuttingPlaneSource->Modified();
     this->remoteCuttingPlaneSource->Update();
@@ -7590,6 +7586,47 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
             totalTimer.elapsed());
     // A full-resolution or ROI cube replaced the one the caption counted.
     this->updateThresholdShare(ui->lineThreshold->text().toDouble());
+}
+
+void vtkWindowCube::startRemotePreviewLoad()
+{
+    this->showPersistentStatusMessage(u"Loading preview..."_s);
+    this->m_deferredPreview.reset();   // superseded by this request
+    this->remotePreviewWatcher.setProperty("requestId", ++this->currentRemotePreviewRequestId);
+    // Adaptive preview downsample — target the user's PreviewTargetMb
+    // setting (default 100 MB). For a small cube this comes out to
+    // factor 1 (the preview IS the full data); for an SKA-scale cube
+    // it can reach 30-60 per axis and we still hit the target. See
+    // computePreviewDownsample() docstring for the math.
+    // Use a short-lived Settings instance pointed at the canonical
+    // workDir (matches MainWindow's construction at startup); this
+    // reads from the same Cube/preview_target_mb key the dialog
+    // would write to once we wire the UI.
+    const QString workDir = QDir::home().absoluteFilePath(qApp->applicationName());
+    Settings settings(workDir);
+    const int targetMb = settings.getPreviewTargetMb();
+    const int downsample = computePreviewDownsample(
+            this->remoteDatasetWidth,
+            this->remoteDatasetHeight,
+            this->remoteDatasetDepth,
+            static_cast<double>(targetMb));
+    this->m_previewStride = std::max(1, downsample);
+    qDebug().noquote() << QStringLiteral(
+            "[preview-debug] launching fetcher requestId=%1 url=%2 dataset=%3 "
+            "cube=%4x%5x%6 target=%7MB downsample=%8")
+                                  .arg(this->currentRemotePreviewRequestId)
+                                  .arg(this->remoteBackendUrl)
+                                  .arg(this->remoteDatasetId)
+                                  .arg(this->remoteDatasetWidth)
+                                  .arg(this->remoteDatasetHeight)
+                                  .arg(this->remoteDatasetDepth)
+                                  .arg(targetMb)
+                                  .arg(downsample);
+    this->remotePreviewWatcher.setFuture(
+            QtConcurrent::run(&fetchRemotePreview, this->remoteBackendUrl, this->remoteDatasetId,
+                              downsample, this->remoteSessionId, this->remoteBackendToken));
+    qDebug().noquote() << QStringLiteral("[preview-debug] setFuture returned, isRunning=%1")
+                                  .arg(this->remotePreviewWatcher.isRunning());
 }
 
 void vtkWindowCube::updateSlice()
@@ -13570,6 +13607,7 @@ void vtkWindowCube::setupInspector()
                 this->setBeamInfo(majorDeg, minorDeg, paDeg);
             });
     this->refreshUnitAndBeamRows();
+    this->addSimulationInspectorRows(panel);
 
     // Flatten a re-hosted stat widget so it reads as a value, not an input box.
     const QString statCss =
@@ -15206,6 +15244,8 @@ void vtkWindowCube::applyMomentToolGate()
             u"acts on the 2D Slice, show it in a pane (the pane's ▾ menu)"_s;
     static const QString reasonNo3d =
             u"acts on the 3D view, show it in a pane (the pane's ▾ menu)"_s;
+    static const QString reasonSliceAcrossXY =
+            u"reads the cube's x and y pixels: set the slice along Z (Inspector, Slice)"_s;
     static const QString reasonNoProbe =
             u"probe a pixel first (Extract Spectrum, or Pick Spectrum on the 3D plane)"_s;
     static const QString reasonNoRegion =
@@ -15220,7 +15260,7 @@ void vtkWindowCube::applyMomentToolGate()
             u"select a region first (click it on the 2D Slice)"_s;
     // Every reason this function writes, so a tooltip of ours is never mistaken
     // for the tool's own sentence and cached over it.
-    static const QSet<QString> ourReasons{ reasonNoSlice,      reasonNo3d,
+    static const QSet<QString> ourReasons{ reasonNoSlice,      reasonNo3d, reasonSliceAcrossXY,
                                            reasonNoProbe,      reasonNoRegion,
                                            reasonNoImageView,  reasonNoLinkTargets,
                                            reasonNoMoment,     reasonNoSelectedRegion };
@@ -15275,6 +15315,7 @@ void vtkWindowCube::applyMomentToolGate()
     in.spectralAxis = !CubeToolGate::isSpatialAxisType(this->remoteDatasetCtype[2]);
     in.celestialWcs = this->remoteDatasetCtype[0].trimmed().isEmpty()
             || this->remoteHasCelestialAxes();
+    in.sliceAlongZ = this->sliceAlongZ();
     const CubeToolGate::Decision d = CubeToolGate::evaluate(in);
 
     // Hidden rather than greyed: no state would ever make these apply to this
@@ -15344,7 +15385,7 @@ void vtkWindowCube::applyMomentToolGate()
         if (!viewShown) {
             if (keepArmedSlice && a->isChecked())
                 continue;   // running, and its pane is only hidden by the zoom
-            applyGate(a, false, reasonNoSlice);
+            applyGate(a, false, in.sliceAlongZ ? reasonNoSlice : reasonSliceAcrossXY);
         } else {
             applyGate(a, baseline, QString());
             // Enabled because a moment pane could become the slice — but a tool

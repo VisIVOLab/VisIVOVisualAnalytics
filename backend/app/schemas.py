@@ -105,6 +105,32 @@ class DatasetField(BaseModel):
     path: str      # what /v1/datasets/open takes to open it
 
 
+class PhysicalUnitsInfo(BaseModel):
+    """How a simulation variable is shown in physical units (issue #524): a
+    viewer shows ``value * value_factor`` in ``value_unit`` and a coordinate
+    ``* length_factor`` in ``length_unit``; the data itself stays in code
+    units. Each ``*_source`` is "definitions" (the run's definitions.h),
+    "user" (typed with /v1/datasets/units) or "none" (code units, factor 1)."""
+    active: bool = False
+    source: str = "none"
+    origin: str = ""                    # the definitions file the factors came from
+    variable: str = ""
+    # The run's code units in cgs, when known (UNIT_DENSITY, UNIT_LENGTH, UNIT_VELOCITY).
+    unit_density: float | None = None
+    unit_length: float | None = None
+    unit_velocity: float | None = None
+    value_factor: float = 1.0
+    value_unit: str = ""
+    value_quantity: str = ""            # density, velocity, pressure, magnetic or ""
+    value_source: str = "none"
+    length_factor: float = 1.0
+    length_unit: str = ""
+    length_source: str = "none"
+    time_factor: float = 1.0            # the code time unit in seconds
+    time_unit: str = ""
+    time_code: float | None = None      # the output's time in code units (PLUTO)
+
+
 class OpenDatasetResponse(BaseModel):
     valid: bool
     error: str
@@ -155,6 +181,13 @@ class OpenDatasetResponse(BaseModel):
     # field shown, and every field of the file with the path that opens it.
     field_name: str = ""
     fields: list[DatasetField] = []
+    # True for a volume of a simulation (a VBT field, a PLUTO variable, or a
+    # cube whose axes are X, Y, Z): its slice may be taken along x, y or z at
+    # a coordinate, where a spectral cube only steps through channels (#524).
+    simulation_volume: bool = False
+    # Physical units of the values, coordinates and time (issue #524); null
+    # for a dataset that has none to give (an image, a spectral cube).
+    physical_units: PhysicalUnitsInfo | None = None
     # A VBT volume (issue #165): the byte order its values are read in, the
     # one its header declares, and a warning when they look like the other.
     byte_order: str = ""
@@ -250,6 +283,10 @@ class CubePreviewRequest(BaseModel):
     #: every ``downsample``-th voxel. ``strided``: every ``downsample``-th
     #: voxel whatever exists.
     source: Literal["auto", "strided"] = "auto"
+    #: Physical units of a simulation volume (issue #524): the values come back
+    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: file's own (code) units.
+    value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 
 
 class CubePreviewResponse(BaseModel):
@@ -307,6 +344,10 @@ class CubeRegionLevelRequest(BaseModel):
     #: ``pyramid``: from the pyramid only (409 without one); ``strided``:
     #: every ``2^level``-th voxel of the cube. Level 0 is always the cube.
     source: Literal["auto", "pyramid", "strided"] = "auto"
+    #: Physical units of a simulation volume (issue #524): the values come back
+    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: file's own (code) units.
+    value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 
 
 class PyramidStatusRequest(BaseModel):
@@ -341,8 +382,13 @@ class PyramidStatusResponse(BaseModel):
 
 class CubeSliceRequest(BaseModel):
     dataset_id: str
+    #: "z" (a channel, the default of every spectral cube), or, on a
+    #: simulation volume, "x" or "y": the plane is then y by z or x by z.
     axis: str
-    index: int
+    index: int = 0
+    #: The plane nearest to this coordinate of the axis, in the cube's world
+    #: unit (code units for a simulation): instead of ``index`` when given.
+    coordinate: float | None = None
     #: The longest side of the answer, in samples: the plane (or the region
     #: below) is read every ``stride`` pixels so that neither side exceeds it.
     #: 0 is the whole resolution, what clients before issue #381 get: a
@@ -354,6 +400,10 @@ class CubeSliceRequest(BaseModel):
     x1: int | None = None
     y0: int | None = None
     y1: int | None = None
+    #: Physical units of a simulation volume (issue #524): the values come back
+    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: file's own (code) units.
+    value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 
 
 class CubeSliceResponse(BaseModel):
@@ -373,6 +423,11 @@ class CubeSliceResponse(BaseModel):
     x0: int = 0
     y0: int = 0
     stride: int = 1
+    #: The plane served: its axis, its 0-based index along it and how many
+    #: planes the axis has (what a coordinate was resolved to).
+    axis: str = "z"
+    index: int = 0
+    planes: int = 0
 
 
 class CubeSubvolumeRequest(BaseModel):
@@ -383,6 +438,10 @@ class CubeSubvolumeRequest(BaseModel):
     y1: int
     z0: int
     z1: int
+    #: Physical units of a simulation volume (issue #524): the values come back
+    #: multiplied by this factor (``PhysicalUnitsInfo.value_factor``); 1 is the
+    #: file's own (code) units.
+    value_scale: float = Field(1.0, gt=0, allow_inf_nan=False)
 
 
 class CubeSubvolumeResponse(BaseModel):

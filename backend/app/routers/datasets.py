@@ -209,6 +209,9 @@ async def open_dataset(
         session.session_id[:8] + "…", dataset_id, kind, path,
     )
     response = _build_open_response(dataset_id, session.session_id, kind, geometry)
+    response.simulation_volume = _is_simulation_volume(registered_path, kind, geometry)
+    if response.simulation_volume:
+        response.physical_units = await asyncio.to_thread(_physical_units_info, registered_path)
     if orders:
         response.byte_order = orders["byte_order"]
         response.byte_order_declared = orders["byte_order_declared"]
@@ -275,6 +278,97 @@ async def pixel_to_sky(
                                        request.z)
     except Exception as exc:
         return PixelToSkyResponse(valid=False, error=str(exc))
+
+
+# ── Simulation volumes: slice axes and physical units (issue #524) ──────────
+
+def _is_simulation_volume(path: str, kind: str, geometry: dict[str, Any]) -> bool:
+    from .. import physical_units as pu  # noqa: PLC0415
+    return pu.is_simulation_volume(path, kind, geometry.get("ctype", []))
+
+
+def _physical_units_info(path: str) -> PhysicalUnitsInfo:
+    from .. import physical_units as pu  # noqa: PLC0415
+    from .. import pluto_source  # noqa: PLC0415
+    units = pu.dataset_units(path)
+    run = units.run
+    code_time = None
+    if pluto_source.split_ref(path)[1] is not None:
+        try:
+            code_time = float(pluto_source.resolve(path).record.time)
+        except (OSError, ValueError, AttributeError):
+            code_time = None
+    sources = [s.source for s in (units.value, units.length)]
+    return PhysicalUnitsInfo(
+        active=units.active,
+        source="user" if "user" in sources or run.source == "user" else (
+            run.source if units.active else "none"),
+        origin=run.origin, variable=units.variable,
+        unit_density=run.density, unit_length=run.length, unit_velocity=run.velocity,
+        value_factor=units.value.factor, value_unit=units.value.unit,
+        value_quantity=units.value.quantity, value_source=units.value.source,
+        length_factor=units.length.factor, length_unit=units.length.unit,
+        length_source=units.length.source,
+        time_factor=units.time.factor, time_unit=units.time.unit, time_code=code_time)
+
+
+class DatasetUnitsRequest(BaseModel):
+    dataset_id: str
+    #: The run's code units, cgs (PLUTO's UNIT_DENSITY, UNIT_LENGTH,
+    #: UNIT_VELOCITY); pressure, time and the magnetic field follow from them.
+    unit_density: float | None = None
+    unit_length: float | None = None
+    unit_velocity: float | None = None
+    #: A factor and a unit for this variable's values, replacing what the run's
+    #: units give (any format: a VBT field, a FITS cube).
+    value_factor: float | None = None
+    value_unit: str = ""
+    #: A factor and a unit for the coordinates of the run.
+    length_factor: float | None = None
+    length_unit: str = ""
+    #: Forget everything typed for this variable and run (before applying the rest).
+    clear: bool = False
+
+
+class DatasetUnitsResponse(BaseModel):
+    valid: bool
+    error: str = ""
+    physical_units: PhysicalUnitsInfo | None = None
+
+
+@router.post("/v1/datasets/units", response_model=DatasetUnitsResponse, tags=["datasets"])
+async def set_dataset_units(
+    request: DatasetUnitsRequest,
+    _: None = _auth,
+    session: Session = Depends(get_session),
+) -> DatasetUnitsResponse:
+    """Type the physical units of a simulation volume: the run's UNIT_DENSITY /
+    UNIT_LENGTH / UNIT_VELOCITY (cgs), or a factor and unit for this variable
+    and for the coordinates, or ``clear`` them. They are kept with the file
+    (``app.physical_units``), shared by every variable of a PLUTO run, so a
+    later open reports them. Values are never rewritten: viewers show
+    ``value * value_factor``."""
+    entry = _require_dataset(session, request.dataset_id)
+    if not _is_simulation_volume(entry["path"], entry.get("kind", ""),
+                                 {"ctype": entry.get("ctype", [])}):
+        return DatasetUnitsResponse(
+            valid=False, error="Physical units apply to a simulation volume.")
+    from .. import physical_units as pu  # noqa: PLC0415
+    run = {k: v for k, v in (("unit_density", request.unit_density),
+                             ("unit_length", request.unit_length),
+                             ("unit_velocity", request.unit_velocity)) if v is not None}
+    try:
+        await asyncio.to_thread(
+            pu.set_user, entry["path"], run=run or None,
+            value=None if request.value_factor is None
+            else (request.value_factor, request.value_unit),
+            length=None if request.length_factor is None
+            else (request.length_factor, request.length_unit),
+            clear=request.clear, by=f"session {session.session_id[:8]}")
+        info = await asyncio.to_thread(_physical_units_info, entry["path"])
+    except (ValueError, OSError) as exc:
+        return DatasetUnitsResponse(valid=False, error=str(exc))
+    return DatasetUnitsResponse(valid=True, physical_units=info)
 
 
 # ── Typed beam for a header without one (issue #416) ────────────────────────

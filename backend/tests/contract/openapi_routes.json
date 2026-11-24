@@ -137,6 +137,7 @@
     "POST /v1/datasets/open_skava",
     "POST /v1/datasets/open_url",
     "POST /v1/datasets/pixel_to_sky",
+    "POST /v1/datasets/units",
     "POST /v1/dynspec/dedisperse",
     "POST /v1/dynspec/pulse_profile",
     "POST /v1/dynspec/rfi_mask",

@@ -103,14 +103,21 @@ BackendSaveSubregionResult BackendClient::maskCubeRegion(
 BackendSaveChannel2dResult BackendClient::saveCubeChannelAs2dFits(
         const QString &datasetId,
         int channel,
-        const QString &outputBasename)
+        const QString &outputBasename,
+        const QString &axis,
+        bool physical)
 {
     BackendSaveChannel2dResult result;
     QString error;
-    const QJsonDocument body(QJsonObject{
+    QJsonObject request{
             { QStringLiteral("dataset_id"),      datasetId },
             { QStringLiteral("channel"),         channel },
-            { QStringLiteral("output_basename"), outputBasename } });
+            { QStringLiteral("output_basename"), outputBasename } };
+    if (axis != QLatin1String("z"))
+        request.insert(QStringLiteral("axis"), axis);
+    if (physical)
+        request.insert(QStringLiteral("physical"), true);
+    const QJsonDocument body(request);
     const QByteArray raw =
             performPost(QUrl(m_baseUrl + QStringLiteral("/v1/cube/save_channel_2d")),
                         body, error);

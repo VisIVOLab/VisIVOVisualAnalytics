@@ -85,6 +85,11 @@ struct Inputs
     bool spectralAxis{ true };
     /// The two first axes carry a celestial WCS.
     bool celestialWcs{ true };
+    /// The slice is a z plane (a channel). A simulation volume's slice may be
+    /// taken along x or y (#524): its pixels are then not the cube's x and y,
+    /// so the tools that read or draw cube pixel coordinates have nothing to
+    /// act on until the slice is a z plane again.
+    bool sliceAlongZ{ true };
 };
 
 struct Decision
@@ -122,7 +127,7 @@ inline Decision evaluate(const Inputs &in)
     // Each family needs its own view on screen — that is where it draws its
     // overlay and where its interactor observer lives. Nothing else about the
     // layout matters, the focused pane included.
-    d.slice2dTools = in.slice2dVisible || in.slicePaneAvailable;
+    d.slice2dTools = in.sliceAlongZ && (in.slice2dVisible || in.slicePaneAvailable);
     d.regionTools = d.slice2dTools || in.regionMapVisible;
     d.view3dTools = in.view3dVisible;
     // These four gate on state, not on the layout: a spectrum can be probed on

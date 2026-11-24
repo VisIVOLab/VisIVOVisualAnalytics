@@ -87,18 +87,20 @@ BackendRegionLevelResult BackendClient::requestRegionLevel(const QString &datase
                                                            const QString &source) const
 {
     BackendRegionLevelResult result;
+    QJsonObject levelRequest{ { QStringLiteral("dataset_id"), datasetId },
+                              { QStringLiteral("level"), level },
+                              { QStringLiteral("x0"), x0 },
+                              { QStringLiteral("x1"), x1 },
+                              { QStringLiteral("y0"), y0 },
+                              { QStringLiteral("y1"), y1 },
+                              { QStringLiteral("z0"), z0 },
+                              { QStringLiteral("z1"), z1 },
+                              { QStringLiteral("ghost"), ghost },
+                              { QStringLiteral("source"), source } };
+    if (const double scale = displayValueScale(datasetId); scale != 1.0)
+        levelRequest.insert(QStringLiteral("value_scale"), scale);
     const BinaryReply reply = this->binaryPoster()(
-            QStringLiteral("/v1/cube/region_level_bin"),
-            QJsonObject{ { QStringLiteral("dataset_id"), datasetId },
-                         { QStringLiteral("level"), level },
-                         { QStringLiteral("x0"), x0 },
-                         { QStringLiteral("x1"), x1 },
-                         { QStringLiteral("y0"), y0 },
-                         { QStringLiteral("y1"), y1 },
-                         { QStringLiteral("z0"), z0 },
-                         { QStringLiteral("z1"), z1 },
-                         { QStringLiteral("ghost"), ghost },
-                         { QStringLiteral("source"), source } });
+            QStringLiteral("/v1/cube/region_level_bin"), levelRequest);
     result.httpStatus = reply.status;
     if (!reply.ok) {
         // The route's refusals (409, 413, 422) are one plain-text sentence:
