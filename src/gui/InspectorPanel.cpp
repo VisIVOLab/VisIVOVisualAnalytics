@@ -80,6 +80,19 @@ void fitLineEditToText(QLineEdit *edit)
     QObject::connect(edit, &QLineEdit::textChanged, edit, refit);
 }
 
+/// The Inspector never scrolls sideways: a control that does not fit would sit
+/// beyond the right edge where nobody can reach it (the Estimate button of the
+/// contour panel, the last tab). The scroll area gives its page the viewport's
+/// width, whatever the page's own minimum, and the controls inside are made to
+/// shrink to it (wrapped form rows, combo boxes with a short minimum length).
+/// Call it once the page is made, before it is set on the scroll area.
+void fitPageToViewportWidth(QScrollArea *scroll, QWidget *page)
+{
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Ignored: QScrollArea then takes no minimum width from the page.
+    page->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+}
+
 } // namespace
 
 InspectorPanel::InspectorPanel(QWidget *parent)
@@ -95,11 +108,15 @@ InspectorPanel::InspectorPanel(QWidget *parent)
 
     // ── Tabs ──────────────────────────────────────────────────────────────────
     m_tabs = new QTabWidget(this);
-    // Three short labels fit 320px easily — never elide them; and trim the tab
-    // padding (the global QSS default was wide enough to force truncation).
-    m_tabs->tabBar()->setElideMode(Qt::ElideNone);
+    // Properties, Analysis, Parameters and Copilot have to fit 320 px: trim the
+    // tab padding (the global QSS default was wide enough to force truncation).
+    // Scroll arrows would hide the last tab behind them; if a font ever makes
+    // the labels wider than the panel they are elided instead, all four still
+    // reachable.
+    m_tabs->tabBar()->setElideMode(Qt::ElideRight);
+    m_tabs->tabBar()->setUsesScrollButtons(false);
     m_tabs->tabBar()->setExpanding(false);
-    m_tabs->setStyleSheet(QStringLiteral("QTabBar::tab { padding: 8px 12px; }"));
+    m_tabs->setStyleSheet(QStringLiteral("QTabBar::tab { padding: 8px 8px; }"));
     root->addWidget(m_tabs, 1);
 
     // Properties (scrollable — hosts KV rows plus migrated setting sections)
@@ -113,6 +130,7 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_propsLayout->setContentsMargins(4, 8, 4, 4);
     m_propsLayout->setSpacing(4);
     m_propsLayout->addStretch(1);
+    fitPageToViewportWidth(propsScroll, m_propsPage);
     propsScroll->setWidget(m_propsPage);
     m_tabs->addTab(propsScroll, u"Properties"_s);
 
@@ -125,6 +143,7 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_analysisLayout->setContentsMargins(4, 8, 4, 4);
     m_analysisLayout->setSpacing(2);
     m_analysisLayout->addStretch(1);
+    fitPageToViewportWidth(analysisScroll, m_analysisPage);
     analysisScroll->setWidget(m_analysisPage);
     m_tabs->addTab(analysisScroll, u"Analysis"_s);
 
@@ -133,7 +152,6 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     auto *provScroll = new QScrollArea(m_tabs);
     provScroll->setWidgetResizable(true);
     provScroll->setFrameShape(QFrame::NoFrame);
-    provScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_provPage = new QWidget(provScroll);
     m_provLayout = new QVBoxLayout(m_provPage);
     m_provLayout->setContentsMargins(4, 8, 4, 4);
@@ -215,6 +233,7 @@ InspectorPanel::InspectorPanel(QWidget *parent)
     m_provLayout->addWidget(m_provBody);
     m_provLayout->addWidget(exportBtn);
     m_provLayout->addStretch(1);
+    fitPageToViewportWidth(provScroll, m_provPage);
     provScroll->setWidget(m_provPage);
     m_tabs->addTab(provScroll, u"Parameters"_s);
 }

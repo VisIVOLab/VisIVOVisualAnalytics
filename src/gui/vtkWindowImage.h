@@ -579,7 +579,8 @@ private:
     };
     QVector<ExternalContourLayer> m_externalContourLayers;
     void addExternalContours();
-    /// Why the levels of an external layer are not the usual ones, or "".
+    /// What the panel says about @p layer: why the levels of an external file are
+    /// not the usual ones, and what the layer reports itself (ContourLayer::problem).
     QString noteOfContourLayer(const ContourLayer *layer) const;
     /// Draws the contours of a layer already aligned to the master (issue #500),
     /// with the levels and style of the contour panel (3, 5, 10, 20 sigma to start).

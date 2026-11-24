@@ -37,6 +37,7 @@ private slots:
     void joinedLinesCarryLevelColourAndDash();
     void dashesFollowTheLengthAndRoundCorners();
     void largeImagesAreThinned();
+    void thinningIsSaidInTheNote();
     void signedMultiplesGiveNegativeLevels();
     void defaultLevelsAreThreeFiveTenTwentySigma();
     void radioImagesAlsoGetMinusThreeSigmaDashed();

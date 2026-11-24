@@ -73,6 +73,9 @@ public:
     /// thinned, that it is; empty when there is nothing to say.
     QString setSettings(const visivo::contours::Settings &settings);
     const visivo::contours::Settings &settings() const { return m_settings; }
+    /// What setSettings() said, as of now (the image may have changed since):
+    /// for whoever shows the panel of a layer without applying settings.
+    QString problem() const;
     /// The levels in effect, ascending.
     const std::vector<double> &levels() const { return m_levels; }
 
@@ -145,6 +148,7 @@ private:
     double m_worldPerPixel{ 1.0 };
     double m_arcsecPerPixel{ 0.0 };
     visivo::contours::Settings m_settings;
+    QString m_problem;   ///< of the last setSettings(), without the note on thinning
     std::vector<double> m_levels;
     /// The colour of each level (0-255 RGB), as it is drawn.
     std::vector<std::array<unsigned char, 3>> m_colours;

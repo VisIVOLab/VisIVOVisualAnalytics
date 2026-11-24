@@ -398,10 +398,18 @@ void vtkWindowImage::refreshContourTargets()
 
 QString vtkWindowImage::noteOfContourLayer(const ContourLayer *layer) const
 {
-    for (const auto &ext : m_externalContourLayers)
-        if (ext.layer.get() == layer && !ext.note.isEmpty())
-            return ext.note.left(1).toUpper() + ext.note.mid(1);
-    return QString();
+    // What the layer says about its own contours (no levels, a smoothing it
+    // cannot convert, a thinned image) comes with every layer, the image's own
+    // included: the panel is cleared and refilled each time the pick changes, and
+    // used to lose it here.
+    QString text = layer ? layer->problem() : QString();
+    for (const auto &ext : m_externalContourLayers) {
+        if (ext.layer.get() != layer || ext.note.isEmpty())
+            continue;
+        const QString why = ext.note.left(1).toUpper() + ext.note.mid(1);
+        text = text.isEmpty() ? why : why + u"\n"_s + text;
+    }
+    return text;
 }
 
 void vtkWindowImage::addExternalContours()

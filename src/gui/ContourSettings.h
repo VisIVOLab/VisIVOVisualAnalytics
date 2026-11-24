@@ -491,6 +491,19 @@ inline int thinStride(long long width, long long height, long long maxPixels)
     return std::max(stride, 1);
 }
 
+/// The line for the panel when a @p width x @p height image is thinned before it is
+/// contoured (see thinStride); empty when it is not.
+inline QString thinningNote(long long width, long long height, long long maxPixels)
+{
+    const int stride = thinStride(width, height, maxPixels);
+    if (stride <= 1)
+        return QString();
+    return QStringLiteral("Large image (%1 Mpx): the contours are drawn on 1 pixel in %2 along "
+                          "each axis.")
+            .arg(double(width) * double(height) / 1e6, 0, 'f', 0)
+            .arg(stride);
+}
+
 // ── Joining segments into lines ──
 // The contour filter gives one segment per grid cell it crosses; a dash pattern
 // and a region file need the lines those segments make. VTK's own joiner is far

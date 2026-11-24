@@ -770,18 +770,21 @@ QString ContourLayer::setSettings(const vc::Settings &settings)
     else if (m_colours != colours || dashNegative != m_settings.dashNegative)
         changed(/*geometry=*/false);
 
+    m_problem = problem;
+    return this->problem();
+}
+
+QString ContourLayer::problem() const
+{
     // Say when the image is thinned.
+    QString out = m_problem;
     int w = 0, h = 0;
     if (inputPixels(&w, &h) > 0) {
-        const int stride = vc::thinStride(w, h, m_maxPixels);
-        if (stride > 1) {
-            const QString note = u"Large image (%1 Mpx): the contours are drawn on 1 pixel in %2 along each axis."_s
-                                         .arg(double(w) * double(h) / 1e6, 0, 'f', 0)
-                                         .arg(stride);
-            problem = problem.isEmpty() ? note : problem + u"\n"_s + note;
-        }
+        const QString note = vc::thinningNote(w, h, m_maxPixels);
+        if (!note.isEmpty())
+            out = out.isEmpty() ? note : out + u"\n"_s + note;
     }
-    return problem;
+    return out;
 }
 
 void ContourLayer::applyStyle()

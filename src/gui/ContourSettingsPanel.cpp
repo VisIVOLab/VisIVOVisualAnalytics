@@ -49,6 +49,11 @@ ContourSettingsPanel::ContourSettingsPanel(QWidget *parent) : QWidget(parent)
     m_form = new QFormLayout();
     m_form->setHorizontalSpacing(8);
     m_form->setVerticalSpacing(4);
+    // The Inspector is 320 px wide by default: a row whose field does not fit
+    // beside its label puts the field under it, and the fields take the width
+    // there is (the macOS style would keep them at their size hint).
+    m_form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    m_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     outer->addLayout(m_form);
 
     m_levelMode = new QComboBox(this);

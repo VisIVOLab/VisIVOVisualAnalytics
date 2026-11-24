@@ -482,6 +482,16 @@ void TestContourSettings::largeImagesAreThinned()
     QCOMPARE(vc::thinStride(0, 10, 100), 1);
 }
 
+void TestContourSettings::thinningIsSaidInTheNote()
+{
+    // The SDP9 continuum as shown: 5184 x 5184, thinned 1 in 3.
+    const QString note = vc::thinningNote(5184, 5184, 4'000'000);
+    QVERIFY(note.contains(QStringLiteral("1 pixel in 3")));
+    QVERIFY(note.contains(QStringLiteral("27 Mpx")));
+    QVERIFY(vc::thinningNote(2000, 2000, 4'000'000).isEmpty());
+    QVERIFY(vc::thinningNote(0, 0, 4'000'000).isEmpty());
+}
+
 void TestContourSettings::signedMultiplesGiveNegativeLevels()
 {
     vc::Settings s;
