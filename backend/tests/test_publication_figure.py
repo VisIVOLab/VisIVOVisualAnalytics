@@ -373,3 +373,89 @@ def test_desktop_colour_maps_with_a_stand_in_resolve():
     from app.publication_figure import resolve_cmap
     assert resolve_cmap("Glow").name == "hot"
     assert resolve_cmap("Default").name == "inferno"
+
+
+@pytest.mark.asyncio
+async def test_svg_keeps_its_text_as_text_and_pdf_embeds_truetype(client, ds):
+    """Journals and editors need to edit the labels: matplotlib's default turns every
+    glyph of an SVG into an outline and writes Type 3 fonts into a PDF."""
+    svg = await _fig(client, ds, output_basename="text41.svg", title="Blob title", xlabel="East")
+    text = Path(svg["output_path"]).read_text()
+    assert "<text" in text and "Blob title" in text and "East" in text
+    pdf = await _fig(client, ds, output_basename="text41.pdf", title="Blob title")
+    data = Path(pdf["output_path"]).read_bytes()
+    assert b"/CIDFontType2" in data and b"/Type3" not in data   # TrueType outlines
+    # the setting is the save's, not the process's
+    import matplotlib  # noqa: PLC0415
+    assert matplotlib.rcParams["svg.fonttype"] == "path"
+
+
+@pytest.fixture
+async def ds_nan(client, opened_image, beam_image, tmp_path):
+    """The blob with its left strip blank (NaN), as outside the disc of a map."""
+    with fits.open(beam_image) as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    data[:, :40] = np.nan
+    p = tmp_path / "blank.fits"
+    fits.PrimaryHDU(data, header).writeto(p)
+    h = opened_image["headers"]
+    r = await client.post("/v1/datasets/open", json={"path": str(p)}, headers=h)
+    assert r.json()["valid"], r.json()
+    return {"id": r.json()["dataset_id"], "headers": h}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stretch", ["linear", "log"])
+async def test_blank_pixels_are_not_the_top_colour(client, ds_nan, stretch):
+    """astropy's clip dropped the mask, so a NaN came out as the top colour (black in
+    Greys); it is the page's white."""
+    _, px = await _preview(client, ds_nan, cmap="Greys", stretch=stretch, vmin=-0.05, vmax=1.0,
+                           add_colorbar=False, add_grid=False, width_in=6, height_in=4.8,
+                           preview_px=600)
+    h, w = px.shape[:2]
+    # The axes span about 0.125..0.9 of the width and 0.11..0.88 of the height: the
+    # blank strip is the left fifth of them, the blob (dark) is at their centre.
+    strip = px[int(0.3 * h):int(0.7 * h), int(0.15 * w):int(0.2 * w)]
+    assert strip.mean() > 0.95, strip.mean()
+    centre = px[int(0.45 * h):int(0.55 * h), int(0.5 * w):int(0.55 * w)]
+    assert centre.mean() < 0.6, centre.mean()
+
+
+@pytest.mark.asyncio
+async def test_blank_pixels_in_every_format(client, ds_nan):
+    for ext in ("pdf", "svg", "eps"):
+        body = await _fig(client, ds_nan, output_basename=f"blank41.{ext}", cmap="Greys")
+        assert body["valid"], body["error"]
+
+
+@pytest.mark.parametrize("position", ["bottom", "top"])
+@pytest.mark.parametrize("tick_size", [10.0, 14.0])
+@pytest.mark.parametrize("stretch", ["linear", "log", "squared", "asinh", "sqrt"])
+def test_horizontal_colour_bar_labels_do_not_overlap(position, tick_size, stretch):
+    from astropy.visualization import (AsinhStretch, ImageNormalize, LinearStretch, LogStretch,
+                                       PowerStretch, SqrtStretch)
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+    from app.publication_figure import _shorten_horizontal_ticks
+    fig = Figure(figsize=(6.4, 4.8), dpi=100)
+    canvas = FigureCanvasAgg(fig)
+    ax = fig.add_subplot(1, 1, 1)
+    im = ax.imshow(np.linspace(-1.4e-4, 1.75e-4, 100).reshape(10, 10),
+                   norm=ImageNormalize(vmin=-1.4e-4, vmax=1.75e-4, stretch={
+                       "linear": LinearStretch(), "log": LogStretch(), "squared": PowerStretch(2.0),
+                       "asinh": AsinhStretch(), "sqrt": SqrtStretch()}[stretch]))
+    cbar = fig.colorbar(im, ax=ax, location=position, fraction=0.046, pad=0.14)
+    cbar.ax.tick_params(labelsize=tick_size)
+    _shorten_horizontal_ticks(cbar, fig, tick_size, "sans-serif")
+    canvas.draw()
+    renderer = canvas.get_renderer()
+    labels = [t for t in cbar.ax.get_xticklabels() if t.get_text() and t.get_visible()]
+    boxes = [t.get_window_extent(renderer) for t in labels]
+    boxes.append(cbar.ax.xaxis.get_offset_text().get_window_extent(renderer))
+    assert len(labels) >= 2
+    for i, a in enumerate(boxes):
+        for b in boxes[i + 1:]:
+            assert not a.overlaps(b), (a, b)
+    # short: nothing like -0.00015 is printed
+    assert all(len(t.get_text()) <= 6 for t in labels), [t.get_text() for t in labels]

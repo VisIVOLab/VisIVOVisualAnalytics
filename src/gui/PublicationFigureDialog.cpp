@@ -51,7 +51,8 @@ QDoubleSpinBox *spin(double lo, double hi, double value, int decimals, QWidget *
     s->setDecimals(decimals);
     s->setValue(value);
     s->setSuffix(suffix);
-    s->setKeyboardTracking(false);
+    // Keyboard tracking stays on: a size typed in the box reaches the preview as it
+    // is typed (through the dialog's one debounce), not only after Tab.
     return s;
 }
 }   // namespace
@@ -172,11 +173,16 @@ void PublicationFigureDialog::build()
     w->compass->setChecked(d.compass);
     w->compassPosition = combo(kCorners, d.compassPosition, over);
     const auto &ov = *m_ctx.overlays;
-    w->contours = new QCheckBox(u"Contours of the window"_s, over);
+    // The image's own contours and every external set the window shows are drawn
+    // together; the "Contours of" box in the window only picks which set its panel edits.
+    const auto nSets = static_cast<int>(ov.contourSources.size());
+    w->contours = new QCheckBox(nSets > 1 ? u"Contours of the window (%1 sets)"_s.arg(nSets)
+                                          : u"Contours of the window"_s,
+                                over);
     w->contours->setChecked(d.contours && ov.hasContours());
     w->contours->setEnabled(ov.hasContours());
     w->contours->setToolTip(ov.hasContours()
-                                    ? u"The image's own and the external contours, as drawn."_s
+                                    ? u"The image's own and the external contours, all together, as drawn."_s
                                     : u"Show contours in the window first."_s);
     w->regions = new QCheckBox(u"Regions (%1)"_s.arg(ov.regions.size()), over);
     w->regions->setChecked(d.regions && !ov.regions.isEmpty());
@@ -207,7 +213,6 @@ void PublicationFigureDialog::build()
     w->dpi = new QSpinBox(out);
     w->dpi->setRange(30, 1200);
     w->dpi->setValue(d.dpi);
-    w->dpi->setKeyboardTracking(false);
     w->crop = new QCheckBox(u"Trim the white margin"_s, out);
     w->crop->setChecked(d.crop);
     fx->addRow(u"Format"_s, w->format);
@@ -342,6 +347,13 @@ void PublicationFigureDialog::runPreview()
     // A preview of a dialog that has closed would be a request nobody reads.
     if (!isVisible())
         return;
+    // While a range is being typed the minimum may pass the maximum for a moment
+    // (the preview follows the keys): that is not asked of the backend, the last
+    // picture stays and the status says what is waited for.
+    if (w->useRange->isChecked() && w->vmin->value() >= w->vmax->value()) {
+        m_status->setText(u"The minimum must be below the maximum."_s);
+        return;
+    }
     if (m_inFlight) {
         m_dirty = true;
         return;

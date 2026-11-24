@@ -110,10 +110,63 @@ def _norm(data: np.ndarray, req):
         hi = float(req.vmax) if req.vmax is not None else float(finite.max())
     if not lo < hi:
         raise ValueError("The range needs a minimum below the maximum.")
-    # clip: a pixel below the range is the lowest colour, not a negative number for
-    # a stretch (sqrt, log, power) to turn into a hole. Blanks stay blank because
-    # the image is drawn as a masked array.
-    return ImageNormalize(vmin=lo, vmax=hi, stretch=stretches[req.stretch](), clip=True)
+    # No clip=True here: astropy's clip drops the mask, so a blank pixel (outside the
+    # image disc) would come out as the top colour. The data are clipped to the range
+    # by ``_masked`` instead, which keeps the blanks blank.
+    return ImageNormalize(vmin=lo, vmax=hi, stretch=stretches[req.stretch](), clip=False)
+
+
+def _masked(data: np.ndarray, norm) -> np.ma.MaskedArray:
+    """``data`` as drawn: a pixel below or above the range is the lowest or highest
+    colour (not a negative number for a stretch such as sqrt, log or power to turn
+    into a hole), and a blank (NaN) pixel stays masked, so it takes the colour map's
+    bad colour."""
+    # One copy of the picture (a large image is held once more here, not twice): the
+    # masked array owns its data, which are clipped in place.
+    if data.dtype.kind != "f":
+        data = data.astype(np.float32)
+    out = np.ma.masked_invalid(data, copy=True)
+    np.clip(out.data, norm.vmin, norm.vmax, out=out.data)
+    return out
+
+
+def _with_blank_colour(cmap):
+    """A copy of ``cmap`` whose bad colour is transparent: blank pixels leave the
+    background (white) of the page, in the raster and in the vector files, instead
+    of the colour map's own bad colour or its top colour. A copy, because the
+    registry's maps are shared."""
+    return cmap.with_extremes(bad=(1.0, 1.0, 1.0, 0.0))
+
+
+# Text stays text in the vector files: SVG keeps <text> elements (editable in a
+# journal's or an editor's tools), PDF and EPS embed TrueType (42), not Type 3 glyph
+# outlines. Set around the save, not in the global rc.
+_VECTOR_TEXT_RC = {"svg.fonttype": "none", "pdf.fonttype": 42, "ps.fonttype": 42}
+
+
+def _shorten_horizontal_ticks(cbar, fig, tick_size: float, family: str) -> None:
+    """Fewer, shorter tick labels on a horizontal colour bar. Its labels sit side by
+    side, so a range such as -1.4e-4..1.75e-4 printed in full (-0.00015, -0.00010) runs
+    them together at the ends: the number of ticks follows the bar's length and the
+    common power of ten moves to one multiplier at the end of the bar."""
+    from astropy.visualization import LinearStretch  # noqa: PLC0415
+    from matplotlib.ticker import FixedLocator, MaxNLocator, ScalarFormatter  # noqa: PLC0415
+    length_pt = cbar.ax.get_position().width * fig.get_figwidth() * 72.0
+    # A label of a short number is about six characters of 0.6 em; keep a gap as wide.
+    nbins = int(max(2, min(8, length_pt // (8.0 * tick_size))))
+    fmt = ScalarFormatter()   # plain text, so the family asked for applies to it
+    fmt.set_powerlimits((-3, 4))
+    stretch = getattr(cbar.norm, "stretch", None)
+    if stretch is None or isinstance(stretch, LinearStretch):
+        cbar.locator = MaxNLocator(nbins=nbins)
+    else:
+        # The bar's axis is stretched (log, sqrt, ...): ticks evenly spaced in data
+        # would crowd at one end, so they are evenly spaced along the bar instead.
+        n = max(2, min(nbins, 5))
+        cbar.locator = FixedLocator(cbar.norm.inverse(np.linspace(0.0, 1.0, n)))
+    cbar.formatter = fmt
+    cbar.update_ticks()
+    cbar.ax.xaxis.get_offset_text().set(fontsize=tick_size, fontfamily=family)
 
 
 def _set_ticks(coords, native: str, req) -> None:
@@ -137,7 +190,7 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
     from matplotlib.figure import Figure  # noqa: PLC0415
 
     fmt = format_of(output_path) if output_path else "png"
-    cmap = resolve_cmap(req.cmap)
+    cmap = _with_blank_colour(resolve_cmap(req.cmap))
     family = check_font(req.font_family)
     color = _overlay_color(cmap, req.overlay_color)
     height, width = data.shape
@@ -218,7 +271,7 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
             for lab in (*ax.get_xticklabels(), *ax.get_yticklabels()):
                 lab.set_fontfamily(family)
 
-        im = ax.imshow(np.ma.masked_invalid(shown), origin="lower", cmap=cmap, norm=norm,
+        im = ax.imshow(_masked(shown, norm), origin="lower", cmap=cmap, norm=norm,
                        extent=extent)
         # The limits are the image's from here on: overlays that leave it (a contour
         # of a larger map) must not widen them, and the corners the beam, scale bar
@@ -254,6 +307,8 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
             cbar.set_label(req.colorbar_label or str(header.get("BUNIT", "")).strip() or "value",
                            fontsize=req.colorbar_label_size, fontfamily=family)
             cbar.ax.tick_params(labelsize=req.tick_size)
+            if req.colorbar_position in ("bottom", "top"):
+                _shorten_horizontal_ticks(cbar, fig, req.tick_size, family)
             for lab in cbar.ax.get_yticklabels() + cbar.ax.get_xticklabels():
                 lab.set_fontfamily(family)
 
@@ -261,10 +316,12 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
         kwargs: dict[str, Any] = {"dpi": dpi, "format": fmt}
         if req.crop:
             kwargs["bbox_inches"] = "tight"
-        if output_path:
-            fig.savefig(output_path, **kwargs)
-        else:
-            fig.savefig(buf, **kwargs)
+        import matplotlib  # noqa: PLC0415
+        with matplotlib.rc_context(_VECTOR_TEXT_RC):
+            if output_path:
+                fig.savefig(output_path, **kwargs)
+            else:
+                fig.savefig(buf, **kwargs)
         # Figure() is not in pyplot's registry, so there is nothing to close.
 
     out: dict[str, Any] = {"format": fmt, "notes": notes, "regions_drawn": drawn_regions,
