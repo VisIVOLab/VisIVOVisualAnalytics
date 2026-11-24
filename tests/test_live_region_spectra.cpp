@@ -132,5 +132,70 @@ void TestLiveRegionSpectra::theOverlayLeavesOutTheSelectedAndWhatHasNoPixels()
     QCOMPARE(plan[0].colour, u"#ff8800"_s);   // the region's own colour
     QCOMPARE(plan[1].regionId, 5);
     QCOMPARE(plan[1].name, u"Region 5"_s);    // unnamed: called by its id
-    QCOMPARE(plan[1].colour, defaultRegionColour());
+    // It shares the default colour with the selected region: both are
+    // moved to the palette, so that the curves differ.
+    QVERIFY(plan[1].colour != defaultRegionColour());
+    QVERIFY(plan[1].colour != overlayColours(list, 2).at(2));
+}
+
+void TestLiveRegionSpectra::regionsWithTheSameColourGetDistinctOnes()
+{
+    // Four boxes with the default colour and one with its own.
+    const std::vector<Region> list{ box(1, u"A"_s), box(2, u"B"_s), box(3, u"C"_s),
+                                    box(4, u"D"_s), box(5, u"E"_s, u"#ff8800"_s) };
+    const auto colours = overlayColours(list, 1);
+    QCOMPARE(colours.at(5), u"#ff8800"_s);   // unique: kept
+    QSet<QString> seen;
+    for (const Region &r : list) {
+        QVERIFY(colours.at(r.id) != defaultRegionColour());
+        seen.insert(colours.at(r.id));
+    }
+    QCOMPARE(seen.size(), 5);
+    // The plan carries the same colours (they are what the legend shows).
+    for (const auto &e : overlayPlan(list, 1))
+        QCOMPARE(e.colour, colours.at(e.regionId));
+    // Stable: removing a region that did not collide leaves the others alone.
+    std::vector<Region> fewer = list;
+    fewer.pop_back();
+    const auto again = overlayColours(fewer, 1);
+    for (int id : { 1, 2, 3, 4 })
+        QCOMPARE(again.at(id), colours.at(id));
+    // A palette colour a region holds by itself is not given to another.
+    std::vector<Region> clash{ box(1, u"A"_s), box(2, u"B"_s),
+                               box(3, u"C"_s, overlayPalette().at(2)) };
+    const auto c2 = overlayColours(clash, 1);
+    QVERIFY(c2.at(1) != c2.at(3));
+    QVERIFY(c2.at(2) != c2.at(3));
+    QVERIFY(c2.at(1) != c2.at(2));
+    // Alone with a default colour: it keeps it.
+    QCOMPARE(overlayColours({ box(1, u"A"_s) }, 1).at(1), defaultRegionColour());
+}
+
+void TestLiveRegionSpectra::keepAllTakesEveryRegionWithPixels()
+{
+    Region line = box(2, u"Line 2"_s);
+    line.shape = Shape::Line;
+    Region hidden = box(3, u"Hidden"_s);
+    hidden.visible = false;
+    const std::vector<Region> list{ box(1, u"Box 1"_s), line, hidden, box(4, u"Box 4"_s) };
+    const std::vector<int> want{ 1, 3, 4 };
+    QVERIFY(keepAllTargets(list) == want);
+    QVERIFY(keepAllTargets({}).empty());
+}
+
+void TestLiveRegionSpectra::aKeptSpectrumIsNotKeptTwice()
+{
+    KeptLedger ledger;
+    const auto exists = [](const QString &id) { return id != u"gone"_s; };
+    const QString k = KeptLedger::key(u"sig"_s, u"cube"_s);
+    QVERIFY(ledger.find(1, k, exists).isEmpty());
+    ledger.record(1, k, u"spectrum1"_s);
+    QCOMPARE(ledger.find(1, k, exists), u"spectrum1"_s);
+    // The region moved, or the cube changed: a new spectrum.
+    QVERIFY(ledger.find(1, KeptLedger::key(u"sig2"_s, u"cube"_s), exists).isEmpty());
+    QVERIFY(ledger.find(1, KeptLedger::key(u"sig"_s, u"cube2"_s), exists).isEmpty());
+    QVERIFY(ledger.find(2, k, exists).isEmpty());
+    // The product was deleted from Session Data: made again on demand.
+    ledger.record(2, k, u"gone"_s);
+    QVERIFY(ledger.find(2, k, exists).isEmpty());
 }

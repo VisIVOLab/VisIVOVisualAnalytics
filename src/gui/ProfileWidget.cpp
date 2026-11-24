@@ -1701,7 +1701,25 @@ static QString runAppModalSaveDialog(QWidget *anchor, const QString &title,
     return dlg.selectedFiles().value(0);
 }
 
+void ProfileWidget::runGated(std::function<void()> action)
+{
+    if (!m_exportGate) {
+        action();
+        return;
+    }
+    QPointer<ProfileWidget> alive(this);
+    m_exportGate([alive, action = std::move(action)]() {
+        if (alive)
+            action();
+    });
+}
+
 void ProfileWidget::savePlot1Png()
+{
+    this->runGated([this]() { this->savePlot1PngNow(); });
+}
+
+void ProfileWidget::savePlot1PngNow()
 {
     // QPointer-aware: even though the Qt-rendered dialog blocks input
     // during exec(), nothing prevents some other code from calling
@@ -1752,6 +1770,11 @@ void ProfileWidget::showAndRaiseFirstTime()
 }
 
 void ProfileWidget::saveSpectrumCsv()
+{
+    this->runGated([this]() { this->saveSpectrumCsvBody(); });
+}
+
+void ProfileWidget::saveSpectrumCsvBody()
 {
     // QPointer-aware: macOS native sheets run a nested event loop; if
     // anything deletes this widget mid-dialog (cube viewer disposing the

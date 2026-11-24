@@ -10,6 +10,7 @@
 #include <QWidget>
 #include <QVector>
 
+#include <functional>
 #include <limits>
 #include <memory>
 
@@ -166,6 +167,11 @@ public:
     void clearLines();                            ///< remove the Line-ID overlay
     void saveSpectrumCsvNow();                     ///< export the raw spectrum as CSV
     void saveSpectrumPngNow();                     ///< export the plot as PNG
+    /// What an export (CSV, PNG) must wait for: called with the export to run,
+    /// it calls it when ready, now or later, or never to cancel it. The live
+    /// region spectrum keeps a full-resolution product with it first (#521).
+    using ExportGate = std::function<void(std::function<void()> proceed)>;
+    void setExportGate(ExportGate gate) { m_exportGate = std::move(gate); }
     bool canFit() const { return !m_backendUrl.isEmpty() && !m_fitInProgress; }   ///< can START a fit
     /// Which part of the spectrum the Gaussian fit sees (issue #416). The
     /// visible range is the default: a whole-spectrum fit locks onto whatever
@@ -202,10 +208,16 @@ private slots:
     /// two columns. Only meaningful in spectrum-mode — the button is
     /// hidden in image-profile mode.
     void saveSpectrumCsv();
+    /// The bodies of the two exports above, after the gate let them go.
+    void savePlot1PngNow();
+    void saveSpectrumCsvBody();
+    /// Runs @p action at once, or when the export gate says so.
+    void runGated(std::function<void()> action);
     /// Fit a Gaussian to the current spectrum via the backend and overlay it.
     void requestLineFit();
 
 private:
+    ExportGate m_exportGate;
     Ui::ProfileWidget *ui;
     vtkSmartPointer<vtkImageData> dataset;
     std::unique_ptr<AstroUtils> astro;

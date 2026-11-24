@@ -86,4 +86,15 @@ void vtkWindowCube::applyImportedRegions(const visivo::regions::ImportResult &re
             break;
         }
     }
+    // Several regions in the file: say how to keep all their spectra.
+    int withPixels = 0;
+    for (int id : ids)
+        if (const auto *r = this->m_regions.find(id); r && visivo::regions::hasArea(r->shape))
+            ++withPixels;
+    if (withPixels > 1)
+        this->statusBar()->showMessage(
+                u"%1 regions imported. Tools ▸ Regions ▸ Keep Spectra of All Regions (or the "
+                u"live spectrum's Inspector) keeps a full-resolution spectrum of each in "
+                u"Session Data."_s.arg(withPixels),
+                12000);
 }

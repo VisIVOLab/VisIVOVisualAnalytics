@@ -553,6 +553,14 @@ void vtkWindowCube::setupRegionListActions()
     m_actOverlayRegionSpectra->setStatusTip(m_actOverlayRegionSpectra->toolTip());
     QObject::connect(m_actOverlayRegionSpectra, &QAction::toggled, this,
                      [this](bool on) { this->setLiveRegionOverlayAll(on); });
+    m_actKeepAllRegionSpectra = new QAction(u"Keep Spectra of All Regions"_s, this);
+    m_actKeepAllRegionSpectra->setToolTip(
+            u"One full-resolution spectrum product in Session Data for every region (each with "
+            u"its statistics and the region in its Provenance), run in the background with a "
+            u"progress dialog that can be cancelled."_s);
+    m_actKeepAllRegionSpectra->setStatusTip(m_actKeepAllRegionSpectra->toolTip());
+    QObject::connect(m_actKeepAllRegionSpectra, &QAction::triggered, this,
+                     [this]() { this->keepAllRegionSpectra(); });
 }
 
 // ── Drawing the list ─────────────────────────────────────────────────────────
@@ -1064,20 +1072,21 @@ std::optional<std::array<int, 4>> vtkWindowCube::selectedRegionPixelBox() const
 
 // ── Analysis ─────────────────────────────────────────────────────────────────
 
-void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
+QString vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win,
+                                    const QVector<double> *fullResSpectrum, bool show)
 {
     if (id < 0)
         id = this->m_regions.selectedId();
     const Region *found = this->m_regions.find(id);
     if (!found)
-        return;
+        return QString();
     const Region region = *found;   // a copy: the list may change below
     if (!visivo::regions::hasArea(region.shape)) {
         this->statusBar()->showMessage(
                 u"%1 is a %2: it has no pixels to measure."_s.arg(region.name,
                                                                     visivo::regions::shapeName(region.shape)),
                 5000);
-        return;
+        return QString();
     }
     if (!win)
         win = this->regionAnalysisWin();
@@ -1123,8 +1132,16 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
     // samples the preview has inside the region, not of every pixel of it.
     QVector<double> spectral, meanValues;
     int samples = 0;
+    // A spectrum the caller already has at full resolution (an export, Keep
+    // all) is the product's: it is never made from the 3-D preview.
+    const bool haveFullRes = fullResSpectrum && !fullResSpectrum->isEmpty();
+    if (haveFullRes) {
+        meanValues = *fullResSpectrum;
+        spectral = this->fullResolutionSpectralAxis(meanValues.size());
+    }
     const bool haveSpectrum = stats.valid
-            && this->regionPreviewSpectrum(region, &spectral, &meanValues, &samples);
+            && (haveFullRes
+                || this->regionPreviewSpectrum(region, &spectral, &meanValues, &samples));
 
     QVariantMap params;
     params.insert(u"Region"_s, label);
@@ -1147,7 +1164,7 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
                 u"%1: no valid pixels in the region on the %2 (all blanked / NaN, or outside "
                 u"the image)."_s.arg(label, statsScope),
                 6000);
-        return;
+        return QString();
     }
     // The flux in the status line too: on a moment-0 map it is the number asked for.
     const QString fluxNote = params.contains(u"Integrated flux"_s)
@@ -1160,6 +1177,7 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
         // spectrum is not the mean of every pixel of the region.
         const double scale = this->m_displaySampling.scale;
         const QString spectrumScope =
+                haveFullRes ? u"spectrum: full resolution (from the file)"_s :
                 scale > 1.0 ? u"spectrum: 3-D preview, 1 pixel in %1 per axis (%2 samples)"_s
                                       .arg(scale, 0, 'g', 3)
                                       .arg(samples)
@@ -1179,17 +1197,20 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
         this->m_products1d.insert(pid, sp);
         params.insert(u"Spectrum from"_s, spectrumScope.mid(QStringLiteral("spectrum: ").size()));
         this->registerAnalysisProduct(u"spectrum"_s, productLabel, params, this, pid,
-                                      u"spectrum1d"_s, /*revealProvenance=*/true, origin);
+                                      u"spectrum1d"_s, /*revealProvenance=*/show, origin,
+                                      /*selectInSession=*/show);
         // SHOW it: free pane → grow the layout → else it waits in Session Data.
-        // Never borrowed: a region spectrum is a permanent product.
-        const int pane = this->acquirePaneForProduct(pid, /*mayBorrow=*/false);
-        this->refreshPaneChrome();
+        // Never borrowed: a region spectrum is a permanent product. A batch
+        // (Keep all) shows none: a pane per region would take the screen.
+        const int pane = show ? this->acquirePaneForProduct(pid, /*mayBorrow=*/false) : -1;
+        if (show)
+            this->refreshPaneChrome();
         // The shared region plot (the Spectrum view's widget) follows every
         // region analysis, as it always has. With no pane free the spectrum
         // would only be a row in Session Data: then, and only then, the plot
         // is raised as a window of its own; with a pane it is shown there,
         // and a window on top of the slice would hide the regions being edited.
-        if (pane < 0 || this->probePlotWidget) {
+        if (show && (pane < 0 || this->probePlotWidget)) {
             const bool freshWidget = !this->probePlotWidget;
             if (freshWidget) {
                 this->probePlotWidget = new ProfileWidget(this);
@@ -1218,12 +1239,16 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
         // cube that does not hold the whole region) is a first answer: the
         // backend's mean over every pixel of the region replaces it.
         const bool wholeCubeShown = this->previewIsFullResolution();
-        if (!wholeCubeShown && !this->remoteDatasetId.isEmpty())
+        if (!wholeCubeShown && !haveFullRes && !this->remoteDatasetId.isEmpty())
             this->requestFullResolutionRegionSpectrum(pid, region, plotTitle, label, params,
                                                       origin, stats.validCount,
                                                       stats.totalCount, statsScope);
         this->statusBar()->showMessage(
-                (pane >= 0 ? u"%1: mean %2 · median %3 · %4/%5 px - spectrum in pane %6, full "
+                !show ? u"%1: mean %2 · median %3 · %4/%5 px - spectrum kept in Session Data."_s
+                                .arg(label, fmt(stats.mean) + fluxNote, fmt(stats.median))
+                                .arg(stats.validCount)
+                                .arg(stats.totalCount)
+                : (pane >= 0 ? u"%1: mean %2 · median %3 · %4/%5 px - spectrum in pane %6, full "
                              u"stats in Inspector › Parameters."_s
                            : u"%1: mean %2 · median %3 · %4/%5 px - spectrum in its own "
                              u"window (no free pane), full stats in Inspector › Parameters.%6"_s)
@@ -1232,7 +1257,7 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
                         .arg(stats.totalCount)
                         .arg(pane >= 0 ? QString::number(pane + 1) : QString()),
                 6000);
-        return;
+        return pid;
     }
 
     // Valid statistics but no cube spectrum to hang them on (a region on a
@@ -1252,6 +1277,7 @@ void vtkWindowCube::analyzeRegion(int id, vtkRenderWindow *win)
                     .arg(stats.validCount)
                     .arg(stats.totalCount),
             6000);
+    return QString();
 }
 
 void vtkWindowCube::insertRegionFluxParams(QVariantMap &params, vtkImageData *image,

@@ -128,16 +128,34 @@ In the cube viewer the spectrum of the selected region is shown in one pane
 - The spectrum uses the spectral axis chosen for the window (*Spectral axis*
   menu: quantity and frame) and is drawn again when you change it.
 - Clicking the empty slice to pan lets go of the selection but leaves the
-  spectrum; deleting the region closes it.
+  spectrum; deleting the region moves the live spectrum to another region
+  when some remain, and closes it with the last one.
 - Nothing is added to Session Data while you drag. *Keep as product* in the
   Inspector (shown with the live spectrum) or *Analyse Region* turns the
   current region into a permanent SPEC product, as described below.
 - *Overlay all regions* (Inspector, or *Tools ▸ Regions ▸ Overlay All Region
   Spectra*) lays the spectra of the other visible regions over the live one,
   each in its region's colour and named in the legend; the live region's own
-  curve takes its region's colour too. The other curves come from the 3-D
-  view's samples, or from the file if that region was already shown at full
-  resolution.
+  curve takes its region's colour too. When regions share a colour (the
+  default one, for instance) each gets a different one from a fixed palette,
+  so that the curves can be told apart (the legend shows which curve is which;
+  the region's outline in the views keeps its own colour). The other curves
+  come from the 3-D view's samples, or from the file if that region was
+  already shown at full resolution.
+- Exporting from the live pane (*Save spectrum as CSV*, *Save as PNG*, in the
+  pane or the Inspector, or *File ▸ Export*) first keeps the region as a SPEC
+  product, with its statistics and the region in its Provenance, so that what
+  you export can be found again and replayed. The product is made from the
+  region's full-resolution spectrum, never from the drag preview or the 3-D
+  view's samples: when only the preview is shown, the full-resolution one is
+  asked for first (the status bar says so) and the export follows it. If that
+  fails, nothing is exported. Exporting the same region again does not make a
+  second product.
+- *Tools ▸ Regions ▸ Keep Spectra of All Regions* (also *Keep all regions* in
+  the Inspector, next to the live spectrum) makes one full-resolution SPEC
+  product per region, hidden regions included, as a background batch with a
+  progress dialog and a *Cancel* button (what was kept stays). After you
+  import a ds9 or CRTF file with several regions the status bar points to it.
 
 *Tools ▸ Regions ▸ Live Region Spectrum* switches the whole behaviour off
 (it is on by default and remembered). The live pane takes a free pane, or

@@ -616,6 +616,7 @@ private:
     QPointer<class ProfileWidget> m_specInspTarget;   ///< the pane widget the controls drive
     QWidget       *m_specInspLiveRegion{ nullptr };   ///< Keep / overlay row, for the live region spectrum only
     QPushButton   *m_specInspKeep      { nullptr };
+    QPushButton   *m_specInspKeepAll   { nullptr };
     QCheckBox     *m_specInspOverlayAll{ nullptr };
 
     // Full-resolution 3-D cube statistics from the backend (the local block is only the decimated
@@ -1348,6 +1349,26 @@ protected:
     void pushLiveRegionOverlay();   ///< ...on every pane showing the live spectrum
     QString liveRegionCubeKey() const;
     void keepLiveRegionSpectrum();
+    /// Makes a SPEC product of region @p id from its FULL-resolution spectrum:
+    /// the live cache's, or one asked of the backend first (never the 3-D
+    /// preview's samples, unless the cube has no backend to ask). A product
+    /// already made for the same geometry on the same cube is reused. @p done
+    /// gets the product id and whether there is one; it may run later.
+    void keepRegionSpectrumFull(int id, bool show,
+                                std::function<void(const QString &, bool)> done);
+    /// Before an export from the live pane: the region's full-resolution
+    /// spectrum is in the pane and kept as a product (with its recipe), then
+    /// @p proceed runs; if that fails nothing is exported.
+    void keepLiveRegionForExport(std::function<void()> proceed);
+    /// One full-resolution SPEC product per region, as a cancellable batch
+    /// with a progress dialog (Tools ▸ Regions ▸ Keep Spectra of All Regions).
+    void keepAllRegionSpectra();
+    struct KeepAllState;
+    void keepAllStep(std::shared_ptr<KeepAllState> st);
+    visivo::liveregion::KeptLedger m_keptSpectra;
+    bool m_liveExportBusy{ false };
+    bool m_keepAllRunning{ false };
+    QPointer<QAction> m_actKeepAllRegionSpectra;
     void setLiveRegionSpectra(bool on);
     void setLiveRegionOverlayAll(bool on);
     bool m_liveRegionSpectra{ true };      ///< Tools ▸ Regions ▸ Live Region Spectrum
@@ -2390,8 +2411,12 @@ protected:
     void redoRegionEdit();
     /// Statistics on the map of @p win (regionAnalysisWin() by default) and
     /// the mean spectrum over the cube of region @p id (the selected one by
-    /// default).
-    void analyzeRegion(int id = -1, vtkRenderWindow *win = nullptr);
+    /// default). Returns the id of the spectrum product made (empty: none).
+    /// @p fullResSpectrum, when given, is the region's mean spectrum at full
+    /// resolution and is used as it is, instead of the 3-D view's samples;
+    /// @p show false makes the product without opening a pane for it.
+    QString analyzeRegion(int id = -1, vtkRenderWindow *win = nullptr,
+                          const QVector<double> *fullResSpectrum = nullptr, bool show = true);
     /// The beam-aware flux of @p region on the map @p image (issue #401):
     /// integrated flux in Jy (a channel) or Jy km/s (a moment 0), its error
     /// from the nearest background region or the map noise, the beam area,

@@ -19,4 +19,7 @@ private slots:
     void theCacheDropsTheOldestFirst();
     void theSignatureFollowsTheGeometryNotTheName();
     void theOverlayLeavesOutTheSelectedAndWhatHasNoPixels();
+    void regionsWithTheSameColourGetDistinctOnes();
+    void keepAllTakesEveryRegionWithPixels();
+    void aKeptSpectrumIsNotKeptTwice();
 };

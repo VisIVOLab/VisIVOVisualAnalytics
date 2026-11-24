@@ -23,8 +23,11 @@
 #include "RegionModel.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QJsonDocument>
+#include <QSet>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <cstdint>
@@ -175,22 +178,122 @@ struct OverlayEntry
     QString colour;   ///< "#rrggbb"
 };
 
+/// Colours for curves that must be told apart: regions made with the default
+/// colour all share one, so overlaid curves would be identical.
+inline const QStringList &overlayPalette()
+{
+    static const QStringList p{ QStringLiteral("#4e79a7"), QStringLiteral("#f28e2b"),
+                                QStringLiteral("#e15759"), QStringLiteral("#59a14f"),
+                                QStringLiteral("#edc948"), QStringLiteral("#b07aa1"),
+                                QStringLiteral("#ff9da7"), QStringLiteral("#9c755f"),
+                                QStringLiteral("#76b7b2"), QStringLiteral("#bab0ac") };
+    return p;
+}
+
+/// The curve colour of every region that is drawn in the overlay (the
+/// selected one and the entries of overlayPlan). A colour held by one region
+/// alone stays; regions that share a colour each get one from the palette,
+/// starting at their id and skipping what is already taken (so it mostly
+/// stays when other regions come and go).
+inline std::unordered_map<int, QString> overlayColours(const std::vector<regions::Region> &list,
+                                                       int selectedId)
+{
+    std::vector<const regions::Region *> shown;
+    for (const regions::Region &r : list)
+        if (r.id == selectedId || (r.visible && regions::hasArea(r.shape)))
+            shown.push_back(&r);
+    QHash<QString, int> uses;
+    for (const regions::Region *r : shown)
+        ++uses[regionColour(*r).toLower()];
+    std::unordered_map<int, QString> out;
+    QSet<QString> taken;
+    for (const regions::Region *r : shown) {
+        const QString c = regionColour(*r).toLower();
+        if (uses.value(c) == 1) {
+            out[r->id] = c;
+            taken.insert(c);
+        }
+    }
+    const QStringList &pal = overlayPalette();
+    const int n = int(pal.size());
+    for (const regions::Region *r : shown) {
+        if (out.count(r->id))
+            continue;
+        const int start = ((r->id % n) + n) % n;
+        int pick = start;
+        for (int k = 0; k < n; ++k) {
+            const int i = (start + k) % n;
+            if (!taken.contains(pal[i])) {
+                pick = i;
+                break;
+            }
+        }
+        out[r->id] = pal[pick];   // more regions than colours: reuse
+        taken.insert(pal[pick]);
+    }
+    return out;
+}
+
 /// The regions laid over the selected one: every visible region with pixels in
 /// it (not a line, a vector or a text), in list order, the selected one apart
-/// (it is the main curve). A region without a name is called by its id.
+/// (it is the main curve). A region without a name is called by its id. The
+/// colour is the one the curve and its legend swatch are drawn in
+/// (overlayColours).
 inline std::vector<OverlayEntry> overlayPlan(const std::vector<regions::Region> &list,
                                              int selectedId)
 {
+    const auto colours = overlayColours(list, selectedId);
     std::vector<OverlayEntry> out;
     for (const regions::Region &r : list) {
         if (r.id == selectedId || !r.visible || !regions::hasArea(r.shape))
             continue;
         out.push_back({ r.id,
                         r.name.isEmpty() ? QStringLiteral("Region %1").arg(r.id) : r.name,
-                        regionColour(r) });
+                        colours.at(r.id) });
     }
     return out;
 }
+
+/// The regions "Keep spectra of all regions" makes a product of: every one
+/// with pixels in it, hidden or not (a hidden region is still a region of the
+/// file), in list order.
+inline std::vector<int> keepAllTargets(const std::vector<regions::Region> &list)
+{
+    std::vector<int> out;
+    for (const regions::Region &r : list)
+        if (regions::hasArea(r.shape))
+            out.push_back(r.id);
+    return out;
+}
+
+/// Which region spectra were turned into products already, so that exporting
+/// twice from the live pane, or Keep all after it, does not make a second
+/// product of the same spectrum. One is a region's geometry on one cube.
+class KeptLedger
+{
+public:
+    static QString key(const QString &signature, const QString &cubeKey)
+    {
+        return signature + QLatin1Char('|') + cubeKey;
+    }
+    void record(int regionId, const QString &key, const QString &productId)
+    {
+        m_kept[regionId] = { key, productId };
+    }
+    /// The product of @p regionId made for @p key that still exists (@p exists
+    /// says which products do); empty when there is none.
+    template <class Exists>
+    QString find(int regionId, const QString &key, Exists exists) const
+    {
+        const auto it = m_kept.find(regionId);
+        if (it == m_kept.end() || it->second.first != key || !exists(it->second.second))
+            return QString();
+        return it->second.second;
+    }
+
+private:
+    std::unordered_map<int, std::pair<QString, QString>> m_kept;
+};
 
 }   // namespace visivo::liveregion
 

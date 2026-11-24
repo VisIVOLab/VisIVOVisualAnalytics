@@ -8333,6 +8333,7 @@ QVector<vtkWindowCube::CubeTool> vtkWindowCube::cubeTools() const
     add(u"Regions"_s, self->m_actHiDistance);
     add(u"Regions"_s, self->m_actLiveRegionSpectra);
     add(u"Regions"_s, self->m_actOverlayRegionSpectra);
+    add(u"Regions"_s, self->m_actKeepAllRegionSpectra);
     add(u"Regions"_s, self->m_actImportCubeRegion);
     add(u"Regions"_s, self->m_actExportCubeRegion);
 
@@ -12745,6 +12746,13 @@ void vtkWindowCube::mountView(int slot)
         // The overlay of the live region spectrum belongs to that product only:
         // a slot reused for another spectrum must not keep the curves.
         const bool isLiveRegion = !m_regionLiveId.isEmpty() && v.productId == m_regionLiveId;
+        // Exporting the live spectrum keeps it first, at full resolution (#521).
+        if (isLiveRegion)
+            sp->setExportGate([this](std::function<void()> proceed) {
+                this->keepLiveRegionForExport(std::move(proceed));
+            });
+        else
+            sp->setExportGate({});
         if (!isLiveRegion && sp->overlaySpectrumCount() > 0)
             sp->setOverlaySpectra({});
         m_paneProductId[slot] = v.productId;
@@ -13870,12 +13878,18 @@ void vtkWindowCube::buildSpectrumInspectorControls(InspectorPanel *panel)
     m_specInspOverlayAll->setToolTip(
             u"Lay the spectra of all the other regions over this one, each in its region's "
             u"colour and under its name."_s);
+    m_specInspKeepAll = mkBtn(u"Keep all regions"_s,
+                              u"One full-resolution spectrum product in Session Data for every "
+                              u"region, run in the background; it can be cancelled."_s);
     liveCol->addWidget(m_specInspKeep);
+    liveCol->addWidget(m_specInspKeepAll);
     liveCol->addWidget(m_specInspOverlayAll);
     col->addWidget(m_specInspLiveRegion);
     m_specInspLiveRegion->setVisible(false);
     QObject::connect(m_specInspKeep, &QPushButton::clicked, this,
                      [this]() { this->keepLiveRegionSpectrum(); });
+    QObject::connect(m_specInspKeepAll, &QPushButton::clicked, this,
+                     [this]() { this->keepAllRegionSpectra(); });
     QObject::connect(m_specInspOverlayAll, &QCheckBox::toggled, this,
                      [this](bool on) { this->setLiveRegionOverlayAll(on); });
 

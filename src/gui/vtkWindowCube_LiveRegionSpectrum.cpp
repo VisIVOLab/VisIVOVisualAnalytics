@@ -19,6 +19,7 @@
 
 #include "vtkWindowCube.h"
 #include <QFutureWatcher>
+#include <QProgressDialog>
 #include <QtConcurrent>
 #include "ui_vtkWindowCube.h"
 
@@ -191,8 +192,27 @@ void vtkWindowCube::updateLiveRegionSpectrum(bool dragging)
     if (!sel || !visivo::regions::hasArea(sel->shape)) {
         // Clicking empty slice to pan lets go of the selection: the spectrum
         // stays. Only the region going away ends it.
-        if (!m_regionLiveId.isEmpty() && !this->m_regions.find(m_regionLiveRegionId))
+        if (!m_regionLiveId.isEmpty() && !this->m_regions.find(m_regionLiveRegionId)) {
+            // The region the pane shows is gone. While other visible regions
+            // remain the pane follows the latest drawn one (not selecting it:
+            // a second Delete must not take that one too) instead of leaving
+            // an empty slot; with the last one gone the pane is given back.
+            int next = -1;
+            const auto &all = this->m_regions.regions();
+            for (auto it = all.rbegin(); it != all.rend(); ++it)
+                if (it->visible && visivo::regions::hasArea(it->shape)) {
+                    next = it->id;
+                    break;
+                }
+            if (next >= 0 && this->cubeDisplaySource) {
+                m_regionLiveRegionId = next;
+                m_regionLiveSignature.clear();
+                this->runLiveRegionSpectrum(/*allowFullRes=*/true, /*force=*/true);
+                if (!m_regionLiveSignature.isEmpty())   // it drew
+                    return;
+            }
             this->stopLiveRegionSpectrum();
+        }
         return;
     }
     if (dragging) {
@@ -460,6 +480,7 @@ void vtkWindowCube::applyLiveRegionOverlay(ProfileWidget *plot)
     const QString cubeKey = this->liveRegionCubeKey();
     QVector<ProfileWidget::OverlayCurve> curves;
     QHash<int, LiveOverlayMemo> memo;
+    const auto colours = visivo::liveregion::overlayColours(this->m_regions.regions(), sel->id);
     for (const auto &entry :
          visivo::liveregion::overlayPlan(this->m_regions.regions(), sel->id)) {
         const Region *r = this->m_regions.find(entry.regionId);
@@ -492,7 +513,7 @@ void vtkWindowCube::applyLiveRegionOverlay(ProfileWidget *plot)
             curves.push_back(std::move(c));
     }
     m_regionOverlayMemo = std::move(memo);   // regions that went away drop out
-    plot->setOverlaySpectra(curves, sel->name, QColor(visivo::liveregion::regionColour(*sel)));
+    plot->setOverlaySpectra(curves, sel->name, QColor(colours.at(sel->id)));
 }
 
 void vtkWindowCube::pushLiveRegionOverlay()
@@ -547,6 +568,223 @@ void vtkWindowCube::setLiveRegionOverlayAll(bool on)
         this->pushLiveRegionOverlay();
 }
 
+void vtkWindowCube::keepRegionSpectrumFull(int id, bool show,
+                                           std::function<void(const QString &, bool)> done)
+{
+    const Region *found = this->m_regions.find(id);
+    if (!found || !visivo::regions::hasArea(found->shape) || !this->cubeDisplaySource) {
+        done(QString(), false);
+        return;
+    }
+    const Region region = *found;
+    const QString signature = visivo::liveregion::geometrySignature(region);
+    const QString ledgerKey =
+            visivo::liveregion::KeptLedger::key(signature, this->liveRegionCubeKey());
+    // Whatever full-resolution spectrum is at hand when it is there: made into
+    // the product unless this very spectrum has one already.
+    auto finish = [this, id, ledgerKey, signature, show, done](const QVector<double> &full,
+                                                               bool haveFull) {
+        // The region may have been dragged while the backend was computing:
+        // a spectrum of the old geometry must not become the product of the
+        // new one.
+        const Region *now = this->m_regions.find(id);
+        if (haveFull
+            && (!now || visivo::liveregion::geometrySignature(*now) != signature
+                || visivo::liveregion::KeptLedger::key(signature, this->liveRegionCubeKey())
+                        != ledgerKey)) {
+            this->statusBar()->showMessage(
+                    u"The region changed while its spectrum was being computed; nothing was "
+                    u"kept. Try again."_s,
+                    6000);
+            done(QString(), false);
+            return;
+        }
+        const QString already = m_keptSpectra.find(id, ledgerKey, [this](const QString &p) {
+            return m_products1d.contains(p);
+        });
+        if (!already.isEmpty()) {
+            done(already, true);
+            return;
+        }
+        vtkRenderWindow *win = this->regionAnalysisWin();
+        if (!win) {
+            this->statusBar()->showMessage(
+                    u"Show the 2D Slice or a moment map in a pane to keep the region's spectrum "
+                    u"with its statistics."_s,
+                    5000);
+            done(QString(), false);
+            return;
+        }
+        const QString pid = this->analyzeRegion(id, win, haveFull ? &full : nullptr, show);
+        if (!pid.isEmpty())
+            m_keptSpectra.record(id, ledgerKey, pid);
+        done(pid, !pid.isEmpty());
+    };
+    // The 3-D view already holds the whole cube, or there is no backend to
+    // ask: the spectrum at hand is the best there is.
+    if (this->previewIsFullResolution() || this->remoteDatasetId.isEmpty()) {
+        finish(QVector<double>(), false);
+        return;
+    }
+    const QString cacheKey = this->liveRegionCacheKey(signature);
+    if (const QVector<double> *cached = m_regionFullResCache.find(cacheKey)) {
+        const QVector<double> copy = *cached;   // the cache may move under finish()
+        finish(copy, true);
+        return;
+    }
+    const QJsonObject canonical = visivo::regions::toCanonical(region, 0.0);
+    const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
+    const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
+    auto *watcher = new QFutureWatcher<BackendSpectrumResult>(this);
+    QObject::connect(watcher, &QFutureWatcherBase::finished, this,
+                     [this, watcher, cacheKey, region, finish, done]() {
+        watcher->deleteLater();
+        const BackendSpectrumResult r = watcher->result();
+        if (!r.valid || r.values.isEmpty()) {
+            this->statusBar()->showMessage(
+                    u"%1: the full-resolution spectrum failed (%2)."_s.arg(
+                            region.name, r.valid ? u"no channels"_s : r.error),
+                    8000);
+            done(QString(), false);
+            return;
+        }
+        m_regionFullResCache.insert(cacheKey, r.values);
+        finish(r.values, true);
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, session, dataset, canonical]() {
+        BackendClient client(url, token);
+        client.setSessionId(session);
+        return client.spectralRegion(dataset, canonical);
+    }));
+}
+
+void vtkWindowCube::keepLiveRegionForExport(std::function<void()> proceed)
+{
+    const Region *r = this->m_regions.find(m_regionLiveRegionId);
+    if (!r || !visivo::regions::hasArea(r->shape)) {
+        proceed();   // nothing of a region behind the pane
+        return;
+    }
+    if (m_liveExportBusy)
+        return;   // an export is already waiting for its full-resolution spectrum
+    m_liveExportBusy = true;
+    const int id = r->id;
+    const QString signature = visivo::liveregion::geometrySignature(*r);
+    this->statusBar()->showMessage(
+            u"%1: keeping its full-resolution spectrum in Session Data before exporting..."_s
+                    .arg(r->name),
+            0);
+    this->keepRegionSpectrumFull(id, /*show=*/true,
+                                 [this, id, signature, proceed](const QString &, bool ok) {
+        m_liveExportBusy = false;
+        if (!ok) {
+            this->statusBar()->showMessage(
+                    u"Nothing exported: the region's full-resolution spectrum could not be kept."_s,
+                    8000);
+            return;
+        }
+        // The file written is the product's: the pane shows the full-resolution
+        // spectrum too before it is read.
+        const Region *now = this->m_regions.find(id);
+        if (now && signature == m_regionLiveSignature && !m_regionLiveFullRes) {
+            if (const QVector<double> *full =
+                        m_regionFullResCache.find(this->liveRegionCacheKey(signature))) {
+                const QVector<double> copy = *full;
+                this->applyLiveRegionSpectrum(
+                        *now, this->fullResolutionSpectralAxis(copy.size()), copy,
+                        /*fullResolution=*/true, u"full resolution (from the file)"_s);
+            }
+        }
+        if (m_regionLiveRegionId != id || m_regionLiveSignature != signature) {
+            this->statusBar()->showMessage(
+                    u"The live spectrum changed while the region was being kept; nothing was "
+                    u"exported. Export again."_s,
+                    6000);
+            return;
+        }
+        this->statusBar()->clearMessage();
+        proceed();
+    });
+}
+
+struct vtkWindowCube::KeepAllState
+{
+    std::vector<int> ids;
+    std::size_t next{ 0 };
+    int kept{ 0 };
+    int failed{ 0 };
+    bool cancelled{ false };
+    QPointer<QProgressDialog> dialog;
+};
+
+void vtkWindowCube::keepAllRegionSpectra()
+{
+    if (m_keepAllRunning)
+        return;
+    auto st = std::make_shared<KeepAllState>();
+    st->ids = visivo::liveregion::keepAllTargets(this->m_regions.regions());
+    if (st->ids.empty()) {
+        this->statusBar()->showMessage(u"No region with pixels to keep a spectrum of."_s, 5000);
+        return;
+    }
+    if (!this->regionAnalysisWin()) {
+        this->statusBar()->showMessage(
+                u"Show the 2D Slice or a moment map in a pane to keep the regions' spectra with "
+                u"their statistics."_s,
+                5000);
+        return;
+    }
+    m_keepAllRunning = true;
+    auto *dlg = new QProgressDialog(u"Keeping the spectra of the regions..."_s, u"Cancel"_s, 0,
+                                    int(st->ids.size()), this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(u"Keep Spectra of All Regions"_s);
+    dlg->setWindowModality(Qt::NonModal);
+    dlg->setMinimumDuration(0);
+    dlg->setAutoReset(false);
+    dlg->setAutoClose(false);
+    dlg->setValue(0);
+    st->dialog = dlg;
+    QObject::connect(dlg, &QProgressDialog::canceled, this, [st]() { st->cancelled = true; });
+    dlg->show();
+    this->keepAllStep(st);
+}
+
+void vtkWindowCube::keepAllStep(std::shared_ptr<KeepAllState> st)
+{
+    if (st->cancelled || st->next >= st->ids.size()) {
+        m_keepAllRunning = false;
+        const std::size_t left = st->ids.size() - st->next;
+        if (st->dialog)
+            st->dialog->close();
+        this->statusBar()->showMessage(
+                u"Kept the full-resolution spectra of %1 region(s) in Session Data%2%3."_s
+                        .arg(st->kept)
+                        .arg(st->failed > 0 ? u"; %1 failed"_s.arg(st->failed) : QString())
+                        .arg(st->cancelled && left > 0 ? u"; cancelled, %1 left"_s.arg(left)
+                                                       : QString()),
+                10000);
+        this->refreshPaneChrome();
+        return;
+    }
+    const int id = st->ids[st->next];
+    if (st->dialog) {
+        const Region *r = this->m_regions.find(id);
+        st->dialog->setLabelText(u"Region %1 of %2: %3"_s.arg(st->next + 1)
+                                         .arg(st->ids.size())
+                                         .arg(r ? r->name : QString()));
+        st->dialog->setValue(int(st->next));
+    }
+    this->keepRegionSpectrumFull(id, /*show=*/false,
+                                 [this, st](const QString &, bool ok) {
+        ++(ok ? st->kept : st->failed);
+        ++st->next;
+        // Out of this call: a synchronous product would otherwise recurse
+        // once per region.
+        QTimer::singleShot(0, this, [this, st]() { this->keepAllStep(st); });
+    });
+}
+
 void vtkWindowCube::keepLiveRegionSpectrum()
 {
     // The same as Analyse Region: the statistics, the region in the product's
@@ -563,5 +801,15 @@ void vtkWindowCube::keepLiveRegionSpectrum()
                 5000);
         return;
     }
-    this->analyzeRegion(m_regionLiveRegionId, win);
+    const QString pid = this->analyzeRegion(m_regionLiveRegionId, win);
+    // Recorded only when the product holds the full spectrum now: with a
+    // preview it is replaced later (or not, if the backend fails), and an
+    // export must not take it for the full-resolution one.
+    if (!pid.isEmpty() && (this->previewIsFullResolution() || this->remoteDatasetId.isEmpty()))
+        m_keptSpectra.record(m_regionLiveRegionId,
+                             visivo::liveregion::KeptLedger::key(
+                                     visivo::liveregion::geometrySignature(
+                                             *this->m_regions.find(m_regionLiveRegionId)),
+                                     this->liveRegionCubeKey()),
+                             pid);
 }
