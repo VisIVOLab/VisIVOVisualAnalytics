@@ -260,6 +260,8 @@ void vtkWindowCube::onLassoRelease()
     const bool volumeShown = this->volumeLayerShown(renderer);
     vtkActor *iso = this->currentIsosurfaceActor;
     const bool isoShown = !volumeShown && iso && renderer->HasViewProp(iso) && iso->GetVisibility() != 0;
+    // Several surfaces (issue #526): the click may land on any of them.
+    const QVector<vtkActor *> surfaces = this->isoSurfaceActors();
     if (volumeShown) {
         // The blocks of a refined box stand in for the volume while shown.
         if (this->m_lod && this->m_lod->active())
@@ -267,7 +269,8 @@ void vtkWindowCube::onLassoRelease()
         else
             picker->AddPickList(this->volume);
     } else if (isoShown) {
-        picker->AddPickList(iso);
+        for (vtkActor *surface : surfaces)
+            picker->AddPickList(surface);
     }
     if ((!volumeShown && !isoShown) || picker->Pick(pos[0], pos[1], 0.0, renderer) == 0) {
         qDebug().noquote() << u"[lasso] no pick at (%1,%2) volume=%3 iso=%4"_s

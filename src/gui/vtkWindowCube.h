@@ -48,6 +48,7 @@ class RegionPropertiesDialog;
 class vtkCallbackCommand;
 
 #include "CubeViewportGeometry.h"
+#include "IsoLevels.h"
 #include "CubeLodAuto.h"
 #include "CubeLodGeometry.h"
 #include "LiveRegionSpectra.h"
@@ -124,6 +125,7 @@ class PvDiagramWidget;
 class ToolResultDialog;
 class ChannelOverlay;
 class VolumeColorbar;
+class IsoLegend;
 class QTableView;
 class QTreeView;
 class vtkAxisActor2D;
@@ -179,6 +181,14 @@ struct AsyncIsosurfaceResult
     QString errorMessage;
     int requestId{ 0 };
     bool meshInDisplayCoordinates{ false };
+    /// Several levels (issue #526): each surface and its level, ascending;
+    /// `mesh` is the first. Empty for a single threshold.
+    QVector<vtkSmartPointer<vtkPolyData>> levelMeshes;
+    QVector<double> levelValues;
+    /// Levels asked for that cut no voxels, so have no surface.
+    QVector<double> skippedLevels;
+    /// The backend sampled the cube to draw the surfaces (stride above 1).
+    bool sampled{ false };
 };
 
 struct RemoteCubePreviewResult
@@ -2866,6 +2876,35 @@ protected:
     void applyCubeOpenResult(const CubeOpenStageResult &result);
     void applyIsosurfaceResult(const AsyncIsosurfaceResult &result);
     void startAsyncIsosurface(double isoValue);
+
+    // ── Isosurfaces at several levels (issue #526; vtkWindowCube_IsoLevels.cpp) ──
+    /// The levels, each with its colour and opacity; empty: ONE surface at the
+    /// threshold, as before. With levels the threshold no longer moves the
+    /// surfaces (it still drives the volume).
+    QVector<visivo::isolevels::Level> m_isoLevels;
+    /// The surfaces of the levels beyond the first, drawn with
+    /// currentIsosurfaceActor (the first, the lowest level).
+    QVector<vtkSmartPointer<vtkActor>> m_isoExtraActors;
+    QVector<double> m_isoInFlightLevels;   ///< the levels of the request in flight
+    int m_isoSavedMultiSamples{ 0 };       ///< the window's samples, restored when peeling ends
+    bool m_isoRerunPending{ false };       ///< asked again while the local (ROI) compute ran
+    QVector<double> m_isoDrawnValues;      ///< the level of each drawn surface, ascending
+    QColor m_isoSingleColour{ 255, 128, 255 };   ///< the single surface's colour while levels are in use
+    QPointer<IsoLegend> m_isoLegend;
+    QPointer<QWidget> m_isoLevelsRow;
+    bool isoLevelsActive() const { return !m_isoLevels.isEmpty(); }
+    /// Every surface the 3-D view draws: the first, then the extras.
+    QVector<vtkActor *> isoSurfaceActors() const;
+    void openIsoLevelsDialog();
+    void setIsoLevels(const QVector<visivo::isolevels::Level> &levels);
+    void clearIsoLevels();
+    /// The colour map's colour at a data value (the default of a level).
+    QColor isoColourAt(double value) const;
+    /// Colour and opacity of each level onto its surface, depth peeling when a
+    /// surface is translucent, the legend.
+    void applyIsoLevelStyle();
+    void refreshIsoLegend();
+    void removeIsoExtraActors();
     void scheduleIsosurfaceRecompute();
     void setCubeRenderModeLocally(bool isosurfaceMode);
     void updateCube();

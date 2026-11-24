@@ -57,6 +57,7 @@
 #include "ColourBarTicks.h"
 #include "ProductPaneDisplay.h"
 #include "VolumeColorbar.h"
+#include "IsoLegend.h"
 #include "RemoteRenderWidget.h"
 #include "SidebarPanel.h"
 #include "Settings.h"
@@ -714,7 +715,7 @@ void refitCubeCamera(vtkRenderer *renderer, vtkImageData *cubeImage)
 }
 
 AsyncIsosurfaceResult computeIsosurface(vtkSmartPointer<vtkImageData> image, double isoValue,
-                                        int requestId)
+                                        int requestId, QVector<double> levels = {})
 {
     QElapsedTimer timer;
     timer.start();
@@ -725,16 +726,32 @@ AsyncIsosurfaceResult computeIsosurface(vtkSmartPointer<vtkImageData> image, dou
         return result;
     }
 
-    vtkNew<vtkFlyingEdges3D> filter;
-    filter->SetInputData(image);
-    filter->SetValue(0, isoValue);
-    filter->ComputeNormalsOff();
-    filter->ComputeGradientsOff();
-    filter->Update();
+    // One surface at the threshold, or one per level (issue #526), each from its
+    // own pass: flying edges is linear in the voxels and the levels are few.
+    if (levels.isEmpty())
+        levels << isoValue;
+    const bool several = levels.size() > 1;
+    for (const double level : levels) {
+        vtkNew<vtkFlyingEdges3D> filter;
+        filter->SetInputData(image);
+        filter->SetValue(0, level);
+        filter->ComputeNormalsOff();
+        filter->ComputeGradientsOff();
+        filter->Update();
 
-    vtkSmartPointer<vtkPolyData> mesh = vtkSmartPointer<vtkPolyData>::New();
-    mesh->ShallowCopy(filter->GetOutput());
-    result.mesh = mesh;
+        vtkSmartPointer<vtkPolyData> mesh = vtkSmartPointer<vtkPolyData>::New();
+        mesh->ShallowCopy(filter->GetOutput());
+        if (!several) {
+            result.mesh = mesh;
+        } else if (mesh->GetNumberOfPolys() > 0) {
+            result.levelMeshes << mesh;
+            result.levelValues << level;
+        } else {
+            result.skippedLevels << level;
+        }
+    }
+    if (several && !result.levelMeshes.isEmpty())
+        result.mesh = result.levelMeshes.first();
     result.meshInDisplayCoordinates = true;
     qDebug().noquote()
             << QStringLiteral("[perf][isosurface] compute: %1 ms").arg(timer.elapsed());
@@ -980,14 +997,16 @@ RemoteCubeSubvolumeResult fetchRemoteSubvolume(const QString &backendUrl, const 
 
 AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QString &datasetId,
                                             double isoValue, int requestId, const QString &sessionId,
-                                            const QString &backendToken)
+                                            const QString &backendToken,
+                                            const QVector<double> &levels = {})
 {
     AsyncIsosurfaceResult result;
     result.requestId = requestId;
 
     BackendClient client(backendUrl, backendToken);
     client.setSessionId(sessionId);
-    const auto response = client.requestIsosurface(datasetId, isoValue);
+    const auto response = levels.isEmpty() ? client.requestIsosurface(datasetId, isoValue)
+                                           : client.requestIsosurfaceLevels(datasetId, levels);
     qDebug().noquote()
             << QStringLiteral("[remote-iso] response valid=%1 error=%2 num_points=%3 num_polys=%4")
                        .arg(response.valid)
@@ -1010,6 +1029,24 @@ AsyncIsosurfaceResult fetchRemoteIsosurface(const QString &backendUrl, const QSt
         result.errorMessage = u"Invalid remote isocontour payload."_s;
         return result;
     }
+    // Several levels: one mesh each (an older backend sends none of these, and
+    // the first-surface mesh above is then all there is).
+    if (!levels.isEmpty() && !response.surfaces.isEmpty()) {
+        for (const auto &surface : response.surfaces) {
+            auto mesh = decodeRemoteIsosurface(surface.pointsData, surface.polysData,
+                                               surface.numPoints, surface.numPolys);
+            if (!mesh) {
+                result.errorMessage = u"Invalid remote isocontour payload."_s;
+                result.mesh = nullptr;
+                return result;
+            }
+            result.levelMeshes << mesh;
+            result.levelValues << surface.value;
+        }
+    }
+    result.skippedLevels = response.skippedLevels;
+    result.sampled = std::any_of(response.stride.cbegin(), response.stride.cend(),
+                                 [](int s) { return s > 1; });
     result.meshInDisplayCoordinates = false;
     qDebug().noquote()
             << QStringLiteral("[remote-iso] mesh points=%1 polys=%2")
@@ -2395,6 +2432,13 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     QObject::connect(&this->isosurfaceWatcher, &QFutureWatcher<AsyncIsosurfaceResult>::finished,
                      this, [this]() {
                          const auto result = this->isosurfaceWatcher.result();
+                         if (this->m_isoRerunPending) {
+                             // Asked for again while it ran (new levels): this
+                             // answer is stale; compute the one asked for.
+                             this->m_isoRerunPending = false;
+                             this->startAsyncIsosurface(ui->lineThreshold->text().toDouble());
+                             return;
+                         }
                          if (result.requestId != this->currentIsosurfaceRequestId) {
                              return;
                          }
@@ -3291,6 +3335,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         this->m_volumeColorbar = new VolumeColorbar(this);
         this->m_volumeColorbar->hide();   // until there is a range to show
         this->m_volumeColorbar->attachTo(ui->vtkCube);
+        this->m_isoLegend = new IsoLegend(this);   // the isosurface levels' legend (#526)
+        this->m_isoLegend->attachTo(ui->vtkCube);
         // The same scrubber on the 2-D Slice (see channelOverlay2d).
         this->channelOverlay2d = new ChannelOverlay(ui->vtkImage);
         ui->vtkImage->installEventFilter(this->channelOverlay2d);
@@ -6739,8 +6785,10 @@ void vtkWindowCube::applyThresholdToPipeline(double threshold)
     // A remote view on a non-linear scale draws with these functions.
     this->pushVolumeTransferFunctionsToRemote();
 
-    // In isosurface mode, schedule an async remote recompute.
-    if (!this->cubeOpenWatcher.isRunning() && ui->actionIsosurface->isChecked()) {
+    // In isosurface mode, schedule an async remote recompute: of the surface at
+    // the threshold, not of surfaces at levels (issue #526), which it does not move.
+    if (!this->cubeOpenWatcher.isRunning() && ui->actionIsosurface->isChecked()
+        && !this->isoLevelsActive()) {
         this->scheduleIsosurfaceRecompute();
     }
     this->updateThresholdShare(threshold);
@@ -7514,8 +7562,11 @@ void vtkWindowCube::applyCubeOpenResult(const CubeOpenStageResult &result)
                                .arg(this->currentCubeVisibleRange[0], 0, 'g', 8)
                                .arg(this->currentCubeVisibleRange[1], 0, 'g', 8)
                                .arg(threshold, 0, 'g', 8);
-            if (threshold < this->currentCubeVisibleRange[0]
-                || threshold > this->currentCubeVisibleRange[1]) {
+            // Levels (issue #526) do not use the threshold: a level outside the
+            // block is reported when its surface is missing.
+            if (!this->isoLevelsActive()
+                && (threshold < this->currentCubeVisibleRange[0]
+                    || threshold > this->currentCubeVisibleRange[1])) {
                 qDebug().noquote()
                         << QStringLiteral("[remote-iso] recompute skipped threshold outside current ROI range");
                 this->persistentStatusActive = false;
@@ -8811,6 +8862,20 @@ QWidget *vtkWindowCube::buildFlatLeftDockControls()
         auto *l = new QLabel(u"Surface color"_s, surfRow);
         l->setStyleSheet(labelCss);
         h->addWidget(l, 1);
+        auto *levelsButton = new QToolButton(surfRow);
+        levelsButton->setText(u"Levels\u2026"_s);
+        levelsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        levelsButton->setStyleSheet(
+                QStringLiteral("QToolButton{background:transparent;border:none;color:%1;"
+                               "font-size:11px;font-weight:600;}")
+                        .arg(pri));
+        levelsButton->setToolTip(
+                u"Draw several surfaces at once: a number of levels spaced linearly or "
+                u"logarithmically between two values, or a list, each with its own colour and "
+                u"opacity."_s);
+        QObject::connect(levelsButton, &QToolButton::clicked, this,
+                         &vtkWindowCube::openIsoLevelsDialog);
+        h->addWidget(levelsButton, 0);
         rehost(ui->btnCubeColor);
         ui->btnCubeColor->setParent(surfRow);
         h->addWidget(ui->btnCubeColor, 0);
@@ -15861,7 +15926,10 @@ void vtkWindowCube::undoCopilotActions()
 
 void vtkWindowCube::changeCubeColor()
 {
-    if (this->viewingIsosurface()) {
+    if (this->viewingIsosurface() && this->isoLevelsActive()) {
+        // Each surface has its own colour: the levels editor sets them.
+        this->openIsoLevelsDialog();
+    } else if (this->viewingIsosurface()) {
         double rgb[3];
         this->currentIsosurfaceActor->GetProperty()->GetColor(rgb);
 
@@ -15915,8 +15983,12 @@ void vtkWindowCube::renderImage()
 
 void vtkWindowCube::startAsyncIsosurface(double isoValue)
 {
+    // The surfaces at the levels when there are some (issue #526), else the one
+    // at the threshold.
+    const QVector<double> levels = visivo::isolevels::values(this->m_isoLevels);
     if (this->remoteIsosurfaceRequestInFlight
-        && std::fabs(this->inFlightRemoteIsosurfaceThreshold - isoValue) < 1e-9) {
+        && std::fabs(this->inFlightRemoteIsosurfaceThreshold - isoValue) < 1e-9
+        && this->m_isoInFlightLevels == levels) {
         qDebug().noquote()
                 << QStringLiteral("[remote-iso] skipping duplicate in-flight threshold=%1")
                            .arg(isoValue, 0, 'g', 12);
@@ -15941,6 +16013,7 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
         const bool roiSubvolumeActive = this->usingHighResCube && this->currentRemoteRoi != fullExtent;
         if (roiSubvolumeActive) {
             if (this->isosurfaceWatcher.isRunning()) {
+                this->m_isoRerunPending = true;   // started when this one ends
                 return;
             }
             auto *source = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));
@@ -15959,8 +16032,8 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
                                .arg(this->currentRemoteRoi[4])
                                .arg(this->currentRemoteRoi[5]);
             this->isosurfaceWatcher.setFuture(
-                    QtConcurrent::run([data, isoValue, requestId]() {
-                        return computeIsosurface(data, isoValue, requestId);
+                    QtConcurrent::run([data, isoValue, requestId, levels]() {
+                        return computeIsosurface(data, isoValue, requestId, levels);
                     }));
             return;
         }
@@ -15968,6 +16041,7 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
         ++this->activeRemoteIsosurfaceRequests;
         this->remoteIsosurfaceRequestInFlight = true;
         this->inFlightRemoteIsosurfaceThreshold = isoValue;
+        this->m_isoInFlightLevels = levels;
         auto *watcher = new QFutureWatcher<AsyncIsosurfaceResult>(this);
         watcher->setProperty("requestId", requestId);
         watcher->setProperty("isoValue", isoValue);
@@ -15977,10 +16051,12 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
                              const auto result = watcher->result();
                              const int requestId = watcher->property("requestId").toInt();
                              const double isoValue = watcher->property("isoValue").toDouble();
-                             if (std::fabs(this->inFlightRemoteIsosurfaceThreshold - isoValue) < 1e-9) {
+                             if (std::fabs(this->inFlightRemoteIsosurfaceThreshold - isoValue) < 1e-9
+                                 && requestId == this->currentIsosurfaceRequestId) {
                                  this->remoteIsosurfaceRequestInFlight = false;
                                  this->inFlightRemoteIsosurfaceThreshold =
                                          std::numeric_limits<double>::quiet_NaN();
+                                 this->m_isoInFlightLevels.clear();
                              }
                              watcher->deleteLater();
 
@@ -16009,7 +16085,8 @@ void vtkWindowCube::startAsyncIsosurface(double isoValue)
                          });
         watcher->setFuture(QtConcurrent::run(&fetchRemoteIsosurface, this->remoteBackendUrl,
                                              this->remoteDatasetId, isoValue, requestId,
-                                             this->remoteSessionId, this->remoteBackendToken));
+                                             this->remoteSessionId, this->remoteBackendToken,
+                                             levels));
     }
 }
 
@@ -16479,8 +16556,8 @@ void vtkWindowCube::handle3dPickEvent(const std::array<int, 2> &eventPos)
         picker->GetPickPosition(world);
         haveWorld = true;
         planeHit = true;
-    } else if (hitProp && this->currentIsosurfaceActor
-               && picker->GetViewProp() == this->currentIsosurfaceActor.GetPointer()) {
+    } else if (hitProp && this->isoSurfaceActors().contains(
+                       vtkActor::SafeDownCast(picker->GetViewProp()))) {
         // Clicked the isosurface: the surface point IS the feature, exactly.
         picker->GetPickPosition(world);
         haveWorld = true;
@@ -16638,8 +16715,9 @@ void vtkWindowCube::apply3dRenderingVisibility()
     // Applied to BOTH props, not just the mounted one: the mode can change while
     // the layer is off, and the newly mounted prop has to come up hidden too.
     this->setVolumeLayerVisible(m_show3dRendering);
-    if (this->currentIsosurfaceActor)
-        this->currentIsosurfaceActor->SetVisibility(m_show3dRendering ? 1 : 0);
+    for (vtkActor *surface : this->isoSurfaceActors())
+        surface->SetVisibility(m_show3dRendering ? 1 : 0);
+    this->refreshIsoLegend();
     this->refreshVolumeColorbar();
     if (ui->vtkCube && ui->vtkCube->renderWindow())
         ui->vtkCube->renderWindow()->Render();
@@ -16665,17 +16743,21 @@ void vtkWindowCube::setCubeRenderModeLocally(bool isosurfaceMode)
     }
 
     this->m_isosurfaceDrawn = isosurfaceMode;
+    this->applyIsoLevelStyle();   // depth peeling and the legend follow what is drawn
 
     if (isosurfaceMode) {
-        if (this->currentIsosurfaceActor && !renderer->HasViewProp(this->currentIsosurfaceActor)) {
-            renderer->AddActor(this->currentIsosurfaceActor);
+        // The first surface and, with several levels (issue #526), the others.
+        for (vtkActor *surface : this->isoSurfaceActors()) {
+            if (!renderer->HasViewProp(surface))
+                renderer->AddActor(surface);
         }
         if (this->currentIsosurfaceActor && renderer->HasViewProp(this->volume)) {
             renderer->RemoveViewProp(this->volume);
         }
     } else {
-        if (this->currentIsosurfaceActor && renderer->HasViewProp(this->currentIsosurfaceActor)) {
-            renderer->RemoveActor(this->currentIsosurfaceActor);
+        for (vtkActor *surface : this->isoSurfaceActors()) {
+            if (renderer->HasViewProp(surface))
+                renderer->RemoveActor(surface);
         }
         if (!renderer->HasViewProp(this->volume)) {
             renderer->AddViewProp(this->volume);
@@ -16747,22 +16829,31 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
         return;
     }
 
-    if (cubeImage && validBounds(cubeBounds) && !result.meshInDisplayCoordinates) {
-        // The mesh is in cube voxels; the 3-D view is in the displayed cube's
-        // samples: world = (cube - offset) / scale. vtkTransform pre-multiplies,
-        // so the translation written second is applied to the point first.
+    // The mesh is in cube voxels; the 3-D view is in the displayed cube's
+    // samples: world = (cube - offset) / scale. vtkTransform pre-multiplies,
+    // so the translation written second is applied to the point first.
+    vtkNew<vtkTransform> meshToDisplay;
+    const bool needsTransform =
+            cubeImage && validBounds(cubeBounds) && !result.meshInDisplayCoordinates;
+    if (needsTransform) {
         const CubeLodGeometry::Sampling &ds = this->m_displaySampling;
-        vtkNew<vtkTransform> meshToDisplay;
         meshToDisplay->Scale(1.0 / ds.scale, 1.0 / ds.scale, 1.0 / ds.scale);
         meshToDisplay->Translate(-ds.offset, -ds.offset, -ds.offset);
-
-        vtkNew<vtkTransformPolyDataFilter> transformFilter;
-        transformFilter->SetTransform(meshToDisplay);
-        transformFilter->SetInputData(result.mesh);
-        transformFilter->Update();
-
-        displayMesh = vtkSmartPointer<vtkPolyData>::New();
-        displayMesh->ShallowCopy(transformFilter->GetOutput());
+    }
+    const auto toDisplay = [&](vtkPolyData *mesh) {
+        vtkSmartPointer<vtkPolyData> out = mesh;
+        if (needsTransform) {
+            vtkNew<vtkTransformPolyDataFilter> transformFilter;
+            transformFilter->SetTransform(meshToDisplay);
+            transformFilter->SetInputData(mesh);
+            transformFilter->Update();
+            out = vtkSmartPointer<vtkPolyData>::New();
+            out->ShallowCopy(transformFilter->GetOutput());
+        }
+        return out;
+    };
+    if (needsTransform) {
+        displayMesh = toDisplay(result.mesh);
 
         double transformedBounds[6];
         displayMesh->GetBounds(transformedBounds);
@@ -16795,7 +16886,48 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
         renderer->RemoveActor(this->currentIsosurfaceActor);
     }
 
+    // Several levels (issue #526): the first surface above is the lowest level's;
+    // each of the others is an actor of its own. Colour and opacity of each
+    // come from its level (applyIsoLevelStyle).
+    this->removeIsoExtraActors();
     this->currentIsosurfaceActor = newActor;
+    for (int i = 1; i < result.levelMeshes.size(); ++i) {
+        vtkNew<vtkPolyDataMapper> extraMapper;
+        extraMapper->SetInputData(toDisplay(result.levelMeshes[i]));
+        extraMapper->ScalarVisibilityOff();
+        vtkNew<vtkActor> extra;
+        extra->SetMapper(extraMapper);
+        this->m_isoExtraActors << vtkSmartPointer<vtkActor>(extra);
+    }
+    if (this->isoLevelsActive()) {
+        // Which level each surface is: the backend leaves out a level that cuts
+        // no voxels, so the surfaces are matched to the levels by value.
+        this->m_isoDrawnValues = result.levelValues.isEmpty()
+                ? QVector<double>{ this->m_isoLevels.first().value }
+                : result.levelValues;
+        if (!result.skippedLevels.isEmpty()) {
+            QStringList skipped;
+            for (const double v : result.skippedLevels)
+                skipped << visivo::isolevels::label(v);
+            // After the caller has cleared "Computing isosurface...".
+            const QString text = result.sampled
+                    ? tr("No surface at level %1: nothing reaches it, or a small peak was lost "
+                         "in the sampled copy of the cube.").arg(skipped.join(u", "_s))
+                    : tr("No surface at level %1: nothing in the cube reaches it.")
+                              .arg(skipped.join(u", "_s));
+            QTimer::singleShot(0, this, [this, text]() { this->statusBar()->showMessage(text, 6000); });
+        } else if (result.sampled) {
+            QTimer::singleShot(0, this, [this]() {
+                this->statusBar()->showMessage(
+                        tr("The surfaces are drawn from a sampled copy of the cube (too many "
+                           "triangles at full resolution); raise the lowest level for finer ones."),
+                        8000);
+            });
+        }
+    } else {
+        this->m_isoDrawnValues.clear();
+    }
+    this->applyIsoLevelStyle();
     apply3dRenderingVisibility();   // a fresh isosurface must honour the layer toggle
     this->remoteIsosurfaceReady = true;
     qDebug().noquote()

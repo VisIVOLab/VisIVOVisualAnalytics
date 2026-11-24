@@ -204,6 +204,8 @@ add_executable(VisIVOTests
     TestThresholdShare.h
     test_threshold_share.cpp
     TestColourBarTicks.h
+    TestIsoLevels.h
+    test_iso_levels.cpp
     test_colour_bar_ticks.cpp
     TestSequentialColors.h
     test_sequential_colors.cpp
@@ -319,6 +321,7 @@ target_include_directories(VisIVOTests PRIVATE
 target_link_libraries(VisIVOTests PRIVATE
     visivo_test_support
     Qt::Test
+    Qt::Gui          # QColor (the isosurface levels, IsoLevels.h); no window is made
     Qt::Concurrent   # the quit drain's test of a worker waiting on a queued job
 )
 # Let the contract test locate the shared header manifest in both build layouts.

@@ -900,14 +900,32 @@ struct BackendImageTileResult
     QByteArray data;       ///< float32 LE, row-major, width*height
 };
 
+/// One surface of an isosurface answer: the mesh at one level (issue #526).
+struct BackendIsosurfaceSurface
+{
+    double value{ 0. };       ///< the level, in the cube's units
+    int numPoints{ 0 };
+    int numPolys{ 0 };
+    QByteArray pointsData;    ///< float32 xyz, cube voxel coordinates
+    QByteArray polysData;     ///< int32 VTK polygon connectivity
+};
+
 struct BackendIsosurfaceResult
 {
     bool valid{ false };
     QString error;
+    /// The first (lowest) level's mesh, as before levels existed.
     int numPoints{ 0 };
     int numPolys{ 0 };
     QByteArray pointsData;
     QByteArray polysData;
+    /// Every surface, ascending by level; one for a single threshold. An
+    /// older backend sends none: the first-surface fields are then the only one.
+    QVector<BackendIsosurfaceSurface> surfaces;
+    /// Levels asked for that cut no voxels, so have no surface.
+    QVector<double> skippedLevels;
+    /// Sampling stride (z, y, x) of the extraction; empty or (1,1,1): the cube's own grid.
+    QVector<int> stride;
 };
 
 // ── HiPS (Hierarchical Progressive Survey) ────────────────────────────────────
@@ -3022,6 +3040,12 @@ public:
     BackendImageTileResult requestImageTile(const QString &datasetId, int level,
                                             int tileX, int tileY, int tileSize = 256) const;
     BackendIsosurfaceResult requestIsosurface(const QString &datasetId, double threshold) const;
+    /// The surfaces at `levels` (POST /v1/products/isosurface, issue #526);
+    /// one level is the same request as the threshold's.
+    BackendIsosurfaceResult requestIsosurfaceLevels(const QString &datasetId,
+                                                    const QVector<double> &levels) const;
+    /// The answer of /v1/products/isosurface, decoded (a network-free seam).
+    static BackendIsosurfaceResult parseIsosurfaceResultObject(const QJsonObject &object);
     BackendMomentResult requestMoment(const QString &datasetId, int order, int channelStart,
                                       int channelEnd, bool maskEnabled,
                                       double thresholdValue, bool thresholdAuto = false,

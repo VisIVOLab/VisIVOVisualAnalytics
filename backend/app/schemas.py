@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 class ErrorDetail(BaseModel):
     error: str
@@ -913,18 +913,58 @@ class VbtSubsetResponse(BaseModel):
 
 
 class IsosurfaceProductRequest(BaseModel):
+    """One surface at ``threshold``, or several (issue #526): ``levels`` (an
+    explicit list), or ``n_levels`` between ``level_min`` and ``level_max``
+    spaced ``linear`` or ``log``. ``levels`` wins over ``n_levels``, which wins
+    over ``threshold``; at most ``app.iso_levels.MAX_LEVELS`` surfaces."""
     dataset_id: str
-    threshold: float
+    threshold: float | None = None
+    levels: list[float] | None = None
+    n_levels: int | None = Field(default=None, ge=1)
+    level_min: float | None = None
+    level_max: float | None = None
+    spacing: Literal["linear", "log"] = "linear"
+
+    @model_validator(mode="after")
+    def _levels_resolve(self) -> "IsosurfaceProductRequest":
+        self.resolved_levels()   # a request that names no valid level is a 422
+        return self
+
+    def resolved_levels(self) -> list[float]:
+        """The surfaces' values, ascending."""
+        from .iso_levels import resolve_levels  # noqa: PLC0415
+        return resolve_levels(self.threshold, self.levels, self.n_levels, self.level_min,
+                              self.level_max, self.spacing)
 
 
-class IsosurfaceProductResponse(BaseModel):
-    valid: bool
-    error: str
+class IsosurfaceLevelMesh(BaseModel):
+    """One surface of an isosurface answer, in the same encoding as the
+    answer's own first-surface fields."""
+    value: float
     compression: str = ""
     points_base64: str = ""
     polys_base64: str = ""
     num_points: int = 0
     num_polys: int = 0
+
+
+class IsosurfaceProductResponse(BaseModel):
+    valid: bool
+    error: str
+    # The first (lowest) level's surface, as before levels existed.
+    compression: str = ""
+    points_base64: str = ""
+    polys_base64: str = ""
+    num_points: int = 0
+    num_polys: int = 0
+    # Every surface, ascending by level value (issue #526).
+    levels: list[IsosurfaceLevelMesh] = []
+    # Levels asked for that cut no voxels: they have no surface.
+    skipped_levels: list[float] = []
+    # Sampling stride (z, y, x) of the extraction; (1, 1, 1) is the cube's own
+    # grid, larger means the cube was sampled and the surfaces are coarser.
+    stride: list[int] = []
+    num_polys_total: int = 0
 
 
 class CosmologyDistanceRequest(BaseModel):
