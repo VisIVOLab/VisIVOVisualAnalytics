@@ -197,3 +197,21 @@ void TestSupportedFormats::gadgetSnapshotsMatchByTheirNames()
     QVERIFY(visivo::fileTypePrefixes(FileType::AllSupported).isEmpty());
     QVERIFY(visivo::fileTypePrefixes(FileType::Fits).isEmpty());
 }
+
+void TestSupportedFormats::aFitsTheBackendRecognisedByContentIsListedWithTheFitsGroups()
+{
+    // An extension-less FITS (the ATCA images, issue #501): the backend says
+    // is_fits, and the groups that take FITS names list it.
+    QVERIFY(!visivo::fileTypeMatches(u"AGN_SHORES_I", FileType::Fits));
+    QVERIFY(visivo::fileTypeMatchesEntry(u"AGN_SHORES_I", true, FileType::Fits));
+    QVERIFY(visivo::fileTypeMatchesEntry(u"AGN_SHORES_I", true, FileType::AllSupported));
+    QVERIFY(visivo::fileTypeMatchesEntry(u"AGN_SHORES_I", true, FileType::Catalogue));
+    QVERIFY(visivo::fileTypeMatchesEntry(u"AGN_SHORES_I", true, FileType::AllFiles));
+    // Not FITS to the backend: only All files lists it. Other groups are untouched.
+    QVERIFY(!visivo::fileTypeMatchesEntry(u"README", false, FileType::Fits));
+    QVERIFY(visivo::fileTypeMatchesEntry(u"README", false, FileType::AllFiles));
+    QVERIFY(!visivo::fileTypeMatchesEntry(u"AGN_SHORES_I", true, FileType::Hdf5));
+    QVERIFY(!visivo::fileTypeMatchesEntry(u"AGN_SHORES_I", true, FileType::Vbt));
+    // Dotfiles stay hidden outside All files.
+    QVERIFY(!visivo::fileTypeMatchesEntry(u".hidden", true, FileType::Fits));
+}

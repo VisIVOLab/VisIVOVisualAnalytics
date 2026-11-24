@@ -7,6 +7,7 @@ import functools
 import logging
 import math as _math
 import os
+import stat as stat_module
 import struct
 import sys as _sys
 import tempfile
@@ -960,14 +961,70 @@ def _has_fits_name(path: Path) -> bool:
             or _compressed_fits.has_compressed_name(path))
 
 
+#: Suffixes of files the backend opens as something other than FITS (or never
+#: opens): a file called this is not read to see whether it is FITS.
+_NOT_FITS_SUFFIXES = frozenset({
+    ".h5", ".hdf5", ".hdf", ".he5", ".bfdata", ".csv", ".tsv", ".txt", ".vot", ".votable",
+    ".xml", ".tbl", ".speck", ".bin", ".head", ".flt", ".dbl", ".out", ".json", ".log",
+    ".md", ".py", ".sh", ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".pdf", ".zip", ".tar",
+    ".tgz", ".xz", ".bz2", ".7z", ".npy", ".npz", ".nc", ".root", ".parquet", ".mp4", ".so",
+    ".o", ".pyc",
+})
+_FITS_BLOCK = 2880
+
+
+def _fits_card_is_primary(card: bytes) -> bool:
+    """Whether 80 bytes are a primary header's first card: ``SIMPLE  = T``."""
+    return card[:9] == b"SIMPLE  =" and card[9:80].split(b"/", 1)[0].strip() == b"T"
+
+
+@functools.lru_cache(maxsize=4096)
+def _sniff_fits(path: str, mtime_ns: int, size: int) -> bool:
+    """Whether the file starts like a FITS file, plain or gzip-compressed.
+    Reads at most the first 80 bytes (of the decompressed stream, for gzip).
+    Keyed by mtime and size so a rewritten file is read again. A read that
+    fails raises, and lru_cache does not keep an exception: a file that could
+    not be read a moment ago is read again."""
+    import gzip  # noqa: PLC0415
+    with open(path, "rb") as handle:
+        head = handle.read(80)
+    if head[:2] == _compressed_fits.GZIP_MAGIC:
+        # A small gzipped image is far below one FITS block on disk.
+        with gzip.open(path, "rb") as stream:
+            head = stream.read(80)
+    elif size < _FITS_BLOCK:
+        return False   # a plain FITS file is whole blocks
+    return _fits_card_is_primary(head)
+
+
+def _is_fits_by_content(path: Path) -> bool:
+    """A FITS file under a name that does not say so (the ATCA images
+    ``AGN_SHORES_I``, issue #501): a regular file, with no suffix or one not
+    known to be something else, whose first card is ``SIMPLE  = T``. The name
+    is judged first by the callers; this is the cheap fallback, one bounded
+    read, symbolic links followed (``stat`` and ``open`` do)."""
+    import zlib  # noqa: PLC0415
+    if path.suffix.lower() in _NOT_FITS_SUFFIXES:
+        return False
+    try:
+        st = path.stat()
+        if not stat_module.S_ISREG(st.st_mode) or st.st_size < 20:
+            return False
+        return _sniff_fits(str(path), st.st_mtime_ns, st.st_size)
+    except (OSError, EOFError, zlib.error):
+        return False
+
+
 def _is_fits(path: Path) -> bool:
-    return path.is_file() and _has_fits_name(path)
+    """A FITS file, by its name first, else by its first card."""
+    return path.is_file() and (_has_fits_name(path) or _is_fits_by_content(path))
 
 
 def _is_supported_dataset(path: Path) -> bool:
-    """Accept FITS (compressed too) and HDF5 beamformed / dynamic-spectrum files."""
+    """Accept FITS (compressed too, whatever its name) and HDF5 beamformed /
+    dynamic-spectrum files."""
     from .hdf5_dynspec import is_hdf5_path  # noqa: PLC0415 (lazy h5py import)
-    return path.is_file() and (_has_fits_name(path) or is_hdf5_path(path))
+    return path.is_file() and (_is_fits(path) or is_hdf5_path(path))
 
 
 def _normalize_catalogue_field(raw: str) -> str:

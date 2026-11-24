@@ -94,8 +94,11 @@ In the *Data Hub*:
   | HDF5 | `.h5 .hdf5 .hdf .bfdata` |
   | All files | everything, hidden files included |
 
-  The filter goes by name only. A file with an unusual extension opens from
-  *All files*, because the backend identifies it by content.
+  The filter goes by name, with one exception: a FITS file with no extension
+  (the ATCA images `AGN_SHORES_I`, `_Q`, `_U` are delivered so) is recognised
+  by its first header card and listed with the FITS groups too. A file with an
+  unusual extension opens from *All files*, because the backend identifies it
+  by content.
 - *Preview* (in the browser): the start of the selected file, read by the
   backend: FITS HDUs and header cards, the first lines of a text table, a VBT
   `.head`, the groups of an HDF5 file.

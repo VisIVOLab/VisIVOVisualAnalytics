@@ -19,4 +19,5 @@ private slots:
     void aNameThatMatchesNoPattern_yieldsNoCandidates();
     void pbCorrectedIntensity_alsoOffersUncorrectedCompanions();
     void pick_prefersThePbCompanionWhenBothExist();
+    void aNameWithoutExtension_takesTheBareRoleSuffix();
 };

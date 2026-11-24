@@ -158,7 +158,7 @@ the backend's code: a copy made weeks ago shows there.
 ## Files
 
 ### `GET /v1/files/list?path=<dir>`
-List backend-side directory. Returns `{valid, error, current_path, entries}`, `entries` being `FileEntry[]` with `name`, `path`, `type`, `size`, `modified_time`, `is_fits`. A missing or refused directory is `valid: false` ("Directory not found.").
+List backend-side directory. Returns `{valid, error, current_path, entries}`, `entries` being `FileEntry[]` with `name`, `path`, `type`, `size`, `modified_time`, `is_fits`. `is_fits` is true for a FITS name (also compressed) and, for a regular file with no extension or one not known to be another format, when its first card reads `SIMPLE  = T` (plain, or inside a gzip stream; symbolic links followed; at most 80 bytes read per file, issue #501). `POST /v1/datasets/open`, `/v1/files/header`, the layer and contour pickers and the SODA media type use the same test. A missing or refused directory is `valid: false` ("Directory not found.").
 
 ### `POST /v1/files/header`
 ```json

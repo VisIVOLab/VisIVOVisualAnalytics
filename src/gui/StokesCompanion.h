@@ -54,6 +54,15 @@ inline QStringList stokesCompanionCandidates(const QString &fileName, const QStr
     candidates << QString(fileName).replace(QStringLiteral("_I_PB.fits"),
                                             QStringLiteral("_") + role
                                                     + QStringLiteral(".fits"));
+    // A name with no extension (ATCA: AGN_SHORES_I beside AGN_SHORES_Q, issue
+    // #501): the same suffixes, at the end of the name.
+    const QString bare = QStringLiteral("_") + role;
+    if (fileName.endsWith(QStringLiteral("_I")))
+        candidates << fileName.chopped(2) + bare;
+    if (fileName.endsWith(QStringLiteral("_I_PB"))) {
+        candidates << fileName.chopped(5) + bare + QStringLiteral("_PB");
+        candidates << fileName.chopped(5) + bare;
+    }
     candidates.removeDuplicates();
     candidates.removeAll(fileName);   // a pattern that matched nothing is not a candidate
     return candidates;

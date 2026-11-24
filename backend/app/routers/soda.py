@@ -51,7 +51,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse,
 
 from ..auth import verify_token
 from ..compressed_fits import CompressedFitsError, readable_path
-from ..dependencies import _FITS_SUFFIXES, _is_supported_dataset, _normalize_path, _run_heavy, get_exports_dir
+from ..dependencies import _FITS_SUFFIXES, _is_fits, _is_supported_dataset, _normalize_path, _run_heavy, get_exports_dir
 from ..fits_truncation import FitsTruncatedError, check_not_truncated
 from ..skava_client import SkavaResolveError, access_url_to_local_path
 from ..soda_cutout import CutoutError, CutoutNoOverlap, describe, make_cutout, parse_pol
@@ -190,6 +190,8 @@ def _media_type(path: Path) -> str:
         return "application/x-hdf5"
     if name.endswith(".gz"):
         return "application/gzip"
+    if _is_fits(path):
+        return "application/fits"   # a FITS file under a name that does not say so (#501)
     return "application/octet-stream"
 
 
