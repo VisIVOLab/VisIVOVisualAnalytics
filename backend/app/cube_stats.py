@@ -91,12 +91,12 @@ class _Moments:
 def squeezed_shape(full) -> tuple[int, int, int] | None:
     """The (z, y, x) shape ``squeeze_to_3d`` gives data of shape ``full``, an
     image one plane deep; None when it is neither."""
-    dims = [int(n) for n in full if int(n) != 1]
+    from .fits_dataset import cube_shape  # noqa: PLC0415
+
+    dims = cube_shape(full)
     if len(dims) == 2:
-        return (1, dims[0], dims[1])
-    if len(dims) >= 3:
-        return tuple(dims[-3:])  # type: ignore[return-value]
-    return None
+        return (1, *dims)
+    return dims if len(dims) == 3 else None  # type: ignore[return-value]
 
 
 class _Reader:

@@ -57,13 +57,12 @@ def ready_pyramid(path: str) -> str | None:
     """
     from .brick_pyramid import default_pyramid_path  # noqa: PLC0415
     from .pyramid_builds import pyramid_ready  # noqa: PLC0415
+    from .region_level import pyramid_eligible  # noqa: PLC0415
     from .volume_source import volume_shape  # noqa: PLC0415
 
     try:
         full, hdu = volume_shape(path, None)
-        full = [int(n) for n in full]
-        shape = full[-3:]
-        if len(shape) != 3 or min(shape) <= 1 or any(n != 1 for n in full[:-3]):
+        if not pyramid_eligible(full):
             return None
         if not pyramid_ready(path, hdu):
             return None

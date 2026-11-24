@@ -95,6 +95,7 @@ class VolumeGridRequest(VolumeRenderRequest):
 
 def _paths(entry: dict, req: VolumeRenderRequest) -> tuple[str, str | None]:
     """The brightness's volume and the colour's (None: the brightness)."""
+    from ..fits_dataset import cube_shape  # noqa: PLC0415
     from ..volume_source import (field_siblings, ref_order, resolve_vbt,  # noqa: PLC0415
                                  vbt_field_ref, vbt_volume_header, volume_shape, with_order)
     path = str(entry.get("path") or "")
@@ -105,11 +106,11 @@ def _paths(entry: dict, req: VolumeRenderRequest) -> tuple[str, str | None]:
     except (OSError, ValueError) as exc:
         raise HTTPException(422, f"Cannot read the cube: {exc}") from exc
     # A plane has no depth for a ray to cross: a black picture, not a render.
-    if len(full) < 3 or any(int(n) < 2 for n in full[-3:]):
+    if len(cube_shape(full)) < 3:
         raise HTTPException(422, f"Ray-traced volume rendering needs a cube at least two "
                                  f"voxels deep along each axis (this one is {tuple(full)}).")
     if req.colour_by == "velocity":
-        _velocities(path, int(full[-3]))   # refused now, not in the task
+        _velocities(path, int(cube_shape(full)[0]))   # refused now, not in the task
     if req.colour_by != "colour":
         return path, None
     if req.colour_field is None:
@@ -197,9 +198,10 @@ def _prepare(entry: dict, req: VolumeRenderRequest) -> dict:
     """The grids a render or the GPU view draws: the emissivity, the colour
     index in [0, 1], their table and the colour's range, the world box."""
     from ..volume_raytrace import colour_index, emission_from, velocity_range  # noqa: PLC0415
+    from ..fits_dataset import cube_shape  # noqa: PLC0415
     from ..volume_source import volume_shape  # noqa: PLC0415
     bright_path, colour_path = _paths(entry, req)
-    shape = tuple(int(n) for n in volume_shape(bright_path)[0][-3:])
+    shape = tuple(int(n) for n in cube_shape(volume_shape(bright_path)[0]))
     stride = _stride(shape, req.max_voxels, getattr(req, "max_axis", None))
     field = _read(bright_path, stride)
     nz, ny, nx = shape
@@ -225,7 +227,7 @@ def _prepare(entry: dict, req: VolumeRenderRequest) -> dict:
         del field
         return _grids(req, emission, index, lo, hi, False, box, shape)
     if colour_path is not None:
-        cshape = tuple(int(n) for n in volume_shape(colour_path)[0][-3:])
+        cshape = tuple(int(n) for n in cube_shape(volume_shape(colour_path)[0]))
         if cshape != shape:
             raise HTTPException(422, f"The colour field's grid {cshape} is not the "
                                      f"brightness's {shape}.")

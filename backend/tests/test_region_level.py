@@ -494,15 +494,17 @@ async def test_pyramid_status_reports_a_build_without_starting_one(client, auth_
     assert code == 200 and answer["state"] == "failed" and answer["error"] == "MemoryError: "
 
 
-async def test_pyramid_status_of_a_cube_no_pyramid_holds(client, auth_headers, tmp_path,
+async def test_pyramid_status_of_a_cube_with_a_degenerate_axis(client, auth_headers, tmp_path,
                                                          no_build):
-    # A cube whose last three axes are not its cube (an axis of one plane
-    # among them): no pyramid holds it, the desktop reads it squeezed.
+    # A cube with a size-1 axis among its last three (CASA's RA, DEC,
+    # STOKES = 1, FREQ is (z, 1, y, x)): the pyramid holds the cube the
+    # desktop reads, squeezed, since issue #506. Nothing is built here: with
+    # no pyramid yet its state is "absent" and the levels are strided.
     cube = _cube(WIDE)
     path = _fits(tmp_path, cube[:, np.newaxis], "spare.fits")      # (z, 1, y, x)
     headers, did = await _open(client, auth_headers, path)
-    code, answer = await _status(client, headers, did, build=True)
-    assert code == 200 and answer["state"] == "unsupported"
+    code, answer = await _status(client, headers, did, build=False)
+    assert code == 200 and answer["state"] != "unsupported"
     # Its levels are still offered, strided, on the cube the desktop reads.
     assert answer["shapes"] == [[24, 32, 140], [12, 16, 70], [6, 8, 35]]
     resp = await client.post("/v1/cube/region_level_bin",

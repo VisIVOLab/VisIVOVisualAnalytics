@@ -153,8 +153,6 @@ class LevelReader:
             from .volume_source import volume_data  # noqa: PLC0415
             self._ctx = volume_data(path, None)
             data = self._ctx.__enter__()
-            while data.ndim > 3:
-                data = data[0]
             self._data = data
 
     def slab(self, z0: int, z1: int) -> np.ndarray:

@@ -25,6 +25,20 @@ One HDF5 file per cube (version 1):
 | `levelK/data` | the cube at level K, float32, axes z, y, x, chunked by the brick, NaN for a blank voxel |
 | `levelK/min`, `levelK/max` | one value per brick: the minimum and maximum of its finite voxels, NaN for a brick with none |
 
+### Which axes are the cube
+
+A FITS array can have more than three axes. The cube is the axes longer than
+one, wherever they sit (`fits_dataset.cube_axes`), the same rule as the
+dataset's, the render session's and the volume source's: a CASA export, RA,
+DEC, STOKES (size 1), FREQ, numpy shape `(FREQ, 1, Y, X)`, is a FREQ cube, and
+so is `(1, FREQ, Y, X)`. With more than three axes longer than one, the last
+three are the cube and the others keep their first plane (a warning says so).
+Before issue #506 a pyramid took the last three numpy axes, which for the CASA
+order was one plane. A file whose cube is not its last three axes records that
+(`source_layout`, `axes=0,2,3`), which gives it another pyramid name and makes
+a pyramid built the old way `StalePyramid`, so it is rebuilt. A file the two
+rules read alike keeps its pyramid.
+
 Level 0 is the cube. Level K+1 is level K halved on every axis (rounded up):
 each voxel is the mean of a 2x2x2 block of level K over its finite voxels, NaN
 when none is finite, so blank regions stay blank instead of pulling averages

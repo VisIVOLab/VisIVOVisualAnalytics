@@ -358,6 +358,7 @@ def _reduced_source(path: str, request: CubeReducedRequest):
     from fastapi.responses import JSONResponse  # noqa: PLC0415
     from ..brick_pyramid import default_pyramid_path  # noqa: PLC0415
     from ..pyramid_builds import ensure_pyramid  # noqa: PLC0415
+    from ..region_level import cube_shape, pyramid_eligible  # noqa: PLC0415
     from ..volume_source import volume_shape  # noqa: PLC0415
 
     if request.source == "cube":
@@ -366,11 +367,10 @@ def _reduced_source(path: str, request: CubeReducedRequest):
         full, hdu = volume_shape(path, None)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(422, f"The cube could not be read: {exc}") from exc
-    full = [int(n) for n in full]
-    shape = full[-3:]
-    # A pyramid holds the HDU's last three axes: the cube the reduction reads
-    # only when every other axis is one plane and none of these three is.
-    fits = len(shape) == 3 and min(shape) > 1 and all(n == 1 for n in full[:-3])
+    shape = cube_shape(full)
+    # A pyramid holds the cube the reduction reads (the same axes) when the
+    # file has exactly three axes longer than one.
+    fits = pyramid_eligible(full)
     if request.source == "auto":
         if not fits or request.mode != "mean" or \
                 int(np.prod(shape)) * 4 <= _vr_pyramid_bytes():
