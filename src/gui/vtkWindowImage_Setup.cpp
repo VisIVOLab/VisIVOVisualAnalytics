@@ -1120,6 +1120,9 @@ void vtkWindowImage::setupInspector()
     // where the user guide sends people, and the Inspector list is where they
     // browse. Adding them only to the Inspector made the documented menu route
     // a dead end.
+    // Additive blend and the RGB composite built on it (issue #45).
+    if (!this->m_blend)
+        this->setupLayerBlend();
     if (!this->m_actPublicationFigure) {
         this->m_actPublicationFigure = ui->menuTools->addAction(u"Publication Figure…"_s);
         this->m_actPublicationFigure->setToolTip(
@@ -1410,6 +1413,10 @@ QVector<vtkWindowImage::ImageTool> vtkWindowImage::imageTools() const
     add(u"Polarisation"_s, self->m_actComputeSpectralIndex);
     add(u"Polarisation"_s, self->m_actComputeFaradayRM);
     add(u"Polarisation"_s, self->m_actTogglePolVecs);
+
+    add(u"Layers"_s, self->m_actMakeRgb);
+    add(u"Layers"_s, self->m_actBlendAdditive);
+    add(u"Layers"_s, self->m_actSaveBlend);
 
     add(u"Products"_s, self->m_actPublicationFigure);
     add(u"Products"_s, self->m_actImageQuality);

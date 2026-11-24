@@ -1186,6 +1186,29 @@ protected:
     void loadAnnotationsJson();
     QString annotationsJsonPath() const;
 
+    // ── Additive blend / RGB composite (issue #45, vtkWindowImage_Blend.cpp) ──
+    /// Normal blending draws each layer over the one below by its opacity;
+    /// Additive sums the visible layers' colours per pixel (opacity = weight),
+    /// which is what a red/green/blue composite needs. The sum is drawn as one
+    /// extra image on top of the stack and rebuilt only when something it
+    /// depends on changed.
+    struct BlendState;
+    std::shared_ptr<BlendState> m_blend;
+    bool m_blendAdditive{ false };
+    bool m_blendSyncing{ false };
+    QPointer<QAction> m_actBlendAdditive;
+    QPointer<QAction> m_actMakeRgb;
+    QPointer<QAction> m_actSaveBlend;
+    QPointer<QCheckBox> m_blendCheck;
+    void setupLayerBlend();
+    void setBlendAdditive(bool on);
+    /// The render window's StartEvent: brings the blend image up to date before
+    /// a frame is drawn, so every way a layer can change (the cards, a
+    /// window-level drag, a reload) is covered without hooking each one.
+    void onBlendRenderStart();
+    void makeRgbComposite();
+    void saveBlendPng();
+
     // ── Blink / Compare ──────────────────────────────────────────────────────
     QTimer m_blinkTimer;
     bool m_blinkState{ false };
@@ -1235,6 +1258,12 @@ private:
     /// the unit and the beam of a selected layer come from them.
     QHash<QString, QStringList> m_layerCards;
     QStringList selectedLayerCards();
+    /// A layer file's header cards, read once per file and cached (also when the
+    /// read failed): the one reader for the unit, beam and wavelength of layers.
+    QStringList layerCardsForPath(const QString &path);
+    /// A layer's wavelength in metres from its header (WAVELENG…, or a FREQ/WAVE
+    /// axis), NaN when it gives none: orders the RGB composite's channels.
+    double layerWavelengthMetres(int row);
     /// The Dataset card's two fields that follow the selected layer.
     QPointer<QLabel> m_activeLayerValueLabel;
     QPointer<QLabel> m_layerCountValueLabel;

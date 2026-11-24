@@ -71,6 +71,9 @@ const std::map<std::string, std::function<void(vtkLookupTable *)>> ColorMaps::Lo
     { "PureRed"s, &ColorMaps::SetPureRed },
     { "PureGreen"s, &ColorMaps::SetPureGreen },
     { "PureBlue"s, &ColorMaps::SetPureBlue },
+    { "PureCyan"s, &ColorMaps::SetPureCyan },
+    { "PureMagenta"s, &ColorMaps::SetPureMagenta },
+    { "PureYellow"s, &ColorMaps::SetPureYellow },
     { "AllRed"s, &ColorMaps::SetAllRed },
     { "AllGreen"s, &ColorMaps::SetAllGreen },
     { "AllBlue"s, &ColorMaps::SetAllBlue },
@@ -2157,6 +2160,30 @@ void ColorMaps::SetPureBlue(vtkLookupTable *lut)
     lut->SetNumberOfTableValues(256);
     for (vtkIdType i = 0; i < 256; ++i) {
         lut->SetTableValue(i, 0., 0., i / 255.);
+    }
+}
+
+void ColorMaps::SetPureCyan(vtkLookupTable *lut)
+{
+    lut->SetNumberOfTableValues(256);
+    for (vtkIdType i = 0; i < 256; ++i) {
+        lut->SetTableValue(i, 0., i / 255., i / 255.);
+    }
+}
+
+void ColorMaps::SetPureMagenta(vtkLookupTable *lut)
+{
+    lut->SetNumberOfTableValues(256);
+    for (vtkIdType i = 0; i < 256; ++i) {
+        lut->SetTableValue(i, i / 255., 0., i / 255.);
+    }
+}
+
+void ColorMaps::SetPureYellow(vtkLookupTable *lut)
+{
+    lut->SetNumberOfTableValues(256);
+    for (vtkIdType i = 0; i < 256; ++i) {
+        lut->SetTableValue(i, i / 255., i / 255., 0.);
     }
 }
 

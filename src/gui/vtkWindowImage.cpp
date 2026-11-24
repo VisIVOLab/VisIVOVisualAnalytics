@@ -3548,7 +3548,13 @@ QString vtkWindowImage::selectedLayerBunit()
 
 QStringList vtkWindowImage::selectedLayerCards()
 {
-    const QString path = this->selectedLayerPath();
+    return this->layerCardsForPath(this->selectedLayerPath());
+}
+
+QStringList vtkWindowImage::layerCardsForPath(const QString &path)
+{
+    if (path.isEmpty())
+        return {};
     auto cached = this->m_layerCards.constFind(path);
     if (cached != this->m_layerCards.constEnd())
         return cached.value();
