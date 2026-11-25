@@ -8,8 +8,10 @@
 #include <array>
 #include <vector>
 
-#include <vtkSmartPointer.h>
-
+// Forward declaration only: the header is also read by the test build, which
+// has no VTK (it uses the QString helpers below).
+template <class T>
+class vtkSmartPointer;
 class vtkAxisActor2D;
 class vtkRenderer;
 class vtkTextActor;
