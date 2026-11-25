@@ -45,9 +45,9 @@ MASS_COLUMNS = ("mass", "Mass", "MASS")
 BH_MASS_COLUMNS = ("bh_mass", "BH_Mass", "BH_MASS", "bhmass", *MASS_COLUMNS)
 #: The fields of a layer that choose and weigh its particles; the others only
 #: style it (a compose of a still may change those alone).
-GEOMETRY_FIELDS = ("kind", "dataset_id", "gadget_type", "type_field", "type_value", "filters",
-                   "x", "y", "z", "radius_field", "radius_scale", "neighbours", "weight_field",
-                   "quantity_field")
+GEOMETRY_FIELDS = ("kind", "dataset_id", "gadget_type", "family", "type_field",
+                   "type_value", "filters", "x", "y", "z", "radius_field", "radius_scale",
+                   "neighbours", "weight_field", "quantity_field")
 
 
 class MarkerStyle(BaseModel):
@@ -60,7 +60,8 @@ class MarkerStyle(BaseModel):
 
 class ParticleLayer(BaseModel):
     """One component. Its particles: ``dataset_id`` (None: the request's),
-    or ``gadget_type`` (a particle type of the request's snapshot), narrowed
+    ``gadget_type`` (a particle type of the request's snapshot) or ``family``
+    (a family of the request's RAMSES output, ``dm``, ``stars``...), narrowed
     to ``type_field == type_value`` (a table mixing types) and ``filters``.
     Its weight: ``weight_field`` (None: the table's mass column, else one per
     particle). See docs/technical/backend-api/particle-layers.md."""
@@ -68,6 +69,7 @@ class ParticleLayer(BaseModel):
     kind: Literal["particles", "markers"] = "particles"
     dataset_id: str | None = None
     gadget_type: int | None = Field(None, ge=0, le=5)
+    family: str | None = Field(None, pattern=r"^[a-z][a-z-]*$|^family--?[0-9]+$")
     type_field: str | None = None
     type_value: float | None = None
     filters: list[dict] = []
@@ -108,8 +110,9 @@ class ParticleLayer(BaseModel):
     def _consistent(self):
         if (self.type_field is None) != (self.type_value is None):
             raise ValueError("type_field and type_value go together.")
-        if self.gadget_type is not None and self.dataset_id is not None:
-            raise ValueError("A layer names a dataset_id or a gadget_type, not both.")
+        if sum(v is not None for v in (self.dataset_id, self.gadget_type, self.family)) > 1:
+            raise ValueError("A layer names a dataset_id, a gadget_type or a family, "
+                             "only one of them.")
         for label, window in (("range", self.range), ("quantity_range", self.quantity_range)):
             if window is not None and not window[1] > window[0]:
                 raise ValueError(f"{label}: the top must be above the bottom.")
@@ -152,19 +155,29 @@ class ParticleLayersCompose(BaseModel):
 # ── The particles of a layer ─────────────────────────────────────────────────
 
 def layer_entry(entry: dict, layer: ParticleLayer, session: Session) -> dict:
-    """The dataset a layer draws: its own, a particle type of the request's
-    snapshot, or the request's."""
+    """The dataset a layer draws: its own, a component of the request's
+    snapshot (a Gadget particle type, a RAMSES family), or the request's."""
     if layer.dataset_id is not None:
         return _require_dataset(session, layer.dataset_id)
-    if layer.gadget_type is None:
+    if layer.gadget_type is None and layer.family is None:
         return entry
-    from ..gadget_snapshot import gadget_ref, split_ref  # noqa: PLC0415
-    from ..point_table import component_format  # noqa: PLC0415
+    from ..point_table import component_format, split_component  # noqa: PLC0415
     path = str(entry.get("path") or "")
-    if component_format(path) != "gadget":
-        raise HTTPException(422, "gadget_type names a particle type of a Gadget snapshot; "
+    fmt = component_format(path)
+    if layer.gadget_type is not None:
+        if fmt != "gadget":
+            raise HTTPException(422, "gadget_type names a particle type of a Gadget snapshot; "
+                                     "this dataset is not one.")
+        from ..gadget_snapshot import gadget_ref  # noqa: PLC0415
+        return {**entry, "path": gadget_ref(split_component(path)[0], layer.gadget_type)}
+    if fmt != "ramses":
+        raise HTTPException(422, "family names a particle family of a RAMSES output; "
                                  "this dataset is not one.")
-    return {**entry, "path": gadget_ref(split_ref(path)[0], layer.gadget_type)}
+    from ..ramses_output import ramses_ref, split_ref  # noqa: PLC0415
+    reference = ramses_ref(split_component(path)[0], layer.family)
+    if split_ref(reference)[1] is None:
+        raise HTTPException(422, f"{layer.family!r} is no RAMSES particle family.")
+    return {**entry, "path": reference}
 
 
 def _first_column(names, candidates) -> str | None:

@@ -230,10 +230,16 @@ def _gadget_split(path: str | os.PathLike) -> tuple[str, int | None]:
     return gadget_snapshot.split_ref(path)
 
 
+def _ramses_split(path: str | os.PathLike) -> tuple[str, str | None]:
+    from . import ramses_output  # noqa: PLC0415
+    return ramses_output.split_ref(path)
+
+
 def run_key(path: str | os.PathLike) -> str:
     """What the run-wide units are kept under: the directory of a PLUTO run
-    (every variable and every output of it shares them), else the file."""
-    base, name = _pluto_split(path)
+    (every variable and every output of it shares them), else the file (a
+    RAMSES output's directory, whichever family names it)."""
+    base, name = _pluto_split(_ramses_split(path)[0])
     real = os.path.realpath(base)
     return ("dir:" + os.path.dirname(real)) if name is not None else ("file:" + real)
 
@@ -241,7 +247,9 @@ def run_key(path: str | os.PathLike) -> str:
 def dataset_key(path: str | os.PathLike) -> str:
     """What one dataset's own columns are kept under: its reference, symlinks
     resolved in the file part; every particle type of a Gadget snapshot shares
-    the snapshot's, as its columns do."""
+    the snapshot's, as its columns do, and every family of a RAMSES output the
+    output directory's."""
+    path = _ramses_split(path)[0]
     base, ptype = _gadget_split(path)
     if ptype is not None:
         return os.path.realpath(base)
@@ -428,8 +436,19 @@ def scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
     """Every column of the dataset ``path`` that can be shown in physical units,
     ``{column: {"factor", "unit"[, "source"]}}``: the one function every
     reader feeds and every consumer reads. A Gadget component answers from its
-    unit system (``Component.physical()``), a PLUTO or VBT volume from the
-    run's code units; what the user typed replaces either."""
+    unit system (``Component.physical()``), a RAMSES family or output
+    directory from the ``unit_l``, ``unit_d`` and ``unit_t`` of its info file
+    (``RamsesOutput.unit_table``), a PLUTO or VBT volume from the run's code
+    units; what the user typed replaces any of them."""
+    if _ramses_split(path)[1] is not None:
+        from . import ramses_output  # noqa: PLC0415
+        return ramses_output.resolve(path).physical()
+    if os.path.isdir(path):
+        from . import ramses_output  # noqa: PLC0415
+        if ramses_output.output_of(path) is not None:
+            table = ramses_output.open_output(path).unit_table()
+            return with_typed(path, {c: {"factor": float(f), "unit": u}
+                                     for c, (f, u) in table.items()}, columns=tuple(table))
     if _gadget_split(path)[1] is not None:
         from . import gadget_snapshot  # noqa: PLC0415
         return gadget_snapshot.resolve(path).physical()

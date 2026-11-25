@@ -19,7 +19,8 @@ sky or Cartesian positions (`/v1/catalogue/open`). Answers `valid`,
 in its ray-traced style, issue #264) or `catalogue`, and `units` (issue #259:
 `{column: unit}` as a catalogue's file declares them, VOTable, FITS or IPAC;
 `{}` for a VBT, whose header carries none; a Gadget particle type's code
-units, issue #31). `format` is `gadget` for a snapshot's particle type, and
+units, issue #31). `format` is `gadget` for a snapshot's particle type,
+`ramses` for a family of a RAMSES output (issue #549), and
 `particles` is true for every table of a simulation's particles (VBT,
 Gadget): the page opens those ray-traced. 422 for a dataset that is not a
 table of points.

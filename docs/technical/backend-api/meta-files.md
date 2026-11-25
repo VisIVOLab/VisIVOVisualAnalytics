@@ -266,7 +266,16 @@ do not match the grid, a 1-D run) is `pluto` / `unsupported` with the reason. A 
 (`<first file>::gadget-type=<N>`), with `open_path` the first type with
 particles and `components` all of them; one that cannot be read (a file
 missing, counts that do not add up) is `particles` / `unsupported` with the
-reason ([Gadget snapshots](../design/gadget-snapshots.md)). A descriptor of the legacy VisIVO Importer (`rawPointsDesc`, `rawGridsDesc`, `flyDesc`, issue #551), recognised by its first word, or a bare `*.fly` file, is read in place (`app/raw_descriptor.py`): points are `particles` / `catalogue`, a grid `cube` or `image` / `dataset`, each with `open_path` the reference of the first listed file (`<descriptor>::raw-points=<k>`, `<descriptor>::raw-grid=<k>`); one that cannot be read (a size that does not match, a 1-D grid, a file not there) is `unsupported` with the reason. A bare FLY file whose type and byte order its size and values do not settle is `fly` / `ask` with `confident: false`, and the detail says to write a `flyDesc`. `/v1/files/classify` and `/v1/files/header` also take a reference; `/v1/datasets/open` takes a grid's descriptor or reference (its `byte_order` is refused: the descriptor declares it) and `/v1/catalogue/open` a points descriptor or reference (`format` in the answer is `rawpoints`). A gzip-compressed FITS is classified by what it holds
+reason ([Gadget snapshots](../design/gadget-snapshots.md)). A RAMSES output
+(issue #549), judged by the content of its `info_*.txt`, is the same for its
+folder or any file in it (`info_*.txt`, `header_*.txt`, `amr_*.out*`,
+`part_*.out*`): `particles` / `catalogue` with `open_path` the first family
+(`<output folder>::ramses-family=<slug>`) and `components` all of them; an
+output with no particle file is `amr` / `unsupported` (its mesh has no viewer
+yet, issue #550); one with a process's file missing is `particles` /
+`unsupported` with the reason ([RAMSES outputs](../design/ramses-outputs.md)).
+A descriptor of the legacy VisIVO Importer (`rawPointsDesc`, `rawGridsDesc`, `flyDesc`, issue #551), recognised by its first word, or a bare `*.fly` file, is read in place (`app/raw_descriptor.py`): points are `particles` / `catalogue`, a grid `cube` or `image` / `dataset`, each with `open_path` the reference of the first listed file (`<descriptor>::raw-points=<k>`, `<descriptor>::raw-grid=<k>`); one that cannot be read (a size that does not match, a 1-D grid, a file not there) is `unsupported` with the reason. A bare FLY file whose type and byte order its size and values do not settle is `fly` / `ask` with `confident: false`, and the detail says to write a `flyDesc`. `/v1/files/classify` and `/v1/files/header` also take a reference; `/v1/datasets/open` takes a grid's descriptor or reference (its `byte_order` is refused: the descriptor declares it) and `/v1/catalogue/open` a points descriptor or reference (`format` in the answer is `rawpoints`).
+A gzip-compressed FITS is classified by what it holds
 (read through the start of the gzip stream) and a tile-compressed one like
 any FITS, the `detail` adding that it is decompressed into the workspace cache
 when opened; `compressed` / `unsupported` is a compressed file that holds no

@@ -56,8 +56,8 @@ def _selection_chunks(entry, filters, columns):
     from ..point_table import is_particle_format  # noqa: PLC0415
     columns = list(dict.fromkeys(columns))
     if is_particle_format(entry.get("format")) and entry.get("dataframe") is None:
-        from .. import gadget_snapshot as gs  # noqa: PLC0415
-        component = gs.resolve(entry["path"])
+        from ..point_table import resolve_component  # noqa: PLC0415
+        component = resolve_component(entry["path"])
         matching = _particle_matcher(component, filters)
         n = max(1, component.num_rows)
 
@@ -195,8 +195,8 @@ def _target_position(session: Session, centre: ProfileCentre, pos) -> list[float
             raise ValueError(f"The target catalogue has {len(frame)} rows.")
         values = [float(frame[f].iloc[row]) for f in pos]
     else:
-        from .. import gadget_snapshot as gs  # noqa: PLC0415
-        component = gs.resolve(entry["path"])
+        from ..point_table import resolve_component  # noqa: PLC0415
+        component = resolve_component(entry["path"])
         if row >= component.num_rows:
             raise ValueError(f"The target catalogue has {component.num_rows} rows.")
         values = [float(np.asarray(component.take(f, np.array([row])))[0]) for f in pos]

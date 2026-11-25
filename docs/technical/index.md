@@ -51,6 +51,7 @@ methods/*
 design/large-cube-loading
 design/brick-pyramid
 design/gadget-snapshots
+design/ramses-outputs
 design/distributed-backend-design
 design/copilot-backend
 design/async-patterns

@@ -47,7 +47,8 @@ void TestSupportedFormats::allSupportedIsTheUnionWithoutRepeats()
     const QStringList all = visivo::fileTypeSuffixes(FileType::AllSupported);
     for (const FileType type : { FileType::Fits, FileType::Catalogue, FileType::Vbt,
                                  FileType::Hdf5, FileType::DelimitedText, FileType::Pluto,
-                                 FileType::Gadget, FileType::RawDescriptor }) {
+                                 FileType::Gadget, FileType::Ramses,
+                                 FileType::RawDescriptor }) {
         for (const QString &suffix : visivo::fileTypeSuffixes(type))
             QVERIFY2(all.contains(suffix), qPrintable(suffix));
     }
@@ -102,7 +103,8 @@ void TestSupportedFormats::dotfilesAreListedOnlyUnderAllFiles()
     // macOS resource forks keep the name they shadow.
     for (const FileType type : { FileType::AllSupported, FileType::Fits, FileType::Catalogue,
                                  FileType::Vbt, FileType::Hdf5, FileType::DelimitedText, FileType::Pluto,
-                                 FileType::Gadget, FileType::RawDescriptor }) {
+                                 FileType::Gadget, FileType::Ramses,
+                                 FileType::RawDescriptor }) {
         QVERIFY(!visivo::fileTypeMatches(u"._m31.fits", type));
         QVERIFY(!visivo::fileTypeMatches(u".snap_010", type));
         QVERIFY(!visivo::fileTypeMatches(u".DS_Store", type));
@@ -200,6 +202,21 @@ void TestSupportedFormats::gadgetSnapshotsMatchByTheirNames()
              u"Gadget snapshots (snap_* snapshot_*)"_s);
     QVERIFY(visivo::fileTypePrefixes(FileType::AllSupported).isEmpty());
     QVERIFY(visivo::fileTypePrefixes(FileType::Fits).isEmpty());
+}
+
+void TestSupportedFormats::ramsesOutputsMatchByTheirNames()
+{
+    // RAMSES writes `info_NNNNN.txt`, `amr_NNNNN.out00001`, `hydro_...`, `part_...`
+    // (#549): the files of one `output_NNNNN` folder.
+    for (const auto name : { u"info_00185.txt"_s, u"amr_00185.out00001"_s,
+                             u"hydro_00185.out00016"_s, u"part_00185.out00003"_s }) {
+        QVERIFY2(visivo::fileTypeMatches(name, FileType::Ramses), qPrintable(name));
+    }
+    QVERIFY(!visivo::fileTypeMatches(u"m31.fits", FileType::Ramses));
+    QVERIFY(!visivo::fileTypeMatches(u".part_00185.out00003", FileType::Ramses));
+    QVERIFY(visivo::openableFileTypes().contains(FileType::Ramses));
+    QCOMPARE(visivo::fileTypeDisplayLabel(FileType::Ramses),
+             u"RAMSES outputs (info_* amr_* hydro_* part_*)"_s);
 }
 
 void TestSupportedFormats::aFitsTheBackendRecognisedByContentIsListedWithTheFitsGroups()

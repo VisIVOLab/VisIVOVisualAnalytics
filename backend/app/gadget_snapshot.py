@@ -2119,3 +2119,7 @@ def gadget_components(path: str | Path) -> list[dict]:
     names = SUBFIND_TYPE_NAMES if snap.is_subfind else TYPE_NAMES
     return [{"name": names[t], "path": gadget_ref(snap.path, t), "num_rows": int(n)}
             for t, n in enumerate(snap.counts()) if _offered(snap, t)]
+
+
+#: The name every component module (app/point_table.py COMPONENT_FORMATS) offers.
+components = gadget_components
