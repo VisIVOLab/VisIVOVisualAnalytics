@@ -9,6 +9,8 @@
 // other volume, in the grid's units. No widgets, no network:
 // tests/test_pluto_cartesian_view.cpp.
 
+#include "ByteSize.h"
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -154,13 +156,6 @@ inline qint64 voxelBudget(int millions)
     return static_cast<qint64>(std::max(1, millions)) * 1000000;
 }
 
-inline QString byteSize(qint64 bytes)
-{
-    constexpr double kMiB = 1024.0 * 1024.0;
-    return bytes >= 1024.0 * kMiB ? QStringLiteral("%1 GiB").arg(bytes / (1024.0 * kMiB), 0, 'f', 2)
-                                  : QStringLiteral("%1 MiB").arg(bytes / kMiB, 0, 'f', 1);
-}
-
 /// The plan as a short rich-text summary for the dialog.
 inline QString summary(const Plan &plan)
 {
@@ -178,7 +173,7 @@ inline QString summary(const Plan &plan)
                           "<i>Coordinates are in the run's length unit; cells outside the "
                           "domain are empty.</i>")
             .arg(modeLabel(plan.mode), plan.geometry.toLower(), dims.join(QStringLiteral(" × ")),
-                 cells.join(QStringLiteral(" × ")), byteSize(plan.bytes),
+                 cells.join(QStringLiteral(" × ")), visivo::formatBytes(plan.bytes),
                  boxes.join(QStringLiteral(", ")));
 }
 

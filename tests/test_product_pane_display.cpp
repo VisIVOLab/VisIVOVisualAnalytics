@@ -4,6 +4,7 @@
 
 #include <QtTest>
 
+#include <limits>
 #include <vector>
 
 using namespace Qt::Literals::StringLiterals;
@@ -91,6 +92,54 @@ void TestProductPaneDisplay::percentileFloorFollowsPhysicalUnits()
     QVERIFY(floor > 0.0);
     QVERIFY(floor < 1e-24);
     QCOMPARE(floor, 1e-30 * 10 * 1000.0);
+}
+
+void TestProductPaneDisplay::logFloorIsRelativeToThePeak()
+{
+    // Residual-heavy map: 5% of the cells are rounding residuals (1e-30..1e-20)
+    // next to a 1e-3 .. 1 body. The raw 1st percentile sits at 1e-30, twenty-nine
+    // decades under the peak; the shared rule stops at twelve.
+    std::vector<double> residual;
+    for (int i = 0; i < 50; ++i)
+        residual.push_back(1e-30 * (1 + i));
+    for (int i = 0; i < 950; ++i)
+        residual.push_back(1e-3 + 1e-3 * i);
+    const double peak = 0.95;   // 1e-3 * 950
+    const double f = LutScale::percentileFloor(residual);
+    QVERIFY(f >= peak * 1e-12 * 0.999);
+    QVERIFY(f <= peak * 1e-12 * 1.001);
+
+    // Physical units: a 1e-24 peak keeps a floor of its own order, not 1e-12.
+    QCOMPARE(LutScale::logFloor(1e-27, 1e-24), 1e-27);
+    QVERIFY(LutScale::logFloor(1e-40, 1e-24) > 0.99e-36);
+
+    // Radio data: peak 1e-3 Jy/beam, noise around 0. The faint end the noise
+    // gives (about 1e-6) is kept. Where main used max(1e-12, peak*1e-12) the
+    // floor is now peak*1e-12 = 1e-15 only when the data has nothing fainter
+    // than that to offer.
+    QCOMPARE(LutScale::logFloor(1.25e-6, 1e-3), 1.25e-6);
+    QCOMPARE(LutScale::logFloor(0.0, 1e-3), 1e-3 * LutScale::logFloorRatio);
+    QCOMPARE(LutScale::logFloor(1e-20, 1e-3), 1e-3 * LutScale::logFloorRatio);
+
+    // Nothing usable.
+    QCOMPARE(LutScale::logFloor(0.0, 0.0), 0.0);
+    QCOMPARE(LutScale::logFloor(0.0, std::numeric_limits<double>::quiet_NaN()), 0.0);
+    // A negative peak (all-negative map) is taken by magnitude.
+    QCOMPARE(LutScale::logFloor(0.0, -2.0), 2.0 * LutScale::logFloorRatio);
+}
+
+void TestProductPaneDisplay::sameRangeChecksEachEnd()
+{
+    const double cur[2] = { 1e-24, 1e-3 };
+    QVERIFY(LutScale::sameRange(cur, { 1e-24, 1e-3 }));
+    QVERIFY(LutScale::sameRange(cur, { 1e-24 * (1 + 1e-12), 1e-3 }));
+    // A low-end edit on a log range spanning twenty-one decades: the old single
+    // tolerance (1e-9 of the larger end) was 1e-12, so this passed as unchanged.
+    QVERIFY(!LutScale::sameRange(cur, { 2e-24, 1e-3 }));
+    QVERIFY(!LutScale::sameRange(cur, { 1e-24, 2e-3 }));
+    const double zero[2] = { 0.0, 1.0 };
+    QVERIFY(LutScale::sameRange(zero, { 0.0, 1.0 }));
+    QVERIFY(!LutScale::sameRange(zero, { 1e-30, 1.0 }));
 }
 
 void TestProductPaneDisplay::momentSummary()

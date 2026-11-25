@@ -20,6 +20,8 @@ private slots:
     void sqrtBarInvertsTheStretch();
     void percentileFloorTakesTheFaintEnd();
     void percentileFloorFollowsPhysicalUnits();
+    void logFloorIsRelativeToThePeak();
+    void sameRangeChecksEachEnd();
     void momentSummary();
     void maskedMomentSummary();
     void linewidthSummaryNamesTheMethodOnce();

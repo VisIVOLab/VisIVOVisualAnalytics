@@ -1,4 +1,5 @@
 #include "CubeViewportGeometry.h"
+#include "WcsAxisTicks.h"
 
 #include <vtkCamera.h>
 #include <vtkCoordinate.h>
@@ -254,6 +255,39 @@ ImageRect dataAreaFor(const int size[2], vtkImageData *image, const ImageGutter 
     r.x = g.left + (innerW - r.width) / 2.;
     r.y = g.bottom + (innerH - r.height) / 2.;
     return r;
+}
+
+AxisFrame axisFrameFor(const int size[2], vtkCamera *camera, vtkImageData *image,
+                       const ImageGutter &g, double minExtent)
+{
+    AxisFrame f;
+    if (!size || size[0] <= 0 || size[1] <= 0 || !camera || !image) {
+        return f;
+    }
+    double b[6];
+    image->GetBounds(b);
+    if (!validBounds(b)) {
+        return f;
+    }
+    // Parallel projection: one scale for both axes, the focal point at the
+    // viewport centre. Each axis is then laid along the image as it sits on
+    // screen (visivo::fitAxisToImage), clipped to the gutter.
+    const double pxPerUnit = static_cast<double>(size[1]) / (2. * camera->GetParallelScale());
+    const double *focal = camera->GetFocalPoint();
+    const visivo::AxisFit fx = visivo::fitAxisToImage(size[0], focal[0], pxPerUnit, b[0], b[1],
+                                                      g.left, g.right, minExtent);
+    const visivo::AxisFit fy = visivo::fitAxisToImage(size[1], focal[1], pxPerUnit, b[2], b[3],
+                                                      g.bottom, g.top, minExtent);
+    f.valid = fx.valid && fy.valid;
+    f.left = fx.screenLo;
+    f.right = fx.screenHi;
+    f.bottom = fy.screenLo;
+    f.top = fy.screenHi;
+    f.xmin = fx.worldLo;
+    f.xmax = fx.worldHi;
+    f.ymin = fy.worldLo;
+    f.ymax = fy.worldHi;
+    return f;
 }
 
 bool fitImageInGutter(vtkRenderer *renderer, vtkImageData *image, const ImageGutter &g,

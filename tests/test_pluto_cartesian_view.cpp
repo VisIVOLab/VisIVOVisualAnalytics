@@ -74,7 +74,7 @@ void TestPlutoCartesianView::summary_namesTheViewTheGridAndTheBox()
     QVERIFY(text.contains(QStringLiteral("spherical")));
     QVERIFY(text.contains(QStringLiteral("200 × 400")));
     QVERIFY(text.contains(QStringLiteral("z -2 to 2")));
-    QVERIFY(text.contains(QStringLiteral("0.3 MiB")));
+    QVERIFY(text.contains(QStringLiteral("312 KiB")) || text.contains(QStringLiteral("313 KiB")));
     QCOMPARE(modeLabel(QStringLiteral("cube")), QStringLiteral("Cartesian cube"));
     QCOMPARE(modeLabel(QStringLiteral("grid")), QStringLiteral("uniform grid"));
 }

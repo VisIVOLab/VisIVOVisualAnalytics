@@ -3,6 +3,7 @@
 #include "app/BackendWording.h"
 #include "CameraPresetActions.h"
 #include "ColourBarTicks.h"
+#include "LutScale.h"
 #include "SaveViewDialog.h"
 #include "VolumeColorbar.h"
 #include "WindowCloseShortcut.h"
@@ -1068,12 +1069,15 @@ double vtkWindowVbtVolume::positiveFloor() const
         const double sampledFloor =
                 percentileFromSortedSample(this->cachedPositiveSampledValues, 0.01);
         if (std::isfinite(sampledFloor) && sampledFloor > 0.0) {
-            return sampledFloor;
+            // Capped by the shared rule, so residuals do not set a flat log display.
+            return LutScale::logFloor(sampledFloor,
+                                      std::max(this->dataScalarMax,
+                                               this->cachedPositiveSampledValues.back()));
         }
         return this->cachedPositiveSampledValues.front();
     }
     if (this->dataScalarMax > 0.0) {
-        return this->dataScalarMax * 1e-12;
+        return LutScale::logFloor(0.0, this->dataScalarMax);
     }
     return 1e-12;
 }

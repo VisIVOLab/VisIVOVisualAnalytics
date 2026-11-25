@@ -3,6 +3,7 @@
 
 #include "ColorMaps.h"
 #include "ColormapIcon.h"
+#include "LutScale.h"
 #include "theme/SegmentedToggle.h"
 
 #include <vtkDataSetAttributes.h>
@@ -67,7 +68,7 @@ double sampledPositiveFloor(vtkImageData *dataset)
     const std::size_t index =
             std::min<std::size_t>(positives.size() - 1,
                                   static_cast<std::size_t>(std::floor((positives.size() - 1) * 0.01)));
-    return positives[index];
+    return LutScale::logFloor(positives[index], positives.back());
 }
 }
 

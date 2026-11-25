@@ -374,3 +374,47 @@ def test_a_variable_named_twice_is_made_once_and_a_failure_leaves_nothing(tmp_pa
     with pytest.raises(RuntimeError):
         _view(first, shape=(8, 8, 8))
     assert sorted(views.iterdir()) == before
+
+
+# ── Memory and blanks ────────────────────────────────────────────────────────
+
+def test_a_plane_larger_than_the_chunk_is_processed_in_bounded_chunks():
+    # (2048, 2048, 4): a plane of 4 Mi voxels, four times the chunk. Whole planes
+    # held ~120 B/voxel, about 2 GB; the chunk is a run of the file's order.
+    plan = pc.CartesianPlan("SPHERICAL", "cube", ("X", "Y", "Z"), (-1.0,) * 3, (1.0,) * 3,
+                            (2048, 2048, 4), False)
+    bounds = pc._chunk_bounds(plan)
+    sizes = [hi - lo for lo, hi in bounds]
+    assert max(sizes) <= pc.CHUNK_VOXELS and sum(sizes) == plan.voxels
+    assert bounds[0][0] == 0 and all(a[1] == b[0] for a, b in zip(bounds, bounds[1:]))
+    assert len(bounds) >= plan.voxels // pc.CHUNK_VOXELS
+    axes = pc._voxel_axes(plan, *bounds[1])
+    assert all(a.size == sizes[1] for a in axes.values())
+    # The chunk keeps the file's order: X fastest, Y next, Z slowest.
+    first = pc._voxel_axes(plan, 0, 2048 * 2 + 1)
+    assert first["X"][1] > first["X"][0] and first["Y"][2047] == first["Y"][0]
+    assert first["Y"][2048] > first["Y"][0] and first["Z"][2048 * 2] == first["Z"][0]
+
+
+def test_such_a_plane_is_planned_and_the_cap_still_applies(sphere):
+    grid = ps.parse_grid(Path(sphere).parent / "grid.out")
+    plan = pc.plan_cartesian(grid, shape=(8192, 8192, 2))
+    assert plan.voxels == 8192 * 8192 * 2
+    with pytest.raises(pc.PlutoCartesianError, match="voxels"):
+        pc.plan_cartesian(grid, shape=(5000, 5000, 5000))
+
+
+def test_a_blank_cell_does_not_smear_through_a_zero_weight(tmp_path):
+    # Output voxels sit exactly on the native cell centres, so the neighbour of
+    # each has weight 0; NaN * 0 used to turn the next voxel into NaN.
+    edges = (_edges(0.0, 16.0, 16), _edges(0.0, 4.0, 4), _edges(0.0, 4.0, 4))
+    first, _ = _run(tmp_path, "CARTESIAN", edges, lambda x, y, z: x + 0.0 * y)
+    var = ps.resolve(ps.pluto_dataset_path(first))
+    src = np.memmap(var.data_path, dtype=var.dtype, mode="r+", shape=var.shape,
+                    offset=var.offset)
+    src[:, :, 5] = np.nan
+    src.flush()
+    del src
+    _, cube, _ = _view(first, shape=(16, 4, 4))
+    row = cube[2, 2]
+    assert np.isnan(row[5]) and np.isfinite(np.delete(row, 5)).all()

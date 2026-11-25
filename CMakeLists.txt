@@ -755,6 +755,7 @@ set(PROJECT_SOURCES
         src/gui/PhysicalUnitsControl.h
         src/app/SimulationVolume.h
         src/app/PlutoCartesianView.h
+        src/app/ByteSize.h
         src/app/PhysicalUnits.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h

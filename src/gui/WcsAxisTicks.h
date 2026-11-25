@@ -119,9 +119,11 @@ struct AxisFit
 /// @p viewportPx the viewport's extent along this axis; @p focal the camera's
 /// world position along it and @p pxPerUnit its zoom (parallel projection);
 /// [@p visibleLo, @p visibleHi] the part of the image on screen, in world
-/// units; @p marginLo/@p marginHi the room kept at either end for the labels.
+/// units; @p marginLo/@p marginHi the room kept at either end for the labels;
+/// @p minExtent the shortest axis, in pixels, worth labelling.
 inline AxisFit fitAxisToImage(double viewportPx, double focal, double pxPerUnit, double visibleLo,
-                              double visibleHi, double marginLo, double marginHi)
+                              double visibleHi, double marginLo, double marginHi,
+                              double minExtent = 60.0)
 {
     AxisFit fit;
     if (!(pxPerUnit > 0.0) || !std::isfinite(pxPerUnit) || !(viewportPx > 0.0))
@@ -131,7 +133,7 @@ inline AxisFit fitAxisToImage(double viewportPx, double focal, double pxPerUnit,
     fit.screenHi = std::min(viewportPx - marginHi, centre + (visibleHi - focal) * pxPerUnit);
     fit.worldLo = focal + (fit.screenLo - centre) / pxPerUnit;
     fit.worldHi = focal + (fit.screenHi - centre) / pxPerUnit;
-    fit.valid = fit.screenHi - fit.screenLo >= 60.0;
+    fit.valid = fit.screenHi - fit.screenLo >= minExtent;
     return fit;
 }
 

@@ -219,7 +219,7 @@ double sampledPositiveFloor(vtkImageData *imageData, qint64 targetSamples = 2500
         return 0.0;
     }
     std::sort(positives.begin(), positives.end());
-    return percentileFromSorted(positives, 1.0);
+    return LutScale::logFloor(percentileFromSorted(positives, 1.0), positives.back());
 }
 
 

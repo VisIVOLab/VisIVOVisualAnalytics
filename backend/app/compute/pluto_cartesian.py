@@ -29,13 +29,15 @@ phi seam of a full circle, constant inside the half cell next to the domain
 edge. Vector components keep the native basis (``vx1`` is still the radial
 velocity of a spherical run): a variable is resampled, not rotated.
 
-Memory is bounded by the chunk: the output is produced a few planes at a time,
-straight into the file, and the source is read through its memory map.
+Memory is bounded by the chunk: the output is produced CHUNK_VOXELS voxels at a
+time (a run of the file's own order, so a plane larger than the chunk is split
+too), straight into the file, and the source is read through its memory map.
 """
 from __future__ import annotations
 
 import itertools
 import math
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -51,9 +53,8 @@ from .arepo import _safe_name
 #: for more, up to HARD_MAX_VOXELS.
 DEFAULT_MAX_VOXELS = 1 << 26
 HARD_MAX_VOXELS = 1 << 30
-#: The output is computed a plane of the slowest axis at a time at least.
-MAX_PLANE_VOXELS = 1 << 26
-#: Output voxels computed at a time: ~25 temporaries of 8 bytes each.
+#: Output voxels computed at a time: ~25 temporaries of 8 bytes each (about
+#: 120 bytes a voxel in all), whatever the shape of the output.
 CHUNK_VOXELS = 1 << 20
 #: Samples per native axis when the bounding box of the domain is searched.
 _BOX_SAMPLES = 65
@@ -212,10 +213,6 @@ def plan_cartesian(grid: ps.PlutoGrid, shape=None, max_voxels: int = DEFAULT_MAX
         if len(shape) != len(axes) or any(n < 1 for n in shape):
             raise PlutoCartesianError(
                 f"give {len(axes)} voxel counts ({', '.join(axes)}), each at least 1.")
-        if int(np.prod(shape[:-1], dtype=np.int64)) > MAX_PLANE_VOXELS:
-            raise PlutoCartesianError(
-                f"a plane of {' x '.join(map(str, shape[:-1]))} voxels is more than "
-                f"{MAX_PLANE_VOXELS:,}; the grid is computed a plane at a time.")
         if int(np.prod(shape, dtype=np.int64)) > HARD_MAX_VOXELS:
             raise PlutoCartesianError(
                 f"{' x '.join(map(str, shape))} is more than {HARD_MAX_VOXELS:,} voxels.")
@@ -329,20 +326,19 @@ def sample_chunk(grid: ps.PlutoGrid, plan: CartesianPlan, out: dict[str, np.ndar
 # ── The resampling ───────────────────────────────────────────────────────────
 
 def _voxel_axes(plan: CartesianPlan, lo: int, hi: int) -> dict[str, np.ndarray]:
-    """Cartesian centres of the voxels of the slowest axis from ``lo`` to
-    ``hi``, as flat arrays in C order of the (slowest, …, fastest) chunk."""
-    centres = [l + (np.arange(n) + 0.5) * ((u - l) / n)
-               for l, u, n in zip(plan.lower, plan.upper, plan.shape)]
-    centres[-1] = centres[-1][lo:hi]
-    mesh = np.meshgrid(*centres[::-1], indexing="ij")     # slowest first
-    return {name: m.ravel() for name, m in zip(plan.axes[::-1], mesh)}
+    """Cartesian centres of the voxels ``lo`` to ``hi`` - 1 in the file's order
+    (C order, slowest axis outermost), as flat arrays. A run of that order, not
+    whole planes, so the chunk is the same size whatever the shape."""
+    slow_first = list(zip(plan.axes[::-1], plan.lower[::-1], plan.upper[::-1], plan.shape[::-1]))
+    index = np.unravel_index(np.arange(lo, hi, dtype=np.int64), [n for *_, n in slow_first])
+    return {name: l + (i + 0.5) * ((u - l) / n)
+            for (name, l, u, n), i in zip(slow_first, index)}
 
 
 def _chunk_bounds(plan: CartesianPlan) -> list[tuple[int, int]]:
-    slow = plan.shape[-1]
-    plane = max(1, plan.voxels // slow)
-    step = max(1, CHUNK_VOXELS // plane)
-    return [(a, min(slow, a + step)) for a in range(0, slow, step)]
+    """Runs of at most CHUNK_VOXELS voxels covering the output, in file order."""
+    total, step = plan.voxels, max(1, int(CHUNK_VOXELS))
+    return [(a, min(total, a + step)) for a in range(0, total, step)]
 
 
 def resample(grid: ps.PlutoGrid, plan: CartesianPlan, fields: list[np.ndarray], sinks):
@@ -359,7 +355,15 @@ def resample(grid: ps.PlutoGrid, plan: CartesianPlan, fields: list[np.ndarray], 
             if corners and inside.any():
                 acc = np.zeros(int(inside.sum()), dtype=np.float64)
                 for index, weight in corners:
-                    acc += src[index] * weight
+                    w = np.broadcast_to(np.asarray(weight, dtype=np.float64), acc.shape)
+                    # A neighbour with weight exactly 0 contributes nothing: NaN * 0
+                    # is NaN, and a blanked cell would smear onto voxels that sit
+                    # on the cell next to it.
+                    live = w != 0.0
+                    if live.all():
+                        acc += src[index] * w
+                    else:
+                        acc[live] += src[index[live]] * w[live]
                 values[inside] = acc
             sink(values)
 
@@ -370,6 +374,10 @@ def build_header(plan: CartesianPlan, var: ps.PlutoVariable, source_ref: str):
     own keywords, and what it was made from and how."""
     from astropy.io import fits  # noqa: PLC0415
 
+    # The variable's own cards (name, time, step, output number, source
+    # geometry) are written by pluto_source.pluto_fits_header: start from them
+    # and replace what a view changes, the axes, the bit depth and the grid kind.
+    base = ps.pluto_fits_header(var)
     hdr = fits.Header()
     hdr["SIMPLE"] = True
     hdr["BITPIX"] = -32
@@ -381,12 +389,11 @@ def build_header(plan: CartesianPlan, var: ps.PlutoVariable, source_ref: str):
         hdr[f"CRPIX{axis}"] = 1.0
         hdr[f"CRVAL{axis}"] = l + 0.5 * h
         hdr[f"CDELT{axis}"] = h
-    hdr["OBJECT"] = var.name
-    hdr["PLUTOVAR"] = (var.name, "PLUTO variable")
-    hdr["PLUTOTIM"] = (var.record.time, "PLUTO output time (code units)")
-    hdr["PLUTOSTP"] = (var.record.step, "PLUTO integration step")
-    hdr["PLUTONUM"] = (var.record.index, "PLUTO output number")
-    hdr["PLUTOGEO"] = (plan.geometry, "geometry of the source grid")
+    for card in base.cards:
+        if card.keyword in ("SIMPLE", "BITPIX", "NAXIS", "PLUTOWHY") or re.fullmatch(
+                r"(NAXIS|CTYPE|CRPIX|CRVAL|CDELT|CNAME)\d", card.keyword):
+            continue
+        hdr.append(card)
     hdr["PLUTOGRD"] = ("UNIFORM", "axes are coordinates (code units)")
     hdr["CREATOR"] = "VisIVO (PLUTO Cartesian view)"
     hdr["DATE"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")

@@ -273,30 +273,36 @@ void vtkWindowImage::updateWcsOverlay()
     this->lastRenderedWcsFormat = currentFormat;
 
     constexpr double leftMargin = 168.;
-    constexpr double minAxisX = 136.;
-    constexpr double minBottom = 58.;
-    constexpr double rightMargin = 34.;
-    constexpr double topMargin = 28.;
     // The axes run along the image as it sits on screen, not along the whole
     // viewport: the image rarely fills it, and the ticks must read the
-    // coordinate under them. Far zoomed in or out the viewport's edges win.
-    auto *camera = renderer->GetActiveCamera();
-    const double *focal = camera->GetFocalPoint();
-    const double pxPerUnit = size[1] / (2.0 * camera->GetParallelScale());
-    const visivo::AxisFit fitX = visivo::fitAxisToImage(size[0], focal[0], pxPerUnit, visible.xmin,
-                                                        visible.xmax, minAxisX, rightMargin);
-    const visivo::AxisFit fitY = visivo::fitAxisToImage(size[1], focal[1], pxPerUnit, visible.ymin,
-                                                        visible.ymax, minBottom, topMargin);
-    const bool fitted = fitX.valid && fitY.valid;
-    const double axisX = fitted ? fitX.screenLo : minAxisX;
-    const double xRight = fitted ? fitX.screenHi : size[0] - rightMargin;
-    const double bottomMargin = fitted ? fitY.screenLo : minBottom;
-    const double yTop = fitted ? fitY.screenHi : size[1] - topMargin;
+    // coordinate under them. The same frame the cube's slice overlay uses
+    // (CubeGeom::axisFrameFor); this viewer has no colour-bar column, so its
+    // gutter is the room the labels need.
+    CubeGeom::ImageGutter gutter;
+    gutter.left = 136.;
+    gutter.right = 34.;
+    gutter.bottom = 58.;
+    gutter.top = 28.;
+    const CubeGeom::AxisFrame frame =
+            CubeGeom::axisFrameFor(size, renderer->GetActiveCamera(), imageData, gutter);
+    if (!frame.valid) {
+        // Too little of the image on screen to label. Axes laid to the
+        // viewport's edges would read the wrong coordinates, so show none.
+        this->invalidateWcsOverlayCache();
+        hideCustomWcsOverlay(this->overlayXAxis, this->overlayYAxis, this->overlayXTitleActor,
+                             this->overlayYTitleActor, this->overlayXTickActors,
+                             this->overlayYTickActors);
+        return;
+    }
+    const double axisX = frame.left;
+    const double xRight = frame.right;
+    const double bottomMargin = frame.bottom;
+    const double yTop = frame.top;
     // The voxel range the two ends of each axis stand for.
-    const double axXmin = fitted ? fitX.worldLo : visible.xmin;
-    const double axXmax = fitted ? fitX.worldHi : visible.xmax;
-    const double axYmin = fitted ? fitY.worldLo : visible.ymin;
-    const double axYmax = fitted ? fitY.worldHi : visible.ymax;
+    const double axXmin = frame.xmin;
+    const double axXmax = frame.xmax;
+    const double axYmin = frame.ymin;
+    const double axYmax = frame.ymax;
     configureAxisActor(this->overlayXAxis, axisX, bottomMargin, xRight, bottomMargin);
     configureAxisActor(this->overlayYAxis, axisX, yTop, axisX, bottomMargin);
     this->overlayXAxis->SetTitle("");

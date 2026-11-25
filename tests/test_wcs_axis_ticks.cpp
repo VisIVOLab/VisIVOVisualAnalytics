@@ -125,4 +125,12 @@ void TestWcsAxisTicks::anAxisFollowsTheImageOnScreenAndReadsItsEnds()
     // Too little of the image on screen to label: no axis fit, the caller keeps its default.
     QVERIFY(!visivo::fitAxisToImage(1100.0, 5000.0, 1.0, 0.0, 400.0, 136.0, 34.0).valid);
     QVERIFY(!visivo::fitAxisToImage(1100.0, 200.0, 0.0, 0.0, 400.0, 136.0, 34.0).valid);
+    // A panned camera moves the axis with the image; a small pane may label a
+    // shorter axis than the default 60 px.
+    const visivo::AxisFit panned = visivo::fitAxisToImage(1100.0, 100.0, px, 0.0, 400.0, 136.0, 34.0);
+    QVERIFY(std::abs(panned.screenLo - (550.0 - 100.0 * px)) < 1e-9);
+    QVERIFY(std::abs(panned.worldLo - 0.0) < 1e-9);
+    const visivo::AxisFit narrow = visivo::fitAxisToImage(200.0, 20.0, 1.0, 0.0, 40.0, 80.0, 70.0);
+    QVERIFY(!narrow.valid);
+    QVERIFY(visivo::fitAxisToImage(200.0, 20.0, 1.0, 0.0, 40.0, 80.0, 70.0, 16.0).valid);
 }

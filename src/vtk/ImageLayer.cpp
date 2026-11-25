@@ -166,10 +166,9 @@ void ImageLayer::updateImageTransform(double rotationDegrees)
 
 double ImageLayer::logScaleEpsilon(double maxValue)
 {
-    const double finiteMax = std::isfinite(maxValue) ? std::abs(maxValue) : 0.0;
-    // Twelve decades under the peak: a fixed 1e-12 was above the whole range
-    // of a physical-units cube (rho ~ 1e-24).
-    return finiteMax > 0.0 ? finiteMax * 1e-12 : 1e-12;
+    // The shared log rule with only the peak known (see LutScale::logFloor).
+    const double floorValue = LutScale::logFloor(0.0, maxValue);
+    return floorValue > 0.0 ? floorValue : 1e-12;
 }
 
 void ImageLayer::rebuildPreviewImageIfNeeded(const char *context)
