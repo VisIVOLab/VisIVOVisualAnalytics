@@ -190,6 +190,9 @@ private slots:
     /// Resample a PLUTO output on polar, cylindrical, spherical or stretched
     /// cells onto a uniform Cartesian grid (issue #527) and open the cube.
     void openPlutoCartesianView();
+    /// Resample one field of an AMR output (RAMSES...) onto a uniform grid at a
+    /// level, over the box or a region of it (issue #550), and open the cube.
+    void openAmrUniformView();
     void openSettingsDialog();
     void openAboutDialog();
     void loadPanoramicView();

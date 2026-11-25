@@ -5,6 +5,8 @@
 #include "RemoteSessionRecovery.h"
 #include "BackendClient.h"
 #include "app/SimulationVolume.h"
+#include "app/AmrView.h"
+#include "AmrBlockOverlay.h"
 #include "CatalogueOverlayUtils.h"
 #include "CubeOpenPreviewTask.h"
 #include "CubeStatRows.h"
@@ -3541,6 +3543,41 @@ protected:
     void reloadForDisplayUnits();
     /// The launch of the preview fetch, as the constructor starts it.
     void startRemotePreviewLoad();
+
+    // ── A cube made from an AMR output (issue #550; vtkWindowCube_Amr.cpp) ──
+    // Told by its AMR* header cards. Such a cube can draw the cells of the mesh
+    // its slice cuts, coloured by refinement level, and refine a box of itself:
+    // the same output resampled over that box at the finest level it holds.
+    std::optional<visivo::amrview::Provenance> m_amr;
+    AmrBlockOverlay m_amrBlocks;
+    bool m_amrBlocksOn{ false };
+    QTimer m_amrBlocksTimer;
+    int m_amrBlocksSeq{ 0 };
+    QPointer<QWidget> m_amrHost;       ///< the Inspector's AMR rows, shown for an AMR cube
+    QPointer<QLabel> m_amrCaption;
+    QPointer<QLabel> m_amrStatus;
+    QPointer<QCheckBox> m_amrBlocksCheck;
+    QPointer<QAction> m_actRefineAmr;
+    QPointer<QDialog> m_refineAmrDialog;
+    bool m_refineAmrBusy{ false };
+    /// Read the header once the window is up and, for an AMR cube, switch the
+    /// AMR tools on.
+    void detectAmrCube();
+    void addAmrInspectorRows(class InspectorPanel *panel);
+    /// Show the AMR rows of the Inspector with what the header said.
+    void showAmrTools();
+    void setAmrBlocksShown(bool shown);
+    /// Ask the backend for the cells the displayed slice cuts (after a pause, so
+    /// a scrub is one request) and draw them.
+    void scheduleAmrBlocks();
+    void fetchAmrBlocks();
+    /// The cube's own axes, for the conversions between voxels and coordinates.
+    std::array<visivo::amrview::AxisScale, 3> amrAxes() const;
+    /// Refine this box: the dialog (vtkWindowCube.cpp, next to the other box tools).
+    void refineAmrBox();
+    /// Plan, confirm and run the refinement of @p box (voxels, inclusive).
+    void runAmrRefine(const std::array<int, 6> &box, QWidget *owner,
+                      const std::function<void(bool)> &setBusy);
 
     // ── Several fields of one run in one view (issue #525; vtkWindowCube_Fields.cpp) ──
     // The window's own field keeps its look where it always was (the slice's
