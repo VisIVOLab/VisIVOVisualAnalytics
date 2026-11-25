@@ -666,6 +666,138 @@ void TestBackendRouting::cluster_sshFailureMessages()
     QVERIFY(ClusterConnection::launcherFailure(leonardo, 1, u"x"_s, false).contains(u"did not report"_s));
 }
 
+void TestBackendRouting::cluster_changingSiteClearsTheOldClustersFields()
+{
+    ClusterProfile p;
+    p.name = u"mine"_s;
+    p.user = u"me"_s;
+    p.account = u"MY_PROJECT"_s;
+    p.applyPreset(u"pleiadi"_s);
+    p.shipLauncher = false;
+    p.repoDir = u"/home/me/clone"_s;
+    p.sif = u"/scratch/me/backend-egl.sif"_s;
+    p.image = u"docker://registry.example/backend:1.0.0"_s;
+    p.dataRoot = u"/scratch/me/data"_s;
+    p.workspace = u"/scratch/me/ws"_s;
+    p.nodeCode = u"NODE1"_s;
+    p.extraArgs = { u"--backend-src"_s, u"/scratch/me/src"_s };
+
+    // The same site again: nothing changes, nothing is reported.
+    ClusterProfile same = p;
+    QVERIFY(same.changeSite(u"pleiadi"_s).isEmpty());
+    QCOMPARE(same.repoDir, p.repoDir);
+    QVERIFY(!same.shipLauncher);
+    QCOMPARE(same.extraArgs, p.extraArgs);
+
+    // "Other" clears nothing and keeps what is there.
+    ClusterProfile other = p;
+    QVERIFY(other.changeSite(QString()).isEmpty());
+    QVERIFY(other.site.isEmpty());
+    QCOMPARE(other.sif, p.sif);
+    QCOMPARE(other.workspace, p.workspace);
+    // A first choice of a known site from "Other" (a host that is no known site) clears nothing either.
+    ClusterProfile fresh;
+    fresh.frontend = u"login.example.org"_s;
+    fresh.dataRoot = u"/data/x"_s;
+    fresh.shipLauncher = false;
+    QVERIFY(fresh.changeSite(u"leonardo"_s).isEmpty());
+    QCOMPARE(fresh.dataRoot, u"/data/x"_s);
+    QVERIFY(!fresh.shipLauncher);
+    QCOMPARE(fresh.site, u"leonardo"_s);
+
+    // A different known site: the old cluster's paths go, the launcher is sent, the preset applies.
+    const QStringList reset = p.changeSite(u"leonardo"_s);
+    QCOMPARE(reset, (QStringList{ u"VisIVO clone"_s, u"Backend image file"_s, u"Data root"_s,
+                                  u"Workspace"_s, u"SRC node code"_s, u"More options"_s,
+                                  u"Send the launcher from this client"_s }));
+    QVERIFY(p.repoDir.isEmpty() && p.sif.isEmpty() && p.dataRoot.isEmpty() && p.workspace.isEmpty()
+            && p.nodeCode.isEmpty() && p.extraArgs.isEmpty());
+    QVERIFY(p.shipLauncher);
+    QCOMPARE(p.site, u"leonardo"_s);
+    QCOMPARE(p.partition, u"boost_usr_prod"_s);
+    // Login, account, name and a registry reference are kept.
+    QCOMPARE(p.user, u"me"_s);
+    QCOMPARE(p.account, u"MY_PROJECT"_s);
+    QCOMPARE(p.name, u"mine"_s);
+    QCOMPARE(p.image, u"docker://registry.example/backend:1.0.0"_s);
+
+    // An image that is not a docker:// reference is a path on the old cluster.
+    p.image = u"/scratch/me/old.sif"_s;
+    QCOMPARE(p.changeSite(u"pleiadi"_s), (QStringList{ u"Image to pull"_s }));
+    QVERIFY(p.image.isEmpty());
+
+    // An older profile with no site stored is still known by its host.
+    ClusterProfile old;
+    old.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
+    old.sif = u"/scratch/me/b.sif"_s;
+    QCOMPARE(old.changeSite(u"leonardo"_s), (QStringList{ u"Backend image file"_s }));
+
+    // Known as a site only by its host, and that site chosen: nothing is cleared, the preset applies.
+    ClusterProfile byHost;
+    byHost.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
+    byHost.sif = u"/scratch/me/b.sif"_s;
+    QVERIFY(byHost.changeSite(u"pleiadi"_s).isEmpty());
+    QCOMPARE(byHost.site, u"pleiadi"_s);
+    QCOMPARE(byHost.partition, u"gpu"_s);
+    QCOMPARE(byHost.sif, u"/scratch/me/b.sif"_s);
+    // A --site that is no known site is no origin to clear.
+    ClusterProfile odd;
+    odd.frontend = u"login.example.org"_s;
+    odd.extraArgs = { u"--site"_s, u"elsewhere"_s };
+    QVERIFY(odd.changeSite(u"leonardo"_s).isEmpty());
+    QCOMPARE(odd.extraArgs, (QStringList{ u"--site"_s, u"elsewhere"_s }));
+}
+
+void TestBackendRouting::cluster_changedHostKeyIsNotAnUnknownOne()
+{
+    ClusterProfile leonardo;
+    leonardo.frontend = u"login.leonardo.cineca.it"_s;
+    leonardo.user = u"me"_s;
+    leonardo.site = u"leonardo"_s;
+    ClusterProfile other;
+    other.frontend = u"login.example.org"_s;
+    // What ssh prints for a key that differs from the recorded one: it ends
+    // with the same "Host key verification failed." as an unknown key.
+    const QString changed =
+            u"@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            u"@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
+            u"@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            u"IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\n"
+            u"Offending ECDSA key in /home/me/.ssh/known_hosts:12\n"
+            u"Host key for login.leonardo.cineca.it has changed and you have requested strict checking.\n"
+            u"Host key verification failed.\n"_s;
+    // A newer ssh may print only the "Host key for ... has changed" line.
+    const QString changedShort = u"Host key for login.example.org has changed and you have requested "
+                                 u"strict checking.\nHost key verification failed.\n"_s;
+    // OpenSSH's other wording for the same case.
+    QVERIFY(ClusterConnection::launcherFailure(
+                    other, 255,
+                    u"The ECDSA host key for login.example.org has changed,\nHost key verification failed.\n"_s, false)
+                    .contains(u"differs from the one recorded"_s));
+    const QString unknown = u"No ED25519 host key is known for login.example.org and you have "
+                            u"requested strict checking.\nHost key verification failed.\n"_s;
+
+    for (const ClusterProfile &p : { leonardo, other }) {
+        const QString m = ClusterConnection::launcherFailure(p, 255, changed, false);
+        QVERIFY(m.contains(u"differs from the one recorded"_s));
+        QVERIFY(m.contains(u"intercepting"_s));
+        QVERIFY(m.contains(u"ssh-keygen -R %1"_s.arg(p.frontend)));
+        QVERIFY(!m.contains(u"does not know"_s));
+    }
+    // The login-node note is for Leonardo only.
+    const QString onLeonardo = ClusterConnection::launcherFailure(leonardo, 255, changed, false);
+    QVERIFY(onLeonardo.contains(u"several login nodes"_s));
+    QVERIFY(onLeonardo.contains(u"ssh-keyscan"_s));
+    const QString generic = ClusterConnection::launcherFailure(other, 255, changedShort, false);
+    QVERIFY(generic.contains(u"differs from the one recorded"_s));
+    QVERIFY(!generic.contains(u"login nodes"_s));
+    // An unknown key keeps the earlier advice.
+    const QString m = ClusterConnection::launcherFailure(leonardo, 255, unknown, false);
+    QVERIFY(m.contains(u"does not know the host key"_s));
+    QVERIFY(m.contains(u"from a terminal"_s));
+    QVERIFY(!m.contains(u"differs"_s));
+}
+
 void TestBackendRouting::cluster_progressLinesBecomeStatus()
 {
     using C = ClusterConnection;

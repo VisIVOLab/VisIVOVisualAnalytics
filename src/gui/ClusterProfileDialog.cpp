@@ -50,6 +50,11 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     m_site->setToolTip(u"A known site fills in its login node, partition, GPU, resources and "
                        u"time; your login, account and data folder stay yours."_s);
     form->addRow(u"Site"_s, m_site);
+    // What a change of site reset, so that nothing disappears without a word.
+    m_siteNote = new QLabel(this);
+    m_siteNote->setWordWrap(true);
+    m_siteNote->setVisible(false);
+    form->addRow(QString(), m_siteNote);
     const auto line = [this, form](const QString &label, const QString &placeholder,
                                    const QString &tip = {}) {
         auto *e = new QLineEdit(this);
@@ -122,10 +127,15 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
             showProfile(p);
     });
     QObject::connect(m_site, &QComboBox::activated, this, [this](int index) {
-        // A site fills in what it defines, over what the fields hold now.
+        // A site fills in what it defines, over what the fields hold now; moving
+        // from another known site also clears that cluster's paths (changeSite).
+        // The combo already shows the new site: the profile is changed from the one shown before.
         ClusterProfile p = current();
-        p.applyPreset(m_site->itemData(index).toString());
+        p.site = m_shownSite;
+        const QStringList reset = p.changeSite(m_site->itemData(index).toString());
         showProfile(p);
+        m_siteNote->setText(u"Reset for %1: %2."_s.arg(ClusterProfile::presetLabel(p.site), reset.join(u", "_s)));
+        m_siteNote->setVisible(!reset.isEmpty());
     });
     QObject::connect(saveBtn, &QPushButton::clicked, this, [this]() { saveCurrent(); });
     QObject::connect(deleteBtn, &QPushButton::clicked, this, [this]() {
@@ -176,6 +186,8 @@ void ClusterProfileDialog::reloadNames(const QString &select)
 
 void ClusterProfileDialog::showProfile(const ClusterProfile &p)
 {
+    m_siteNote->setVisible(false);
+    m_shownSite = p.site;
     m_name->setEditText(p.name);
     m_frontend->setText(p.frontend);
     m_user->setText(p.user);
