@@ -1,9 +1,11 @@
 #include "CubeWcsUtil.h"
 
+#include "WcsAxisTicks.h"
 #include "wcs.h"  // libwcs: ra2str / dec2str / WCS_J2000 / WCS_GALACTIC / WCS_ECLIPTIC
 
 #include <vtkAxisActor2D.h>
 #include <vtkProperty2D.h>
+#include <vtkRenderer.h>
 #include <vtkTextActor.h>
 #include <vtkTextProperty.h>
 
@@ -83,6 +85,26 @@ void configureAxisActor(vtkAxisActor2D *axis, double x1, double y1, double x2, d
     axis->GetTitleTextProperty()->SetFontSize(16);
     applyOverlayFont(axis->GetLabelTextProperty());
     applyOverlayFont(axis->GetTitleTextProperty());
+}
+
+void thinXTickLabels(vtkRenderer *renderer,
+                     const std::vector<vtkSmartPointer<vtkTextActor>> &labels, double axisPx,
+                     double dpr, bool skipFirst)
+{
+    const int intervals = static_cast<int>(labels.size()) - 1;
+    double widest = 0.0;
+    for (const auto &label : labels) {
+        if (!label)
+            continue;
+        double bbox[4] = { 0.0, 0.0, 0.0, 0.0 };
+        label->GetBoundingBox(renderer, bbox);   // width as drawn (font, HiDPI, digits)
+        widest = std::max(widest, bbox[1] - bbox[0]);
+    }
+    const int stride = visivo::tickLabelStride(axisPx, widest, 10.0 * dpr, intervals);
+    for (int i = 0; i <= intervals; ++i) {
+        if (labels[static_cast<std::size_t>(i)])
+            labels[static_cast<std::size_t>(i)]->SetVisibility(!(skipFirst && i == 0) && i % stride == 0);
+    }
 }
 
 void configureTickLabelActor(vtkTextActor *actor, bool rightAligned)

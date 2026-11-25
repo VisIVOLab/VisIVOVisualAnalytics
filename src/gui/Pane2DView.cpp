@@ -956,10 +956,6 @@ void Pane2DView::updateWcsOverlay()
         m_overlayXTicks[x]->SetInput(m_wcs.formatCoord(0, frameX, spanX).toStdString().c_str());
         m_overlayXTicks[x]->SetDisplayPosition(static_cast<int>(axisX + t * (xRight - axisX)),
                                                static_cast<int>(bottomMargin - 18. * d));
-        // Drop the leftmost x label — corner collision with the bottom y label.
-        // In a narrow pane the five labels collide: keep every other one.
-        const bool crowded = (xRight - axisX) / (kOverlayTickCount - 1) < 62. * d;
-        m_overlayXTicks[x]->SetVisibility(i != 0 && (!crowded || i % 2 == 0));
         const QString yLabel = m_wcs.formatCoord(1, frameY, spanY);
         yLabelChars = std::max(yLabelChars, int(yLabel.size()));
         m_overlayYTicks[x]->SetInput(yLabel.toStdString().c_str());
@@ -968,6 +964,9 @@ void Pane2DView::updateWcsOverlay()
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         m_overlayYTicks[x]->VisibilityOn();
     }
+    // Drop the leftmost x label (corner collision with the bottom y label) and keep
+    // only as many of the others as fit side by side (#544).
+    CubeWcs::thinXTickLabels(m_renderer, m_overlayXTicks, xRight - axisX, d, /*skipFirst=*/true);
     // The y title clears the tick labels, whatever their precision.
     m_overlayYTitle->SetDisplayPosition(
             static_cast<int>(visivo::yAxisTitleX(axisX, axisX - 74. * d, 12. * d, yLabelChars,

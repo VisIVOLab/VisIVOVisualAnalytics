@@ -134,3 +134,76 @@ void TestWcsAxisTicks::anAxisFollowsTheImageOnScreenAndReadsItsEnds()
     QVERIFY(!narrow.valid);
     QVERIFY(visivo::fitAxisToImage(200.0, 20.0, 1.0, 0.0, 40.0, 80.0, 70.0, 16.0).valid);
 }
+
+namespace {
+// What the label at a full-resolution pixel reads for a linear FITS axis.
+double headerValue(double crval, double crpix, double cdelt, double fullResPixel)
+{
+    return crval + (fullResPixel + 1.0 - crpix) * cdelt;
+}
+
+// The world extent a VTK image with this grid covers (vtkImageData::GetBounds on
+// one axis): origin to origin + (samples - 1) * spacing.
+struct GridAxis
+{
+    int samples;
+    double origin;
+    double spacing;
+    double lo() const { return origin; }
+    double hi() const { return origin + (samples - 1) * spacing; }
+};
+
+// The label span an axis laid on this grid prints, over the full-resolution
+// pixels it shows: the ratio to CDELT x those pixels is 1 when the labels are right.
+double labelSpanRatio(const GridAxis &grid, double trueStride)
+{
+    const double cdelt = -1.027777777717e-06;   // SDP9 continuum
+    const double viewportPx = 1100.0;
+    const double pxPerUnit = 0.07;   // the whole image fits
+    const double focal = 0.5 * (grid.lo() + grid.hi());
+    const visivo::AxisFit fit = visivo::fitAxisToImage(viewportPx, focal, pxPerUnit, grid.lo(),
+                                                       grid.hi(), 136.0, 34.0);
+    const double span = std::fabs(headerValue(136.9, 5185.0, cdelt, fit.worldHi)
+                                  - headerValue(136.9, 5185.0, cdelt, fit.worldLo));
+    const double fullResPixelsShown = trueStride * (fit.screenHi - fit.screenLo) / pxPerUnit
+            / grid.spacing;
+    return span / (std::fabs(cdelt) * fullResPixelsShown);
+}
+}   // namespace
+
+void TestWcsAxisTicks::aDecimatedImageLabelsItsAxisInFullResolutionPixels()
+{
+    // Level 0, then the three ways an image reaches the screen reduced by 2
+    // (issue #539): a tile level, a block-mean preview (origin half a cell in)
+    // and a cube slice read 1 in 2 from a region's corner.
+    QVERIFY(std::abs(labelSpanRatio({ 10368, 0.0, 1.0 }, 1.0) - 1.0) < 1e-9);
+    QVERIFY(std::abs(labelSpanRatio({ 5184, 0.0, 2.0 }, 2.0) - 1.0) < 1e-9);
+    QVERIFY(std::abs(labelSpanRatio({ 5184, 0.5, 2.0 }, 2.0) - 1.0) < 1e-9);
+    QVERIFY(std::abs(labelSpanRatio({ 2000, 3000.0, 2.0 }, 2.0) - 1.0) < 1e-9);
+    // The wrong mapping: the displayed voxel read as the pixel (spacing 1 on a
+    // grid that is really 2 apart) halves the span.
+    QVERIFY(std::abs(labelSpanRatio({ 5184, 0.0, 1.0 }, 2.0) - 0.5) < 1e-9);
+}
+
+void TestWcsAxisTicks::tickLabelsAreThinnedToTheRoomTheyHave()
+{
+    // Five ticks, four intervals, labels 60 px wide with 10 px between them.
+    // Room for all five: every label.
+    QCOMPARE(visivo::tickLabelStride(400.0, 60.0, 10.0, 4), 1);
+    // About 175 px wide (issue #544): 44 px per interval, so every other label.
+    QCOMPARE(visivo::tickLabelStride(175.0, 60.0, 10.0, 4), 2);
+    // Barely room for two: the ends only.
+    QCOMPARE(visivo::tickLabelStride(100.0, 60.0, 10.0, 4), 4);
+    // Wider labels (more digits) need more room for the same axis.
+    QCOMPARE(visivo::tickLabelStride(400.0, 95.0, 10.0, 4), 2);
+    // The chosen stride always leaves the gap, unless only the ends are left.
+    for (double axisPx = 120.0; axisPx < 900.0; axisPx += 7.0) {
+        const int k = visivo::tickLabelStride(axisPx, 70.0, 10.0, 4);
+        QVERIFY(k == 1 || k == 2 || k == 4);
+        if (k < 4)
+            QVERIFY(k * axisPx / 4.0 >= 80.0);
+    }
+    // Unusable input keeps the ends.
+    QCOMPARE(visivo::tickLabelStride(0.0, 60.0, 10.0, 4), 4);
+    QCOMPARE(visivo::tickLabelStride(400.0, 60.0, 10.0, 1), 1);
+}

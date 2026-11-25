@@ -992,13 +992,6 @@ void vtkWindowCube::updateSliceWcsOverlay()
         this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX + t * (xRight - axisX)),
                 static_cast<int>(bottomMargin - 18. * dpr));
-        // Drop the leftmost x label — it collides with the bottom y label in the
-        // corner, and that value is readable from the y axis anyway.
-        // In a narrow pane the labels collide: keep every other one.
-        const bool crowded = overlayTickCount > 1
-                && (xRight - axisX) / (overlayTickCount - 1) < 62. * dpr;
-        this->sliceOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(
-                i != 0 && (!crowded || i % 2 == 0));
         const QString yLabel = this->formatRemoteOverlayCoordinate(1, frameY, sliceSpanY);
         sliceYLabelChars = std::max(sliceYLabelChars, int(yLabel.size()));
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
@@ -1008,6 +1001,11 @@ void vtkWindowCube::updateSliceWcsOverlay()
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         this->sliceOverlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
+    // Drop the leftmost x label (it collides with the bottom y label in the
+    // corner, and that value is readable from the y axis anyway) and keep only
+    // as many of the others as fit side by side (#544).
+    CubeWcs::thinXTickLabels(renderer, this->sliceOverlayXTickActors, xRight - axisX, dpr,
+                             /*skipFirst=*/true);
     // The y title clears the tick labels, whatever their precision.
     this->sliceOverlayYTitleActor->SetDisplayPosition(
             static_cast<int>(visivo::yAxisTitleX(axisX, axisX - 74. * dpr, 12. * dpr,
@@ -1171,8 +1169,6 @@ void vtkWindowCube::updateMomentWcsOverlay()
         this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX + t * (xRight - axisX)),
                 static_cast<int>(bottomMargin - 18. * dpr));
-        // Drop the leftmost x label — corner collision with the bottom y label.
-        this->momentOverlayXTickActors[static_cast<std::size_t>(i)]->SetVisibility(i != 0);
         const QString yLabel = this->formatRemoteOverlayCoordinate(1, frameY, momentSpanY);
         momentYLabelChars = std::max(momentYLabelChars, int(yLabel.size()));
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->SetInput(
@@ -1182,6 +1178,9 @@ void vtkWindowCube::updateMomentWcsOverlay()
                 static_cast<int>(bottomMargin + t * (yTop - bottomMargin)));
         this->momentOverlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
+    // Leftmost label dropped (corner collision), the rest thinned to fit (#544).
+    CubeWcs::thinXTickLabels(renderer, this->momentOverlayXTickActors, xRight - axisX, dpr,
+                             /*skipFirst=*/true);
     this->momentOverlayYTitleActor->SetDisplayPosition(
             static_cast<int>(visivo::yAxisTitleX(axisX, axisX - 74. * dpr, 12. * dpr,
                                                  momentYLabelChars, 7.5 * dpr, 10. * dpr)),

@@ -89,6 +89,24 @@ inline QString formatLinearTick(double value, double axisSpan)
     return QString::number(value, 'g', 8);
 }
 
+/// Which tick labels of an axis to draw, so neighbours do not overlap. The axis
+/// has @p intervals + 1 evenly spaced ticks over @p axisPx display pixels, each
+/// labelled with text up to @p widestLabelPx wide; labels are drawn on every
+/// k-th tick and k is returned: the smallest divisor of @p intervals that leaves
+/// @p gapPx between neighbours. When even that does not fit, only the two ends
+/// are drawn (k = @p intervals). A small image on screen has little room, and
+/// its labels carry many digits ("136.9141" next to "136.9114", issue #544).
+inline int tickLabelStride(double axisPx, double widestLabelPx, double gapPx, int intervals)
+{
+    if (intervals <= 1 || !(axisPx > 0.0) || !std::isfinite(axisPx))
+        return std::max(1, intervals);
+    for (int k = 1; k < intervals; ++k) {
+        if (intervals % k == 0 && k * axisPx / intervals >= widestLabelPx + gapPx)
+            return k;
+    }
+    return intervals;
+}
+
 /// What the status bar and the Inspector call the frame of a WCS that is not
 /// on the sky: a PLUTO run in X, Y, Z is not "Galactic".
 inline QString linearFrameLabel(const QString &ctype1, const QString &ctype2)

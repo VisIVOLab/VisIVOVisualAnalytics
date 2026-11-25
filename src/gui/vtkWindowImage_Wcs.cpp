@@ -375,7 +375,6 @@ void vtkWindowImage::updateWcsOverlay()
         this->overlayXTickActors[static_cast<std::size_t>(i)]->SetDisplayPosition(
                 static_cast<int>(axisX + t * (xRight - axisX)),
                 static_cast<int>(bottomMargin - 18));
-        this->overlayXTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
 
         const QString yLabel = this->formatRemoteOverlayCoordinate(1, frameY, spanY);
         yLabelChars = std::max(yLabelChars, int(yLabel.size()));
@@ -394,6 +393,10 @@ void vtkWindowImage::updateWcsOverlay()
                         + (i == 0 ? 2 : 0));
         this->overlayYTickActors[static_cast<std::size_t>(i)]->VisibilityOn();
     }
+    // Only as many x labels as fit side by side; this viewer keeps the leftmost
+    // one, which sits above the corner (#516) (#544).
+    CubeWcs::thinXTickLabels(renderer, this->overlayXTickActors, xRight - axisX, 1.0,
+                             /*skipFirst=*/false);
     // The y title clears the tick labels, whatever their precision: their
     // width measured as drawn (font 16, and in device pixels on a HiDPI
     // screen), not estimated from a character count, which left it over them.
