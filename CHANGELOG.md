@@ -37,18 +37,26 @@ with several fields and physical units, and figure export.
   level, dashed negative levels, for the image's own contours, contours from
   another FITS file and the cube's slice contours. *Export Contours…* writes
   a ds9 region file or a vertex table in sky coordinates.
-- **Image and cube in sky coordinates (#522).** *Link to Cube* and *Link to
-  Image* make pan and zoom follow by sky position and angular size, with the
-  cursor shown as a crosshair in the other window. *Send Selected / All
-  Regions* converts regions between the two WCS, and *Extract PV in Cube*
-  turns a line drawn on the map into the cube's PV path.
-- **Additive blend and RGB composite (#45).** *View ▸ Additive* sums the
+- **Image and cube in sky coordinates (#522).** *Link Views*, switched on in
+  an image window (*Tools ▸ Views*) and in a cube window, makes pan and zoom
+  follow by sky position and angular size, with the cursor shown as a
+  crosshair in the other window. *Send Selected Region* / *Send All Regions to
+  Linked Cube* (or *Linked Image*) converts regions between the two WCS, and
+  *Extract PV in Linked Cube* turns a line drawn on the map into the cube's
+  PV path.
+- **Additive blend and RGB composite (#45).** *View ▸ Additive Blend* sums the
   visible layers per pixel, each with its own colour map, range and weight.
   *Make RGB Composite…* sets up black-to-colour maps for the ticked layers,
   and *Save Blended Image as PNG…* writes the result at full resolution.
 - **Isosurfaces at several levels (#526).** *Levels…* in the volume window's
-  isosurface mode draws up to 8 nested surfaces, linear or log spaced or from a typed list,
-  each with its own colour and opacity and a legend.
+  isosurface mode draws up to 8 nested surfaces, linear or log spaced or
+  from a typed list, each with its own colour and opacity and a legend.
+- **Axes and log scale (#542).** Axes on a 2-D image, a cube slice or a
+  product pane follow the image under pan and zoom, so a tick reads the
+  coordinate beneath it, and hide when too little of the image is on screen.
+  A linear WCS is named as such. The floor of a logarithmic stretch is set
+  relative to the peak in every viewer, so data in physical units (1e-24)
+  and maps with many tiny residuals both display.
 
 **Simulations**
 
@@ -57,24 +65,32 @@ with several fields and physical units, and figure export.
   PLUTO's unit constants are read from `definitions.h` or typed, and
   *Display ▸ Physical* switches values, coordinates, time, colour bars and
   thresholds. Moment maps, noise and mask tools stay in code units.
-- **Several fields in one view (#525).** *Inspector ▸ Fields ▸ Add Field…*
-  adds up to three fields of the same grid, volume-rendered together in 3-D
-  (local backend) and shown in 2-D as layered, additive, split or mirrored.
+- **Several fields in one view (#525).** *Add Field…* in the Inspector's
+  Fields section adds up to three fields of the same grid, each with its own
+  colour map, range, threshold and opacity. They are volume-rendered together
+  in 3-D (Composite mode, local backend) and shown in 2-D as layered,
+  additive, split or mirrored; typed limits follow the physical-units switch.
 - **Cartesian view of PLUTO output (#527).** *Data ▸ Cartesian View of a
   PLUTO Output…* resamples polar, cylindrical, spherical and stretched grids
-  onto a regular grid, so they are seen in their real geometry. The source,
-  geometry and interpolation are kept in the FITS header.
+  onto a regular grid, so they are seen in their real geometry: a 3-D
+  spherical run becomes a cube, an axisymmetric (r, θ) run the meridional
+  x–z plane (optionally mirrored), a 2-D polar run an x–y image. The result is
+  written in chunks, so large views do not need the whole cube in memory. The
+  source, geometry and interpolation are kept in the FITS header.
 
 **Figures and export**
 
 - **Save View As (#528).** *Save View As…* for the 3-D views writes PNG (with
   an optional transparent background), PDF or SVG at the view's size, 2×, 4×
   or a given width. Axes, colour bar and title are optional.
-- **Publication figure (#41).** The dialog shows a live preview and controls
-  figure size, fonts, titles, colour map and stretch, sky grid and frame,
-  colour bar, beam, scale bar, compass, and the window's contours, regions
-  and annotations. The output is PNG, PDF, SVG or EPS. Anything asked for and
-  not drawn is listed in the result.
+- **Publication figure (#41).** The dialog shows a live preview and starts
+  from the window's colour map, stretch, range and sky frame. It controls
+  figure size, fonts, titles, sky grid and frame (equatorial, Galactic or
+  ecliptic), colour bar, beam, scale bar (arcsec, arcmin or degrees chosen
+  from its size, or a chosen unit), a compass in the grid's frame, and the
+  window's contours, regions and annotations. The output is PNG, PDF, SVG
+  (with editable text) or EPS. Anything asked for and not drawn is listed in
+  the result.
 
 ## 1.3.2 (2026-11-24)
 
