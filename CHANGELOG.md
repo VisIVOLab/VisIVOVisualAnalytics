@@ -54,6 +54,9 @@ with several fields and physical units, and figure export.
 - **Axes and log scale (#542).** Axes on a 2-D image, a cube slice or a
   product pane follow the image under pan and zoom, so a tick reads the
   coordinate beneath it, and hide when too little of the image is on screen.
+  When the image is small on screen, x labels are thinned so they do not
+  overlap (#544); reduced pyramid levels and decimated slices are labelled in
+  full-resolution coordinates (#539).
   A linear WCS is named as such. The floor of a logarithmic stretch is set
   relative to the peak in every viewer, so data in physical units (1e-24)
   and maps with many tiny residuals both display.
