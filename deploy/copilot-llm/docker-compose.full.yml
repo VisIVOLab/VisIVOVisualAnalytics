@@ -44,7 +44,8 @@ services:
   visivo-backend:
     build:
       context: ../..                       # repository root
-      dockerfile: deploy/copilot-llm/Dockerfile.backend
+      dockerfile: docker/Dockerfile        # the published backend image, CPU target
+      target: cpu
     container_name: visivo-backend
     restart: unless-stopped
     ports:
