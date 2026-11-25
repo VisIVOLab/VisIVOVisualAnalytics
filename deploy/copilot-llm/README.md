@@ -106,6 +106,11 @@ desktop's default replaced the backend's copilot: there, choose **"Your server"*
 in **Settings ▸ Copilot** with `http://copilot-llm:8000/v1` and the
 `VLLM_API_KEY`.
 
+The backend container is built from `docker/Dockerfile`, the recipe of the
+published image `ghcr.io/visivolab/visivo-backend` (see
+[Running the backend on a cluster](../../docs/technical/deployment/hpc-slurm.md#published-container-images)),
+so it runs as a non-root user and confines the backend to `/data`.
+
 **Coexistence:** the LLM uses the GPU; the backend runs **CPU-only** compute
 (moments / spectral / photometry / copilot), so they share the machine fine.
 Server-side *rendering* (the GPU WebRTC path) is **not** enabled in this backend

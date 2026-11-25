@@ -1,6 +1,6 @@
 # Backend image for the remote / memory-capped benchmark (benchmark/remote/README.md).
 #
-# The same service as deploy/copilot-llm/Dockerfile.backend, plus iproute2 so the
+# The same service as docker/Dockerfile (the published CPU image), plus iproute2 so the
 # run script can shape the container's link with `tc netem` (latency and
 # bandwidth), which emulates a service on another host. Build from the
 # repository root:

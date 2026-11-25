@@ -335,6 +335,84 @@ Every job (the bindings are harmless where the libraries do not exist) gets:
   `/tmp`, because fontconfig takes a file lock in `~/.cache`, and on an
   NFS-mounted home that lock can hang the first render for ever.
 
+## Published container images
+
+Each release publishes the backend as an OCI image on the GitHub Container
+Registry, so a site pulls it instead of building it (the recipe is
+`docker/Dockerfile`, the workflow `.github/workflows/backend-image.yml`).
+
+| Image | Platforms | What it is |
+|---|---|---|
+| `ghcr.io/visivolab/visivo-backend:<version>` (and `latest`) | amd64, arm64 | The analysis API with the full scientific stack and SoFiA-2. Server-side 3-D rendering reports itself unavailable. |
+| `ghcr.io/visivolab/visivo-backend:<version>-egl` | amd64 | The same, with VTK built from source with EGL, so a node with an NVIDIA GPU renders the cube itself. |
+
+The images run as a non-root user and write nothing inside themselves. Their
+entrypoint reads:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `VISIVO_TOKEN` | a random token, printed at start (never written to `HOME`) | The access token. Pass it in the environment, not on a command line. |
+| `PORT` | `8000` | The port (`VISIVO_HOST`, default `0.0.0.0`, the address). |
+| the data | `/data` | The directory the data is bound at. When `/data` exists (or `VISIVO_DATA_ROOT` names another directory that does), the backend is confined to it and to the exports directory; with nothing bound there, it is unrestricted, and under Apptainer that includes the user's home. `VISIVO_DATA_ROOTS` sets the roots outright. |
+| `VISIVO_EXPORTS_DIR` | scratch under `/tmp` | Where products are written. Bind a directory here to keep them. |
+| `VISIVO_WORKERS` | `4` | Worker processes for the heavy computations. |
+
+Caches and libraries' configuration go to `${TMPDIR:-/tmp}/visivo-<uid>`
+(`VISIVO_SCRATCH` moves it), never to `HOME`.
+
+**Docker or Podman**
+
+```bash
+docker run --rm -p 8000:8000 \
+    -e VISIVO_TOKEN=<token> \
+    -v /path/to/data:/data:ro \
+    ghcr.io/visivolab/visivo-backend:<version>
+```
+
+For rendering, `--gpus all` (the NVIDIA Container Toolkit) with the `-egl` image;
+for a read-only root file system, `--read-only --tmpfs /tmp`. In the desktop,
+register `http://<host>:8000` and the token under **Settings ▸ Backends ▸ Remote
+Backends**. `docker/smoke_test.sh <image>` runs the checks CI runs: it starts the
+image as a locked-down site would, calls `/v1/health` and opens a small cube.
+
+**Apptainer or Singularity, on an HPC system**
+
+```bash
+# The image cache is large: keep it off the home directory.
+export APPTAINER_CACHEDIR=/path/on/scratch/apptainer-cache      # SINGULARITY_CACHEDIR on Singularity
+apptainer pull visivo-backend-egl.sif docker://ghcr.io/visivolab/visivo-backend:<version>-egl
+
+# On a GPU node. VISIVO_TOKEN reaches the container through APPTAINERENV_.
+export APPTAINERENV_VISIVO_TOKEN=<token>
+export APPTAINERENV_PORT=8000
+# --cleanenv drops SLURM's GPU assignment: pass it on, or the backend sees every GPU of the node.
+[ -z "${CUDA_VISIBLE_DEVICES:-}" ] || export APPTAINERENV_CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"
+apptainer run --nv --cleanenv \
+    --bind /path/to/data:/data \
+    --bind /usr/share/glvnd/egl_vendor.d/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+    --env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+    visivo-backend-egl.sif
+```
+
+`apptainer` and `singularity` take the same options here (`singularity pull
+docker://...` is the same command). The CPU image needs neither `--nv` nor the
+two EGL lines. Two points are specific to the EGL image:
+
+* Singularity's `--nv` binds the host's `libEGL_nvidia` but not the glvnd vendor
+  file that names it, so libglvnd finds no EGL vendor and the render window
+  cannot be created. Binding the host's `10_nvidia.json` and pointing
+  `__EGL_VENDOR_LIBRARY_FILENAMES` at it fixes that. Where the host has no such
+  file, leave the bind out: the image carries one that names
+  `libEGL_nvidia.so.0`.
+* `--cleanenv` keeps the host's environment (a site's module paths, its
+  `LD_LIBRARY_PATH`) out of the container, so the libraries are the image's and
+  the ones `--nv` adds.
+
+Run it in a job, not on the frontend, and reach it from the desktop through an
+SSH tunnel as described [above](#quick-start). The launcher accepts the pulled
+file with `--sif`, but its NVIDIA bindings were written for the POWER9 images
+(`/usr/lib64`): on x86_64 start the container as above.
+
 ## Node capacity under SLURM
 
 The backend reads the memory it may use where it is true for its process

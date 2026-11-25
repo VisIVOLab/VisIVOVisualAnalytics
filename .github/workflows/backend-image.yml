@@ -1,0 +1,261 @@
+# The VisIVO backend as container images on the GitHub Container Registry
+# (issue #66), for Docker/Podman and, with `apptainer pull docker://...`, for
+# HPC and SRC nodes.
+#
+#   ghcr.io/visivolab/visivo-backend:<version>      CPU, linux/amd64 + linux/arm64
+#   ghcr.io/visivolab/visivo-backend:latest         the same, of the newest release
+#   ghcr.io/visivolab/visivo-backend:<version>-egl  EGL rendering, linux/amd64
+#
+# Triggers
+#   - push of a release tag (v* or a bare number, as release.yml): builds and
+#     pushes both images, <version> being backend/app/VERSION, as the release is.
+#   - workflow_dispatch: builds both; pushes only with the `push` input, and then,
+#     from anything but a tag, as <version>-dev.<sha> (never over a release tag
+#     or `latest`). Run it on `main` without `push` to warm the VTK cache: a
+#     cache saved on a branch is invisible to a tag build, and only the default
+#     branch's is (GitHub scopes caches by ref).
+#   - pull_request touching the image files: builds both and runs the smoke
+#     test, pushes nothing, so the Dockerfile is proven before it is released.
+#
+# The EGL image compiles VTK, about an hour, as its own Dockerfile stage whose
+# result is cached (type=gha). Neither image needs a GPU to be built or smoke
+# tested; whether the EGL one renders is for a GPU node to say.
+#
+# A new package on GHCR is private until an owner makes it public (Package
+# settings); anonymous `apptainer pull` needs it public.
+
+name: Backend image
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]*'
+  workflow_dispatch:
+    inputs:
+      push:
+        description: 'Push the images to GHCR (from a branch: as <version>-dev.<sha>)'
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'docker/**'
+      - 'backend/requirements.txt'
+      - '.github/workflows/backend-image.yml'
+
+concurrency:
+  group: backend-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/visivolab/visivo-backend
+
+jobs:
+  meta:
+    # The public repository only: the private development repository has a
+    # minutes quota and is not where the package lives (as in release.yml).
+    if: github.repository == 'VisIVOLab/VisIVOVisualAnalytics'
+    name: version and tags
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      push: ${{ steps.v.outputs.push }}
+      cpu_tags: ${{ steps.v.outputs.cpu_tags }}
+      egl_tags: ${{ steps.v.outputs.egl_tags }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: backend/app/VERSION
+          sparse-checkout-cone-mode: false
+
+      - id: v
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+          PUSH_INPUT: ${{ inputs.push }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # The same read as release.yml and CMakeLists.txt: the whole file less
+          # a BOM and surrounding whitespace.
+          version=$(python3 -I -c 'import sys; print(open(sys.argv[1], encoding="utf-8-sig").read().strip())' backend/app/VERSION)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=backend/app/VERSION::'$version' is not X.Y.Z"
+            exit 1
+          fi
+          release=false
+          if [ "$REF_TYPE" = "tag" ]; then
+            release=true
+            if [ "${TAG#v}" != "$version" ]; then
+              echo "::error::Tag $TAG is not the project version $version (backend/app/VERSION): bump it first, then tag"
+              exit 1
+            fi
+          fi
+          push=false
+          if [ "$EVENT" = "push" ] || { [ "$EVENT" = "workflow_dispatch" ] && [ "$PUSH_INPUT" = "true" ]; }; then
+            push=true
+          fi
+          base="$version"
+          [ "$release" = "true" ] || base="$version-dev.${SHA::7}"
+          {
+            echo "version=$version"
+            echo "push=$push"
+            echo "cpu_tags<<EOF"
+            echo "$IMAGE:$base"
+            [ "$release" = "true" ] && echo "$IMAGE:latest"
+            echo "EOF"
+            echo "egl_tags<<EOF"
+            echo "$IMAGE:$base-egl"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version $version, push=$push, tag base $base"
+
+  cpu:
+    name: CPU image (amd64, arm64)
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # arm64 is built under emulation: the stack is all wheels, so it is slow
+      # but short.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.meta.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # amd64 first, loaded into the local daemon for the smoke test: a broken
+      # image fails here, before the slower arm64 build.
+      - name: Build (amd64, loaded for the smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: cpu
+          platforms: linux/amd64
+          load: true
+          tags: visivo-backend:ci
+          build-args: |
+            VERSION=${{ needs.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=cpu
+          provenance: false
+
+      - name: Smoke test
+        run: docker/smoke_test.sh visivo-backend:ci
+
+      - name: Build and push (amd64, arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: cpu
+          platforms: linux/amd64,linux/arm64
+          push: ${{ needs.meta.outputs.push == 'true' }}
+          tags: ${{ needs.meta.outputs.cpu_tags }}
+          build-args: |
+            VERSION=${{ needs.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=cpu
+          cache-to: type=gha,scope=cpu,mode=max
+          # No attestation manifests: older Singularity/Apptainer releases do
+          # not expect an "unknown/unknown" entry in the image index.
+          provenance: false
+
+  egl:
+    name: EGL image (amd64)
+    needs: meta
+    runs-on: ubuntu-latest
+    # VTK from source on a 4-core runner.
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The VTK build tree and its layers need more than the runner's free disk.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force > /dev/null
+          df -h / | tail -n 1
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.meta.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile itself fails if vtkEGLRenderWindow was not built or does
+      # not link libEGL, and if the application's render probe does not import.
+      - name: Build (loaded for the checks)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: egl
+          platforms: linux/amd64
+          load: true
+          tags: visivo-backend:ci-egl
+          build-args: |
+            VERSION=${{ needs.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=egl
+          cache-to: type=gha,scope=egl,mode=max
+          provenance: false
+
+      # No GPU on the runner: no render here. What can be said without one is
+      # that the build is the EGL one, and that the image serves the API.
+      - name: Check the image
+        run: |
+          docker run --rm visivo-backend:ci-egl python -c "
+          import vtk
+          from vtkmodules import vtkRenderingOpenGL2 as gl
+          print('vtk', vtk.VTK_VERSION, 'vtkEGLRenderWindow', hasattr(gl, 'vtkEGLRenderWindow'))
+          assert vtk.VTK_VERSION == '9.3.1' and hasattr(gl, 'vtkEGLRenderWindow')
+          import os; assert os.environ['__EGL_VENDOR_LIBRARY_FILENAMES'].endswith('10_nvidia.json')
+          "
+          docker/smoke_test.sh visivo-backend:ci-egl
+
+      - name: Push
+        if: needs.meta.outputs.push == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: egl
+          platforms: linux/amd64
+          push: true
+          tags: ${{ needs.meta.outputs.egl_tags }}
+          build-args: |
+            VERSION=${{ needs.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=egl
+          provenance: false
