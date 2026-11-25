@@ -288,8 +288,10 @@ def _is_simulation_volume(path: str, kind: str, geometry: dict[str, Any]) -> boo
 
 
 def _is_gadget_component(path: str) -> bool:
+    """Whether ``path`` is a particle component (a Gadget type, a RAMSES
+    family) whose physical units its reader states."""
     from ..point_table import component_format  # noqa: PLC0415
-    return component_format(path) == "gadget"
+    return component_format(path) is not None
 
 
 def _physical_units_info(path: str) -> PhysicalUnitsInfo:

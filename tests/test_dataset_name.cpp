@@ -55,4 +55,11 @@ void TestDatasetName::aParticleTypeIsShownAsSnapshotAndType()
     QCOMPARE(stem.absolutePath(), QStringLiteral("/runs/zoom/snapdir_010"));
     // The file's dot does not cut the name short.
     QCOMPARE(stem.completeBaseName(), QStringLiteral("snap_010_0_stars"));
+
+    // A family of a RAMSES output (#549): the output's folder, then the family.
+    const QString output = QStringLiteral("/runs/zoom/output_00185");
+    const QString dm = output + QStringLiteral("::ramses-family=dm");
+    QVERIFY(visivo::isFieldReference(dm));
+    QCOMPARE(visivo::datasetFilePath(dm), output);
+    QCOMPARE(visivo::datasetDisplayName(dm), QStringLiteral("output_00185 · family dm"));
 }

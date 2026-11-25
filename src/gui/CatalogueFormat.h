@@ -14,6 +14,9 @@ inline QString catalogueFormatForPath(const QString &path)
     // backend tells a snapshot by its content whatever format it is asked for.)
     if (path.contains(QStringLiteral("::gadget-type=")))
         return QStringLiteral("gadget");
+    // A family of a RAMSES output (#549), by its reference.
+    if (path.contains(QStringLiteral("::ramses-family=")))
+        return QStringLiteral("ramses");
     const QString suffix = QFileInfo(path).suffix().trimmed().toLower();
     // A VisIVO Binary Table of points (issue #83), by its header or its binary.
     if (suffix == QStringLiteral("head") || suffix == QStringLiteral("bin"))

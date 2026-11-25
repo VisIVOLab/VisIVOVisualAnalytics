@@ -22,5 +22,6 @@ private slots:
     void allFilesIsAlwaysOffered();
     void initialTypePrefersTheRememberedOne();
     void gadgetSnapshotsMatchByTheirNames();
+    void ramsesOutputsMatchByTheirNames();
     void aFitsTheBackendRecognisedByContentIsListedWithTheFitsGroups();
 };

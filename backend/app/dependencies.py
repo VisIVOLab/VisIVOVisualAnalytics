@@ -1300,8 +1300,9 @@ def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
         return frame
     if fmt_lower == "vbt":
         return _read_vbt_points(path)
-    if fmt_lower == "gadget":
-        # One particle type of a Gadget snapshot (issue #31), read in place.
+    if fmt_lower in ("gadget", "ramses"):
+        # One particle type of a Gadget snapshot (issue #31) or one family of
+        # a RAMSES output (issue #549), read in place.
         from .point_table import particle_frame  # noqa: PLC0415
         return particle_frame(path)
     raise ValueError(f"Unsupported catalogue format: {fmt}")

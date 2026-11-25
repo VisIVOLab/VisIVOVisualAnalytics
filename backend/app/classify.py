@@ -93,7 +93,9 @@ def classify_path(path: str | Path, allowed=None) -> dict:
 
     ``kind`` names the content ("image", "cube", "dynspec", "fits-table",
     "catalogue", "vbt", "pluto" (an output that cannot be opened), "particles"
-    (a particle snapshot), "unknown"); ``opener`` names the route that opens it.
+    (a particle snapshot: Gadget, or a RAMSES output), "amr" (a RAMSES output
+    with a mesh and no particles), "unknown"); ``opener`` names the route that
+    opens it.
     ``components``: a snapshot's particle types, each with its own path.
     ``open_path`` is the path the opener should be given when it differs from
     the one asked about — a VBT selected by its ``.bin`` opens by its ``.head``
@@ -104,7 +106,7 @@ def classify_path(path: str | Path, allowed=None) -> dict:
         # A snapdir: the snapshot it holds (issue #31). One whose files
         # reach outside the data roots is shown as a plain directory.
         try:
-            particles = _classify_particles(path, allowed)
+            particles = _classify_ramses(path, allowed) or _classify_particles(path, allowed)
         except PermissionError:
             particles = None
         if particles is not None:
@@ -137,6 +139,11 @@ def classify_path(path: str | Path, allowed=None) -> dict:
     pluto = _classify_pluto(path)
     if pluto is not None:
         return pluto
+
+    # ── A RAMSES output: any file of its directory (info, amr, part, ...) ────
+    ramses = _classify_ramses(path, allowed)
+    if ramses is not None:
+        return ramses
 
     # ── A particle snapshot (Gadget binary or HDF5), by its header record ────
     # Read in place as a table of points, one particle type at a time (#31).
@@ -306,6 +313,50 @@ def _looks_like_delimited_text(text: str, truncated: bool = False) -> bool:
     rows, and a character count then calls a perfectly ordinary CSV unknown.
     """
     return sniff_separator(text, truncated) is not None
+
+
+def _classify_ramses(path: Path, allowed=None) -> dict | None:
+    """The verdict on a RAMSES output (issue #549): its directory, or any
+    file in it (``info_*.txt``, ``amr_*.out*``, ``part_*.out*``, ...), judged
+    by the info file's content. With particle files it opens as a table of
+    points, one family at a time (``open_path`` the first, ``components``
+    all); without, it holds a mesh only, which no opener takes yet. None for
+    anything else."""
+    from . import ramses_output as rm  # noqa: PLC0415
+    from .point_table import particle_components, particle_dataset_path  # noqa: PLC0415
+
+    directory = rm.output_of(path)
+    if directory is None:
+        return None
+    try:
+        out = rm.open_output(directory)
+        info = out.info
+        found = particle_dataset_path(directory, allowed)   # the data-root check first
+        mesh = ""
+        if out.has("amr"):
+            mesh = (f"a mesh of levels {info.levelmin}-{info.levelmax}"
+                    + (f" with {len(out.hydro_names())} hydro variables" if out.has("hydro") else ""))
+        if found is None:
+            if not mesh:
+                return _result("unknown", "unsupported", True,
+                               f"RAMSES output {out.number} with no particle or mesh file.")
+            return _result("amr", "unsupported", True,
+                           f"RAMSES output {out.number} ({info.ncpu} files): {mesh} and no "
+                           "particles; the mesh has no viewer yet.")
+        components = particle_components(found[0])
+    except PermissionError:
+        raise
+    except (OSError, ValueError, IndexError) as exc:
+        return _result("particles", "unsupported", True,
+                       f"RAMSES output that cannot be read: {exc}")
+    counts = ", ".join(f"{c['num_rows']} {c['name']}" for c in components)
+    z = f" at z = {info.redshift:.3g}" if info.cosmological else ""
+    detail = (f"RAMSES output {out.number} ({info.ncpu} files){z}: {counts}. "
+              "Each particle family opens as a table of points.")
+    if mesh:
+        detail += f" It also holds {mesh}, which the particle table does not show."
+    return _result("particles", "catalogue", True, detail, open_path=found[0],
+                   components=components)
 
 
 def _classify_particles(path: Path, allowed=None) -> dict | None:

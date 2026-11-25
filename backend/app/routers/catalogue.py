@@ -35,8 +35,9 @@ async def open_catalogue(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> CatalogueOpenResponse:
-    from ..point_table import (is_particle_format, particle_catalogue_metadata,  # noqa: PLC0415
-                               particle_components, particle_dataset_path, split_component)
+    from ..point_table import (COMPONENT_FORMATS, is_particle_format,  # noqa: PLC0415
+                               particle_catalogue_metadata, particle_components,
+                               particle_dataset_path, split_component)
     raw_paths = request.paths if request.paths else [request.path]
     fmt = request.format.strip().lower()
     paths: list[Path] = []
@@ -63,7 +64,7 @@ async def open_catalogue(
         else:
             read_as.append(str(p))
         paths.append(p)
-    if fmt == "gadget" and len(read_as) > 1:
+    if fmt in COMPONENT_FORMATS and len(read_as) > 1:
         return CatalogueOpenResponse(
             valid=False, error="A particle snapshot opens one particle type at a time.")
     is_vbt = fmt == "vbt"
@@ -88,7 +89,7 @@ async def open_catalogue(
                                   and not orders["byte_order_warning"]):
                     orders.update(found)
                 orders["changed"] = changed
-        if fmt == "gadget":
+        if fmt in COMPONENT_FORMATS:
             return None, particle_catalogue_metadata(read_as[0])
         if len(paths) == 1:
             return _catalogue_metadata(Path(read_as[0]), fmt)
@@ -125,7 +126,7 @@ async def open_catalogue(
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
     # A snapshot's particle type is known by its reference: every reader of
     # the dataset (render sessions, the VR page, its series) opens that.
-    entry_path = read_as[0] if fmt == "gadget" else str(path)
+    entry_path = read_as[0] if fmt in COMPONENT_FORMATS else str(path)
     components = particle_components(entry_path)
     session.datasets[dataset_id] = {"path": entry_path, "paths": [str(p) for p in paths],
                                     "dataframe": dataframe, **metadata,
@@ -179,9 +180,8 @@ def _particle_filtered_page(path: str, filters, limit: int, offset: int,
                             random_sample: bool, even_sample: bool, phase: int,
                             fields=None):
     """Filter a component out of core, then read only the requested page."""
-    from .. import gadget_snapshot as gs  # noqa: PLC0415
-    from ..point_table import particle_rows  # noqa: PLC0415
-    component = gs.resolve(path)
+    from ..point_table import particle_rows, resolve_component  # noqa: PLC0415
+    component = resolve_component(path)
     matching = _particle_matcher(component, filters)
     chunk = PARTICLE_CHUNK_ROWS
     counts = [len(matching(start, min(component.num_rows, start + chunk)))
@@ -453,9 +453,9 @@ def _entry_periods(entry) -> dict[str, float]:
     from ..point_table import component_format  # noqa: PLC0415
     path = entry.get("path")
     periods = {}
-    if path and component_format(path) == "gadget":
-        from .. import gadget_snapshot as gs  # noqa: PLC0415
-        periods = gs.resolve(path).periods()
+    if path and component_format(path):
+        from ..point_table import resolve_component  # noqa: PLC0415
+        periods = resolve_component(path).periods()
     entry["_periods"] = periods
     return periods
 
@@ -468,8 +468,8 @@ def _diagnostic_chunks(entry, request):
     weighted = bool(request.weight_field)
     from ..point_table import is_particle_format  # noqa: PLC0415
     if is_particle_format(entry.get("format")) and entry.get("dataframe") is None:
-        from .. import gadget_snapshot as gs  # noqa: PLC0415
-        component = gs.resolve(entry["path"])
+        from ..point_table import resolve_component  # noqa: PLC0415
+        component = resolve_component(entry["path"])
         matching = _particle_matcher(component, request.filters)
         n = max(1, component.num_rows)
 
@@ -625,9 +625,8 @@ def _sorted_order(values: np.ndarray, rows: np.ndarray, descending: bool) -> np.
 def _particle_sorted_page(path: str, filters, sort, limit: int, offset: int,
                           fields=None):
     """Sort a page while retaining at most ``offset + limit`` candidate rows."""
-    from .. import gadget_snapshot as gs  # noqa: PLC0415
-    from ..point_table import particle_rows  # noqa: PLC0415
-    component = gs.resolve(path)
+    from ..point_table import particle_rows, resolve_component  # noqa: PLC0415
+    component = resolve_component(path)
     if sort.field not in component.names:
         raise ValueError(f"Unknown sort field: {sort.field!r}")
     if limit <= 0:

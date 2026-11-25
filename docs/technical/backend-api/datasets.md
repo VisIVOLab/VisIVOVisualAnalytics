@@ -174,6 +174,9 @@ Physical units of a dataset (issue #524), one table for every reader in
 `app/physical_units.py`: `{column: {factor, unit[, source]}}`, the factor that
 makes the column physical and the unit it is then in. Each reader states its
 own columns (a Gadget snapshot through its unit system, `Component.physical()`;
+a RAMSES family or output folder from the `unit_l`, `unit_d`, `unit_t` of its
+`info_*.txt`: `x`, `y`, `z`, `dx` in kpc, `vx`.. in km/s, `mass` in Msun,
+`density` in g/cm³, `pressure` in erg/cm³, proper at the output's `aexp`;
 a PLUTO output through the run's code units; a VBT field or a FITS cube has
 none of its own), `scales(path)` lays what the user typed over them, and every
 route, export and client reads that. What was typed is kept with the file
@@ -300,8 +303,13 @@ Open a catalogue file on the backend.
 ```json
 { "path": "/data/catalogue.csv", "format": "csv" }
 ```
-`format` is `csv` (default), `votable`, `fits`, `ipac`, `speck`, `vbt` or
-`gadget`. A Gadget snapshot (issue #31) is recognised by its content whatever
+`format` is `csv` (default), `votable`, `fits`, `ipac`, `speck`, `vbt`,
+`gadget` or `ramses`. A RAMSES output (issue #549) is recognised the same way:
+its `output_NNNNN` folder, any file in it (`info_*.txt`, `amr_*.out*`,
+`part_*.out*`) or a family reference `<output folder>::ramses-family=<slug>`
+(`dm`, `stars`, `sinks`, ...) opens that particle family (dark matter first)
+as a table of particles, response `format: "ramses"`
+([RAMSES outputs](../design/ramses-outputs.md)). A Gadget snapshot (issue #31) is recognised by its content whatever
 format is asked for: a file of it, its `snapdir` folder, or a particle-type
 reference `<first file>::gadget-type=<N>` opens that particle type (the first
 with particles for a file or a folder) as a table of particles, read in place

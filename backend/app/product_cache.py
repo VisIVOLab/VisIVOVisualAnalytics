@@ -36,6 +36,18 @@ def file_identity(path: str | os.PathLike) -> str:
     from .volume_source import (byte_order_override, field_data_file,  # noqa: PLC0415
                                 raw_field, vbt_head)
 
+    if component_format(path) == "ramses":
+        # A RAMSES family (issue #549): the output's info, header and
+        # descriptors and its particle files; the mesh files change nothing
+        # a particle table reads.
+        from .ramses_output import open_output  # noqa: PLC0415
+        try:
+            stats = [os.stat(f) for f in open_output(split_component(path)[0]).files(("part",))]
+        except (OSError, ValueError):
+            return ""
+        return "|".join(f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
+                        for st in stats)
+
     if component_format(path) == "gadget":
         # A snapshot's particle type (issue #31): every file of the snapshot,
         # and the run's parameter file and the environment's units, which

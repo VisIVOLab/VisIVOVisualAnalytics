@@ -220,7 +220,7 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
             return FileClassifyResponse(
                 valid=True, error="", path=request.path, kind="particles",
                 opener="unsupported", confident=True,
-                detail=f"Gadget snapshot that cannot be read: {exc}")
+                detail=f"Particle snapshot that cannot be read: {exc}")
         if found is None:
             return FileClassifyResponse(valid=False, error="File not found.")
         return FileClassifyResponse(

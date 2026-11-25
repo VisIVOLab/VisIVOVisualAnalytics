@@ -23,6 +23,9 @@
 //     `snap_010.0.hdf5`), so the group matches the names Gadget writes by
 //     default, by their beginning (`snap_`, `snapshot_`). A snapshot under
 //     another name opens all the same: the classifier reads its header.
+//   - RAMSES outputs (#549): a folder `output_NNNNN` (pick the folder, or any
+//     file in it) of `info_NNNNN.txt`, `amr_NNNNN.out00001`, `hydro_...`,
+//     `part_...`: no suffix of their own, so by the beginning of the name.
 //
 // These are a VIEW filter. The backend classifies a file by its content, so a
 // FITS or a CSV under some other name still opens: it is listed under
@@ -48,6 +51,7 @@ enum class FileType {
     DelimitedText,    ///< comma, tab or semicolon text tables, for readers that take nothing else
     Pluto,            ///< PLUTO simulation output (binary data files; the .out/grid.out beside them)
     Gadget,           ///< Gadget particle snapshots (binary or HDF5, one file or several)
+    Ramses,           ///< RAMSES outputs (a file of an `output_NNNNN` folder: info, amr, hydro, part)
     AllFiles,         ///< every file, dotfiles included; stays LAST (the tests walk up to it)
 };
 
@@ -94,6 +98,10 @@ inline const QList<FileTypeInfo> &fileTypes()
         // tells a snapshot by its header, whatever its name.
         { FileType::Gadget, "gadget"_L1, u"Gadget snapshots"_s, {},
           { u"snap_"_s, u"snapshot_"_s } },
+        // RAMSES outputs (#549), by the names RAMSES writes; the classifier
+        // reads the folder's info file, whatever a file is called.
+        { FileType::Ramses, "ramses"_L1, u"RAMSES outputs"_s, {},
+          { u"info_"_s, u"amr_"_s, u"hydro_"_s, u"part_"_s } },
         { FileType::AllFiles, "all-files"_L1, u"All files"_s, {} },
     };
     return table;
@@ -209,7 +217,7 @@ inline QString fileTypeDisplayLabel(FileType type)
 inline QList<FileType> openableFileTypes()
 {
     return { FileType::AllSupported, FileType::Fits, FileType::Catalogue, FileType::Vbt,
-             FileType::Hdf5, FileType::Pluto, FileType::Gadget };
+             FileType::Hdf5, FileType::Pluto, FileType::Gadget, FileType::Ramses };
 }
 
 /// What a caller offers, in table order, with AllFiles always there: whatever

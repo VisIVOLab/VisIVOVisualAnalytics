@@ -69,6 +69,9 @@ def snapshot_series(path: str, allowed=None) -> dict:
     path = os.path.abspath(path)
     folder, name = os.path.split(path)
     pat = pattern(name)
+    # An output kept in a directory of its own (RAMSES ``output_00042``) is a
+    # series of its sibling directories, each member named by its number.
+    directory = os.path.isdir(path)
     names = []
     if pat is not None:
         try:
@@ -77,14 +80,14 @@ def snapshot_series(path: str, allowed=None) -> dict:
                     if k >= MAX_LISTED:
                         break
                     # Only the series' names are kept, whatever the listing's order.
-                    if pat.match(e.name) and e.is_file():
+                    if pat.match(e.name) and (e.is_dir() if directory else e.is_file()):
                         names.append(e.name)
         except OSError:
             names = []
     if allowed is not None:
         names = [n for n in names if n == name or allowed(os.path.join(folder, n))]
     found = members(name, names)
-    if len(found) == 1 and pat is not None:
+    if len(found) == 1 and pat is not None and not directory:
         folders = _folder_series(path, allowed)
         if folders is not None:
             return folders

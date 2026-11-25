@@ -203,7 +203,7 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
         frame = context.get("dataframe")
         fmt = context.get("format")
     from ..point_table import component_format, is_particle_format  # noqa: PLC0415
-    if frame is None and path and component_format(path) == "gadget":
+    if frame is None and path and component_format(path):
         # A snapshot's particle type is opened out of core (no frame): its
         # statistics are streamed from the shards, a slice of rows at a time.
         out = _particle_catalogue_summary(path, params, context or {})
@@ -274,9 +274,9 @@ def _particle_catalogue_summary(path: str, params: dict[str, Any],
     gadget_snapshot.PIECE_CACHE). Beyond PARTICLE_SUMMARY_MAX_ROWS rows they
     come from an evenly spaced sample, stated in ``sample``: min and max are
     then those of the sample, not necessarily of the component."""
-    from .. import gadget_snapshot as gs  # noqa: PLC0415
-    from ..point_table import particle_catalogue_metadata  # noqa: PLC0415
-    component = gs.resolve(path)
+    from ..point_table import (component_format, particle_catalogue_metadata,  # noqa: PLC0415
+                               resolve_component)
+    component = resolve_component(path)
     meta = context if context.get("fields") else {**particle_catalogue_metadata(path), **context}
     fields = list(meta.get("fields") or [])
     max_cols = max(1, int(params.get("max_columns", 40)))
@@ -305,7 +305,7 @@ def _particle_catalogue_summary(path: str, params: dict[str, Any],
         columns.append(entry)
     out = {
         "kind": "catalogue",
-        "format": "gadget",
+        "format": component_format(path) or "gadget",
         "num_rows": int(component.num_rows),
         "num_columns": len(fields),
         "coordinate_fields": meta.get("coordinate_fields") or {},

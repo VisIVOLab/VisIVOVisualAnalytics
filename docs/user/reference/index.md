@@ -41,6 +41,8 @@ in a line or two. For a task explained step by step, start from the
 - [PLUTO simulation output](pluto-output.md)
 - [Gadget snapshots](gadget-snapshots.md): particle types of a Gadget
   snapshot, one file or several, with units and derived gas columns.
+- [RAMSES outputs](ramses-outputs.md): the particles of an `output_NNNNN`
+  folder, one family at a time, with units from its info file.
 - [Ray-traced particles](raytraced-particles.md) and
   [ray-traced volumes](raytraced-volumes.md)
 
@@ -74,6 +76,7 @@ skava-discovery
 simulations
 pluto-output
 gadget-snapshots
+ramses-outputs
 raytraced-particles
 raytraced-volumes
 publication-output

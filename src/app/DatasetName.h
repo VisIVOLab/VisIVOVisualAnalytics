@@ -4,9 +4,11 @@
 // Binary Table volume opens as a cube whose path is a reference to the field,
 // "<data>.bin::vbt-field=<index>" (backend/app/volume_source.py), and a
 // particle type of a Gadget snapshot as a table of points whose path is
-// "<first file>::gadget-type=<type>" (issue #31, backend/app/gadget_snapshot.py):
-// the viewers use either as any path for the backend, and show it as
-// "<volume> · <field>", "<snapshot> · <particle type>".
+// "<first file>::gadget-type=<type>" (issue #31, backend/app/gadget_snapshot.py),
+// as a family of a RAMSES output (#549) does with
+// "<output folder>::ramses-family=<family>" (backend/app/ramses_output.py):
+// the viewers use any of them as a path for the backend, and show it as
+// "<volume> · <field>", "<snapshot> · <particle type>", "<output> · <family>".
 
 #include <QDir>
 #include <QFileInfo>
@@ -29,12 +31,19 @@ inline const QString &gadgetTypeSeparator()
     return sep;
 }
 
+inline const QString &ramsesFamilySeparator()
+{
+    static const QString sep = QStringLiteral("::ramses-family=");
+    return sep;
+}
+
 namespace detail {
 /// Where a reference's separator starts in @p path and which one it is; -1
 /// for a path that is no reference.
 inline int referenceAt(const QString &path, const QString **separator = nullptr)
 {
-    for (const QString *sep : { &vbtFieldSeparator(), &gadgetTypeSeparator() }) {
+    for (const QString *sep : { &vbtFieldSeparator(), &gadgetTypeSeparator(),
+                                 &ramsesFamilySeparator() }) {
         const int at = path.lastIndexOf(*sep);
         if (at >= 0) {
             if (separator)
@@ -121,8 +130,9 @@ inline QString datasetDisplayName(const QString &path)
     if (volume.endsWith(QLatin1String(".bin")))
         volume.chop(4);
     // Before the backend listed the names, the index.
-    const QString what = separator == &gadgetTypeSeparator() ? QStringLiteral("type %1")
-                                                             : QStringLiteral("field %1");
+    const QString what = separator == &gadgetTypeSeparator()  ? QStringLiteral("type %1")
+                         : separator == &ramsesFamilySeparator() ? QStringLiteral("family %1")
+                                                                 : QStringLiteral("field %1");
     const QString field = fieldNames().value(path, what.arg(path.mid(at + separator->size())));
     return QStringLiteral("%1 · %2").arg(volume, field);
 }
