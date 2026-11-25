@@ -41,6 +41,7 @@ private slots:
 
 private:
     void setBusy(bool busy, const QString &message = QString());
+    void fitToContents();
 
     QString m_path;
     QString m_backendUrl;

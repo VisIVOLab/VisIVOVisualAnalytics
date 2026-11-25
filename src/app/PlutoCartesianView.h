@@ -21,6 +21,14 @@
 
 namespace visivo::plutoview {
 
+/// The backend names a Cartesian view's file after this suffix (pluto_source.py
+/// VIEW_SUFFIX). Cells outside the source domain are NaN by design there, so a
+/// large blank fraction is the shape of the run, not damage.
+inline bool isCartesianViewPath(const QString &path)
+{
+    return path.endsWith(QStringLiteral(".pluto-cartesian.fits"));
+}
+
 /// What the backend would make: the output axes, their box, the voxel counts.
 struct Plan
 {

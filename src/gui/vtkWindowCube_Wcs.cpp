@@ -574,7 +574,7 @@ double vtkWindowCube::remoteFrameCoordinate(int axis, double voxelX, double voxe
 QString vtkWindowCube::formatRemoteOverlayCoordinate(int axis, double value, double axisSpan) const
 {
     if (!this->remoteHasCelestialAxes()) {
-        return QString::number(value, 'g', 8);
+        return visivo::formatLinearTick(value, axisSpan);
     }
     if (!this->useSexagesimalWcsFormat) {
         return this->formatDegreeCoordinate(value, axisSpan);
@@ -606,6 +606,10 @@ QString vtkWindowCube::formatDegreeCoordinate(double value, double axisSpan) con
 
 QString vtkWindowCube::currentWcsFrameLabel() const
 {
+    // X, Y, Z of a simulation are not on the sky: say so instead of naming
+    // the frame the menu happens to have selected.
+    if (!this->remoteHasCelestialAxes())
+        return visivo::linearFrameLabel(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1]);
     const int frame = this->selectedWcsFrame();
     return frame == WCS_GALACTIC ? u"Galactic"_s
             : (frame == WCS_J2000 ? u"FK5"_s : u"Ecliptic"_s);

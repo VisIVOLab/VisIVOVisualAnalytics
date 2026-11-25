@@ -84,3 +84,45 @@ void TestWcsAxisTicks::theYTitleClearsLongLabels()
     // ...but never off the window.
     QCOMPARE(visivo::yAxisTitleX(136.0, 56.0, 8.0, 40, 7.5, 10.0), 8.0);
 }
+
+void TestWcsAxisTicks::aLinearAxisPrintsZeroNotRoundingNoise()
+{
+    // x = 0 of a 0..3 AU axis came out of the pixel-to-world map as 1.63e-16.
+    QCOMPARE(visivo::formatLinearTick(1.63e-16, 3.0), QStringLiteral("0"));
+    QCOMPARE(visivo::formatLinearTick(-1.63e-16, 3.0), QStringLiteral("0"));
+    QCOMPARE(visivo::formatLinearTick(1.5, 3.0), QStringLiteral("1.5"));
+    // A genuinely small axis keeps its small values.
+    QCOMPARE(visivo::formatLinearTick(2e-24, 4e-24), QStringLiteral("2e-24"));
+    // Span unknown (the hover readout): printed as is.
+    QCOMPARE(visivo::formatLinearTick(1.63e-16, -1.0), QStringLiteral("1.63e-16"));
+}
+
+void TestWcsAxisTicks::aLinearWcsIsNotNamedAfterASkyFrame()
+{
+    QCOMPARE(visivo::linearFrameLabel(QStringLiteral("X"), QStringLiteral("Z")),
+             QStringLiteral("linear (X, Z)"));
+    QCOMPARE(visivo::linearFrameLabel(QString(), QString()), QStringLiteral("pixel"));
+}
+
+void TestWcsAxisTicks::anAxisFollowsTheImageOnScreenAndReadsItsEnds()
+{
+    // A 400-pixel-wide image centred in an 1100-pixel viewport at 1.4 px per
+    // voxel: it spans screen 270..830, not the 136..1066 the axis used to cover.
+    const double px = 1.4;
+    const visivo::AxisFit fit = visivo::fitAxisToImage(1100.0, 200.0, px, 0.0, 400.0, 136.0, 34.0);
+    QVERIFY(fit.valid);
+    QVERIFY(std::abs(fit.screenLo - 270.0) < 1e-9);
+    QVERIFY(std::abs(fit.screenHi - 830.0) < 1e-9);
+    // The axis ends read the image's own ends.
+    QVERIFY(std::abs(fit.worldLo - 0.0) < 1e-9);
+    QVERIFY(std::abs(fit.worldHi - 400.0) < 1e-9);
+    // Zoomed in until the image overflows the viewport: the viewport's room
+    // wins, and the ends read what is under them.
+    const visivo::AxisFit zoomed = visivo::fitAxisToImage(1100.0, 200.0, 10.0, 0.0, 400.0, 136.0, 34.0);
+    QCOMPARE(zoomed.screenLo, 136.0);
+    QCOMPARE(zoomed.screenHi, 1066.0);
+    QVERIFY(std::abs(zoomed.worldLo - (200.0 + (136.0 - 550.0) / 10.0)) < 1e-9);
+    // Too little of the image on screen to label: no axis fit, the caller keeps its default.
+    QVERIFY(!visivo::fitAxisToImage(1100.0, 5000.0, 1.0, 0.0, 400.0, 136.0, 34.0).valid);
+    QVERIFY(!visivo::fitAxisToImage(1100.0, 200.0, 0.0, 0.0, 400.0, 136.0, 34.0).valid);
+}

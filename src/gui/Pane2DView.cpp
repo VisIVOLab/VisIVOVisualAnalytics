@@ -576,7 +576,10 @@ void Pane2DView::setRange(double lo, double hi)
     const std::array<double, 2> eff = LutScale::rangeFor(m_scale, lo, hi);
     double cur[2] = { 0., 0. };
     m_lut->GetTableRange(cur);
-    if (std::fabs(cur[0] - eff[0]) < 1e-12 && std::fabs(cur[1] - eff[1]) < 1e-12)
+    // Relative to the range: an absolute 1e-12 is wider than a whole physical-units
+    // range (rho ~ 1e-24), so every change looked like none.
+    const double tol = 1e-9 * std::max(std::fabs(eff[1]), std::fabs(eff[0]));
+    if (std::fabs(cur[0] - eff[0]) <= tol && std::fabs(cur[1] - eff[1]) <= tol)
         return;
     LutScale::setRange(m_lut, m_scale, lo, hi);   // authoritative — mapper + colorbar honor THIS
     m_lut->Modified();

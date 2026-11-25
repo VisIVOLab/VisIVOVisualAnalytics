@@ -1,6 +1,7 @@
 #include "vtkWindowImage.h"
 #include "WindowCloseShortcut.h"
 #include "app/DatasetName.h"
+#include "app/PlutoCartesianView.h"
 #include "Settings.h"
 #include "StatusMessageRoom.h"
 #include "ui_vtkWindowImage.h"
@@ -218,7 +219,7 @@ double sampledPositiveFloor(vtkImageData *imageData, qint64 targetSamples = 2500
         return 0.0;
     }
     std::sort(positives.begin(), positives.end());
-    return std::max(1e-12, percentileFromSorted(positives, 1.0));
+    return percentileFromSorted(positives, 1.0);
 }
 
 
@@ -336,7 +337,7 @@ SanityReport buildImageSanityReport(const std::array<QString, 3> &ctype,
                                     const std::array<double, 3> &crval,
                                     const std::array<double, 3> &crpix,
                                     const std::array<double, 3> &cdelt,
-                                    vtkImageData *imageData)
+                                    vtkImageData *imageData, bool blanksExpected)
 {
     const auto pairRecognized = [&ctype]() {
         const QString c1 = ctype[0].trimmed().toUpper();
@@ -362,7 +363,10 @@ SanityReport buildImageSanityReport(const std::array<QString, 3> &ctype,
         warnings << u"Only one spatial axis looks celestial; the coordinate pairing is incomplete."_s;
     } else if (axis0Celestial && !pairRecognized()) {
         warnings << u"Celestial axis pairing is not recognized as FK5, Galactic, or Ecliptic."_s;
-    } else if (!axis0Celestial && !axis1Celestial) {
+    } else if (!axis0Celestial && !axis1Celestial
+               && !(axisHasLinearWcs(ctype[0], crval[0], crpix[0], cdelt[0])
+                    && axisHasLinearWcs(ctype[1], crval[1], crpix[1], cdelt[1]))) {
+        // A complete linear WCS (X/Y of a simulation) is not missing metadata.
         unknowns << u"Celestial WCS metadata unavailable; overlay may fall back to pixel coordinates."_s;
     }
 
@@ -370,7 +374,8 @@ SanityReport buildImageSanityReport(const std::array<QString, 3> &ctype,
         unknowns << u"CTYPE metadata incomplete for one or more spatial axes."_s;
     }
 
-    const double blankFraction = computeBlankFraction(imageData);
+    // A Cartesian view of a polar or spherical run is NaN outside its domain.
+    const double blankFraction = blanksExpected ? 0.0 : computeBlankFraction(imageData);
     if (blankFraction >= 0.2) {
         warnings << u"Loaded image is heavily blanked/NaN (%1%)."_s.arg(blankFraction * 100.0, 0, 'f', 1);
     }
@@ -3108,8 +3113,9 @@ void vtkWindowImage::updateSanityPanel()
     std::array<double, 3> crpix = this->remoteDatasetCrpix;
     std::array<double, 3> cdelt = this->remoteDatasetCdelt;
     auto *imageData = this->layers ? this->layers->getImageData(this->layers->getMasterIndex()) : nullptr;
-    const auto report = buildImageSanityReport(ctype, cunit,
-                                               crval, crpix, cdelt, imageData);
+    const auto report = buildImageSanityReport(
+            ctype, cunit, crval, crpix, cdelt, imageData,
+            visivo::plutoview::isCartesianViewPath(this->selectedLayerPath()));
     this->sanityLabel->setText(report.summary);
     this->sanityLabel->setToolTip(report.details);
 }

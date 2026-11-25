@@ -19,6 +19,7 @@ private slots:
     void logBarOnSignedDataStartsAtTheFloor();
     void sqrtBarInvertsTheStretch();
     void percentileFloorTakesTheFaintEnd();
+    void percentileFloorFollowsPhysicalUnits();
     void momentSummary();
     void maskedMomentSummary();
     void linewidthSummaryNamesTheMethodOnce();

@@ -93,7 +93,10 @@ inline double percentileFloor(std::vector<double> positives)
     const std::size_t idx = static_cast<std::size_t>(
             std::clamp<double>(0.01 * static_cast<double>(positives.size() - 1), 0.0,
                                static_cast<double>(positives.size() - 1)));
-    return std::max(1e-12, positives[idx]);
+    // No absolute floor: physical densities are 1e-24 g/cm3 and below, and a
+    // fixed 1e-12 here put the whole map under it (a black slice whose colour
+    // bar read "1e-12" throughout). Every sample is already > 0.
+    return positives[idx];
 }
 
 // Apply a scale mode to a vtkLookupTable ALREADY freshly filled with a linear

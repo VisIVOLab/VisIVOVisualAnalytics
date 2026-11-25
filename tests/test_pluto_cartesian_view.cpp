@@ -97,3 +97,11 @@ void TestPlutoCartesianView::voxelBudget_isInMillions()
     QCOMPARE(voxelBudget(0), qint64(1000000));
     QCOMPARE(voxelBudget(1000), qint64(1000000000));
 }
+
+void TestPlutoCartesianView::isCartesianViewPath_knowsTheBackendsFileName()
+{
+    // Cells outside the run's domain are NaN there: the sanity check must not
+    // call that damage.
+    QVERIFY(isCartesianViewPath(QStringLiteral("/exports/rho.pluto-cartesian.fits")));
+    QVERIFY(!isCartesianViewPath(QStringLiteral("/data/rho.fits")));
+}

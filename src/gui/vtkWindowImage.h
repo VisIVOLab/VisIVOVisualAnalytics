@@ -648,6 +648,7 @@ private:
                                                     std::numeric_limits<double>::quiet_NaN(),
                                                     std::numeric_limits<double>::quiet_NaN() };
     std::array<int, 2> lastOverlayViewportSize{ -1, -1 };
+    unsigned long lastOverlayCameraMTime{ 0 };
     int lastRenderedWcsFrame{ std::numeric_limits<int>::min() };
     int lastRenderedWcsFormat{ -1 };
     vtkNew<vtkLineSource> probeHorizontalLine;

@@ -80,6 +80,19 @@ void TestProductPaneDisplay::percentileFloorTakesTheFaintEnd()
     QCOMPARE(LutScale::percentileFloor({ 0.5 }), 0.5);
 }
 
+void TestProductPaneDisplay::percentileFloorFollowsPhysicalUnits()
+{
+    // A PLUTO density in g/cm3 runs 1e-30..1e-24: a fixed 1e-12 floor put the
+    // whole slice below it and every colour-bar label read "1e-12".
+    std::vector<double> v;
+    for (int i = 1; i <= 1000; ++i)
+        v.push_back(1e-30 * i * 1000.0);   // 1e-27 .. 1e-24
+    const double floor = LutScale::percentileFloor(v);
+    QVERIFY(floor > 0.0);
+    QVERIFY(floor < 1e-24);
+    QCOMPARE(floor, 1e-30 * 10 * 1000.0);
+}
+
 void TestProductPaneDisplay::momentSummary()
 {
     // The recipe a moment registers with (vtkWindowCube, Provenance params).

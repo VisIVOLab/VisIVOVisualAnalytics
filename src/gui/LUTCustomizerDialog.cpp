@@ -37,8 +37,6 @@ using namespace Qt::StringLiterals;
 namespace {
 constexpr vtkIdType histogramTargetSamples = 250000;
 constexpr int histogramBinCount = 512;
-constexpr double logAxisEpsilon = 1e-12;
-
 double sampledPositiveFloor(vtkImageData *dataset)
 {
     if (!dataset) {
@@ -69,7 +67,7 @@ double sampledPositiveFloor(vtkImageData *dataset)
     const std::size_t index =
             std::min<std::size_t>(positives.size() - 1,
                                   static_cast<std::size_t>(std::floor((positives.size() - 1) * 0.01)));
-    return std::max(logAxisEpsilon, positives[index]);
+    return positives[index];
 }
 }
 

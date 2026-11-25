@@ -17,4 +17,5 @@ private slots:
     void summary_namesTheViewTheGridAndTheBox();
     void requestBody_carriesTheBudgetAndOnlyWhatIsAsked();
     void voxelBudget_isInMillions();
+    void isCartesianViewPath_knowsTheBackendsFileName();
 };

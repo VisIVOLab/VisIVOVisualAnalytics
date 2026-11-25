@@ -166,8 +166,10 @@ void ImageLayer::updateImageTransform(double rotationDegrees)
 
 double ImageLayer::logScaleEpsilon(double maxValue)
 {
-    const double finiteMax = std::isfinite(maxValue) ? std::abs(maxValue) : 1.0;
-    return std::max(1e-12, finiteMax * 1e-12);
+    const double finiteMax = std::isfinite(maxValue) ? std::abs(maxValue) : 0.0;
+    // Twelve decades under the peak: a fixed 1e-12 was above the whole range
+    // of a physical-units cube (rho ~ 1e-24).
+    return finiteMax > 0.0 ? finiteMax * 1e-12 : 1e-12;
 }
 
 void ImageLayer::rebuildPreviewImageIfNeeded(const char *context)

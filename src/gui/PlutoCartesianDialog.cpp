@@ -23,7 +23,7 @@ PlutoCartesianDialog::PlutoCartesianDialog(const QString &plutoPath, const QStri
 {
     setWindowTitle(u"Cartesian View of a PLUTO Output"_s);
     setAttribute(Qt::WA_DeleteOnClose);
-    setMinimumWidth(460);
+    setMinimumWidth(560);
 
     auto *layout = new QVBoxLayout(this);
     auto *intro = new QLabel(
@@ -40,6 +40,9 @@ PlutoCartesianDialog::PlutoCartesianDialog(const QString &plutoPath, const QStri
     m_millions->setRange(1, 1000);
     m_millions->setValue(64);
     m_millions->setSuffix(u" million voxels at most"_s);
+    // The suffix is long: without a floor the form layout squeezes the box to
+    // a few pixels and the number cannot be read.
+    m_millions->setMinimumWidth(240);
     m_millions->setToolTip(
             u"The grid is as fine as the finest cell of the run, and coarser when that would "
             u"be more voxels than this. Each voxel is 4 bytes per variable."_s);
@@ -57,10 +60,14 @@ PlutoCartesianDialog::PlutoCartesianDialog(const QString &plutoPath, const QStri
     m_planLabel = new QLabel(u"Grid: —"_s, this);
     m_planLabel->setWordWrap(true);
     m_planLabel->setTextFormat(Qt::RichText);
+    // Tall enough for the whole summary at the dialog's width, whatever the
+    // label's hint was when it held only "Grid: —".
+    m_planLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::MinimumExpanding);
     layout->addWidget(m_planLabel);
 
     auto *actions = new QHBoxLayout();
     m_statusLabel = new QLabel(this);
+    m_statusLabel->setWordWrap(true);
     actions->addWidget(m_statusLabel, 1);
     m_extractButton = new QPushButton(u"Resample"_s, this);
     m_extractButton->setDefault(true);
@@ -115,11 +122,23 @@ void PlutoCartesianDialog::onPlanFinished()
     if (!plan.valid) {
         m_planLabel->setText(u"<b>Grid:</b> %1"_s.arg(plan.error.toHtmlEscaped()));
         m_extractButton->setEnabled(false);
+        fitToContents();
         return;
     }
     m_mirror->setEnabled(pv::canMirror(plan));
     m_planLabel->setText(pv::summary(plan));
     m_extractButton->setEnabled(true);
+    fitToContents();
+}
+
+void PlutoCartesianDialog::fitToContents()
+{
+    // The summary arrives after the dialog is shown and is several lines long:
+    // grow to hold it instead of clipping its last line.
+    layout()->activate();
+    const int width = qMax(this->width(), minimumWidth());
+    const int height = qMax(layout()->totalHeightForWidth(width), layout()->totalMinimumSize().height());
+    resize(width, qMax(this->height(), height));
 }
 
 void PlutoCartesianDialog::extract()

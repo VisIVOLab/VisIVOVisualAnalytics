@@ -1073,7 +1073,7 @@ double vtkWindowVbtVolume::positiveFloor() const
         return this->cachedPositiveSampledValues.front();
     }
     if (this->dataScalarMax > 0.0) {
-        return std::max(1e-12, this->dataScalarMax * 1e-12);
+        return this->dataScalarMax * 1e-12;
     }
     return 1e-12;
 }

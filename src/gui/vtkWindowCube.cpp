@@ -21,6 +21,7 @@
 #include "RegionSessionController.h"
 #include "WorkspaceChrome.h"
 #include "app/DatasetName.h"
+#include "app/PlutoCartesianView.h"
 #include "DatasetBeamControl.h"
 #include "InspectorPanel.h"
 #include "theme/SegmentedToggle.h"
@@ -7801,7 +7802,9 @@ void vtkWindowCube::updateSanityPanel()
     const auto report = buildCubeSanityReport(this->remoteDatasetCtype, this->remoteDatasetCunit,
                                               this->remoteDatasetCrval, this->remoteDatasetCrpix,
                                               this->remoteDatasetCdelt,
-                                              this->currentCubeBlankFraction);
+                                              visivo::plutoview::isCartesianViewPath(this->filepath)
+                                                      ? 0.0   // NaN outside the run's domain, by design
+                                                      : this->currentCubeBlankFraction);
     CubeUiAssembler::SanityStatusData d;
     d.text    = report.summary;
     d.tooltip = report.details;
