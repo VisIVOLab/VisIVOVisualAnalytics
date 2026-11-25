@@ -890,6 +890,11 @@ private:
     bool m_pointTable{ false };   ///< a simulation's particles: a VBT of points, a snapshot's particle type
     QString m_tableFormat;        ///< the format the backend read ("vbt", "gadget", "csv", ...)
     bool m_defaultScaleChosen{ false };   ///< the opening Log/Linear choice, made once
+    bool m_defaultColourPending{ false }; ///< chooseDefaultColour waits for the other columns
+    bool m_choosingDefaultColour{ false };
+    /// The one value of the colour column when it does not vary over the rows
+    /// drawn: the bar shows it alone, not the range made around it.
+    std::optional<double> m_colourConstant;
     bool m_cartesian{ false };    ///< positions are X/Y/Z columns
     /// A table of points without classes: colour means a column, or one
     /// colour for all (no morphology checkbox).
@@ -899,6 +904,13 @@ private:
     QFormLayout *m_encForm{ nullptr };
     void applyPointTableLayout();
     void choosePointTableDefaults();
+    /// The colour a table of points opens with: its preferred quantity, unless
+    /// that is constant over the rows loaded (a mass every dark-matter particle
+    /// shares), then one that varies, or none (#563). Asked again when the
+    /// other columns have arrived and none was known to vary.
+    void chooseDefaultColour();
+    /// The axis titles, from the unit each mapped column is stored in (#563).
+    void updateAxisTitles(const QString &xKey, const QString &yKey, const QString &zKey);
 
     // ── Colour bar and LUT editor, as in the cube viewer's 3-D view ───────────
     QPointer<VolumeColorbar> m_colorbar;

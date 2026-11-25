@@ -8,6 +8,12 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **RAMSES in the 3-D points window (#563).** The axis titles name the unit the
+  column is stored in (`X (box units)` for RAMSES, not `X (Mpc)` over ticks of
+  0 to 1), Session Data names a table by its format (RAMSES, GADGET) instead of
+  VBT, and a table no longer opens coloured by a constant column (the mass of
+  dark-matter particles): another column that varies, or a single colour; a
+  constant column's colour bar shows its one value, not a made-up range.
 - **Published backend images (#66).** Each release publishes the backend on
   the GitHub Container Registry as `ghcr.io/visivolab/visivo-backend:<version>`
   (CPU, amd64 and arm64) and `:<version>-egl` (server-side EGL rendering for

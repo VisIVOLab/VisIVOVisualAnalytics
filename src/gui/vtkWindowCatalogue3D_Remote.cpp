@@ -20,6 +20,8 @@
 #include "VolumeColorbar.h"
 #include "Catalogue3DParser.h"
 #include "ColorMaps.h"
+#include "ColourBarTicks.h"
+#include "app/PointTableDisplay.h"
 #include "LutScale.h"
 
 #include <QActionGroup>
@@ -549,39 +551,70 @@ void vtkWindowCatalogue3D::choosePointTableDefaults()
         // combo would read splats while points are drawn.
         this->updateGeometryMode();
     }
+    this->chooseDefaultColour();
+}
+
+void vtkWindowCatalogue3D::chooseDefaultColour()
+{
     if (!this->comboMapColor)
         return;
     QStringList skip{ this->schema.xFieldName, this->schema.yFieldName, this->schema.zFieldName };
     for (const int i : this->m_velocityColIdx)
         if (i >= 0)
             skip << this->rawHeaders.value(i);
-    int fallback = -1;
-    int preferredIndex = -1;
-    int preferredRank = std::numeric_limits<int>::max();
-    const QStringList preferred{ u"rho"_s, u"density"_s, u"temperature"_s,
-                                 u"mass"_s, u"u"_s, u"sfr"_s, u"age"_s };
+    // The columns it may open coloured by: the file's own, not a position or a
+    // velocity component. `items` and `fields` map each back to its place in
+    // the combo and in the rows.
+    QStringList candidates;
+    QList<int> items;
+    QList<int> fields;
     for (int i = 0; i < this->comboMapColor->count(); ++i) {
         const QString key = this->comboMapColor->itemData(i).toString();
         if (!key.startsWith(u"raw:"_s))
             continue;
-        const QString column = this->rawHeaders.value(key.mid(4).toInt());
+        const int field = key.mid(4).toInt();
+        const QString column = this->rawHeaders.value(field);
         if (skip.contains(column, Qt::CaseInsensitive))
             continue;
-        if (fallback < 0)
-            fallback = i;
-        for (int rank = 0; rank < preferred.size(); ++rank) {
-            if (column.compare(preferred.at(rank), Qt::CaseInsensitive) == 0) {
-                if (rank < preferredRank) {
-                    preferredIndex = i;
-                    preferredRank = rank;
-                }
+        candidates << column;
+        items << i;
+        fields << field;
+    }
+    const QStringList preferred{ u"rho"_s, u"density"_s, u"temperature"_s,
+                                 u"mass"_s, u"u"_s, u"sfr"_s, u"age"_s };
+    // What the rows loaded say of a column: no value yet (the other columns
+    // follow the first paint), one value, or several.
+    const auto spread = [this, &fields](int candidate) {
+        bool any = false, varies = false;
+        double first = 0.0;
+        for (const Catalogue3DEntry &entry : this->entries) {
+            double value = 0.0;
+            if (!this->rawFieldValue(entry, fields.at(candidate), value) || !std::isfinite(value))
+                continue;
+            if (!any) {
+                any = true;
+                first = value;
+            } else if (value != first) {
+                varies = true;
                 break;
             }
         }
+        return !any ? visivo::pointtable::Spread::Unknown
+                    : (varies ? visivo::pointtable::Spread::Varies
+                              : visivo::pointtable::Spread::Constant);
+    };
+    const visivo::pointtable::ColourChoice choice =
+            visivo::pointtable::chooseDefaultColour(candidates, preferred, spread);
+    // Not the user's own choice: the combo's handler would take it for one.
+    const QScopedValueRollback<bool> own(this->m_choosingDefaultColour, true);
+    this->m_defaultColourPending = choice.pending;
+    if (choice.index >= 0) {
+        this->comboMapColor->setCurrentIndex(items.at(choice.index));
+    } else if (!candidates.isEmpty()) {
+        // The kept column does not vary and none else is known to: none, until
+        // the other columns arrive (item 0 is the single colour).
+        this->comboMapColor->setCurrentIndex(0);
     }
-    const int selected = preferredIndex >= 0 ? preferredIndex : fallback;
-    if (selected >= 0)
-        this->comboMapColor->setCurrentIndex(selected);
 }
 
 void vtkWindowCatalogue3D::refreshColorbar()
@@ -597,6 +630,24 @@ void vtkWindowCatalogue3D::refreshColorbar()
         return;
     }
     const double lo = range[0], hi = range[1];
+    const QString title = this->mapColorKey.startsWith(u"raw:"_s)
+            ? this->rawHeaders.value(this->mapColorKey.mid(4).toInt())
+            : (this->comboMapColor ? this->comboMapColor->currentText() : QString());
+    if (this->m_colourConstant) {
+        // A column that does not vary: one colour and its one value, not the
+        // range made around it to have a scale (#563).
+        double rgb[3];
+        // The colour the points have: the lookup of the value itself.
+        this->valueLut->GetColor(*this->m_colourConstant, rgb);
+        this->m_colorbar->setColours(
+                QVector<QColor>(256, QColor::fromRgbF(rgb[0], rgb[1], rgb[2])));
+        this->m_colorbar->setTicks({ qMakePair(
+                0.5, visivo::tickLabels({ *this->m_colourConstant }).value(0)) });
+        this->m_colorbar->setTitle(title + u" (constant)"_s);
+        this->m_colorbar->setThreshold(std::nullopt);
+        this->m_colorbar->show();
+        return;
+    }
     const auto mode = this->comboColorScale
             ? static_cast<LutScale::Mode>(std::clamp(this->comboColorScale->currentIndex(), 0, 4))
             : LutScale::Mode::Linear;
@@ -626,10 +677,7 @@ void vtkWindowCatalogue3D::refreshColorbar()
     }
     this->m_colorbar->setColours(colours);
     this->m_colorbar->setTicks(ticks);
-    this->m_colorbar->setTitle(this->mapColorKey.startsWith(u"raw:"_s)
-                                       ? this->rawHeaders.value(this->mapColorKey.mid(4).toInt())
-                                       : (this->comboMapColor ? this->comboMapColor->currentText()
-                                                              : QString()));
+    this->m_colorbar->setTitle(title);
     this->m_colorbar->setThreshold(std::nullopt);
     this->m_colorbar->show();
 }

@@ -35,4 +35,15 @@ inline QString catalogueFormatForPath(const QString &path)
     return QStringLiteral("csv");
 }
 
+/// What a table of particles is called on screen (the command bar's badge and
+/// the Session Data row): the format the backend read it as, VBT when it says
+/// nothing or the file is one. Session Data named every point table VBT, a
+/// RAMSES output's included (issue #563).
+inline QString particleFormatLabel(const QString &tableFormat, const QString &path)
+{
+    if (tableFormat.isEmpty() || catalogueFormatForPath(path) == QStringLiteral("vbt"))
+        return QStringLiteral("VBT");
+    return tableFormat.toUpper();
+}
+
 } // namespace visivo

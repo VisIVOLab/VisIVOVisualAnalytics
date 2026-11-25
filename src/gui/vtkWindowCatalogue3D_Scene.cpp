@@ -2,6 +2,7 @@
 #include "ParticleSplatDefaults.h"
 #include "ParticleSplatVtk.h"
 #include "SnapshotTimelineSteps.h"
+#include "app/PointTableDisplay.h"
 #include "app/DatasetUsers.h"
 #include "app/TaskQuitDrain.h"
 #include "ui_vtkWindowCatalogue3D.h"
@@ -445,9 +446,7 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     const double bounds[6] = { xMin, xMax, yMin, yMax, zMin, zMax };
     cubeAxesActor->SetBounds(bounds);
     cubeAxesActor->SetCamera(renderer->GetActiveCamera());
-    cubeAxesActor->SetXTitle("X (Mpc)");
-    cubeAxesActor->SetYTitle("Y (Mpc)");
-    cubeAxesActor->SetZTitle("Z (Mpc)");
+    this->updateAxisTitles(this->mapXKey, this->mapYKey, this->mapZKey);
     cubeAxesActor->SetXUnits("");
     cubeAxesActor->SetYUnits("");
     cubeAxesActor->SetZUnits("");
@@ -686,6 +685,42 @@ QString vtkWindowCatalogue3D::fallbackDetailsText(const Catalogue3DEntry &entry)
     return text.trimmed();
 }
 
+void vtkWindowCatalogue3D::updateAxisTitles(const QString &xKey, const QString &yKey,
+                                            const QString &zKey)
+{
+    // The numbers on an axis are the column's as stored (this window has no
+    // physical-units switch), so the title names the unit the table states for
+    // it. A RAMSES output's positions are box units, not the Mpc this window
+    // labelled every axis with (#563).
+    const QJsonObject units = this->m_componentMetadata.value(u"units"_s).toObject();
+    const QStringList positions{ this->schema.xFieldName, this->schema.yFieldName,
+                                 this->schema.zFieldName };
+    const QStringList keys{ xKey, yKey, zKey };
+    for (int axis = 0; axis < 3; ++axis) {
+        const QString &key = keys.at(axis);
+        QString column;
+        const bool computed = !key.startsWith(u"raw:"_s);
+        if (!computed)
+            column = this->rawHeaders.value(key.mid(4).toInt());
+        else if (this->m_pointTable)
+            column = positions.at(axis);
+        // A computed position of a table that states no unit is in Mpc, as
+        // ever (a sky catalogue's distance, a VBT); a mapped column without one
+        // has no unit to name.
+        const QString title = visivo::pointtable::axisTitle(
+                QString(QChar(u'X' + axis)),
+                column.isEmpty() ? QString() : units.value(column).toString(),
+                computed ? u"Mpc"_s : QString());
+        const QByteArray bytes = title.toUtf8();
+        if (axis == 0)
+            this->cubeAxesActor->SetXTitle(bytes.constData());
+        else if (axis == 1)
+            this->cubeAxesActor->SetYTitle(bytes.constData());
+        else
+            this->cubeAxesActor->SetZTitle(bytes.constData());
+    }
+}
+
 void vtkWindowCatalogue3D::updatePointPositions(bool newSplatBasis)
 {
     if (this->entries.empty()) {
@@ -746,6 +781,7 @@ void vtkWindowCatalogue3D::updatePointPositions(bool newSplatBasis)
     this->sourcesPolyData->Modified();
     const double bounds[6] = { xMin, xMax, yMin, yMax, zMin, zMax };
     this->cubeAxesActor->SetBounds(bounds);
+    this->updateAxisTitles(resolvedXKey, resolvedYKey, resolvedZKey);
     this->renderer->ResetCameraClippingRange();
     this->updateHighlightSphere(this->hoverSphere.Get(), this->hoverActor.Get(), this->hoveredIndex, 1.35);
     this->updateHighlightSphere(this->selectSphere.Get(), this->selectActor.Get(), this->selectedIndex, 1.18);
@@ -825,11 +861,15 @@ void vtkWindowCatalogue3D::updateColorMapping()
 
     // A column constant over the rows loaded (a sorted table's first page)
     // keeps its colour, over a range around its value; only a column with no
-    // value falls back.
-    if (anyValid && !(minValue < maxValue)) {
-        const double pad = std::max(std::abs(minValue) * 0.5, 0.5);
-        minValue -= pad;
-        maxValue += pad;
+    // value falls back. The range is made up: the colour bar is told the value
+    // is constant and shows that one (#563).
+    std::optional<double> constantValue;
+    if (anyValid) {
+        const visivo::pointtable::ColourSpan span =
+                visivo::pointtable::colourSpan(minValue, maxValue);
+        minValue = span.lo;
+        maxValue = span.hi;
+        constantValue = span.constant;
     }
     if (!anyValid || !(minValue < maxValue)) {
         qWarning() << "[catalogue3d] invalid color mapping" << this->mapColorKey
@@ -856,6 +896,11 @@ void vtkWindowCatalogue3D::updateColorMapping()
         minValue = this->m_colorRemoteRange[0];
         maxValue = this->m_colorRemoteRange[1];
     }
+    // The bar shows the single value only while its range is the made-up one.
+    this->m_colourConstant = (constantValue && !(this->m_colorUserRange[1] > this->m_colorUserRange[0])
+                              && !(this->m_remoteView
+                                   && this->m_colorRemoteRange[1] > this->m_colorRemoteRange[0]))
+            ? constantValue : std::nullopt;
     // A table of points coloured by a quantity spanning three decades or more,
     // all positive (a density, a mass), opens in Log, as a cube does.
     if (this->m_cartesian && !this->m_defaultScaleChosen && this->comboColorScale) {

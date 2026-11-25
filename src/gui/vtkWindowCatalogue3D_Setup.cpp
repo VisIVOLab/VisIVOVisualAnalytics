@@ -822,6 +822,9 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
             return;
         }
         this->mapColorKey = this->comboMapColor->currentData().toString();
+        // The user's own choice ends the wait for a better default (#563).
+        if (!this->m_choosingDefaultColour)
+            this->m_defaultColourPending = false;
         // The range and the scale were for the previous column: a new column
         // opens on its own range, and a table of points chooses Log again.
         this->m_colorUserRange[0] = this->m_colorUserRange[1] = 0.0;
@@ -1039,7 +1042,9 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
         return;
 
     chrome->installSessionDock(this->filepath, this->shownName(),
-                               this->m_pointTable && !this->m_particlesByRule ? u"vbt"_s : u"catalogue"_s);
+                               this->m_pointTable && !this->m_particlesByRule
+                                       ? this->particleTag().toLower()
+                                       : u"catalogue"_s);
     // Design #1d: what is drawn and how it is drawn lives in the LEFT column,
     // under the dataset it belongs to.
     if (this->m_pageViz) {
@@ -1187,10 +1192,7 @@ QString vtkWindowCatalogue3D::particleTag() const
 {
     // The format of a simulation's particles, for the command bar: VBT,
     // GADGET, or a table's own (IPAC, CSV) when its rows are particles.
-    if (this->m_tableFormat.isEmpty()
-        || visivo::catalogueFormatForPath(this->filepath) == u"vbt"_s)
-        return u"VBT"_s;
-    return this->m_tableFormat.toUpper();
+    return visivo::particleFormatLabel(this->m_tableFormat, this->filepath);
 }
 
 void vtkWindowCatalogue3D::updateLoadMoreButtons()
