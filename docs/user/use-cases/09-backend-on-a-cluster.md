@@ -34,6 +34,11 @@ changes while you work.
    - *Workspace*: where the backend writes exports, brick pyramids and logs.
      Put it on a large disk, not in your home.
 
+   On CINECA Leonardo, put `--site leonardo` in *More options* (with
+   `--image docker://...` instead of *Backend image* to pull the image once):
+   it sets the partition, the scratch paths and the container flags there.
+   *Account* is then required.
+
    Press *Save* to keep the profile.
 
    ```{figure} img/09-backend-on-a-cluster-1.png

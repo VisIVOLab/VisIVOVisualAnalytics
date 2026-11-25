@@ -4,10 +4,11 @@
 # Submit the VisIVO backend to a SLURM compute node, wait for it to become
 # ready, and print the SSH tunnel command the operator runs on the laptop.
 #
-# Designed for the INAF PLEIADI-GPU system, where ``pleiadi-gpu.oact.inaf.it``
-# is the frontend (login node) of a SLURM cluster. The frontend should not
-# run long-lived services; this script puts the backend on a real compute
-# node instead, optionally with GPU allocation.
+# Written for the INAF PLEIADI-GPU system, where ``pleiadi-gpu.oact.inaf.it``
+# is the frontend (login node) of a SLURM cluster, and works on any SLURM site
+# with plain options; ``--site leonardo`` adds the defaults of CINECA Leonardo.
+# The frontend should not run long-lived services; this script puts the
+# backend on a real compute node instead, optionally with GPU allocation.
 #
 # Usage:
 #   bash scripts/launch_backend_slurm.sh [options]
@@ -24,7 +25,16 @@
 #   --data-root  PATH       Data dir bound at /data + sets VISIVO_DATA_ROOT
 #                           (default: $VISIVO_DATA_ROOT or unset)
 #                           STRONGLY recommended for production.
-#   --sif        PATH       Apptainer .sif image      (default: apptainer/backend.sif)
+#   --sif        PATH       Apptainer/Singularity .sif image
+#                           (default: apptainer/backend.sif, or the file --image
+#                           pulls to)
+#   --image      REF        An image to pull once on the frontend (compute nodes
+#                           often have no internet), e.g.
+#                           docker://ghcr.io/visivolab/visivo-backend:<version>-egl
+#                           It is pulled to --sif when given, else to a .sif
+#                           under <workspace>/images, and reused while the file
+#                           exists (delete it to pull again).
+#                           ($VISIVO_IMAGE)
 #   --backend-src PATH      Host path to a backend/app source tree to bind over
 #                           /app/app inside the container. Lets you iterate on
 #                           Python code without rebuilding the .sif.
@@ -46,6 +56,15 @@
 #   --version    TEXT       What the status document reports as the backend
 #                           version, e.g. the VisIVO commit the image was
 #                           built from ($VISIVO_VERSION; default: the image's)
+#   --site       NAME       Site profile: leonardo, pleiadi or generic ($VISIVO_SITE;
+#                           default: detected from the host name, else generic).
+#                           A profile only sets defaults for what an option or
+#                           variable does not give; see "Site profiles" below.
+#   --cleanenv | --no-cleanenv
+#                           Run the container with --cleanenv, so that the host's
+#                           environment does not reach it ($VISIVO_CLEANENV=1|0;
+#                           default: on for leonardo, off elsewhere). The variables
+#                           the backend needs are passed explicitly.
 #   --no-gpu                Shorthand for --gres ""; also drops --nv at runtime.
 #   --help                  Print this help.
 #
@@ -58,6 +77,25 @@
 #   # CPU-only smoke test
 #   bash scripts/launch_backend_slurm.sh --no-gpu --partition normal
 #
+#   # CINECA Leonardo, from a login node: A100, image pulled once
+#   bash scripts/launch_backend_slurm.sh --site leonardo --account <ACCOUNT> \
+#       --image docker://ghcr.io/visivolab/visivo-backend:<version>-egl \
+#       --data-root /path/to/simulation/data
+#
+# Site profiles (defaults only; every option and variable above still wins):
+#   generic   what the options say. The default.
+#   pleiadi   the same as generic (the defaults above were written for it).
+#   leonardo  partition boost_usr_prod; an account is required (--account;
+#             --qos boost_qos_dbg for a short test); the container runs with
+#             --cleanenv; the workspace (logs, token, caches, exports, images)
+#             and the data root default to the user's scratch area
+#             ($CINECA_SCRATCH, else $SCRATCH, else $WORK), because $HOME has a
+#             small quota; the host's glvnd vendor directory is bound for EGL.
+#             The container runtime is `singularity` there (no `apptainer`):
+#             the launcher uses whichever exists ($VISIVO_CONTAINER_RUNTIME
+#             overrides). The data root jails the backend: pass --data-root for
+#             data that is elsewhere.
+#
 # What it does:
 #   1. Submits a SLURM batch job that starts the Apptainer container with
 #      --nv (when --gres includes gpu) and the path jail set.
@@ -66,9 +104,10 @@
 #   4. Prints the SSH tunnel command for the laptop + the auth token.
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
+ORIG_ARGS=("$@")   # for a re-run under a login shell (see the scratch lookup)
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-PARTITION="${VISIVO_PARTITION:-gpu}"
+PARTITION="${VISIVO_PARTITION:-}"   # empty → the site profile's, else "gpu"
 TIME="${VISIVO_TIME:-08:00:00}"
 MEM="${VISIVO_MEM:-64G}"
 CPUS="${VISIVO_CPUS:-8}"
@@ -77,7 +116,11 @@ GRES="${VISIVO_GRES:-gpu:1}"
 PORT="${VISIVO_PORT:-8000}"
 BIND_PATH="${VISIVO_BIND:-$HOME}"
 DATA_ROOT="${VISIVO_DATA_ROOT:-}"
-SIF="${VISIVO_SIF:-$(dirname "$0")/../apptainer/backend.sif}"
+SIF="${VISIVO_SIF:-}"        # empty → the pulled image, else apptainer/backend.sif
+IMAGE="${VISIVO_IMAGE:-}"
+SITE="${VISIVO_SITE:-}"
+CLEANENV="${VISIVO_CLEANENV:-}"
+RUNTIME="${VISIVO_CONTAINER_RUNTIME:-}"
 BACKEND_SRC="${VISIVO_BACKEND_SRC_OVERRIDE:-}"
 TOKEN="${VISIVO_TOKEN:-}"
 NODE_CODE="${VISIVO_NODE_CODE:-}"
@@ -105,6 +148,10 @@ while [[ $# -gt 0 ]]; do
         --bind)      BIND_PATH="$2"; shift 2 ;;
         --data-root) DATA_ROOT="$2"; shift 2 ;;
         --sif)       SIF="$2";       shift 2 ;;
+        --image)     IMAGE="$2";     shift 2 ;;
+        --site)      SITE="$2";      shift 2 ;;
+        --cleanenv)    CLEANENV=1;   shift ;;
+        --no-cleanenv) CLEANENV=0;   shift ;;
         --backend-src) BACKEND_SRC="$2"; shift 2 ;;
         --token)     TOKEN="$2";     shift 2 ;;
         --node-code) NODE_CODE="$2"; shift 2 ;;
@@ -121,6 +168,107 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+# ── Site profile ──────────────────────────────────────────────────────────────
+# A profile only supplies defaults for what no option or variable gave, so any
+# site stays usable with plain options. Detection is by host name (the launcher
+# runs on the frontend); --site or VISIVO_SITE decides when it is wrong.
+if [[ -z "$SITE" ]]; then
+    # Leonardo: the login hosts (login01.leonardo.local, login01-ext.leonardo.cineca.it)
+    # and the node names (lrdn..., lrdl...); a host that merely has the word in
+    # its name stays generic.
+    SITE_HOST="$(hostname -f 2>/dev/null || hostname)"
+    SITE_HOST="$(printf '%s' "$SITE_HOST" | tr '[:upper:]' '[:lower:]')"
+    case "$SITE_HOST" in
+        login*.leonardo.local|*.leonardo.cineca.it|lrdn*|lrdl*) SITE=leonardo ;;
+        *pleiadi*)           SITE=pleiadi ;;
+        *)                   SITE=generic ;;
+    esac
+    SITE_HOW="detected"
+else
+    SITE_HOW="given"
+fi
+SITE_PARTITION="gpu"      # partition when none is given
+SITE_CLEANENV=0           # --cleanenv when neither option nor variable says
+SITE_NEEDS_ACCOUNT=false  # --account is mandatory on the site
+SITE_SCRATCH=false        # workspace and data root default to the scratch area
+# Host libraries EGL needs. /usr/lib64 is where PLEIADI (ppc64le) keeps them;
+# the Debian-based image on an x86 site finds them through --nv and the vendor
+# directory, and /usr/lib64 would only shadow its own.
+EGL_LD_LIBRARY_PATH="/usr/lib64"
+EGL_VENDOR_DIR=false      # bind the host's whole glvnd vendor directory
+# ssh from the frontend to the compute node is how readiness is checked; where
+# that can be refused, ask SLURM to run the check inside the job instead.
+PROBE_SRUN=false
+case "$SITE" in
+    generic|pleiadi) ;;
+    leonardo)
+        SITE_PARTITION="boost_usr_prod"
+        SITE_CLEANENV=1
+        SITE_NEEDS_ACCOUNT=true
+        SITE_SCRATCH=true
+        EGL_LD_LIBRARY_PATH=""
+        EGL_VENDOR_DIR=true
+        PROBE_SRUN=true
+        ;;
+    *)
+        echo "[visivo] ERROR: unknown site '$SITE' (leonardo, pleiadi or generic)" >&2
+        exit 1
+        ;;
+esac
+echo "[visivo] Site profile: $SITE ($SITE_HOW)"
+
+PARTITION="${PARTITION:-$SITE_PARTITION}"
+CLEANENV="${CLEANENV:-$SITE_CLEANENV}"
+if [[ "$SITE_NEEDS_ACCOUNT" == "true" && -z "$ACCOUNT" ]]; then
+    echo "[visivo] ERROR: the $SITE site needs your project account: --account <ACCOUNT> (or VISIVO_ACCOUNT)." >&2
+    exit 1
+fi
+
+# The user's scratch area: CINECA exports it as $CINECA_SCRATCH; $SCRATCH and
+# $WORK are the common names elsewhere. $HOME is small on these systems.
+if [[ "$SITE_SCRATCH" == "true" ]]; then
+    SCRATCH_DIR=""
+    for cand in "${CINECA_SCRATCH:-}" "${SCRATCH:-}" "${WORK:-}"; do
+        if [[ -n "$cand" && -d "$cand" ]]; then
+            SCRATCH_DIR="$(cd -P "$cand" && pwd -P)"
+            break
+        fi
+    done
+    # Over a non-interactive ssh the shell is not a login shell, and the
+    # variables the site's /etc/profile.d sets are missing: read them once.
+    if [[ -z "$SCRATCH_DIR" && -z "${VISIVO_LOGIN_SHELL:-}" ]]; then
+        VISIVO_LOGIN_SHELL=1 exec bash -l "$0" "${ORIG_ARGS[@]}"
+    fi
+    if [[ -n "$SCRATCH_DIR" ]]; then
+        [[ -z "$WORKSPACE" ]] && WORKSPACE="$SCRATCH_DIR/visivo"
+        [[ -z "$DATA_ROOT" ]] && DATA_ROOT="$SCRATCH_DIR"
+        # Pulled layers and their temporary files, where there is room.
+        : "${APPTAINER_CACHEDIR:=$SCRATCH_DIR/visivo/cache/containers}"
+        : "${SINGULARITY_CACHEDIR:=$SCRATCH_DIR/visivo/cache/containers}"
+        : "${APPTAINER_TMPDIR:=$SCRATCH_DIR/visivo/cache/tmp}"
+        : "${SINGULARITY_TMPDIR:=$SCRATCH_DIR/visivo/cache/tmp}"
+        mkdir -p "$APPTAINER_CACHEDIR" "$SINGULARITY_CACHEDIR" "$APPTAINER_TMPDIR" "$SINGULARITY_TMPDIR"
+        export APPTAINER_CACHEDIR SINGULARITY_CACHEDIR APPTAINER_TMPDIR SINGULARITY_TMPDIR
+        echo "[visivo] Scratch area: $SCRATCH_DIR (workspace: $WORKSPACE, data root: $DATA_ROOT)"
+    else
+        echo "[visivo] WARNING: no scratch area found (\$CINECA_SCRATCH, \$SCRATCH, \$WORK); pass --workspace and --data-root." >&2
+    fi
+fi
+
+# The container runtime: Apptainer where it exists, else Singularity (CINECA
+# Leonardo has only `singularity`). Without either on this host, keep the old
+# name: the compute nodes may provide it through a module.
+if [[ -z "$RUNTIME" ]]; then
+    if command -v apptainer >/dev/null 2>&1; then
+        RUNTIME=apptainer
+    elif command -v singularity >/dev/null 2>&1; then
+        RUNTIME=singularity
+    else
+        RUNTIME=apptainer
+        echo "[visivo] WARNING: neither apptainer nor singularity is on this host's PATH; the job will call apptainer." >&2
+    fi
+fi
 
 # Drop --nv when no GPU is being requested.
 if [[ -z "$GRES" || "$GRES" == "0" ]]; then
@@ -139,8 +287,8 @@ fi
 # The job script is read by bash again on the node: every value goes into it
 # quoted (printf %q), the numbers must be numbers, and nothing may hold a
 # line break (an #SBATCH line would end there and the rest run as commands).
-for name in PARTITION TIME MEM CPUS WORKERS GRES PORT BIND_PATH DATA_ROOT SIF BACKEND_SRC \
-            TOKEN NODE_CODE JOB_NAME ACCOUNT QOS WORKSPACE VERSION LOG_DIR; do
+for name in PARTITION TIME MEM CPUS WORKERS GRES PORT BIND_PATH DATA_ROOT SIF IMAGE BACKEND_SRC \
+            TOKEN NODE_CODE JOB_NAME ACCOUNT QOS WORKSPACE VERSION LOG_DIR RUNTIME; do
     if [[ "${!name}" == *$'\n'* || "${!name}" == *$'\r'* ]]; then
         echo "[visivo] ERROR: ${name} holds a line break" >&2
         exit 1
@@ -166,6 +314,15 @@ if [[ "$LOG_DIR" == *\"* ]]; then
 fi
 q() { printf '%q' "$1"; }
 
+if ! [[ "$CLEANENV" =~ ^[01]$ ]]; then
+    echo "[visivo] ERROR: VISIVO_CLEANENV must be 1 or 0, not '$CLEANENV'" >&2
+    exit 1
+fi
+if [[ "$RUNTIME" =~ [[:space:]] ]]; then
+    echo "[visivo] ERROR: the container runtime must be a command name: '$RUNTIME'" >&2
+    exit 1
+fi
+
 # ── Generate token if not provided ───────────────────────────────────────────
 if [[ -z "$TOKEN" ]]; then
     TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
@@ -187,11 +344,43 @@ else
     echo "[visivo] WARNING: could not write $TOKEN_FILE; the token is printed below"
 fi
 
-# ── Verify the Apptainer image exists ────────────────────────────────────────
+# ── The image ────────────────────────────────────────────────────────────────
+# --image is pulled once, here on the frontend (compute nodes often have no
+# internet), to --sif when given, else to a .sif named after the reference
+# under <workspace>/images (or ~/.visivo_images). An existing file is reused;
+# delete it to pull again, e.g. for a moving tag.
+if [[ -n "$IMAGE" ]]; then
+    if [[ -z "$SIF" ]]; then
+        IMAGE_DIR="${WORKSPACE:+$WORKSPACE/images}"
+        IMAGE_DIR="${IMAGE_DIR:-$HOME/.visivo_images}"
+        SIF="$IMAGE_DIR/$(printf '%s' "${IMAGE#*://}" | tr -c 'A-Za-z0-9._-' '_').sif"
+    fi
+    if [[ -f "$SIF" ]]; then
+        echo "[visivo] Image already pulled: $SIF (delete it to pull $IMAGE again)"
+    else
+        if ! command -v "$RUNTIME" >/dev/null 2>&1; then
+            echo "[visivo] ERROR: --image needs $RUNTIME on this host to pull $IMAGE." >&2
+            exit 1
+        fi
+        mkdir -p "$(dirname "$SIF")"
+        # Pulled under a temporary name, so that an interrupted pull leaves no
+        # file that the next run would take for the image.
+        PULL_TMP="$SIF.pulling.$$"
+        trap 'rm -f "$PULL_TMP"; exit 130' INT HUP TERM
+        echo "[visivo] Pulling $IMAGE to $SIF (a few GB; this can take minutes)..."
+        if ! "$RUNTIME" pull "$PULL_TMP" "$IMAGE" || ! mv -f "$PULL_TMP" "$SIF"; then
+            rm -f "$PULL_TMP"
+            echo "[visivo] ERROR: could not pull $IMAGE." >&2
+            exit 1
+        fi
+        trap - INT HUP TERM
+    fi
+fi
+SIF="${SIF:-$(dirname "$0")/../apptainer/backend.sif}"
 if [[ ! -f "$SIF" ]]; then
-    echo "[visivo] ERROR: Apptainer image not found: $SIF"
-    echo "[visivo] Build it first, e.g.:"
-    echo "         apptainer build $SIF apptainer/backend-conda.def"
+    echo "[visivo] ERROR: container image not found: $SIF"
+    echo "[visivo] Pull one (--image docker://...), pass --sif, or build it, e.g.:"
+    echo "         $RUNTIME build $SIF apptainer/backend-conda.def"
     exit 1
 fi
 
@@ -267,13 +456,36 @@ fi
 # rebuilding the .sif. The typical use is testing the CUDA-after-fork
 # fix and similar runtime-only patches.
 SRC_BIND_FLAG=""
+SRC_INFO="the image's own /app/app"
 if [[ -n "$BACKEND_SRC" ]]; then
     if [[ ! -d "$BACKEND_SRC" ]]; then
         echo "[visivo] ERROR: --backend-src directory not found: $BACKEND_SRC"
         exit 1
     fi
+    BACKEND_SRC="$(cd "$BACKEND_SRC" && pwd -P)"
+    if [[ ! -f "$BACKEND_SRC/__init__.py" ]]; then
+        echo "[visivo] ERROR: --backend-src is not the app package (no __init__.py): $BACKEND_SRC" >&2
+        echo "[visivo]        Pass the backend/app directory, not backend/." >&2
+        exit 1
+    fi
+    # Which copy runs is the first thing to check when a new route answers
+    # 404: a stale checkout on the cluster looks exactly like that.
+    SRC_INFO="$BACKEND_SRC"
+    if SRC_COMMIT="$(git -C "$BACKEND_SRC" rev-parse --short HEAD 2>/dev/null)"; then
+        SRC_INFO+=", commit $SRC_COMMIT"
+        [[ -n "$(git -C "$BACKEND_SRC" status --porcelain -- . 2>/dev/null)" ]] && SRC_INFO+=" + uncommitted changes"
+    else
+        SRC_INFO+=", not a git checkout"
+    fi
+    # Newest modification time over the whole tree (GNU find; on a find without
+    # -printf the line is left out).
+    SRC_NEWEST="$(find "$BACKEND_SRC" -name '*.py' -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 || true)"
+    SRC_NEWEST="${SRC_NEWEST%%.*}"
+    if [[ "$SRC_NEWEST" =~ ^[0-9]+$ ]]; then
+        SRC_INFO+=", newest file $(date -d "@$SRC_NEWEST" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$SRC_NEWEST" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+    fi
     SRC_BIND_FLAG="--bind $(q "${BACKEND_SRC}:/app/app")"
-    echo "[visivo] Overlaying /app/app with host source: $BACKEND_SRC"
+    echo "[visivo] Overlaying /app/app with host source: $SRC_INFO"
 fi
 
 # ── EGL / server-side rendering support ─────────────────────────────────────
@@ -306,9 +518,44 @@ for lib in \
         fi
     done
 done
-GLVND_JSON="/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
-if [[ -f "$GLVND_JSON" ]]; then
+GLVND_DIR="/usr/share/glvnd/egl_vendor.d"
+GLVND_JSON="${GLVND_DIR}/10_nvidia.json"
+if [[ "$EGL_VENDOR_DIR" != "true" && -f "$GLVND_JSON" ]]; then
     NV_RUNTIME_BINDS="${NV_RUNTIME_BINDS} --bind ${GLVND_JSON}:${GLVND_JSON}"
+fi
+# Where --nv binds libEGL, libEGL_nvidia and libGLdispatch but not the vendor
+# file that points libglvnd at libEGL_nvidia (Leonardo), the whole directory is
+# bound. Checked on the compute node, where the job script runs.
+EGL_VENDOR_BIND=""
+if [[ "$EGL_VENDOR_DIR" == "true" && "$USE_GPU" == "true" ]]; then
+    EGL_VENDOR_BIND='EGL_BIND=(); [[ -d '"$GLVND_DIR"' ]] && EGL_BIND=(--bind '"$GLVND_DIR:$GLVND_DIR"')'
+fi
+LD_LIBRARY_PATH_ENV=""
+if [[ -n "$EGL_LD_LIBRARY_PATH" ]]; then
+    LD_LIBRARY_PATH_ENV="export APPTAINERENV_LD_LIBRARY_PATH=$(q "$EGL_LD_LIBRARY_PATH")"
+fi
+
+# --cleanenv keeps the host's environment (REQUESTS_CA_BUNDLE and pip's CA
+# variables break Python inside a Debian-based image) out of the container.
+# What the backend reads is passed on by name: the SLURM and CUDA variables of
+# the job (read inside the job), and the operator's VISIVO_* settings and
+# VTK_EGL_DEVICE_INDEX as they are at submit time (written into the job
+# script). The launcher's own VISIVO_* options (account, partition, image...)
+# and the token (handled above) are not forwarded; a variable the job script
+# has already set explicitly is not overridden.
+CLEANENV_FLAG=""
+CLEANENV_PASS=""
+if [[ "$CLEANENV" == "1" ]]; then
+    CLEANENV_FLAG="--cleanenv"
+    # shellcheck disable=SC2016  # written verbatim into the job script
+    CLEANENV_PASS='for v in SLURM_JOB_ID SLURM_MEM_PER_NODE SLURM_MEM_PER_CPU SLURM_CPUS_ON_NODE SLURM_CPUS_PER_TASK CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES; do
+    [[ -n "${!v+x}" ]] && export "APPTAINERENV_${v}=${!v}"
+done'
+    LAUNCHER_ONLY=" VISIVO_TOKEN VISIVO_ACCOUNT VISIVO_ASSIGN_TIMEOUT VISIVO_BACKEND_SRC_OVERRIDE VISIVO_BIND VISIVO_CLEANENV VISIVO_CONTAINER_RUNTIME VISIVO_CPUS VISIVO_GRES VISIVO_IMAGE VISIVO_JOB_NAME VISIVO_LOGIN_SHELL VISIVO_LOG_DIR VISIVO_MEM VISIVO_PARTITION VISIVO_PORT VISIVO_QOS VISIVO_SIF VISIVO_SITE VISIVO_TIME VISIVO_WORKSPACE "
+    for v in "${!VISIVO_@}" VTK_EGL_DEVICE_INDEX; do
+        [[ -n "${!v+x}" && "$LAUNCHER_ONLY" != *" $v "* ]] || continue
+        CLEANENV_PASS+=$'\n'"[[ -n \"\${APPTAINERENV_${v}+x}\" ]] || export APPTAINERENV_${v}=$(q "${!v}")"
+    done
 fi
 
 # ── Write the SLURM job script ────────────────────────────────────────────────
@@ -320,6 +567,8 @@ echo "[visivo] Job started on \$(hostname) at \$(date)"
 echo "[visivo] Port: ${PORT}"
 echo "[visivo] GPU: " $(q "${GRES:-disabled}")
 echo "[visivo] Data root:" $(q "${DATA_ROOT:-(not jailed)}")
+echo "[visivo] Runtime: " $(q "${RUNTIME}") ", image:" $(q "${SIF}")
+echo "[visivo] Backend source:" $(q "${SRC_INFO}")
 
 # Env vars consumed inside the container.
 export APPTAINERENV_VISIVO_TOKEN=$(q "${TOKEN}")
@@ -327,7 +576,7 @@ export APPTAINERENV_VISIVO_WORKERS=${WORKERS}
 export APPTAINERENV_PORT=${PORT}
 export APPTAINERENV_VISIVO_HOST="0.0.0.0"
 # EGL / SSR env (see comment on NV_RUNTIME_BINDS above).
-export APPTAINERENV_LD_LIBRARY_PATH=/usr/lib64
+${LD_LIBRARY_PATH_ENV}
 export APPTAINERENV_XDG_CACHE_HOME=/tmp/visivo-cache
 export APPTAINERENV_XDG_CONFIG_HOME=/tmp/visivo-config
 export APPTAINERENV_XDG_DATA_HOME=/tmp/visivo-data
@@ -341,9 +590,22 @@ mkdir -p /tmp/visivo-cache /tmp/visivo-config /tmp/visivo-data /tmp/visivo-mpl
 ${DATA_ROOT_ENV}
 ${NODE_ENV}
 ${WORKSPACE_ENV}
+${CLEANENV_PASS}
+${EGL_VENDOR_BIND}
 
-apptainer run ${NV_FLAG} \\
+# A Singularity that does not know the APPTAINERENV_ prefix (SingularityCE,
+# SingularityPRO) reads SINGULARITYENV_: hand every variable on, so that this
+# script, and any APPTAINERENV_ the operator exported, work with either.
+if [[ \$(basename $(q "${RUNTIME}")) == singularity ]]; then
+    for v in "\${!APPTAINERENV_@}"; do
+        n="SINGULARITYENV_\${v#APPTAINERENV_}"
+        [[ -n "\${!n+x}" ]] || export "\$n=\${!v}"
+    done
+fi
+
+$(q "${RUNTIME}") run ${NV_FLAG} ${CLEANENV_FLAG} \\
     --bind $(q "${BIND_PATH}:${BIND_PATH}") \\
+    "\${EGL_BIND[@]}" \\
     ${DATA_BIND_FLAG} \\
     ${WORKSPACE_BIND_FLAG} \\
     ${NV_RUNTIME_BINDS} \\
@@ -360,6 +622,8 @@ echo "[visivo]   workers:   ${WORKERS}  (backend ProcessPoolExecutor)"
 echo "[visivo]   mem:       ${MEM}"
 echo "[visivo]   time:      ${TIME}"
 echo "[visivo]   sif:       ${SIF}"
+echo "[visivo]   runtime:   ${RUNTIME}$([[ "$CLEANENV" == "1" ]] && echo ' (--cleanenv)')"
+echo "[visivo]   backend:   ${SRC_INFO}"
 
 # A name given on the command line takes precedence over the script's #SBATCH line.
 JOB_ID="$(sbatch --parsable ${JOB_NAME:+--job-name="$JOB_NAME"} ${ACCOUNT:+--account="$ACCOUNT"} \
@@ -399,12 +663,23 @@ fi
 echo "[visivo] Compute node: $NODE"
 
 # ── Poll the health endpoint via SSH to the compute node ──────────────────────
+# Where ssh to a compute node may be refused (PROBE_SRUN), the same check runs
+# as a step of the job itself.
+probe_health() {
+    local cmd
+    cmd="curl -sf -H $(q "X-Visivo-Token: ${TOKEN}") http://localhost:${PORT}/v1/health"
+    if ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "$NODE" "$cmd" >/dev/null 2>&1; then
+        return 0
+    fi
+    [[ "$PROBE_SRUN" == "true" ]] || return 1
+    ${TIMEOUT_CMD:+"$TIMEOUT_CMD" 30} srun --jobid="$JOB_ID" --overlap --gres=none --nodes=1 --ntasks=1 \
+        --quiet bash -c "$cmd" >/dev/null 2>&1
+}
+TIMEOUT_CMD="$(command -v timeout || true)"
 echo "[visivo] Waiting for backend to become ready (polling every 5 s)..."
 READY=false
 for attempt in $(seq 1 "$POLL_MAX"); do
-    if ssh -o StrictHostKeyChecking=no -o BatchMode=yes \
-           "$NODE" "curl -sf -H $(q "X-Visivo-Token: ${TOKEN}") http://localhost:${PORT}/v1/health" \
-           >/dev/null 2>&1; then
+    if probe_health; then
         READY=true
         break
     fi
@@ -431,6 +706,8 @@ cat <<EOF
   Frontend:      ${FRONTEND}
   GPU:           ${GRES:-disabled}
   Data root:     ${DATA_ROOT:-(not jailed)}
+  Backend code:  ${SRC_INFO}
+  Log file:      ${LOG_DIR}/visivo_backend_${JOB_ID}.log
 ══════════════════════════════════════════════════════════════════════
 
   Run this SSH tunnel command ON YOUR LAPTOP:
