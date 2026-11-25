@@ -34,4 +34,8 @@ private slots:
     void seamColumnFollowsStrideAndOrigin();
 
     void opacityNodesScale();
+
+    void typedLimitsKeepTheirPhysicalValueAcrossUnits();
+    void aReadIsDroppedWhenItsFieldOrUnitsChanged();
+    void theCastDrawsOnlyCompositeWithoutAClip();
 };

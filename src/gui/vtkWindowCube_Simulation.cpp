@@ -199,8 +199,14 @@ void vtkWindowCube::setPhysicalDisplay(bool physical)
 {
     if (!m_simulationVolume || physical == m_showPhysical)
         return;
+    // A seam typed for the Split / Mirrored fields is in the axis units shown:
+    // it stays the same place when they change.
+    const std::size_t seamAxis = std::size_t(this->slicePlaneAxes()[0]);
+    const double oldSeamFactor = m_axisUnits.factor[seamAxis];
     m_showPhysical = physical;
     this->refreshAxisUnits();
+    m_fieldSeam = visivo::fields::rescaleLimit(m_fieldSeam, oldSeamFactor,
+                                               m_axisUnits.factor[seamAxis]);
     // The value unit on the colour bars, probe and spectra axes.
     this->setIntensityUnit(m_codeBunit, m_intensityUnitNote);
     this->refreshSimulationRows();

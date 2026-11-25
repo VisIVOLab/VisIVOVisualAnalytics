@@ -27,6 +27,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace visivo::fields {
@@ -271,6 +273,45 @@ inline void scaleOpacityNodes(std::vector<std::pair<double, double>> &nodes, dou
     const double k = std::clamp(opacity, 0.0, 1.0);
     for (auto &n : nodes)
         n.second = std::clamp(n.second * k, 0.0, 1.0);
+}
+
+// ── Units, reads in flight, and what the 3-D cast can draw ─────────────────
+
+/// A typed limit (Min, Max, Threshold) in the units shown, carried across a
+/// switch of the display units: the same physical value, in the new units. An
+/// untyped limit stays untyped. \a oldScale and \a newScale are the factors
+/// from the file's units to the shown ones (BackendClient::displayValueScale);
+/// a limit that cannot be converted (a zero or non-finite factor) is dropped.
+inline std::optional<double> rescaleLimit(std::optional<double> limit, double oldScale,
+                                          double newScale)
+{
+    if (!limit)
+        return std::nullopt;
+    if (!(oldScale != 0.0) || !std::isfinite(oldScale) || !std::isfinite(newScale))
+        return std::nullopt;
+    const double v = *limit * (newScale / oldScale);
+    if (!std::isfinite(v))
+        return std::nullopt;
+    return v;
+}
+
+/// Whether a read that comes back is still the one wanted: asked for the same
+/// read (\a asked: the field's read id when it was sent, \a current: its id
+/// now, changed by a removal, a re-add or a switch of units) and in the units
+/// shown now (\a askedScale, \a shownScale).
+inline bool readIsCurrent(std::uint64_t asked, std::uint64_t current, double askedScale,
+                          double shownScale)
+{
+    return asked == current && askedScale == shownScale;
+}
+
+/// The one ray cast of several volumes composites only (VTK's multi-input
+/// cast has no MIP or MinIP) and has no cropping, so the window's own blend
+/// mode (0 Composite, 1 MIP, 2 MinIP) and the headset's clip box are drawn by
+/// the window's own volume alone.
+inline bool castCanDraw(int blendMode, bool headsetCropping)
+{
+    return blendMode == 0 && !headsetCropping;
 }
 
 }   // namespace visivo::fields

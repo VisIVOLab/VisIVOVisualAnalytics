@@ -263,3 +263,30 @@ void TestFieldOverlay::opacityNodesScale()
     scaleOpacityNodes(nodes, 9.0);          // clamped to 1: nothing grows past 1
     QVERIFY(std::abs(nodes[2].second - 0.5) < 1e-12);
 }
+
+void TestFieldOverlay::typedLimitsKeepTheirPhysicalValueAcrossUnits()
+{
+    // Shown values = file values x scale: 2.0 shown at scale 1 is 8.0 shown at scale 4.
+    QCOMPARE(*rescaleLimit(2.0, 1.0, 4.0), 8.0);
+    QCOMPARE(*rescaleLimit(8.0, 4.0, 1.0), 2.0);
+    QCOMPARE(*rescaleLimit(-3.0, 2.0, 2.0), -3.0);            // same scale: unchanged
+    QVERIFY(!rescaleLimit(std::nullopt, 1.0, 4.0));           // untyped stays untyped
+    QVERIFY(!rescaleLimit(2.0, 0.0, 4.0));                    // cannot convert: dropped
+    QVERIFY(!rescaleLimit(2.0, 1.0, std::nan("")));
+}
+
+void TestFieldOverlay::aReadIsDroppedWhenItsFieldOrUnitsChanged()
+{
+    QVERIFY(readIsCurrent(7, 7, 1.0, 1.0));
+    QVERIFY(!readIsCurrent(7, 8, 1.0, 1.0));     // removed / re-added / units switched
+    QVERIFY(!readIsCurrent(7, 7, 1.0, 1e-3));    // asked in the units shown before
+    QVERIFY(readIsCurrent(7, 7, 2.5, 2.5));
+}
+
+void TestFieldOverlay::theCastDrawsOnlyCompositeWithoutAClip()
+{
+    QVERIFY(castCanDraw(0, false));
+    QVERIFY(!castCanDraw(1, false));   // MIP
+    QVERIFY(!castCanDraw(2, false));   // MinIP
+    QVERIFY(!castCanDraw(0, true));    // the headset's clip crops
+}

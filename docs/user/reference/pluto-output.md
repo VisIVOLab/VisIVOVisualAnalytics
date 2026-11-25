@@ -71,7 +71,7 @@ each, so the memory is a few planes.
 along every ray: a dense tracer behind lighter gas is seen behind it. Each
 field has its own colour and opacity functions; emission and absorption are
 summed along the ray, as in the headset's *Overlay* in *Sum* mode (there is no
-*MIP* for several fields on the desktop, and the clipping box of the headset does not cut the cast). Each field is read once, on the grid
+*MIP* for several fields on the desktop, and the clipping box of the headset does not cut the cast: in *MIP* or *MinIP*, or while the headset's clip crops the box, the box shows this window's field alone, with a message, and the fields come back in *Composite* without the clip). Each field is read once, on the grid
 the box is drawn on (the preview, or the full grid when that is loaded), so a
 field costs one cube of that size; the box follows the grid if it changes. The
 colour map, *Min*/*Max*, *Threshold* and *Opacity* of this window's own field
@@ -79,11 +79,15 @@ are the window's usual controls. Each field has its own colour bar beside the
 window's. The headset keeps drawing this window's field alone; its *Overlay*
 does the same job there.
 
-Two limits. The 3-D box needs the local renderer: in *Remote* the backend draws
+Three limits. The extra fields are drawn in *Composite* only, as above. The 3-D box needs the local renderer: in *Remote* the backend draws
 the box and knows one field, so added fields show in the slice only, with a
 message. And a refined box (Refine Selected Box) and several fields do not go
-together: clear the refined box first. Fields added are shown in code units
-whatever the physical units of this window.
+together: clear the refined box first.
+
+Fields added follow the units of this window. When you switch between code and
+physical units, their planes and voxels are read again in the new ones, and a
+*Min*, *Max* or *Threshold* you typed (and the seam) keeps its physical value,
+converted to the new units.
 
 ## Slices along x, y or z
 

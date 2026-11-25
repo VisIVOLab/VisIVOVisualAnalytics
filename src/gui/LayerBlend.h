@@ -214,4 +214,26 @@ inline int displayStep(int width, int height, long long pixelBudget)
     return step;
 }
 
+// ── Values to colours: the rule the image blend and the field composite share ──
+
+/// \a src clamped to the table's range (either order), NaN kept. A saturated
+/// pixel then takes the table's top colour whatever it does outside its range.
+inline void clampToRange(const float *src, std::size_t n, double rangeA, double rangeB, float *out)
+{
+    const float lo = static_cast<float>(std::min(rangeA, rangeB));
+    const float hi = static_cast<float>(std::max(rangeA, rangeB));
+    for (std::size_t i = 0; i < n; ++i)
+        out[i] = std::isnan(src[i]) ? src[i] : std::clamp(src[i], lo, hi);
+}
+
+/// The no-data rule: a NaN value is a transparent pixel, whatever colour the
+/// table gives NaN. \a rgba holds 4 bytes a pixel.
+inline void clearNoData(const float *values, std::size_t n, std::uint8_t *rgba)
+{
+    for (std::size_t i = 0; i < n; ++i) {
+        if (std::isnan(values[i]))
+            rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = rgba[i * 4 + 3] = 0;
+    }
+}
+
 }   // namespace visivo::blend

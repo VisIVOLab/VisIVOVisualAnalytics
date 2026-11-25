@@ -1070,6 +1070,7 @@ RemoteFieldVolumeResult fetchRemoteFieldVolume(const QString &backendUrl, const 
     RemoteFieldVolumeResult out;
     out.name = name;
     out.datasetId = datasetId;
+    out.valueScale = BackendClient::displayValueScale(datasetId);
 
     vtkSmartPointer<vtkImageData> image;
     if (roi) {
@@ -3780,6 +3781,10 @@ void vtkWindowCube::applyVolumeBlendMode(int idx)
         this->volumeMapper->SetBlendModeToComposite();
         break;
     }
+    // The cast of several fields composites only: it gives way to the plain
+    // volume in MIP / MinIP, and comes back in Composite (issue #525).
+    if (!m_fields.empty())
+        this->rebuildFieldVolumes();
     // MIP and MinIP take an extremum along the whole ray, which separate
     // volumes cannot combine: a refined box ends there (issue #321).
     this->updateRefineBoxAction();
@@ -4144,6 +4149,9 @@ void vtkWindowCube::applyRemotePreviewResult(const RemoteCubePreviewResult &resu
         }
         this->applyThreshold(initial);   // updates UI + pipeline, no Render
         this->m_initialThresholdApplied = true;
+        // A field added before this cube arrived waited for it (fetchFieldVolume
+        // reads only once the cube is drawn, which this flag says): its voxels now.
+        this->fieldsFollowMainCube();
         // After the rest of this load (the LUT is synchronised below).
         const double r0 = result.cubeRange[0], r1 = result.cubeRange[1];
         QTimer::singleShot(0, this, [this, r0, r1]() { this->chooseDefaultScale(r0, r1); });

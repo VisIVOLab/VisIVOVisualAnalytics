@@ -21,6 +21,7 @@
 #include <vtkSmartPointer.h>
 
 #include <array>
+#include <cstdint>
 #include <optional>
 
 class VolumeColorbar;
@@ -47,6 +48,11 @@ struct SimField
     QString path;          ///< the field's reference (what opens it)
     QString datasetId;     ///< on the backend; empty until opened
     bool opening{ false }; ///< a fetch (open, volume) is out
+    /// Names the reads in flight for this field: a result that comes back with
+    /// another id (the field was removed, added again under the same name, or
+    /// the units changed since it was asked) is dropped. New at every one of those.
+    std::uint64_t readId;
+    void renewReadId();
     visivo::units::PhysicalUnits units;   ///< the field's own, from its open
     bool scaleChosen{ false };            ///< the default scale was picked (or the user chose)
 
@@ -106,5 +112,8 @@ struct SimFieldViews
     vtkSmartPointer<vtkImageStack> stack;       ///< the slice's stack of images
     bool compositeShown{ false };
     bool updatePending{ false };   ///< a redraw of the picture is queued (the table changed)
+    /// The 3-D cast was left out because the window's blend mode or the
+    /// headset's clip is something it cannot draw: the plain volume shows.
+    bool castSuppressed{ false };
     QPointer<VolumeColorbar> mainBar2d;   ///< the window's own field's bar on the combined slice
 };

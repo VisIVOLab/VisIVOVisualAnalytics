@@ -29,6 +29,7 @@
 #include "ColorMaps.h"
 #include "ColourBarTicks.h"
 #include "InspectorPanel.h"
+#include "LayerBlendLut.h"
 #include "VolumeColorbar.h"
 #include "CubeLodVolumes.h"
 #include "app/BackendClient.h"
@@ -83,7 +84,16 @@
 using namespace Qt::StringLiterals;
 namespace vf = visivo::fields;
 
-SimField::SimField() = default;
+namespace {
+std::uint64_t nextReadId()
+{
+    static std::uint64_t counter = 0;
+    return ++counter;
+}
+}   // namespace
+
+SimField::SimField() : readId(nextReadId()) {}
+void SimField::renewReadId() { readId = nextReadId(); }
 SimField::~SimField() = default;
 SimFieldViews::SimFieldViews() = default;
 SimFieldViews::~SimFieldViews() = default;
@@ -138,25 +148,18 @@ FieldOpenResult openFieldDataset(const QString &url, const QString &token, const
     return r;
 }
 
-/// \a img's values through \a lut as RGBA bytes (alpha 0 where blank). Values
-/// are clamped to the table's range first, so a saturated pixel takes the top
-/// colour whatever the table does outside its range (as the image viewer's
-/// blend does).
+/// \a img's values through \a lut as RGBA bytes: the image viewer's Additive
+/// blend maps its layers the same way (LayerBlendLut.h), clamping to the
+/// table's range and leaving no-data pixels transparent.
 void mapThroughTable(vtkLookupTable *lut, vtkImageData *img, std::vector<std::uint8_t> &out)
 {
     const std::size_t n = static_cast<std::size_t>(img->GetNumberOfPoints());
     out.assign(n * 4, 0);
     if (!lut || img->GetScalarType() != VTK_FLOAT)
         return;
-    const double *range = lut->GetRange();
-    const float lo = static_cast<float>(std::min(range[0], range[1]));
-    const float hi = static_cast<float>(std::max(range[0], range[1]));
-    const float *src = static_cast<const float *>(img->GetScalarPointer());
-    std::vector<float> clamped(n);
-    for (std::size_t i = 0; i < n; ++i)
-        clamped[i] = std::isnan(src[i]) ? src[i] : std::clamp(src[i], lo, hi);
-    lut->MapScalarsThroughTable(clamped.data(), out.data(), VTK_FLOAT, static_cast<int>(n), 1,
-                                VTK_RGBA);
+    std::vector<float> scratch;
+    visivo::blend::mapThroughTable(lut, static_cast<const float *>(img->GetScalarPointer()), n,
+                                   out.data(), scratch);
 }
 
 /// A bar: the colours \a colourAt gives over lo..hi on \a mode's scale, five
@@ -274,7 +277,7 @@ void vtkWindowCube::addField(const QString &name, const QString &path)
     field->colourMap = QString::fromLatin1(defaultMapFor(int(m_fields.size())));
     field->lut = vtkSmartPointer<vtkLookupTable>::New();
     field->opening = true;
-    SimField *raw = field.get();
+    const std::uint64_t askedId = field->readId;
     m_fields.push_back(std::move(field));
     this->rebuildFieldsPanel();
     this->statusBar()->showMessage(u"Adding the field %1..."_s.arg(name));
@@ -282,12 +285,12 @@ void vtkWindowCube::addField(const QString &name, const QString &path)
     // Opened on the backend as its own dataset (one cube per field), in this
     // window's session; its planes and voxels come once it is.
     auto *watcher = new QFutureWatcher<FieldOpenResult>(this);
-    connect(watcher, &QFutureWatcher<FieldOpenResult>::finished, this, [this, watcher, raw]() {
+    connect(watcher, &QFutureWatcher<FieldOpenResult>::finished, this, [this, watcher, askedId]() {
         const FieldOpenResult r = watcher->result();
         watcher->deleteLater();
         SimField *f = this->fieldNamed(r.name);
-        if (!f || f != raw)
-            return;   // removed meanwhile
+        if (!f || f->readId != askedId)
+            return;   // removed meanwhile (or removed and added again)
         f->opening = false;
         if (!r.error.isEmpty()) {
             this->statusBar()->showMessage(r.error, 9000);
@@ -375,12 +378,18 @@ void vtkWindowCube::requestFieldSlices()
         f->sliceInFlight.insert(key);
         auto *watcher = new QFutureWatcher<RemoteCubeSliceResult>(this);
         const QString name = f->name;
+        const std::uint64_t askedId = f->readId;
         connect(watcher, &QFutureWatcher<RemoteCubeSliceResult>::finished, this,
-                [this, watcher, name, key]() {
+                [this, watcher, name, key, askedId]() {
                     const RemoteCubeSliceResult result = watcher->result();
                     watcher->deleteLater();
                     SimField *field = this->fieldNamed(name);
-                    if (!field)
+                    // Removed, or asked in the units shown before a switch (as the
+                    // window's own planes are): nothing of it is kept, and the
+                    // in-flight mark is left to whoever asked again.
+                    if (!field
+                        || !vf::readIsCurrent(askedId, field->readId, result.valueScale,
+                                              BackendClient::displayValueScale(field->datasetId)))
                         return;
                     field->sliceInFlight.remove(key);
                     this->applyFieldSliceResult(name, result);
@@ -602,6 +611,14 @@ void vtkWindowCube::updateFieldComposite()
         vf::compose(layout, colour, pixels, out.data());
     }
     if (outWidth <= 0) {
+        // The axis lies at or beyond the slice's right edge: no side is left to
+        // mirror. Say so, rather than the window's own slice silently staying.
+        if (layout == vf::Layout::Mirrored) {
+            this->statusBar()->showMessage(
+                    u"Mirrored: the axis is outside this slice, so there is nothing to reflect. "
+                    u"Move the axis into the slice (the seam / axis box) or pick another layout."_s,
+                    8000);
+        }
         this->setFieldCompositeVisible(false);
         return;
     }
@@ -735,11 +752,13 @@ void vtkWindowCube::fetchFieldVolume(SimField &field)
     if (this->usingHighResCube)
         roi = this->currentRemoteRoi;
     auto *watcher = new QFutureWatcher<RemoteFieldVolumeResult>(this);
-    connect(watcher, &QFutureWatcher<RemoteFieldVolumeResult>::finished, this, [this, watcher]() {
-        const RemoteFieldVolumeResult r = watcher->result();
-        watcher->deleteLater();
-        this->applyFieldVolumeResult(r);
-    });
+    const std::uint64_t askedId = field.readId;
+    connect(watcher, &QFutureWatcher<RemoteFieldVolumeResult>::finished, this,
+            [this, watcher, askedId]() {
+                const RemoteFieldVolumeResult r = watcher->result();
+                watcher->deleteLater();
+                this->applyFieldVolumeResult(r, askedId);
+            });
     this->statusBar()->showMessage(u"Reading %1 for the 3-D box..."_s.arg(field.name));
     watcher->setFuture(QtConcurrent::run(&fetchRemoteFieldVolume, this->remoteBackendUrl,
                                          this->remoteSessionId, this->remoteBackendToken,
@@ -748,12 +767,19 @@ void vtkWindowCube::fetchFieldVolume(SimField &field)
                                          std::max(1, this->m_previewStride)));
 }
 
-void vtkWindowCube::applyFieldVolumeResult(const RemoteFieldVolumeResult &result)
+void vtkWindowCube::applyFieldVolumeResult(const RemoteFieldVolumeResult &result,
+                                           std::uint64_t askedId)
 {
     SimField *f = this->fieldNamed(result.name);
-    if (!f)
-        return;   // removed meanwhile
+    if (!f || f->readId != askedId)
+        return;   // removed meanwhile, or asked before a switch of units (which asked again)
     f->opening = false;
+    if (!vf::readIsCurrent(askedId, f->readId, result.valueScale,
+                           BackendClient::displayValueScale(f->datasetId))) {
+        // The units changed without the field being told: read again in them.
+        this->fetchFieldVolume(*f);
+        return;
+    }
     if (!result.valid || !result.image) {
         f->volumeError = true;
         this->statusBar()->showMessage(
@@ -887,7 +913,18 @@ void vtkWindowCube::rebuildFieldVolumes()
         if (f->shown && f->volumeImage && f->volume)
             drawn.push_back(f.get());
     }
-    if (drawn.empty() || (this->m_lod && this->m_lod->active())) {
+    // The cast composites and has no cropping: in MIP / MinIP, or while the
+    // headset's clip crops the volume, the window's own volume is drawn alone
+    // (it does both) and the user is told the extra fields are not in it.
+    const bool castOk = vf::castCanDraw(m_volumeBlendMode, m_headsetCropping);
+    const bool left = !castOk && !drawn.empty();
+    if (left && !v.castSuppressed) {
+        this->statusBar()->showMessage(
+                u"Extra fields are drawn in Composite only, and not while the headset's clip "
+                u"crops the box: the 3-D box shows this window's field alone."_s, 9000);
+    }
+    v.castSuppressed = left;
+    if (drawn.empty() || !castOk || (this->m_lod && this->m_lod->active())) {
         v.multi = nullptr;
         v.mapper = nullptr;
         v.mainProxy = nullptr;
@@ -1257,14 +1294,26 @@ void vtkWindowCube::rebuildFieldsPanel()
 
 void vtkWindowCube::fieldsFollowUnits()
 {
-    if (m_fields.empty())
+    if (m_fields.empty()) {
+        this->rebuildFieldsPanel();   // the seam box shows the axis units now shown
         return;
+    }
     for (const auto &f : m_fields) {
         if (f->datasetId.isEmpty())
-            continue;
-        BackendClient::setDisplayValueScale(
-                f->datasetId, visivo::units::columnScale(f->units, visivo::units::valueColumn(),
-                                                         m_showPhysical));
+            continue;   // still opening: it takes the units shown when it opens
+        const double oldScale = BackendClient::displayValueScale(f->datasetId);
+        const double newScale = visivo::units::columnScale(f->units, visivo::units::valueColumn(),
+                                                           m_showPhysical);
+        BackendClient::setDisplayValueScale(f->datasetId, newScale);
+        // Limits typed in the old units stay the same physical values.
+        f->lo = vf::rescaleLimit(f->lo, oldScale, newScale);
+        f->hi = vf::rescaleLimit(f->hi, oldScale, newScale);
+        f->threshold = vf::rescaleLimit(f->threshold, oldScale, newScale);
+        // Reads still out were asked in the old units: their answers are dropped
+        // (a new read id), and the voxels are asked again when the cube comes back.
+        f->renewReadId();
+        f->opening = false;
+        f->volumeError = false;
         // What was read is in the old units: planes now, voxels when the cube
         // comes back (fieldsFollowMainCube reads a field that has none).
         f->slices.clear();
@@ -1275,6 +1324,7 @@ void vtkWindowCube::fieldsFollowUnits()
     }
     this->rebuildFieldVolumes();
     this->updateFieldComposite();
+    this->rebuildFieldsPanel();   // the Min / Max / Threshold edits show the new numbers
 }
 
 void vtkWindowCube::sliceLutModified(vtkObject *, unsigned long, void *clientData, void *)

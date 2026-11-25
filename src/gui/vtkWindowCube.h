@@ -267,6 +267,10 @@ struct RemoteFieldVolumeResult
     vtkSmartPointer<vtkImageData> image;
     std::array<double, 2> visibleRange{ 0., 0. };
     double invisibleSentinel{ -1.0 };
+    /// The display scale of the values (BackendClient::displayValueScale) when
+    /// they were asked, as RemoteCubeSliceResult's: a read in the units shown
+    /// before a toggle is dropped.
+    double valueScale{ 1.0 };
 };
 RemoteFieldVolumeResult fetchRemoteFieldVolume(const QString &backendUrl, const QString &sessionId,
                                                const QString &backendToken, const QString &name,
@@ -3585,7 +3589,7 @@ protected:
     /// The one ray cast of the fields is on screen (not hidden by the layer toggle or a surface).
     bool fieldCastVisible() const;
     void fetchFieldVolume(SimField &field);
-    void applyFieldVolumeResult(const RemoteFieldVolumeResult &result);
+    void applyFieldVolumeResult(const RemoteFieldVolumeResult &result, std::uint64_t askedId);
     void buildFieldVolume(SimField &field);
     void rebuildFieldVolumes();
     void syncFieldVolumeVisibility();
