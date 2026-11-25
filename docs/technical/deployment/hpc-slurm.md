@@ -68,7 +68,10 @@ and the entries for the desktop's Backends page.
 | `--bind PATH` | `VISIVO_BIND` | `$HOME` | A host path bound into the container at the same path. |
 | `--data-root PATH` | `VISIVO_DATA_ROOT` | unset | The data directory, bound at the same path and set as `VISIVO_DATA_ROOT` in the container, so the backend opens nothing outside it. Recommended for any shared or SRC deployment. |
 | `--sif PATH` | `VISIVO_SIF` | `apptainer/backend.sif` next to the script, or the file `--image` pulls | The container image (a `.sif`). |
-| `--image REF` | `VISIVO_IMAGE` | unset | An image to pull once on the frontend, for example `docker://ghcr.io/visivolab/visivo-backend:<version>-egl`. It goes to `--sif` when given, else to `<workspace>/images/` (`~/.visivo_images` without a workspace), and is reused while the file exists: delete it to pull a moving tag again. Pulling happens in the launcher, on the frontend, because compute nodes often have no internet. |
+| `--image REF` | `VISIVO_IMAGE` | unset | An image to pull once on the frontend, for example `docker://ghcr.io/visivolab/visivo-backend:<version>-egl`. It goes to `--sif` when given, else to `--image-dir` (default `<workspace>/images/`, `~/.visivo_images` without a workspace), and is reused while the file exists: delete it to pull a moving tag again. Pulling happens in the launcher, on the frontend, because compute nodes often have no internet. The pull prints `[visivo] Pull: <n> s, <m> MB fetched` every 10 s, since the runtime's own progress bars need a terminal. |
+| `--image-dir DIR` | `VISIVO_IMAGE_DIR` | `<workspace>/images`; on `leonardo` the project's work area | Where a pulled image goes: a directory the whole project shares, so that the project pulls it once. On `leonardo`, with no `--image-dir`, it is `/leonardo_work/<account>/visivo/images` when that directory exists and is writable, else `$WORK/visivo/images`. A directory the launcher creates is group-writable and setgid (`chmod 2775`), so that the project's other members can add images; one that exists but is not writable for you is skipped with a message, and the next place, finally the workspace, is used. |
+| `--assign-timeout SEC` | `VISIVO_ASSIGN_TIMEOUT` | `300` | How long to wait for SLURM to give the job a node; `0` waits for ever (cancel ends it). While it waits the launcher prints `[visivo] Queue: <state> (<reason>), <n> s since submission` when the state or reason changes and every 30 s otherwise, with SLURM's reason from `squeue`. |
+| `--ready-timeout SEC` | `VISIVO_READY_TIMEOUT` | `300`; `600` on `leonardo` | How long to wait for the backend to answer once the job runs (polled every 5 s). A first start reads the image from a shared file system, which can take minutes. |
 | `--cleanenv`, `--no-cleanenv` | `VISIVO_CLEANENV` (`1` or `0`) | on for `leonardo`, off elsewhere | Run the container with `--cleanenv`, so that the host's environment (proxy and CA-bundle variables, for example) does not reach it. What reaches the container is passed by name: the variables the launcher sets for the backend, `SLURM_JOB_ID`, `SLURM_MEM_PER_NODE`, `SLURM_MEM_PER_CPU`, `SLURM_CPUS_ON_NODE`, `SLURM_CPUS_PER_TASK`, `CUDA_VISIBLE_DEVICES` and `NVIDIA_VISIBLE_DEVICES` (as the job sees them), and every `VISIVO_*` variable plus `VTK_EGL_DEVICE_INDEX` exported when the launcher is run (for example `VISIVO_RENDER_MAX_SESSIONS`, `VISIVO_HEAVY_TIMEOUT_S`, `VISIVO_PYRAMID_DIR`). The launcher's own options (`VISIVO_ACCOUNT`, `VISIVO_PARTITION`, `VISIVO_IMAGE`, `VISIVO_SITE` and the like) and the token are not forwarded as they are, and a variable the launcher has already set is not overridden. |
 | | `VISIVO_CONTAINER_RUNTIME` | `apptainer`, else `singularity` | The container command, when neither the default nor the fallback is the one to use. |
 | `--backend-src PATH` | `VISIVO_BACKEND_SRC_OVERRIDE` | unset | A `backend/app` source tree bound over `/app/app` in the container, to try Python changes without rebuilding the image. The launcher refuses a directory that is not the package (no `__init__.py`), and prints which copy runs (path, git commit, uncommitted changes, newest file) in its output, in the job log and in the ready box: a stale copy on the cluster looks like a new route answering 404. |
@@ -160,19 +163,76 @@ the frontend for the job it recorded (`~/.visivo_slurm_job`) and removes
 
 ### Connecting from the desktop
 
-The desktop can do all of the above itself. In the Data Hub, **Connect to a
-cluster…** keeps named profiles: the frontend and your login there, the VisIVO
-clone on the frontend (for `scripts/launch_backend_slurm.sh`), the SLURM
-resources (partition, account, QOS, GPUs, CPUs, memory, time), the backend image, the data
-root, the workspace, and any further launcher options. **Connect** opens a new
-VisIVO window on that cluster; the window you were using stays on its own
-backend.
+The desktop can do all of the above itself, and needs nothing on the
+cluster. In the Data Hub, **Connect to a cluster…** keeps named profiles: the
+site, the frontend and your login there, the SLURM resources (partition,
+account, QOS, GPUs, CPUs, memory, time, how long to wait in the queue), the
+backend image, the data root, the workspace, and any further launcher
+options. **Connect** opens a new VisIVO window on that cluster; the window you
+were using stays on its own backend.
+
+**What the client sends.** The client carries `scripts/launch_backend_slurm.sh`
+(compiled in as a Qt resource, so the launcher always matches the client, on
+every platform) and runs it as `ssh <frontend> bash -s -- <options>` with the
+script on standard input. A short prologue first saves it to a temporary file
+(`$TMPDIR` or `/tmp` on the frontend) and runs that, with its own input closed,
+and removes it afterwards. That gives the launcher a file name, which its
+re-run under a login shell (`bash -l`, when the site's scratch variables are
+missing) needs, and keeps an `ssh` inside it from reading the rest of the
+script. The launcher knows it runs this way (`VISIVO_LAUNCHER_STDIN`, or a `$0`
+that is not a file), and then looks for no `apptainer/backend.sif` next to
+itself: an image is required.
+
+**The image.** With no *Image to pull* and no *Backend image file* in the
+profile, the client passes `--image
+docker://ghcr.io/visivolab/visivo-backend:<client version>-egl`, or the tag
+without `-egl` when the profile asks for no GPU (empty GRES, or `0`). The
+version is the client's own (`backend/app/VERSION`), so the backend is the one
+the client was released with. A build whose version has no published image
+(a development build) takes *Image to pull* from the profile, for example the
+latest release's reference. The published images are for x86 and ARM, so a
+PLEIADI profile (POWER9) names its own image file or clone.
+
+**A profile that runs a clone** (*Send the launcher from this client* unchecked,
+for developers) runs that clone's launcher exactly as before, with no image
+chosen for it: its `--sif`, `--image` and `--backend-src` behave as they did.
+The profile stores the choice (`ship_launcher` in its JSON); one saved before
+the client shipped the launcher has no such key and loads as a clone, an empty
+*VisIVO clone* meaning `~/VisIVOVisualAnalytics`, as it did then.
+
+**Sites.** The *Site* box fills in what a known site defines and leaves your
+login, account, data root and workspace alone. *Leonardo (CINECA)*: the
+frontend `login.leonardo.cineca.it`, partition `boost_usr_prod`, one GPU,
+`--site leonardo`, 8 CPUs, 120 GB, four hours, and a 30-minute wait in the
+queue; the account is required. No QOS is set, so SLURM's default applies: the
+QOS for big productions (`boost_qos_bprod`) takes jobs of many nodes only; set
+`boost_qos_dbg` for a short test. *PLEIADI (INAF)*: `pleiadi-gpu.oact.inaf.it`,
+partition `gpu`, one GPU, 16 CPUs, 96 GB. When `ssh` fails with exit code 255
+the message depends on what happened: if the launcher had not printed anything
+yet, ssh never got in, and on Leonardo (its login hosts only, not CINECA's other
+clusters) it says to renew the CINECA SSH certificate (smallstep
+`step ssh login`), elsewhere to set up key-based access; if the launcher had
+been talking, the connection dropped (sleep, network) and the message says the
+job is cancelled when the window closes (or by the next window for the profile). A host key that `ssh` has not accepted yet ("Host key verification
+failed") is reported first, with the instruction to connect once from a
+terminal and answer yes: BatchMode never asks.
+
+**Waiting.** The connection window shows what the job is doing: *Waiting in the
+queue: <SLURM reason>* while it is pending, *Pulling the backend image* with
+the megabytes fetched, *Starting the backend on the node* while the container
+starts. The wait for a node is the profile's *Wait in queue* (`--assign-timeout`;
+the launcher's own default is 5 minutes), and **Cancel** ends it at any time and
+cancels the job. The client's own one-minute limit for the backend to answer
+through the tunnel starts only after the launcher has reported the node, the
+port and a backend that already answers there, so a long queue or a slow start
+does not count against it.
 
 The new window, before it opens:
 
 * submits the backend job over `ssh` (OpenSSH, as on macOS, Linux and
-  Windows 10 and later) with key-based access to the frontend, since nothing
-  can be typed: set it up once with `ssh-copy-id`;
+  Windows 10 and later) with access to the frontend that asks for nothing, since
+  nothing can be typed: a key set up once with `ssh-copy-id`, or the site's SSH
+  certificate, which you renew before connecting;
 * reads the job, the compute node, the port and the token from the launcher
   (the token is never shown);
 * opens the tunnel on a free local port that is not the desktop's own local
@@ -295,7 +355,7 @@ with plain options (`generic`).
 |---|---|
 | `generic` | Nothing: the options and the defaults of the table above. |
 | `pleiadi` | The same as `generic`: those defaults were written for PLEIADI-GPU. |
-| `leonardo` | Partition `boost_usr_prod`; `--account` required; `--cleanenv`; the workspace (`<scratch>/visivo`: logs, token, caches, exports, pulled images) and the data root (`<scratch>`) on the user's scratch area; image caches (`APPTAINER_CACHEDIR`, `SINGULARITY_CACHEDIR` and their `TMPDIR`) there too; the host's glvnd vendor directory bound for EGL; no `LD_LIBRARY_PATH=/usr/lib64`; the readiness check falls back to `srun` when `ssh` to the node is refused. |
+| `leonardo` | Partition `boost_usr_prod`; `--account` required; `--cleanenv`; pulled images in the project's work area (`--image-dir`); a readiness wait of 10 minutes; the workspace (`<scratch>/visivo`: logs, token, caches, exports, pulled images) and the data root (`<scratch>`) on the user's scratch area; image caches (`APPTAINER_CACHEDIR`, `SINGULARITY_CACHEDIR` and their `TMPDIR`) there too; the host's glvnd vendor directory bound for EGL; no `LD_LIBRARY_PATH=/usr/lib64`; the readiness check falls back to `srun` when `ssh` to the node is refused. |
 
 The container runtime is found at launch: `apptainer` if it exists, else
 `singularity`. With Singularity (SingularityCE, SingularityPRO) the job script
@@ -769,17 +829,19 @@ described in the
 
 ## Troubleshooting
 
-**The job stays pending.** The launcher waits `VISIVO_ASSIGN_TIMEOUT` seconds
-(300 by default) for SLURM to assign a node, then stops with `no compute node
-assigned`; the job stays queued and starts when the resources free up. The
+**The job stays pending.** The launcher waits `--assign-timeout` seconds (the
+`VISIVO_ASSIGN_TIMEOUT` variable; 300 by default, the profile's *Wait in queue*
+from the desktop) for SLURM to assign a node, then stops with `no compute node
+assigned`; the job stays queued and starts when the resources free up. It
+prints the job's state and SLURM's reason while it waits. The
 helper has recorded the job as soon as it was submitted, so `--stop` cancels
-it. To wait longer, set `VISIVO_ASSIGN_TIMEOUT` on the frontend; otherwise ask
+it. To wait longer, raise the timeout (`0` for ever); otherwise ask
 for fewer resources (a shorter `--time`, fewer GPUs, another `--partition`).
 A new run refuses to start while a job from an earlier run is still recorded:
 stop it first.
 
 **The backend does not become ready.** The launcher polls for five minutes
-(ten for the Dask variant), then names the job log. Look there first: a
+(`--ready-timeout`; ten on Leonardo, and for the Dask variant), then names the job log. Look there first: a
 missing image, a data root that does not exist, or a Python error at start.
 
 **The local port is in use.** The helper refuses to start

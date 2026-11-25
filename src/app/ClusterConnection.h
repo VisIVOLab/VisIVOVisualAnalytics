@@ -17,10 +17,14 @@ class QNetworkAccessManager;
 
 /**
  * The backend of one desktop window on a cluster (issue #79): submits the
- * backend job on the SLURM frontend over ssh (scripts/launch_backend_slurm.sh in
- * the profile's clone there), opens and keeps an SSH tunnel to the compute
- * node, and waits for the backend to answer through it. stop() closes the
- * tunnel and cancels the job.
+ * backend job on the SLURM frontend over ssh, opens and keeps an SSH tunnel to
+ * the compute node, and waits for the backend to answer through it. stop()
+ * closes the tunnel and cancels the job.
+ *
+ * The launcher (scripts/launch_backend_slurm.sh) is the one the client carries
+ * (a Qt resource), sent over the ssh connection on standard input: the
+ * cluster needs no clone and the launcher always matches the client. A profile
+ * that names a clone runs that clone's copy instead (developers).
  *
  * Plain OpenSSH, as on macOS, Linux and Windows 10+, with key-based access to
  * the frontend (BatchMode: nothing is ever typed). The window that owns the
@@ -46,6 +50,27 @@ public:
     /// @p args as one command line for the remote POSIX shell: each quoted, so a
     /// value with spaces or shell characters arrives as one argument, and as data.
     static QString remoteCommandLine(const QStringList &args);
+    /// The command run over ssh, as separate arguments: `bash -s -- <options>`
+    /// (the launcher comes on standard input, see stdinPayload) when the profile
+    /// names no clone, else `bash <clone>/scripts/launch_backend_slurm.sh <options>`.
+    /// @p clientVersion picks the image when the profile has none.
+    static QStringList remoteArgv(const ClusterProfile &profile, const QString &jobName,
+                                  const QString &clientVersion);
+    /// What goes to `bash -s` on the frontend: the launcher @p script saved to a
+    /// temporary file and run from it (so that it has a file name to run again
+    /// under a login shell, and no command in it can read the rest of the
+    /// script from standard input), the file removed afterwards.
+    static QByteArray stdinPayload(const QString &script);
+    /// Why the launcher failed, for the user: ssh failures (255) are told
+    /// apart from the launcher's own, and say how to renew an expired
+    /// certificate on Leonardo or accept a new host key. @p output is what the
+    /// launcher and ssh printed; @p reported: the launcher gave job, node, port and token.
+    static QString launcherFailure(const ClusterProfile &profile, int exitCode, const QString &output,
+                                   bool reported);
+    /// The short status a launcher output line stands for ("Waiting in the
+    /// queue: Priority", "Pulling the backend image: 120 MB fetched"), or empty
+    /// when the line is not a progress report.
+    static QString progressStatus(const QString &line);
     /// The first port from @p start for which @p isFree holds and that is not
     /// @p avoid (the desktop's own local backend); 0 if none in 64 tries.
     static int chooseLocalPort(int start, int avoid, const std::function<bool(int)> &isFree);
@@ -77,6 +102,8 @@ public:
 
 signals:
     void message(const QString &text);
+    /// What the connection is doing now, in a few words (for a status line).
+    void progress(const QString &text);
     void connected(const QString &url, const QString &token);
     void failed(const QString &reason);
     /// The tunnel dropped after connecting and is being reopened.

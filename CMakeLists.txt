@@ -865,6 +865,16 @@ qt_add_resources(${PROJECT_NAME} bundled_spectral_lines
 # Compile bundled Lato fonts into the binary so they load on all platforms
 # without requiring system font installation.
 # Accessible at runtime as :/fonts/Lato-Regular.ttf etc.
+# The cluster launcher the client sends over ssh (ClusterConnection), so that a
+# cluster needs no clone of the repository. Accessible as
+# :/cluster/launch_backend_slurm.sh.
+qt_add_resources(${PROJECT_NAME} cluster_launcher
+        PREFIX "/cluster"
+        BASE "scripts"
+        FILES
+            scripts/launch_backend_slurm.sh
+)
+
 qt_add_resources(${PROJECT_NAME} bundled_fonts
         PREFIX "/fonts"
         BASE "resources/fonts"
@@ -929,6 +939,17 @@ add_subdirectory(src/vtk)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
         $<$<CONFIG:Release>:QT_NO_DEBUG_OUTPUT>
 )
+
+# Only the release workflow sets this. A build from the repository carries the
+# number of the last release, for which a backend image may not be published
+# (images exist for release tags), so "Connect to a cluster" does not pick an
+# image by that number unless this is set.
+option(VISIVO_RELEASE_BUILD
+    "Release package build: the client may start the published backend image of its own version on a cluster"
+    OFF)
+if (VISIVO_RELEASE_BUILD)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VISIVO_RELEASE_BUILD=1)
+endif()
 
 # ── Optional: VR (OpenXR) support for the cube viewer ────────────────────────
 #
