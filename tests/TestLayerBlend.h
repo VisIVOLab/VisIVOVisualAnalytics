@@ -31,4 +31,7 @@ private slots:
     void reducedDisplayAveragesTheBlock();
     void displayStepFitsTheBudget();
     void affineInverseRoundTrips();
+
+    void clampToRangeKeepsNanAndTakesEitherOrder();
+    void noDataIsTransparentWhateverTheTableGaveNan();
 };

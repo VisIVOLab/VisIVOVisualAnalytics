@@ -37,6 +37,58 @@ The other variables of the output are listed in *Session Data* as
 variables whose files are present are listed. Face-centred magnetic fields of
 a constrained-transport run (`Bx1s` …) are not listed.
 
+## Several variables in one view
+
+To see two or three variables of the run together (a passive tracer over the
+density, ρ beside p), open one and use *Add Field…* in the Inspector, *Fields*.
+It lists the other variables of the output; pick one and it joins this window.
+At most three fields are in one view, this one included. Each field has its own
+block: *Shown*, *Opacity*, a colour map (it starts as a black-to-colour map so
+that fields add up as dyes), *Log* (a positive field over three decades starts
+on it), *Min* and *Max* of the colour map, and a *Threshold*. *Remove* takes
+the field out. Every field must be on the same grid.
+
+**In the slice** the fields become one picture. *Slice* picks how:
+
+- *Layered*: each field drawn over the one below, weighted by its opacity. Where an upper field is at its lower limit (or below its threshold, when you typed one) it lets the field below show.
+- *Additive*: the colours added and clipped at white, as the image viewer's
+  Additive blend does.
+- *Split*: the first field left of a seam, the second right of it. The seam is
+  the middle, or the coordinate typed in the box beside it (in the units shown,
+  along the slice's horizontal axis).
+- *Mirrored*: for a run that holds one side of an axis. The first field is
+  reflected to the left of the axis, the second drawn as it is to the right.
+  The axis is x = 0 when the grid holds it, else the grid's edge, or the
+  coordinate typed.
+
+Split and Mirrored take the first two fields shown. Each field has its own
+colour bar, side by side at the right edge. The probe, the regions, the
+contours and the spectrum tools keep reading this window's own field. The
+planes of the other fields are read at the same level as this one's, a plane
+each, so the memory is a few planes.
+
+**In the 3-D box** the fields are drawn in one ray cast, so they interleave
+along every ray: a dense tracer behind lighter gas is seen behind it. Each
+field has its own colour and opacity functions; emission and absorption are
+summed along the ray, as in the headset's *Overlay* in *Sum* mode (there is no
+*MIP* for several fields on the desktop, and the clipping box of the headset does not cut the cast: in *MIP* or *MinIP*, or while the headset's clip crops the box, the box shows this window's field alone, with a message, and the fields come back in *Composite* without the clip). Each field is read once, on the grid
+the box is drawn on (the preview, or the full grid when that is loaded), so a
+field costs one cube of that size; the box follows the grid if it changes. The
+colour map, *Min*/*Max*, *Threshold* and *Opacity* of this window's own field
+are the window's usual controls. Each field has its own colour bar beside the
+window's. The headset keeps drawing this window's field alone; its *Overlay*
+does the same job there.
+
+Three limits. The extra fields are drawn in *Composite* only, as above. The 3-D box needs the local renderer: in *Remote* the backend draws
+the box and knows one field, so added fields show in the slice only, with a
+message. And a refined box (Refine Selected Box) and several fields do not go
+together: clear the refined box first.
+
+Fields added follow the units of this window. When you switch between code and
+physical units, their planes and voxels are read again in the new ones, and a
+*Min*, *Max* or *Threshold* you typed (and the seam) keeps its physical value,
+converted to the new units.
+
 ## Slices along x, y or z
 
 A simulation volume is not a spectral cube, so its slice is not a channel. In

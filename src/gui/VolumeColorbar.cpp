@@ -6,6 +6,8 @@
 #include <QPainter>
 #include <QPainterPath>
 
+#include "ColourBarTicks.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -51,6 +53,30 @@ void VolumeColorbar::setColours(const QVector<QColor> &colours)
     update();
 }
 
+void VolumeColorbar::setFromScale(const std::function<double(double)> &valueAt,
+                                  const std::function<void(double, double *)> &colourAt)
+{
+    constexpr int kColours = 256;
+    QVector<QColor> colours;
+    colours.reserve(kColours);
+    for (int i = 0; i < kColours; ++i) {
+        double rgb[3] = { 0.0, 0.0, 0.0 };
+        colourAt(valueAt(static_cast<double>(i) / (kColours - 1)), rgb);
+        colours << QColor::fromRgbF(std::clamp(rgb[0], 0.0, 1.0), std::clamp(rgb[1], 0.0, 1.0),
+                                    std::clamp(rgb[2], 0.0, 1.0));
+    }
+    const QVector<double> at{ 0.0, 0.25, 0.5, 0.75, 1.0 };
+    QVector<double> values;
+    for (const double u : at)
+        values << valueAt(u);
+    const QStringList labels = visivo::tickLabels(values);
+    QVector<QPair<double, QString>> ticks;
+    for (int i = 0; i < at.size(); ++i)
+        ticks << qMakePair(at[i], labels[i]);
+    setColours(colours);
+    setTicks(ticks);
+}
+
 void VolumeColorbar::setTicks(const QVector<QPair<double, QString>> &ticks)
 {
     if (ticks == m_look.ticks)
@@ -87,7 +113,16 @@ bool VolumeColorbar::eventFilter(QObject *obj, QEvent *event)
     return QWidget::eventFilter(obj, event);
 }
 
-QRect VolumeColorbar::placement(const QSize &host, const QFontMetrics &fm, const Look &look)
+void VolumeColorbar::setRightOffset(int pixels)
+{
+    if (pixels == m_rightOffset)
+        return;
+    m_rightOffset = pixels;
+    reposition();
+}
+
+QRect VolumeColorbar::placement(const QSize &host, const QFontMetrics &fm, const Look &look,
+                                int rightOffset)
 {
     int labels = 0;
     for (const auto &tick : look.ticks)
@@ -103,7 +138,7 @@ QRect VolumeColorbar::placement(const QSize &host, const QFontMetrics &fm, const
     const int top = std::max(kTop, host.height() / 10);
     const int bottom = std::max(top + 120, host.height() * 9 / 10);
     const int h = std::min(bottom, host.height() - kMargin) - top;
-    return { host.width() - w - kMargin, top, w, std::max(0, h) };
+    return { host.width() - w - kMargin - rightOffset, top, w, std::max(0, h) };
 }
 
 void VolumeColorbar::reposition()
@@ -111,7 +146,7 @@ void VolumeColorbar::reposition()
     QWidget *p = parentWidget();
     if (!p)
         return;
-    setGeometry(placement(p->size(), QFontMetrics(font()), m_look));
+    setGeometry(placement(p->size(), QFontMetrics(font()), m_look, m_rightOffset));
     raise();   // above the render surface
 }
 

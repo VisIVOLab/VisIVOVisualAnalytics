@@ -4,6 +4,7 @@
 
 #include "ImageLayerController.h"
 #include "LayerBlend.h"
+#include "LayerBlendLut.h"
 #include "LayerListModel.h"
 
 #include <QCheckBox>
@@ -183,23 +184,15 @@ void blendBand(const std::vector<const float *> &values, const std::vector<vtkLo
 {
     acc.assign(pixels, Accum{});
     rgba.resize(pixels * 4);
-    std::vector<float> clamped(pixels);
+    std::vector<float> clamped;
     for (std::size_t k = 0; k < values.size(); ++k) {
         // The table maps with the layer's range, stretch and colour map, so the
         // blend is made of exactly the colours the layer shows on its own.
-        // Values are clamped to the range first: a saturated pixel takes the
-        // top colour whatever the table's out-of-range settings, which a copy
-        // made for the worker did not keep (saved PNGs showed 0 where the
-        // screen showed the brightest colour).
-        const double *range = luts[k]->GetRange();
-        const float lo = static_cast<float>(std::min(range[0], range[1]));
-        const float hi = static_cast<float>(std::max(range[0], range[1]));
-        for (std::size_t p = 0; p < pixels; ++p) {
-            const float v = values[k][p];
-            clamped[p] = std::isnan(v) ? v : std::clamp(v, lo, hi);
-        }
-        luts[k]->MapScalarsThroughTable(clamped.data(), rgba.data(), VTK_FLOAT,
-                                        static_cast<int>(pixels), 1, VTK_RGBA);
+        // mapThroughTable clamps the values to the range first: a saturated
+        // pixel takes the top colour whatever the table's out-of-range
+        // settings, which a copy made for the worker did not keep (saved PNGs
+        // showed 0 where the screen showed the brightest colour).
+        mapThroughTable(luts[k], values[k], pixels, rgba.data(), clamped);
         for (std::size_t p = 0; p < pixels; ++p) {
             if (!std::isnan(values[k][p]))
                 accumulate(acc[p], &rgba[p * 4], weights[k]);

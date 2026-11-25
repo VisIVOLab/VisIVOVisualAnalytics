@@ -6,6 +6,7 @@
 #include <QVector>
 #include <QWidget>
 
+#include <functional>
 #include <optional>
 
 class QFontMetrics;
@@ -45,6 +46,11 @@ public:
 
     /// The colours from the bottom of the bar to its top.
     void setColours(const QVector<QColor> &colours);
+    /// Colours and ticks of a scale in one go: \a valueAt takes a position along
+    /// the bar (0 bottom, 1 top) to a value, \a colourAt a value to RGB (0..1).
+    /// 256 colours and five labelled ticks, as every 3-D bar shows.
+    void setFromScale(const std::function<double(double)> &valueAt,
+                      const std::function<void(double, double *)> &colourAt);
     /// Labelled values: (position, text).
     void setTicks(const QVector<QPair<double, QString>> &ticks);
     /// Above the bar: the quantity (a field name, a unit); empty for none.
@@ -53,12 +59,17 @@ public:
     /// bar; none hides both.
     void setThreshold(std::optional<double> position, const QString &caption = {});
 
+    /// Moves the bar left by \a pixels from the right edge, so the bars of
+    /// several fields (issue #525) stand side by side.
+    void setRightOffset(int pixels);
+
     /// What the bar shows now (a saved picture draws the same bar).
     Look look() const { return m_look; }
     /// The bar's font.
     static QFont barFont();
     /// Where a bar showing `look` sits in a view of `host` size.
-    static QRect placement(const QSize &host, const QFontMetrics &fm, const Look &look);
+    static QRect placement(const QSize &host, const QFontMetrics &fm, const Look &look,
+                           int rightOffset = 0);
     /// Draws `look` into `rect` (as placed by placement).
     static void paint(QPainter &painter, const QRect &rect, const QFontMetrics &fm,
                       const Look &look);
@@ -71,4 +82,5 @@ private:
     void reposition();
 
     Look m_look;
+    int m_rightOffset{ 0 };
 };

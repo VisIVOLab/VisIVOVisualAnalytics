@@ -778,6 +778,10 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Products.cpp
         src/gui/vtkWindowImage_Blend.cpp
         src/gui/LayerBlend.h
+        src/gui/LayerBlendLut.h
+        src/gui/FieldOverlay.h
+        src/gui/SimField.h
+        src/gui/vtkWindowCube_Fields.cpp
         src/gui/vtkWindowImage_Cosmology.cpp
         src/gui/vtkWindowImage_Region.cpp
         src/gui/vtkWindowImage_RegionList.cpp
