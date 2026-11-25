@@ -90,9 +90,7 @@ the cube viewer):
 
 ## View menu
 
-- *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges
-  of the image as it is on screen, following pan and zoom. When the image is
-  small, only every second or fourth x label is written so they do not overlap.
+- *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges.
 - *Blink Layers*: alternates layers 0 and 1 (default every 250 ms; the *Blink
   / Compare* card sets the interval, 50 to 1000 ms). Needs two layers.
 - *Additive Blend*: sums the colours of the visible layers instead of
