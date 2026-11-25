@@ -92,7 +92,9 @@ the cube viewer):
 
 ## View menu
 
-- *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges.
+- *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges
+  of the image as it is on screen, following pan and zoom. When the image is
+  small, only every second or fourth x label is written so they do not overlap.
   Each tick is labelled with the coordinate of the point where it sits, in the
   frame chosen in the *WCS* menu. When that frame is rotated against the file's
   own (an equatorial image shown in Galactic coordinates), the pixel axes are no
