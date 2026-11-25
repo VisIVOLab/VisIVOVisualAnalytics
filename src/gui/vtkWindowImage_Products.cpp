@@ -46,6 +46,8 @@
 #include "PublicationFigureDialog.h"
 #include "LteCoDialog.h"
 #include <vtkLookupTable.h>
+#include <vtkNew.h>
+#include "ColorMaps.h"
 #include "RegionModel.h"
 #include "app/LteCoRequest.h"
 
@@ -256,6 +258,41 @@ void vtkWindowImage::recordPublicationFigure(const QString &outputPath)
                                   params, this->scopedProductId(u"pubfig"_s));
 }
 
+namespace {
+/// The colours the window draws its map with, as @p n RGB rows in 0..1 (lowest value
+/// first) for a figure to draw exactly. The map is read by its name from the registry,
+/// freshly, not from the window's table: under a square-root, square or power stretch
+/// the window resamples the table's entries through the stretch, and the figure applies
+/// the stretch itself, which would be done twice. A table with no registry name is read
+/// as it is when the window's scale does not bake a stretch into it (linear, log), and
+/// not sent otherwise (the figure then offers what it can set by name).
+QJsonArray windowColourTable(vtkLookupTable *lut, LutScale::Mode mode, std::size_t n = 256)
+{
+    vtkNew<vtkLookupTable> plain;
+    const std::string name = lut->GetObjectName();
+    if (!name.empty())
+        ColorMaps::SetColorMap(plain, name);
+    vtkLookupTable *source = nullptr;
+    if (!plain->GetObjectName().empty())
+        source = plain;
+    else if (mode == LutScale::Mode::Linear || mode == LutScale::Mode::Log)
+        source = lut;
+    QJsonArray rows;
+    const vtkIdType entries = source ? source->GetNumberOfTableValues() : 0;
+    if (entries < 2)
+        return rows;
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto k = static_cast<vtkIdType>(std::llround(static_cast<double>(i)
+                                                           * static_cast<double>(entries - 1)
+                                                           / static_cast<double>(n - 1)));
+        double rgba[4];
+        source->GetTableValue(k, rgba);
+        rows.append(QJsonArray{ rgba[0], rgba[1], rgba[2] });
+    }
+    return rows;
+}
+}   // namespace
+
 visivo::figure::Context vtkWindowImage::publicationFigureContext()
 {
     namespace vf = visivo::figure;
@@ -264,12 +301,13 @@ visivo::figure::Context vtkWindowImage::publicationFigureContext()
     ctx.fileStem = QFileInfo(this->filepath).completeBaseName() + u"_figure"_s;
     vf::Options &o = ctx.defaults;
 
-    // The colours as the window shows them. The dialog resolves the map's name
-    // against what the backend can set, and says when it has to use Inferno.
+    // The colours as the window shows them: the map's name, and its table, which the
+    // dialog sends when the backend draws that map only approximately by name.
     const int master = this->layers ? this->layers->getMasterIndex() : -1;
     if (master >= 0 && master < this->layers->rowCount()) {
         if (auto *lut = this->layers->getLookupTable(master)) {
             ctx.windowColourMap = QString::fromStdString(lut->GetObjectName());
+            ctx.windowLut = windowColourTable(lut, this->layers->scaleMode(master));
             const double *r = lut->GetTableRange();
             if (r && std::isfinite(r[0]) && std::isfinite(r[1]) && r[0] < r[1]) {
                 o.useRange = true;

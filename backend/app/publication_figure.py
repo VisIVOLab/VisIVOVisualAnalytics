@@ -40,34 +40,82 @@ def format_of(basename: str) -> str:
     return ext if ext in FORMATS else "png"
 
 
-def resolve_cmap(name: str):
-    """A matplotlib colour map for ``name``, case-insensitively: the viewer's
-    registry spells ``Inferno`` and ``CoolWarm`` where matplotlib has ``inferno``
-    and ``coolwarm``. Raises ValueError, naming the map, when none matches."""
+# Desktop colour maps whose tables are matplotlib's own (the registry samples them
+# from it, src/vtk/ColorMaps.cpp and SequentialColorTables.h), compared in lower
+# case. Any other desktop name that matplotlib also spells (Rainbow is an HSV ramp
+# in the viewer and a different table in matplotlib) or that has a stand-in
+# (render_session/_common.py) is drawn approximately, and is said to be.
+_EXACT_LOWER = frozenset(
+    ["inferno", "viridis", "magma", "plasma", "cividis", "gray"]
+    + [f"{b}{r}" for b in ("purples", "blues", "greens", "reds", "greys", "oranges")
+       for r in ("", "_r")])
+
+# Matplotlib maps worth offering besides the viewer's registry (a figure for a
+# journal has long used them: hot and cubehelix were in the one-click dialog).
+EXTRA_CMAPS = ("hot", "cubehelix", "afmhot", "bone", "copper", "gist_heat", "gnuplot2",
+               "turbo", "twilight", "seismic", "Spectral_r", "RdBu_r", "nipy_spectral")
+
+
+def resolve_cmap_info(name: str):
+    """``(colour map, matplotlib name, exact)`` for ``name``, case-insensitively: the
+    viewer's registry spells ``Inferno`` and ``CoolWarm`` where matplotlib has
+    ``inferno`` and ``coolwarm``. ``exact`` is False when the matplotlib map is only
+    close to the viewer's (a stand-in such as ``hot`` for ``Glow``, or a map of the
+    same name but another table). Raises ValueError, naming the map, when none matches."""
     import matplotlib  # noqa: PLC0415
     # The desktop names with a matplotlib stand-in (Glow is hot, Default is
     # inferno) are the table the volume renderer already uses.
     from .render_session._common import _DESKTOP_TO_MPL  # noqa: PLC0415
-    names = list(matplotlib.colormaps)
-    for candidate in (name, _DESKTOP_TO_MPL.get(name, ""),
-                      *(n for n in names if n.lower() == name.lower())):
-        if candidate in matplotlib.colormaps:
-            return matplotlib.colormaps[candidate]
+    registry = matplotlib.colormaps
+    if name in registry:
+        return registry[name], name, True
+    spelled = {n.lower(): n for n in registry}.get(name.lower(), "")
+    if spelled and name.lower() in _EXACT_LOWER:
+        return registry[spelled], spelled, True
+    for candidate in (_DESKTOP_TO_MPL.get(name, ""), spelled):
+        if candidate in registry:
+            return registry[candidate], candidate, False
     raise ValueError(f"Unknown colour map '{name}'.")
 
 
-def supported_cmaps(names: list[str]) -> list[str]:
-    """The ``names`` that ``resolve_cmap`` knows, in the order given: the desktop
-    asks with its colour-map registry, so its figure dialog offers only maps the
-    figure can set."""
-    out = []
+def resolve_cmap(name: str):
+    """A matplotlib colour map for ``name`` (see ``resolve_cmap_info``)."""
+    return resolve_cmap_info(name)[0]
+
+
+def cmap_from_lut(lut: list[list[float]], name: str = "window"):
+    """The window's own colours, as a ``ListedColormap`` of the table the client
+    sampled (RGB in 0..1, lowest value first): exact for any viewer map, a
+    hand-made one included. Raises ValueError for a table that is not N x 3 numbers
+    in 0..1."""
+    from matplotlib.colors import ListedColormap  # noqa: PLC0415
+    try:
+        table = np.asarray(lut, dtype=float)
+    except (TypeError, ValueError):
+        table = np.empty(0)
+    if table.ndim != 2 or table.shape[1] != 3 or table.shape[0] < 2 \
+            or not np.isfinite(table).all() or table.min() < 0.0 or table.max() > 1.0:
+        raise ValueError("The colour table must be at least two rows of three numbers "
+                         "between 0 and 1.")
+    return ListedColormap(table, name=name or "window")
+
+
+def figure_colour_maps(names: list[str]) -> dict[str, Any]:
+    """What the dialog's colour-map list needs: for each of ``names`` that a figure
+    can set, in the order given, whether it is drawn exactly or approximately and
+    with which matplotlib map; and the matplotlib maps of ``EXTRA_CMAPS`` that the
+    names do not already cover, so that nothing the one-click dialog offered is lost."""
+    import matplotlib  # noqa: PLC0415
+    maps = []
     for n in names:
         try:
-            resolve_cmap(n)
+            _cmap, drawn_as, exact = resolve_cmap_info(n)
         except ValueError:
             continue
-        out.append(n)
-    return out
+        maps.append({"name": n, "exact": exact, "drawn_as": drawn_as})
+    covered = {m["name"].lower() for m in maps}
+    extra = [n for n in EXTRA_CMAPS if n in matplotlib.colormaps and n.lower() not in covered]
+    return {"maps": maps, "extra": extra}
 
 
 def check_font(family: str) -> str:
@@ -261,7 +309,15 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
     from matplotlib.figure import Figure  # noqa: PLC0415
 
     fmt = format_of(output_path) if output_path else "png"
-    cmap = _with_blank_colour(resolve_cmap(req.cmap))
+    notes: list[str] = []
+    if req.lut:
+        base = cmap_from_lut(req.lut, req.cmap)
+    else:
+        base, drawn_as, exact = resolve_cmap_info(req.cmap)
+        if not exact:
+            notes.append(f"Colour map '{req.cmap}' is drawn with matplotlib's '{drawn_as}', "
+                         "close to but not the same as the window's map.")
+    cmap = _with_blank_colour(base)
     family = check_font(req.font_family)
     color = _overlay_color(cmap, req.overlay_color)
     height, width = data.shape
@@ -273,7 +329,6 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
         step = int(np.ceil(max(data.shape) / PREVIEW_DECIMATE_ABOVE))
         shown, extent = data[::step, ::step], (-0.5, width - 0.5, -0.5, height - 0.5)
     norm = _norm(shown, req)
-    notes: list[str] = []
 
     dpi = float(req.dpi)
     if preview:

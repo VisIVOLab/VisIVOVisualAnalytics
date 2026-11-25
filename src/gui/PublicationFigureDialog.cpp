@@ -8,12 +8,14 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFutureWatcher>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPixmap>
 #include <QPointer>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QTimer>
@@ -76,8 +78,6 @@ PublicationFigureDialog::PublicationFigureDialog(const Context &context, QWidget
         m_ctx.overlays = std::make_shared<Overlays>();
     if (m_ctx.colourMaps.isEmpty())
         m_ctx.colourMaps = QStringList{ m_ctx.defaults.cmap };
-    if (!m_ctx.windowColourMap.isEmpty())
-        m_ctx.defaults.cmap = colourMapFor(m_ctx.windowColourMap, m_ctx.colourMaps);
     setWindowTitle(u"Publication Figure"_s);
     build();
 }
@@ -92,7 +92,7 @@ void PublicationFigureDialog::build()
     // ── Image ────────────────────────────────────────────────────────────────
     auto *image = new QWidget(tabs);
     auto *fi = new QFormLayout(image);
-    w->cmap = combo(m_ctx.colourMaps, d.cmap, image);
+    w->cmap = new QComboBox(image);
     w->stretch = combo(kStretches, d.stretch, image);
     w->gamma = spin(0.1, 10.0, d.gamma, 2, image);
     w->gamma->setToolTip(u"Exponent of the power stretch."_s);
@@ -107,15 +107,12 @@ void PublicationFigureDialog::build()
     w->percent = spin(50.0, 100.0, d.percent, 1, image, u" %"_s);
     w->percent->setToolTip(u"Without a range, the colours span this percentile of the pixels."_s);
     fi->addRow(u"Colour map"_s, w->cmap);
-    // The window's map when the figure cannot set it: said, not replaced silently.
-    if (!m_ctx.windowColourMap.isEmpty()
-        && m_ctx.windowColourMap.compare(d.cmap, Qt::CaseInsensitive) != 0) {
-        auto *note = new QLabel(u"The window's colour map (%1) is not available in figures; "
-                                u"using %2."_s.arg(m_ctx.windowColourMap, d.cmap),
-                                image);
-        note->setWordWrap(true);
-        fi->addRow(QString(), note);
-    }
+    // Under the list: that the choice is only close to the window's map, or that the
+    // window's is not available. Said, not replaced silently.
+    m_cmapNote = new QLabel(image);
+    m_cmapNote->setWordWrap(true);
+    m_cmapNote->hide();
+    fi->addRow(QString(), m_cmapNote);
     fi->addRow(u"Stretch"_s, w->stretch);
     fi->addRow(u"Power exponent"_s, w->gamma);
     fi->addRow(QString(), w->useRange);
@@ -181,8 +178,10 @@ void PublicationFigureDialog::build()
     w->scaleBar->setChecked(d.scaleBar);
     w->scaleBarLength = spin(0.0, 1e6, d.scaleBarLength, 2, over);
     w->scaleBarLength->setSpecialValueText(u"round length"_s);
+    w->scaleBarLength->setToolTip(u"Pick a unit to type a length; with auto it is a round one."_s);
     w->scaleBarUnit = combo({ u"auto"_s, u"arcsec"_s, u"arcmin"_s, u"deg"_s }, d.scaleBarUnit, over);
-    w->scaleBarUnit->setToolTip(u"auto: arcsec below 60\", arcmin below 60', else degrees."_s);
+    w->scaleBarUnit->setToolTip(u"auto: a round length, in arcsec below 60\", arcmin below 60', "
+                                u"else degrees. Pick a unit to type a length."_s);
     w->scaleBarPosition = combo(kCorners, d.scaleBarPosition, over);
     w->compass = new QCheckBox(u"Compass (north and east)"_s, over);
     w->compass->setChecked(d.compass);
@@ -268,7 +267,7 @@ void PublicationFigureDialog::build()
     m_debounce->setInterval(450);
     connect(m_debounce, &QTimer::timeout, this, &PublicationFigureDialog::runPreview);
     const auto edited = [this] { schedulePreview(); };
-    for (QComboBox *c : { w->cmap, w->stretch, w->fontFamily, w->frame, w->tickFormat,
+    for (QComboBox *c : { w->stretch, w->fontFamily, w->frame, w->tickFormat,
                           w->colorbarPosition, w->beamPosition, w->scaleBarUnit,
                           w->scaleBarPosition, w->compassPosition, w->format })
         connect(c, &QComboBox::currentTextChanged, this, edited);
@@ -277,6 +276,23 @@ void PublicationFigureDialog::build()
                                w->heightIn })
         connect(s, &QDoubleSpinBox::valueChanged, this, edited);
     connect(w->dpi, &QSpinBox::valueChanged, this, edited);
+    connect(w->cmap, &QComboBox::currentIndexChanged, this, [this] {
+        updateColourMapNote();
+        schedulePreview();
+    });
+    // A length is typed in a unit that is picked: with auto it would be read in a unit
+    // the user cannot see, so it is for an explicit unit only (Spec.h).
+    const auto lengthRule = [this] {
+        const bool typed = scaleBarLengthEnabled(w->scaleBarUnit->currentText());
+        w->scaleBarLength->setEnabled(typed);
+        if (!typed)
+            w->scaleBarLength->setValue(0.0);
+    };
+    connect(w->scaleBarUnit, &QComboBox::currentTextChanged, this, lengthRule);
+    lengthRule();
+    // The whole registry now, narrowed to what the backend can set when it answers.
+    fillColourMaps(BackendFigureColourMaps{});
+    requestColourMaps();
     for (QLineEdit *e : { w->title, w->xlabel, w->ylabel, w->colorbarLabel })
         connect(e, &QLineEdit::textChanged, this, edited);
     for (QCheckBox *c : { w->useRange, w->grid, w->colorbar, w->beam, w->scaleBar, w->compass,
@@ -296,7 +312,15 @@ void PublicationFigureDialog::build()
 Options PublicationFigureDialog::options() const
 {
     Options o;
-    o.cmap = w->cmap->currentText();
+    const int cm = w->cmap->currentIndex() >= 0 ? w->cmap->currentData().toInt() : -1;
+    if (cm >= 0 && cm < m_choices.size()) {
+        o.cmap = m_choices[cm].name;
+        // The window's own table is sent as colours: exact whatever the map is.
+        if (m_choices[cm].kind == ColourMapChoice::Kind::Window)
+            o.lut = m_ctx.windowLut;
+    } else {
+        o.cmap = m_ctx.defaults.cmap;
+    }
     o.stretch = w->stretch->currentText();
     o.gamma = w->gamma->value();
     o.percent = w->percent->value();
@@ -408,6 +432,124 @@ void PublicationFigureDialog::runPreview()
         bc.setSessionId(session);
         return bc.publicationFigure(make(true));
     }));
+}
+
+namespace {
+/// One answer per backend and session. Read and written on the GUI thread only.
+QHash<QString, BackendFigureColourMaps> &colourMapAnswers()
+{
+    static QHash<QString, BackendFigureColourMaps> answers;
+    return answers;
+}
+}   // namespace
+
+void PublicationFigureDialog::requestColourMaps()
+{
+    const QString key = m_ctx.backendUrl;
+    const auto cached = colourMapAnswers().constFind(key);
+    if (cached != colourMapAnswers().constEnd()) {
+        fillColourMaps(*cached);
+        return;
+    }
+    // A hung or remote backend must not hold the dialog: the registry is offered at
+    // once and the answer, when it comes, narrows it (the choice is kept).
+    const QString url = m_ctx.backendUrl, token = m_ctx.token, session = m_ctx.sessionId;
+    const QStringList registry = m_ctx.colourMaps;
+    auto *watcher = new QFutureWatcher<BackendFigureColourMaps>(this);
+    connect(watcher, &QFutureWatcher<BackendFigureColourMaps>::finished, this, [this, watcher, key] {
+        watcher->deleteLater();
+        const auto r = watcher->result();
+        if (!r.valid)
+            return;   // an older backend, or none: the whole registry stays, a refusal shows in the preview
+        colourMapAnswers().insert(key, r);
+        fillColourMaps(r);
+    });
+    watcher->setFuture(QtConcurrent::run([url, token, session, registry]() {
+        BackendClient bc(url, token);
+        bc.setSessionId(session);
+        return bc.publicationFigureColourMaps(registry);
+    }));
+}
+
+void PublicationFigureDialog::fillColourMaps(const BackendFigureColourMaps &answer)
+{
+    using Kind = ColourMapChoice::Kind;
+    // What is chosen now, to keep it across the new list; the first time, the window's.
+    const int before = w->cmap->currentData().toInt();
+    const bool first = m_choices.isEmpty();
+    const ColourMapChoice kept = (w->cmap->currentIndex() >= 0 && before >= 0 && before < m_choices.size()) ? m_choices[before]
+                                                                            : ColourMapChoice{};
+    m_choices = colourMapChoices(m_ctx.colourMaps, answer, m_ctx.windowColourMap,
+                                 !m_ctx.windowLut.isEmpty());
+    const auto find = [this](const std::function<bool(const ColourMapChoice &)> &want) {
+        for (int i = 0; i < m_choices.size(); ++i)
+            if (want(m_choices[i]))
+                return i;
+        return -1;
+    };
+    int pick = -1;
+    if (!first) {
+        pick = find([&](const ColourMapChoice &c) { return c.kind == kept.kind && c.name == kept.name; });
+        // The window's table dropped because the backend draws that map exactly by
+        // name: the registry's entry of the same name stands in for it.
+        if (pick < 0 && kept.kind == Kind::Window)
+            pick = find([&](const ColourMapChoice &c) {
+                return c.name.compare(kept.name, Qt::CaseInsensitive) == 0;
+            });
+    } else if (!m_ctx.windowColourMap.isEmpty()) {
+        pick = find([](const ColourMapChoice &c) { return c.kind == Kind::Window; });
+        if (pick < 0)
+            pick = find([&](const ColourMapChoice &c) {
+                return c.name.compare(m_ctx.windowColourMap, Qt::CaseInsensitive) == 0;
+            });
+    } else {
+        pick = find([&](const ColourMapChoice &c) {
+            return c.name.compare(m_ctx.defaults.cmap, Qt::CaseInsensitive) == 0;
+        });
+    }
+    if (pick < 0)
+        pick = find([](const ColourMapChoice &c) { return c.name == QLatin1String("Inferno"); });
+    if (pick < 0 && !m_choices.isEmpty())
+        pick = 0;
+
+    const QSignalBlocker block(w->cmap);
+    w->cmap->clear();
+    bool separated = false;
+    for (int i = 0; i < m_choices.size(); ++i) {
+        if (m_choices[i].kind == Kind::Extra && !separated) {
+            w->cmap->insertSeparator(w->cmap->count());
+            separated = true;
+        }
+        w->cmap->addItem(m_choices[i].label, i);   // the data is the index into m_choices
+    }
+    w->cmap->setCurrentIndex(w->cmap->findData(pick));
+    updateColourMapNote();
+    // The list changed under a choice that is no longer there: the preview follows.
+    if (!first && (pick < 0 || kept.kind != m_choices[pick].kind || kept.name != m_choices[pick].name))
+        schedulePreview();
+}
+
+void PublicationFigureDialog::updateColourMapNote()
+{
+    QString text;
+    const int idx = w->cmap->currentIndex() >= 0 ? w->cmap->currentData().toInt() : -1;
+    if (idx >= 0 && idx < m_choices.size())
+        text = approximationNote(m_choices[idx]);
+    // The window's map when the figure cannot draw it by name or by colours.
+    const bool windowShown = idx >= 0 && idx < m_choices.size() && (m_choices[idx].kind == ColourMapChoice::Kind::Window
+                                          || m_choices[idx].name.compare(
+                                                     m_ctx.windowColourMap, Qt::CaseInsensitive) == 0);
+    if (text.isEmpty() && !m_ctx.windowColourMap.isEmpty() && !windowShown && !m_choices.isEmpty()
+        && m_ctx.windowLut.isEmpty()) {
+        bool listed = false;
+        for (const auto &c : std::as_const(m_choices))
+            listed = listed || c.name.compare(m_ctx.windowColourMap, Qt::CaseInsensitive) == 0;
+        if (!listed)
+            text = u"The window's colour map (%1) is not available in figures."_s.arg(
+                    m_ctx.windowColourMap);
+    }
+    m_cmapNote->setText(text);
+    m_cmapNote->setVisible(!text.isEmpty());
 }
 
 void PublicationFigureDialog::showPreview(const QPixmap &pm, const QString &message)

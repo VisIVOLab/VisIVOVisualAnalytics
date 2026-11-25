@@ -37,12 +37,17 @@ struct Context
     QString datasetId;
     QString fileStem;                    ///< output name without extension
     Options defaults;
-    /// The colour maps the figure can set (orderedColourMaps); empty offers only
-    /// the default's.
+    /// The viewer's colour-map registry (ColorMaps::GetColorMapNames); empty offers
+    /// only the default's. The dialog opens with all of it and narrows it to what the
+    /// backend can set when that answers (colourMapChoices).
     QStringList colourMaps;
     /// The name of the window's colour map; empty when it has none. The dialog
-    /// starts from it, or from Inferno with a note when the figure cannot set it.
+    /// starts from it.
     QString windowColourMap;
+    /// The window's colours as 256 RGB rows in 0..1 (lowest value first, the map
+    /// without the stretch the window applies on top), or empty when there is no
+    /// table to send. With it the figure draws the window's map exactly, whatever it is.
+    QJsonArray windowLut;
     std::shared_ptr<Overlays> overlays;  ///< a null one is taken as no overlays
 };
 
@@ -65,12 +70,20 @@ private:
     void schedulePreview();
     void runPreview();
     void showPreview(const QPixmap &pm, const QString &message);
+    /// Asks the backend, off the GUI thread and once per backend and session, which
+    /// colour maps a figure can set; the answer narrows the list.
+    void requestColourMaps();
+    /// Rebuilds the colour-map list from @p answer, keeping the choice made.
+    void fillColourMaps(const BackendFigureColourMaps &answer);
+    void updateColourMapNote();
 
     Context m_ctx;
     std::unique_ptr<Widgets> w;
     QTimer *m_debounce{ nullptr };
     QLabel *m_preview{ nullptr };
     QLabel *m_status{ nullptr };
+    QLabel *m_cmapNote{ nullptr };
+    QList<ColourMapChoice> m_choices;   ///< what the combo lists, in order
     int m_seq{ 0 };           ///< the newest preview asked for
     bool m_inFlight{ false };
     bool m_dirty{ false };

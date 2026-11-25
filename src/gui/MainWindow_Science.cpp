@@ -102,18 +102,11 @@ void MainWindow::runPublicationFigure(const QString &backendUrl, const QString &
     ctx.token = backendToken;
     ctx.sessionId = sessionId;
     ctx.datasetId = datasetId;
-    // The maps the figure can set: the registry's names that the backend resolves.
-    // If it cannot be asked, all of the registry's are offered and a refusal shows
-    // in the preview.
-    {
-        QStringList registry;
-        for (const std::string &n : ColorMaps::GetColorMapNames())
-            registry << QString::fromStdString(n);
-        BackendClient bc(backendUrl, backendToken);
-        bc.setSessionId(sessionId);
-        const QStringList ok = bc.publicationFigureColourMaps(registry);
-        ctx.colourMaps = visivo::figure::orderedColourMaps(ok.isEmpty() ? registry : ok);
-    }
+    // The viewer's colour-map registry. The dialog opens with all of it and asks the
+    // backend, in the background, which of them a figure can set (once per backend):
+    // a slow or remote backend never holds the window.
+    for (const std::string &n : ColorMaps::GetColorMapNames())
+        ctx.colourMaps << QString::fromStdString(n);
     visivo::figure::PublicationFigureDialog dlg(ctx, this);
     if (dlg.exec() != QDialog::Accepted) return;
 

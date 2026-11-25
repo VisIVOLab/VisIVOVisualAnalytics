@@ -108,19 +108,29 @@ BackendPublicationFigureResult BackendClient::publicationFigure(const QJsonObjec
     return r;
 }
 
-QStringList BackendClient::publicationFigureColourMaps(const QStringList &names) const
+BackendFigureColourMaps BackendClient::publicationFigureColourMaps(const QStringList &names) const
 {
+    // Not the backpressure variant: this is no compute slot, so a 429 is not waited out.
     QString error;
-    const QByteArray payload = performPostRetryingBackpressure(
-            QUrl(m_baseUrl + QStringLiteral("/v1/products/publication_figure/colour_maps")),
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/products/figure_colour_maps")),
             QJsonDocument(QJsonObject{ { QStringLiteral("names"), QJsonArray::fromStringList(names) } }),
             error);
-    QStringList out;
+    BackendFigureColourMaps out;
     if (!error.isEmpty())
         return out;
-    for (const QJsonValue &n : QJsonDocument::fromJson(payload).object()
-                                       .value(QStringLiteral("names")).toArray())
-        out << n.toString();
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    if (!o.value(QStringLiteral("maps")).isArray())
+        return out;
+    for (const QJsonValue &v : o.value(QStringLiteral("maps")).toArray()) {
+        const QJsonObject m = v.toObject();
+        out.maps.append({ m.value(QStringLiteral("name")).toString(),
+                          m.value(QStringLiteral("exact")).toBool(true),
+                          m.value(QStringLiteral("drawn_as")).toString() });
+    }
+    for (const QJsonValue &n : o.value(QStringLiteral("extra")).toArray())
+        out.extra << n.toString();
+    out.valid = true;
     return out;
 }
 

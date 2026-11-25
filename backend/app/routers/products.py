@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 import math
 import uuid
 import logging
@@ -473,6 +473,11 @@ class PublicationFigureRequest(BaseModel):
     had, so a client that sends only a few options gets the figure it got before."""
     dataset_id: str
     cmap: str = "inferno"           # a matplotlib name, in any case (Inferno, CoolWarm, Purples_r)
+    # The window's own colours when its map is not a matplotlib one: N x 3 numbers in
+    # 0..1, lowest value first (the client sends 256 rows). Used instead of ``cmap``,
+    # which then only names it; drawn exactly, whatever the viewer's map is.
+    lut: list[Annotated[list[float], Field(min_length=3, max_length=3)]] | None = Field(
+        None, min_length=2, max_length=1024)
     stretch: str = "linear"         # linear | sqrt | squared | log | asinh | sinh | power
     percent: float = Field(99.5, gt=0.0, le=100.0)   # clip, when vmin/vmax are not given
     vmin: float | None = None       # the range, as the window shows it
@@ -533,20 +538,32 @@ class FigureColourMapsRequest(BaseModel):
     names: list[str] = Field(default_factory=list, max_length=500)
 
 
+class FigureColourMap(BaseModel):
+    name: str                       # as the request spelled it
+    exact: bool                     # False: drawn with a close matplotlib map, not the viewer's
+    drawn_as: str                   # the matplotlib map used
+
+
 class FigureColourMapsResponse(BaseModel):
-    names: list[str]                # those of the request the figure can set, in order
+    maps: list[FigureColourMap]     # those of the request the figure can set, in order
+    extra: list[str]                # matplotlib maps to offer besides them
 
 
-@router.post("/v1/products/publication_figure/colour_maps",
+# A light lookup, not a render: its name must stay clear of the heavy-compute
+# fragments the client's long timeout and job counter match on (BackendClient.cpp).
+@router.post("/v1/products/figure_colour_maps",
              response_model=FigureColourMapsResponse, tags=["products"])
-async def publication_figure_colour_maps(
+def figure_colour_maps(
     request: FigureColourMapsRequest,
     _: None = _auth,
 ) -> FigureColourMapsResponse:
-    """Which of the given colour-map names a publication figure can use (the
-    desktop sends its registry: its dialog then offers exactly these)."""
-    from ..publication_figure import supported_cmaps  # noqa: PLC0415
-    return FigureColourMapsResponse(names=supported_cmaps(request.names))
+    """Which of the given colour-map names a publication figure can use, and for
+    each whether it is drawn exactly or with a close matplotlib map (the desktop
+    sends its registry: its dialog offers these, and says which are approximated).
+    ``extra`` lists matplotlib's own maps to offer after them. A plain ``def``: the
+    listing is blocking work and runs on the thread pool, not the event loop."""
+    from ..publication_figure import figure_colour_maps as listing  # noqa: PLC0415
+    return FigureColourMapsResponse(**listing(request.names))
 
 
 @router.post("/v1/products/publication_figure",

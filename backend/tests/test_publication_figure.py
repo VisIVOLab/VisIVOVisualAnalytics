@@ -715,10 +715,109 @@ async def test_log_stretch_renders_with_a_colour_bar_and_a_signed_range(client, 
     assert body["valid"], body["error"]
 
 
+COLOUR_MAPS_ROUTE = "/v1/products/figure_colour_maps"
+
+
 @pytest.mark.asyncio
 async def test_supported_colour_maps_are_those_the_figure_can_set(client, ds):
-    r = await client.post("/v1/products/publication_figure/colour_maps", headers=ds["headers"],
+    r = await client.post(COLOUR_MAPS_ROUTE, headers=ds["headers"],
                           json={"names": ["Inferno", "AllRed", "purples", "Glow", "NoSuchMap",
                                           "Blues_r"]})
     assert r.status_code == 200, r.text
-    assert r.json()["names"] == ["Inferno", "purples", "Glow", "Blues_r"]
+    assert [m["name"] for m in r.json()["maps"]] == ["Inferno", "purples", "Glow", "Blues_r"]
+
+
+@pytest.mark.asyncio
+async def test_colour_maps_say_which_are_exact_and_which_stand_in(client, ds):
+    """The viewer's Default (an HSV ramp), Glow, Temperature, Sar, VolRenRGB, Rainbow and
+    CoolWarm are drawn with a close matplotlib map, not their own table: said, with the
+    map used. Inferno and the Brewer maps are matplotlib's own tables."""
+    names = ["Inferno", "Viridis", "Gray", "Purples_r", "Default", "Glow", "Temperature", "Sar",
+             "VolRenRGB", "Rainbow", "CoolWarm"]
+    r = await client.post(COLOUR_MAPS_ROUTE, headers=ds["headers"], json={"names": names})
+    assert r.status_code == 200, r.text
+    got = {m["name"]: m for m in r.json()["maps"]}
+    assert [n for n in names if got[n]["exact"]] == ["Inferno", "Viridis", "Gray", "Purples_r"]
+    assert got["Default"]["drawn_as"] == "inferno" and got["Glow"]["drawn_as"] == "hot"
+    assert got["Temperature"]["drawn_as"] == "RdYlBu_r" and got["Sar"]["drawn_as"] == "afmhot"
+    assert got["VolRenRGB"]["drawn_as"] == "jet" and got["Rainbow"]["drawn_as"] == "rainbow"
+
+
+@pytest.mark.asyncio
+async def test_colour_maps_offer_matplotlibs_extras_not_already_listed(client, ds):
+    """hot and cubehelix are not in the viewer's registry: they come after it, and a
+    name the registry already has is not offered twice."""
+    r = await client.post(COLOUR_MAPS_ROUTE, headers=ds["headers"],
+                          json={"names": ["Inferno", "Hot"]})
+    extra = r.json()["extra"]
+    assert "cubehelix" in extra and "hot" not in extra     # Hot (any case) is already listed
+    r = await client.post(COLOUR_MAPS_ROUTE, headers=ds["headers"], json={"names": ["Inferno"]})
+    assert {"hot", "cubehelix"} <= set(r.json()["extra"])
+
+
+@pytest.mark.asyncio
+async def test_an_approximated_colour_map_is_noted_on_the_figure(client, ds):
+    body = await _fig(client, ds, preview=True, cmap="Glow")
+    assert body["valid"], body["error"]
+    assert any("'Glow'" in n and "'hot'" in n and "not the same" in n for n in body["notes"])
+    assert (await _fig(client, ds, preview=True, cmap="Inferno"))["notes"] == []
+
+
+def _inferno_lut(n=256):
+    import matplotlib
+    return np.asarray(matplotlib.colormaps["inferno"](np.linspace(0, 1, n)))[:, :3].tolist()
+
+
+@pytest.mark.asyncio
+async def test_the_windows_own_table_is_drawn_exactly_and_not_noted(client, ds):
+    """A ``lut`` (the window's 256 colours) replaces the named map: the figure has the
+    table's colours whatever the name says, with no 'close to' note."""
+    plain = _pixels(await _fig(client, ds, preview=True, crop=False, cmap="inferno"))
+    with_lut = await _fig(client, ds, preview=True, crop=False, cmap="Glow", lut=_inferno_lut())
+    assert with_lut["valid"], with_lut["error"]
+    assert with_lut["notes"] == []
+    # Inferno sampled at 256 steps is inferno at 256 levels (matplotlib's own N).
+    assert np.abs(_pixels(with_lut) - plain).max() < 0.02
+    # And a table that is not inferno draws differently from it.
+    red = [[i / 255.0, 0.0, 0.0] for i in range(256)]
+    other = _pixels(await _fig(client, ds, preview=True, crop=False, cmap="inferno", lut=red))
+    assert _changed(plain, other).sum() > 1000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lut", [[[0.0, 0.0, 0.0]], [[0.0, 0.0], [1.0, 1.0]],
+                                 [[0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]])
+async def test_a_malformed_colour_table_is_refused(client, ds, lut):
+    r = await client.post(ROUTE, headers=ds["headers"],
+                          json={"dataset_id": ds["id"], "preview": True, "lut": lut})
+    body = r.json()
+    assert r.status_code == 422 or (r.status_code == 200 and not body["valid"]), body
+
+
+def test_the_colour_map_listing_is_not_a_coroutine():
+    """Blocking work, so a plain def (run on the thread pool), not an async one."""
+    import inspect
+    from app.routers.products import figure_colour_maps
+    assert not inspect.iscoroutinefunction(figure_colour_maps)
+
+
+def test_a_native_ecliptic_grid_gets_its_own_compass_not_a_turned_one():
+    """ELON/ELAT axes are named ecliptic, so asking for frame=ecliptic leaves the compass
+    where the grid has it instead of turning it by the ICRS-to-ecliptic angle."""
+    from astropy.wcs import WCS
+    w = WCS(naxis=2)
+    w.wcs.ctype = ("ELON-TAN", "ELAT-TAN")
+    w.wcs.crval = (120.0, 10.0)
+    w.wcs.crpix = (100.5, 80.5)
+    w.wcs.cdelt = (-1 / 3600, 1 / 3600)
+    names, own = _compass_arrows(w, "")
+    names_e, ecl = _compass_arrows(w, "ecliptic")
+    assert names == names_e == ["N", "E"]
+    for a, b in zip(own, ecl):
+        assert abs((a - b + 180.0) % 360.0 - 180.0) < 1e-6
+    # The arrows are the grid's own north and east (up and left on this grid), not an
+    # ICRS north, which would be turned by the ICRS-to-ecliptic angle.
+    for got, want in zip(own, (90.0, 180.0)):
+        assert abs((got - want + 180.0) % 360.0 - 180.0) < 1.0, own
+    # A frame it is not in still turns it.
+    assert abs((_compass_arrows(w, "galactic")[1][0] - own[0] + 180.0) % 360.0 - 180.0) > 5.0

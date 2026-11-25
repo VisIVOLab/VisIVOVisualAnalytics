@@ -20,8 +20,8 @@ namespace vf = visivo::figure;
 
 namespace {
 
-/// A backend that answers POST /v1/products/publication_figure with @p body and
-/// keeps what it was sent.
+/// A backend that answers POST /v1/products/publication_figure and
+/// /v1/products/figure_colour_maps with @p body and keeps what it was sent.
 class FigureServer : public QObject
 {
 public:
@@ -48,9 +48,12 @@ public:
                     if (buffer->size() < end + 4 + length)
                         return;
                     const QByteArray line = buffer->left(buffer->indexOf("\r\n"));
-                    const bool route = line.startsWith("POST /v1/products/publication_figure ");
-                    if (route)
+                    const bool route = line.startsWith("POST /v1/products/publication_figure ")
+                            || line.startsWith("POST /v1/products/figure_colour_maps ");
+                    if (route) {
                         requestBody = buffer->mid(end + 4, length);
+                        requestLine = line;
+                    }
                     buffer->clear();
                     const QByteArray payload =
                             route ? this->body : QByteArray(R"({"detail":"Not Found"})");
@@ -68,6 +71,7 @@ public:
     QTcpServer server;
     QByteArray body;
     QByteArray requestBody;
+    QByteArray requestLine;
 };
 
 QJsonObject body(const vf::Options &o, const vf::Overlays &ov = {}, bool preview = false)
@@ -302,6 +306,148 @@ void TestPublicationFigure::colourMapsOfTheWindowMapToTheBackendsOrInferno()
     QCOMPARE(vf::colourMapFor(u"MyLut"_s, available), u"Inferno"_s);
     QCOMPARE(vf::colourMapFor(QString(), available), u"Inferno"_s);
     QVERIFY(vf::orderedColourMaps({}).isEmpty());
+}
+
+namespace {
+BackendFigureColourMaps answerOf(std::initializer_list<std::tuple<const char *, bool, const char *>> maps,
+                                 QStringList extra)
+{
+    BackendFigureColourMaps a;
+    a.valid = true;
+    for (const auto &[name, exact, drawn] : maps)
+        a.maps.append({ QString::fromLatin1(name), exact, QString::fromLatin1(drawn) });
+    a.extra = std::move(extra);
+    return a;
+}
+
+QStringList labelsOf(const QList<vf::ColourMapChoice> &c)
+{
+    QStringList out;
+    for (const auto &x : c)
+        out << x.label;
+    return out;
+}
+}   // namespace
+
+void TestPublicationFigure::theDialogOpensWithTheWholeRegistryBeforeTheBackendAnswers()
+{
+    const QStringList registry{ u"Glow"_s, u"Viridis"_s, u"DefaultStep"_s, u"Inferno"_s };
+    const auto before = vf::colourMapChoices(registry, BackendFigureColourMaps{}, u"Glow"_s, true);
+    // Nothing narrowed, nothing flagged, no matplotlib extras yet; the window's table first.
+    QCOMPARE(labelsOf(before), (QStringList{ u"Glow (window)"_s, u"Inferno"_s, u"Viridis"_s,
+                                             u"DefaultStep"_s, u"Glow"_s }));
+    for (const auto &c : before)
+        QVERIFY(c.exact);
+    QCOMPARE(before.first().kind, vf::ColourMapChoice::Kind::Window);
+}
+
+void TestPublicationFigure::theBackendsAnswerNarrowsTheListAndFlagsStandIns()
+{
+    const QStringList registry{ u"Glow"_s, u"Viridis"_s, u"DefaultStep"_s, u"Inferno"_s,
+                                u"Rainbow"_s };
+    const auto answer = answerOf({ { "Glow", false, "hot" }, { "Viridis", true, "viridis" },
+                                   { "Inferno", true, "inferno" }, { "Rainbow", false, "rainbow" } },
+                                 { u"hot"_s, u"cubehelix"_s });
+    // The window shows Glow: the backend draws it only as hot, so its own table comes first.
+    const auto c = vf::colourMapChoices(registry, answer, u"Glow"_s, true);
+    QCOMPARE(labelsOf(c), (QStringList{ u"Glow (window)"_s, u"Inferno"_s, u"Viridis"_s, u"Glow"_s,
+                                        u"Rainbow"_s, u"hot"_s, u"cubehelix"_s }));   // DefaultStep gone
+    QCOMPARE(c[0].kind, vf::ColourMapChoice::Kind::Window);
+    QCOMPARE(c[3].kind, vf::ColourMapChoice::Kind::Registry);
+    QVERIFY(!c[3].exact);
+    QCOMPARE(c[3].drawnAs, u"hot"_s);
+    QVERIFY(c[1].exact);
+    // matplotlib's own maps come after the registry's, and are offered as they are.
+    QCOMPARE(c[5].kind, vf::ColourMapChoice::Kind::Extra);
+    QVERIFY(c[5].exact);
+    // The note says what the figure will draw, only for a map that is approximated.
+    QVERIFY(vf::approximationNote(c[3]).contains(u"matplotlib's hot"_s));
+    QVERIFY(vf::approximationNote(c[3]).contains(u"not the same"_s));
+    QVERIFY(vf::approximationNote(c[1]).isEmpty());
+    QVERIFY(vf::approximationNote(c[0]).isEmpty());
+    QVERIFY(vf::approximationNote(c[5]).isEmpty());
+}
+
+void TestPublicationFigure::theWindowsTableIsNotOfferedWhereTheNameIsExactOrThereIsNone()
+{
+    const QStringList registry{ u"Viridis"_s, u"Inferno"_s };
+    const auto answer = answerOf({ { "Viridis", true, "viridis" }, { "Inferno", true, "inferno" } }, {});
+    // The window's Viridis is matplotlib's own table: the registry entry serves.
+    QCOMPARE(labelsOf(vf::colourMapChoices(registry, answer, u"viridis"_s, true)),
+             (QStringList{ u"Inferno"_s, u"Viridis"_s }));
+    // No table to send (a hand-made map under a baked stretch): nothing to offer for it.
+    QCOMPARE(labelsOf(vf::colourMapChoices(registry, answer, u"MyLut"_s, false)),
+             (QStringList{ u"Inferno"_s, u"Viridis"_s }));
+}
+
+void TestPublicationFigure::theWindowsTableAndTheScaleBarRuleReachTheBody()
+{
+    vf::Options o;
+    o.cmap = u"Glow"_s;
+    QVERIFY(!body(o).contains(u"lut"_s));          // a name alone: no table
+    QJsonArray lut;
+    for (int i = 0; i < 256; ++i)
+        lut.append(QJsonArray{ i / 255.0, 0.0, 1.0 - i / 255.0 });
+    o.lut = lut;
+    QCOMPARE(body(o).value(u"lut"_s).toArray().size(), 256);
+    QCOMPARE(body(o).value(u"cmap"_s).toString(), u"Glow"_s);
+
+    // A typed length goes with a unit that was picked; with auto it is a round length.
+    vf::Options s;
+    s.scaleBar = true;
+    s.scaleBarLength = 30.0;
+    s.scaleBarUnit = u"auto"_s;
+    QVERIFY(!vf::scaleBarLengthEnabled(s.scaleBarUnit));
+    QCOMPARE(body(s).value(u"scale_bar_length"_s).toDouble(), 0.0);
+    s.scaleBarUnit = u"arcsec"_s;
+    QVERIFY(vf::scaleBarLengthEnabled(s.scaleBarUnit));
+    QCOMPARE(body(s).value(u"scale_bar_length"_s).toDouble(), 30.0);
+    QCOMPARE(body(s).value(u"scale_bar_unit"_s).toString(), u"arcsec"_s);
+}
+
+void TestPublicationFigure::theColourMapLookupIsNotAHeavyJob()
+{
+    // The long timeout (16 min) and the status bar's "N running" match on path
+    // fragments: the listing must stay clear of them, and does not.
+    const QString lookup = u"/v1/products/figure_colour_maps"_s;
+    QVERIFY(!BackendClient::isHeavyPath(lookup));
+    QCOMPARE(BackendClient::requestTimeoutForPath(lookup).count(), 15000);
+    // The render is a heavy path; the name the listing had first matched it, which is
+    // why it was renamed.
+    QVERIFY(BackendClient::isHeavyPath(u"/v1/products/publication_figure"_s));
+    QVERIFY(BackendClient::isHeavyPath(u"/v1/products/publication_figure/colour_maps"_s));
+    QCOMPARE(BackendClient::requestTimeoutForPath(u"/v1/products/publication_figure"_s).count(),
+             960000);
+}
+
+void TestPublicationFigure::theClientReadsTheColourMapAnswer()
+{
+    FigureServer backend(QJsonDocument(QJsonObject{
+            { "maps", QJsonArray{ QJsonObject{ { "name", "Glow" }, { "exact", false },
+                                               { "drawn_as", "hot" } },
+                                  QJsonObject{ { "name", "Viridis" }, { "exact", true },
+                                               { "drawn_as", "viridis" } } } },
+            { "extra", QJsonArray{ u"cubehelix"_s } } }).toJson());
+    const BackendClient client(backend.url(), u"tok"_s);
+    const BackendFigureColourMaps r =
+            client.publicationFigureColourMaps({ u"Glow"_s, u"Viridis"_s, u"DefaultStep"_s });
+    QVERIFY(r.valid);
+    QCOMPARE(backend.requestLine, QByteArray("POST /v1/products/figure_colour_maps HTTP/1.1"));
+    QCOMPARE(QJsonDocument::fromJson(backend.requestBody).object().value(u"names"_s).toArray().size(), 3);
+    QCOMPARE(r.maps.size(), 2);
+    QCOMPARE(r.maps[0].name, u"Glow"_s);
+    QVERIFY(!r.maps[0].exact);
+    QCOMPARE(r.maps[0].drawnAs, u"hot"_s);
+    QVERIFY(r.maps[1].exact);
+    QCOMPARE(r.extra, QStringList{ u"cubehelix"_s });
+}
+
+void TestPublicationFigure::anOlderBackendGivesNoColourMapAnswer()
+{
+    // 404 on the route (a backend without it): not valid, so the dialog keeps the registry.
+    FigureServer backend(QByteArray{});
+    const BackendClient client(backend.url() + u"/x"_s, u"tok"_s);
+    QVERIFY(!client.publicationFigureColourMaps({ u"Glow"_s }).valid);
 }
 
 void TestPublicationFigure::theWindowsFrameIsTheFiguresFrame()

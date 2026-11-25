@@ -187,6 +187,21 @@ class TestFrameConversion(unittest.TestCase):
         self.assertAlmostEqual(img["center"][1], 32.0, places=5)
         self.assertEqual(R.native_frame_name(wcs), "galactic")
 
+    def test_native_ecliptic_grid_is_named_ecliptic(self):
+        """ELON/ELAT axes are the ecliptic: astropy's wcs_to_celestial_frame answers
+        ICRS for them, which made frame=ecliptic rotate an ecliptic image's compass."""
+        for proj in ("TAN", "SIN", "CAR"):
+            wcs = _wcs(crval=(120.0, 10.0), ctype=(f"ELON-{proj}", f"ELAT-{proj}"), radesys=None)
+            self.assertEqual(R.native_frame_name(wcs), "ecliptic", proj)
+        # Equatorial and Galactic grids are unchanged.
+        self.assertEqual(R.native_frame_name(_wcs()), "fk5")
+        # A region in ecliptic coordinates on such an image needs no conversion.
+        wcs = _wcs(crval=(120.0, 10.0), ctype=("ELON-TAN", "ELAT-TAN"), radesys=None)
+        reg = {"shape": "circle", "frame": "ecliptic", "center": [120.0, 10.0], "radius": 3.0,
+               "unit": "arcsec"}
+        img = R.convert_regions([reg], to_frame="image", wcs=wcs, origin=1)[0]
+        self.assertAlmostEqual(img["center"][0], 32.0, delta=0.6)
+
     def test_off_projection_is_an_error(self):
         reg = {"shape": "circle", "frame": "fk5", "center": [22.0, -47.0], "radius": 3.0, "unit": "arcsec"}
         with self.assertRaises(R.RegionParseError):

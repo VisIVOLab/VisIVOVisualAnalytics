@@ -22,6 +22,13 @@ private slots:
     void contourLinesKeepTheirColourWidthAndDash();
     void contourLinesAreJoinedOnceAndKept();
     void colourMapsOfTheWindowMapToTheBackendsOrInferno();
+    void theDialogOpensWithTheWholeRegistryBeforeTheBackendAnswers();
+    void theBackendsAnswerNarrowsTheListAndFlagsStandIns();
+    void theWindowsTableIsNotOfferedWhereTheNameIsExactOrThereIsNone();
+    void theWindowsTableAndTheScaleBarRuleReachTheBody();
+    void theColourMapLookupIsNotAHeavyJob();
+    void theClientReadsTheColourMapAnswer();
+    void anOlderBackendGivesNoColourMapAnswer();
     void theWindowsFrameIsTheFiguresFrame();
     void formatsAreThoseTheBackendWrites();
     void theClientPostsTheBodyAndReadsThePreview();

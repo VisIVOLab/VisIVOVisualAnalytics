@@ -11,6 +11,7 @@
 
 #include "ContourSettings.h"
 #include "RegionModel.h"
+#include "app/BackendClient.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -43,7 +44,7 @@ inline const std::vector<FormatInfo> &formats()
 
 /// The colour maps a figure offers, from the names the backend can set (its answer
 /// to the viewer's registry, src/vtk/ColorMaps.cpp, POST
-/// /v1/products/publication_figure/colour_maps): the perceptually uniform ones
+/// /v1/products/figure_colour_maps): the perceptually uniform ones
 /// first, the rest alphabetically.
 inline QStringList orderedColourMaps(const QStringList &names)
 {
@@ -59,6 +60,73 @@ inline QStringList orderedColourMaps(const QStringList &names)
             rest << n;
     rest.sort(Qt::CaseInsensitive);
     return head + rest;
+}
+
+/// One line of the dialog's colour-map list.
+struct ColourMapChoice
+{
+    enum class Kind
+    {
+        Window,     ///< the window's own table, sent as colours (exact whatever the map)
+        Registry,   ///< a map of the viewer's registry, set by name on the backend
+        Extra       ///< a matplotlib map the viewer has not
+    };
+    Kind kind{ Kind::Registry };
+    QString name;       ///< what the request's `cmap` says
+    QString label;      ///< what the list shows
+    bool exact{ true }; ///< false: the backend draws a close matplotlib map, not the viewer's
+    QString drawnAs;    ///< that matplotlib map
+};
+
+/// The dialog's colour-map list, in order: the window's own table first (when it
+/// has one to send and the backend does not already draw its map exactly by name),
+/// then the viewer's registry, then matplotlib's own maps. Before the backend has
+/// answered (@p answer not valid) the whole registry is offered, none flagged; after,
+/// only the maps it can set, each with whether it is exact.
+inline QList<ColourMapChoice> colourMapChoices(const QStringList &registry,
+                                               const BackendFigureColourMaps &answer,
+                                               const QString &windowMap, bool windowHasTable)
+{
+    using Kind = ColourMapChoice::Kind;
+    QList<ColourMapChoice> out;
+    QStringList names = registry;
+    const auto exactByName = [&](const QString &n) {
+        for (const auto &m : answer.maps)
+            if (m.exact && m.name.compare(n, Qt::CaseInsensitive) == 0)
+                return true;
+        return false;
+    };
+    if (answer.valid) {
+        names.clear();
+        for (const auto &m : answer.maps)
+            names << m.name;
+    }
+    if (windowHasTable && !windowMap.isEmpty() && !exactByName(windowMap))
+        out.append({ Kind::Window, windowMap, windowMap + QStringLiteral(" (window)"), true, {} });
+    for (const QString &n : orderedColourMaps(names)) {
+        ColourMapChoice c{ Kind::Registry, n, n, true, {} };
+        for (const auto &m : answer.maps)
+            if (m.name == n) {
+                c.exact = m.exact;
+                c.drawnAs = m.drawnAs;
+                break;
+            }
+        out.append(c);
+    }
+    if (answer.valid)
+        for (const QString &n : answer.extra)
+            out.append({ Kind::Extra, n, n, true, {} });
+    return out;
+}
+
+/// What the dialog says under the colour map for @p c: that it is drawn with a
+/// close matplotlib map and not the window's own (a stand-in, not an error).
+inline QString approximationNote(const ColourMapChoice &c)
+{
+    if (c.kind != ColourMapChoice::Kind::Registry || c.exact || c.drawnAs.isEmpty())
+        return {};
+    return QStringLiteral("Drawn with matplotlib's %1, close to but not the same as the "
+                          "window's map.").arg(c.drawnAs);
 }
 
 /// The figure's colour map for the window's: the name in @p available (the dialog's
@@ -80,11 +148,22 @@ inline QString frameForWindow(bool galactic, bool ecliptic)
                     : ecliptic ? QStringLiteral("ecliptic") : QStringLiteral("native");
 }
 
+/// The scale bar's length is typed in a unit that is picked: with the unit on
+/// automatic the backend reads a typed length in the unit it picks from the image's
+/// width, which the user cannot tell, so the length is for an explicit unit only.
+inline bool scaleBarLengthEnabled(const QString &unit)
+{
+    return unit != QLatin1String("auto");
+}
+
 /// Everything the dialog edits. The defaults are the one-click figure's.
 struct Options
 {
     // Image
     QString cmap{ QStringLiteral("Inferno") };
+    /// The window's own colours (256 RGB rows in 0..1, lowest value first), when the
+    /// choice is the window's map and not a name: the backend then draws exactly them.
+    QJsonArray lut;
     QString stretch{ QStringLiteral("linear") };   ///< linear sqrt squared log asinh sinh power
     double gamma{ 1.0 };
     double percent{ 99.5 };
@@ -236,11 +315,14 @@ inline QJsonObject requestBody(const QString &datasetId, const Options &o, const
         { "width_in", o.widthIn }, { "height_in", o.heightIn }, { "dpi", o.dpi },
         { "crop", o.crop },
         { "beam", o.beam }, { "beam_position", o.beamPosition },
-        { "scale_bar", o.scaleBar }, { "scale_bar_length", o.scaleBarLength },
+        { "scale_bar", o.scaleBar },
+        { "scale_bar_length", scaleBarLengthEnabled(o.scaleBarUnit) ? o.scaleBarLength : 0.0 },
         { "scale_bar_unit", o.scaleBarUnit }, { "scale_bar_position", o.scaleBarPosition },
         { "compass", o.compass }, { "compass_position", o.compassPosition },
         { "preview", preview }, { "preview_px", previewPx },
     };
+    if (!o.lut.isEmpty())
+        b["lut"] = o.lut;
     if (o.useRange && o.vmin < o.vmax) {
         b["vmin"] = o.vmin;
         b["vmax"] = o.vmax;
