@@ -84,7 +84,8 @@ with several fields and physical units, and figure export.
   an optional transparent background), PDF or SVG at the view's size, 2×, 4×
   or a given width. Axes, colour bar and title are optional.
 - **Publication figure (#41).** The dialog shows a live preview and starts
-  from the window's colour map, stretch, range and sky frame. It controls
+  from the window's colour map (sent as its colour table, so hand-made maps
+  are drawn exactly), stretch, range and sky frame. It controls
   figure size, fonts, titles, sky grid and frame (equatorial, Galactic or
   ecliptic), colour bar, beam, scale bar (arcsec, arcmin or degrees chosen
   from its size, or a chosen unit), a compass in the grid's frame, and the
