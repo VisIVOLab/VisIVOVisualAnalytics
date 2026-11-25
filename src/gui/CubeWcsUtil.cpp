@@ -6,6 +6,7 @@
 #include <vtkAxisActor2D.h>
 #include <vtkProperty2D.h>
 #include <vtkRenderer.h>
+#include <vtkSmartPointer.h>
 #include <vtkTextActor.h>
 #include <vtkTextProperty.h>
 
