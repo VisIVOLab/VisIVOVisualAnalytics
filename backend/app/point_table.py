@@ -320,7 +320,8 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
 def _ramses_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | None:
     """``particle_dataset_path`` for a RAMSES output (its directory, a file of
     it, or a family reference); None when ``path`` names none or the output
-    has no particle files (its mesh opens as an AMR hierarchy, issue #550)."""
+    has neither particle files nor a mesh with gas (a mesh with gas opens as
+    its gas cells, issue #550)."""
     from . import ramses_output as rm   # noqa: PLC0415
     # Every file of the output passes the data roots before the info or a
     # header is parsed (the mesh files too: the classifier reads them).
@@ -328,9 +329,16 @@ def _ramses_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | No
     if directory is None:
         return None
     out = rm.open_output(directory)
-    if not out.has("part"):
-        return None
     slug = rm.split_ref(path)[1]
+    if slug == rm.CELLS:
+        if not out.has_cells():
+            raise ValueError(f"{directory.name} has no mesh with gas to open as cells.")
+        return rm.ramses_ref(out.path, slug), "ramses"
+    if not out.has("part"):
+        # A mesh with gas and no particles opens as its gas cells (issue #550).
+        if slug is not None:
+            raise ValueError(f"{directory.name} has no {slug!r} particles.")
+        return (rm.ramses_ref(out.path, rm.CELLS), "ramses") if out.has_cells() else None
     if slug is None:
         slug = rm.default_family(out)
         if slug is None:

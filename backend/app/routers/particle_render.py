@@ -241,13 +241,23 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
         and "mass" in table.columns else None)
     if not len(rows):
         raise ValueError("No particle to draw: no row has a position and a positive intensity.")
-    if req.radius_field:
-        if req.radius_field not in table.columns:
-            raise ValueError(f"Unknown radius field: {req.radius_field!r}")
-        radius = np.asarray(table.columns[req.radius_field][rows], dtype=np.float32)
+    # A component that declares the size of its rows (the cells of an AMR mesh,
+    # app/amr_cells.py: their side) is drawn with it, not with a size
+    # estimated from the neighbours; a radius field the request names wins.
+    radius_field = req.radius_field
+    declared = None
+    if not radius_field and component is not None:
+        declared = getattr(component, "size_column", None)
+        if declared not in table.columns:
+            declared = None
+        radius_field = declared
+    if radius_field:
+        if radius_field not in table.columns:
+            raise ValueError(f"Unknown radius field: {radius_field!r}")
+        radius = np.asarray(table.columns[radius_field][rows], dtype=np.float32)
         positive = np.isfinite(radius) & (radius > 0)
         if not positive.any():
-            raise ValueError(f"The radius field {req.radius_field!r} has no positive value.")
+            raise ValueError(f"The radius field {radius_field!r} has no positive value.")
         radius = np.where(positive, radius, radius[positive].min())
         if scale != 1.0:   # the table's units, into the local frame's
             # In float64: a scale above float32's range (a span up to 6.8e38)
@@ -286,7 +296,13 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
     kernel = _projected_kernel(req)
     # An estimated length is half the distance to the neighbours-th particle:
     # an SPH kernel's support reaches that particle.
-    support = 2.0 if kernel != "gauss" and not req.radius_field else 1.0
+    # A declared cell side is drawn as a kernel of the rms width
+    # particle_raytrace.CELL_RMS of it.
+    if declared:
+        from ..particle_raytrace import cell_radius_factor  # noqa: PLC0415
+        support = cell_radius_factor(kernel)
+    else:
+        support = 2.0 if kernel != "gauss" and not radius_field else 1.0
     radius = (radius * (req.radius_scale * support)).astype(np.float32)
     # Positions and sizes in the local frame; ``frame`` (origin, scale) maps
     # it to the table's coordinates, table = origin + scale * local, and
@@ -301,7 +317,8 @@ def _prepare(entry: dict, req: ParticleRenderRequest, columns: tuple[str, ...] =
             clipped=stats["clipped_rows"], light_unit=light_unit,
             log10=bool(req.intensity_field and req.intensity_log10),
             radius_scale=req.radius_scale,
-            smoothing=(f"column {req.radius_field}" if req.radius_field
+            smoothing=(f"cell size ({declared})" if declared
+                       else f"column {radius_field}" if radius_field
                        else f"{req.neighbours} neighbours" if support == 1.0
                        else f"distance to neighbour {req.neighbours}"),
             colour_by=req.colour_by, value_field=req.colour.field,

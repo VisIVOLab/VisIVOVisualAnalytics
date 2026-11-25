@@ -817,6 +817,22 @@ def gaussian_width(kernel: str) -> float:
     return math.sqrt(mean_r2)
 
 
+#: The Gaussian a grid cell is drawn with (issue #550) has the rms width of
+#: half the cell per axis, exp(-d²/h²) with h = side / √2. Cells of a mesh
+#: lie one side apart; sampled that far apart a Gaussian of rms s sums to a
+#: flat sheet with ripples of 2 exp(-2π² (s / side)²): 1.4 % at s = side / 2
+#: (a field uniform over the mesh stays uniform), but 39 % at the rms of the
+#: cube itself, side / √12. The light stays the cell's, whatever the width.
+CELL_RMS = 0.5
+
+
+def cell_radius_factor(kernel: str = "gauss") -> float:
+    """The ``radius`` (the Gaussian's h, or ``kernel``'s support H) to give a
+    cell, per unit of its side: the kernel whose projected second moment
+    is :data:`CELL_RMS` of it (see :func:`gaussian_width`)."""
+    return math.sqrt(2.0) * CELL_RMS / gaussian_width(kernel)
+
+
 if njit is not None:
     @njit(cache=True, nogil=True)
     def _subsamples(h):

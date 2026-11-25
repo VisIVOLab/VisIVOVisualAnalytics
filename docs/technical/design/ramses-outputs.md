@@ -77,3 +77,29 @@ particles, 15,974,645 leaf cells over levels 7 to 13): the info file is parsed
 in under 10 ms; leaf counts take about 0.4 s; the leaf cells of all levels with
 two hydro variables stream in about 1.3 s with blocks of at most 0.4 million
 cells; the sum of `density * dx^3` over the leaves is `omega_b / omega_m`.
+
+## AMR views (#550)
+
+Built on `AmrHierarchy`, so any producer gets them (#554 adds `open_hierarchy`).
+
+- **Cells as points** (`app/amr_cells.py`, `AmrCells`): the leaves as a
+  component beside the families, slug `cells`. Same duck-typed interface; rows
+  are `leaf_blocks` order; `x y z level` and each hydro field are read in one
+  pass when first asked for and kept (8 bytes a cell; `level` 2), `dx = 2^-level`
+  and `mass = density dx^3` are derived. It declares `size_column = "dx"`, and
+  `routers/particle_render._prepare` uses a declared size, when the request names
+  no `radius_field`, instead of the 32-neighbour estimate, with
+  `particle_raytrace.cell_radius_factor` (rms width of half a cell per axis:
+  h = dx/sqrt(2) for the Gaussian, the same projected second moment for M4 and
+  Wendland C4 through `gaussian_width`).
+- **Uniform cube** (`compute/amr_views.py`): `plan_view` and `worker_amr_uniform`,
+  reusing the limits of `compute/pluto_cartesian.py`; slabs of whole planes, one
+  pass over the leaves that reach each slab, so memory is the slab. Leaves
+  coarser or equal to the target level fill their voxels, finer ones are
+  volume-weighted: the mass cube is exact up to float32.
+- **Level map**: `level_map` returns the rectangles of the leaves a plane cuts,
+  per level, with counts; sweeping the planes of a level gives its leaf count.
+- **Finest level in a box**: `AmrHierarchy.finest_level_in(lo, hi)`, by overlap
+  (a coarse cell that reaches into the box counts).
+
+Routes: [AMR outputs](../backend-api/sed-simulations.md).

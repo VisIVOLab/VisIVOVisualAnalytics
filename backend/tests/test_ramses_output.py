@@ -65,7 +65,8 @@ def test_families_come_from_the_family_record_or_the_birth_time(tmp_path):
     assert {k: f.total for k, f in old.families().items()} == {"dm": 7, "stars": 4}
     new = ro.open_output(W.write_output(tmp_path / "b", particles="descriptor")[0])
     assert {k: f.total for k, f in new.families().items()} == {"dm": 6, "stars": 4, "sinks": 1}
-    assert [c["name"] for c in ro.components(new.path)] == ["dark matter", "stars", "sinks"]
+    assert [c["name"] for c in ro.components(new.path)] == ["dark matter", "stars", "sinks",
+                                                            "gas cells"]
     assert new.describe()["families"] == {"dm": 6, "stars": 4, "sinks": 1}
 
 
@@ -226,7 +227,8 @@ def test_classify_takes_the_directory_or_any_file_of_it(tmp_path):
                    directory / "part_00001.out00001", directory / "header_00001.txt"):
         r = classify_path(target)
         assert (r["kind"], r["opener"], r["open_path"]) == ("particles", "catalogue", ref), target
-        assert [c["name"] for c in r["components"]] == ["dark matter", "stars", "sinks"]
+        assert [c["name"] for c in r["components"]] == ["dark matter", "stars", "sinks",
+                                                        "gas cells"]
     assert "RAMSES output 00001 (2 files)" in r["detail"] and "mesh of levels 1-2" in r["detail"]
     # A folder that is not one is still a folder; a file beside it is unaffected.
     plain = tmp_path / "plain"
@@ -234,9 +236,14 @@ def test_classify_takes_the_directory_or_any_file_of_it(tmp_path):
     assert classify_path(plain)["kind"] == "directory"
 
 
-def test_a_mesh_only_output_is_named_and_not_opened_as_particles(tmp_path):
+def test_a_mesh_with_gas_opens_as_cells_and_one_without_has_no_viewer(tmp_path):
     from app.classify import classify_path
     directory, _ = W.write_output(tmp_path, particles=None)
+    r = classify_path(directory)          # the gas cells of the mesh (issue #550)
+    assert (r["kind"], r["opener"]) == ("particles", "catalogue")
+    assert r["open_path"] == ro.ramses_ref(directory, "cells") and "gas cells" in r["detail"]
+    for f in directory.glob("hydro_*"):
+        f.unlink()
     r = classify_path(directory)
     assert (r["kind"], r["opener"]) == ("amr", "unsupported") and "no particles" in r["detail"]
 
@@ -308,7 +315,7 @@ async def test_routes_open_and_draw_an_output(client, auth_headers, tmp_path):
     W.write_output(tmp_path / "run", 2, particles="descriptor", seed=3)
     r = (await client.post("/v1/files/classify", json={"path": str(d1)},
                            headers=auth_headers)).json()
-    assert r["opener"] == "catalogue" and len(r["components"]) == 3, r
+    assert r["opener"] == "catalogue" and len(r["components"]) == 4, r
     cat = (await client.post("/v1/catalogue/open", json={"path": str(d1), "format": "csv"},
                              headers=auth_headers)).json()
     assert cat["valid"], cat

@@ -144,6 +144,34 @@ class AmrHierarchy(ABC):
         cells = float(np.prod(self.extent)) * float(8 ** level)
         return int(level) if float(n) == cells else None
 
+    def finest_level_in(self, lo: Sequence[float] | None = None,
+                        hi: Sequence[float] | None = None) -> int | None:
+        """The finest level among the leaves that overlap the box ``lo`` ..
+        ``hi`` (box units; None: unbounded), None when none does. A leaf
+        overlaps it when its extent does, not only its centre: a coarse cell
+        that merely reaches into the box counts."""
+        if lo is None and hi is None:
+            levels = self.levels
+            return int(levels[-1]) if levels else None
+        coarsest = 2.0 ** -min(self.levels) if self.levels else 1.0
+        pad = 0.5 * coarsest
+        wide_lo = None if lo is None else [v - pad for v in lo]
+        wide_hi = None if hi is None else [v + pad for v in hi]
+        best = None
+        for block in self.leaf_blocks((), None, wide_lo, wide_hi):
+            if best is not None and block.level <= best:
+                continue
+            reach = 0.5 * block.dx
+            keep = np.ones(block.size, dtype=bool)
+            for d in range(3):
+                if lo is not None:
+                    keep &= block.centre[:, d] + reach > lo[d]
+                if hi is not None:
+                    keep &= block.centre[:, d] - reach < hi[d]
+            if keep.any():
+                best = block.level
+        return best
+
     def leaf_cells(self, fields: Sequence[str] = (), levels: Sequence[int] | None = None,
                    lo: Sequence[float] | None = None, hi: Sequence[float] | None = None,
                    max_cells: int = MAX_JOINED_CELLS) -> LeafCells:
@@ -165,3 +193,18 @@ class AmrHierarchy(ABC):
             np.concatenate([np.full(b.size, b.dx) for b in blocks]),
             np.concatenate([b.centre for b in blocks]),
             {f: np.concatenate([b.fields[f] for b in blocks]) for f in fields})
+
+
+def open_hierarchy(path, allowed=None) -> AmrHierarchy:
+    """The mesh a path names: a RAMSES output (its directory, a file of it or
+    a component reference). The one place a further producer (issue #554)
+    is added, so the views and their routes need no change.
+
+    ``allowed`` (path -> bool): every file of the output must pass it, else
+    PermissionError, before any is parsed. ValueError when ``path`` holds no
+    mesh."""
+    from . import ramses_output as rm   # noqa: PLC0415
+    directory = rm.checked_output(path, allowed)
+    if directory is not None:
+        return rm.open_output(directory).amr()
+    raise ValueError(f"{path} holds no AMR mesh this backend reads (a RAMSES output).")

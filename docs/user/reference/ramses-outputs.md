@@ -62,8 +62,19 @@ same holds when the backend draws the points (the axis titles and the bar are
 the same) and over a ray-traced picture, whose bar reads *mass (constant)* with
 the value.
 
+## Gas cells
+
+The mesh's gas opens as one more component, *gas cells*, beside the families:
+one row per leaf cell with `x`, `y`, `z`, the cell size `dx`, its refinement
+`level`, `mass` (density times volume), `density`, the velocities, `pressure`
+and the passive scalars the output has (`metallicity`, ...). A mesh with gas and
+no particle files opens as its cells. The ray-traced view draws each cell with
+its own size, at the resolution the run wrote, without resampling. Uniform
+cubes of a field at a chosen level, the refinement level of a slice and
+"refine a box" come from the same cells; the backend routes are in
+[AMR outputs](../../technical/backend-api/sed-simulations.md).
+
 ## Not read yet
 
-The gas and the mesh (`amr_`, `hydro_`) are read by the backend as leaf cells
-(`app/amr_source.py`), but no viewer shows them yet: an output with no particle
-files is named as a RAMSES mesh and not opened. `grav_` files are not read.
+`grav_` files are not read. A mesh with no `hydro_` file has no gas to show and
+is named as a RAMSES mesh without being opened.

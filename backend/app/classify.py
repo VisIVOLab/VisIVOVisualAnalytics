@@ -374,8 +374,8 @@ def _classify_ramses(path: Path, allowed=None) -> dict | None:
     file in it (``info_*.txt``, ``amr_*.out*``, ``part_*.out*``, ...), judged
     by the info file's content. With particle files it opens as a table of
     points, one family at a time (``open_path`` the first, ``components``
-    all); without, it holds a mesh only, which no opener takes yet. None for
-    anything else."""
+    all); without, a mesh with gas opens as its gas cells (issue #550), and one
+    without gas has no viewer. None for anything else."""
     from . import ramses_output as rm  # noqa: PLC0415
     from .point_table import particle_components, particle_dataset_path  # noqa: PLC0415
 
@@ -406,9 +406,10 @@ def _classify_ramses(path: Path, allowed=None) -> dict | None:
     counts = ", ".join(f"{c['num_rows']} {c['name']}" for c in components)
     z = f" at z = {info.redshift:.3g}" if info.cosmological else ""
     detail = (f"RAMSES output {out.number} ({info.ncpu} files){z}: {counts}. "
-              "Each particle family opens as a table of points.")
+              "Each particle family, and the gas cells of the mesh, opens as a table of points.")
     if mesh:
-        detail += f" It also holds {mesh}, which the particle table does not show."
+        detail += (f" It holds {mesh}: the cells' sizes are their smoothing lengths, and a "
+                   "uniform cube of any field can be resampled from them.")
     return _result("particles", "catalogue", True, detail, open_path=found[0],
                    components=components)
 

@@ -37,6 +37,9 @@ AmrHierarchy` of the run: leaf cells (a cell with son index 0) with centre,
 level and the hydro fields, read one CPU file and one level at a time. Field
 names come from ``hydro_file_descriptor.txt``, else the old order: ``density
 vx vy vz pressure`` then passive scalars (``metallicity``, ``scalar_2``, ...).
+The leaves also open as one more component, ``<directory>::ramses-family=cells``
+(:meth:`RamsesOutput.cells`, app/amr_cells.py), a table of points whose
+columns include the cell size ``dx`` and mass (issue #550).
 
 Units
 -----
@@ -76,6 +79,9 @@ FAMILIES = {1: ("dm", "dark matter"), 2: ("stars", "stars"), 3: ("sinks", "sinks
             0: ("tracer-gas", "gas tracers"), -1: ("tracer-dm", "dark matter tracers"),
             -2: ("tracer-stars", "star tracers"), -3: ("tracer-sinks", "sink tracers")}
 _SLUG_CODE = {slug: code for code, (slug, _) in FAMILIES.items()}
+#: The slug of the gas cells of the mesh (issue #550), a component beside the
+#: particle families: ``<output directory>::ramses-family=cells``.
+CELLS = "cells"
 
 _FILE = re.compile(r"^(amr|hydro|grav|part|sink)_(\d+)\.out(\d+)$")
 _INFO = re.compile(r"^info_(\d+)\.txt$")
@@ -433,7 +439,8 @@ def split_ref(path: str | Path) -> tuple[str, str | None]:
     for any other path."""
     text = str(path)
     base, sep, value = text.rpartition(REF_SEP)
-    if sep and (value in _SLUG_CODE or re.fullmatch(r"family--?\d+", value)):
+    if sep and (value in _SLUG_CODE or value == CELLS
+                or re.fullmatch(r"family--?\d+", value)):
         return base, value
     return text, None
 
@@ -486,6 +493,7 @@ class RamsesOutput:
         self._hydro_domains: dict[int, _HydroDomain] = {}
         self._periodic: bool | None = None
         self._hierarchy: RamsesAmr | None = None
+        self._cells = None
 
     # ── files ──
 
@@ -701,7 +709,24 @@ class RamsesOutput:
                 self._family_rows[key] = np.flatnonzero(codes == fam.code).astype(np.int32)
             return self._family_rows[key]
 
-    def component(self, slug: str) -> "Component":
+    def has_cells(self) -> bool:
+        """Whether the mesh and its gas are there to read as cells (issue #550)."""
+        return self.has("amr") and self.has("hydro") and self.info.ndim == 3
+
+    def cells(self):
+        """The gas cells as a component (app/amr_cells.py)."""
+        if not self.has_cells():
+            raise ValueError(f"{self.directory.name} has no mesh with gas to read as cells.")
+        from .amr_cells import AmrCells  # noqa: PLC0415
+        with self._lock:
+            if self._cells is None:
+                self._cells = AmrCells(self.amr(), self, ramses_ref(self.path, CELLS),
+                                       self.periodic)
+            return self._cells
+
+    def component(self, slug: str):
+        if slug == CELLS:
+            return self.cells()
         if slug not in self.families():
             raise ValueError(f"{self.directory.name} has no {slug!r} particles.")
         return Component(self, slug)
@@ -1065,7 +1090,15 @@ class RamsesAmr(AmrHierarchy):
     def scales(self) -> dict[str, dict]:
         table = self.out.unit_table()
         names = ("x", "y", "z", "dx", *self.fields)
-        return {n: {"factor": float(table[n][0]), "unit": table[n][1]} for n in names if n in table}
+        out = {n: {"factor": float(table[n][0]), "unit": table[n][1]} for n in names if n in table}
+        # A cell's mass is density * dx^3 with dx in box units: the box
+        # length cubed goes into its factor (a particle's mass is in code
+        # mass, unit_d * unit_l^3, with no boxlen).
+        if "density" in out:
+            i = self.out.info
+            out["mass"] = {"factor": float(i.unit_d * (i.boxlen * i.unit_l) ** 3 / MSUN_G),
+                           "unit": "Msun"}
+        return out
 
     def describe(self) -> dict:
         counts = self.leaf_counts()
@@ -1239,10 +1272,15 @@ def default_family(out: RamsesOutput) -> str | None:
 
 
 def components(path: str | Path) -> list[dict]:
-    """Every family with particles: ``{name, path, num_rows}``."""
+    """Every family with particles, then the gas cells of a mesh with gas
+    (issue #550): ``{name, path, num_rows}``."""
     out = open_output(path)
-    return [{"name": f.label, "path": ramses_ref(out.path, slug), "num_rows": f.total}
-            for slug, f in out.families().items()]
+    found = [{"name": f.label, "path": ramses_ref(out.path, slug), "num_rows": f.total}
+             for slug, f in out.families().items()]
+    if out.has_cells():
+        found.append({"name": "gas cells", "path": ramses_ref(out.path, CELLS),
+                      "num_rows": out.amr().n_leaf()})
+    return found
 
 
 def has_family(path: str | Path, slug: str) -> bool:
@@ -1255,6 +1293,9 @@ def has_family(path: str | Path, slug: str) -> bool:
         directory = output_of(path)
         if directory is None:
             return False
+        if slug == CELLS:
+            number = _INFO.match(_info_file(directory).name).group(1)
+            return any(Path(f).name.startswith("hydro_") for f in output_paths(directory, number))
         header = parse_header(next(iter(sorted(directory.glob("header_*.txt"))), None))
         known = {"dm": header.dm, "stars": header.stars, "sinks": header.sinks}.get(slug)
         if known is not None:
