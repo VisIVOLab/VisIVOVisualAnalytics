@@ -28,6 +28,8 @@ private slots:
     void cluster_shippedLauncherIsRunFromStandardInput();
     void cluster_cloneProfileRunsTheClonesLauncher();
     void cluster_imageIsTheClientsVersion();
+    void cluster_buildThatIsNotAReleaseNeverPicksAnImage();
+    void cluster_profileSavedBeforeTheShippedLauncherKeepsItsClone();
     void cluster_sitePresets();
     void cluster_sshFailureMessages();
     void cluster_progressLinesBecomeStatus();

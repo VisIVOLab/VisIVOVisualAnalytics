@@ -69,7 +69,7 @@ and the entries for the desktop's Backends page.
 | `--data-root PATH` | `VISIVO_DATA_ROOT` | unset | The data directory, bound at the same path and set as `VISIVO_DATA_ROOT` in the container, so the backend opens nothing outside it. Recommended for any shared or SRC deployment. |
 | `--sif PATH` | `VISIVO_SIF` | `apptainer/backend.sif` next to the script, or the file `--image` pulls | The container image (a `.sif`). |
 | `--image REF` | `VISIVO_IMAGE` | unset | An image to pull once on the frontend, for example `docker://ghcr.io/visivolab/visivo-backend:<version>-egl`. It goes to `--sif` when given, else to `--image-dir` (default `<workspace>/images/`, `~/.visivo_images` without a workspace), and is reused while the file exists: delete it to pull a moving tag again. Pulling happens in the launcher, on the frontend, because compute nodes often have no internet. The pull prints `[visivo] Pull: <n> s, <m> MB fetched` every 10 s, since the runtime's own progress bars need a terminal. |
-| `--image-dir DIR` | `VISIVO_IMAGE_DIR` | `<workspace>/images`; on `leonardo` the project's work area | Where a pulled image goes: a directory the whole project shares, so that the project pulls it once. On `leonardo`, with no `--image-dir`, it is `/leonardo_work/<account>/visivo/images` when that directory exists and is writable, else `$WORK/visivo/images`. |
+| `--image-dir DIR` | `VISIVO_IMAGE_DIR` | `<workspace>/images`; on `leonardo` the project's work area | Where a pulled image goes: a directory the whole project shares, so that the project pulls it once. On `leonardo`, with no `--image-dir`, it is `/leonardo_work/<account>/visivo/images` when that directory exists and is writable, else `$WORK/visivo/images`. A directory the launcher creates is group-writable and setgid (`chmod 2775`), so that the project's other members can add images; one that exists but is not writable for you is skipped with a message, and the next place, finally the workspace, is used. |
 | `--assign-timeout SEC` | `VISIVO_ASSIGN_TIMEOUT` | `300` | How long to wait for SLURM to give the job a node; `0` waits for ever (cancel ends it). While it waits the launcher prints `[visivo] Queue: <state> (<reason>), <n> s since submission` when the state or reason changes and every 30 s otherwise, with SLURM's reason from `squeue`. |
 | `--ready-timeout SEC` | `VISIVO_READY_TIMEOUT` | `300`; `600` on `leonardo` | How long to wait for the backend to answer once the job runs (polled every 5 s). A first start reads the image from a shared file system, which can take minutes. |
 | `--cleanenv`, `--no-cleanenv` | `VISIVO_CLEANENV` (`1` or `0`) | on for `leonardo`, off elsewhere | Run the container with `--cleanenv`, so that the host's environment (proxy and CA-bundle variables, for example) does not reach it. What reaches the container is passed by name: the variables the launcher sets for the backend, `SLURM_JOB_ID`, `SLURM_MEM_PER_NODE`, `SLURM_MEM_PER_CPU`, `SLURM_CPUS_ON_NODE`, `SLURM_CPUS_PER_TASK`, `CUDA_VISIBLE_DEVICES` and `NVIDIA_VISIBLE_DEVICES` (as the job sees them), and every `VISIVO_*` variable plus `VTK_EGL_DEVICE_INDEX` exported when the launcher is run (for example `VISIVO_RENDER_MAX_SESSIONS`, `VISIVO_HEAVY_TIMEOUT_S`, `VISIVO_PYRAMID_DIR`). The launcher's own options (`VISIVO_ACCOUNT`, `VISIVO_PARTITION`, `VISIVO_IMAGE`, `VISIVO_SITE` and the like) and the token are not forwarded as they are, and a variable the launcher has already set is not overridden. |
@@ -193,9 +193,12 @@ the client was released with. A build whose version has no published image
 latest release's reference. The published images are for x86 and ARM, so a
 PLEIADI profile (POWER9) names its own image file or clone.
 
-**A profile that names a clone** (*VisIVO clone*, for developers) runs that
-clone's launcher exactly as before, with no image chosen for it: its
-`--sif`, `--image` and `--backend-src` behave as they did.
+**A profile that runs a clone** (*Send the launcher from this client* unchecked,
+for developers) runs that clone's launcher exactly as before, with no image
+chosen for it: its `--sif`, `--image` and `--backend-src` behave as they did.
+The profile stores the choice (`ship_launcher` in its JSON); one saved before
+the client shipped the launcher has no such key and loads as a clone, an empty
+*VisIVO clone* meaning `~/VisIVOVisualAnalytics`, as it did then.
 
 **Sites.** The *Site* box fills in what a known site defines and leaves your
 login, account, data root and workspace alone. *Leonardo (CINECA)*: the
@@ -205,9 +208,12 @@ queue; the account is required. No QOS is set, so SLURM's default applies: the
 QOS for big productions (`boost_qos_bprod`) takes jobs of many nodes only; set
 `boost_qos_dbg` for a short test. *PLEIADI (INAF)*: `pleiadi-gpu.oact.inaf.it`,
 partition `gpu`, one GPU, 16 CPUs, 96 GB. When `ssh` fails with exit code 255
-the message depends on the site: on Leonardo it says to renew the CINECA SSH
-certificate (smallstep `step ssh login`); elsewhere it says to set up key-based
-access. A host key that `ssh` has not accepted yet ("Host key verification
+the message depends on what happened: if the launcher had not printed anything
+yet, ssh never got in, and on Leonardo (its login hosts only, not CINECA's other
+clusters) it says to renew the CINECA SSH certificate (smallstep
+`step ssh login`), elsewhere to set up key-based access; if the launcher had
+been talking, the connection dropped (sleep, network) and the message says the
+job is cancelled when the window closes (or by the next window for the profile). A host key that `ssh` has not accepted yet ("Host key verification
 failed") is reported first, with the instruction to connect once from a
 terminal and answer yes: BatchMode never asks.
 

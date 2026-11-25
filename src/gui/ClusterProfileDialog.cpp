@@ -4,6 +4,7 @@
 
 #include <algorithm>
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDialogButtonBox>
@@ -60,9 +61,18 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     };
     m_frontend = line(u"Frontend"_s, u"pleiadi-gpu.oact.inaf.it"_s, u"The SLURM login node, reached with ssh."_s);
     m_user = line(u"User"_s, u"your login on the frontend (empty: the local user)"_s);
-    m_repoDir = line(u"VisIVO clone"_s, u"empty: this client sends the launcher"_s,
-                     u"Only for developers: a VisIVO clone on the frontend, relative to the home "
-                     u"or absolute, whose own launcher is run instead of the client's."_s);
+    m_shipLauncher = new QCheckBox(u"Send the launcher from this client"_s, this);
+    m_shipLauncher->setChecked(true);
+    m_shipLauncher->setToolTip(u"Checked: nothing is needed on the cluster, this client sends the launcher "
+                               u"it carries over ssh. Unchecked (developers, and profiles saved by an "
+                               u"older client): the launcher of a VisIVO clone on the frontend is run."_s);
+    form->addRow(QString(), m_shipLauncher);
+    m_repoDir = line(u"VisIVO clone"_s, u"VisIVOVisualAnalytics (relative to the home, or absolute)"_s,
+                     u"The VisIVO clone on the frontend whose own launcher is run; empty: "
+                     u"~/VisIVOVisualAnalytics. Used only when the launcher is not sent from this client."_s);
+    QObject::connect(m_shipLauncher, &QCheckBox::toggled, m_repoDir,
+                     [this](bool ship) { m_repoDir->setEnabled(!ship); });
+    m_repoDir->setEnabled(false);
     m_partition = line(u"Partition"_s, u"gpu"_s);
     m_account = line(u"Account"_s, u"SLURM project, if the cluster requires one"_s,
                      u"Charged for the job (sbatch --account); required on Leonardo and MareNostrum 5."_s);
@@ -81,10 +91,14 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     m_queueWait->setToolTip(u"How long to wait for the cluster to give the job a node. Cancel "
                             u"in the connection window stops earlier."_s);
     form->addRow(u"Wait in queue"_s, m_queueWait);
-    m_image = line(u"Image to pull"_s, u"empty: ghcr.io/visivolab/visivo-backend:<this client's version>"_s,
+    m_image = line(u"Image to pull"_s,
+                   ClusterProfile::clientImageVersion().isEmpty()
+                           ? u"required here: docker://ghcr.io/visivolab/visivo-backend:<release>[-egl]"_s
+                           : u"empty: ghcr.io/visivolab/visivo-backend:<this client's version>"_s,
                    u"A docker://... reference, pulled once on the frontend. Empty: the published image "
-                   u"of this client's version (with the -egl tag when a GPU is requested). Set it "
-                   u"for a client that is not a release, or to pin another version."_s);
+                   u"of this client's version (with the -egl tag when a GPU is requested). Required "
+                   u"in a build that is not a release (a build from the repository), where no image "
+                   u"of its own exists; also to pin another version."_s);
     m_sif = line(u"Backend image file"_s, u"/scratch/<user>/backend-egl.sif"_s,
                  u"An image file already on the cluster; used instead of pulling."_s);
     m_dataRoot = line(u"Data root"_s, u"/scratch/<user>/data"_s, u"The folder the backend may open data from."_s);
@@ -125,7 +139,7 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
         reloadNames(QString());
     });
     QObject::connect(connectBtn, &QPushButton::clicked, this, [this]() {
-        if (const QString problem = current().launcherProblem(QCoreApplication::applicationVersion());
+        if (const QString problem = current().launcherProblem(ClusterProfile::clientImageVersion());
             !problem.isEmpty()) {
             QMessageBox::warning(this, u"Connect to a cluster"_s, problem);
             return;
@@ -165,6 +179,7 @@ void ClusterProfileDialog::showProfile(const ClusterProfile &p)
     m_name->setEditText(p.name);
     m_frontend->setText(p.frontend);
     m_user->setText(p.user);
+    m_shipLauncher->setChecked(p.shipLauncher);
     m_repoDir->setText(p.repoDir);
     // What the profile stores, not what its host suggests: saving an older profile
     // must not add a --site that its clone may not know.
@@ -191,6 +206,7 @@ ClusterProfile ClusterProfileDialog::current() const
     p.name = m_name->currentText().trimmed();
     p.frontend = m_frontend->text().trimmed();
     p.user = m_user->text().trimmed();
+    p.shipLauncher = m_shipLauncher->isChecked();
     p.repoDir = m_repoDir->text().trimmed();
     p.site = m_site->currentData().toString();
     p.partition = m_partition->text().trimmed();

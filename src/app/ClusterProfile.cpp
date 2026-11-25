@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,6 +18,7 @@ QJsonObject toJson(const ClusterProfile &p)
 {
     return { { u"name"_s, p.name },           { u"frontend"_s, p.frontend },
              { u"user"_s, p.user },           { u"repo_dir"_s, p.repoDir },
+             { u"ship_launcher"_s, p.shipLauncher },
              { u"site"_s, p.site },           { u"image"_s, p.image },
              { u"queue_wait_min"_s, p.queueWaitMin },
              { u"partition"_s, p.partition }, { u"gres"_s, p.gres },
@@ -35,6 +37,9 @@ ClusterProfile fromJson(const QJsonObject &o)
     p.frontend = o.value(u"frontend"_s).toString();
     p.user = o.value(u"user"_s).toString();
     p.repoDir = o.value(u"repo_dir"_s).toString();
+    // A profile saved before the client shipped the launcher has no such key,
+    // and its empty clone meant ~/VisIVOVisualAnalytics: it stays a clone.
+    p.shipLauncher = o.value(u"ship_launcher"_s).toBool(false);
     p.site = o.value(u"site"_s).toString();
     p.image = o.value(u"image"_s).toString();
     p.queueWaitMin = o.value(u"queue_wait_min"_s).toInt(0);
@@ -84,8 +89,11 @@ QString ClusterProfile::effectiveSite() const
         if (extraArgs.at(i).startsWith(u"--site="_s))
             return extraArgs.at(i).mid(7);
     }
+    // Leonardo's login nodes only (login.leonardo.cineca.it, login01-ext.leonardo.cineca.it,
+    // login*.leonardo.local): CINECA runs other clusters with other advice.
     const QString host = frontend.trimmed().toLower();
-    if (host.endsWith(u".cineca.it"_s))
+    if ((host.endsWith(u".cineca.it"_s) && host.contains(u"leonardo"_s))
+        || (host.startsWith(u"login"_s) && host.endsWith(u".leonardo.local"_s)))
         return u"leonardo"_s;
     if (host.contains(u"pleiadi"_s))
         return u"pleiadi"_s;
@@ -115,12 +123,32 @@ QString ClusterProfile::launcherProblem(const QString &clientVersion) const
         return u"Leonardo needs your project account (the Account field)."_s;
     if (usesShippedLauncher() && sif.trimmed().isEmpty() && image.trimmed().isEmpty()
         && !givesOption(extraArgs, u"--image"_s) && !givesOption(extraArgs, u"--sif"_s)
-        && defaultImage(clientVersion).isEmpty())
+        && defaultImage(clientVersion).isEmpty()) {
+        static const QRegularExpression release(u"^[0-9]+\\.[0-9]+\\.[0-9]+$"_s);
+        if (!release.match(clientVersion).hasMatch())
+            return u"This build of VisIVO is not a release, so it does not know which published "
+                   u"backend image to start. Fill in \"Image to pull\" (the docker://... "
+                   u"reference of the version to run), or a Backend image file (.sif) on the "
+                   u"cluster, or name a VisIVO clone that has one."_s;
         return u"No backend image to start. Fill in the Backend image (docker://... to pull, or "
                u"a .sif file on the cluster), or name a VisIVO clone that has one. The published "
-               u"images are for x86 and ARM nodes, and this client's version (%1) must be a "
-               u"release."_s.arg(clientVersion.isEmpty() ? u"unknown"_s : clientVersion);
+               u"images are for x86 and ARM nodes, not for this cluster."_s;
+    }
     return {};
+}
+
+QString ClusterProfile::imageVersion(const QString &appVersion, bool releaseBuild)
+{
+    return releaseBuild ? appVersion : QString();
+}
+
+QString ClusterProfile::clientImageVersion()
+{
+#ifdef VISIVO_RELEASE_BUILD
+    return imageVersion(QCoreApplication::applicationVersion(), true);
+#else
+    return imageVersion(QCoreApplication::applicationVersion(), false);
+#endif
 }
 
 QStringList ClusterProfile::launcherArgs(const QString &clientVersion) const

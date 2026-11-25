@@ -19,7 +19,8 @@ struct ClusterProfile
     QString name;            ///< shown in the status bar ("PLEIADI"); also the key
     QString frontend;        ///< SSH host of the SLURM frontend
     QString user;            ///< SSH login; empty: the local user name
-    QString repoDir;         ///< a clone on the frontend, relative to its home; empty: the client sends its own launcher
+    bool shipLauncher = true;   ///< true: the client sends the launcher it carries; false: the clone's own is run
+    QString repoDir;         ///< the clone on the frontend (relative to its home), used when shipLauncher is false; empty: VisIVOVisualAnalytics
     QString site;            ///< "leonardo", "pleiadi" or empty: a known site (the launcher's --site)
     QString partition;
     QString account;         ///< SLURM account (project); needed on Leonardo, MareNostrum 5
@@ -39,17 +40,29 @@ struct ClusterProfile
     bool isValid() const { return !name.trimmed().isEmpty() && !frontend.trimmed().isEmpty(); }
     /// The SSH destination: user@frontend, or the frontend alone.
     QString sshTarget() const;
-    /// True when the profile names no clone: the client sends the launcher it
-    /// ships and runs it from standard input, so nothing is needed on the frontend.
-    bool usesShippedLauncher() const { return repoDir.trimmed().isEmpty(); }
+    /// True when the client sends the launcher it carries and runs it from
+    /// standard input, so nothing is needed on the frontend. A profile saved
+    /// before the client shipped the launcher loads as a clone (see
+    /// ClusterProfiles::load), so it keeps running its clone.
+    bool usesShippedLauncher() const { return shipLauncher; }
     /// The site, from the profile, else from a `--site` in the further options,
-    /// else from the frontend's name; empty for any other cluster.
+    /// else from the frontend's name (a Leonardo login node, or PLEIADI);
+    /// empty for any other cluster, CINECA's others included.
     QString effectiveSite() const;
     /// The image to pull when the profile names none: this client's version of
     /// the published backend image, with the EGL tag when it asks for a GPU.
-    /// Empty when @p clientVersion is not X.Y.Z, or the profile names its own
+    /// Empty when @p clientVersion is not X.Y.Z (pass clientImageVersion(): it
+    /// is empty in a build that is not a release), or the profile names its own
     /// image or file, or a clone supplies one (as before the client shipped the launcher).
     QString defaultImage(const QString &clientVersion) const;
+    /// The version whose published image this client may start by itself:
+    /// @p appVersion in a release build (@p releaseBuild: the VISIVO_RELEASE_BUILD
+    /// CMake option, which only the release workflow sets), else empty. Images
+    /// are published for release tags only, and a build from main carries the
+    /// number of the last release, so it would ask for an image that may not exist.
+    static QString imageVersion(const QString &appVersion, bool releaseBuild);
+    /// imageVersion() for this build and the running application's version.
+    static QString clientImageVersion();
     /// The options for scripts/launch_backend_slurm.sh, in order.
     /// @p clientVersion picks the image when the profile has none.
     QStringList launcherArgs(const QString &clientVersion = {}) const;

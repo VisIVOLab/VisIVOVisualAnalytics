@@ -16,7 +16,14 @@ are preserved here unedited; the branch names they refer to are historical.
   sites (Leonardo, PLEIADI), says how to renew an expired Leonardo SSH
   certificate or accept a new host key, and shows the queue wait with SLURM's
   reason, the image pull and the backend start; the wait for a node is the
-  profile's and *Cancel* ends it. Profiles that name a clone work as before.
+  profile's and *Cancel* ends it. Profiles saved by an older client keep
+  running their clone (the profile now stores whether the client sends its
+  launcher). Only a release package picks the image of its own version
+  (`VISIVO_RELEASE_BUILD`, set by the release workflow): a build from the
+  repository asks for *Image to pull*, since no image exists for its number.
+  The launcher keeps waiting for a job that SLURM still reports as pending when
+  `squeue` fails, cancels one it can no longer find, and makes the project's
+  shared image folder group-writable.
 - **Published backend images (#66).** Each release publishes the backend on
   the GitHub Container Registry as `ghcr.io/visivolab/visivo-backend:<version>`
   (CPU, amd64 and arm64) and `:<version>-egl` (server-side EGL rendering for

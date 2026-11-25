@@ -8,9 +8,11 @@ given) to check the translation to SINGULARITYENV_ and the variables kept
 under --cleanenv. Nothing here needs SLURM or a container runtime.
 """
 import os
+import signal
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -466,18 +468,115 @@ def test_the_ready_timeout_is_an_option(run_launcher):
     assert r.returncode == 1 and "did not become ready within 5 seconds" in r.stdout
 
 
-def test_a_job_that_vanishes_ends_even_without_a_time_limit(tmp_path):
-    """No queue entry and no accounting record: a minute of it (shortened here) ends the wait."""
-    copy = tmp_path / "launcher.sh"
-    copy.write_text(LAUNCHER.read_text().replace("SECONDS - GONE_SINCE >= 60", "SECONDS - GONE_SINCE >= 2"))
+# squeue shows nothing for the first `STUB_EMPTY` polls of the job (as an overloaded
+# slurmctld does), then the node. sacct answers `STUB_SACCT`; scancel is recorded.
+VANISH_STUBS = {
+    "squeue": (
+        'case "$*" in *%N*) n=$(cat "$STUB_OUT/n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$STUB_OUT/n";'
+        ' if [ "$n" -le "${STUB_EMPTY:-1000}" ]; then :; else echo "lrdn0001|RUNNING|None"; fi;;'
+        ' *) echo 4242;; esac'
+    ),
+    "sacct": 'echo "${STUB_SACCT:-}"',
+    "scontrol": 'if [ -n "${STUB_SCONTROL:-}" ]; then echo "JobId=4242 JobState=$STUB_SCONTROL Reason=None"; fi',
+    "scancel": 'echo "$@" >> "$STUB_OUT/scancel"',
+}
+
+
+def _run_waiting(tmp_path, env, timeout=60):
     bindir = tmp_path / "bin"
-    _install(bindir, ("apptainer",), {"squeue": 'case "$*" in *%N*) ;; *) echo 4242;; esac'})
+    _install(bindir, ("apptainer",), VANISH_STUBS)
     out = tmp_path / "out"
     out.mkdir()
     sif = tmp_path / "backend.sif"
     sif.write_text("sif")
-    env = _bare_env(tmp_path, STUB_OUT=str(out))
-    env["PATH"] = f"{bindir}:{os.environ['PATH']}"
-    r = subprocess.run(["bash", str(copy), "--sif", str(sif), "--assign-timeout", "0"],
-                       env=env, capture_output=True, text=True, timeout=60)
+    e = _bare_env(tmp_path, STUB_OUT=str(out), **env)
+    e["PATH"] = f"{bindir}:{os.environ['PATH']}"
+    r = subprocess.run(["bash", str(LAUNCHER), "--sif", str(sif), "--assign-timeout", "0"],
+                       env=e, capture_output=True, text=True, timeout=timeout)
+    return r, out
+
+
+def test_a_job_that_vanishes_ends_even_without_a_time_limit(tmp_path):
+    """No queue entry and no record anywhere: the wait ends (shortened here) and the job is cancelled."""
+    r, out = _run_waiting(tmp_path, {"VISIVO_GONE_TIMEOUT": "2"})
     assert r.returncode == 1 and "no longer in the queue" in r.stderr, r.stdout + r.stderr
+    assert (out / "scancel").read_text().strip() == "4242"
+
+
+@pytest.mark.parametrize("known", [{"STUB_SACCT": "PENDING"}, {"STUB_SCONTROL": "PENDING"}])
+def test_a_pending_job_is_waited_for_when_squeue_fails(tmp_path, known):
+    """squeue empty (overloaded controller) but the job is PENDING: past the vanish window, keep waiting."""
+    r, out = _run_waiting(tmp_path, {"VISIVO_GONE_TIMEOUT": "1", "STUB_EMPTY": "4", **known})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Compute node: lrdn0001" in r.stdout
+    assert not (out / "scancel").exists()
+
+
+@pytest.mark.parametrize("known,state", [({"STUB_SACCT": "FAILED"}, "FAILED"),
+                                         ({"STUB_SCONTROL": "CANCELLED"}, "CANCELLED")])
+def test_a_job_in_a_terminal_state_ends_the_wait_at_once(tmp_path, known, state):
+    r, _ = _run_waiting(tmp_path, known)
+    assert r.returncode == 1 and f"ended before the backend started (state: {state})" in r.stderr
+
+
+def test_a_shared_image_dir_is_created_group_writable_and_setgid(run_launcher, tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    (tmp_path / "scratch").mkdir()
+    ref = "docker://ghcr.io/example/visivo-backend:1.2.3-egl"
+    r, _ = run_launcher("--site", "leonardo", "--account", "A", "--image", ref, runtimes=("singularity",),
+                        env={"CINECA_SCRATCH": str(tmp_path / "scratch"), "WORK": str(work)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    for d in (work / "visivo", work / "visivo" / "images"):
+        mode = d.stat().st_mode
+        assert mode & stat.S_ISGID and mode & stat.S_IWGRP and mode & stat.S_IXGRP, oct(mode)
+    assert next((work / "visivo" / "images").glob("*.sif"))
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can write anywhere")
+def test_an_unwritable_shared_image_dir_falls_back_with_a_message(run_launcher, tmp_path):
+    work = tmp_path / "work"
+    scratch = tmp_path / "scratch"
+    images = work / "visivo" / "images"
+    images.mkdir(parents=True)
+    scratch.mkdir()
+    images.chmod(0o555)
+    ref = "docker://ghcr.io/example/visivo-backend:1.2.3-egl"
+    try:
+        r, _ = run_launcher("--site", "leonardo", "--account", "A", "--image", ref, runtimes=("singularity",),
+                            env={"CINECA_SCRATCH": str(scratch), "WORK": str(work)})
+    finally:
+        images.chmod(0o755)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "not writable for you" in r.stderr
+    assert not list(images.glob("*.sif"))
+    # The user's own workspace on the scratch takes the image instead.
+    assert next(scratch.rglob("*.sif"))
+
+
+@pytest.mark.parametrize("sig", [signal.SIGHUP, signal.SIGPIPE])
+def test_an_interrupted_pull_leaves_no_temporary_file(tmp_path, sig):
+    """A hang-up (or a broken pipe) while the image is pulled stops the pull and removes its temporary file."""
+    ws = tmp_path / "ws"
+    out = tmp_path / "out"
+    out.mkdir()
+    bindir = tmp_path / "binp"
+    _install(bindir, ("apptainer",), {"runtime": 'if [ "$1" = pull ]; then echo part > "$2"; sleep 30; fi'})
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = {"PATH": f"{bindir}:{os.environ['PATH']}", "HOME": str(home), "STUB_OUT": str(out)}
+    ref = "docker://ghcr.io/example/visivo-backend:1.2.3"
+    p = subprocess.Popen(["bash", str(LAUNCHER), "--image", ref, "--workspace", str(ws)], env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        for _ in range(100):
+            if list((ws / "images").glob("*.pulling.*")):
+                break
+            time.sleep(0.1)
+        assert list((ws / "images").glob("*.pulling.*"))
+        p.send_signal(sig)
+        p.wait(timeout=20)
+    finally:
+        p.kill()
+        p.communicate()
+    assert not list((ws / "images").glob("*.pulling.*"))

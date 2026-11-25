@@ -300,12 +300,30 @@ fi
 
 # Pulled images in a directory the whole project shares (CINECA keeps a work
 # area per project, /leonardo_work/<account>; $WORK is the user's default
-# project), so that the project pulls an image once. --image-dir wins.
+# project), so that the project pulls an image once. --image-dir wins. A
+# directory made here is group-writable and setgid, so that the project's other
+# members can add their images to it; one that exists but is not writable for
+# this user is passed over, and the next place (finally the workspace) is used.
 if [[ "$SITE_SHARED_IMAGES" == "true" && -z "$IMAGE_DIR" ]]; then
     for cand in "${ACCOUNT:+/leonardo_work/$ACCOUNT}" "${WORK:-}"; do
-        if [[ -n "$cand" && -d "$cand" && -w "$cand" ]]; then
-            IMAGE_DIR="$cand/visivo/images"
-            break
+        [[ -n "$cand" && -d "$cand" ]] || continue
+        cand_dir="$cand/visivo/images"
+        if [[ -d "$cand_dir" ]]; then
+            if [[ -w "$cand_dir" ]]; then
+                IMAGE_DIR="$cand_dir"
+                break
+            fi
+            echo "[visivo] The shared image directory $cand_dir is not writable for you; trying the next place." >&2
+        elif [[ -w "$cand" ]]; then
+            made_parent=false
+            [[ -d "$cand/visivo" ]] || made_parent=true
+            if mkdir -p "$cand_dir" 2>/dev/null; then
+                [[ "$made_parent" == "true" ]] && { chmod 2775 "$cand/visivo" 2>/dev/null || true; }
+                chmod 2775 "$cand_dir" 2>/dev/null || true
+                IMAGE_DIR="$cand_dir"
+                break
+            fi
+            echo "[visivo] Could not create $cand_dir; trying the next place." >&2
         fi
     done
 fi
@@ -423,7 +441,7 @@ if [[ -n "$IMAGE" ]]; then
         # file that the next run would take for the image.
         PULL_TMP="$SIF.pulling.$$"
         PULL_PID=""
-        trap '[[ -n "$PULL_PID" ]] && kill "$PULL_PID" 2>/dev/null; rm -f "$PULL_TMP"; exit 130' INT HUP TERM
+        trap '[[ -n "$PULL_PID" ]] && kill "$PULL_PID" 2>/dev/null; rm -f "$PULL_TMP"; exit 130' INT HUP TERM PIPE
         echo "[visivo] Pulling $IMAGE to $SIF (a few GB; this can take minutes)..."
         # The runtime prints its progress bars only on a terminal, which an ssh
         # command has not: a line every few seconds says it is alive and how much
@@ -448,8 +466,9 @@ if [[ -n "$IMAGE" ]]; then
             exit 1
         fi
         PULL_PID=""
+        chmod g+r "$SIF" 2>/dev/null || true   # a project's other members use a shared image
         echo "[visivo] Pull: done in $SECONDS s"
-        trap - INT HUP TERM
+        trap - INT HUP TERM PIPE
     fi
 fi
 if [[ -z "$SIF" && "$STDIN_MODE" == "true" ]]; then
@@ -632,7 +651,7 @@ if [[ "$CLEANENV" == "1" ]]; then
     CLEANENV_PASS='for v in SLURM_JOB_ID SLURM_MEM_PER_NODE SLURM_MEM_PER_CPU SLURM_CPUS_ON_NODE SLURM_CPUS_PER_TASK CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES; do
     [[ -n "${!v+x}" ]] && export "APPTAINERENV_${v}=${!v}"
 done'
-    LAUNCHER_ONLY=" VISIVO_TOKEN VISIVO_ACCOUNT VISIVO_ASSIGN_TIMEOUT VISIVO_BACKEND_SRC_OVERRIDE VISIVO_BIND VISIVO_CLEANENV VISIVO_CONTAINER_RUNTIME VISIVO_CPUS VISIVO_GRES VISIVO_IMAGE VISIVO_IMAGE_DIR VISIVO_JOB_NAME VISIVO_LAUNCHER_STDIN VISIVO_LOGIN_SHELL VISIVO_PULL_REPORT_EVERY VISIVO_READY_TIMEOUT VISIVO_LOG_DIR VISIVO_MEM VISIVO_PARTITION VISIVO_PORT VISIVO_QOS VISIVO_SIF VISIVO_SITE VISIVO_TIME VISIVO_WORKSPACE "
+    LAUNCHER_ONLY=" VISIVO_TOKEN VISIVO_ACCOUNT VISIVO_ASSIGN_TIMEOUT VISIVO_BACKEND_SRC_OVERRIDE VISIVO_BIND VISIVO_CLEANENV VISIVO_CONTAINER_RUNTIME VISIVO_CPUS VISIVO_GRES VISIVO_IMAGE VISIVO_IMAGE_DIR VISIVO_JOB_NAME VISIVO_LAUNCHER_STDIN VISIVO_LOGIN_SHELL VISIVO_PULL_REPORT_EVERY VISIVO_READY_TIMEOUT VISIVO_GONE_TIMEOUT VISIVO_LOG_DIR VISIVO_MEM VISIVO_PARTITION VISIVO_PORT VISIVO_QOS VISIVO_SIF VISIVO_SITE VISIVO_TIME VISIVO_WORKSPACE "
     for v in "${!VISIVO_@}" VTK_EGL_DEVICE_INDEX; do
         [[ -n "${!v+x}" && "$LAUNCHER_ONLY" != *" $v "* ]] || continue
         CLEANENV_PASS+=$'\n'"[[ -n \"\${APPTAINERENV_${v}+x}\" ]] || export APPTAINERENV_${v}=$(q "${!v}")"
@@ -721,6 +740,7 @@ NODE=""
 LAST_QUEUE_LINE=""
 LAST_QUEUE_AT=0
 GONE_SINCE=-1
+GONE_LIMIT="${VISIVO_GONE_TIMEOUT:-300}"   # seconds with no word on the job at all
 SECONDS=0
 while :; do
     QUEUE_LINE="$(squeue -j "$JOB_ID" -h -o '%N|%T|%r' 2>/dev/null || true)"
@@ -740,22 +760,36 @@ while :; do
             LAST_QUEUE_AT=$SECONDS
         fi
     else
-        # Out of the queue already: the job ended (a failure at start-up ends it
-        # within the second), and waiting for a node would only hide why.
+        # squeue says nothing: the job has ended (a failure at start-up ends it
+        # within the second), or squeue failed (an overloaded slurmctld answers
+        # nothing for a while, with the job still pending). Ask the accounting
+        # and the controller before believing either; waiting for a node would
+        # only hide why a job ended.
         STATE="$(sacct -j "$JOB_ID" -X -n -o State 2>/dev/null | awk 'NF {print $1; exit}' || true)"
-        if [[ -n "$STATE" && "$STATE" != PENDING && "$STATE" != RUNNING ]]; then
-            echo "[visivo] ERROR: job $JOB_ID ended before the backend started (state: $STATE)." >&2
-            echo "[visivo]        Last lines of $LOG_DIR/visivo_backend_${JOB_ID}.log:" >&2
-            tail -n 20 "$LOG_DIR/visivo_backend_${JOB_ID}.log" 2>/dev/null | sed 's/^/[visivo]   /' >&2
-            exit 1
-        fi
-        # Neither queued nor ended as far as sacct says (accounting may be off):
-        # with no time limit on the wait, a minute of this is the end of it.
-        (( GONE_SINCE >= 0 )) || GONE_SINCE=$SECONDS
-        if (( SECONDS - GONE_SINCE >= 60 )); then
-            echo "[visivo] ERROR: job $JOB_ID is no longer in the queue and its state is unknown." >&2
-            exit 1
-        fi
+        CTL_STATE="$(scontrol show job "$JOB_ID" 2>/dev/null | tr ' ' '\n' | sed -n 's/^JobState=//p' | head -n 1 || true)"
+        STATE="${STATE:-$CTL_STATE}"
+        case "$STATE" in
+            "")
+                # Neither knows the job (accounting may be off, the controller
+                # down): long enough without an answer is the end of it.
+                (( GONE_SINCE >= 0 )) || GONE_SINCE=$SECONDS
+                if (( SECONDS - GONE_SINCE >= GONE_LIMIT )); then
+                    echo "[visivo] ERROR: job $JOB_ID is no longer in the queue and its state is unknown." >&2
+                    scancel "$JOB_ID" 2>/dev/null || true
+                    exit 1
+                fi
+                ;;
+            PENDING|RUNNING|CONFIGURING|COMPLETING|REQUEUED|RESIZING|SUSPENDED)
+                # Still alive: only the queue listing is missing.
+                GONE_SINCE=-1
+                ;;
+            *)
+                echo "[visivo] ERROR: job $JOB_ID ended before the backend started (state: $STATE)." >&2
+                echo "[visivo]        Last lines of $LOG_DIR/visivo_backend_${JOB_ID}.log:" >&2
+                tail -n 20 "$LOG_DIR/visivo_backend_${JOB_ID}.log" 2>/dev/null | sed 's/^/[visivo]   /' >&2
+                exit 1
+                ;;
+        esac
     fi
     if (( ASSIGN_TIMEOUT > 0 && SECONDS >= ASSIGN_TIMEOUT )); then
         break

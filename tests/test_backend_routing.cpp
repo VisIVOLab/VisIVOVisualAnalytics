@@ -427,6 +427,7 @@ void TestBackendRouting::cluster_cloneProfileRunsTheClonesLauncher()
     ClusterProfile p;
     p.name = u"PLEIADI"_s;
     p.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
+    p.shipLauncher = false;
     p.repoDir = u"~/VisIVOVisualAnalytics"_s;
     p.sif = u"/scratch/x/backend-egl.sif"_s;
     QVERIFY(!p.usesShippedLauncher());
@@ -443,7 +444,11 @@ void TestBackendRouting::cluster_cloneProfileRunsTheClonesLauncher()
     // Only a clone can be older than the client.
     QVERIFY(ClusterConnection::launcherFailure(p, 1, u"Unknown option: --job-name"_s, false)
                     .contains(u"older than this client"_s));
+    // No folder named: the default clone, as before the client shipped the launcher.
     p.repoDir.clear();
+    QCOMPARE(ClusterConnection::remoteArgv(p, u"j"_s, u"1.4.0"_s).at(1),
+             u"VisIVOVisualAnalytics/scripts/launch_backend_slurm.sh"_s);
+    p.shipLauncher = true;
     QVERIFY(!ClusterConnection::launcherFailure(p, 1, u"Unknown option: --job-name"_s, false)
                      .contains(u"older than this client"_s));
 }
@@ -483,8 +488,75 @@ void TestBackendRouting::cluster_imageIsTheClientsVersion()
     p.site = u"pleiadi"_s;
     QVERIFY(p.defaultImage(u"1.4.0"_s).isEmpty());
     QVERIFY(!p.launcherProblem(u"1.4.0"_s).isEmpty());
-    p.repoDir = u"VisIVOVisualAnalytics"_s;   // a clone brings its own image file
+    p.shipLauncher = false;   // a clone brings its own image file
     QVERIFY(p.launcherProblem(u"1.4.0"_s).isEmpty());
+}
+
+void TestBackendRouting::cluster_buildThatIsNotAReleaseNeverPicksAnImage()
+{
+    // Images exist for release tags only; a build from main carries the last
+    // release's number, so it is told to name an image instead.
+    QCOMPARE(ClusterProfile::imageVersion(u"1.4.0"_s, true), u"1.4.0"_s);
+    QVERIFY(ClusterProfile::imageVersion(u"1.4.0"_s, false).isEmpty());
+    ClusterProfile p;
+    p.name = u"X"_s;
+    p.frontend = u"login.example.org"_s;
+    p.gres = u"gpu:1"_s;
+    const QString dev = ClusterProfile::imageVersion(u"1.4.0"_s, false);
+    QVERIFY(p.defaultImage(dev).isEmpty());
+    QVERIFY(p.launcherArgs(dev).indexOf(u"--image"_s) < 0);
+    const QString problem = p.launcherProblem(dev);
+    QVERIFY(problem.contains(u"not a release"_s));
+    QVERIFY(problem.contains(u"Image to pull"_s));
+    // An image, an image file or a clone of its own makes it usable.
+    p.image = u"docker://ghcr.io/visivolab/visivo-backend:1.4.0-egl"_s;
+    QVERIFY(p.launcherProblem(dev).isEmpty());
+    QVERIFY(p.launcherArgs(dev).contains(p.image));
+    p.image.clear();
+    p.sif = u"/scratch/a.sif"_s;
+    QVERIFY(p.launcherProblem(dev).isEmpty());
+    p.sif.clear();
+    p.shipLauncher = false;
+    QVERIFY(p.launcherProblem(dev).isEmpty());
+    // The release build picks the version's image.
+    p.shipLauncher = true;
+    const QString rel = ClusterProfile::imageVersion(u"1.4.0"_s, true);
+    QVERIFY(p.launcherProblem(rel).isEmpty());
+    QCOMPARE(p.defaultImage(rel), u"docker://ghcr.io/visivolab/visivo-backend:1.4.0-egl"_s);
+    // This test binary is not built as a release.
+    QVERIFY(ClusterProfile::clientImageVersion().isEmpty());
+}
+
+void TestBackendRouting::cluster_profileSavedBeforeTheShippedLauncherKeepsItsClone()
+{
+    // As an older client wrote it: no ship_launcher, no site, no image; an empty
+    // repo_dir meant ~/VisIVOVisualAnalytics.
+    QTemporaryDir dir;
+    QSettings s(dir.filePath(u"Settings.ini"_s), QSettings::IniFormat);
+    s.setValue(u"Clusters/profiles"_s,
+               QStringLiteral("[{\"name\":\"PLEIADI\",\"frontend\":\"pleiadi-gpu.oact.inaf.it\","
+                              "\"repo_dir\":\"\",\"sif\":\"/scratch/x/b.sif\",\"cpus\":16},"
+                              "{\"name\":\"Mine\",\"frontend\":\"h.example.org\",\"repo_dir\":\"src/visivo\"}]"));
+    const ClusterProfile old = ClusterProfiles::find(s, u"PLEIADI"_s);
+    QVERIFY(old.isValid());
+    QVERIFY(!old.usesShippedLauncher());
+    const QStringList argv = ClusterConnection::remoteArgv(old, u"j"_s, QString());
+    QCOMPARE(argv.at(1), u"VisIVOVisualAnalytics/scripts/launch_backend_slurm.sh"_s);
+    QVERIFY(!argv.contains(u"--image"_s));
+    QVERIFY(old.launcherProblem(QString()).isEmpty());   // no image asked of a dev build
+    const ClusterProfile mine = ClusterProfiles::find(s, u"Mine"_s);
+    QVERIFY(!mine.usesShippedLauncher());
+    QCOMPARE(ClusterConnection::remoteArgv(mine, u"j"_s, QString()).at(1),
+             u"src/visivo/scripts/launch_backend_slurm.sh"_s);
+    // Saved again, the choice is explicit and stays through a reload.
+    ClusterProfiles::upsert(s, old);
+    QVERIFY(!ClusterProfiles::find(s, u"PLEIADI"_s).usesShippedLauncher());
+    ClusterProfile fresh;
+    fresh.name = u"New"_s;
+    fresh.frontend = u"login.example.org"_s;
+    QVERIFY(fresh.usesShippedLauncher());
+    ClusterProfiles::upsert(s, fresh);
+    QVERIFY(ClusterProfiles::find(s, u"New"_s).usesShippedLauncher());
 }
 
 void TestBackendRouting::cluster_sitePresets()
@@ -534,6 +606,18 @@ void TestBackendRouting::cluster_sitePresets()
     QVERIFY(!l.launcherProblem(u"1.4.0"_s).isEmpty());
     l.account = u"A"_s;
     QVERIFY(l.launcherProblem(u"1.4.0"_s).isEmpty());
+    // Only Leonardo's login nodes are Leonardo; CINECA's other hosts are not.
+    ClusterProfile host;
+    for (const QString &h : { u"login.leonardo.cineca.it"_s, u"LOGIN01-EXT.LEONARDO.CINECA.IT"_s,
+                              u"login02.leonardo.local"_s }) {
+        host.frontend = h;
+        QCOMPARE(host.effectiveSite(), u"leonardo"_s);
+    }
+    for (const QString &h : { u"login.g100.cineca.it"_s, u"login.marconi.cineca.it"_s,
+                              u"data.cineca.it"_s, u"login.example.local"_s, u"leonardo.example.org"_s }) {
+        host.frontend = h;
+        QVERIFY2(host.effectiveSite().isEmpty(), qPrintable(h));
+    }
     // The site is also known from an older profile's options or host.
     ClusterProfile old;
     old.frontend = u"login01-ext.leonardo.cineca.it"_s;
@@ -569,6 +653,14 @@ void TestBackendRouting::cluster_sshFailureMessages()
         QVERIFY(m.contains(u"from a terminal"_s));
         QVERIFY(!m.contains(u"step ssh login"_s));
     }
+    // The connection dropped after the launcher had been talking: ssh got in, so
+    // the certificate is no suspect; the job's cancel is what is said.
+    const QString dropped = ClusterConnection::launcherFailure(
+            leonardo, 255, u"[visivo] Job ID: 42\n[visivo] Queue: PENDING (Priority), 60 s"_s, false);
+    QVERIFY(dropped.contains(u"dropped"_s));
+    QVERIFY(dropped.contains(u"cancelled"_s));
+    QVERIFY(!dropped.contains(u"step ssh login"_s));
+    QVERIFY(!dropped.contains(u"ssh-copy-id"_s));
     // The launcher's own failures are not ssh's.
     QVERIFY(ClusterConnection::launcherFailure(leonardo, 1, u"x"_s, true).contains(u"failed (exit 1)"_s));
     QVERIFY(ClusterConnection::launcherFailure(leonardo, 1, u"x"_s, false).contains(u"did not report"_s));

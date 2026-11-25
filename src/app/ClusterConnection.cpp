@@ -118,8 +118,8 @@ QStringList ClusterConnection::remoteArgv(const ClusterProfile &profile, const Q
         QString repo = profile.repoDir.trimmed();
         if (repo.startsWith(u"~/"_s))
             repo = repo.mid(2);
-        if (repo == u"~"_s)
-            repo = u"VisIVOVisualAnalytics"_s;   // as before the client shipped the launcher
+        if (repo.isEmpty() || repo == u"~"_s)
+            repo = u"VisIVOVisualAnalytics"_s;   // the default clone, as before the client shipped the launcher
         remote = { u"bash"_s, repo + u"/scripts/launch_backend_slurm.sh"_s };
     }
     remote << profile.launcherArgs(clientVersion) << u"--job-name"_s << jobName;
@@ -140,7 +140,12 @@ QByteArray ClusterConnection::stdinPayload(const QString &script)
     // Standard input is the script, which bash reads as it goes: the copy is run
     // with its own input closed, or an ssh in it (the readiness check) would
     // swallow what is left of this one.
+    // The copy is removed however the shell ends: a hang-up, a termination, an
+    // interrupt or a broken pipe (ssh dropped) exits with the usual 128+signal
+    // code, and the EXIT trap removes the file without changing the exit code.
     return (u"visivo_f=\"$(mktemp \"${TMPDIR:-/tmp}/visivo-launcher.XXXXXX\")\" || exit 1\n"
+            u"trap 'rm -f \"$visivo_f\"' EXIT\n"
+            u"trap 'exit 129' HUP; trap 'exit 143' TERM; trap 'exit 130' INT; trap 'exit 141' PIPE\n"
             u"cat > \"$visivo_f\" <<'%1'\n%2%1\n"
             u"VISIVO_LAUNCHER_STDIN=1 bash \"$visivo_f\" \"$@\" </dev/null\n"
             u"visivo_rc=$?\nrm -f \"$visivo_f\"\nexit $visivo_rc\n"_s)
@@ -157,6 +162,13 @@ QString ClusterConnection::launcherFailure(const ClusterProfile &profile, int ex
                u"(ssh %1), check the host and answer yes, then connect again from here."_s
                 .arg(target);
     if (exitCode == 255) {
+        // The launcher talks as soon as it runs: any of its lines in the output
+        // means ssh did get in, so the certificate is not the problem.
+        if (output.contains(u"[visivo]"_s))
+            return u"The connection to %1 dropped while the backend job was starting (the "
+                   u"computer went to sleep, or the network failed). The job is cancelled when "
+                   u"this window closes, or when the next window for this profile starts: "
+                   u"connect again to start a new one."_s.arg(target);
         if (profile.effectiveSite() == u"leonardo"_s)
             return u"ssh could not log in to %1. On Leonardo this is usually an expired or "
                    u"missing SSH certificate: renew your CINECA SSH certificate (smallstep "
@@ -247,7 +259,7 @@ void ClusterConnection::start()
         fail(problem);
         return;
     }
-    if (const QString problem = m_profile.launcherProblem(QCoreApplication::applicationVersion());
+    if (const QString problem = m_profile.launcherProblem(ClusterProfile::clientImageVersion());
         !problem.isEmpty()) {
         fail(problem);
         return;
@@ -287,7 +299,7 @@ void ClusterConnection::start()
     // Recorded before anything is submitted: a job whose id never arrives (a
     // Cancel or a crash right after sbatch) is still cancelled, by its name.
     writeJobRecord();
-    const QStringList remote = remoteArgv(m_profile, m_jobName, QCoreApplication::applicationVersion());
+    const QStringList remote = remoteArgv(m_profile, m_jobName, ClusterProfile::clientImageVersion());
     emit message(u"Submitting the backend job on %1…"_s.arg(m_profile.sshTarget()));
     emit progress(u"Submitting the backend job on %1…"_s.arg(m_profile.sshTarget()));
 

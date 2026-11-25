@@ -51,15 +51,20 @@ yes).
      limit* and *Wait in queue*: the SLURM resources of the job and how long
      to wait for a node. *Account* is required on some sites.
    - *Image to pull*: leave empty to use the backend image of this client's
-     version (the `-egl` one when you ask for a GPU). A development build, or
-     a version of your choice, takes a `docker://...` reference here.
+     version (the `-egl` one when you ask for a GPU). The released packages
+     do this; a build made from the repository has no image of its own, so it
+     needs a `docker://...` reference here (or a *Backend image file*, or a
+     clone). The same applies when you want another version.
    - *Backend image file*: a `.sif` already on the cluster, used instead of
      pulling (for example PLEIADI's own build).
    - *Data root*: the folder the backend may open data from.
    - *Workspace*: where the backend writes exports, brick pyramids and logs.
      Put it on a large disk, not in your home.
-   - *VisIVO clone*: only for developers, to run the launcher of a clone on
-     the frontend instead of the client's.
+   - *Send the launcher from this client* and *VisIVO clone*: leave the box
+     checked. Only developers uncheck it, to run the launcher of a VisIVO clone
+     on the frontend instead of the client's. Profiles saved by an older
+     client load unchecked, so they keep using their clone (empty folder:
+     `~/VisIVOVisualAnalytics`); check the box to stop needing it.
 
    Press *Save* to keep the profile.
 
