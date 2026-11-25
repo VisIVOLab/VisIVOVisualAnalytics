@@ -140,7 +140,9 @@ visivo::pointtable::RenderPlan vtkWindowCatalogue3D::renderPlan() const
     facts.backendRenders = this->m_serverSideRendering;
     facts.backendIsLocal = visivo::backendIsLocal(this->backendUrl);
     facts.tableRows = this->rowsToShow();
-    facts.loadedRows = static_cast<qint64>(this->entries.size());
+    // Rows without usable coordinates were loaded too: they count, or a table
+    // with some stays "partial" after Load all.
+    facts.loadedRows = static_cast<qint64>(this->entries.size() + this->unplacedEntries.size());
     facts.fitsHere = this->canLoadAllLocally();
     return visivo::pointtable::planRender(facts);
 }
@@ -205,10 +207,16 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode, bool chosen)
             this->loadAllEntries();
             // Declined, or a load already running: the loaded rows stay drawn,
             // and the user is told so rather than left to wonder.
-            if (!this->filterBusy && this->rowsToShow() > static_cast<int>(this->entries.size()))
+            const qint64 loaded =
+                    static_cast<qint64>(this->entries.size() + this->unplacedEntries.size());
+            if (this->filterBusy)
+                this->statusBar()->showMessage(
+                        u"Loading rows: the view follows the chosen mode when the load ends."_s,
+                        10000);
+            else if (this->hasMoreRows())
                 this->statusBar()->showMessage(
                         u"Drawing the %L1 rows loaded of %L2: Load all brings the rest."_s
-                                .arg(this->entries.size())
+                                .arg(loaded)
                                 .arg(this->rowsToShow()),
                         10000);
         }
