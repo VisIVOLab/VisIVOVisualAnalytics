@@ -12,6 +12,7 @@
 // stored in, as the backend's `component.units` says it. No widgets, no VTK:
 // tests/test_point_table_display.cpp.
 
+#include <QLocale>
 #include <QString>
 #include <QtGlobal>
 #include <QStringList>
@@ -228,12 +229,21 @@ inline bool fitsLocally(qint64 rows, qint64 columns)
 }
 
 /// What a row costs here, measured: loading all 2,097,152 rows of an 11-column
-/// RAMSES table raised the app's memory by about 4.3 GB (2026-11-25), about 2 KB
-/// a row: each value costs far more than its QVariant once parsed, kept for the
-/// table and drawn. About 150 bytes a row and 170 a column; to say "about".
+/// RAMSES table raised the app's memory by 4.3 GB in one run and 6.9 GB in
+/// another (2026-11-25), up to about 3.3 KB a row: each value costs far more
+/// than its QVariant once parsed, kept for the table and drawn. The larger
+/// figure, so the question does not promise less than it takes: about 150
+/// bytes a row and 280 a column.
 inline double estimatedBytes(qint64 rows, qint64 columns)
 {
-    return static_cast<double>(rows) * (150.0 + 170.0 * static_cast<double>(columns));
+    return static_cast<double>(rows) * (150.0 + 280.0 * static_cast<double>(columns));
+}
+
+/// A row count with thousands separators, the English UI's: "%L1" follows the
+/// application's default locale, which may be C (no separators).
+inline QString groupedCount(qint64 n)
+{
+    return QLocale(QLocale::English, QLocale::UnitedStates).toString(n);
 }
 
 inline QString memoryText(double bytes)
@@ -245,10 +255,9 @@ inline QString memoryText(double bytes)
 
 inline QString loadAllQuestion(qint64 rows, qint64 columns)
 {
-    return QStringLiteral("Load all %L1 rows into this window? About %2 of memory, more while "
+    return QStringLiteral("Load all %1 rows into this window? About %2 of memory, more while "
                           "loading.")
-            .arg(rows)
-            .arg(memoryText(estimatedBytes(rows, columns)));
+            .arg(groupedCount(rows), memoryText(estimatedBytes(rows, columns)));
 }
 
 /// The tooltip of "Load all rows here…" when the table is above the limit.
@@ -267,10 +276,11 @@ inline QString tooManyRowsTip(qint64 columns)
 inline QString renderBadgeText(bool remote, qint64 loaded, qint64 total)
 {
     if (remote)
-        return QStringLiteral("Remote · all %L1 rows").arg(total);
+        return QStringLiteral("Remote · all %1 rows").arg(groupedCount(total));
     return loaded >= total
-            ? QStringLiteral("Local · all %L1 rows").arg(total)
-            : QStringLiteral("Local · sample %L1 of %L2 rows").arg(loaded).arg(total);
+            ? QStringLiteral("Local · all %1 rows").arg(groupedCount(total))
+            : QStringLiteral("Local · sample %1 of %2 rows")
+                      .arg(groupedCount(loaded), groupedCount(total));
 }
 
 inline QString sampleBadgeTip()

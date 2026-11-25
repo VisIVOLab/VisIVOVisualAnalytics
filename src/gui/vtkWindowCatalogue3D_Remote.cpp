@@ -319,12 +319,8 @@ void vtkWindowCatalogue3D::updateRenderBadge()
     }
     if (!this->m_renderBadge)
         return;
-    // A backend that cannot draw has no mode to show, but a sample must still
-    // say it is one: the badge stays for as long as rows are missing.
-    if (!this->m_serverSideRendering && loaded >= total) {
-        this->m_renderBadge->hide();
-        return;
-    }
+    // Always says what is drawn, on a backend that cannot draw too: a sample,
+    // or all the rows once they are loaded here.
     const bool remote = this->m_remoteView && this->m_remoteView->isActive();
     this->m_renderBadge->setText(visivo::pointtable::renderBadgeText(remote, loaded, total));
     // The sample's explanation, and why a chosen mode is not followed when it
