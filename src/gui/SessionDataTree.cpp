@@ -1,6 +1,7 @@
 #include "SessionDataTree.h"
 
 #include "RegionTreeRows.h"
+#include "app/FontSize.h"
 #include "app/ProductRegistry.h"
 #include "app/ThumbnailCache.h"
 #include "theme/VisivoTheme.h"
@@ -110,7 +111,12 @@ public:
         p->save();
         p->setRenderHint(QPainter::Antialiasing, true);
         QFont f = opt.font;
-        f.setPointSizeF(f.pointSizeF() * 0.82);
+        // The row's font may be in pixels (the style sheet's), where pointSizeF
+        // is -1: scale whichever unit it has.
+        if (f.pointSizeF() > 0.0)
+            f.setPointSizeF(visivo::fontsize::scaled(f.pointSizeF(), 0.82, 6.0));
+        else if (f.pixelSize() > 0)
+            f.setPixelSize(int(visivo::fontsize::scaled(f.pixelSize(), 0.82, 8.0) + 0.5));
         p->setFont(f);
         const QColor border(QString::fromLatin1(VisivoTheme::kOutline()));
         const QColor text(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));

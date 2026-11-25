@@ -137,6 +137,8 @@ add_executable(VisIVOTests
     TestCubeToolGate.h
     test_cube_tool_gate.cpp
     TestSimulationVolume.h
+    TestDisplayFixes.h
+    test_display_fixes.cpp
     TestPlutoCartesianView.h
     test_simulation_volume.cpp
     test_pluto_cartesian_view.cpp

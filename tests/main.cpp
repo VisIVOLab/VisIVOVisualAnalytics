@@ -18,6 +18,7 @@
 #include "TestCubeRegionGeom.h"
 #include "TestCubeToolGate.h"
 #include "TestSimulationVolume.h"
+#include "TestDisplayFixes.h"
 #include "TestPlutoCartesianView.h"
 #include "TestCubeLodGeometry.h"
 #include "TestCubeLodPlan.h"
@@ -137,6 +138,7 @@ int main(int argc, char *argv[])
     { TestCubeRegionGeom   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeToolGate     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSimulationVolume t; status |= QTest::qExec(&t, argc, argv); }
+    { TestDisplayFixes t; status |= QTest::qExec(&t, argc, argv); }
     { TestPlutoCartesianView t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodGeometry  t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodPlan      t; status |= QTest::qExec(&t, argc, argv); }

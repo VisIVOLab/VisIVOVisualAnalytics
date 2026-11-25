@@ -127,6 +127,17 @@ inline QString columnUnitLabel(const PhysicalUnits &u, const QString &name, bool
     return physical && it != u.columns.constEnd() ? it->unit : codeUnit;
 }
 
+/// A colour bar's title for a field: "density (g/cm^3)", or whichever of the two
+/// there is. Every field of a view is titled the same way, the window's own
+/// included, so a bar never carries just the unit while its neighbours carry
+/// names.
+inline QString quantityLabel(const QString &name, const QString &unit)
+{
+    if (!name.isEmpty() && !unit.isEmpty())
+        return QStringLiteral("%1 (%2)").arg(name, unit);
+    return name.isEmpty() ? unit : name;
+}
+
 /// The output's time, "t = 3 (code units)" or, with physical units on and the
 /// run's length and velocity known, "t = 9.5e+12 s". Empty when there is none.
 inline QString timeLabel(const PhysicalUnits &u, bool physical)

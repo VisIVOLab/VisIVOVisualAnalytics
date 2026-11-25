@@ -22,7 +22,9 @@ and [Polarimetry](../use-cases/07-polarimetry.md).
 - Mode strip under the toolbar: *Pan*, *Probe*, *Region*, *Ruler*,
   *Annotate*. One mode is armed at a time and decides what a click on the
   image does; *Region* adds a shape strip (*Box*, *Circle*, *Poly*,
-  *Annulus*). A short line to the right says what the mode expects.
+  *Annulus*). A short line to the right says what the mode expects. With
+  nothing armed (*Pan*) the line reads: drag for the colour range, middle-drag
+  to pan, wheel to zoom.
 - Status bar: cursor readout, coordinate frame, a *WCS* badge (yellow when
   the backend had to repair the header; the tooltip lists the changes) and a
   *full-res* badge once the full image has loaded.
@@ -90,7 +92,15 @@ the cube viewer):
 
 ## View menu
 
-- *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges.
+- *Show WCS Axes*: ticks with sky coordinates along the bottom and left edges
+  of the image as it is on screen, following pan and zoom. When the image is
+  small, only every second or fourth x label is written so they do not overlap.
+  Each tick is labelled with the coordinate of the point where it sits, in the
+  frame chosen in the *WCS* menu. When that frame is rotated against the file's
+  own (an equatorial image shown in Galactic coordinates), the pixel axes are no
+  longer lines of constant longitude or latitude: the ticks are exact where they
+  are drawn, but a straight line from a tick across the image does not follow
+  that coordinate.
 - *Blink Layers*: alternates layers 0 and 1 (default every 250 ms; the *Blink
   / Compare* card sets the interval, 50 to 1000 ms). Needs two layers.
 - *Additive Blend*: sums the colours of the visible layers instead of

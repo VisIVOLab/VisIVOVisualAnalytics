@@ -3610,6 +3610,8 @@ protected:
     /// The window's own field's colour bar on the slice (the combined picture
     /// has one bar per field, this window's among them).
     QString mainFieldName() const;
+    /// An added field's colour-bar title: its name and the unit it is shown in.
+    QString fieldBarTitle(const SimField &f) const;
     /// The image the slice pane is framed on: the combined picture when it is on, else the slice.
     vtkImageData *sliceFrameImage() const;
     static void fillRampOn(vtkPiecewiseFunction *f, LutScale::Mode mode, double gamma,

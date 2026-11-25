@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QCheckBox;
 class QComboBox;
@@ -63,6 +64,12 @@ public:
     /// lines on first use: call it off the GUI thread.
     std::function<QJsonObject(bool preview)> bodyMaker() const;
 
+protected:
+    /// Return and Enter never press Render: it exports a file, and a Return meant
+    /// for the colour-map list or an editor reached it (QDialogButtonBox makes its
+    /// first accept button the default when shown, whatever was set before).
+    void keyPressEvent(QKeyEvent *event) override;
+
 private:
     struct Widgets;
 
@@ -85,6 +92,8 @@ private:
     QLabel *m_cmapNote{ nullptr };
     QList<ColourMapChoice> m_choices;   ///< what the combo lists, in order
     bool m_colourMapsFailed{ false };   ///< the backend could not list its maps (older, or down)
+    /// An answer that came while the list was open: applied once it closes.
+    std::optional<BackendFigureColourMaps> m_pendingColourMaps;
     int m_seq{ 0 };           ///< the newest preview asked for
     bool m_inFlight{ false };
     bool m_dirty{ false };

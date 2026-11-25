@@ -3,12 +3,14 @@
 #include "app/BackendClient.h"
 
 #include <QCheckBox>
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QKeyEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -248,6 +250,14 @@ void PublicationFigureDialog::build()
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText(u"Render"_s);
+    // Return must not be a shortcut for Render: it exports a file, and a Return
+    // meant for the colour-map list (or any editor) reached the button too. The
+    // button box makes its first accept button default again when shown, so the
+    // key itself is stopped in keyPressEvent; this only keeps the look plain.
+    for (auto b : { QDialogButtonBox::Ok, QDialogButtonBox::Cancel }) {
+        buttons->button(b)->setAutoDefault(false);
+        buttons->button(b)->setDefault(false);
+    }
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
@@ -481,13 +491,35 @@ void PublicationFigureDialog::requestColourMaps()
 void PublicationFigureDialog::fillColourMaps(const BackendFigureColourMaps &answer)
 {
     using Kind = ColourMapChoice::Kind;
+    // The backend's answer lands about when the user reaches for the list. Clearing
+    // and refilling a combo under its open popup closes it and loses the click (the
+    // first click had to be repeated), so the refill waits for the popup to close.
+    if (w->cmap->view() && w->cmap->view()->isVisible()) {
+        m_pendingColourMaps = answer;
+        QTimer::singleShot(150, this, [this] {
+            if (!m_pendingColourMaps)
+                return;
+            const BackendFigureColourMaps later = *m_pendingColourMaps;
+            m_pendingColourMaps.reset();
+            fillColourMaps(later);
+        });
+        return;
+    }
+    m_pendingColourMaps.reset();
     // What is chosen now, to keep it across the new list; the first time, the window's.
     const int before = w->cmap->currentData().toInt();
     const bool first = m_choices.isEmpty();
     const ColourMapChoice kept = (w->cmap->currentIndex() >= 0 && before >= 0 && before < m_choices.size()) ? m_choices[before]
                                                                             : ColourMapChoice{};
-    m_choices = colourMapChoices(m_ctx.colourMaps, answer, m_ctx.windowColourMap,
-                                 !m_ctx.windowLut.isEmpty() && !m_colourMapsFailed);
+    const QList<ColourMapChoice> choices = colourMapChoices(
+            m_ctx.colourMaps, answer, m_ctx.windowColourMap,
+            !m_ctx.windowLut.isEmpty() && !m_colourMapsFailed);
+    // The answer says what the list says already: leave the combo as it is.
+    if (!first && sameColourMapChoices(choices, m_choices)) {
+        updateColourMapNote();
+        return;
+    }
+    m_choices = choices;
     const auto find = [this](const std::function<bool(const ColourMapChoice &)> &want) {
         for (int i = 0; i < m_choices.size(); ++i)
             if (want(m_choices[i]))
@@ -567,3 +599,13 @@ void PublicationFigureDialog::showPreview(const QPixmap &pm, const QString &mess
 }
 
 }   // namespace visivo::figure
+
+void visivo::figure::PublicationFigureDialog::keyPressEvent(QKeyEvent *event)
+{
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && !(event->modifiers() & ~Qt::KeypadModifier)) {
+        event->accept();   // editors take it first; whatever reaches the dialog stops here
+        return;
+    }
+    QDialog::keyPressEvent(event);
+}

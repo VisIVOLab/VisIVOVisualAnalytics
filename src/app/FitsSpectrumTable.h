@@ -15,6 +15,7 @@
 // are split by FitsHeaderCard.h, the header editor's own parser. Only what a
 // spectrum table needs is read: uncompressed, scalar numeric columns.
 
+#include "app/PhysicalUnits.h"
 #include "gui/FitsHeaderCard.h"
 
 #include <QByteArray>
@@ -178,12 +179,11 @@ inline double cellValue(const char *p, const Column &c)
     return c.zero + c.scale * raw;
 }
 
-/// "name (unit)", or whichever of the two there is.
+/// "name (unit)", or whichever of the two there is (the one rule, shared with
+/// the colour bars' titles).
 inline QString labelWithUnit(const QString &name, const QString &unit)
 {
-    if (!name.isEmpty() && !unit.isEmpty())
-        return QStringLiteral("%1 (%2)").arg(name, unit);
-    return name.isEmpty() ? unit : name;
+    return visivo::units::quantityLabel(name, unit);
 }
 
 }   // namespace fitsspectrum_detail

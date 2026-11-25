@@ -760,6 +760,8 @@ set(PROJECT_SOURCES
         src/app/PlutoCartesianView.h
         src/app/ByteSize.h
         src/app/PhysicalUnits.h
+        src/app/FontSize.h
+        src/app/ResponseHeaders.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h
         src/gui/SedBuilder.h

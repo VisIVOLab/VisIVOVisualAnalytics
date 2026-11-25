@@ -399,12 +399,20 @@ SanityReport buildCubeSanityReport(const std::array<QString, 3> &ctype,
         warnings << u"Only one spatial axis looks celestial; the spatial WCS pairing is incomplete."_s;
     } else if (axis0Celestial && !pairRecognized()) {
         warnings << u"Celestial axis pairing is not recognized as FK5, Galactic, or Ecliptic."_s;
-    } else if (!axis0Celestial && !axis1Celestial) {
+    } else if (!axis0Celestial && !axis1Celestial
+               && !(axisHasLinearWcs(ctype[0], crval[0], crpix[0], cdelt[0])
+                    && axisHasLinearWcs(ctype[1], crval[1], crpix[1], cdelt[1])
+                    && isLinearSpatialAxis(ctype[0]) && isLinearSpatialAxis(ctype[1]))) {
+        // A complete linear WCS (X/Y of a simulation) is not missing metadata,
+        // as the image viewer's check reads it.
         unknowns << u"Celestial WCS metadata unavailable; slice/moment overlays may fall back to voxel coordinates."_s;
     }
 
     const QString spectralType = upperCtype(ctype[2]);
-    if (spectralType.isEmpty()) {
+    if (isLinearSpatialAxis(spectralType)
+        && axisHasLinearWcs(ctype[2], crval[2], crpix[2], cdelt[2])) {
+        // The Z of a simulation box: a length, not an ambiguous spectral axis.
+    } else if (spectralType.isEmpty()) {
         unknowns << u"Spectral-axis metadata incomplete; axis 3 falls back to generic/channel semantics."_s;
     } else if ((spectralType.startsWith(u"FREQ"_s) || spectralType.contains(u"VRAD"_s)
                 || spectralType.contains(u"VOPT"_s) || spectralType.contains(u"VELO"_s))
@@ -17100,6 +17108,9 @@ void vtkWindowCube::applyIsosurfaceResult(const AsyncIsosurfaceResult &result)
 
 QString vtkWindowCube::volumeBarTitle() const
 {
+    // With fields added the main one is titled as they are: name and unit.
+    if (!m_fields.empty())
+        return visivo::units::quantityLabel(this->mainFieldName(), this->m_brightnessUnit);
     // The quantity: the cube's unit, or a VBT field's name.
     return !this->m_brightnessUnit.isEmpty() ? this->m_brightnessUnit
            : visivo::isFieldReference(this->filepath)

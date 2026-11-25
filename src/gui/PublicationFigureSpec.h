@@ -124,6 +124,19 @@ inline QList<ColourMapChoice> colourMapChoices(const QStringList &registry,
     return out;
 }
 
+/// Whether two lists read the same in the combo: rebuilding one that would not
+/// change closed the open popup and swallowed the user's click.
+inline bool sameColourMapChoices(const QList<ColourMapChoice> &a, const QList<ColourMapChoice> &b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (int i = 0; i < a.size(); ++i)
+        if (a[i].kind != b[i].kind || a[i].name != b[i].name || a[i].label != b[i].label
+            || a[i].exact != b[i].exact || a[i].drawnAs != b[i].drawnAs)
+            return false;
+    return true;
+}
+
 /// What the dialog says under the colour map for @p c: that it is drawn with a
 /// close matplotlib map and not the window's own (a stand-in, not an error).
 inline QString approximationNote(const ColourMapChoice &c)

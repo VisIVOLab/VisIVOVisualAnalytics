@@ -4,6 +4,7 @@
 #include <QFutureWatcher>
 #include "CubeWcsUtil.h"
 #include "CubeViewportGeometry.h"
+#include "Pane2DView.h"
 #include "SpectralAxisInfer.h"
 #include "WcsAxisTicks.h"
 
@@ -657,6 +658,12 @@ void vtkWindowCube::invalidateWcsOverlayCache()
                                              std::numeric_limits<double>::quiet_NaN() };
     this->lastSliceOverlayViewportSize = { -1, -1 };
     this->lastMomentOverlayViewportSize = { -1, -1 };
+    // A product pane keeps its own cache, keyed on the camera, not on the frame or
+    // the format its labels are in: without this a zoomed pane kept the old
+    // labels until the next pan or zoom.
+    for (int i = 0; i < 4; ++i)
+        if (m_paneViews[i])
+            m_paneViews[i]->invalidateOverlay(false);
 }
 
 void vtkWindowCube::applyDefaultWcsFormatForSelectedFrame()
@@ -688,6 +695,9 @@ void vtkWindowCube::requestWcsOverlayRender()
                             : vtkImageData::SafeDownCast(this->momentDisplaySource->GetOutputDataObject(0));
                     this->updateProbeReadout(currentImage);
                 }
+                for (int i = 0; i < 4; ++i)
+                    if (m_paneViews[i])
+                        m_paneViews[i]->invalidateOverlay(true);
                 if (!ui || !ui->vtkImage) {
                     return;
                 }
