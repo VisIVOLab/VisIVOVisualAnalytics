@@ -22,6 +22,7 @@
 #include "DiagnosticsWindow.h"
 #include "LinewidthDialog.h"
 #include "ArepoExtractDialog.h"
+#include "PlutoCartesianDialog.h"
 #include "ClusterProfileDialog.h"
 #include "app/ClusterProfile.h"
 
@@ -96,6 +97,7 @@
 #include <limits>
 
 #include "app/DiagnosticsManager.h"
+#include "PublicationFigureDialog.h"
 
 #include <vtkImageData.h>
 
@@ -1072,6 +1074,8 @@ void MainWindow::wireImageViewerProducts(vtkWindowImage *window,
                      [this, owner, backendUrl, backendToken, sessionId, datasetId]() {
                          this->runPublicationFigure(
                                  backendUrl, backendToken, sessionId, datasetId,
+                                 owner ? owner->publicationFigureContext()
+                                       : visivo::figure::Context{},
                                  [owner](const QString &outputPath) {
                                      if (owner)
                                          owner->recordPublicationFigure(outputPath);
@@ -1828,6 +1832,38 @@ void MainWindow::openArepoSnapshot()
 
     auto *dialog = new ArepoExtractDialog(path, backendUrl, backendToken, this);
     QObject::connect(dialog, &ArepoExtractDialog::cubeReady, this,
+                     [this](const QString &backendPath) { this->doOpenDataPath(backendPath); });
+    dialog->show();
+}
+
+void MainWindow::openPlutoCartesianView()
+{
+    const QString backendUrl   = this->settings->getBackendUrl();
+    const QString backendToken = this->settings->getBackendToken();
+
+    BackendClient client(backendUrl, backendToken);
+    const auto health = client.health();
+    if (!health.ok) {
+        QMessageBox::critical(
+                this, u"Backend unavailable"_s,
+                u"Cannot make the Cartesian view: the backend is not reachable.\n\nError: %1"_s
+                        .arg(health.error.isEmpty() ? u"No response"_s : health.error));
+        return;
+    }
+
+    // The output is on the BACKEND's filesystem, next to its grid.out; any of
+    // its data files or its dbl.out / flt.out will do.
+    RemoteFileBrowserDialog browser(client.baseUrl(), client.token(), this);
+    browser.setPurpose(u"Cartesian View of a PLUTO Output"_s);
+    browser.setFileTypes({ visivo::FileType::Pluto }, visivo::FileType::Pluto, u"pluto"_s);
+    if (browser.exec() != QDialog::Accepted)
+        return;
+    const QString path = browser.selectedFilePath();
+    if (path.isEmpty())
+        return;
+
+    auto *dialog = new PlutoCartesianDialog(path, backendUrl, backendToken, this);
+    QObject::connect(dialog, &PlutoCartesianDialog::cubeReady, this,
                      [this](const QString &backendPath) { this->doOpenDataPath(backendPath); });
     dialog->show();
 }

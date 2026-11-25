@@ -6,7 +6,7 @@ compare them.
 
 | Task | Command | Viewer |
 |---|---|---|
-| A figure with colour bar and sky grid | *Tools ▸ Products ▸ Publication Figure…* | image |
+| A figure with preview, fonts, titles, overlays, beam, scale bar and compass: PNG, PDF, SVG or EPS | *Tools ▸ Products ▸ Publication Figure…* | image |
 | An animation | *Tools ▸ Export ▸ Export Movie…* | cube |
 | A still of a 3-D view: PNG (also with a transparent background), PDF or SVG | *Tools ▸ Export ▸ Save View As…* (cube), *View ▸ Save View As…* (volume table, point viewer) | cube, volume table, points |
 | Labels and arrows | *Tools ▸ Annotations ▸ Add Text Annotation…*, *Add Arrow Annotation…* | image |
@@ -15,22 +15,40 @@ compare them.
 
 ## Publication Figure
 
-*Tools ▸ Products ▸ Publication Figure…* renders the current dataset on the
-backend.
+*Tools ▸ Products ▸ Publication Figure…* renders the current image on the
+backend. The dialog has the options on the left and a preview on the right. The
+preview is the backend's own figure at low resolution and is redrawn a moment
+after each change, so what you see is what *Render* writes. The dialog starts
+from the window: its colour map, stretch and colour range, its sky frame, its
+contours, regions and annotations. With no change in the dialog the figure is
+the window's own, not the plain one-click figure (Inferno, linear, 99.5 %
+clip) that a request naming nothing gets. The window's own colour map is the first entry of the list
+(*Glow (window)*, say), drawn with the exact colours the window shows, whatever
+the map is, a hand-made one included. The dialog opens at once and narrows its list when the
+backend answers, keeping what you had chosen.
 
-| Field | Values |
+| Tab | Options |
 |---|---|
-| *Stretch* | `linear`, `log`, `sqrt`, `asinh`, `power` |
-| *Colormap* | `inferno`, `viridis`, `magma`, `gray`, `hot`, `cubehelix`, and the white-to-hue maps `Purples`, `Blues`, `Greens`, `Reds`, `Greys`, `Oranges` (each also reversed with `_r`) |
-| *Title* | optional |
-| *WCS sky grid* | on by default |
-| *Colorbar (BUNIT)* | colour bar labelled with the data's `BUNIT`; on by default |
+| *Image* | *Colour map*: the viewer's colour maps that the backend can set (`Inferno`, `Viridis`, `Magma`, `Plasma`, `Cividis`, `CoolWarm`, `Gray`, the white-to-hue maps `Purples`, `Blues`, `Greens`, `Reds`, `Greys`, `Oranges` with their `_r`, and a few with a close stand-in, such as `Glow` as `hot`; the dialog says under the list when the chosen one is only close to the window's, and the figure repeats it among its notes; matplotlib's own `hot`, `cubehelix`, `turbo` and a few more follow after a separator). *Stretch*: `linear`, `sqrt`, `squared`, `log` (the window's logarithm), `asinh`, `sinh`, `power` with its exponent. *Minimum* and *Maximum* as the window shows them, or *Clip at* a percentile of the pixels. |
+| *Text* | *Title*, *X axis title* and *Y axis title* (the sky axes' names by default), the font (`sans-serif`, `serif`, `monospace`, or a family installed on the backend) and the sizes in points of the title, the axis titles, the tick labels and the colour bar label. |
+| *Axes* | *WCS sky grid*; blank (NaN) pixels are left white, not painted with the top colour; *Coordinate frame* of ticks and grid (`native`, `fk5`, `icrs`, `galactic`, `ecliptic`; the window's Galactic or Ecliptic choice is the starting value); *Tick format* (`auto`, `sexagesimal`, `degrees`); the colour bar on or off, on the right, left, top or bottom, with its label (the data's `BUNIT` by default); a horizontal bar has as many ticks as its length allows, with a common power of ten written once at its end. |
+| *Overlays* | *Beam*, the header's (or the one typed for the dataset) as an ellipse of its true size and orientation; *Scale bar*, angular, with a length in arcsec, arcmin or degrees (the length is typed once a unit is picked; with *auto* it is a round length, written in the unit that suits the image: arcsec below 60″, arcmin below 60′, else degrees, unless you pick one); *Compass*, north and east of the frame the ticks and grid are in, as the pixel grid has them (b and l for Galactic), so an image drawn with another frame than its own gets that frame's compass. Each goes in the corner you pick. *Contours of the window* (the image's own and every external set the window shows, all together, with the levels, colours, widths and dashes you see), *Regions* and *Text and arrow annotations* are drawn when the window has them. |
+| *Output* | *Format* `png`, `pdf`, `svg` or `eps` (vector for the last three: in an SVG the labels stay <text> elements and in a PDF or EPS they are embedded TrueType, so an editor or a journal can change them); width and height in inches; resolution in dpi (200 by default); *Trim the white margin* (on by default, so the file is a little smaller than the size asked for). |
 
-*Render* writes a 200 dpi PNG into the backend's Workspace Exports, lists it
-among the image's products and offers to open it (this works when the backend
-shares your machine's file system). For data a reader will judge
-quantitatively, prefer a perceptually uniform colormap (`viridis`, `inferno`,
-`magma`).
+Anything that is asked for and cannot be drawn is said, not skipped: a beam
+needs `BMAJ` and `BMIN` in the header, the scale bar and the compass need a sky
+grid, and a font that is not installed on the backend is refused rather than
+replaced. The preview shows these notes under the picture, and *Render* repeats
+them.
+
+*Render* writes the file into the backend's Workspace Exports and lists it among
+the image's products. The message that follows offers to open it (this works
+when the backend shares your machine's file system) and to save a copy
+anywhere, which also works for a remote backend. For data a reader will judge
+quantitatively, prefer a perceptually uniform colour map (`viridis`, `inferno`,
+`magma`). The `log` stretch is the window's: colours evenly spaced in the logarithm of
+the value, a minimum at or below zero raised to a positive floor as in the
+window, so preview and window agree.
 
 A figure does not record how it was made. Note in the caption the channel range
 of a moment map and any mask, the stretch and a hand-set colour range, the beam,

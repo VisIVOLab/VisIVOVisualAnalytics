@@ -1420,15 +1420,35 @@ def sky_frame(name: str):
     return frames[name]()
 
 
+def _is_ecliptic_grid(wcs) -> bool:
+    """True for a WCS whose sky axes are ELON/ELAT (in either order)."""
+    try:
+        ctypes = [str(c)[:4].upper() for c in wcs.celestial.wcs.ctype]
+    except (AttributeError, TypeError):
+        return False
+    return sorted(ctypes[:2]) == ["ELAT", "ELON"]
+
+
+def celestial_frame(wcs):
+    """The astropy frame of a celestial WCS's own coordinates: astropy's
+    ``wcs_to_celestial_frame``, except for an ecliptic grid (ELON/ELAT axes), for
+    which it has no frame and answers ICRS. That made a figure or a region file
+    treat the image's own ecliptic coordinates as equatorial ones; here they are
+    the mean ecliptic of J2000 that ``sky_frame("ecliptic")`` is."""
+    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
+    if _is_ecliptic_grid(wcs):
+        return sky_frame("ecliptic")
+    return wcs_to_celestial_frame(wcs)
+
+
 def native_frame_name(wcs) -> str:
     """Canonical name of a celestial WCS's own frame; ``fk5`` when that frame
     has no canonical name (e.g. FK5 of another equinox), so a conversion to
     "the dataset's frame" lands in a frame region files can state."""
     from astropy.coordinates import FK4, FK5, ICRS, BarycentricMeanEcliptic, Galactic  # noqa: PLC0415
     from astropy.time import Time  # noqa: PLC0415
-    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
 
-    f = wcs_to_celestial_frame(wcs)
+    f = celestial_frame(wcs)
     if isinstance(f, ICRS):
         return "icrs"
     if isinstance(f, Galactic):
@@ -1482,11 +1502,11 @@ class _PixelFrame:
 
     def __init__(self, wcs, origin: int):
         import numpy as np  # noqa: PLC0415
-        from astropy.wcs.utils import proj_plane_pixel_scales, wcs_to_celestial_frame  # noqa: PLC0415
+        from astropy.wcs.utils import proj_plane_pixel_scales  # noqa: PLC0415
 
         self.wcs = wcs
         self.origin = origin
-        self.frame = wcs_to_celestial_frame(wcs)
+        self.frame = celestial_frame(wcs)
         self.lng, self.lat = wcs.wcs.lng, wcs.wcs.lat
         scales = proj_plane_pixel_scales(wcs)
         self.scale_deg = float(np.mean(scales))

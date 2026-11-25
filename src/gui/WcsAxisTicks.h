@@ -79,6 +79,64 @@ inline QString formatDegreeTick(double value, double axisSpan)
     return text;
 }
 
+/// A tick of a linear (non-sky) axis. Mapping a pixel to a coordinate leaves
+/// rounding noise where the value is really zero ("1.63e-16" at x = 0), so a
+/// value far below the axis' own span reads "0".
+inline QString formatLinearTick(double value, double axisSpan)
+{
+    if (std::isfinite(axisSpan) && axisSpan > 0.0 && std::fabs(value) < 1e-9 * axisSpan)
+        value = 0.0;
+    return QString::number(value, 'g', 8);
+}
+
+/// What the status bar and the Inspector call the frame of a WCS that is not
+/// on the sky: a PLUTO run in X, Y, Z is not "Galactic".
+inline QString linearFrameLabel(const QString &ctype1, const QString &ctype2)
+{
+    const QString a = ctype1.trimmed();
+    const QString b = ctype2.trimmed();
+    if (a.isEmpty() && b.isEmpty())
+        return QStringLiteral("pixel");
+    return QStringLiteral("linear (%1, %2)")
+            .arg(a.isEmpty() ? QStringLiteral("?") : a, b.isEmpty() ? QStringLiteral("?") : b);
+}
+
+/// Where one axis of the image viewer runs on screen, and what it reads there.
+/// The image sits in the middle of a viewport it rarely fills, so an axis laid
+/// from edge to edge of the viewport but labelled with the image's own range
+/// put every tick at the wrong coordinate. The axis is instead laid along the
+/// part of the image on screen, clipped to the room the labels need, and read
+/// at its two ends.
+struct AxisFit
+{
+    double screenLo{ 0.0 };   ///< display pixel of the axis' start
+    double screenHi{ 0.0 };   ///< display pixel of its end
+    double worldLo{ 0.0 };    ///< world coordinate under screenLo
+    double worldHi{ 0.0 };    ///< world coordinate under screenHi
+    bool valid{ false };      ///< false when too little of the image is on screen
+};
+
+/// @p viewportPx the viewport's extent along this axis; @p focal the camera's
+/// world position along it and @p pxPerUnit its zoom (parallel projection);
+/// [@p visibleLo, @p visibleHi] the part of the image on screen, in world
+/// units; @p marginLo/@p marginHi the room kept at either end for the labels;
+/// @p minExtent the shortest axis, in pixels, worth labelling.
+inline AxisFit fitAxisToImage(double viewportPx, double focal, double pxPerUnit, double visibleLo,
+                              double visibleHi, double marginLo, double marginHi,
+                              double minExtent = 60.0)
+{
+    AxisFit fit;
+    if (!(pxPerUnit > 0.0) || !std::isfinite(pxPerUnit) || !(viewportPx > 0.0))
+        return fit;
+    const double centre = 0.5 * viewportPx;
+    fit.screenLo = std::max(marginLo, centre + (visibleLo - focal) * pxPerUnit);
+    fit.screenHi = std::min(viewportPx - marginHi, centre + (visibleHi - focal) * pxPerUnit);
+    fit.worldLo = focal + (fit.screenLo - centre) / pxPerUnit;
+    fit.worldHi = focal + (fit.screenHi - centre) / pxPerUnit;
+    fit.valid = fit.screenHi - fit.screenLo >= minExtent;
+    return fit;
+}
+
 /// Display x of the rotated y-axis title. It sits at @p defaultX unless the tick
 /// labels, which end @p tickGap left of the axis and run @p labelChars wide at
 /// @p charWidth each, reach it: a small field prints long labels

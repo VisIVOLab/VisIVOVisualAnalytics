@@ -84,19 +84,8 @@ BackendProductFitsResult BackendClient::mosaic(const QStringList &datasetIds,
     return parseProductFits(payload, error);
 }
 
-BackendPublicationFigureResult BackendClient::publicationFigure(
-        const QString &datasetId, const QString &stretch, const QString &title,
-        bool addGrid, bool addColorbar, const QString &cmap, int dpi) const
+BackendPublicationFigureResult BackendClient::publicationFigure(const QJsonObject &body) const
 {
-    QJsonObject body{
-        { QStringLiteral("dataset_id"),   datasetId },
-        { QStringLiteral("stretch"),      stretch },
-        { QStringLiteral("title"),        title },
-        { QStringLiteral("add_grid"),     addGrid },
-        { QStringLiteral("add_colorbar"), addColorbar },
-        { QStringLiteral("cmap"),         cmap },
-        { QStringLiteral("dpi"),          dpi },
-    };
     QString error;
     const QByteArray payload =
             performPostRetryingBackpressure(QUrl(m_baseUrl + QStringLiteral("/v1/products/publication_figure")),
@@ -107,10 +96,42 @@ BackendPublicationFigureResult BackendClient::publicationFigure(
     r.valid      = o.value(QStringLiteral("valid")).toBool();
     r.error      = o.value(QStringLiteral("error")).toString();
     r.outputPath = o.value(QStringLiteral("output_path")).toString();
+    r.workspaceFilename = o.value(QStringLiteral("workspace_filename")).toString();
+    r.format     = o.value(QStringLiteral("format")).toString();
     r.width      = o.value(QStringLiteral("width")).toInt();
     r.height     = o.value(QStringLiteral("height")).toInt();
     r.hasWcs     = o.value(QStringLiteral("has_wcs")).toBool();
+    r.regionsDrawn = o.value(QStringLiteral("regions_drawn")).toInt();
+    for (const QJsonValue &n : o.value(QStringLiteral("notes")).toArray())
+        r.notes << n.toString();
+    r.png = QByteArray::fromBase64(o.value(QStringLiteral("png_base64")).toString().toLatin1());
     return r;
+}
+
+BackendFigureColourMaps BackendClient::publicationFigureColourMaps(const QStringList &names) const
+{
+    // Not the backpressure variant: this is no compute slot, so a 429 is not waited out.
+    QString error;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/products/figure_colour_maps")),
+            QJsonDocument(QJsonObject{ { QStringLiteral("names"), QJsonArray::fromStringList(names) } }),
+            error);
+    BackendFigureColourMaps out;
+    if (!error.isEmpty())
+        return out;
+    const QJsonObject o = QJsonDocument::fromJson(payload).object();
+    if (!o.value(QStringLiteral("maps")).isArray())
+        return out;
+    for (const QJsonValue &v : o.value(QStringLiteral("maps")).toArray()) {
+        const QJsonObject m = v.toObject();
+        out.maps.append({ m.value(QStringLiteral("name")).toString(),
+                          m.value(QStringLiteral("exact")).toBool(true),
+                          m.value(QStringLiteral("drawn_as")).toString() });
+    }
+    for (const QJsonValue &n : o.value(QStringLiteral("extra")).toArray())
+        out.extra << n.toString();
+    out.valid = true;
+    return out;
 }
 
 BackendImageQualityResult BackendClient::imageQuality(const QString &datasetId) const

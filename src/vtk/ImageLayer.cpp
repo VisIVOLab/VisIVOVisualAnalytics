@@ -166,8 +166,9 @@ void ImageLayer::updateImageTransform(double rotationDegrees)
 
 double ImageLayer::logScaleEpsilon(double maxValue)
 {
-    const double finiteMax = std::isfinite(maxValue) ? std::abs(maxValue) : 1.0;
-    return std::max(1e-12, finiteMax * 1e-12);
+    // The shared log rule with only the peak known (see LutScale::logFloor).
+    const double floorValue = LutScale::logFloor(0.0, maxValue);
+    return floorValue > 0.0 ? floorValue : 1e-12;
 }
 
 void ImageLayer::rebuildPreviewImageIfNeeded(const char *context)

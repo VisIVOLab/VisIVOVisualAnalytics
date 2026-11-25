@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 import math
 import uuid
 import logging
@@ -465,16 +465,57 @@ async def mosaic(
               "coverage_fraction": result["coverage_fraction"]})
 
 
+Corner = Literal["bottom-left", "bottom-right", "top-left", "top-right"]
+
+
 class PublicationFigureRequest(BaseModel):
+    """Every field but ``dataset_id`` has the value the one-click figure always
+    had, so a client that sends only a few options gets the figure it got before."""
     dataset_id: str
-    cmap: str = "inferno"
-    stretch: str = "linear"         # linear | log | sqrt | asinh | power
-    percent: float = 99.5
+    cmap: str = "inferno"           # a matplotlib name, in any case (Inferno, CoolWarm, Purples_r)
+    # The window's own colours when its map is not a matplotlib one: N x 3 numbers in
+    # 0..1, lowest value first (the client sends 256 rows). Used instead of ``cmap``,
+    # which then only names it; drawn exactly, whatever the viewer's map is.
+    lut: list[Annotated[list[float], Field(min_length=3, max_length=3)]] | None = Field(
+        None, min_length=2, max_length=1024)
+    stretch: str = "linear"         # linear | sqrt | squared | log | asinh | sinh | power
+    percent: float = Field(99.5, gt=0.0, le=100.0)   # clip, when vmin/vmax are not given
+    vmin: float | None = None       # the range, as the window shows it
+    vmax: float | None = None
+    gamma: float = Field(1.0, gt=0.0, le=10.0)       # exponent of the power stretch
     title: str = ""
+    xlabel: str = ""                # "" = the sky axes' names, or X/Y (pixels)
+    ylabel: str = ""
     add_grid: bool = True
+    frame: Literal["native", "fk5", "icrs", "galactic", "ecliptic"] = "native"   # frame of ticks and grid
+    tick_format: Literal["auto", "sexagesimal", "degrees"] = "auto"
     add_colorbar: bool = True
-    dpi: int = 200
-    output_basename: str = ""       # .png/.pdf/.svg; defaults to .png
+    colorbar_position: Literal["right", "left", "top", "bottom"] = "right"
+    colorbar_label: str = ""        # "" = BUNIT
+    font_family: str = "sans-serif"  # sans-serif | serif | monospace, or an installed family
+    title_size: float = Field(12.0, ge=4.0, le=72.0)
+    label_size: float = Field(10.0, ge=4.0, le=72.0)
+    tick_size: float = Field(10.0, ge=4.0, le=72.0)
+    colorbar_label_size: float = Field(10.0, ge=4.0, le=72.0)
+    width_in: float = Field(8.0, ge=1.0, le=40.0)    # figure size, inches
+    height_in: float = Field(6.5, ge=1.0, le=40.0)
+    dpi: int = Field(200, ge=30, le=1200)
+    crop: bool = True               # trim the white margin (the figure is then a little smaller)
+    overlay_color: str = "auto"     # grid, beam, scale bar, compass: auto = white on dark maps
+    beam: bool = False              # the header's beam as an ellipse
+    beam_position: Corner = "bottom-left"
+    scale_bar: bool = False
+    scale_bar_length: float = Field(0.0, ge=0.0)    # in scale_bar_unit; 0 = a round length
+    scale_bar_unit: Literal["auto", "arcsec", "arcmin", "deg"] = "auto"   # auto: arcsec, arcmin or deg by size
+    scale_bar_position: Corner = "bottom-right"
+    compass: bool = False
+    compass_position: Corner = "top-right"
+    # Canonical regions (regions.py), 1-based image pixels or any sky frame, for
+    # the window's contours, regions and annotations: see figure_overlays.py.
+    regions: list[dict] = Field(default_factory=list)
+    preview: bool = False           # a small PNG in the response, no file written
+    preview_px: int = Field(800, ge=100, le=2400)   # longest side of the preview
+    output_basename: str = ""       # .png/.pdf/.svg/.eps; defaults to .png
 
 
 class PublicationFigureResponse(BaseModel):
@@ -482,9 +523,47 @@ class PublicationFigureResponse(BaseModel):
     error: str = ""
     output_path: str = ""
     workspace_filename: str = ""
-    width: int = 0
+    width: int = 0                  # of the image, in pixels
     height: int = 0
     has_wcs: bool = False
+    format: str = ""                # png | pdf | svg | eps
+    notes: list[str] = []           # what was asked for and could not be drawn, and why
+    regions_drawn: int = 0
+    png_base64: str = ""            # preview only
+    png_width: int = 0
+    png_height: int = 0
+
+
+class FigureColourMapsRequest(BaseModel):
+    names: list[str] = Field(default_factory=list, max_length=500)
+
+
+class FigureColourMap(BaseModel):
+    name: str                       # as the request spelled it
+    exact: bool                     # False: drawn with a close matplotlib map, not the viewer's
+    drawn_as: str                   # the matplotlib map used
+
+
+class FigureColourMapsResponse(BaseModel):
+    maps: list[FigureColourMap]     # those of the request the figure can set, in order
+    extra: list[str]                # matplotlib maps to offer besides them
+
+
+# A light lookup, not a render: its name must stay clear of the heavy-compute
+# fragments the client's long timeout and job counter match on (BackendClient.cpp).
+@router.post("/v1/products/figure_colour_maps",
+             response_model=FigureColourMapsResponse, tags=["products"])
+def figure_colour_maps(
+    request: FigureColourMapsRequest,
+    _: None = _auth,
+) -> FigureColourMapsResponse:
+    """Which of the given colour-map names a publication figure can use, and for
+    each whether it is drawn exactly or with a close matplotlib map (the desktop
+    sends its registry: its dialog offers these, and says which are approximated).
+    ``extra`` lists matplotlib's own maps to offer after them. A plain ``def``: the
+    listing is blocking work and runs on the thread pool, not the event loop."""
+    from ..publication_figure import figure_colour_maps as listing  # noqa: PLC0415
+    return FigureColourMapsResponse(**listing(request.names))
 
 
 @router.post("/v1/products/publication_figure",
@@ -494,20 +573,23 @@ async def publication_figure(
     _: None = _auth,
     session: Session = Depends(get_session),
 ) -> PublicationFigureResponse:
-    """Render a publication-quality figure with WCS grid + colorbar (UC 1.3)."""
+    """Render a publication-quality figure (UC 1.3): WCS grid, colour bar, text,
+    contours, regions, beam, scale bar, compass; or, with ``preview``, a small PNG."""
     from ..products_advanced import worker_publication_figure  # noqa: PLC0415
     try:
         entry = _require_dataset(session, request.dataset_id)
-        basename = request.output_basename.strip() or f"{Path(entry['path']).stem}_figure.png"
-        if not basename.lower().endswith((".png", ".pdf", ".svg")):
-            basename = basename + ".png"
-        # make_workspace_path defaults missing extensions to .fits, so pass a
-        # name that already carries an image extension (handled above).
-        output_path = str(make_workspace_path(basename))
-        result = worker_publication_figure(
-            output_path, path=entry["path"], cmap=request.cmap, stretch=request.stretch,
-            percent=request.percent, title=request.title, add_grid=request.add_grid,
-            add_colorbar=request.add_colorbar, dpi=int(request.dpi))
+        output_path = None
+        if not request.preview:
+            basename = request.output_basename.strip() or f"{Path(entry['path']).stem}_figure.png"
+            if not basename.lower().endswith((".png", ".pdf", ".svg", ".eps")):
+                basename = basename + ".png"
+            # make_workspace_path defaults missing extensions to .fits, so pass a
+            # name that already carries an image extension (handled above).
+            output_path = str(make_workspace_path(basename))
+        # Drawing is CPU work and matplotlib takes its time: off the event loop, so
+        # the preview that follows each edit does not stall the other requests.
+        result = await asyncio.to_thread(
+            worker_publication_figure, output_path, path=entry["path"], req=request)
     except HTTPException:
         raise
     except Exception as exc:
@@ -515,8 +597,11 @@ async def publication_figure(
         return PublicationFigureResponse(valid=False, error=str(exc))
     return PublicationFigureResponse(
         valid=True, output_path=result["output_path"],
-        workspace_filename=Path(result["output_path"]).name,
-        width=result["width"], height=result["height"], has_wcs=result["has_wcs"])
+        workspace_filename=Path(result["output_path"]).name if result["output_path"] else "",
+        width=result["width"], height=result["height"], has_wcs=result["has_wcs"],
+        format=result["format"], notes=result["notes"], regions_drawn=result["regions_drawn"],
+        png_base64=result.get("png_base64", ""), png_width=result.get("png_width", 0),
+        png_height=result.get("png_height", 0))
 
 
 class ImageQualityRequest(BaseModel):

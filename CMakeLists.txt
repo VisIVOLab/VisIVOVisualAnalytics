@@ -548,6 +548,9 @@ set(PROJECT_SOURCES
         src/gui/RenderExportPlan.h
         src/gui/SaveViewDialog.cpp
         src/gui/SaveViewDialog.h
+        src/gui/PublicationFigureDialog.cpp
+        src/gui/PublicationFigureDialog.h
+        src/gui/PublicationFigureSpec.h
         src/vtk/RenderExport.cpp
         src/vtk/RenderExport.h
         src/gui/BusyStatus.cpp
@@ -731,6 +734,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage.h
         src/gui/vtkWindowImage_Catalogue.cpp
         src/gui/ArepoExtractDialog.cpp
+        src/gui/PlutoCartesianDialog.cpp
         src/gui/FilterFitsDialog.cpp
         src/gui/LayerCardDelegate.cpp
         src/gui/LayerCardDelegate.h
@@ -747,11 +751,14 @@ set(PROJECT_SOURCES
         src/gui/McutoutJobDialog.cpp
         src/gui/McutoutJobDialog.h
         src/gui/ArepoExtractDialog.h
+        src/gui/PlutoCartesianDialog.h
         src/gui/DatasetBeamControl.cpp
         src/gui/DatasetBeamControl.h
         src/gui/PhysicalUnitsControl.cpp
         src/gui/PhysicalUnitsControl.h
         src/app/SimulationVolume.h
+        src/app/PlutoCartesianView.h
+        src/app/ByteSize.h
         src/app/PhysicalUnits.h
         src/gui/SedWindow.cpp
         src/gui/SedWindow.h
@@ -775,6 +782,10 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Products.cpp
         src/gui/vtkWindowImage_Blend.cpp
         src/gui/LayerBlend.h
+        src/gui/LayerBlendLut.h
+        src/gui/FieldOverlay.h
+        src/gui/SimField.h
+        src/gui/vtkWindowCube_Fields.cpp
         src/gui/vtkWindowImage_Cosmology.cpp
         src/gui/vtkWindowImage_Region.cpp
         src/gui/vtkWindowImage_RegionList.cpp

@@ -136,7 +136,7 @@ double sampledPositiveFloor(vtkImageData *image, int targetSamples)
         // is a poor floor, which is the whole reason this function exists — but
         // it is a working one, and better than refusing a stretch of an image
         // that does have signal in it.
-        return std::max(1e-12, range[1] * 1e-6);
+        return range[1] * 1e-6;
     }
     return percentileFloor(std::move(positives));
 }

@@ -1463,6 +1463,12 @@ void vtkWindowCube::setupSliceRenderer()
     sliceStack->AddImage(this->m_sliceDetailActor);
     sliceStack->SetActiveLayer(0);
     ren->AddViewProp(sliceStack);
+    // The fields added to a simulation (issue #525) draw one more image in this
+    // stack and hide the slice under it.
+    this->m_fieldViews = std::make_unique<SimFieldViews>();
+    this->m_fieldViews->base = sliceActor.Get();
+    this->m_fieldViews->stack = sliceStack.Get();
+    this->watchSliceLutForFields();
     this->m_sliceDetailTimer.setSingleShot(true);
     this->m_sliceDetailTimer.setInterval(300);
     connect(&this->m_sliceDetailTimer, &QTimer::timeout, this, &vtkWindowCube::refreshSliceDetail,

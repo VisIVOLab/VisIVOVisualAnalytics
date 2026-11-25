@@ -39,7 +39,7 @@ public:
     /// Clear all Properties rows (call before the add* sequence).
     void clearProperties();
     /// Section caption (Lato 10px/700, 0.14em) — or a lighter sub-caption.
-    void addPropertyCaption(const QString &caption, bool sub = false);
+    QLabel *addPropertyCaption(const QString &caption, bool sub = false);
     /// Key/value row with a string value (value in mono, right-aligned).
     void addPropertyRow(const QString &key, const QString &value);
     /// Key/value row whose value is a live widget (e.g. a re-hosted stat label).

@@ -18,6 +18,7 @@
 #include "TestCubeRegionGeom.h"
 #include "TestCubeToolGate.h"
 #include "TestSimulationVolume.h"
+#include "TestPlutoCartesianView.h"
 #include "TestCubeLodGeometry.h"
 #include "TestCubeLodPlan.h"
 #include "TestCubeLodGate.h"
@@ -35,6 +36,7 @@
 #include "TestSedPlotStyle.h"
 #include "TestMolecularLineClient.h"
 #include "TestLteCoRequest.h"
+#include "TestPublicationFigure.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
 #ifdef VISIVO_TEST_ASTRO_MATCH
@@ -84,6 +86,7 @@
 #include "TestThresholdShare.h"
 #include "TestLayerCardGeometry.h"
 #include "TestLayerBlend.h"
+#include "TestFieldOverlay.h"
 #include "TestRegionReadout.h"
 #include "TestRegionModel.h"
 #include "TestRegionFlux.h"
@@ -134,6 +137,7 @@ int main(int argc, char *argv[])
     { TestCubeRegionGeom   t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeToolGate     t; status |= QTest::qExec(&t, argc, argv); }
     { TestSimulationVolume t; status |= QTest::qExec(&t, argc, argv); }
+    { TestPlutoCartesianView t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodGeometry  t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodPlan      t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodGate      t; status |= QTest::qExec(&t, argc, argv); }
@@ -151,6 +155,7 @@ int main(int argc, char *argv[])
     { TestSedPlotStyle     t; status |= QTest::qExec(&t, argc, argv); }
     { TestMolecularLineClient t; status |= QTest::qExec(&t, argc, argv); }
     { TestLteCoRequest t; status |= QTest::qExec(&t, argc, argv); }
+    { TestPublicationFigure t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
 #ifdef VISIVO_TEST_ASTRO_MATCH
@@ -197,6 +202,7 @@ int main(int argc, char *argv[])
     { TestBusyFeedback     t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerCardGeometry t; status |= QTest::qExec(&t, argc, argv); }
     { TestLayerBlend       t; status |= QTest::qExec(&t, argc, argv); }
+    { TestFieldOverlay     t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionReadout    t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionModel      t; status |= QTest::qExec(&t, argc, argv); }
     { TestRegionFlux       t; status |= QTest::qExec(&t, argc, argv); }

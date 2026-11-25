@@ -248,7 +248,7 @@ void InspectorPanel::clearProperties()
     }
 }
 
-void InspectorPanel::addPropertyCaption(const QString &caption, bool sub)
+QLabel *InspectorPanel::addPropertyCaption(const QString &caption, bool sub)
 {
     auto *lbl = new QLabel(caption, m_propsPage);
     if (sub) {
@@ -263,6 +263,7 @@ void InspectorPanel::addPropertyCaption(const QString &caption, bool sub)
                              VisivoTheme::sectionHeaderCss()));
     }
     m_propsLayout->insertWidget(m_propsLayout->count() - 1, lbl);
+    return lbl;
 }
 
 void InspectorPanel::applyValueStyle(QLabel *label, const QString &value)

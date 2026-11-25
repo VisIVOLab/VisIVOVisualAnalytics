@@ -767,12 +767,19 @@ void vtkWindowCube::applyHeadsetClip()
                 rw->Render();
         }
         this->m_headsetCropping = false;
+        // The cast of several fields (no cropping) is back (issue #525).
+        if (!m_fields.empty())
+            this->rebuildFieldVolumes();
         return;
     }
     // Followed from now on, here and in a remote view's bootstrap, whether or
     // not the local volume exists yet.
     this->m_headsetCropping = true;
     this->applyLodUserCrop();
+    // The cast of several fields cannot crop: the window's own volume shows
+    // alone while the clip is followed (issue #525).
+    if (!m_fields.empty())
+        this->rebuildFieldVolumes();
     if (!this->volumeMapper)
         return;
     auto *display = vtkImageData::SafeDownCast(this->cubeDisplaySource->GetOutputDataObject(0));

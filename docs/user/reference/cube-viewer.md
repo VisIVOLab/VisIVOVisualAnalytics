@@ -215,7 +215,11 @@ and validation: [Cube viewer: methods](../../technical/methods/cube-viewer.md).
   every product pane: moment, line-width and Faraday maps, and the PV
   diagram. The colour bar follows it. Each pane keeps its own; the product
   remembers the last choice when it is shown again or recomputed. *Log* is
-  refused, with a message, on an image with no positive values.
+  refused, with a message, on an image with no positive values. Its lower end
+  is the faint end of the positive values (their 1st percentile), but never
+  more than twelve decades under the peak, so rounding residuals in an
+  otherwise empty map do not flatten the display. The rule is relative to the
+  data, so it also holds for physical units (a density of 1e-24 g/cm3).
 - *Same range on every channel* (*DISPLAY* of the 2-D Slice): keeps one colour
   range across channels instead of stretching each channel to its own range.
   *Cube range* sets the range to the whole loaded cube. Choosing any range
@@ -372,6 +376,10 @@ read as regions. See [Catalogues and HiPS](catalogues-hips.md).
   followed, including *Shift+R* and the *Camera* presets. The chips next to the
   button choose which facets are linked. See
   [Figures, movies and linked views](publication-output.md).
+- *Add Field…* (Inspector, *Fields*; simulation volumes with other variables):
+  puts a second or third variable of the same run in this window's slice and 3-D
+  box, instead of a second window. See
+  [Several variables in one view](pluto-output.md#several-variables-in-one-view).
 - *Link Views* also reaches image windows that have it on: the slice and the
   image follow each other by sky, and the cursor of one is a crosshair in the other.
   See [Link an image and a cube](publication-output.md#link-an-image-and-a-cube).

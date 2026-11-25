@@ -217,21 +217,38 @@ than two datasets is 422. The response has the same shape as `map_math`, with
 pixels covered by at least one input).
 
 ### `POST /v1/products/publication_figure`
-Render an image as a figure file with a WCS sky grid and a colour bar labelled
-with `BUNIT`.
+Render an image as a figure file, or, with `preview`, as a small PNG in the
+response (issue #41). Only `dataset_id` is required; every other field has the
+value the one-click figure always had.
 
 ```json
-{ "dataset_id": "...", "cmap": "inferno", "stretch": "asinh", "percent": 99.5,
+{ "dataset_id": "...", "cmap": "Inferno", "stretch": "asinh", "percent": 99.5,
   "title": "", "add_grid": true, "add_colorbar": true, "dpi": 200,
   "output_basename": "field.pdf" }
 ```
 
-`stretch` is `linear`, `log`, `sqrt`, `asinh` or `power` (astropy
-`simple_norm`, clipped at `percent`). The format follows the extension of
-`output_basename` (`.png`, `.pdf`, `.svg`; anything else gets `.png`
-appended); the default name is `<stem>_figure.png`. Without a celestial WCS the
-axes are in pixels. Response: `valid`, `error`, `output_path`,
-`workspace_filename`, `width`, `height` (image pixels), `has_wcs`.
+| Group | Fields |
+|---|---|
+| Colours | `cmap`: a matplotlib name in any case (`Inferno`, `CoolWarm`, `Purples_r`) or a viewer name with a stand-in (`Glow` is `hot`); unknown is `valid: false`. A map that is only close to the viewer's (a stand-in, or a name matplotlib spells with another table, such as `Rainbow`) is drawn, and a note says with which map. `lut`, optional: the window's own colours as 2 to 1024 rows of three numbers in 0..1, lowest value first (the desktop sends 256); it replaces `cmap`, which then only names it, and draws any viewer map exactly, a hand-made one included (no note; a malformed table is `valid: false`). `stretch`: `linear`, `sqrt`, `squared`, `asinh`, `sinh`, `power` (astropy stretches; `gamma` is the power exponent) and `log`, the window's pure logarithm: colours evenly spaced in log10 of the value over the range, as VTK's log table gives them (a custom `_Log10Stretch` on astropy's `ImageNormalize`, equal to the logarithm of matplotlib's `LogNorm` on the range, and not astropy's `LogStretch`). A minimum at or below zero is raised to a positive floor (the 1st percentile of the positive pixels, or a millionth of the maximum), as the window does with signed data; a range with no positive maximum is `valid: false`. `vmin`/`vmax` give the range; without them `percent` clips (default 99.5). |
+| Text | `title`, `xlabel`, `ylabel` (empty: the sky axes' names, or X/Y in pixels), `colorbar_label` (empty: `BUNIT`). `font_family`: `sans-serif`, `serif`, `monospace` or an installed family (a missing one is refused, not replaced). `title_size`, `label_size`, `tick_size`, `colorbar_label_size` in points (4 to 72). |
+| Axes | `add_grid`; `frame` `native`, `fk5`, `icrs`, `galactic` or `ecliptic` (the barycentric mean ecliptic of J2000; another frame than the image's is drawn as astropy's coordinate overlay, on the bottom and left edges); `tick_format` `auto`, `sexagesimal` or `degrees`. |
+| Colour bar | `add_colorbar`; `colorbar_position` `right`, `left`, `top` or `bottom`. A horizontal bar gets a `MaxNLocator` sized to its length and one scalar offset (`1e-4`) instead of long labels. NaN pixels are masked and take a transparent bad colour (white page); pixels outside the range take the end colours. |
+| Size | `width_in` and `height_in` (1 to 40 inches, 8 x 6.5 by default), `dpi` (30 to 1200); more than 120 megapixels is refused. `crop` (default true) trims the white margin, so the file is a little smaller than asked; false gives exactly the size. |
+| Marks | `beam` (BMAJ/BMIN/BPA of the header, or the beam typed for the dataset, as an ellipse of true size and orientation), `scale_bar` with `scale_bar_length` (in `scale_bar_unit` `auto`, the default, `arcsec`, `arcmin` or `deg`; 0 is a 1, 2 or 5 x 10^n length near a fifth of the width, and `auto` writes it in arcsec below 60", arcmin below 60', else degrees; a length typed with `auto` is read in that unit, which the label states, so a client that lets the user type a length sends the unit with it: the desktop dialog enables the length only once a unit is picked, and sends 0 with `auto`), `compass` (north and east of the frame the ticks and grid are in, `frame`, drawn on the pixel grid at the centre of the image: b and l for a Galactic frame, N and E otherwise; for a frame other than the image's the arrows are turned by the angle between the two norths there, with `regions._north_rotation`). The beam, the scale bar and the compass read the WCS through `regions._PixelFrame`, as the regions do. Each has a `*_position`: `bottom-left`, `bottom-right`, `top-left` or `top-right`. `overlay_color` (default `auto`: white over a dark map, black over a light one). |
+| Overlays | `regions`: canonical regions of [Regions](regions.md), in 1-based image pixels or any sky frame (converted with the dataset's WCS). A contour line is a `polygon` or `line` with `props.color`, `props.width` and `props.dash`; an annotation a `text` or a `vector`; any region is drawn as it is. Lines of one style are one artist, so tens of thousands of contour lines are fine; more than 3 million vertices are refused. A malformed region is left out and counted. |
+| Output | `output_basename`: the format follows its extension `.png`, `.pdf`, `.svg` or `.eps` (anything else gets `.png`); SVG text stays `<text>` (`svg.fonttype=none`) and PDF/EPS embed TrueType (42), set around the save only; the default is `<stem>_figure.png`. `preview` (true: no file, the PNG comes back in `png_base64`, its longest side `preview_px`, 800 by default, and the image decimated when it is very large). |
+
+Response: `valid`, `error`, `output_path`, `workspace_filename` (what
+`GET /v1/exports/download` takes), `format`, `width`, `height` (image pixels),
+`has_wcs`, `notes` (what was asked for and could not be drawn: no beam in the
+header, no sky grid, a scale bar longer than the image, overlays left out),
+`regions_drawn`, and for a preview `png_base64`, `png_width`, `png_height`.
+A request with a value out of range or not one of the listed words is 422.
+The figure is drawn off the event loop and renders are serialised.
+
+### `POST /v1/products/figure_colour_maps`
+Body `{"names": [...]}` (at most 500); response `{"maps": [{"name", "exact", "drawn_as"}], "extra": [...]}`. `maps` are the names the figure can set (`cmap` resolves them), in the order sent; `exact` is false when `drawn_as`, the matplotlib map used, is only close to the viewer's table (Default, Glow, Temperature, Sar, VolRenRGB, Rainbow, CoolWarm...), true for matplotlib's own tables (Inferno, Viridis, Magma, Plasma, Cividis, Gray and the Brewer maps). `extra` are matplotlib maps to offer after the registry (`hot`, `cubehelix`, `turbo`...) that the names do not already cover. A light lookup, deliberately not under `/products/publication_figure/`: the desktop's long-compute timeout and job counter match on that path, and this answer must come back in seconds. The desktop calls it off the GUI thread when the dialog opens, keeps the answer per backend for the session, and uses it to narrow the list and to say which maps are approximated.
+
 
 ### `POST /v1/products/image_quality`
 Quality and artefact metrics for an image. Request: `{dataset_id}`.

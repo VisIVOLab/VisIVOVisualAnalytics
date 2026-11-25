@@ -43,7 +43,11 @@
 #include <QUrl>
 #include <vtkImageData.h>
 #include "ProfileWidget.h"
+#include "PublicationFigureDialog.h"
 #include "LteCoDialog.h"
+#include <vtkLookupTable.h>
+#include <vtkNew.h>
+#include "ColorMaps.h"
 #include "RegionModel.h"
 #include "app/LteCoRequest.h"
 
@@ -246,11 +250,116 @@ void vtkWindowImage::recordPublicationFigure(const QString &outputPath)
     // figure used to be announced in a message box and nowhere else.
     QVariantMap params;
     params.insert(u"Output path"_s, outputPath);
-    params.insert(u"Format"_s, u"PNG (matplotlib, rendered on the backend)"_s);
+    params.insert(u"Format"_s, u"%1 (matplotlib, rendered on the backend)"_s.arg(
+            QFileInfo(outputPath).suffix().toUpper()));
     params.insert(u"Storage"_s, u"Workspace Exports"_s);
     this->registerAnalysisProduct(u"figure"_s,
                                   u"Publication figure: %1"_s.arg(QFileInfo(outputPath).fileName()),
                                   params, this->scopedProductId(u"pubfig"_s));
+}
+
+namespace {
+/// The colours the window draws its map with, as @p n RGB rows in 0..1 (lowest value
+/// first) for a figure to draw exactly. The map is read by its name from the registry,
+/// freshly, not from the window's table: under a square-root, square or power stretch
+/// the window resamples the table's entries through the stretch, and the figure applies
+/// the stretch itself, which would be done twice. A table with no registry name is read
+/// as it is when the window's scale does not bake a stretch into it (linear, log), and
+/// not sent otherwise (the figure then offers what it can set by name).
+QJsonArray windowColourTable(vtkLookupTable *lut, LutScale::Mode mode, std::size_t n = 256)
+{
+    vtkNew<vtkLookupTable> plain;
+    const std::string name = lut->GetObjectName();
+    if (!name.empty())
+        ColorMaps::SetColorMap(plain, name);
+    vtkLookupTable *source = nullptr;
+    if (!plain->GetObjectName().empty())
+        source = plain;
+    else if (mode == LutScale::Mode::Linear || mode == LutScale::Mode::Log)
+        source = lut;
+    QJsonArray rows;
+    const vtkIdType entries = source ? source->GetNumberOfTableValues() : 0;
+    if (entries < 2)
+        return rows;
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto k = static_cast<vtkIdType>(std::llround(static_cast<double>(i)
+                                                           * static_cast<double>(entries - 1)
+                                                           / static_cast<double>(n - 1)));
+        double rgba[4];
+        source->GetTableValue(k, rgba);
+        rows.append(QJsonArray{ rgba[0], rgba[1], rgba[2] });
+    }
+    return rows;
+}
+}   // namespace
+
+visivo::figure::Context vtkWindowImage::publicationFigureContext()
+{
+    namespace vf = visivo::figure;
+    vf::Context ctx;
+    ctx.overlays = std::make_shared<vf::Overlays>();
+    ctx.fileStem = QFileInfo(this->filepath).completeBaseName() + u"_figure"_s;
+    vf::Options &o = ctx.defaults;
+
+    // The colours as the window shows them: the map's name, and its table, which the
+    // dialog sends when the backend draws that map only approximately by name.
+    const int master = this->layers ? this->layers->getMasterIndex() : -1;
+    if (master >= 0 && master < this->layers->rowCount()) {
+        if (auto *lut = this->layers->getLookupTable(master)) {
+            ctx.windowColourMap = QString::fromStdString(lut->GetObjectName());
+            ctx.windowLut = windowColourTable(lut, this->layers->scaleMode(master));
+            const double *r = lut->GetTableRange();
+            if (r && std::isfinite(r[0]) && std::isfinite(r[1]) && r[0] < r[1]) {
+                o.useRange = true;
+                o.vmin = r[0];
+                o.vmax = r[1];
+            }
+        }
+        switch (this->layers->scaleMode(master)) {
+        case LutScale::Mode::Log: o.stretch = u"log"_s; break;
+        case LutScale::Mode::Sqrt: o.stretch = u"sqrt"_s; break;
+        case LutScale::Mode::Square: o.stretch = u"squared"_s; break;
+        case LutScale::Mode::Power:
+            o.stretch = u"power"_s;
+            o.gamma = this->layers->scaleGamma(master);
+            break;
+        case LutScale::Mode::Linear: break;
+        }
+    }
+    o.frame = vf::frameForWindow(ui->actionGalactic->isChecked(), ui->actionEcliptic->isChecked());
+
+    // Over the image. The lines of a contour layer are taken here, on the GUI
+    // thread, as the export does; they are joined later, off it.
+    constexpr std::size_t kMaxFigureSegments = 1'000'000;
+    const auto identity = [](double x, double y) { return std::array<double, 2>{ x, y }; };
+    bool tooMany = false;
+    const auto take = [&](ContourLayer *layer) {
+        if (!layer || !layer->hasInput() || !layer->visible())
+            return;
+        bool big = false;
+        auto src = layer->lineSource(identity, kMaxFigureSegments, &big);
+        if (big)
+            tooMany = true;
+        else if (!src.segments.empty())
+            ctx.overlays->contourSources.push_back(std::move(src));
+    };
+    if (m_contoursVisible)
+        take(m_contourLayer.get());
+    for (const auto &ext : std::as_const(m_externalContourLayers))
+        take(ext.layer.get());
+    if (tooMany)
+        statusBar()->showMessage(u"Some contours have too many segments for a figure and are "
+                                 u"left out: raise the lowest level or smooth the image."_s, 8000);
+    ctx.overlays->regions = vf::regionRegions(m_regions.regions());
+    std::vector<vf::Note> notes;
+    for (const auto &a : m_annotations)
+        notes.push_back({ a.type == Annotation::Arrow, a.text, a.worldX, a.worldY, a.arrowEndX,
+                          a.arrowEndY });
+    ctx.overlays->annotations = vf::noteRegions(notes);
+    o.contours = ctx.overlays->hasContours();
+    o.regions = !ctx.overlays->regions.isEmpty();
+    o.annotations = !ctx.overlays->annotations.isEmpty();
+    return ctx;
 }
 
 void vtkWindowImage::recordImageQuality(const QVariantMap &metrics)

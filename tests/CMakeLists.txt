@@ -137,7 +137,9 @@ add_executable(VisIVOTests
     TestCubeToolGate.h
     test_cube_tool_gate.cpp
     TestSimulationVolume.h
+    TestPlutoCartesianView.h
     test_simulation_volume.cpp
+    test_pluto_cartesian_view.cpp
     TestCubeLodGeometry.h
     test_cube_lod_geometry.cpp
     TestCubeLodPlan.h
@@ -162,6 +164,8 @@ add_executable(VisIVOTests
     test_molecular_line_client.cpp
     TestLteCoRequest.h
     test_lte_co_request.cpp
+    TestPublicationFigure.h
+    test_publication_figure.cpp
     TestVlkbPosString.h
     test_vlkb_pos_string.cpp
     TestSkyOverlap.h
@@ -219,6 +223,8 @@ add_executable(VisIVOTests
     test_layer_card_geometry.cpp
     TestLayerBlend.h
     test_layer_blend.cpp
+    TestFieldOverlay.h
+    test_field_overlay.cpp
     TestRegionReadout.h
     test_region_readout.cpp
     TestBackendUrlLocality.h

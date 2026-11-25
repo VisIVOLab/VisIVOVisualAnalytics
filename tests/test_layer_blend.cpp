@@ -254,3 +254,26 @@ void TestLayerBlend::affineInverseRoundTrips()
     const auto r = inv.after(m).apply(1.0, 2.0);
     QVERIFY(std::fabs(r[0] - 1.0) < 1e-9 && std::fabs(r[1] - 2.0) < 1e-9);
 }
+
+void TestLayerBlend::clampToRangeKeepsNanAndTakesEitherOrder()
+{
+    const float v[] = { -5.f, 0.5f, 9.f, std::nanf("") };
+    float out[4];
+    clampToRange(v, 4, 0.0, 1.0, out);
+    QCOMPARE(out[0], 0.f);
+    QCOMPARE(out[1], 0.5f);
+    QCOMPARE(out[2], 1.f);
+    QVERIFY(std::isnan(out[3]));
+    clampToRange(v, 4, 1.0, 0.0, out);   // a reversed range clamps the same way
+    QCOMPARE(out[2], 1.f);
+}
+
+void TestLayerBlend::noDataIsTransparentWhateverTheTableGaveNan()
+{
+    const float v[] = { 1.f, std::nanf("") };
+    std::uint8_t rgba[8] = { 10, 20, 30, 255, 1, 2, 3, 255 };
+    clearNoData(v, 2, rgba);
+    QCOMPARE(int(rgba[3]), 255);   // data keeps its colour
+    QCOMPARE(int(rgba[0]), 10);
+    QCOMPARE(int(rgba[4]) + rgba[5] + rgba[6] + rgba[7], 0);
+}
