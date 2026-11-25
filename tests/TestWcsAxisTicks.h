@@ -19,4 +19,6 @@ private slots:
     void aLinearAxisPrintsZeroNotRoundingNoise();
     void aLinearWcsIsNotNamedAfterASkyFrame();
     void anAxisFollowsTheImageOnScreenAndReadsItsEnds();
+    void aDecimatedImageLabelsItsAxisInFullResolutionPixels();
+    void tickLabelsAreThinnedToTheRoomTheyHave();
 };
