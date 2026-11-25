@@ -181,7 +181,7 @@ inline QString summary(const Plan &plan)
     const char axes[] = { 'x', 'y', 'z' };
     for (int i = 0; i < 3 && i < plan.lowerPhysical.size() && i < plan.upperPhysical.size(); ++i)
         boxes.append(QStringLiteral("%1 %2 to %3")
-                             .arg(QLatin1Char(axes[i]), detail::g(plan.lowerPhysical[i]),
+                             .arg(QString(QLatin1Char(axes[i])), detail::g(plan.lowerPhysical[i]),
                                   detail::g(plan.upperPhysical[i])));
     QString text = QStringLiteral(
                            "<b>Level %1</b>: %2 voxels (%3), voxel %4 %5<br>"
