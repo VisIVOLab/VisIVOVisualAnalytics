@@ -50,7 +50,7 @@ the field out. Every field must be on the same grid.
 
 **In the slice** the fields become one picture. *Slice* picks how:
 
-- *Layered*: each field drawn over the one below, weighted by its opacity.
+- *Layered*: each field drawn over the one below, weighted by its opacity. Where an upper field is at its lower limit (or below its threshold, when you typed one) it lets the field below show.
 - *Additive*: the colours added and clipped at white, as the image viewer's
   Additive blend does.
 - *Split*: the first field left of a seam, the second right of it. The seam is

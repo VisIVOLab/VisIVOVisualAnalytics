@@ -3551,9 +3551,12 @@ protected:
     bool m_mainFieldShown{ true };
     double m_mainFieldOpacity{ 1.0 };
     QPointer<QWidget> m_fieldsHost;          ///< the Inspector's list, rebuilt as fields change
+    QPointer<QLabel> m_fieldsCaption;        ///< its caption: shown with the list
     QPointer<QComboBox> m_fieldLayoutCombo;
     QPointer<QLineEdit> m_fieldSeamEdit;
-    /// The Fields rows of the Inspector (a simulation volume with siblings).
+    /// The Fields rows of the Inspector (a simulation volume). The section is
+    /// there from the start and shown once the siblings are known: they arrive
+    /// (setSiblingFields) after the constructor has built the Inspector.
     void addFieldInspectorRows(class InspectorPanel *panel);
     void rebuildFieldsPanel();
     /// The siblings of this window's field not yet added, as (name, path).

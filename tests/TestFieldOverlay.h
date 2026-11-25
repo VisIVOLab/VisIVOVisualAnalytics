@@ -19,6 +19,8 @@ private slots:
     void layeredOpacityMixesTheLayers();
     void layeredBlankTopLeavesTheBottom();
     void layeredNothingIsTransparent();
+    void quietPixelsOfAnUpperLayerLetTheOneBelowShow();
+    void thresholdTypedClearsBelowIt();
     void additiveSumsAndClips();
     void additiveBlankLayerAddsNothing();
     void additiveMatchesTheImageViewerBlend();

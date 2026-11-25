@@ -17120,6 +17120,9 @@ void vtkWindowCube::setSiblingFields(const QList<QPair<QString, QString>> &field
         // Opened when the headset switches to this field (followHeadsetField).
         this->m_fieldProductIds.insert(field.second, registered.isEmpty() ? productId : registered);
     }
+    // The Inspector is built in the constructor, before the siblings are
+    // known: its Fields section is filled (and shown) now.
+    this->rebuildFieldsPanel();
 }
 
 // ── The 3-D volume's scale (issue #83) ───────────────────────────────────────

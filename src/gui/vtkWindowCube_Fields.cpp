@@ -198,6 +198,12 @@ SimField *vtkWindowCube::fieldNamed(const QString &name) const
 
 QString vtkWindowCube::mainFieldName() const
 {
+    // The name the other fields carry: the run's own list names this window's
+    // field too (the file may be called data.0000 for every variable).
+    for (const auto &sibling : m_siblingFieldList) {
+        if (sibling.second == this->filepath)
+            return sibling.first;
+    }
     return visivo::isFieldReference(this->filepath) ? visivo::fieldNames().value(this->filepath)
                                                     : QFileInfo(this->filepath).completeBaseName();
 }
@@ -556,6 +562,15 @@ void vtkWindowCube::updateFieldComposite()
         Layer l;
         l.opacity = f->opacity;
         mapThroughTable(f->lut, img, l.rgba);
+        // Over another field, the quiet part of this one lets the field below
+        // show (its lowest colour would cover it).
+        if (m_fieldLayout == vf::Layout::Layered && !layers.empty()
+            && img->GetScalarType() == VTK_FLOAT) {
+            vf::clearBelowLimit(l.rgba.data(),
+                                static_cast<const float *>(img->GetScalarPointer()),
+                                std::size_t(img->GetNumberOfPoints()), lo,
+                                f->threshold.has_value(), f->threshold.value_or(0.0));
+        }
         layers.push_back(std::move(l));
     }
     if (layers.empty()) {
@@ -1019,9 +1034,9 @@ void vtkWindowCube::fieldsFollowMainCube()
 
 void vtkWindowCube::addFieldInspectorRows(InspectorPanel *panel)
 {
-    if (!panel || !m_simulationVolume || m_siblingFieldList.size() < 2)
+    if (!panel || !m_simulationVolume)
         return;
-    panel->addPropertyCaption(u"FIELDS"_s);
+    m_fieldsCaption = panel->addPropertyCaption(u"FIELDS"_s);
     auto *host = new QWidget();
     auto *layout = new QVBoxLayout(host);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -1035,6 +1050,12 @@ void vtkWindowCube::rebuildFieldsPanel()
 {
     if (!m_fieldsHost)
         return;
+    // Hidden while the dataset has no other field (and until the siblings are
+    // known), so a single-field run shows no empty section.
+    const bool shown = m_siblingFieldList.size() >= 2;
+    m_fieldsHost->setVisible(shown);
+    if (m_fieldsCaption)
+        m_fieldsCaption->setVisible(shown);
     auto *layout = qobject_cast<QVBoxLayout *>(m_fieldsHost->layout());
     if (!layout)
         return;

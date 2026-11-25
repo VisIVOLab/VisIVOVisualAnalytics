@@ -161,7 +161,9 @@ field.
   and the same longest side as its own (`/v1/cube/slice`, along the slice axis),
   keeps six per field, maps each through its own lookup table (clamped to the
   table's range first) and combines the colours on the slice's grid with
-  `FieldOverlay.h`: "over" weighted by opacity for *Layered*, the image
+  `FieldOverlay.h`: "over" weighted by opacity for *Layered* (a field above the
+  first is made transparent where it is at or below its lower limit, or below
+  a typed threshold: `clearBelowLimit`), the image
   viewer's own sum (`LayerBlend.h`) for *Additive*. *Split* and *Mirrored* map
   output columns to a field and a slice column (`splitLayout`, `splitSource`):
   mirrored about an axis at column *s* the picture is twice as wide as the part

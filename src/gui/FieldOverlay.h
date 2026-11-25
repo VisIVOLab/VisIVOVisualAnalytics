@@ -119,6 +119,26 @@ struct ColourLayer
     double opacity{ 1.0 };
 };
 
+/// Makes transparent the pixels of a layer drawn over another (Layered) where
+/// its field has nothing to show: a value at or below the table's lower limit
+/// (what a value below the range is clamped to, the background of a field that
+/// is zero there), or below the field's threshold when one was typed (where the
+/// 3-D opacity ramp starts). Without it a field's lowest colour, black in many
+/// maps, covers the fields below. \a rgba is the layer's colours (4 bytes a
+/// pixel), \a values its \a pixels values; a NaN is blank already.
+inline void clearBelowLimit(std::uint8_t *rgba, const float *values, std::size_t pixels,
+                            double lowerLimit, bool hasThreshold, double threshold)
+{
+    // In float, as the table's clamp is: a typed 0.1 must catch the pixels at 0.1f.
+    const float lo = static_cast<float>(lowerLimit);
+    const float th = static_cast<float>(threshold);
+    for (std::size_t p = 0; p < pixels; ++p) {
+        const float v = values[p];
+        if (v <= lo || (hasThreshold && v < th))
+            rgba[p * 4 + 3] = 0;
+    }
+}
+
 /// Layered or Additive composite of \a layers (first = bottom) over \a pixels
 /// pixels into \a out. A layer of null colours is skipped.
 inline void compose(Layout layout, const std::vector<ColourLayer> &layers, std::size_t pixels,

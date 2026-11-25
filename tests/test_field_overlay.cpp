@@ -96,6 +96,33 @@ void TestFieldOverlay::layeredNothingIsTransparent()
     QVERIFY(same(over({ { { 9, 9, 9, 255 }, 0.0 } }), 0, 0, 0, 0));
 }
 
+void TestFieldOverlay::quietPixelsOfAnUpperLayerLetTheOneBelowShow()
+{
+    // The top field is black at its floor and bright in a clump: over a red
+    // bottom, the floor must not hide it.
+    const Px red{ 255, 0, 0, 255 };
+    std::array<std::uint8_t, 8> top{ 0, 0, 0, 255, 255, 255, 255, 255 };
+    const std::array<float, 2> values{ 0.0f, 5.0f };
+    clearBelowLimit(top.data(), values.data(), 2, /*lowerLimit=*/0.0, false, 0.0);
+    QCOMPARE(int(top[3]), 0);     // at the limit: transparent
+    QCOMPARE(int(top[7]), 255);   // above it: kept
+    const Px quiet{ top[0], top[1], top[2], top[3] };
+    QVERIFY(same(over({ { red, 1.0 }, { quiet, 1.0 } }), 255, 0, 0, 255));
+    const Px bright{ top[4], top[5], top[6], top[7] };
+    QVERIFY(same(over({ { red, 1.0 }, { bright, 1.0 } }), 255, 255, 255, 255));
+}
+
+void TestFieldOverlay::thresholdTypedClearsBelowIt()
+{
+    std::array<std::uint8_t, 12> rgba{ 9, 9, 9, 255, 9, 9, 9, 255, 9, 9, 9, 255 };
+    const std::array<float, 3> values{ 1.0f, 2.0f, 3.0f };
+    // Limit 0 (nothing at it), threshold 2: below 2 goes, 2 stays.
+    clearBelowLimit(rgba.data(), values.data(), 3, 0.0, true, 2.0);
+    QCOMPARE(int(rgba[3]), 0);
+    QCOMPARE(int(rgba[7]), 255);
+    QCOMPARE(int(rgba[11]), 255);
+}
+
 void TestFieldOverlay::additiveSumsAndClips()
 {
     QVERIFY(same(over({ { { 255, 0, 0, 255 }, 1.0 }, { { 0, 255, 0, 255 }, 1.0 } },
