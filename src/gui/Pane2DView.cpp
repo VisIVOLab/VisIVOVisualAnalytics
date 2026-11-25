@@ -723,8 +723,12 @@ void Pane2DView::invalidateOverlay(bool renderNow)
                                std::numeric_limits<double>::quiet_NaN(),
                                std::numeric_limits<double>::quiet_NaN() };
     m_overlayViewportSize = { -1, -1 };
-    if (renderNow && m_window)
+    // The overlay is rebuilt in the EndEvent observer, after the frame is drawn, so
+    // rendering alone showed the new labels only one render later: rebuild first.
+    if (renderNow && m_window) {
+        this->updateWcsOverlay();
         m_window->Render();
+    }
 }
 
 void Pane2DView::setBottomReserve(int logicalPx)
