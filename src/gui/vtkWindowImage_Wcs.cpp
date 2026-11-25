@@ -264,6 +264,10 @@ void vtkWindowImage::updateWcsOverlay()
     if (visibleBounds == this->lastOverlayVisibleBounds && viewportSize == this->lastOverlayViewportSize
         && camMTime == this->lastOverlayCameraMTime
         && currentFrame == this->lastRenderedWcsFrame && currentFormat == this->lastRenderedWcsFormat) {
+        // setWcsOverlayVisible above showed every label again: thin them as
+        // they were, or an unchanged view drew them all, overlapping (#544).
+        CubeWcs::thinXTickLabels(renderer, this->overlayXTickActors, this->lastOverlayXAxisPx,
+                                 1.0, /*skipFirst=*/false);
         return;
     }
     this->lastOverlayVisibleBounds = visibleBounds;
@@ -395,7 +399,8 @@ void vtkWindowImage::updateWcsOverlay()
     }
     // Only as many x labels as fit side by side; this viewer keeps the leftmost
     // one, which sits above the corner (#516) (#544).
-    CubeWcs::thinXTickLabels(renderer, this->overlayXTickActors, xRight - axisX, 1.0,
+    this->lastOverlayXAxisPx = xRight - axisX;
+    CubeWcs::thinXTickLabels(renderer, this->overlayXTickActors, this->lastOverlayXAxisPx, 1.0,
                              /*skipFirst=*/false);
     // The y title clears the tick labels, whatever their precision: their
     // width measured as drawn (font 16, and in device pixels on a HiDPI
