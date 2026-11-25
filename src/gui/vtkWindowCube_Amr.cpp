@@ -44,12 +44,16 @@ constexpr int kMaxBlocks = 200000;
 constexpr qint64 kRefineMaxVoxels = 64LL * 1000000;
 }   // namespace
 
-std::array<av::AxisScale, 3> vtkWindowCube::amrAxes() const
+std::optional<std::array<av::AxisScale, 3>> vtkWindowCube::amrAxes() const
 {
     std::array<av::AxisScale, 3> axes;
     for (int i = 0; i < 3; ++i) {
-        const double origin = this->remoteVoxelToNative(i, 0.0, nullptr);
-        axes[std::size_t(i)] = { origin, this->remoteVoxelToNative(i, 1.0, nullptr) - origin };
+        bool okOrigin = false, okNext = false;
+        const double origin = this->remoteVoxelToNative(i, 0.0, &okOrigin);
+        const double next = this->remoteVoxelToNative(i, 1.0, &okNext);
+        if (!okOrigin || !okNext)
+            return std::nullopt;
+        axes[std::size_t(i)] = { origin, next - origin };
     }
     return axes;
 }
@@ -116,6 +120,8 @@ void vtkWindowCube::addAmrInspectorRows(InspectorPanel *panel)
     m_amrBlocksCheck->setToolTip(
             u"Outline the cells of the mesh that this slice cuts, coloured by refinement level "
             u"(blue the coarsest, red the finest). It follows the slice."_s);
+    // An Inspector rebuilt while the blocks are shown keeps the box ticked.
+    m_amrBlocksCheck->setChecked(m_amrBlocksOn);
     QObject::connect(m_amrBlocksCheck, &QCheckBox::toggled, this,
                      &vtkWindowCube::setAmrBlocksShown);
     layout->addWidget(m_amrBlocksCheck);
@@ -173,9 +179,18 @@ void vtkWindowCube::scheduleAmrBlocks()
 
 void vtkWindowCube::fetchAmrBlocks()
 {
-    if (!m_amrBlocksOn || !m_amr || m_displayedSliceIndex < 0
-        || !this->m_sliceBackdropProductId.isEmpty())
+    if (!m_amrBlocksOn || !m_amr || m_displayedSliceIndex < 0)
         return;
+    if (!this->m_sliceBackdropProductId.isEmpty()) {
+        // The slice pane shows a product, not the cube: the blocks would not
+        // belong to the picture. Say so rather than leave the box ticked silently.
+        m_amrBlocks.hide();
+        this->statusBar()->showMessage(
+                u"AMR blocks are drawn over the cube's own slice, not over a product shown "
+                u"in its place."_s,
+                6000);
+        return;
+    }
     const int normal = static_cast<int>(m_sliceAxis);
     const int index = m_displayedSliceIndex;
     const int seq = ++m_amrBlocksSeq;
@@ -208,7 +223,14 @@ void vtkWindowCube::fetchAmrBlocks()
                     self->m_amrBlocks.hide();
                     return;
                 }
-                const auto axes = self->amrAxes();
+                const auto scales = self->amrAxes();
+                if (!scales) {
+                    self->m_amrBlocks.hide();
+                    self->statusBar()->showMessage(
+                            u"AMR blocks: this cube's axes have no world coordinates."_s, 6000);
+                    return;
+                }
+                const auto &axes = *scales;
                 const auto plane = av::planeAxes(normal);
                 const int lowest = map.levels.firstKey(), highest = map.levels.lastKey();
                 QVector<AmrBlockOverlay::Group> groups;
@@ -246,7 +268,8 @@ void vtkWindowCube::runAmrRefine(const std::array<int, 6> &box, QWidget *owner,
 {
     if (!m_amr || m_refineAmrBusy)
         return;
-    const av::Region region = av::regionFromVoxelBox(box, this->amrAxes());
+    const auto axes = this->amrAxes();
+    const av::Region region = axes ? av::regionFromVoxelBox(box, *axes) : av::Region{};
     if (!region.set) {
         QMessageBox::warning(owner, u"Refine a Box"_s,
                              u"This cube's axes have no usable coordinates, so the box cannot be "

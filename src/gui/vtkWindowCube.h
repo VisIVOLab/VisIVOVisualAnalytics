@@ -3572,7 +3572,9 @@ protected:
     void scheduleAmrBlocks();
     void fetchAmrBlocks();
     /// The cube's own axes, for the conversions between voxels and coordinates.
-    std::array<visivo::amrview::AxisScale, 3> amrAxes() const;
+    /// The cube's three axes in the mesh's coordinates; nullopt when one has no
+    /// world coordinates (voxel numbers would be sent as positions).
+    std::optional<std::array<visivo::amrview::AxisScale, 3>> amrAxes() const;
     /// Refine this box: the dialog (vtkWindowCube.cpp, next to the other box tools).
     void refineAmrBox();
     /// Plan, confirm and run the refinement of @p box (voxels, inclusive).
