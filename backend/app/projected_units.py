@@ -2,8 +2,9 @@
 
 A projected map (particle_raytrace.projected_maps) holds, per pixel, the
 weight the particles' kernels put in it and the weighted mean of a quantity.
-A Gadget snapshot states what its columns are (gadget_snapshot.Component
-physical and units), so its maps can be written in physical units: the
+A Gadget snapshot or a RAMSES output states what its columns are
+(``physical`` and ``units`` of gadget_snapshot.Component and
+ramses_output.Component), so its maps can be written in physical units: the
 surface density in Msun/kpc² when the weight is the particles' mass (a number
 per kpc² with no weight), the mean in the quantity's own unit (a temperature
 in K, an entropy in keV cm², a velocity dispersion in km/s), the pixels in
@@ -74,10 +75,26 @@ def map_units(component, *, axes, weight: str | None, power: float, clipped: int
             out["density_factor"] = float(light_unit) * float(physical[weight]["factor"])
     out["value_unit"], out["value_factor"] = _value_unit(colour_by, value_field, velocity,
                                                          physical, stored)
-    out.update({"comoving": bool(snapshot.units.comoving),
-                "scale_factor": float(snapshot.scale_factor),
-                "hubble": float(snapshot.header.hubble),
-                "hubble_units": bool(snapshot.units.hubble_units)})
+    out.update(_frame(snapshot))
+    return out
+
+
+def _frame(snapshot) -> dict:
+    """The expansion a snapshot's lengths are written in: a Gadget snapshot's
+    header and units, a RAMSES output's info (physical lengths at aexp, no
+    h units: ramses_output.RamsesOutput.unit_table)."""
+    info = getattr(snapshot, "info", None)
+    if info is not None:
+        out = {"comoving": False, "scale_factor": float(info.aexp),
+               "hubble": float(info.h0 / 100.0 if info.cosmological else 1.0),
+               "hubble_units": False}
+        if info.cosmological:
+            out["redshift"] = float(info.redshift)
+        return out
+    out = {"comoving": bool(snapshot.units.comoving),
+           "scale_factor": float(snapshot.scale_factor),
+           "hubble": float(snapshot.header.hubble),
+           "hubble_units": bool(snapshot.units.hubble_units)}
     if snapshot.units.comoving:
         out["redshift"] = float(snapshot.header.redshift)
     return out

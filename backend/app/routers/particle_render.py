@@ -348,13 +348,12 @@ def _projected_kernel(req: ParticleRenderRequest) -> str:
 
 
 def _snapshot_component(spec: str):
-    """The Gadget particle type a table of points reads (None for any other
-    table): what states its units."""
-    from ..point_table import component_format  # noqa: PLC0415
-    if str(spec).startswith("{") or component_format(spec) != "gadget":
+    """The component of a snapshot a table of points reads (a Gadget particle
+    type, a RAMSES family; None for any other table): what states its units."""
+    from ..point_table import component_format, resolve_component  # noqa: PLC0415
+    if str(spec).startswith("{") or component_format(spec) is None:
         return None
-    from .. import gadget_snapshot  # noqa: PLC0415
-    return gadget_snapshot.resolve(spec)
+    return resolve_component(spec)
 
 
 def _region(columns, axes, population: np.ndarray, origin, scale: float, periods,

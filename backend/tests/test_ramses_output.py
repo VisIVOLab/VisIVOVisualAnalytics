@@ -394,3 +394,114 @@ def test_the_real_output_against_yt():
     ytx = ad["DM", "particle_position_x"].to("code_length").d
     assert set(np.round(pos, 12)) <= set(np.round(ytx / ds.domain_width[0].to("code_length").d, 12))
     assert ad["gas", "cell_volume"].shape[0] == out.amr().n_leaf()
+
+
+# ── Review fixes (PR #559) ───────────────────────────────────────────────────
+
+def _entry(directory, slug="dm"):
+    return {"kind": "catalogue", "format": "ramses", "path": ro.ramses_ref(directory, slug),
+            "paths": [str(directory)]}
+
+
+def test_a_ramses_projected_map_is_mass_weighted_in_physical_units(tmp_path):
+    pytest.importorskip("numba")
+    from app.routers.particle_render import ParticleRenderRequest, _prepare
+    directory, _ = W.write_output(tmp_path, particles="descriptor")
+    cam = {"position": (0, 0, 10), "focal_point": (0, 0, 0), "view_up": (0, 1, 0)}
+    req = ParticleRenderRequest(dataset_id="d", mode="projected", cameras=[cam], x="x", y="y",
+                                z="z")
+    units = _prepare(_entry(directory), req)["map_units"]
+    assert units["weighting"] == "mass" and units["density_unit"] == "Msun/kpc^2"
+    assert units["comoving"] is False and units["hubble_units"] is False
+    assert units["scale_factor"] == pytest.approx(0.5)
+    assert units["redshift"] == pytest.approx(1.0)
+    assert units["kpc_per_unit"] > 0
+
+
+def test_a_layer_names_a_ramses_family(tmp_path):
+    from app.routers import particle_layers as router
+    directory, _ = W.write_output(tmp_path, particles="descriptor")
+    session = None                                 # a layer by family never asks the session
+    entry = _entry(directory)
+    layers = [router.ParticleLayer(family=slug) for slug in ("stars", "sinks")]
+    paths = [router.layer_entry(entry, lay, session)["path"] for lay in layers]
+    assert paths == [ro.ramses_ref(directory, "stars"), ro.ramses_ref(directory, "sinks")]
+    with pytest.raises(ValueError, match="only one"):
+        router.ParticleLayer(family="dm", gadget_type=1)
+    with pytest.raises(router.HTTPException) as err:     # a Gadget type on a RAMSES output
+        router.layer_entry(entry, router.ParticleLayer(gadget_type=1), session)
+    assert err.value.status_code == 422
+    other = {**entry, "path": str(tmp_path / "plain.vbt")}
+    with pytest.raises(router.HTTPException) as err:     # a family on anything else
+        router.layer_entry(other, router.ParticleLayer(family="dm"), session)
+    assert err.value.status_code == 422
+    with pytest.raises(router.HTTPException):            # a name that is no family
+        router.layer_entry(entry, router.ParticleLayer(family="nonsense"), session)
+
+
+def test_a_refused_path_is_not_parsed(tmp_path, monkeypatch):
+    from app.classify import _classify_ramses, classify_path
+    from app.point_table import particle_dataset_path
+    directory, _ = W.write_output(tmp_path, particles="descriptor")
+    parsed = []
+    for name in ("parse_info", "parse_header", "parse_descriptor"):
+        real = getattr(ro, name)
+        monkeypatch.setattr(ro, name, lambda *a, _r=real, _n=name, **k:
+                            parsed.append(_n) or _r(*a, **k))
+    ro._cached.cache_clear()
+    for refused in ("info_00001.txt", "header_00001.txt", "part_file_descriptor.txt",
+                    "amr_00001.out00001"):
+        target = str(directory / refused)
+        with pytest.raises(PermissionError) as err:
+            particle_dataset_path(directory, lambda p, t=target: p != t)
+        assert refused in str(err.value) and str(tmp_path) not in str(err.value)
+        with pytest.raises(PermissionError):
+            _classify_ramses(directory / "info_00001.txt", lambda p, t=target: p != t)
+    # The folder is shown as a plain directory, nothing of it read.
+    assert classify_path(directory, lambda p: "part_" not in p)["kind"] == "directory"
+    assert parsed == []
+
+
+def test_a_rewritten_file_is_not_served_from_the_cache(tmp_path):
+    directory, _ = W.write_output(tmp_path, particles="descriptor")
+    first = ro.open_output(directory)
+    assert ro.open_output(directory) is first
+    part = directory / "part_00001.out00001"
+    data = part.read_bytes()
+    os.utime(part, ns=(1, 1))                     # same size, another time
+    assert ro.open_output(directory) is not first
+    again = ro.open_output(directory)
+    part.write_bytes(data + b"\0" * 8)            # another size
+    assert ro.open_output(directory) is not again
+
+
+def test_a_stray_info_or_header_file_is_no_ramses_output(tmp_path):
+    from app.classify import classify_path
+    directory, _ = W.write_output(tmp_path, particles="descriptor")
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    for name in ("info_00007.txt", "header_00007.txt"):
+        (stray / name).write_bytes((directory / "info_00001.txt").read_bytes())
+    assert ro.output_of(stray / "info_00007.txt") is None
+    assert ro.output_of(stray) is None
+    assert classify_path(stray / "info_00007.txt")["kind"] != "particles"
+    # With a data file of its own number it is one; of another number it is not.
+    (stray / "part_00008.out00001").write_bytes(b"x")
+    assert ro.output_of(stray / "info_00007.txt") is None
+    (stray / "amr_00007.out00001").write_bytes(b"x")
+    assert ro.output_of(stray / "info_00007.txt") == stray
+
+
+def test_one_single_precision_particle_keeps_its_fields(tmp_path):
+    recs = [(0, 4)] * 7 + [(0, 4), (0, 4)] + [(0, 4)] * 12
+    class Reader:
+        order = "<"
+        map = np.array([1.0], dtype="<f4").tobytes()
+        def array(self, offset, dtype, count):
+            return np.frombuffer(self.map, dtype=dtype, count=count, offset=offset)
+    has = ro.RamsesOutput._has_nsink
+    assert has(recs, 1, Reader()) is False      # a position's bits
+    Reader.map = np.array([0], dtype="<i4").tobytes()
+    assert has(recs, 1, Reader()) is True       # nsink = 0
+    assert has(recs, 5, None) is True
+    assert has([(0, 4)] * 7 + [(0, 40)], 5, None) is False

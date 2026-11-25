@@ -300,17 +300,12 @@ def _ramses_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | No
     it, or a family reference); None when ``path`` names none or the output
     has no particle files (its mesh opens as an AMR hierarchy, issue #550)."""
     from . import ramses_output as rm   # noqa: PLC0415
-    directory = rm.output_of(path)
+    # Every file of the output passes the data roots before the info or a
+    # header is parsed (the mesh files too: the classifier reads them).
+    directory = rm.checked_output(path, allowed)
     if directory is None:
         return None
     out = rm.open_output(directory)
-    if allowed is not None:
-        # Before any file is read beyond the info file: the mesh files too
-        # (the classifier reads their headers).
-        for f in out.all_paths():
-            if not allowed(f):
-                raise PermissionError(f"{Path(f).name}, a file of this output, lies outside the "
-                                      "folders this backend may read.")
     if not out.has("part"):
         return None
     slug = rm.split_ref(path)[1]

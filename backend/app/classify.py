@@ -325,7 +325,7 @@ def _classify_ramses(path: Path, allowed=None) -> dict | None:
     from . import ramses_output as rm  # noqa: PLC0415
     from .point_table import particle_components, particle_dataset_path  # noqa: PLC0415
 
-    directory = rm.output_of(path)
+    directory = rm.checked_output(path, allowed)   # the data roots before any parse
     if directory is None:
         return None
     try:

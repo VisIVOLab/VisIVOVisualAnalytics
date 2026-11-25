@@ -323,11 +323,16 @@ def parse_descriptor(path: Path | None) -> list[tuple[str, str]] | None:
 
 # ── the output ───────────────────────────────────────────────────────────────
 
-def output_of(path: str | Path) -> Path | None:
+def output_of(path: str | Path, allowed=None) -> Path | None:
     """The output directory a path names (the directory, or any RAMSES file
     in it: ``info_*.txt``, ``header_*.txt``, ``amr_*.out*``, ``part_*.out*``,
     a descriptor), a reference's directory included; None for anything else.
-    Judged by content: the directory must hold an info file that reads as one."""
+    Judged by content: the directory must hold an info file that reads as one,
+    and AMR or particle files of its output number (a stray ``info_*.txt``
+    beside other data is no output).
+
+    ``allowed`` (path -> bool): an info file it refuses raises PermissionError
+    before a byte of it is read."""
     base = split_ref(path)[0]
     p = Path(base)
     try:
@@ -337,19 +342,74 @@ def output_of(path: str | Path) -> Path | None:
             p = p.parent
         if not p.is_dir():
             return None
-        info = _info_file(p)
+        info = _info_file(p, allowed)
+        if info is None or not _holds_data(p, _INFO.match(info.name).group(1)):
+            return None
+        return p
+    except PermissionError:
+        raise
     except OSError:
         return None
-    return p if info is not None else None
 
 
-def _info_file(directory: Path) -> Path | None:
+def _holds_data(directory: Path, number: str) -> bool:
+    """Whether ``directory`` has an AMR or particle file of output ``number``."""
+    try:
+        with os.scandir(directory) as it:
+            for e in it:
+                m = _FILE.match(e.name)
+                if m and m.group(1) in ("amr", "part") and m.group(2) == number:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def output_paths(directory: Path, number: str) -> list[str]:
+    """Every file of output ``number`` a reader may open (its info and header
+    files, the descriptors, the AMR, hydro and particle files), found by name
+    alone: nothing is opened, so the data roots can be checked before any is
+    parsed. No check that the set is complete."""
+    names = {f"info_{number}.txt", f"header_{number}.txt", "part_file_descriptor.txt",
+             "hydro_file_descriptor.txt"}
+    found = []
+    try:
+        with os.scandir(directory) as it:
+            for e in it:
+                m = _FILE.match(e.name)
+                if e.name in names or (m and m.group(1) in ("amr", "hydro", "part")
+                                       and m.group(2) == number):
+                    found.append(e.path)
+    except OSError:
+        pass
+    return sorted(found)
+
+
+def checked_output(path: str | Path, allowed=None) -> Path | None:
+    """``output_of`` with the data roots checked first: every file of the
+    output must pass ``allowed`` before any is parsed (the info and header
+    files too), else PermissionError (naming the file, nothing of its
+    content)."""
+    directory = output_of(path, allowed)
+    if directory is not None and allowed is not None:
+        number = _INFO.match(_info_file(directory, allowed).name).group(1)
+        for f in output_paths(directory, number):
+            if not allowed(f):
+                raise PermissionError(f"{Path(f).name}, a file of this output, lies outside "
+                                      "the folders this backend may read.")
+    return directory
+
+
+def _info_file(directory: Path, allowed=None) -> Path | None:
     try:
         with os.scandir(directory) as it:
             names = sorted(e.name for e in it if _INFO.match(e.name))
     except OSError:
         return None
     for name in names:
+        if allowed is not None and not allowed(str(directory / name)):
+            raise PermissionError(f"{name}, a file of this output, lies outside the "
+                                  "folders this backend may read.")
         try:
             with open(directory / name, "rb") as fh:
                 head = fh.read(2048).decode("utf-8", errors="replace")
@@ -478,7 +538,7 @@ class RamsesOutput:
     def all_paths(self) -> list[str]:
         """Every file of the output a reader may open, found by name (no
         check that the set is complete): what the data roots must allow."""
-        return self.files(()) + [p for kind in self._found.values() for p in kind.values()]
+        return output_paths(self.directory, self.number)
 
     def files(self, kinds: Sequence[str] = ("amr", "hydro", "part")) -> list[str]:
         """The files of the output that are read: info and header, the
@@ -530,7 +590,7 @@ class RamsesOutput:
                              "than info says.")
         if not npart:
             return _PartFile(0, {})
-        names = self._field_names(recs, npart)
+        names = self._field_names(recs, npart, rd)
         head = len(recs) - len(names)
         if head < _HEADER_RECORDS - 1:
             raise ValueError(f"{Path(path).name}: {len(recs)} records for {len(names)} fields "
@@ -549,7 +609,7 @@ class RamsesOutput:
             return self._part_descriptor[index][1]
         return "i" if name in _INT_COLUMNS else "f"
 
-    def _field_names(self, recs, npart: int) -> list[str]:
+    def _field_names(self, recs, npart: int, rd: _Reader | None = None) -> list[str]:
         """The names of a part file's field records, in order: from the
         descriptor, the header's ``Particle fields`` line, else positionally."""
         ndim = self.info.ndim
@@ -557,7 +617,7 @@ class RamsesOutput:
             return _unique([_PART_NAMES.get(n, n) for n, _ in self._part_descriptor])
         if self.header.fields:
             return _unique(list(self.header.fields))
-        head = _HEADER_RECORDS if recs[7][1] == 4 else _HEADER_RECORDS - 1
+        head = _HEADER_RECORDS if self._has_nsink(recs, npart, rd) else _HEADER_RECORDS - 1
         names = [*"xyz"[:ndim], *("vx", "vy", "vz")[:ndim], "mass", "id", "level"]
         extra_floats = iter(("birth_time", "metallicity"))
         extra_bytes = iter(("family", "tag"))
@@ -566,6 +626,19 @@ class RamsesOutput:
             names.append(next(extra_bytes, f"extra_{len(names)}") if size == 1
                          else next(extra_floats, f"extra_{len(names)}"))
         return names
+
+    @staticmethod
+    def _has_nsink(recs, npart: int, rd: _Reader | None) -> bool:
+        """Whether the header's eighth record is ``nsink`` (4 bytes) rather
+        than the first field. One single-precision particle makes a field
+        record 4 bytes too: then its value tells, a count being small and a
+        position's bits (a float above 1e-38) at least 2^23."""
+        if recs[7][1] != 4:
+            return False
+        if npart != 1 or rd is None:
+            return True
+        value = int(rd.array(recs[7][0], np.dtype("i4").newbyteorder(rd.order), 1)[0])
+        return 0 <= value < (1 << 20)
 
     @property
     def num_particles(self) -> int:
@@ -1135,13 +1208,21 @@ def _cached(directory: str, _stamp: tuple) -> RamsesOutput:
 
 def open_output(path: str | Path) -> RamsesOutput:
     """The output a path names (its directory, a file of it or a family
-    reference), kept while its info file is unchanged."""
+    reference), kept while its files are unchanged: the key holds the size and
+    modification time of every file it reads (a rewritten particle or mesh
+    file would otherwise be served with the old offsets)."""
     directory = output_of(path)
     if directory is None:
         raise ValueError(f"{path} is not a RAMSES output.")
     info = _info_file(directory)
-    st = os.stat(info)
-    return _cached(str(directory), (st.st_size, st.st_mtime_ns))
+    stamp = []
+    for f in output_paths(directory, _INFO.match(info.name).group(1)):
+        try:
+            st = os.stat(f)
+        except OSError:
+            continue
+        stamp.append((f, st.st_size, st.st_mtime_ns))
+    return _cached(str(directory), tuple(stamp))
 
 
 def resolve(path: str | Path) -> Component:

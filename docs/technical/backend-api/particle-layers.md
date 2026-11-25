@@ -96,6 +96,7 @@ A **layer**:
 | `kind` | `particles` (default) or `markers`. |
 | `dataset_id` | Another dataset of the session (a component opened on its own). |
 | `gadget_type` | 0 to 5: that particle type of the request's Gadget snapshot (0 gas, 1 dark matter, 4 stars, 5 black holes). 422 if the request's dataset is not a snapshot. |
+| `family` | A particle family of the request's RAMSES output (`dm`, `stars`, `sinks`, ...): that family's particles, drawn like a Gadget type. 422 if the request's dataset is not a RAMSES output or the name is no family. Only one of `dataset_id`, `gadget_type` and `family` per layer. |
 | `type_field`, `type_value` | The rows where `type_field == type_value`: one type of a table that mixes them (a VBT, an IPAC table). |
 | `filters` | More filters, as the single-layer request takes them. |
 | `x`, `y`, `z` | Position columns; empty: the table's own. |
