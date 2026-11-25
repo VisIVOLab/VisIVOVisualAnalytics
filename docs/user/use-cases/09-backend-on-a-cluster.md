@@ -35,7 +35,13 @@ the first time.
 If `ssh` is refused, the window says so: on Leonardo it means the certificate
 expired, so repeat step 1. The first connection to a host also needs its key
 accepted once from a terminal (`ssh <user>@login.leonardo.cineca.it`, answer
-yes).
+yes). `login.leonardo.cineca.it` points to several login nodes, each with its
+own host keys, so a key accepted on one node can be refused on the next
+connection. If the window says the host key *differs from the one recorded*,
+do not just replace it: compare the new fingerprint with the ones CINECA
+publishes, then record the keys of every login node once (connect once to each
+`loginNN-ext.leonardo.cineca.it` node from a terminal, or `ssh-keyscan` them and
+check the fingerprints).
 
 ## Steps
 
@@ -45,7 +51,12 @@ yes).
 2. Fill in a profile:
    - *Name*: the name shown in the status bar, for example the cluster's.
    - *Site*: *Leonardo (CINECA)* or *PLEIADI (INAF)* fill in the fields the
-     site defines; *Other* leaves them to you.
+     site defines; *Other* leaves them to you. Switching from one known site
+     to another also clears what belongs to the old cluster (*VisIVO clone*,
+     *Backend image file*, *Data root*, *Workspace*, *SRC node code*, *More
+     options*), turns *Send the launcher from this client* on, and lists the
+     fields it reset under the box. Your login, account and a `docker://`
+     image stay.
    - *Frontend* and *User*: the login node and your login there.
    - *Partition*, *Account*, *QOS*, *GPUs (gres)*, *CPUs*, *Memory*, *Time
      limit* and *Wait in queue*: the SLURM resources of the job and how long

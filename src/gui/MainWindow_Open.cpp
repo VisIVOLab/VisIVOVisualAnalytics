@@ -1630,10 +1630,23 @@ void MainWindow::dispatchOpenForPath(const QString &path)
         QString picked;
         {
             const visivo::BusyPause asking;   // the question is what to read now
-            picked = QInputDialog::getItem(
-                    this, u"Open simulation snapshot"_s,
-                    u"%1\n\nComponent to open:"_s.arg(verdict.detail), labels, current,
-                    /*editable=*/false, &chosen);
+            // QInputDialog::getItem sizes its label to one line: a snapshot's
+            // description (particle counts, blocks left out) made the dialog
+            // wider than the screen. The label wraps at a readable width.
+            QInputDialog dialog(this);
+            dialog.setWindowTitle(u"Open simulation snapshot"_s);
+            dialog.setLabelText(u"%1\n\nComponent to open:"_s.arg(verdict.detail));
+            dialog.setComboBoxItems(labels);
+            dialog.setComboBoxEditable(false);
+            dialog.setTextValue(labels.value(current));
+            if (auto *label = dialog.findChild<QLabel *>()) {
+                label->setWordWrap(true);
+                label->setMinimumWidth(dialog.fontMetrics().averageCharWidth() * 60);
+                label->setMaximumWidth(dialog.fontMetrics().averageCharWidth() * 90);
+            }
+            chosen = dialog.exec() == QDialog::Accepted;
+            if (chosen)
+                picked = dialog.textValue();
         }
         this->m_openRequestClock.start();
         record->excludedMs += choosing.elapsed();

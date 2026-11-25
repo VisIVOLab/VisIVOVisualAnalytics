@@ -228,6 +228,45 @@ void ClusterProfile::applyPreset(const QString &siteId)
     }
 }
 
+QStringList ClusterProfile::changeSite(const QString &siteId)
+{
+    const QString target = presetSites().contains(siteId) ? siteId : QString();
+    // The site the profile is for now: its own, else the one its host or options
+    // name. Only a known one counts as an origin whose paths are to go.
+    QString from = effectiveSite();
+    if (!presetSites().contains(from))
+        from.clear();
+    if (target == from) {
+        // The profile may only be known as that site by its host: it still gets the preset.
+        if (site.trimmed() != target)
+            applyPreset(siteId);
+        return {};
+    }
+    QStringList reset;
+    if (!target.isEmpty() && !from.isEmpty()) {
+        const auto clear = [&reset](QString &value, const QString &label) {
+            if (!value.trimmed().isEmpty())
+                reset << label;
+            value.clear();
+        };
+        clear(repoDir, u"VisIVO clone"_s);
+        clear(sif, u"Backend image file"_s);
+        if (!image.trimmed().startsWith(u"docker://"_s))
+            clear(image, u"Image to pull"_s);
+        clear(dataRoot, u"Data root"_s);
+        clear(workspace, u"Workspace"_s);
+        clear(nodeCode, u"SRC node code"_s);
+        if (std::any_of(extraArgs.begin(), extraArgs.end(), [](const QString &a) { return !a.isEmpty(); }))
+            reset << u"More options"_s;
+        extraArgs.clear();
+        if (!shipLauncher)
+            reset << u"Send the launcher from this client"_s;
+        shipLauncher = true;
+    }
+    applyPreset(siteId);
+    return reset;
+}
+
 QString ClusterProfile::joinCommand(const QStringList &args)
 {
     QStringList out;
