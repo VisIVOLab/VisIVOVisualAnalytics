@@ -95,11 +95,16 @@ def default_axes(names: list[str]) -> tuple[str, str, str]:
 def open_point_table(dataset_path: str) -> PointTable:
     if str(dataset_path).startswith("{"):
         return _open_catalogue(json.loads(dataset_path))
-    if component_format(dataset_path):
+    if component_format(dataset_path) in COMPONENT_FORMATS:
         component = resolve_component(dataset_path)
         # Columns built when first read: a renderer reads three or four.
         return PointTable(list(component.names), component.columns(), component.num_rows,
                           default_axes(component.names))
+    if component_format(dataset_path) == "rawpoints":
+        # A file of a legacy-importer descriptor (issue #551), read in place.
+        from . import raw_descriptor   # noqa: PLC0415
+        rf = raw_descriptor.points_file(dataset_path)
+        return PointTable(rf.names, rf.columns(), rf.num_rows, default_axes(rf.names))
     from .volume_source import parse_vbt_header, split_order   # noqa: PLC0415
     # The header's path (the VBT route registers it); its binary beside it.
     # It may carry the byte order the dataset was opened in (issue #165).
@@ -187,11 +192,13 @@ def positions_within(columns, axes, rows: np.ndarray, lo, hi,
 
 #: Catalogue formats that are a simulation's particles read in place: always
 #: cartesian, drawn ray-traced by default, opened by a header or a reference.
-PARTICLE_FORMATS = ("vbt", "gadget", "ramses")
+PARTICLE_FORMATS = ("vbt", "gadget", "ramses", "rawpoints")
 
 #: The formats whose particles are components of a snapshot or an output,
 #: each a module with ``split_ref``, ``resolve``, ``components`` and
-#: ``has_*`` (the particle seam below dispatches on them).
+#: ``has_*`` (the particle seam below dispatches on them). A file of a
+#: raw-points descriptor (``"rawpoints"``, issue #551) is a component
+#: reference too but is read by raw_descriptor, not through this dispatch.
 COMPONENT_FORMATS = ("gadget", "ramses")
 
 
@@ -200,13 +207,17 @@ def is_particle_format(fmt: str | None) -> bool:
 
 
 def component_format(path: str | Path) -> str | None:
-    """The format a component reference names (``"gadget"``, ``"ramses"``),
+    """The format a component reference names (``"gadget"``, ``"ramses"``, or
+    ``"rawpoints"`` for a file of a legacy-importer descriptor, issue #551),
     from the string alone; None for any other path."""
     from .gadget_snapshot import split_ref   # noqa: PLC0415
     from .ramses_output import REF_SEP, split_ref as split_ramses   # noqa: PLC0415
+    from .raw_descriptor import is_points_ref   # noqa: PLC0415
     if REF_SEP in str(path) and split_ramses(path)[1] is not None:
         return "ramses"
-    return "gadget" if split_ref(path)[1] is not None else None
+    if split_ref(path)[1] is not None:
+        return "gadget"
+    return "rawpoints" if is_points_ref(path) else None
 
 
 def component_module(fmt: str):
@@ -222,7 +233,7 @@ def resolve_component(path: str | Path):
     """The component (a Gadget particle type, a RAMSES family) a reference
     names: named columns that read where they lie."""
     fmt = component_format(path)
-    if fmt is None:
+    if fmt not in COMPONENT_FORMATS:
         raise ValueError(f"{path} is no particle component reference.")
     return component_module(fmt).resolve(path)
 
@@ -233,7 +244,7 @@ def has_component(path: str | Path, suffix: str) -> bool:
     ``::ramses-family=stars``), from its headers only; False for one that
     cannot be read."""
     fmt = component_format(suffix)
-    if fmt is None:
+    if fmt not in COMPONENT_FORMATS:
         return False
     module = component_module(fmt)
     key = module.split_ref(suffix)[1]
@@ -243,12 +254,17 @@ def has_component(path: str | Path, suffix: str) -> bool:
 def split_component(path: str | Path) -> tuple[str, str]:
     """``(file, reference suffix)`` of a component reference; ``(path, "")``
     for any other path. The file is what the data roots check (a snapshot's
-    file, a RAMSES output's directory); the suffix goes back on after."""
+    file, a RAMSES output's directory, a raw-points descriptor); the suffix
+    goes back on after."""
     text = str(path)
     fmt = component_format(text)
-    if fmt is None:
+    if fmt == "rawpoints":
+        from .raw_descriptor import split_points_ref   # noqa: PLC0415
+        base = split_points_ref(text)[0]
+    elif fmt in COMPONENT_FORMATS:
+        base = component_module(fmt).split_ref(text)[0]
+    else:
         return text, ""
-    base = component_module(fmt).split_ref(text)[0]
     return base, text[len(base):]
 
 
@@ -264,6 +280,12 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
     must pass it too, as the named one passed the data roots; one that does
     not (a symbolic link out of them) raises PermissionError."""
     from . import gadget_snapshot as gs   # noqa: PLC0415
+    from . import raw_descriptor   # noqa: PLC0415
+    # A file of a legacy-importer descriptor (issue #551): by its descriptor,
+    # a bare FLY file or a reference.
+    raw = raw_descriptor.points_dataset_path(path, allowed)
+    if raw is not None:
+        return raw, "rawpoints"
     base, ptype = gs.split_ref(path)
     ramses = _ramses_dataset_path(path, allowed)
     if ramses is not None:
@@ -323,14 +345,17 @@ def particle_components(path: str | Path) -> list[dict]:
     path, num_rows}``: its particle types with particles (a RAMSES output's
     families); [] for a table that is one component (a VBT)."""
     fmt = component_format(path)
-    return component_module(fmt).components(path) if fmt else []
+    return component_module(fmt).components(path) if fmt in COMPONENT_FORMATS else []
 
 
 def particle_metadata(path: str | Path) -> dict:
     """What a particle table states about itself beyond its columns: for a
     snapshot component its time, redshift, box, cosmology, unit system and
     each column's unit and physical conversion; {} for a VBT."""
-    if not component_format(path):
+    if component_format(path) == "rawpoints":
+        from . import raw_descriptor   # noqa: PLC0415
+        return {"snapshot": raw_descriptor.points_file(path).describe(), "component": {}}
+    if component_format(path) not in COMPONENT_FORMATS:
         return {}
     component = resolve_component(path)
     return {"snapshot": component.snapshot.describe(), "component": component.describe()}
@@ -371,7 +396,11 @@ def particle_rows(path: str | Path, rows, fields=None) -> pd.DataFrame:
 def particle_frame(path: str | Path) -> pd.DataFrame:
     """A snapshot component as a catalogue's table: one column per block
     column (views of the memory map for a single-file snapshot), and their
-    units in ``attrs["units"]``, as a catalogue file declares them."""
+    units in ``attrs["units"]``, as a catalogue file declares them. A file of
+    a raw-points descriptor: its columns, views of its map, no units."""
+    if component_format(path) == "rawpoints":
+        from . import raw_descriptor   # noqa: PLC0415
+        return pd.DataFrame(raw_descriptor.points_file(path).columns(), copy=False)
     component = resolve_component(path)
     # Compatibility path for operations that truly require a complete frame.
     # Normal open, sampling and rendering use particle_rows/LazyColumns.

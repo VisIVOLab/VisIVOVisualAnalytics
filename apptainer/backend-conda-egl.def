@@ -32,6 +32,31 @@ From: backend-conda.sif
     About 70-90 min on 16 POWER9 cores; VTK dominates. VTK_TAG (default
     v9.3.1) selects the source tag: APPTAINERENV_VTK_TAG=v9.3.1.
 
+    ── Build with no internet on the build host (compute node) ──────────
+    Where login nodes have internet but a CPU-time limit and compute nodes
+    have none, build in two steps and give the second a VTK source tree
+    cloned on the login node. Variables reach %post prefixed
+    (APPTAINERENV_ or, on Singularity, SINGULARITYENV_); VTK_SRC is read
+    by %setup on the build host, so it is given plain (the prefixed names
+    are read as well).
+
+    # 1. Login node: compilers, EGL headers, conda's VTK removed (minutes).
+    #    --notest: the checks in %test need the VTK of step 3.
+    APPTAINERENV_VTK_STAGE=deps singularity build --fakeroot --force --notest \
+        backend-egl-deps.sif VisIVO/apptainer/backend-conda-egl.def
+    # 2. Login node, once: the source (a few hundred MB).
+    git clone --depth 1 --branch v9.3.1 https://gitlab.kitware.com/vtk/vtk.git /scratch/path/vtk-src
+    # 3. Compute node (sbatch): the step-1 image is the base, named backend-conda.sif.
+    ln -sf backend-egl-deps.sif backend-conda.sif
+    VTK_SRC=/scratch/path/vtk-src APPTAINERENV_VTK_STAGE=build \
+        singularity build --fakeroot --force backend-egl.sif VisIVO/apptainer/backend-conda-egl.def
+
+    VTK_STAGE is all (the default: both steps in one build, as before),
+    deps (the apt and conda steps) or build (VTK only). VTK_SRC must hold
+    the tree of VTK_TAG; it is copied into the image while it builds
+    (without .git) and removed afterwards, and the build stops if it is
+    not a VTK source tree. Without VTK_SRC the source is cloned from GitLab.
+
     ── Run ──────────────────────────────────────────────────────────────
     scripts/launch_backend_slurm.sh --sif backend-egl.sif ... binds the
     host's NVIDIA EGL libraries and glvnd vendor file, which Apptainer's
@@ -51,17 +76,29 @@ From: backend-conda.sif
     ENV_PREFIX=/opt/conda/envs/visivo
     PY="$ENV_PREFIX/bin/python"
     VTK_TAG="${VTK_TAG:-v9.3.1}"
-    echo "[backend-conda-egl.def] VTK_TAG=$VTK_TAG"
+    VTK_STAGE="${VTK_STAGE:-all}"
+    case "$VTK_STAGE" in
+        all|deps|build) ;;
+        *) echo "[backend-conda-egl.def] FATAL: VTK_STAGE=$VTK_STAGE (all, deps or build)"; exit 1 ;;
+    esac
+    echo "[backend-conda-egl.def] VTK_TAG=$VTK_TAG VTK_STAGE=$VTK_STAGE"
+    # 'deps' is the part that needs internet (apt), 'build' the part that
+    # needs the CPU time (VTK); 'all' is both, in this one build.
+    STEP_DEPS=1; STEP_VTK=1
+    [ "$VTK_STAGE" != build ] || STEP_DEPS=0
+    [ "$VTK_STAGE" != deps ] || STEP_VTK=0
 
     # ── 1. Compilers and the EGL/GL headers (apt) ─────────────────────
     # Mesa's EGL/GL development packages are not on conda-forge for
     # ppc64le. They provide the headers and libglvnd's libEGL.so to link
     # against; at run time the host's NVIDIA libraries are bound in.
-    apt-get update
-    apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build git pkg-config \
-        libegl-dev libegl1 libgl-dev libopengl-dev libglvnd-dev
-    rm -rf /var/lib/apt/lists/*
+    if [ "$STEP_DEPS" = 1 ]; then
+        apt-get update
+        apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build git pkg-config \
+            libegl-dev libegl1 libgl-dev libopengl-dev libglvnd-dev
+        rm -rf /var/lib/apt/lists/*
+    fi
 
     EGL_LIBDIR="/usr/lib/$(gcc -print-multiarch)"
     EGL_LIB="$EGL_LIBDIR/libEGL.so"
@@ -92,22 +129,24 @@ From: backend-conda.sif
     # them gone, the env provides none of them, so under --nv the loader
     # takes all three from the host's glvnd, as long as Apptainer's
     # nvliblist exposes all three (it does on PLEIADI-GPU).
-    . /opt/conda/etc/profile.d/conda.sh
-    # Only the installed ones: conda refuses the whole command when one of
-    # the names is not in the env, and then removes nothing.
-    DROP=""
-    for pkg in vtk vtk-base vtk-io-ffmpeg gl2ps glew libglu libgl libglx libopengl libegl libglvnd; do
-        ls "$ENV_PREFIX/conda-meta/$pkg-"[0-9]*.json >/dev/null 2>&1 && DROP="$DROP $pkg"
-    done
-    echo "[backend-conda-egl.def] removing from the env:$DROP"
-    [ -z "$DROP" ] || conda remove -y --force -p "$ENV_PREFIX" $DROP
-    for lib in libGLdispatch.so.0 libOpenGL.so.0 libEGL.so.1 libGL.so.1 libGLX.so.0; do
-        [ ! -e "$ENV_PREFIX/lib/$lib" ] \
-            || { echo "[backend-conda-egl.def] FATAL: conda's $lib is still in the env"; exit 1; }
-    done
-    if "$PY" -c "import vtkmodules" 2>/dev/null; then
-        echo "[backend-conda-egl.def] FATAL: conda's vtkmodules is still importable"
-        exit 1
+    if [ "$STEP_DEPS" = 1 ]; then
+        . /opt/conda/etc/profile.d/conda.sh
+        # Only the installed ones: conda refuses the whole command when one of
+        # the names is not in the env, and then removes nothing.
+        DROP=""
+        for pkg in vtk vtk-base vtk-io-ffmpeg gl2ps glew libglu libgl libglx libopengl libegl libglvnd; do
+            ls "$ENV_PREFIX/conda-meta/$pkg-"[0-9]*.json >/dev/null 2>&1 && DROP="$DROP $pkg"
+        done
+        echo "[backend-conda-egl.def] removing from the env:$DROP"
+        [ -z "$DROP" ] || conda remove -y --force -p "$ENV_PREFIX" $DROP
+        for lib in libGLdispatch.so.0 libOpenGL.so.0 libEGL.so.1 libGL.so.1 libGLX.so.0; do
+            [ ! -e "$ENV_PREFIX/lib/$lib" ] \
+                || { echo "[backend-conda-egl.def] FATAL: conda's $lib is still in the env"; exit 1; }
+        done
+        if "$PY" -c "import vtkmodules" 2>/dev/null; then
+            echo "[backend-conda-egl.def] FATAL: conda's vtkmodules is still importable"
+            exit 1
+        fi
     fi
 
     # ── 3. VTK from source, headless with EGL ─────────────────────────
@@ -117,8 +156,15 @@ From: backend-conda.sif
     # NVIDIA driver on the first GL call after the context was made
     # (vtkOpenGLState::Initialize). The cell-grid and LIC modules stay off:
     # the backend renders volumes and slices only.
+    if [ "$STEP_VTK" = 1 ]; then
     rm -rf /tmp/vtk-src /tmp/vtk-build
-    git clone --depth 1 --branch "$VTK_TAG" https://gitlab.kitware.com/vtk/vtk.git /tmp/vtk-src
+    # Staged from VTK_SRC by %setup, for a build host with no internet.
+    if [ -f /opt/vtk-src-offline/CMakeLists.txt ]; then
+        echo "[backend-conda-egl.def] VTK source: the tree given as VTK_SRC"
+        mv /opt/vtk-src-offline /tmp/vtk-src
+    else
+        git clone --depth 1 --branch "$VTK_TAG" https://gitlab.kitware.com/vtk/vtk.git /tmp/vtk-src
+    fi
     mkdir -p /tmp/vtk-build
     cd /tmp/vtk-build
     cmake -G Ninja \
@@ -177,8 +223,10 @@ From: backend-conda.sif
     cd /
     rm -rf /tmp/vtk-src /tmp/vtk-build
     conda clean --all --yes
+    fi
 
     # ── 4. Check what was built ───────────────────────────────────────
+    if [ "$STEP_VTK" = 1 ]; then
     "$PY" - <<'EOF'
 import glob, subprocess, sys
 import vtk
@@ -191,6 +239,25 @@ if "libEGL" not in subprocess.check_output(["ldd", lib], text=True):
     sys.exit(f"[backend-conda-egl.def] FATAL: {lib} does not link libEGL")
 print("[backend-conda-egl.def] vtkEGLRenderWindow present, linked to libEGL")
 EOF
+    fi
+
+%setup
+    # Runs on the build host. Stages the VTK source tree given as VTK_SRC
+    # into the image, so that %post can build VTK where there is no
+    # internet. A %setup copy rather than a build-time --bind (not an option
+    # of every Apptainer and SingularityPRO release) or a %files entry (no
+    # variables in its paths). Unset: nothing happens.
+    set -e
+    SRC="${VTK_SRC:-${APPTAINERENV_VTK_SRC:-${SINGULARITYENV_VTK_SRC:-}}}"
+    if [ -n "$SRC" ]; then
+        ROOTFS="${APPTAINER_ROOTFS:-${SINGULARITY_ROOTFS:-}}"
+        [ -n "$ROOTFS" ] || { echo "[%setup] ERROR: no APPTAINER_ROOTFS or SINGULARITY_ROOTFS"; exit 1; }
+        [ -f "$SRC/CMakeLists.txt" ] && [ -d "$SRC/Rendering/OpenGL2" ] \
+            || { echo "[%setup] ERROR: VTK_SRC=$SRC is not a VTK source tree"; exit 1; }
+        echo "[%setup] Staging the VTK source from $SRC"
+        mkdir -p "$ROOTFS/opt/vtk-src-offline"
+        tar -cf - -C "$SRC" --exclude='./.git' . | tar -xf - -C "$ROOTFS/opt/vtk-src-offline"
+    fi
 
 %test
     /opt/conda/envs/visivo/bin/python - <<'EOF'

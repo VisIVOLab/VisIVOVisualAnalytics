@@ -64,7 +64,7 @@ async def open_catalogue(
         else:
             read_as.append(str(p))
         paths.append(p)
-    if fmt in COMPONENT_FORMATS and len(read_as) > 1:
+    if (fmt in COMPONENT_FORMATS or fmt == "rawpoints") and len(read_as) > 1:
         return CatalogueOpenResponse(
             valid=False, error="A particle snapshot opens one particle type at a time.")
     is_vbt = fmt == "vbt"
@@ -126,7 +126,7 @@ async def open_catalogue(
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
     # A snapshot's particle type is known by its reference: every reader of
     # the dataset (render sessions, the VR page, its series) opens that.
-    entry_path = read_as[0] if fmt in COMPONENT_FORMATS else str(path)
+    entry_path = read_as[0] if (fmt in COMPONENT_FORMATS or fmt == "rawpoints") else str(path)
     components = particle_components(entry_path)
     session.datasets[dataset_id] = {"path": entry_path, "paths": [str(p) for p in paths],
                                     "dataframe": dataframe, **metadata,
@@ -450,10 +450,10 @@ def _entry_periods(entry) -> dict[str, float]:
     cached = entry.get("_periods")
     if cached is not None:
         return cached
-    from ..point_table import component_format  # noqa: PLC0415
+    from ..point_table import COMPONENT_FORMATS, component_format  # noqa: PLC0415
     path = entry.get("path")
     periods = {}
-    if path and component_format(path):
+    if path and component_format(path) in COMPONENT_FORMATS:
         from ..point_table import resolve_component  # noqa: PLC0415
         periods = resolve_component(path).periods()
     entry["_periods"] = periods

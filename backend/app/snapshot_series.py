@@ -16,6 +16,12 @@ too (Gadget's ``snapdir_010/snap_010.0``, issue #31): when the folder holds
 no other member and its name carries the same number, the series runs over
 the sibling folders, each member the same file name with that folder's
 number (``snapdir_011/snap_011.0``).
+
+A file of a legacy-importer descriptor (``rawPointsDesc``, ``rawGridsDesc``,
+``flyDesc``, issue #551) has its series written down: the descriptor lists
+the snapshots and their time tags, in order, whatever their names
+(app/raw_descriptor.py ``series``); the members are references to the files
+of the list and ``numbers`` are their time tags.
 """
 from __future__ import annotations
 
@@ -66,6 +72,10 @@ def snapshot_series(path: str, allowed=None) -> dict:
     (path -> bool): a member it refuses is left out, e.g. a symbolic link
     that resolves outside the backend's data roots. Of a longer series, the
     MAX_MEMBERS nearest the open file by number."""
+    from . import raw_descriptor  # noqa: PLC0415
+    listed = raw_descriptor.series(path, allowed)
+    if listed is not None:
+        return listed
     path = os.path.abspath(path)
     folder, name = os.path.split(path)
     pat = pattern(name)

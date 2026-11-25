@@ -43,6 +43,8 @@ A multi-file snapshot in a numbered folder of its own
 (`snapdir_011/snap_011.0`) when its own folder holds no other member; a
 particle-type reference keeps its type on every member's path.
 
+A file of a raw descriptor (`rawPointsDesc`, `flyDesc`, issue #551) is the exception: its series is the descriptor's own list, in the order written, whatever the names; `paths` are references (`<descriptor>::raw-points=<k>`) and `numbers` the time tags. A listed file that is not there, or that the data roots refuse, is left out.
+
 `sky` in the request (optional, issue #260) places a sky catalogue as the
 desktop window does: `{"frame": "fk5" | "galactic" | "supergalactic",
 "distance_mode": "comoving" | "redshift_space", "cosmology": "Planck18" |

@@ -1,0 +1,12 @@
+# Build context of docker/Dockerfile: the backend and the entrypoint, nothing
+# else. BuildKit reads this file because it is named after the Dockerfile.
+*
+!backend
+!docker/entrypoint.sh
+backend/.venv
+backend/tests
+backend/scripts
+backend/*.md
+**/__pycache__
+**/*.pyc
+**/.pytest_cache

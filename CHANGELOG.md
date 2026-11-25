@@ -6,6 +6,24 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+- **Published backend images (#66).** Each release publishes the backend on
+  the GitHub Container Registry as `ghcr.io/visivolab/visivo-backend:<version>`
+  (CPU, amd64 and arm64) and `:<version>-egl` (server-side EGL rendering for
+  NVIDIA GPUs, amd64), to be run with Docker, Podman or, pulled with
+  `apptainer pull docker://...`, on HPC and SRC nodes. The image starts only
+  when a data directory is bound at `/data` (or `VISIVO_DATA_ROOT[S]` is set),
+  so a token alone never reaches the rest of the user's files. The
+  self-hosted copilot backend (`deploy/copilot-llm`) is built from the same
+  recipe: it now runs as a non-root user on Python 3.12, confined to `/data`.
+- **Building the backend image yourself (#66).** `docker/build_sif.sh` builds
+  the image on any x86_64 machine with Docker or Podman and converts it to a
+  `.sif` for Apptainer or Singularity. On a cluster, `apptainer/backend-conda-egl.def`
+  builds in two steps (`VTK_STAGE=deps`, then `build`) and takes a VTK source tree
+  prepared on the login node (`VTK_SRC`), for sites whose compute nodes have no
+  internet. Documented in `docs/technical/deployment/hpc-slurm.md`.
+
 ## 1.4.0 (2026-11-25)
 
 Radio image and cube tools refined from user feedback, simulation volumes

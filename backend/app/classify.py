@@ -88,6 +88,54 @@ def _classify_pluto(path: Path) -> dict | None:
                    open_path=ref)
 
 
+def _classify_raw(path: Path, allowed=None) -> dict | None:
+    """The verdict on a legacy-importer descriptor (``rawPointsDesc``,
+    ``rawGridsDesc``, ``flyDesc``) or a bare ``.fly`` file (issue #551); None
+    for any other file. The first file of the list is the one to open
+    (``open_path``, a reference); the others are its series. A bare FLY file
+    whose type, byte order and size the file cannot tell is ``ask``: the
+    importer takes those as options, and here they are written in a
+    descriptor."""
+    from . import raw_descriptor as rd  # noqa: PLC0415
+
+    kind = rd.sniff(path)
+    if kind is None:
+        return None
+    grid = kind == "rawgrids"
+    label = {"rawpoints": "raw points", "rawgrids": "raw grid", "fly": "FLY",
+             "bare-fly": "FLY"}[kind]
+    try:
+        ref = (rd.grid_dataset_path if grid else rd.points_dataset_path)(path, allowed)
+        rf = rd.open_file(ref)
+    except PermissionError:
+        raise
+    except (OSError, ValueError) as exc:
+        if kind == "bare-fly" and isinstance(exc, rd.RawFormatError):
+            return _result("fly", "ask", False, str(exc))
+        return _result("grid" if grid else "particles", "unsupported", True,
+                       f"{label} descriptor that cannot be read: {exc}")
+    d = rf.desc
+    steps = len(d.entries)
+    series = f", {steps} files as a series" if steps > 1 else ""
+    kind_of = f"{'float64' if d.dtype.itemsize == 8 else 'float32'}, {d.endian} endian"
+    if grid:
+        axes = [n for n in rf.shape[::-1] if n > 1]
+        if len(axes) < 2:
+            return _result("grid", "unsupported", True,
+                           f"Raw grid of one dimension ({int(max(rf.shape))} cells): no image "
+                           "or cube to show.")
+        return _result("cube" if len(axes) == 3 else "image", "dataset", True,
+                       f"Raw grid {d.name} ({' × '.join(str(n) for n in axes)}, {kind_of}"
+                       f"{series}): read in place; each listed file is one dataset.",
+                       open_path=ref)
+    what = "FLY file with no descriptor (type and byte order read from its values)" \
+        if d.bare else f"{label} descriptor"
+    scalars = f", {rf.scalars} scalar field(s)" if rf.kind == "rawpoints" else ", velocities"
+    return _result("particles", "catalogue", True,
+                   f"{what}: {d.rows} points{scalars} ({kind_of}{series}). Each listed file "
+                   "opens as a table of points.", open_path=ref)
+
+
 def classify_path(path: str | Path, allowed=None) -> dict:
     """``{kind, opener, confident, detail, open_path}`` for one path.
 
@@ -144,6 +192,12 @@ def classify_path(path: str | Path, allowed=None) -> dict:
     ramses = _classify_ramses(path, allowed)
     if ramses is not None:
         return ramses
+
+    # ── The legacy importer's raw descriptors and a bare FLY file ────────────
+    # Read in place (issue #551): points as a table, a grid as a cube or image.
+    raw = _classify_raw(path, allowed)
+    if raw is not None:
+        return raw
 
     # ── A particle snapshot (Gadget binary or HDF5), by its header record ────
     # Read in place as a table of points, one particle type at a time (#31).

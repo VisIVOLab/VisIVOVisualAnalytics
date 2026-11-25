@@ -39,6 +39,8 @@ in a line or two. For a task explained step by step, start from the
 - [SKAVA Discovery tab](skava-discovery.md)
 - [Simulation snapshots (AREPO)](simulations.md)
 - [PLUTO simulation output](pluto-output.md)
+- [Raw points, raw grids and FLY files](raw-descriptors.md): the VisIVO
+  Importer's descriptor formats, read without conversion.
 - [Gadget snapshots](gadget-snapshots.md): particle types of a Gadget
   snapshot, one file or several, with units and derived gas columns.
 - [RAMSES outputs](ramses-outputs.md): the particles of an `output_NNNNN`
@@ -75,6 +77,7 @@ vlkb-archive
 skava-discovery
 simulations
 pluto-output
+raw-descriptors
 gadget-snapshots
 ramses-outputs
 raytraced-particles

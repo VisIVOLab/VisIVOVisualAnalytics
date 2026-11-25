@@ -158,6 +158,26 @@ async def open_dataset(
                     valid=False, error="byte_order does not apply to a PLUTO output: it is "
                                        "read in the byte order its .out file gives.")
             path, field = Path(pluto), None
+        else:
+            # A raw grid of a legacy-importer descriptor (issue #551): by its
+            # descriptor or a reference, read in place in the byte order the
+            # descriptor declares.
+            from ..raw_descriptor import grid_dataset_path, split_grid_ref  # noqa: PLC0415
+            grid_base = split_grid_ref(request.path)[0]
+            try:
+                grid = await asyncio.to_thread(
+                    grid_dataset_path, str(_normalize_path(grid_base))
+                    + request.path[len(grid_base):], _within_data_roots)
+            except ValueError as exc:
+                return OpenDatasetResponse(valid=False, error=str(exc))
+            except OSError:
+                return OpenDatasetResponse(valid=False, error="File not found.")
+            if grid is not None:
+                if request.byte_order is not None:
+                    return OpenDatasetResponse(
+                        valid=False, error="byte_order does not apply to a raw grid: it is "
+                                           "read in the byte order its descriptor gives.")
+                path, field, pluto = Path(grid), None, grid
     orders: dict = {}
     if vbt is not None:
         path = Path(vbt)
@@ -290,8 +310,8 @@ def _is_simulation_volume(path: str, kind: str, geometry: dict[str, Any]) -> boo
 def _is_gadget_component(path: str) -> bool:
     """Whether ``path`` is a particle component (a Gadget type, a RAMSES
     family) whose physical units its reader states."""
-    from ..point_table import component_format  # noqa: PLC0415
-    return component_format(path) is not None
+    from ..point_table import COMPONENT_FORMATS, component_format  # noqa: PLC0415
+    return component_format(path) in COMPONENT_FORMATS
 
 
 def _physical_units_info(path: str) -> PhysicalUnitsInfo:

@@ -67,13 +67,13 @@ def _hdu_and_shape(path: str) -> tuple[int, tuple[int, int, int]]:
     from .brick_pyramid import source_shape  # noqa: PLC0415
     from .fits_dataset import image_hdu_index  # noqa: PLC0415
 
-    from .volume_source import field_data_file, is_field_ref, volume_shape  # noqa: PLC0415
+    from .volume_source import field_file, is_field_ref, volume_shape  # noqa: PLC0415
 
     # A field reference (a 2-D PLUTO run, issue #315) is its data file's version.
-    st = os.stat(field_data_file(path))
+    st = os.stat(field_file(path))
     from .canonical_path import canonical_path  # noqa: PLC0415
 
-    key = (str(canonical_path(field_data_file(path))), path, st.st_size, st.st_mtime_ns)
+    key = (str(canonical_path(field_file(path))), path, st.st_size, st.st_mtime_ns)
     if key not in _layout:
         if is_field_ref(path):
             hdu = volume_shape(path)[1]

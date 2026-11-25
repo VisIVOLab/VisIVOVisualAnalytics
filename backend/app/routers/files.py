@@ -96,7 +96,7 @@ async def file_header(request: FileHeaderRequest, _: None = _auth) -> FileHeader
         path = _normalize_path(base)
         # The data file checked as any path, the field kept (a reference
         # begins with its data file's path).
-        ref = field_dataset_path(str(path) + request.path[len(base):]) \
+        ref = field_dataset_path(str(path) + request.path[len(base):], _within_data_roots) \
             if base != request.path else None
         if ref is None and not _is_fits(path):
             raise ValueError("FITS file not found.")
@@ -194,6 +194,7 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
     """
     from ..classify import classify_path  # noqa: PLC0415
     from ..pluto_source import is_pluto_ref  # noqa: PLC0415
+    from ..raw_descriptor import is_grid_ref  # noqa: PLC0415
     from ..volume_source import (field_data_file, field_dataset_path,  # noqa: PLC0415
                                  is_field_ref, volume_shape)
     from ..point_table import (particle_components, particle_dataset_path,  # noqa: PLC0415
@@ -220,31 +221,36 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
             return FileClassifyResponse(
                 valid=True, error="", path=request.path, kind="particles",
                 opener="unsupported", confident=True,
-                detail=f"Particle snapshot that cannot be read: {exc}")
+                detail=f"Snapshot that cannot be read: {exc}")
         if found is None:
             return FileClassifyResponse(valid=False, error="File not found.")
         return FileClassifyResponse(
             valid=True, error="", path=request.path, kind="particles", opener="catalogue",
             confident=True, open_path=found[0], components=components,
-            detail="A particle type of a simulation snapshot.")
+            detail=("A file of a raw-points descriptor." if found[1] == "rawpoints"
+                    else "A particle type of a simulation snapshot."))
 
     # A field of a VBT volume (issue #83) or a PLUTO variable (#315) (a Recent
     # entry, a Session Data row) opens as the cube, or image, it was.
     if is_field_ref(request.path):
         base = field_data_file(request.path)
         try:
-            ref = field_dataset_path(str(_normalize_path(base)) + request.path[len(base):])
+            ref = field_dataset_path(str(_normalize_path(base)) + request.path[len(base):],
+                                     _within_data_roots)
             shape = volume_shape(ref)[0] if ref is not None else ()
         except Exception:
             ref, shape = None, ()
         if ref is None:
             return FileClassifyResponse(valid=False, error="File not found.")
         pluto = is_pluto_ref(ref)
-        # A PLUTO run may be 2-D: an image. A VBT volume is a cube, as it was.
-        kind = "image" if pluto and sum(1 for n in shape if n > 1) < 3 else "cube"
+        raw = is_grid_ref(ref)
+        # A PLUTO run or a raw grid may be 2-D: an image. A VBT volume is a
+        # cube, as it was.
+        kind = "image" if (pluto or raw) and sum(1 for n in shape if n > 1) < 3 else "cube"
         return FileClassifyResponse(
             valid=True, error="", path=request.path, kind=kind, opener="dataset",
             confident=True, detail=("A variable of a PLUTO output." if pluto
+                                    else "A raw grid of a descriptor." if raw
                                     else "A field of a VisIVO Binary Table volume."))
     try:
         path = _normalize_path(request.path)

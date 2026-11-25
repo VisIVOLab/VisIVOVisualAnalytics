@@ -350,8 +350,8 @@ def _projected_kernel(req: ParticleRenderRequest) -> str:
 def _snapshot_component(spec: str):
     """The component of a snapshot a table of points reads (a Gadget particle
     type, a RAMSES family; None for any other table): what states its units."""
-    from ..point_table import component_format, resolve_component  # noqa: PLC0415
-    if str(spec).startswith("{") or component_format(spec) is None:
+    from ..point_table import COMPONENT_FORMATS, component_format, resolve_component  # noqa: PLC0415
+    if str(spec).startswith("{") or component_format(spec) not in COMPONENT_FORMATS:
         return None
     return resolve_component(spec)
 

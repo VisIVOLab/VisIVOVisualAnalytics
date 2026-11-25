@@ -175,10 +175,12 @@ async def points_series(request: PointInfoRequest, _: None = _auth,
     if not path:
         raise HTTPException(422, "The table has no file to step from.")
     from ..dependencies import _normalize_path   # noqa: PLC0415
-    from ..point_table import split_component   # noqa: PLC0415
+    from ..point_table import component_format, split_component   # noqa: PLC0415
     # A snapshot's particle type (issue #31): the series of its file (or of
-    # its snapdir), each member the same particle type.
-    path, suffix = split_component(path)
+    # its snapdir), each member the same particle type. A file of a raw
+    # descriptor (issue #551) is its own: the descriptor's list.
+    path, suffix = (path, "") if component_format(path) == "rawpoints" \
+        else split_component(path)
 
     def allowed(member: str) -> bool:
         # A member is opened by path later: one the data roots refuse (a
