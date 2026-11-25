@@ -10,6 +10,7 @@
 #include <QFormLayout>
 #include <QFutureWatcher>
 #include <QHash>
+#include <QKeyEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -250,8 +251,9 @@ void PublicationFigureDialog::build()
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText(u"Render"_s);
     // Return must not be a shortcut for Render: it exports a file, and a Return
-    // meant for the colour-map list (or any editor) reached the button too. Both
-    // buttons are only clicked; QDialog would otherwise make the first one default.
+    // meant for the colour-map list (or any editor) reached the button too. The
+    // button box makes its first accept button default again when shown, so the
+    // key itself is stopped in keyPressEvent; this only keeps the look plain.
     for (auto b : { QDialogButtonBox::Ok, QDialogButtonBox::Cancel }) {
         buttons->button(b)->setAutoDefault(false);
         buttons->button(b)->setDefault(false);
@@ -597,3 +599,13 @@ void PublicationFigureDialog::showPreview(const QPixmap &pm, const QString &mess
 }
 
 }   // namespace visivo::figure
+
+void visivo::figure::PublicationFigureDialog::keyPressEvent(QKeyEvent *event)
+{
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && !(event->modifiers() & ~Qt::KeypadModifier)) {
+        event->accept();   // editors take it first; whatever reaches the dialog stops here
+        return;
+    }
+    QDialog::keyPressEvent(event);
+}

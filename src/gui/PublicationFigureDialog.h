@@ -64,6 +64,12 @@ public:
     /// lines on first use: call it off the GUI thread.
     std::function<QJsonObject(bool preview)> bodyMaker() const;
 
+protected:
+    /// Return and Enter never press Render: it exports a file, and a Return meant
+    /// for the colour-map list or an editor reached it (QDialogButtonBox makes its
+    /// first accept button the default when shown, whatever was set before).
+    void keyPressEvent(QKeyEvent *event) override;
+
 private:
     struct Widgets;
 
