@@ -345,6 +345,48 @@ def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[floa
     return radius, splat_opacity(depth, intensity, steps=False)
 
 
+# vtkCubeAxesActor lays an axis title (and the tick labels) along the axis in
+# 3-D, so seen nearly end-on they are foreshortened to a long diagonal white
+# streak instead of text. The foreshortening of an axis is the sine of the angle
+# between it and the line of sight; below this the axis is left out until the
+# view turns away from it (the desktop viewer applies the same rule,
+# vtkWindowCatalogue3D::hideEdgeOnAxes). 0.5 is 30 degrees: in the app the
+# title was still squashed and unreadable at 25.
+EDGE_ON_SINE = 0.5
+
+
+def axis_sines(eye, aim) -> list[float]:
+    """The sine of the angle between each axis of the box and the line of sight
+    from ``eye`` to ``aim`` (1 across the view, 0 along it)."""
+    sight = np.asarray(aim, dtype=float) - np.asarray(eye, dtype=float)
+    norm = float(np.linalg.norm(sight))
+    if norm <= 0.0:
+        return [1.0, 1.0, 1.0]
+    sight /= norm
+    return [math.sqrt(max(0.0, 1.0 - float(sight[i]) ** 2)) for i in range(3)]
+
+
+def readable_axes(sines) -> tuple[bool, bool, bool]:
+    """Which axes of the box carry a readable title and labels."""
+    return tuple(s >= EDGE_ON_SINE for s in sines)
+
+
+def hide_edge_on_axes(cube_axes, camera, bounds) -> None:
+    """Show only the axes of ``cube_axes`` that are readable from ``camera``.
+    A perspective view looks from the eye at the middle of the box; a parallel
+    one along its direction of projection, whatever it is centred on."""
+    if camera.GetParallelProjection():
+        aim = camera.GetFocalPoint()
+    else:
+        aim = [(bounds[2 * i] + bounds[2 * i + 1]) / 2.0 for i in range(3)]
+    ok = readable_axes(axis_sines(camera.GetPosition(), aim))
+    # The axis switch alone leaves the title and the labels of a nearly
+    # end-on axis drawn (VTK 9.6); the labels switch takes the title with it.
+    for axis, readable in zip("XYZ", ok):
+        for part in ("Axis", "AxisLabel", "AxisTick", "AxisMinorTick"):
+            getattr(cube_axes, f"Set{axis}{part}Visibility")(bool(readable))
+
+
 def _float_target_pass():
     """The renderer's passes drawn into a float32 target and clamped onto the
     window (vtkToneMappingPass, Clamp; VTK 9.0 and later): splats of an
@@ -963,6 +1005,7 @@ class PointRenderSession(PointStereoMixin):
         axes_cam.SetViewUp(cam.GetViewUp())
         self._axes_renderer.ResetCamera()
         self._renderer.ResetCameraClippingRange()
+        hide_edge_on_axes(self._outline, cam, self._bounds)
         t0 = time.perf_counter()
         self._render_window.Render()
         render_ms = (time.perf_counter() - t0) * 1000.0
