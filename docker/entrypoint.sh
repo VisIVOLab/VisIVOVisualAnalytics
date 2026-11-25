@@ -12,7 +12,12 @@
 #   VISIVO_DATA_ROOT    the directory the data is bound at. When it, or /data,
 #                       exists, the backend is confined to it (VISIVO_DATA_ROOTS
 #                       is set from it, plus the exports directory), unless
-#                       VISIVO_DATA_ROOTS is already set
+#                       VISIVO_DATA_ROOTS is already set. With none of these the
+#                       server does not start: see VISIVO_ALLOW_UNRESTRICTED
+#   VISIVO_ALLOW_UNRESTRICTED
+#                       1 starts the server without a data root, so that the
+#                       backend opens any file the user running it can read
+#                       (under Apptainer that includes the whole HOME, ~/.ssh)
 #   VISIVO_EXPORTS_DIR  where products are written (default: scratch). Bind a
 #                       directory here to keep them when the container ends.
 #   VISIVO_SCRATCH      the writable scratch directory (default
@@ -74,9 +79,23 @@ if [ "$#" -gt 0 ]; then
     exec "$@"
 fi
 
+# The token is the only other thing between a port on a shared node and the
+# user's files: without a data root the backend would open anything its user can
+# read, ~/.ssh included under Apptainer. Refuse, unless the operator says so.
+if [ -z "${VISIVO_DATA_ROOTS:-}" ] && [ "${VISIVO_ALLOW_UNRESTRICTED:-}" != "1" ]; then
+    {
+        echo "[visivo] ERROR: no data directory is configured, so the backend would open any file"
+        echo "[visivo]        this user can read (under Apptainer, the whole home directory)."
+        echo "[visivo]        Bind the data at /data (docker run -v DIR:/data:ro, apptainer run --bind DIR:/data),"
+        echo "[visivo]        or set VISIVO_DATA_ROOT=DIR (a bound directory) or VISIVO_DATA_ROOTS=DIR1:DIR2,"
+        echo "[visivo]        or set VISIVO_ALLOW_UNRESTRICTED=1 to start without a restriction."
+    } >&2
+    exit 2
+fi
+
 PORT="${PORT:-8000}"
 HOST="${VISIVO_HOST:-0.0.0.0}"
-echo "[visivo] backend on ${HOST}:${PORT}, scratch ${scratch}, data roots ${VISIVO_DATA_ROOTS:-unrestricted}"
+echo "[visivo] backend on ${HOST}:${PORT}, scratch ${scratch}, data roots ${VISIVO_DATA_ROOTS:-UNRESTRICTED (VISIVO_ALLOW_UNRESTRICTED=1)}"
 
 # --app-dir because Apptainer starts in the caller's working directory, not in
 # the image's.

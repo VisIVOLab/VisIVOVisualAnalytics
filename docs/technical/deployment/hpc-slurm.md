@@ -339,7 +339,11 @@ Every job (the bindings are harmless where the libraries do not exist) gets:
 
 Each release publishes the backend as an OCI image on the GitHub Container
 Registry, so a site pulls it instead of building it (the recipe is
-`docker/Dockerfile`, the workflow `.github/workflows/backend-image.yml`).
+`docker/Dockerfile`, the workflow `.github/workflows/backend-image.yml`). To
+build it yourself (`docker build -f docker/Dockerfile --target cpu .` from the
+repository root, `--target egl` for the EGL one, which compiles VTK) or through
+`docker compose build`, BuildKit is required: it is the default of Docker 23 and
+later, and `DOCKER_BUILDKIT=1` turns it on in an older one.
 
 | Image | Platforms | What it is |
 |---|---|---|
@@ -353,9 +357,9 @@ entrypoint reads:
 |---|---|---|
 | `VISIVO_TOKEN` | a random token, printed at start (never written to `HOME`) | The access token. Pass it in the environment, not on a command line. |
 | `PORT` | `8000` | The port (`VISIVO_HOST`, default `0.0.0.0`, the address). |
-| the data | `/data` | The directory the data is bound at. When `/data` exists (or `VISIVO_DATA_ROOT` names another directory that does), the backend is confined to it and to the exports directory; with nothing bound there, it is unrestricted, and under Apptainer that includes the user's home. `VISIVO_DATA_ROOTS` sets the roots outright. |
+| the data | `/data` | The directory the data is bound at. When `/data` exists (or `VISIVO_DATA_ROOT` names another directory that does), the backend is confined to it and to the exports directory. `VISIVO_DATA_ROOTS` sets the roots outright. With none of these the image **refuses to start**: an unconfined backend opens any file its user can read, and under Apptainer that includes the whole home directory (`~/.ssh`) for anyone holding the token. `VISIVO_ALLOW_UNRESTRICTED=1` starts it anyway, for a machine where that is acceptable. |
 | `VISIVO_EXPORTS_DIR` | scratch under `/tmp` | Where products are written. Bind a directory here to keep them. |
-| `VISIVO_WORKERS` | `4` | Worker processes for the heavy computations. |
+| `VISIVO_WORKERS` | `4` | The size of the backend's process pool for the heavy computations. The server itself is one uvicorn worker (`--workers 1`): this variable does not add HTTP workers. |
 
 Caches and libraries' configuration go to `${TMPDIR:-/tmp}/visivo-<uid>`
 (`VISIVO_SCRATCH` moves it), never to `HOME`.
@@ -373,7 +377,9 @@ For rendering, `--gpus all` (the NVIDIA Container Toolkit) with the `-egl` image
 for a read-only root file system, `--read-only --tmpfs /tmp`. In the desktop,
 register `http://<host>:8000` and the token under **Settings ▸ Backends ▸ Remote
 Backends**. `docker/smoke_test.sh <image>` runs the checks CI runs: it starts the
-image as a locked-down site would, calls `/v1/health` and opens a small cube.
+image as a locked-down site would, calls `/v1/health` and opens a small cube,
+and checks that it refuses to start with no data directory and that a modified
+copy of `backend/app` bound onto `/app/app` is the code that runs.
 
 **Apptainer or Singularity, on an HPC system**
 
@@ -389,7 +395,7 @@ export APPTAINERENV_PORT=8000
 [ -z "${CUDA_VISIBLE_DEVICES:-}" ] || export APPTAINERENV_CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES"
 apptainer run --nv --cleanenv \
     --bind /path/to/data:/data \
-    --bind /usr/share/glvnd/egl_vendor.d/10_nvidia.json:/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
+    --bind /usr/share/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d \
     --env __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json \
     visivo-backend-egl.sif
 ```
@@ -400,18 +406,35 @@ two EGL lines. Two points are specific to the EGL image:
 
 * Singularity's `--nv` binds the host's `libEGL_nvidia` but not the glvnd vendor
   file that names it, so libglvnd finds no EGL vendor and the render window
-  cannot be created. Binding the host's `10_nvidia.json` and pointing
-  `__EGL_VENDOR_LIBRARY_FILENAMES` at it fixes that. Where the host has no such
-  file, leave the bind out: the image carries one that names
+  cannot be created. Binding the host's vendor directory
+  (`/usr/share/glvnd/egl_vendor.d`, the whole directory, as the launcher's site
+  profiles do) and pointing `__EGL_VENDOR_LIBRARY_FILENAMES` at its
+  `10_nvidia.json` fixes that. Where the host has no such directory, leave the
+  bind out: the image carries a file of that name that names
   `libEGL_nvidia.so.0`.
+* The data is bound at `/data` here, which is also what confines the backend to
+  it (see the table above).
 * `--cleanenv` keeps the host's environment (a site's module paths, its
   `LD_LIBRARY_PATH`) out of the container, so the libraries are the image's and
   the ones `--nv` adds.
 
 Run it in a job, not on the frontend, and reach it from the desktop through an
-SSH tunnel as described [above](#quick-start). The launcher accepts the pulled
-file with `--sif`, but its NVIDIA bindings were written for the POWER9 images
-(`/usr/lib64`): on x86_64 start the container as above.
+SSH tunnel as described [above](#quick-start). The launcher runs these images too: with
+the site profile (`--site leonardo`, see [Site profiles](#site-profiles) and
+[CINECA Leonardo](#cineca-leonardo)) it pulls `--image
+docker://ghcr.io/visivolab/visivo-backend:<version>-egl` (or takes a pulled
+file with `--sif`), binds the host's glvnd vendor directory, leaves
+`LD_LIBRARY_PATH` alone and sets the data root, as in the example there:
+
+```bash
+bash scripts/launch_backend_slurm.sh --site leonardo --account <ACCOUNT> \
+    --image docker://ghcr.io/visivolab/visivo-backend:<version>-egl \
+    --data-root /path/to/the/data
+```
+
+`--backend-src <checkout>/backend/app` overlays the image's backend code: the
+image keeps it at `/app/backend/app` and `/app/app` is a link to it, so the
+launcher's bind onto `/app/app` replaces it.
 
 ## Node capacity under SLURM
 

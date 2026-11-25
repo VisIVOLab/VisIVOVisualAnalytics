@@ -14,12 +14,20 @@
 #     or `latest`). Run it on `main` without `push` to warm the VTK cache: a
 #     cache saved on a branch is invisible to a tag build, and only the default
 #     branch's is (GitHub scopes caches by ref).
-#   - pull_request touching the image files: builds both and runs the smoke
-#     test, pushes nothing, so the Dockerfile is proven before it is released.
+#   - pull_request touching the image files: builds the CPU image only (amd64,
+#     no emulation) and runs the smoke test, pushes nothing. The EGL image is
+#     not built on a PR: its VTK compile is hours of runner time. A change to the
+#     EGL stages is proven by a workflow_dispatch run on its branch.
 #
 # The EGL image compiles VTK, about an hour, as its own Dockerfile stage whose
-# result is cached (type=gha). Neither image needs a GPU to be built or smoke
-# tested; whether the EGL one renders is for a GPU node to say.
+# result is cached (type=gha, mode=max, scope egl: only that stage is worth
+# keeping; the CPU image caches its final layers, mode=min). Neither image needs
+# a GPU to be built or smoke tested; whether the EGL one renders is for a GPU
+# node to say.
+#
+# After this workflow first lands on main, a maintainer runs workflow_dispatch
+# on main once (without `push`) to warm the VTK cache, or the first release tag
+# compiles VTK from scratch.
 #
 # A new package on GHCR is private until an owner makes it public (Package
 # settings); anonymous `apptainer pull` needs it public.
@@ -130,8 +138,9 @@ jobs:
           persist-credentials: false
 
       # arm64 is built under emulation: the stack is all wheels, so it is slow
-      # but short.
+      # but short. Not on a pull request: amd64 proves the Dockerfile.
       - uses: docker/setup-qemu-action@v3
+        if: github.event_name != 'pull_request'
         with:
           platforms: arm64
       - uses: docker/setup-buildx-action@v3
@@ -159,12 +168,14 @@ jobs:
             VERSION=${{ needs.meta.outputs.version }}
             REVISION=${{ github.sha }}
           cache-from: type=gha,scope=cpu
+          cache-to: type=gha,scope=cpu,mode=min
           provenance: false
 
       - name: Smoke test
         run: docker/smoke_test.sh visivo-backend:ci
 
       - name: Build and push (amd64, arm64)
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -176,8 +187,10 @@ jobs:
           build-args: |
             VERSION=${{ needs.meta.outputs.version }}
             REVISION=${{ github.sha }}
-          cache-from: type=gha,scope=cpu
-          cache-to: type=gha,scope=cpu,mode=max
+          cache-from: |
+            type=gha,scope=cpu
+            type=gha,scope=cpu-multi
+          cache-to: type=gha,scope=cpu-multi,mode=min
           # No attestation manifests: older Singularity/Apptainer releases do
           # not expect an "unknown/unknown" entry in the image index.
           provenance: false
@@ -185,6 +198,8 @@ jobs:
   egl:
     name: EGL image (amd64)
     needs: meta
+    # Not on a pull request (see the header).
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # VTK from source on a 4-core runner.
     timeout-minutes: 330

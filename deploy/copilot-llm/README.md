@@ -109,7 +109,10 @@ in **Settings ▸ Copilot** with `http://copilot-llm:8000/v1` and the
 The backend container is built from `docker/Dockerfile`, the recipe of the
 published image `ghcr.io/visivolab/visivo-backend` (see
 [Running the backend on a cluster](../../docs/technical/deployment/hpc-slurm.md#published-container-images)),
-so it runs as a non-root user and confines the backend to `/data`.
+so it runs as a non-root user and confines the backend to `/data`. The
+Dockerfile needs BuildKit (the default of Docker 23 and later, and of
+`docker compose build`; with an older Docker set `DOCKER_BUILDKIT=1`, and
+`podman-compose` needs Podman 4 or later).
 
 **Coexistence:** the LLM uses the GPU; the backend runs **CPU-only** compute
 (moments / spectral / photometry / copilot), so they share the machine fine.

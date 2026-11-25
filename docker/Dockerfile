@@ -27,8 +27,9 @@
 # The VTK build takes about an hour and depends on nothing but the base image
 # and VTK_TAG, so it is a stage of its own; CI caches it (type=gha).
 #
-# At run time: docker/entrypoint.sh. Nothing is written inside the image, and
-# the user is not root.
+# At run time: docker/entrypoint.sh. Nothing is written inside the image, the
+# user is not root, and the backend starts only when it is told which directories
+# it may read (a bound /data, or VISIVO_DATA_ROOT[S]).
 
 ARG PYTHON_IMAGE=python:3.12-slim-bookworm
 
@@ -169,6 +170,10 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8000
 WORKDIR /app/backend
+# The code is /app/backend/app. The launcher scripts' --backend-src binds a host
+# checkout onto /app/app (the layout of the older Apptainer images), and a bind
+# onto a symlink lands on its target, so that option works here unchanged.
+RUN ln -s /app/backend/app /app/app
 EXPOSE 8000
 USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/visivo-entrypoint"]
@@ -190,12 +195,13 @@ COPY --from=pydeps-egl /opt/venv /opt/venv
 COPY --from=vtk-egl /out/opt/venv /opt/venv
 COPY backend/ /app/backend/
 # Check what was built, so that a VTK without EGL fails the build here and not
-# on a GPU node: the EGL window exists and links libEGL, no library of VTK is
-# missing one of its own, the application's probe imports. No GPU is needed (and
-# a builder has none): whether it renders is for the node to say.
+# on a GPU node: the EGL window exists and links libEGL and glvnd's libOpenGL, no
+# library or extension module of VTK is missing one of its own, the application's
+# probe imports. No GPU is needed (and a builder has none): whether it renders is
+# for the node to say.
 RUN VISIVO_TOKEN=build HOME=/tmp VISIVO_EXPORTS_DIR=/tmp/x VISIVO_HIPS_CACHE=/tmp/y \
     python - <<'CHECK'
-import glob, subprocess, sys
+import glob, os, subprocess, sys
 import vtk
 from vtkmodules import vtkRenderingOpenGL2 as gl
 print(f"vtk {vtk.VTK_VERSION} from {vtk.__file__}")
@@ -209,9 +215,22 @@ if not libs:
 for lib in libs:
     if "not found" in subprocess.check_output(["ldd", lib], text=True):
         sys.exit(f"FATAL: {lib} has a missing dependency")
+# The Python extension modules, which link the libraries above: a module whose
+# dependency is missing fails at import on the node, not here, unless looked at.
+modules = glob.glob(os.path.join(os.path.dirname(gl.__file__), "*.so"))
+if not modules:
+    sys.exit("FATAL: no extension modules in vtkmodules")
+for mod in modules:
+    if "not found" in subprocess.check_output(["ldd", mod], text=True):
+        sys.exit(f"FATAL: {mod} has a missing dependency")
 render = glob.glob("/opt/venv/lib/libvtkRenderingOpenGL2-*.so")[0]
-if "libEGL" not in subprocess.check_output(["ldd", render], text=True):
+links = subprocess.check_output(["ldd", render], text=True)
+if "libEGL" not in links:
     sys.exit(f"FATAL: {render} does not link libEGL")
+# glvnd's libOpenGL, which dispatches to the host's NVIDIA libraries, and not
+# the legacy libGL.so.1 (Mesa's, which would answer without a GPU).
+if "libOpenGL.so" not in links or "libGL.so.1" in links:
+    sys.exit(f"FATAL: {render} does not link glvnd's libOpenGL, or links libGL.so.1:\n{links}")
 # What the backend's isosurface and velocity-field code uses, against the numpy
 # the requirements resolved.
 import numpy as np
@@ -219,7 +238,7 @@ from vtkmodules.util import numpy_support as ns
 ns.vtk_to_numpy(ns.numpy_to_vtk(np.zeros(4, "f4")))
 sys.path.insert(0, "/app/backend")
 from app.render_session import server_side_rendering_available  # noqa: F401
-print("vtkEGLRenderWindow present, linked to libEGL; the application's probe imports")
+print("vtkEGLRenderWindow present, linked to libEGL and libOpenGL; the application's probe imports")
 CHECK
 RUN python -m compileall -q /app/backend/app
 # libglvnd picks the NVIDIA EGL vendor, not another. Under Apptainer the host's
