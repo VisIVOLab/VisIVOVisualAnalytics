@@ -6,7 +6,7 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.4.0 (2026-11-25)
 
 Radio image and cube tools refined from user feedback, simulation volumes
 with several fields and physical units, and figure export.
