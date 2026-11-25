@@ -63,7 +63,7 @@ async def open_catalogue(
         else:
             read_as.append(str(p))
         paths.append(p)
-    if fmt == "gadget" and len(read_as) > 1:
+    if fmt in ("gadget", "rawpoints") and len(read_as) > 1:
         return CatalogueOpenResponse(
             valid=False, error="A particle snapshot opens one particle type at a time.")
     is_vbt = fmt == "vbt"
@@ -125,7 +125,7 @@ async def open_catalogue(
     dataset_id = f"cat_{uuid.uuid4().hex[:12]}"
     # A snapshot's particle type is known by its reference: every reader of
     # the dataset (render sessions, the VR page, its series) opens that.
-    entry_path = read_as[0] if fmt == "gadget" else str(path)
+    entry_path = read_as[0] if fmt in ("gadget", "rawpoints") else str(path)
     components = particle_components(entry_path)
     session.datasets[dataset_id] = {"path": entry_path, "paths": [str(p) for p in paths],
                                     "dataframe": dataframe, **metadata,

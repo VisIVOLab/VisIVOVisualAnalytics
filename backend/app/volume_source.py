@@ -1,7 +1,8 @@
 """A volume read where it is: an HDU of a FITS file, a field of a VisIVO
 Binary Table volume (issue #83), or a variable of a PLUTO binary output
-(issue #315, app/pluto_source.py). The last two are raw fields
-(:class:`RawField`): samples at an offset of a file, read in place.
+(issue #315, app/pluto_source.py), or a raw grid of the legacy VisIVO
+Importer's descriptor (issue #551, app/raw_descriptor.py). The last three are
+raw fields (:class:`RawField`): samples at an offset of a file, read in place.
 
 A VBT volume is a cube already: each field is ``nx * ny * nz`` scalars, x
 fastest, one field after the other in the ``.bin`` beside its ``.head``. It is
@@ -20,6 +21,8 @@ from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+
+from . import raw_descriptor
 
 
 # ── The byte order a VBT is read in (issue #165) ─────────────────────────────
@@ -249,7 +252,7 @@ class RawField:
     #: PLUTO .out, which a running simulation appends a line to at every
     #: output: its own line is in :attr:`layout`.
     sidecars: tuple[str, ...] = ()
-    kind: str = ""                  # "vbt" | "pluto"
+    kind: str = ""                  # "vbt" | "pluto" | "rawgrid"
 
     @property
     def layout(self) -> str:
@@ -278,6 +281,12 @@ def raw_field(path: str | Path, hdu: int | None = None) -> RawField | None:
     if var is not None:
         return RawField(var.data_path, var.index, var.offset, var.dtype, var.shape,
                         (), "pluto")
+    if raw_descriptor.is_grid_ref(path):
+        rf = raw_descriptor.grid_file(path)
+        # The descriptor is a sidecar: a type or size edited beside the same
+        # data is another source.
+        return RawField(rf.path, rf.index, 0, rf.desc.dtype, rf.shape, (rf.desc.path,),
+                        "rawgrid")
     return None
 
 
@@ -285,7 +294,8 @@ def is_field_ref(path: str | Path) -> bool:
     """Whether ``path`` is a reference to a field (VBT or PLUTO), from the
     string alone."""
     from .pluto_source import split_ref as split_pluto  # noqa: PLC0415
-    return split_ref(path)[1] is not None or split_pluto(path)[1] is not None
+    return (split_ref(path)[1] is not None or split_pluto(path)[1] is not None
+            or raw_descriptor.is_grid_ref(path))
 
 
 def field_data_file(path: str | Path) -> str:
@@ -296,13 +306,35 @@ def field_data_file(path: str | Path) -> str:
     if field is not None:
         return base
     base, name = split_pluto(path)
-    return base if name is not None else str(path)
+    if name is not None:
+        return base
+    # A raw grid's reference begins with its descriptor: the file the data
+    # roots check; the data file it lists is checked when it is opened.
+    return raw_descriptor.split_grid_ref(path)[0]
 
 
-def field_dataset_path(path: str | Path) -> str | None:
-    """The reference a field reference (VBT or PLUTO) opens by, checked; None
-    when ``path`` is no field reference or names a field that is not there."""
+def field_file(path: str | Path) -> str:
+    """The file a field reference's samples are in, to open or stat: its data
+    file. :func:`field_data_file` is the reference's leading path, which the
+    routes check against the data roots; the two differ for a raw grid, whose
+    reference begins with its descriptor."""
+    if raw_descriptor.is_grid_ref(path):
+        return raw_field(path).path
+    return field_data_file(path)
+
+
+def field_dataset_path(path: str | Path, allowed=None) -> str | None:
+    """The reference a field reference (VBT, PLUTO or raw grid) opens by,
+    checked; None when ``path`` is no field reference or names a field that is
+    not there. ``allowed`` (path -> bool): the data file a raw grid's
+    descriptor lists must pass it too (None, as a refused path, when it does
+    not)."""
     from . import pluto_source  # noqa: PLC0415
+    if raw_descriptor.is_grid_ref(path):
+        try:
+            return raw_descriptor.grid_dataset_path(path, allowed)
+        except (OSError, ValueError):
+            return None
     base, field = split_ref(path)
     if field is not None:
         return vbt_dataset_path(base, field)
@@ -323,7 +355,9 @@ def field_listing(path: str | Path) -> tuple[list[dict], str]:
         return [], ""
     fields = field_siblings(path)
     _base, index = split_ref(path)
-    if index is not None:
+    if raw_descriptor.is_grid_ref(path):
+        name = next((f["name"] for f in fields if f["path"] == path), "")
+    elif index is not None:
         name = fields[index]["name"] if 0 <= index < len(fields) else ""
     else:
         name = pluto_source.split_ref(path)[1] or ""
@@ -339,6 +373,13 @@ def field_siblings(path: str | Path) -> list[dict]:
         return vbt_fields(base)
     if pluto_source.split_ref(path)[1] is not None:
         return pluto_source.pluto_fields(path)
+    if raw_descriptor.is_grid_ref(path):
+        # The descriptor's list: one dataset for each file (a time step).
+        try:
+            return [{"name": f["name"], "path": f["path"]}
+                    for f in raw_descriptor.listing(path)]
+        except (OSError, ValueError):
+            return []
     return []
 
 
@@ -431,9 +472,32 @@ def vbt_fits_header(path: str | Path, field: int):
     return hdr
 
 
+def raw_grid_fits_header(rf):
+    """The header a raw grid is read with as a FITS cube: its axes as linear X,
+    Y, Z, one unit a cell from 0 at the first (the format states no box), as a
+    VBT volume's; the descriptor's variable, time tag and file as cards."""
+    from astropy.io import fits  # noqa: PLC0415
+
+    hdr = fits.Header()
+    hdr["SIMPLE"] = True
+    hdr["BITPIX"] = -32 if rf.desc.dtype.itemsize == 4 else -64
+    hdr["NAXIS"] = 3
+    for axis, (n, name) in enumerate(zip(rf.shape[::-1], "XYZ"), start=1):
+        hdr[f"NAXIS{axis}"] = int(n)
+        hdr[f"CTYPE{axis}"] = name
+        hdr[f"CRPIX{axis}"] = 1.0
+        hdr[f"CRVAL{axis}"] = 0.0
+        hdr[f"CDELT{axis}"] = 1.0
+    hdr["OBJECT"] = rf.desc.name
+    hdr["RAWVAR"] = (rf.desc.name[:68], "raw grid variable")
+    hdr["RAWTIME"] = (rf.time, "time tag in the descriptor")
+    hdr["RAWSTEP"] = (rf.index + 1, "place in the descriptor's list")
+    return hdr
+
+
 def open_fits(path: str | Path, **kwargs):
     """``fits.open(path, **kwargs)``; for a field reference (a VBT field, a
-    PLUTO variable), an HDUList with the field memory-mapped in place as its
+    PLUTO variable, a raw grid), an HDUList with the field memory-mapped in place as its
     primary HDU's data (no copy)."""
     from astropy.io import fits  # noqa: PLC0415
 
@@ -450,6 +514,11 @@ def open_fits(path: str | Path, **kwargs):
             data=np.memmap(var.data_path, dtype=var.dtype, mode="r", shape=var.shape,
                            offset=var.offset),
             header=pluto_source.pluto_fits_header(var), do_not_scale_image_data=True)
+        return fits.HDUList([hdu])
+    if raw_descriptor.is_grid_ref(path):
+        rf = raw_descriptor.grid_file(path)
+        hdu = fits.PrimaryHDU(data=raw_field(path).memmap(), header=raw_grid_fits_header(rf),
+                              do_not_scale_image_data=True)
         return fits.HDUList([hdu])
     return fits.open(str(path), **kwargs)
 

@@ -100,6 +100,11 @@ def open_point_table(dataset_path: str) -> PointTable:
         # Columns built when first read: a renderer reads three or four.
         return PointTable(list(component.names), component.columns(), component.num_rows,
                           default_axes(component.names))
+    if component_format(dataset_path) == "rawpoints":
+        # A file of a legacy-importer descriptor (issue #551), read in place.
+        from . import raw_descriptor   # noqa: PLC0415
+        rf = raw_descriptor.points_file(dataset_path)
+        return PointTable(rf.names, rf.columns(), rf.num_rows, default_axes(rf.names))
     from .volume_source import parse_vbt_header, split_order   # noqa: PLC0415
     # The header's path (the VBT route registers it); its binary beside it.
     # It may carry the byte order the dataset was opened in (issue #165).
@@ -187,7 +192,7 @@ def positions_within(columns, axes, rows: np.ndarray, lo, hi,
 
 #: Catalogue formats that are a simulation's particles read in place: always
 #: cartesian, drawn ray-traced by default, opened by a header or a reference.
-PARTICLE_FORMATS = ("vbt", "gadget")
+PARTICLE_FORMATS = ("vbt", "gadget", "rawpoints")
 
 
 def is_particle_format(fmt: str | None) -> bool:
@@ -195,10 +200,14 @@ def is_particle_format(fmt: str | None) -> bool:
 
 
 def component_format(path: str | Path) -> str | None:
-    """The format a component reference names (``"gadget"``), from the
-    string alone; None for any other path."""
+    """The format a component reference names (``"gadget"``, or ``"rawpoints"``
+    for a file of a legacy-importer descriptor, issue #551), from the string
+    alone; None for any other path."""
     from .gadget_snapshot import split_ref   # noqa: PLC0415
-    return "gadget" if split_ref(path)[1] is not None else None
+    from .raw_descriptor import is_points_ref   # noqa: PLC0415
+    if split_ref(path)[1] is not None:
+        return "gadget"
+    return "rawpoints" if is_points_ref(path) else None
 
 
 def split_component(path: str | Path) -> tuple[str, str]:
@@ -206,8 +215,11 @@ def split_component(path: str | Path) -> tuple[str, str]:
     for any other path. The file is what the data roots check; the suffix
     goes back on after."""
     from .gadget_snapshot import split_ref   # noqa: PLC0415
+    from .raw_descriptor import split_points_ref   # noqa: PLC0415
     text = str(path)
     base, ptype = split_ref(text)
+    if ptype is None:
+        base, ptype = split_points_ref(text)
     return (base, text[len(base):]) if ptype is not None else (text, "")
 
 
@@ -223,6 +235,12 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
     must pass it too, as the named one passed the data roots; one that does
     not (a symbolic link out of them) raises PermissionError."""
     from . import gadget_snapshot as gs   # noqa: PLC0415
+    from . import raw_descriptor   # noqa: PLC0415
+    # A file of a legacy-importer descriptor (issue #551): by its descriptor,
+    # a bare FLY file or a reference.
+    raw = raw_descriptor.points_dataset_path(path, allowed)
+    if raw is not None:
+        return raw, "rawpoints"
     base, ptype = gs.split_ref(path)
     p = Path(base)
     if ptype is None and not (p.is_dir() and gs.first_in_dir(p, allowed) is not None) \
@@ -265,6 +283,9 @@ def particle_metadata(path: str | Path) -> dict:
     """What a particle table states about itself beyond its columns: for a
     snapshot component its time, redshift, box, cosmology, unit system and
     each column's unit and physical conversion; {} for a VBT."""
+    if component_format(path) == "rawpoints":
+        from . import raw_descriptor   # noqa: PLC0415
+        return {"snapshot": raw_descriptor.points_file(path).describe(), "component": {}}
     if component_format(path) != "gadget":
         return {}
     from . import gadget_snapshot   # noqa: PLC0415
@@ -309,7 +330,11 @@ def particle_rows(path: str | Path, rows, fields=None) -> pd.DataFrame:
 def particle_frame(path: str | Path) -> pd.DataFrame:
     """A snapshot component as a catalogue's table: one column per block
     column (views of the memory map for a single-file snapshot), and their
-    units in ``attrs["units"]``, as a catalogue file declares them."""
+    units in ``attrs["units"]``, as a catalogue file declares them. A file of
+    a raw-points descriptor: its columns, views of its map, no units."""
+    if component_format(path) == "rawpoints":
+        from . import raw_descriptor   # noqa: PLC0415
+        return pd.DataFrame(raw_descriptor.points_file(path).columns(), copy=False)
     from . import gadget_snapshot   # noqa: PLC0415
     component = gadget_snapshot.resolve(path)
     # Compatibility path for operations that truly require a complete frame.

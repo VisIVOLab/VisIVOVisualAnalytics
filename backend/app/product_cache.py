@@ -51,6 +51,23 @@ def file_identity(path: str | os.PathLike) -> str:
         return "|".join([f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
                          for st in stats] + ([f"units={units}"] if units else []))
 
+    from . import raw_descriptor  # noqa: PLC0415
+    if raw_descriptor.is_grid_ref(path) or raw_descriptor.is_points_ref(path):
+        # A file of a legacy-importer descriptor (issue #551): its data file
+        # and its descriptor, which says how the data read.
+        files = raw_descriptor.identity_files(path)
+        if not files:
+            return ""
+        parts = []
+        for candidate in files:
+            try:
+                st = os.stat(candidate)
+            except OSError:
+                return ""
+            parts.append(f"{st.st_dev}.{st.st_ino}.{st.st_size}."
+                         f"{st.st_mtime_ns}.{st.st_ctime_ns}")
+        return "|".join(parts + [f"ref={path}"])
+
     base = field_data_file(path)
     sidecars = [vbt_head(base)]
     layout = ""
