@@ -85,15 +85,23 @@ class SourceSignature:
 
     @classmethod
     def of(cls, path: str | os.PathLike, hdu: int) -> "SourceSignature":
+        from .canonical_path import canonical_path  # noqa: PLC0415
         from .volume_source import byte_order_override, raw_field  # noqa: PLC0415
 
         raw = raw_field(path, hdu)
         order = byte_order_override(path) if raw is not None and raw.kind == "vbt" else ""
-        if raw is not None:
+        if raw is not None and raw.kind != "rawgrid":
             # A field reference names the data and the field: the same
             # pyramid as the data file's own, whichever way it was opened.
             path, hdu = raw.path, raw.index
-        st = os.stat(path)
+        elif raw is not None:
+            # A raw grid (issue #551) is only known by its descriptor: the
+            # reference stays the source (its data file alone could not be
+            # read again), the data file's version is the source's.
+            from .volume_source import field_data_file  # noqa: PLC0415
+            base = field_data_file(path)
+            path, hdu = str(canonical_path(base)) + str(path)[len(base):], raw.index
+        st = os.stat(raw.path if raw is not None else path)
         size, mtime = int(st.st_size), int(st.st_mtime_ns)
         if raw is not None:
             # A VBT's values are read as its .head says (type, byte order,
@@ -101,13 +109,13 @@ class SourceSignature:
             for sidecar in raw.sidecars:
                 side = os.stat(sidecar)
                 size, mtime = size + int(side.st_size), max(mtime, int(side.st_mtime_ns))
-        layout = raw.layout if raw is not None and raw.kind == "pluto" else ""
+        layout = raw.layout if raw is not None and raw.kind in ("pluto", "rawgrid") else ""
         if raw is None:
             layout = _fits_layout(path, hdu)
         # Keyed on the stored name: on a case-insensitive file system the
         # same file named in another case is the same pyramid (#325).
-        from .canonical_path import canonical_path  # noqa: PLC0415
-
+        if raw is not None and raw.kind == "rawgrid":
+            return cls(path, int(hdu), size, mtime, order, layout)
         return cls(str(canonical_path(path)), int(hdu), size, mtime, order, layout)
 
 
@@ -178,7 +186,9 @@ def default_pyramid_path(source: str | os.PathLike, hdu: int = 0) -> Path:
         from .dependencies import get_exports_dir  # noqa: PLC0415
         directory = get_exports_dir() / ".pyramids"
     key = hashlib.sha256(sig.key.encode()).hexdigest()[:16]
-    return directory / f"{Path(sig.path).stem}-{key}.pyr.h5"
+    from .volume_source import field_data_file  # noqa: PLC0415
+    # A reference's own text is no file name (a raw grid's): its data file's.
+    return directory / f"{Path(field_data_file(sig.path)).stem}-{key}.pyr.h5"
 
 
 # ── building ────────────────────────────────────────────────────────────────

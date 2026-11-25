@@ -266,7 +266,7 @@ do not match the grid, a 1-D run) is `pluto` / `unsupported` with the reason. A 
 (`<first file>::gadget-type=<N>`), with `open_path` the first type with
 particles and `components` all of them; one that cannot be read (a file
 missing, counts that do not add up) is `particles` / `unsupported` with the
-reason ([Gadget snapshots](../design/gadget-snapshots.md)). A gzip-compressed FITS is classified by what it holds
+reason ([Gadget snapshots](../design/gadget-snapshots.md)). A descriptor of the legacy VisIVO Importer (`rawPointsDesc`, `rawGridsDesc`, `flyDesc`, issue #551), recognised by its first word, or a bare `*.fly` file, is read in place (`app/raw_descriptor.py`): points are `particles` / `catalogue`, a grid `cube` or `image` / `dataset`, each with `open_path` the reference of the first listed file (`<descriptor>::raw-points=<k>`, `<descriptor>::raw-grid=<k>`); one that cannot be read (a size that does not match, a 1-D grid, a file not there) is `unsupported` with the reason. A bare FLY file whose type and byte order its size and values do not settle is `fly` / `ask` with `confident: false`, and the detail says to write a `flyDesc`. `/v1/files/classify` and `/v1/files/header` also take a reference; `/v1/datasets/open` takes a grid's descriptor or reference (its `byte_order` is refused: the descriptor declares it) and `/v1/catalogue/open` a points descriptor or reference (`format` in the answer is `rawpoints`). A gzip-compressed FITS is classified by what it holds
 (read through the start of the gzip stream) and a tile-compressed one like
 any FITS, the `detail` adding that it is decompressed into the workspace cache
 when opened; `compressed` / `unsupported` is a compressed file that holds no

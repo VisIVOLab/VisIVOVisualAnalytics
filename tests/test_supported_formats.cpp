@@ -47,7 +47,7 @@ void TestSupportedFormats::allSupportedIsTheUnionWithoutRepeats()
     const QStringList all = visivo::fileTypeSuffixes(FileType::AllSupported);
     for (const FileType type : { FileType::Fits, FileType::Catalogue, FileType::Vbt,
                                  FileType::Hdf5, FileType::DelimitedText, FileType::Pluto,
-                                 FileType::Gadget }) {
+                                 FileType::Gadget, FileType::RawDescriptor }) {
         for (const QString &suffix : visivo::fileTypeSuffixes(type))
             QVERIFY2(all.contains(suffix), qPrintable(suffix));
     }
@@ -55,6 +55,10 @@ void TestSupportedFormats::allSupportedIsTheUnionWithoutRepeats()
     QCOMPARE(all.count(u".fits"_s), 1);
     QCOMPARE(QSet<QString>(all.begin(), all.end()).size(), all.size());
     QVERIFY(visivo::fileTypeSuffixes(FileType::AllFiles).isEmpty());
+    // Legacy importer descriptors and FLY files (#551) are offered by name.
+    QVERIFY(visivo::fileTypeMatches(u"points.desc", FileType::RawDescriptor));
+    QVERIFY(visivo::fileTypeMatches(u"snap.fly", FileType::RawDescriptor));
+    QVERIFY(visivo::fileTypeMatches(u"grid.desc", FileType::AllSupported));
 }
 
 void TestSupportedFormats::multiPartSuffixesMatchWhole()
@@ -98,7 +102,7 @@ void TestSupportedFormats::dotfilesAreListedOnlyUnderAllFiles()
     // macOS resource forks keep the name they shadow.
     for (const FileType type : { FileType::AllSupported, FileType::Fits, FileType::Catalogue,
                                  FileType::Vbt, FileType::Hdf5, FileType::DelimitedText, FileType::Pluto,
-                                 FileType::Gadget }) {
+                                 FileType::Gadget, FileType::RawDescriptor }) {
         QVERIFY(!visivo::fileTypeMatches(u"._m31.fits", type));
         QVERIFY(!visivo::fileTypeMatches(u".snap_010", type));
         QVERIFY(!visivo::fileTypeMatches(u".DS_Store", type));

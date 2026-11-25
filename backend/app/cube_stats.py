@@ -185,10 +185,10 @@ def _byte_reader(path: str, hdu_index: int) -> _Reader | None:
     from astropy.io import fits  # noqa: PLC0415
 
     from .compute.moment import _FITS_RAW_DTYPES, _pread_into  # noqa: PLC0415
-    from .volume_source import field_data_file, is_field_ref, raw_field  # noqa: PLC0415
+    from .volume_source import field_file, is_field_ref, raw_field  # noqa: PLC0415
 
     field = raw_field(path) if is_field_ref(path) else None
-    fh = open(field_data_file(path), "rb", buffering=0)  # noqa: SIM115 - closed by the reader
+    fh = open(field_file(path), "rb", buffering=0)  # noqa: SIM115 - closed by the reader
     handles: list = [fh]
 
     def close() -> None:
@@ -230,7 +230,7 @@ def _byte_reader(path: str, hdu_index: int) -> _Reader | None:
         offset = int(hdu._data_offset)
         if compression:
             # Offsets are of the decompressed stream (astropy's).
-            stream = importlib.import_module(_STREAMS[compression]).open(field_data_file(path), "rb")
+            stream = importlib.import_module(_STREAMS[compression]).open(field_file(path), "rb")
             handles.append(stream)
             fill = _seek_fill(stream)
         elif offset + int(np.prod(shape)) * dtype.itemsize > size:
