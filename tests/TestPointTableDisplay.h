@@ -27,4 +27,12 @@ private slots:
     void aConstantColumnHasOneValueNotAMadeUpRange();
     void aColumnThatVariesKeepsItsRange();
     void aConstantBarIsOneValueAndItsOwnColour();
+    void autoDrawsOnARemoteBackendWhileRowsAreMissing();
+    void autoAndRemoteNeverLeaveTheLocalBackend();
+    void localIsNeverRemoteWhateverTheRows();
+    void remoteSaysWhyWhenTheBackendCannotDrawIt();
+    void theLimitFollowsTheCellBudgetAndTheColumns();
+    void loadAllRowsIsOfferedOnlyForMissingRowsThatFit();
+    void theConfirmationSaysRowsAndAboutHowMuchMemory();
+    void theBadgeNamesWhereAndHowManyRows();
 };

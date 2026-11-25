@@ -176,3 +176,93 @@ void TestPointTableDisplay::aConstantBarIsOneValueAndItsOwnColour()
     QVERIFY(reported.constant.has_value());
     QVERIFY(reported.hi < 1e-6);
 }
+
+namespace {
+RenderFacts facts(RenderChoice choice, bool backendRenders, bool isLocal, qint64 rows,
+                  qint64 loaded)
+{
+    RenderFacts f;
+    f.choice = choice;
+    f.backendRenders = backendRenders;
+    f.backendIsLocal = isLocal;
+    f.tableRows = rows;
+    f.loadedRows = loaded;
+    return f;
+}
+}   // namespace
+
+void TestPointTableDisplay::autoDrawsOnARemoteBackendWhileRowsAreMissing()
+{
+    QVERIFY(planRender(facts(RenderChoice::Auto, true, false, 2097152, 75000)).remote);
+    // Every row loaded: nothing the backend would add.
+    QVERIFY(!planRender(facts(RenderChoice::Auto, true, false, 75000, 75000)).remote);
+    // A backend that cannot draw them.
+    QVERIFY(!planRender(facts(RenderChoice::Auto, false, false, 2097152, 75000)).remote);
+    QVERIFY(planRender(facts(RenderChoice::Remote, true, false, 1000, 1000)).remote);
+}
+
+void TestPointTableDisplay::autoAndRemoteNeverLeaveTheLocalBackend()
+{
+    for (const RenderChoice choice : { RenderChoice::Auto, RenderChoice::Remote })
+        QVERIFY(!planRender(facts(choice, true, true, 2097152, 75000)).remote);
+}
+
+void TestPointTableDisplay::localIsNeverRemoteWhateverTheRows()
+{
+    // The RAMSES table of #570: Local only chooses where it is drawn.
+    for (const bool isLocal : { false, true }) {
+        const RenderPlan plan =
+                planRender(facts(RenderChoice::Local, true, isLocal, 2097152, 75000));
+        QVERIFY(!plan.remote);
+        QVERIFY(plan.note.isEmpty());
+    }
+}
+
+void TestPointTableDisplay::remoteSaysWhyWhenTheBackendCannotDrawIt()
+{
+    QVERIFY(planRender(facts(RenderChoice::Remote, false, false, 10, 10)).note.contains(u"EGL"_s));
+    QVERIFY(planRender(facts(RenderChoice::Remote, true, true, 10, 10))
+                    .note.contains(u"local backend"_s));
+}
+
+void TestPointTableDisplay::theLimitFollowsTheCellBudgetAndTheColumns()
+{
+    QCOMPARE(localRowLimit(12), qint64(4166666));
+    QCOMPARE(localRowLimit(0), kLocalCellBudget);   // never divides by zero
+    QVERIFY(fitsLocally(4166666, 12));
+    QVERIFY(!fitsLocally(4166667, 12));
+    QVERIFY(!fitsLocally(20000000, 12));
+    QVERIFY(tooManyRowsTip(12).contains(u"limit ≈4M"_s));
+    QVERIFY(tooManyRowsTip(12).contains(u"Remote rendering draws all rows"_s));
+    QVERIFY(tooManyRowsTip(500).contains(u"≈100k"_s));
+}
+
+void TestPointTableDisplay::loadAllRowsIsOfferedOnlyForMissingRowsThatFit()
+{
+    // The window's rule, in its pieces: something to load, and it fits.
+    const auto offered = [](qint64 loaded, qint64 total, qint64 columns) {
+        return loaded < total && fitsLocally(total, columns);
+    };
+    QVERIFY(offered(75000, 2097152, 12));
+    QVERIFY(!offered(2097152, 2097152, 12));   // all there already
+    QVERIFY(!offered(75000, 100000000, 12));   // too many: Remote draws them
+}
+
+void TestPointTableDisplay::theConfirmationSaysRowsAndAboutHowMuchMemory()
+{
+    QLocale::setDefault(QLocale::English);
+    QCOMPARE(loadAllQuestion(2097152, 12),
+             u"Load all 2,097,152 rows into this window? About 7.4 GB of memory, more while "
+             u"loading."_s);
+    QVERIFY(loadAllQuestion(50000, 12).contains(u"About 176 MB"_s));
+}
+
+void TestPointTableDisplay::theBadgeNamesWhereAndHowManyRows()
+{
+    QLocale::setDefault(QLocale::English);
+    QCOMPARE(renderBadgeText(false, 75000, 2097152),
+             u"Local · sample 75,000 of 2,097,152 rows"_s);
+    QCOMPARE(renderBadgeText(false, 2097152, 2097152), u"Local · all 2,097,152 rows"_s);
+    QCOMPARE(renderBadgeText(true, 75000, 2097152), u"Remote · all 2,097,152 rows"_s);
+    QVERIFY(sampleBadgeTip().contains(u"Load all rows here"_s));
+}

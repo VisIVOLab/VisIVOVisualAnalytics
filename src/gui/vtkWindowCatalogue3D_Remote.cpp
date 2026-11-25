@@ -98,11 +98,14 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
         a->setCheckable(true);
         a->setToolTip(tip);
         group->addAction(a);
+        // A choice of the user's: it says why when it is not followed.
         QObject::connect(a, &QAction::triggered, this,
-                         [this, mode]() { this->applyRenderMode(mode); });
+                         [this, mode]() { this->applyRenderMode(mode, true); });
         return a;
     };
-    add(u"Auto"_s, u"On the backend when the table has more rows than this window loaded"_s,
+    add(u"Auto"_s,
+        u"On a remote backend when the table has more rows than this window loaded, "
+        u"else here"_s,
         RenderMode::Auto)
             ->setChecked(true);
     add(u"Local (CPU/GPU on this machine)"_s, u"The rows loaded in this window, drawn here"_s,
@@ -110,6 +113,12 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     this->m_actRenderRemote = add(u"Remote (GPU on backend)"_s,
                                   u"Every row, drawn on the backend and streamed"_s,
                                   RenderMode::Remote);
+    // Loading rows is a step of its own: the modes above only choose where
+    // the rows are drawn.
+    menu->addSeparator();
+    this->m_actLoadAllRows = menu->addAction(u"Load all rows here\u2026"_s);
+    QObject::connect(this->m_actLoadAllRows, &QAction::triggered, this,
+                     [this]() { this->loadAllEntries(/*askAlways=*/true); });
     menu->setToolTipsVisible(true);
     ui->menuView->insertMenu(ui->menuView->actions().value(2), menu);
 
@@ -125,20 +134,33 @@ int vtkWindowCatalogue3D::rowsToShow() const
     return this->m_totalCount >= 0 ? this->m_totalCount : this->m_tableRows;
 }
 
-bool vtkWindowCatalogue3D::wantsRemote() const
+visivo::pointtable::RenderPlan vtkWindowCatalogue3D::renderPlan() const
 {
-    // Never with the local backend: it draws here; never mixed.
-    if (!this->m_serverSideRendering || visivo::backendIsLocal(this->backendUrl))
-        return false;
-    if (this->m_renderMode == RenderMode::Remote)
-        return true;
-    // Auto: the table (with the filters applied) holds more rows than this
-    // window loaded.
-    return this->m_renderMode == RenderMode::Auto
-            && this->rowsToShow() > static_cast<int>(this->entries.size());
+    using visivo::pointtable::RenderChoice;
+    visivo::pointtable::RenderFacts facts;
+    facts.choice = this->m_renderMode == RenderMode::Local    ? RenderChoice::Local
+            : this->m_renderMode == RenderMode::Remote        ? RenderChoice::Remote
+                                                              : RenderChoice::Auto;
+    facts.backendRenders = this->m_serverSideRendering;
+    facts.backendIsLocal = visivo::backendIsLocal(this->backendUrl);
+    facts.tableRows = this->rowsToShow();
+    facts.loadedRows = this->loadedRowCount();
+    return visivo::pointtable::planRender(facts);
 }
 
-void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
+qint64 vtkWindowCatalogue3D::loadedRowCount() const
+{
+    // Rows without usable coordinates were loaded too: they count, or a table
+    // with some stays "partial" after Load all.
+    return static_cast<qint64>(this->entries.size() + this->unplacedEntries.size());
+}
+
+bool vtkWindowCatalogue3D::wantsRemote() const
+{
+    return this->renderPlan().remote;
+}
+
+void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode, bool chosen)
 {
     this->m_renderMode = mode;
     if (this->m_actRenderRemote) {
@@ -151,7 +173,13 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
                             ? u"Only on a backend that renders server-side (EGL)"_s
                             : u"The local backend: the points are drawn on this machine"_s);
     }
-    if (!this->wantsRemote()) {
+    const visivo::pointtable::RenderPlan plan = this->renderPlan();
+    this->m_renderNote = plan.note;
+    // A choice that is not followed says why, where the user looks; the badge
+    // keeps the reason for as long as it holds.
+    if (chosen && !plan.note.isEmpty())
+        this->statusBar()->showMessage(plan.note, 10000);
+    if (!plan.remote) {
         if (RemotePointView *view = this->m_remoteView) {
             this->m_remoteView = nullptr;
             const bool wasWaiting = !view->isActive();
@@ -277,16 +305,32 @@ void vtkWindowCatalogue3D::updateRenderBadge()
     // The comparison card says what camera linking does while the view is
     // drawn on the backend; it follows every change of where it is drawn.
     this->updateComparisonUi();
+    const qint64 loaded = this->loadedRowCount();
+    const qint64 total = this->rowsToShow();
+    // Load all rows here: only for rows still on the backend, and few enough.
+    if (this->m_actLoadAllRows) {
+        const bool more = loaded < total;
+        const bool fits = this->canLoadAllLocally();
+        this->m_actLoadAllRows->setEnabled(more && fits);
+        this->m_actLoadAllRows->setToolTip(
+                !more ? u"Every row is already loaded in this window."_s
+                      : !fits ? visivo::pointtable::tooManyRowsTip(this->schema.headers.size())
+                              : u"Load every row of the table into this window (no paging)."_s);
+    }
     if (!this->m_renderBadge)
         return;
-    if (!this->m_serverSideRendering) {
-        this->m_renderBadge->hide();
-        return;
-    }
+    // Always says what is drawn, on a backend that cannot draw too: a sample,
+    // or all the rows once they are loaded here.
     const bool remote = this->m_remoteView && this->m_remoteView->isActive();
-    this->m_renderBadge->setText(
-            remote ? u"Remote · all %L1 rows"_s.arg(this->rowsToShow())
-                   : u"Local · %L1 of %L2 rows"_s.arg(this->entries.size()).arg(this->rowsToShow()));
+    this->m_renderBadge->setText(visivo::pointtable::renderBadgeText(remote, loaded, total));
+    // The sample's explanation, and why a chosen mode is not followed when it
+    // is not: both, not one hiding the other.
+    QStringList tip;
+    if (!remote && loaded < total)
+        tip << visivo::pointtable::sampleBadgeTip();
+    if (!this->m_renderNote.isEmpty())
+        tip << this->m_renderNote;
+    this->m_renderBadge->setToolTip(tip.join(u"\n\n"_s));
     this->m_renderBadge->show();
 }
 

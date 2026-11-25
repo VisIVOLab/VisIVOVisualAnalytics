@@ -11,6 +11,7 @@
 #include "app/BackendClient.h"
 #include "app/SampProtocol.h"
 #include "app/CosmologyModel.h"
+#include "app/PointTableDisplay.h"
 #include "app/VrLink.h"
 
 #include <vtkNew.h>
@@ -771,7 +772,10 @@ private:
     QPointer<QLabel> m_loadMessage;
     QFutureWatcher<Catalogue3DFilterTaskResult> m_loadMoreWatcher;
     void loadMoreEntries();
-    void loadAllEntries();   // load every remaining row in one query (no paging)
+    /// Load every remaining row in one query (no paging). ``askAlways``: the
+    /// View-menu item confirms with the memory estimate whatever the size; the
+    /// Load all button only above 500 000 rows.
+    void loadAllEntries(bool askAlways = false);
     // ── Session-expiry auto-recovery ──────────────────────────────────────────
     QFutureWatcher<BackendCatalogueInfo> m_reopenWatcher;
     void autoReopenThenLoadMore();
@@ -878,10 +882,15 @@ private:
     QPointer<RemoteRenderWidget> m_remoteWidget;
     QPointer<RemotePointView> m_remoteView;
     QPointer<QAction> m_actRenderRemote;
+    QPointer<QAction> m_actLoadAllRows;   ///< View > Rendering > Load all rows here...
     QPointer<QLabel> m_renderBadge;
     void setupRemoteRendering();
     bool wantsRemote() const;
+    /// What the chosen mode does for this table now (PointTableDisplay.h).
+    visivo::pointtable::RenderPlan renderPlan() const;
+    QString m_renderNote;   ///< why the mode chosen is not the one drawn, or ""
     int rowsToShow() const;
+    qint64 loadedRowCount() const;   ///< rows held here, placed or not
 
     // ── A table of points (issue #83): a VBT, cartesian ──────────────────────
     // The same window as a catalogue, without what only a sky catalogue has:
@@ -938,7 +947,8 @@ private:
     /// Save View As… (#528): the particle view as PNG, PDF or SVG.
     void saveViewAs3d();
     void showLutEditor();
-    void applyRenderMode(RenderMode mode);
+    /// @p chosen: from View > Rendering (a refusal says why), not a reload of the rows.
+    void applyRenderMode(RenderMode mode, bool chosen = false);
     void updateRenderBadge();
     /// The view's state as commands for the backend (sent when changed).
     void pushRemoteState();

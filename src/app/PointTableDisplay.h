@@ -12,7 +12,9 @@
 // stored in, as the backend's `component.units` says it. No widgets, no VTK:
 // tests/test_point_table_display.cpp.
 
+#include <QLocale>
 #include <QString>
+#include <QtGlobal>
 #include <QStringList>
 
 #include <algorithm>
@@ -160,6 +162,132 @@ inline double fractionAlong(double value, double lo, double hi, bool log)
             ? std::log(value / lo) / std::log(hi / lo)
             : (value - lo) / (hi - lo);
     return std::clamp(f, 0.0, 1.0);
+}
+
+// ── Where the points are drawn (issue #570) ──────────────────────────────────
+// The rendering mode chooses where the points are drawn and never moves data:
+// loading rows is a step of its own (View ▸ Rendering ▸ Load all rows here…).
+
+/// View ▸ Rendering.
+enum class RenderChoice { Auto, Local, Remote };
+
+struct RenderFacts
+{
+    RenderChoice choice{ RenderChoice::Auto };
+    bool backendRenders{ false };     ///< the open said it can draw points server-side
+    bool backendIsLocal{ false };     ///< this machine's own backend: its GPU is this one
+    qint64 tableRows{ 0 };            ///< rows of the table, filters applied
+    qint64 loadedRows{ 0 };           ///< rows this window holds
+};
+
+struct RenderPlan
+{
+    bool remote{ false };             ///< streamed from the backend
+    QString note;                     ///< why the choice was not followed, "" when it was
+};
+
+/// Auto streams from a remote backend that renders while the window holds
+/// fewer rows than the table; Local never does; Remote always does when it
+/// can. This machine's own backend is drawn here, never mixed.
+inline RenderPlan planRender(const RenderFacts &f)
+{
+    RenderPlan plan;
+    const bool canRemote = f.backendRenders && !f.backendIsLocal;
+    switch (f.choice) {
+    case RenderChoice::Remote:
+        plan.remote = canRemote;
+        if (!canRemote)
+            plan.note = !f.backendRenders
+                    ? QStringLiteral("Only a backend that renders server-side (EGL) can draw "
+                                     "the points: showing the loaded rows.")
+                    : QStringLiteral("This is the local backend: its points are drawn on this "
+                                     "machine.");
+        break;
+    case RenderChoice::Auto:
+        plan.remote = canRemote && f.tableRows > f.loadedRows;
+        break;
+    case RenderChoice::Local:
+        break;
+    }
+    return plan;
+}
+
+/// A full local copy, in cells (rows x columns): fifty million values are a
+/// sizeable desktop allocation, and still allow the 2.3 M x 9 catalogue of the
+/// progressive-loading workflow.
+constexpr qint64 kLocalCellBudget = 50000000;
+
+/// The most rows a table of @p columns columns may have to be loaded whole.
+inline qint64 localRowLimit(qint64 columns)
+{
+    return kLocalCellBudget / std::max<qint64>(1, columns);
+}
+
+inline bool fitsLocally(qint64 rows, qint64 columns)
+{
+    return rows <= localRowLimit(columns);
+}
+
+/// What a row costs here, measured: loading all 2,097,152 rows of an 11-column
+/// RAMSES table raised the app's memory by 4.3 GB in one run and 6.9 GB in
+/// another (2026-11-25), up to about 3.3 KB a row: each value costs far more
+/// than its QVariant once parsed, kept for the table and drawn. The larger
+/// figure, so the question does not promise less than it takes: about 150
+/// bytes a row and 280 a column.
+inline double estimatedBytes(qint64 rows, qint64 columns)
+{
+    return static_cast<double>(rows) * (150.0 + 280.0 * static_cast<double>(columns));
+}
+
+/// A row count with thousands separators, the English UI's: "%L1" follows the
+/// application's default locale, which may be C (no separators).
+inline QString groupedCount(qint64 n)
+{
+    return QLocale(QLocale::English, QLocale::UnitedStates).toString(n);
+}
+
+inline QString memoryText(double bytes)
+{
+    return bytes >= 1.0e9
+            ? QStringLiteral("%1 GB").arg(bytes / 1.0e9, 0, 'f', 1)
+            : QStringLiteral("%1 MB").arg(std::max(1.0, std::round(bytes / 1.0e6)), 0, 'f', 0);
+}
+
+inline QString loadAllQuestion(qint64 rows, qint64 columns)
+{
+    return QStringLiteral("Load all %1 rows into this window? About %2 of memory, more while "
+                          "loading.")
+            .arg(groupedCount(rows), memoryText(estimatedBytes(rows, columns)));
+}
+
+/// The tooltip of "Load all rows here…" when the table is above the limit.
+inline QString tooManyRowsTip(qint64 columns)
+{
+    const qint64 limit = localRowLimit(columns);
+    const QString text = limit >= 1000000
+            ? QStringLiteral("%1M").arg(std::llround(static_cast<double>(limit) / 1.0e6))
+            : QStringLiteral("%1k").arg(std::max<qint64>(1, std::llround(limit / 1000.0)));
+    return QStringLiteral("Too many rows to draw here (limit ≈%1); Remote rendering draws "
+                          "all rows.")
+            .arg(text);
+}
+
+/// The status-bar badge: where the points are drawn and how many of the rows.
+inline QString renderBadgeText(bool remote, qint64 loaded, qint64 total)
+{
+    if (remote)
+        return QStringLiteral("Remote · all %1 rows").arg(groupedCount(total));
+    return loaded >= total
+            ? QStringLiteral("Local · all %1 rows").arg(groupedCount(total))
+            : QStringLiteral("Local · sample %1 of %2 rows")
+                      .arg(groupedCount(loaded), groupedCount(total));
+}
+
+inline QString sampleBadgeTip()
+{
+    return QStringLiteral("Drawn on this computer from a random sample of the table. Use View "
+                          "▸ Rendering ▸ Load all rows here… or Remote rendering "
+                          "to see every row.");
 }
 
 }   // namespace visivo::pointtable
