@@ -456,6 +456,14 @@ def _checked(path: str | Path, want: str, allowed) -> str | None:
     kind = sniff(base)
     if kind is None or (kind in ("rawpoints", "fly", "bare-fly")) != (want == "points"):
         return None
+    if allowed is not None:
+        # Before open_file stats the data file: a refused file's size or
+        # existence must not show in an error.
+        entries = descriptor(base).entries
+        i = 0 if k is None else int(k)
+        if 0 <= i < len(entries) and not allowed(entries[i][1]):
+            raise PermissionError(f"{Path(entries[i][1]).name}, a file of this descriptor, "
+                                  "lies outside the folders this backend may read.")
     rf = open_file(base, k, want)
     if allowed is not None and not allowed(rf.path):
         raise PermissionError(f"{Path(rf.path).name}, a file of this descriptor, lies "

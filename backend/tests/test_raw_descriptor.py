@@ -6,6 +6,7 @@ flysource.cpp): the values read back are the values written."""
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 import zlib
 
 import numpy as np
@@ -167,6 +168,23 @@ def test_a_file_outside_the_allowed_roots_is_refused(tmp_path):
     with pytest.raises(PermissionError):
         particle_dataset_path(desc, allowed=lambda p: False)
     assert particle_dataset_path(desc, allowed=lambda p: True) is not None
+
+
+def test_a_refused_file_is_not_stat_ed(tmp_path):
+    # A descriptor listing a file outside the roots: the refusal must come
+    # before the size check, so its message says nothing about that file.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_bytes(b"x" * 213)
+    inside = tmp_path / "inside"
+    inside.mkdir()
+    desc, _ = write_rawpoints(inside, ["a"], "little")
+    lines = desc.read_text().splitlines()
+    lines[-1] = lines[-1].rsplit(None, 1)[0] + " ../outside/secret"
+    desc.write_text("\n".join(lines) + "\n")
+    with pytest.raises(PermissionError) as err:
+        particle_dataset_path(desc, allowed=lambda p: str(inside) in str(Path(p).resolve()))
+    assert "213" not in str(err.value) and "bytes" not in str(err.value)
 
 
 def test_remote_files_are_not_fetched(tmp_path):
