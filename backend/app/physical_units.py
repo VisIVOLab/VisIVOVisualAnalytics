@@ -43,6 +43,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from .vbt_byte_order_store import _exclusive, _write
@@ -210,6 +211,51 @@ def _load() -> dict:
     with _LOCK:
         _cache = (stamp, entries)
     return entries
+
+
+@lru_cache(maxsize=64)
+def _card(path: str, _size: int, _mtime_ns: int, key: str) -> str | None:
+    from astropy.io import fits  # noqa: PLC0415
+    try:
+        value = fits.getheader(path).get(key)
+    except (OSError, ValueError):
+        return None
+    return str(value) if value else None
+
+
+def view_card(path: str | os.PathLike, suffix: str, key: str) -> str | None:
+    """The header card ``key`` of a cube the app resampled from a simulation (a
+    FITS file named ``...suffix``); None for any other file or a missing card.
+    The one reader every producer's views use to name their source, cached on
+    the file's size and time."""
+    if not str(path).endswith(suffix):
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return _card(str(path), st.st_size, st.st_mtime_ns, key)
+
+
+#: Producers whose views state their own columns: a module with
+#: ``view_source(path) -> ref | None`` (the run a view was made from) and
+#: ``view_scales(path, ref) -> table`` (its columns' factors). A further
+#: producer's views (issue #554) are one more name here. PLUTO views are not
+#: among them: they are shown in the run's code units through its
+#: ``definitions.h`` (:func:`pluto_ref_of`).
+VIEW_PRODUCERS = ("amr_source",)
+
+
+def view_scales(path: str | os.PathLike) -> dict[str, ColumnScale] | None:
+    """The columns of a view whose producer states them (see
+    :data:`VIEW_PRODUCERS`); None when ``path`` is not such a view."""
+    import importlib  # noqa: PLC0415
+    for name in VIEW_PRODUCERS:
+        producer = importlib.import_module(f"{__package__}.{name}")
+        ref = producer.view_source(path)
+        if ref is not None:
+            return producer.view_scales(path, ref)
+    return None
 
 
 def pluto_ref_of(path: str | os.PathLike) -> str:
@@ -439,7 +485,9 @@ def scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
     unit system (``Component.physical()``), a RAMSES family or output
     directory from the ``unit_l``, ``unit_d`` and ``unit_t`` of its info file
     (``RamsesOutput.unit_table``), a PLUTO or VBT volume from the run's code
-    units; what the user typed replaces any of them."""
+    units, and a view the app resampled from a run (an AMR uniform cube) from
+    that run's own table (:data:`VIEW_PRODUCERS`); what the user typed replaces
+    any of them."""
     if _ramses_split(path)[1] is not None:
         from . import ramses_output  # noqa: PLC0415
         return ramses_output.resolve(path).physical()
@@ -452,7 +500,8 @@ def scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
     if _gadget_split(path)[1] is not None:
         from . import gadget_snapshot  # noqa: PLC0415
         return gadget_snapshot.resolve(path).physical()
-    return with_typed(path, _volume_scales(path))
+    view = view_scales(path)
+    return with_typed(path, _volume_scales(path) if view is None else view)
 
 
 def column_scale(path: str | os.PathLike, column: str) -> ColumnScale | None:

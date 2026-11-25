@@ -381,6 +381,13 @@ void MainWindow::buildDataMenu()
     QObject::connect(actPlutoCartesian, &QAction::triggered, this,
                      &MainWindow::openPlutoCartesianView);
 
+    auto *actAmrUniform = dataMenu->addAction(u"Uniform Cube of an AMR Output…"_s);
+    actAmrUniform->setToolTip(
+            u"Resample one field of an adaptive-mesh output (RAMSES) onto a uniform grid at a "
+            u"chosen refinement level, over the box or a region of it, on the backend, and "
+            u"open it like any other volume."_s);
+    QObject::connect(actAmrUniform, &QAction::triggered, this, &MainWindow::openAmrUniformView);
+
     dataMenu->addSeparator();
 
     // The archive services: they fetch a file rather than open one, which is

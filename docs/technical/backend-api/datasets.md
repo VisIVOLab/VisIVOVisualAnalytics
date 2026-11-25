@@ -307,7 +307,8 @@ Open a catalogue file on the backend.
 `gadget` or `ramses`. A RAMSES output (issue #549) is recognised the same way:
 its `output_NNNNN` folder, any file in it (`info_*.txt`, `amr_*.out*`,
 `part_*.out*`) or a family reference `<output folder>::ramses-family=<slug>`
-(`dm`, `stars`, `sinks`, ...) opens that particle family (dark matter first)
+(`dm`, `stars`, `sinks`, ..., and `cells`: the leaf cells of the mesh, issue
+#550) opens that particle family (dark matter first)
 as a table of particles, response `format: "ramses"`
 ([RAMSES outputs](../design/ramses-outputs.md)). A Gadget snapshot (issue #31) is recognised by its content whatever
 format is asked for: a file of it, its `snapdir` folder, or a particle-type

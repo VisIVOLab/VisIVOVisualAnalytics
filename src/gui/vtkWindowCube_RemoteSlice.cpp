@@ -513,6 +513,7 @@ void vtkWindowCube::applyRemoteSliceResult(const RemoteCubeSliceResult &result)
     // letterbox cannot run (issue #358).
     this->refitSliceCamera();
     this->layout2dPaneFor(/*slice=*/true, true);   // gutter-aware letterbox supersedes the plain refit
+    this->scheduleAmrBlocks();   // the mesh's cells in the new plane (AMR cubes, when shown)
     if (this->probeModeActive && this->probeValid) {
         this->refreshProbeOverlay();
         this->updateProbeReadout(result.imageData);

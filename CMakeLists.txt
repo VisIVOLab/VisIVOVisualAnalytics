@@ -654,6 +654,7 @@ set(PROJECT_SOURCES
         src/gui/RegionFrameText.h
         src/gui/RegionListOverlay.cpp
         src/gui/SkyCursorOverlay.cpp
+        src/gui/AmrBlockOverlay.cpp
         src/gui/LinkedDatasetSky.cpp
         src/gui/RegionListOverlay.h
         src/gui/RegionListExport.cpp
@@ -698,6 +699,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_Samp.cpp
         src/gui/vtkWindowCube_RemoteSlice.cpp
         src/gui/vtkWindowCube_Simulation.cpp
+        src/gui/vtkWindowCube_Amr.cpp
         src/gui/vtkWindowCube_Probe.cpp
         src/gui/vtkWindowCube_Polarisation.cpp
         src/gui/vtkWindowCube_Lte.cpp
@@ -735,6 +737,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowImage_Catalogue.cpp
         src/gui/ArepoExtractDialog.cpp
         src/gui/PlutoCartesianDialog.cpp
+        src/gui/AmrUniformDialog.cpp
         src/gui/FilterFitsDialog.cpp
         src/gui/LayerCardDelegate.cpp
         src/gui/LayerCardDelegate.h
@@ -752,12 +755,14 @@ set(PROJECT_SOURCES
         src/gui/McutoutJobDialog.h
         src/gui/ArepoExtractDialog.h
         src/gui/PlutoCartesianDialog.h
+        src/gui/AmrUniformDialog.h
         src/gui/DatasetBeamControl.cpp
         src/gui/DatasetBeamControl.h
         src/gui/PhysicalUnitsControl.cpp
         src/gui/PhysicalUnitsControl.h
         src/app/SimulationVolume.h
         src/app/PlutoCartesianView.h
+        src/app/AmrView.h
         src/app/ByteSize.h
         src/app/PhysicalUnits.h
         src/app/FontSize.h

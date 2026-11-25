@@ -3467,6 +3467,7 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
     // A simulation's grid (axes X, Y, Z) is sliced along any axis and shown in
     // coordinates, not channels (issue #524).
     this->m_simulationVolume = this->detectSimulationVolume();
+    this->detectAmrCube();      // an AMR cube gets the mesh's blocks and Refine Box
     this->refreshAxisUnits();   // the file's own axes until the backend's units arrive
     // Backend-authoritative: statistics fields show "-" until populated.
     ui->lineCubeMin->clear();
@@ -5443,6 +5444,59 @@ void vtkWindowCube::showRefineBoxDialog()
     dlg->onAction([self, dlg]() {
         if (self)
             self->refineBox(dlg->bounds());
+    });
+    dlg->show();
+    dlg->raise();
+    dlg->activateWindow();
+}
+
+void vtkWindowCube::refineAmrBox()
+{
+    // The box to refine (issue #550): a drawn region's bounding box on the sky,
+    // else the middle half; along the third axis the middle half. The amber box
+    // shows it in the volume while it is edited, as for the other box tools.
+    if (!m_amr)
+        return;
+    if (m_refineAmrDialog) {
+        m_refineAmrDialog->show();
+        m_refineAmrDialog->raise();
+        m_refineAmrDialog->activateWindow();
+        return;
+    }
+    const auto middleHalf = [](int n) {
+        return std::array<int, 2>{ std::max(0, n / 4), std::max(0, (3 * n) / 4 - 1) };
+    };
+    const auto mx = middleHalf(this->remoteDatasetWidth);
+    const auto my = middleHalf(this->remoteDatasetHeight);
+    const auto mz = middleHalf(this->remoteDatasetDepth);
+    int defX0 = mx[0], defX1 = mx[1], defY0 = my[0], defY1 = my[1];
+    // The drawn region is in the slice's own pixels: x and y only for a z slice.
+    if (const auto box = this->selectedRegionPixelBox(); box && this->sliceAlongZ()) {
+        defX0 = (*box)[0];
+        defX1 = (*box)[1];
+        defY0 = (*box)[2];
+        defY1 = (*box)[3];
+    }
+    auto *dlg = new CubeBoxToolDialog(
+            this, u"Refine a Box of the AMR Mesh"_s,
+            u"Resample this box from the AMR output at the finest level the mesh holds inside it "
+            u"(the plan, with the level and the memory, is shown before anything runs). The "
+            u"result opens in a new window; this one stays as it is, so the two can be compared."_s,
+            u"Refine"_s,
+            this->remoteDatasetWidth, this->remoteDatasetHeight, this->remoteDatasetDepth,
+            defX0, defX1, defY0, defY1, mz[0], mz[1],
+            QString(), nullptr, /*zIsChannels=*/false);
+    m_refineAmrDialog = dlg;
+    previewBoxWhileEditing(this, dlg);
+    QPointer<vtkWindowCube> self(this);
+    QPointer<CubeBoxToolDialog> dlgPtr(dlg);
+    dlg->onAction([self, dlgPtr]() {
+        if (!self || !dlgPtr)
+            return;
+        self->runAmrRefine(dlgPtr->bounds(), dlgPtr.data(), [dlgPtr](bool busy) {
+            if (dlgPtr)
+                dlgPtr->setBusy(busy);
+        });
     });
     dlg->show();
     dlg->raise();
@@ -13743,6 +13797,7 @@ void vtkWindowCube::setupInspector()
             });
     this->refreshUnitAndBeamRows();
     this->addSimulationInspectorRows(panel);
+    this->addAmrInspectorRows(panel);
 
     // Flatten a re-hosted stat widget so it reads as a value, not an input box.
     const QString statCss =

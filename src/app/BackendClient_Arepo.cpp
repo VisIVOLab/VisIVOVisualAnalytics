@@ -270,6 +270,78 @@ visivo::plutoview::Result BackendClient::extractPlutoCartesian(const QString &pa
     return result;
 }
 
+// ── AMR outputs: a uniform cube, the level map of a slice (#550) ──────────────
+
+visivo::amrview::Plan BackendClient::planAmrUniform(const QString &path, const QString &field,
+                                                    int level,
+                                                    const visivo::amrview::Region &region,
+                                                    qint64 maxVoxels) const
+{
+    namespace av = visivo::amrview;
+    av::Plan plan;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/simulations/amr/plan")),
+            QJsonDocument(av::requestBody(path, field, level, region, maxVoxels)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        plan.error = describeFailure(payload, transportError,
+                                     QStringLiteral("Could not plan the uniform cube."));
+        return plan;
+    }
+    plan = av::parsePlan(object);
+    if (!plan.valid)
+        plan.error = QStringLiteral("The backend sent no grid.");
+    return plan;
+}
+
+visivo::amrview::Result BackendClient::extractAmrUniform(
+        const QString &path, const QString &field, int level,
+        const visivo::amrview::Region &region, qint64 maxVoxels) const
+{
+    namespace av = visivo::amrview;
+    av::Result result;
+    QString transportError;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/simulations/amr/uniform")),
+            QJsonDocument(av::requestBody(path, field, level, region, maxVoxels)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        result.error = describeFailure(payload, transportError,
+                                       QStringLiteral("The uniform cube could not be made."));
+        return result;
+    }
+    result.plan = av::parsePlan(object);
+    result.outputs = av::parseCubes(object);
+    const QJsonValue finest = object.value(QStringLiteral("finest_level"));
+    result.finestLevel = finest.isDouble() ? finest.toInt() : -1;
+    result.valid = !result.outputs.isEmpty();
+    if (!result.valid)
+        result.error = QStringLiteral("The backend produced no cube.");
+    return result;
+}
+
+visivo::amrview::LevelMap BackendClient::amrLevelMap(const QString &path, const QString &axis,
+                                                     double coordinate, int maxRects) const
+{
+    namespace av = visivo::amrview;
+    av::LevelMap map;
+    QString transportError;
+    const QByteArray payload = performPost(
+            QUrl(m_baseUrl + QStringLiteral("/v1/simulations/amr/level-map")),
+            QJsonDocument(av::levelMapBody(path, axis, coordinate, maxRects)), transportError);
+    const QJsonObject object = QJsonDocument::fromJson(payload).object();
+    if (!transportError.isEmpty() || !object.value(QStringLiteral("valid")).toBool()) {
+        map.error = describeFailure(payload, transportError,
+                                    QStringLiteral("Could not read the refinement levels."));
+        return map;
+    }
+    map = av::parseLevelMap(object);
+    if (!map.valid)
+        map.error = QStringLiteral("The plane cuts no cell.");
+    return map;
+}
+
 // ── VLKB multi-cutout ─────────────────────────────────────────────────────────
 //
 // The archive's asynchronous batch API: submit a list of datasets as one job,

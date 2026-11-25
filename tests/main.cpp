@@ -20,6 +20,7 @@
 #include "TestSimulationVolume.h"
 #include "TestDisplayFixes.h"
 #include "TestPlutoCartesianView.h"
+#include "TestAmrView.h"
 #include "TestCubeLodGeometry.h"
 #include "TestCubeLodPlan.h"
 #include "TestCubeLodGate.h"
@@ -142,6 +143,7 @@ int main(int argc, char *argv[])
     { TestSimulationVolume t; status |= QTest::qExec(&t, argc, argv); }
     { TestDisplayFixes t; status |= QTest::qExec(&t, argc, argv); }
     { TestPlutoCartesianView t; status |= QTest::qExec(&t, argc, argv); }
+    { TestAmrView t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodGeometry  t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodPlan      t; status |= QTest::qExec(&t, argc, argv); }
     { TestCubeLodGate      t; status |= QTest::qExec(&t, argc, argv); }

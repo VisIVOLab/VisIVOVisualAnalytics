@@ -3,6 +3,7 @@
 
 #include "DatasetBeam.h"
 #include "PhysicalUnits.h"
+#include "AmrView.h"
 #include "PlutoCartesianView.h"
 #include "FilePreview.h"
 #include "ParticleProfiles.h"
@@ -3597,6 +3598,24 @@ public:
      *  Cartesian grid, one FITS per variable (all of them when @p allVariables). */
     visivo::plutoview::Result extractPlutoCartesian(const QString &path, qint64 maxVoxels,
                                                     bool mirror, bool allVariables) const;
+
+    /** POST /v1/simulations/amr/plan — the uniform cube of one field of an AMR
+     *  output (RAMSES, or a code read through yt): level, grid, cost, whether it
+     *  fits, and the finest level inside a region (#550). */
+    visivo::amrview::Plan planAmrUniform(const QString &path, const QString &field, int level,
+                                         const visivo::amrview::Region &region,
+                                         qint64 maxVoxels) const;
+
+    /** POST /v1/simulations/amr/uniform — resample the field onto a uniform grid, a
+     *  FITS cube on the backend. @p level < 0: the finest level that fits. */
+    visivo::amrview::Result extractAmrUniform(const QString &path, const QString &field,
+                                              int level, const visivo::amrview::Region &region,
+                                              qint64 maxVoxels) const;
+
+    /** POST /v1/simulations/amr/level-map — the refinement level of the cells the
+     *  plane @p axis ("x", "y", "z") = @p coordinate (the cube's own axes) cuts. */
+    visivo::amrview::LevelMap amrLevelMap(const QString &path, const QString &axis,
+                                          double coordinate, int maxRects) const;
 
     // ── SED fitting ──────────────────────────────────────────────────────────
     /** POST /v1/sed/fit — greybody fit of a source's photometry. */

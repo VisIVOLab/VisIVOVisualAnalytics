@@ -142,6 +142,8 @@ add_executable(VisIVOTests
     TestPlutoCartesianView.h
     test_simulation_volume.cpp
     test_pluto_cartesian_view.cpp
+    TestAmrView.h
+    test_amr_view.cpp
     TestCubeLodGeometry.h
     test_cube_lod_geometry.cpp
     TestCubeLodPlan.h

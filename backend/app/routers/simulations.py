@@ -21,6 +21,11 @@ Three routes, and the split between them is deliberate:
   resampled onto, and the resampling itself: a FITS cube per variable, opened
   like any other (``app/compute/pluto_cartesian.py``).
 
+* ``POST /v1/simulations/amr/plan``, ``/amr/uniform`` and ``/amr/level-map``
+  (issue #550) — a uniform cube of one field of an AMR output (RAMSES) at a
+  chosen level over a box, the plan that says its cost first, and the
+  refinement level of the cells a slice cuts (``app/compute/amr_views.py``).
+
 The legacy client ran the extraction by spawning ``python arepo-extractor.py``
 through ``QProcess``, against a Python interpreter path kept in QSettings.
 """
@@ -252,3 +257,130 @@ async def pluto_cartesian(request: PlutoCartesianRequest, _: None = _auth):
         logger.warning("[pluto-cartesian] failed path=%s error=%s", ref, exc)
         raise _pluto_cartesian_error(exc, request.path) from exc
     return {"valid": True, "error": "", **result}
+
+
+# ── AMR outputs: a uniform cube, the level map of a slice (#550) ─────────────
+
+class AmrPlanRequest(BaseModel):
+    #: A RAMSES output: its directory, a file of it or a component reference.
+    path: str
+    #: A hydro field, ``mass`` (the gas mass in a voxel) or ``level``.
+    field: str = "density"
+    #: The target level (voxel side 2^-level of the box); None: the finest
+    #: level the region holds that fits ``max_voxels``.
+    level: int | None = Field(None, ge=0)
+    #: The region's two corners (None: the whole run), in ``region_unit``:
+    #: ``box`` (a fraction of the box) or ``physical`` (the cube's own axes).
+    lo: list[float] | None = None
+    hi: list[float] | None = None
+    region_unit: str = "box"
+    max_voxels: int | None = None
+
+
+class AmrLevelMapRequest(BaseModel):
+    path: str
+    axis: str = "z"
+    coordinate: float
+    #: The unit of ``coordinate`` and of the rectangles: ``box`` or ``physical``.
+    unit: str = "box"
+    lo: list[float] | None = None
+    hi: list[float] | None = None
+    region_unit: str = "box"
+    max_rects: int = Field(200_000, ge=1, le=5_000_000)
+
+
+def _amr_error(exc: Exception, path: str) -> HTTPException:
+    if isinstance(exc, FileNotFoundError):
+        return HTTPException(404, f"No such file: {path}")
+    if isinstance(exc, ValueError):   # AmrViewError, an unreadable mesh, a wrong request
+        return HTTPException(422, str(exc))
+    return HTTPException(500, str(exc))
+
+
+def _amr_hierarchy(path: str):
+    """The mesh ``path`` names, every file of it inside the data roots."""
+    from ..amr_source import open_hierarchy  # noqa: PLC0415
+    from ..dependencies import _within_data_roots  # noqa: PLC0415
+    _normalize_path(path.split("::ramses-family=")[0])
+    return open_hierarchy(path, _within_data_roots)
+
+
+@router.post("/v1/simulations/amr/plan", tags=["simulations"])
+async def amr_plan(request: AmrPlanRequest, _: None = _auth):
+    """What the uniform cube of this field would be: its level, voxels, bytes,
+    memory, whether it fits the limit (``max_voxels``, default and hard limit
+    those of the PLUTO Cartesian view), the grid's box in box units and in the
+    run's, and ``finest_level_in_region``: the level "refine this box" would
+    ask for. Reads the mesh's geometry only. 422 for a request that cannot be
+    met."""
+    from ..compute.amr_views import DEFAULT_MAX_VOXELS, plan_view  # noqa: PLC0415
+
+    try:
+        h = await asyncio.to_thread(_amr_hierarchy, request.path)
+        _, answer = await asyncio.to_thread(
+            plan_view, h, request.field, request.level, request.lo, request.hi,
+            request.region_unit, request.max_voxels or DEFAULT_MAX_VOXELS)
+    except PermissionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _amr_error(exc, request.path) from exc
+    return {"valid": True, "error": "", "path": request.path, "code": h.code, "plan": answer}
+
+
+@router.post("/v1/simulations/amr/uniform", tags=["simulations"])
+async def amr_uniform(request: AmrPlanRequest, _: None = _auth):
+    """Resample one field of an AMR output onto a uniform grid, a FITS cube in
+    the exports directory that opens like any volume: X/Y/Z in the run's
+    length unit, values in its unit for the field, the AMR* cards saying how it
+    was made. A region and no level refines that box at the finest level it
+    holds (if it fits ``max_voxels``).
+
+    Returns ``{valid, error, plan, outputs: [{field, path, shape}],
+    finest_level}``; 422 for a request that cannot be met or a cube above the
+    limit (see the plan)."""
+    from ..compute.amr_views import DEFAULT_MAX_VOXELS, plan_view, worker_amr_uniform  # noqa: PLC0415
+
+    limit = request.max_voxels or DEFAULT_MAX_VOXELS
+    out_dir = get_exports_dir() / "amr-uniform"
+    try:
+        h = await asyncio.to_thread(_amr_hierarchy, request.path)
+        # The level the plan settles on is what runs (and an impossible request
+        # is refused before a heavy job is taken).
+        plan, answer = await asyncio.to_thread(
+            plan_view, h, request.field, request.level, request.lo, request.hi,
+            request.region_unit, limit)
+        if not answer["fits"]:
+            raise ValueError(answer["reason"])
+        logger.info("[amr-uniform] path=%s field=%s level=%s shape=%s", request.path,
+                    request.field, plan.level, plan.shape)
+        result = await _run_heavy(
+            worker_amr_uniform, request.path, request.field, plan.level, request.lo,
+            request.hi, request.region_unit, limit, str(out_dir))
+    except (HTTPException, PermissionError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[amr-uniform] failed path=%s error=%s", request.path, exc)
+        raise _amr_error(exc, request.path) from exc
+    return {"valid": True, "error": "", **result}
+
+
+@router.post("/v1/simulations/amr/level-map", tags=["simulations"])
+async def amr_level_map(request: AmrLevelMapRequest, _: None = _auth):
+    """The refinement level of the cells a slice cuts: the plane ``axis =
+    coordinate`` (box or physical units), the leaf cells it crosses as
+    rectangles ``[u0, v0, u1, v1]`` in the other two axes, grouped by level
+    (``levels``), with their ``counts`` per level, for the client to draw over
+    the slice. A window (``lo``, ``hi``) limits it; ``max_rects`` keeps the
+    coarsest levels and says ``truncated``. 422 for a plane outside the run."""
+    from ..compute.amr_views import level_map  # noqa: PLC0415
+
+    try:
+        h = await asyncio.to_thread(_amr_hierarchy, request.path)
+        result = await asyncio.to_thread(
+            level_map, h, request.axis, request.coordinate, request.unit, request.lo,
+            request.hi, request.region_unit, request.max_rects)
+    except PermissionError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise _amr_error(exc, request.path) from exc
+    return {"valid": True, "error": "", "path": request.path, **result}

@@ -186,3 +186,104 @@ takes that variable's physical units (`app.physical_units.pluto_ref_of`): the
 run's `definitions.h` or what the user typed for it, with coordinates in
 length. Heavy-task throttle, as AREPO's. Implementation:
 `app/compute/pluto_cartesian.py`.
+
+## AMR outputs (issue #550)
+
+Views of an AMR mesh that need no code's file layout: they read
+`app.amr_source.AmrHierarchy` (RAMSES now; the producers of #554 add
+`open_hierarchy`). Paths are a RAMSES output (folder, a file of it or a
+`::ramses-family=cells` reference); every file of it must lie inside the data
+roots (403 otherwise). Implementation: `app/compute/amr_views.py`.
+
+### `POST /v1/simulations/amr/plan`
+`{path, field?, level?, lo?, hi?, region_unit?, max_voxels?}` → `{valid, error,
+path, code, plan}`. `field` is a hydro variable (default `density`), `mass`
+(the gas mass in a voxel, Msun) or `level`. `lo`/`hi` are the region's corners
+(three numbers each; none: the whole run) in `region_unit` `box` (a fraction of
+the box, default) or `physical` (the cube's own axes, kpc counted from the
+box's corner); the grid is the region snapped outward to the lattice of the
+target level. `level` omitted: the finest level the region holds that fits
+`max_voxels` (default 2^26; at most 2^30, the PLUTO Cartesian view's limits).
+`plan` is `{field, level, shape [x, y, z], voxels, bytes_estimate, voxel_size,
+voxel_size_physical, lower, upper, lower_physical, upper_physical, length_unit,
+value_unit, fits, max_voxels, hard_max_voxels, max_level_within_limit, reason?,
+passes, slab_planes, peak_memory_bytes_estimate, finest_level_in_region,
+levels, fields, extent}`. `finest_level_in_region` counts a coarse cell that
+only reaches into the box (one pass over the mesh geometry, under 0.4 s on 16
+million leaves; the mesh's finest level, free, with no region): it is the level
+"refine this box" asks for. A cube above `max_voxels` is planned with
+`fits: false` and a `reason`; above 2^30, 422. 422 also for an unknown field, a
+level above the mesh's finest, an empty region.
+
+### `POST /v1/simulations/amr/uniform`
+Same request. Resamples the field onto the plan's grid: a leaf at or coarser
+than the target level fills the voxels it covers; the leaves finer than a voxel
+give their mean, weighted per field: by volume for `density`, `pressure` and
+`mass` (the gas mass `density x voxel volume` is conserved at every level), by
+mass for the velocities (`vx`, `vy`, `vz`) and the passive scalars
+(`metallicity`, `scalar_N`), as yt takes them, so the momentum `density x v x
+voxel volume` is conserved too (on `output_00185` at level 7 the cube's momentum
+differs from the cells' by 3e-10 of their absolute sum) and a light coarse leaf
+does not drag a dense fine one; `level`: the finest level among them. `plan`
+also says the `weighting` (`volume`, `density` or `finest`). A region and
+no `level` is "refine this box": the finest level it holds, if it fits. Heavy
+job (the throttle and wall-clock timeout of AREPO's and PLUTO's). Answer
+`{valid, error, plan, outputs: [{field, path, shape}], finest_level}`;
+422 with the plan's `reason` when the cube does not fit. One FITS per call,
+`<field>-L<level>.amr-uniform.fits` in a folder of its own under `amr-uniform/`
+of the exports directory, opening like any volume. The cube is written in the
+run's CODE units, as a PLUTO Cartesian view is: axes `X`/`Y`/`Z` in box units
+(`CUNIT` `box`; `CRVAL` the first voxel's centre from the box's corner),
+`BUNIT` the code unit of the field (`code density`, `code velocity`,
+`code pressure`, `code density x box volume` for `mass`, none for `level` and
+the metallicity). The `AMRSRC` card (the output) is how the shared units table
+(`physical_units.scales(cube)`, the `.amr-uniform.fits` suffix selecting it,
+`physical_units.VIEW_PRODUCERS` for further producers) finds the run's own
+factors, `AmrHierarchy.scales()`: coordinates box to kpc, `value` to g/cm^3,
+km/s, erg/cm^3 or Msun, so Display > Physical and a typed override work on
+the cube; an output that can no longer be opened (or whose path is not ASCII,
+the card's limit) leaves the cube in code units. Other cards: `AMRCODE`,
+`AMRFLD`, `AMRLEV`, `AMRMODE` (`mean` or `max`), `AMRWGT` (`volume`, `density`
+or `finest`: the weighting of the mean over finer leaves), `AMRFCT` and
+`AMRUNIT` (stored value x `AMRFCT` = value in `AMRUNIT`), `AMRLMAX`, `AMRLO1..3`/`AMRHI1..3` (the grid's box in box
+units), `AMRBOXL` (length units per box unit), `AEXP`, `REDSHIFT`, `AMRTIME`.
+Voxels no leaf reaches are NaN. Memory is one slab (at most 2^24 voxels, 9
+bytes each, 17 for a mass-weighted field) plus a leaf block, whatever the cube's size: the run's passes
+over the mesh are `plan.passes`. Measured on `output_00185` (15,974,645
+leaves, levels 7 to 13): the density cube at level 9 (512^3, 537 MB) in 4.3 s
+with a peak resident set of 1.3 GB, mostly the memory-mapped files.
+
+### `POST /v1/simulations/amr/level-map`
+`{path, axis, coordinate, unit?, lo?, hi?, region_unit?, max_rects?}` →
+`{valid, error, path, axis, coordinate, unit, plane_axes, levels, counts,
+cells, truncated, area, window_area, to_physical, length_unit}`. The leaf cells
+that the plane `axis = coordinate` cuts (a plane on the edge between two cells
+is the upper one's), as rectangles `[u0, v0, u1, v1]` in the other two axes
+(`plane_axes`, x, y, z order) in `unit` (`box`, or `physical`: the cube's own
+axes), grouped by level in `levels` (`{"9": [[...], ...]}`). `counts` are all
+the cells per level, `area` their total area inside the window (`window_area`
+when the mesh tiles it). `max_rects` (default 200,000) keeps the coarsest
+levels and sets `truncated`; the rest is dropped as the leaves are read, so
+memory is `max_rects` rectangles plus one block even for a deeply refined
+slice, and `counts` stay exact. A slice of the whole `output_00185` is 44,000
+cells, in 0.35 s. 422 for a plane outside the run or an axis that is not x, y
+or z.
+
+### Cells as points
+The leaf cells also open as a particle component, `<output
+folder>::ramses-family=cells` ("gas cells", after the particle families in
+`components`; a mesh with gas and no particles opens as it): columns `x y z dx
+level mass density vx vy vz pressure metallicity` (the hydro names the output
+gives), `dx` the cell side and `mass = density dx^3` in box units, both derived
+(from `level`, `density`), the rest read in one pass when first asked for.
+`describe()` names `size_column: "dx"`; the ray-traced particle renderers
+(`/v1/particles/render`, layers) then draw each cell as a kernel of the rms
+width half its side per axis (a Gaussian of h = dx/sqrt(2); a Gaussian of
+that width per axis sums to a flat sheet within 1.4 % over a lattice, where
+the cube's own rms, dx/sqrt(12), would ripple by 39 %) instead of estimating a
+size from the 32 nearest neighbours; a `radius_field` in the request still wins.
+Units through `physical_units.scales()`: lengths in kpc, density in g/cm^3,
+mass in Msun (the factor includes the box length cubed). The total gas mass of
+`output_00185` is the same from the cells (sum of `mass`) and from the cubes
+(density times voxel volume) at levels 7, 8 and 9, within 2e-10 (float32
+rounding of the cube).

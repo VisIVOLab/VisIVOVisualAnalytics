@@ -521,20 +521,5 @@ def view_source(path: str | Path) -> str | None:
     """The PLUTO variable reference a Cartesian-view cube was resampled from
     (its ``PLUTOSRC`` card), so its values and coordinates are shown in that
     run's physical units; None for any other file."""
-    if not str(path).endswith(VIEW_SUFFIX):
-        return None
-    try:
-        st = os.stat(path)
-    except OSError:
-        return None
-    return _view_source(str(path), st.st_size, st.st_mtime_ns)
-
-
-@lru_cache(maxsize=32)
-def _view_source(path: str, _size: int, _mtime_ns: int) -> str | None:
-    from astropy.io import fits  # noqa: PLC0415
-    try:
-        value = fits.getheader(path).get(SOURCE_KEY)
-    except (OSError, ValueError):
-        return None
-    return str(value) if value else None
+    from .physical_units import view_card  # noqa: PLC0415
+    return view_card(path, VIEW_SUFFIX, SOURCE_KEY)

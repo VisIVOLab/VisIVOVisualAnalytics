@@ -39,10 +39,12 @@ def file_identity(path: str | os.PathLike) -> str:
     if component_format(path) == "ramses":
         # A RAMSES family (issue #549): the output's info, header and
         # descriptors and its particle files; the mesh files change nothing
-        # a particle table reads.
-        from .ramses_output import open_output  # noqa: PLC0415
+        # a particle table reads. The gas cells (issue #550) are the mesh
+        # and its hydro files.
+        from .ramses_output import CELLS, open_output, split_ref  # noqa: PLC0415
+        kinds = ("amr", "hydro") if split_ref(path)[1] == CELLS else ("part",)
         try:
-            stats = [os.stat(f) for f in open_output(split_component(path)[0]).files(("part",))]
+            stats = [os.stat(f) for f in open_output(split_component(path)[0]).files(kinds)]
         except (OSError, ValueError):
             return ""
         return "|".join(f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
