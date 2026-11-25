@@ -32,6 +32,14 @@ using namespace Qt::Literals::StringLiterals;
 
 namespace {
 
+/// The one value of a colour column that does not vary, when the view's colour
+/// request says so ("constant", set by the window; the backend never sees it).
+std::optional<double> constantOf(const QJsonObject &viewColour)
+{
+    const QJsonValue value = viewColour.value(u"constant"_s);
+    return value.isDouble() ? std::optional<double>(value.toDouble()) : std::nullopt;
+}
+
 /// 256 colours of a named map, as the backend's map of that name.
 std::vector<QVector3D> namedLut(const QString &name)
 {
@@ -402,6 +410,7 @@ ParticleGLView::Tone RaytraceSettingsPanel::gpuTone(const QJsonObject &viewColou
             t.lut = pointsLut(viewColour.value(u"points"_s).toArray(), t.hueMin, t.hueMax,
                               t.hueLog);
             t.barTitle = viewColour.value(u"field"_s).toString();
+            t.hueConstant = constantOf(viewColour);
         } else {
             t.hue = by == u"velocity_dispersion"_s ? ParticleGLView::Hue::NamedMap
                                                      : ParticleGLView::Hue::Density;
@@ -417,6 +426,7 @@ ParticleGLView::Tone RaytraceSettingsPanel::gpuTone(const QJsonObject &viewColou
         t.hueMax = viewColour.value(u"max"_s).toDouble(1.0);
         t.lut = pointsLut(viewColour.value(u"points"_s).toArray(), t.hueMin, t.hueMax, t.hueLog);
         t.barTitle = viewColour.value(u"field"_s).toString();
+        t.hueConstant = constantOf(viewColour);
     }
     return t;
 }

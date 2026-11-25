@@ -167,7 +167,7 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
         // Back to the rows loaded here: their own colour range, and the
         // automatic Log/Linear choice made on it.
         if (this->m_colorRemoteRange[1] > this->m_colorRemoteRange[0]) {
-            this->m_colorRemoteRange[0] = this->m_colorRemoteRange[1] = 0.0;
+            this->clearRemoteColourRange();
             if (!(this->m_colorUserRange[1] > this->m_colorUserRange[0])) {
                 if (this->comboColorScale) {
                     const QSignalBlocker block(this->comboColorScale);
@@ -199,7 +199,7 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
                                  view->deleteLater();
                              }
                              // The rows loaded here, coloured over their range.
-                             this->m_colorRemoteRange[0] = this->m_colorRemoteRange[1] = 0.0;
+                             this->clearRemoteColourRange();
                              this->updateColorMapping();
                              if (this->m_renderStack)
                                  this->showRenderPage(0);
@@ -211,11 +211,21 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
         // the colours and the bar use, unless Min..Max were set in Edit.
         QObject::connect(this->m_remoteView, &RemotePointView::colourRange, this,
                          [this](double lo, double hi) {
-                             if (!(hi > lo) || (lo == this->m_colorRemoteRange[0]
-                                                && hi == this->m_colorRemoteRange[1]))
+                             // A column of one value comes as lo == hi: its
+                             // colours and bar follow the same rule as the rows
+                             // loaded here (colourSpan), not a span of the
+                             // backend's making.
+                             if (!(hi >= lo))
                                  return;
-                             this->m_colorRemoteRange[0] = lo;
-                             this->m_colorRemoteRange[1] = hi;
+                             const visivo::pointtable::ColourSpan span =
+                                     visivo::pointtable::colourSpan(lo, hi);
+                             if (span.lo == this->m_colorRemoteRange[0]
+                                 && span.hi == this->m_colorRemoteRange[1]
+                                 && span.constant == this->m_colorRemoteConstant)
+                                 return;
+                             this->m_colorRemoteRange[0] = span.lo;
+                             this->m_colorRemoteRange[1] = span.hi;
+                             this->m_colorRemoteConstant = span.constant;
                              if (this->m_colorUserRange[1] > this->m_colorUserRange[0])
                                  return;
                              // The automatic Log/Linear choice, on this range.
@@ -413,6 +423,12 @@ QList<QVariantMap> vtkWindowCatalogue3D::pointViewCommands(bool *textFiltersSkip
     add({ { u"type"_s, u"set_show_axes"_s },
           { u"visible"_s, !this->chkShowAxes || this->chkShowAxes->isChecked() } });
     add({ { u"type"_s, u"set_show_colorbar"_s }, { u"visible"_s, false } });
+    // The box's labels name the unit the stored numbers are in (#563).
+    // The columns asked for above, not the ones the loaded page can draw: the
+    // backend draws those.
+    const QStringList titles = this->axisTitles(this->mapXKey, this->mapYKey, this->mapZKey);
+    add({ { u"type"_s, u"set_axis_titles"_s }, { u"x"_s, titles.at(0) },
+          { u"y"_s, titles.at(1) }, { u"z"_s, titles.at(2) } });
     return commands;
 }
 
@@ -1011,9 +1027,13 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
             return req;
         };
         source.tone = [self]() {
-            return self ? self->m_rtPanel->gpuTone(
-                                  self->raytraceViewState().value(u"colour"_s).toObject())
-                        : ParticleGLView::Tone();
+            if (!self)
+                return ParticleGLView::Tone();
+            QJsonObject colour = self->raytraceViewState().value(u"colour"_s).toObject();
+            // For the bar of the picture only: not part of the backend's request.
+            if (self->m_colourConstant)
+                colour.insert(u"constant"_s, *self->m_colourConstant);
+            return self->m_rtPanel->gpuTone(colour);
         };
         source.toneJson = [self](double base) {
             return self ? self->m_rtPanel->tone(base) : QJsonObject();

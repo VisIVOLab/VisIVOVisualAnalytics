@@ -40,6 +40,11 @@ Commands (besides the camera / viewport ones the cube session takes):
 ``{"type": "set_filters", "filters": [{"field", "op", "value"}, ...]}``
 ``{"type": "set_background", "name": "Dark" | "Dark gray" | "White"}``
 ``{"type": "set_show_outline" | "set_show_axes" | "set_show_colorbar", "visible": bool}``
+``{"type": "set_axis_titles", "x": str, "y": str, "z": str}``
+                                         — the labels of the box's axes, as
+                                           the client words them (it names the
+                                           unit the stored numbers are in,
+                                           issue #563); bare letters until sent
 ``{"type": "set_sky_positions", "frame": "fk5" | "galactic" | "supergalactic",
    "distance_mode": "comoving" | "redshift_space", "cosmology": str}``
                                          — a sky catalogue's positions
@@ -121,6 +126,7 @@ class PointViewState:
     show_outline: bool = True
     show_axes: bool = True
     show_colorbar: bool = True
+    axis_titles: tuple[str, str, str] = ("X", "Y", "Z")
     # A sky catalogue's positions (app/catalogue_positions.py).
     sky_frame: str = "fk5"
     distance_mode: str = "comoving"
@@ -589,9 +595,7 @@ class PointRenderSession(PointStereoMixin):
         # The labelled box of the desktop viewer (vtkCubeAxesActor).
         self._outline = vtk.vtkCubeAxesActor()
         self._outline.SetCamera(self._renderer.GetActiveCamera())
-        self._outline.SetXTitle("X")
-        self._outline.SetYTitle("Y")
-        self._outline.SetZTitle("Z")
+        self._apply_axis_titles_on_thread()
         self._outline.SetFlyModeToOuterEdges()
         for axis in "XYZ":
             getattr(self._outline, f"Draw{axis}GridlinesOff")()
@@ -663,6 +667,12 @@ class PointRenderSession(PointStereoMixin):
         self._outline.SetVisibility(1 if self.view.show_outline and len(rows) else 0)
         self._recolour_on_thread(field_changed=True)
 
+    def _apply_axis_titles_on_thread(self) -> None:
+        x, y, z = self.view.axis_titles
+        self._outline.SetXTitle(x)
+        self._outline.SetYTitle(y)
+        self._outline.SetZTitle(z)
+
     def _recolour_on_thread(self, field_changed: bool = False) -> None:
         """Colour codes of the drawn rows and the tables that colour them.
 
@@ -677,16 +687,19 @@ class PointRenderSession(PointStereoMixin):
         if name and name in self._columns and len(self._rows):
             stats = column_stats(self._columns[name], self._rows)
             lo, hi = (stats[0], stats[1]) if stats else (0.0, 1.0)
-            if not hi > lo:
-                hi = _widened(lo)
+            # A column of one value has its colours over lo..widened (the
+            # scale needs a span), but it reports the range it has, lo..lo:
+            # the client's bar then shows that one value, not a made-up span
+            # (issue #563).
+            span_hi = hi if hi > lo else _widened(lo)
             self._data_range = (lo, hi)
             if field_changed or self.view.color_min is None or self.view.color_max is None:
                 cmin = self.view.color_min if self.view.color_min is not None else lo
-                cmax = self.view.color_max if self.view.color_max is not None else hi
+                cmax = self.view.color_max if self.view.color_max is not None else span_hi
             else:
                 cmin, cmax = self.view.color_min, self.view.color_max
             if not cmax > cmin:
-                cmin, cmax = lo, hi
+                cmin, cmax = lo, span_hi
         else:
             self._data_range, cmin, cmax = None, 0.0, 1.0
         # The client's log scale (with its own colour function only).
@@ -915,6 +928,11 @@ class PointRenderSession(PointStereoMixin):
             self.view.show_colorbar = bool(command.get("visible", True))
             self._colorbar.SetVisibility(
                 1 if self.view.show_colorbar and self._data_range is not None else 0)
+        elif ctype == "set_axis_titles":
+            titles = tuple(str(command.get(a) or a.upper())[:80] for a in "xyz")
+            if titles != self.view.axis_titles:
+                self.view.axis_titles = titles
+                self._apply_axis_titles_on_thread()
         elif ctype == "set_show_axes":
             self.view.show_axes = bool(command.get("visible", True))
             self._axes_actor.SetVisibility(1 if self.view.show_axes else 0)

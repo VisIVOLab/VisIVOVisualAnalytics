@@ -142,6 +142,26 @@ inline ColourSpan colourSpan(double lo, double hi)
     return { lo - pad, hi + pad, lo };
 }
 
+/// The title of a bar over a column that does not vary, in the 3-D view and
+/// over a ray-traced picture alike.
+inline QString constantBarTitle(const QString &column)
+{
+    return column + QStringLiteral(" (constant)");
+}
+
+/// Where along a colour table over [lo, hi] a value falls (0..1), on a log
+/// scale when @p log and the range is positive: the colour a constant column's
+/// points have, which the bar of such a column shows alone.
+inline double fractionAlong(double value, double lo, double hi, bool log)
+{
+    if (!(hi > lo))
+        return 0.5;
+    const double f = log && lo > 0.0 && value > 0.0
+            ? std::log(value / lo) / std::log(hi / lo)
+            : (value - lo) / (hi - lo);
+    return std::clamp(f, 0.0, 1.0);
+}
+
 }   // namespace visivo::pointtable
 
 #endif   // POINT_TABLE_DISPLAY_H

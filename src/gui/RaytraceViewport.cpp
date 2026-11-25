@@ -664,6 +664,7 @@ void RaytraceViewport::takeFallbackGrid(QNetworkReply *reply, bool projected,
             o.lo = m_gridRange.first;
             o.hi = m_gridRange.second;
             o.log = m_gridLog;
+            o.constant = tone.hueConstant;
             o.hasBar = o.hi > o.lo;
         }
     }

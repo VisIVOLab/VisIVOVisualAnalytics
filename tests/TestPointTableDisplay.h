@@ -26,4 +26,5 @@ private slots:
     void anIdentifierIsNeverTheDefault();
     void aConstantColumnHasOneValueNotAMadeUpRange();
     void aColumnThatVariesKeepsItsRange();
+    void aConstantBarIsOneValueAndItsOwnColour();
 };

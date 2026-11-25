@@ -910,7 +910,12 @@ private:
     /// other columns have arrived and none was known to vary.
     void chooseDefaultColour();
     /// The axis titles, from the unit each mapped column is stored in (#563).
+    /// The same words go to the backend's view (set_axis_titles).
+    QStringList axisTitles(const QString &xKey, const QString &yKey, const QString &zKey) const;
     void updateAxisTitles(const QString &xKey, const QString &yKey, const QString &zKey);
+    /// A requested axis mapping, or @p fallbackKey when its column has fewer
+    /// than three finite values or does not vary.
+    QString validatedAxisKey(const QString &requestedKey, const QString &fallbackKey) const;
 
     // ── Colour bar and LUT editor, as in the cube viewer's 3-D view ───────────
     QPointer<VolumeColorbar> m_colorbar;
@@ -921,6 +926,14 @@ private:
     /// Drawn on the backend: the colour column's range over every row drawn
     /// there, as it reports it (the rows loaded here are only a page).
     double m_colorRemoteRange[2]{ 0.0, 0.0 };
+    /// Set with that range when the column has the one value throughout: the
+    /// range is then the one made around it (visivo::pointtable::colourSpan).
+    std::optional<double> m_colorRemoteConstant;
+    void clearRemoteColourRange()
+    {
+        m_colorRemoteRange[0] = m_colorRemoteRange[1] = 0.0;
+        m_colorRemoteConstant.reset();
+    }
     void refreshColorbar();
     /// Save View As… (#528): the particle view as PNG, PDF or SVG.
     void saveViewAs3d();

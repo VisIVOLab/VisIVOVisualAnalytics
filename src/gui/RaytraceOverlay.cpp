@@ -1,6 +1,7 @@
 #include "RaytraceOverlay.h"
 
 #include "ColourBarTicks.h"
+#include "app/PointTableDisplay.h"
 #include "ParticleFrame.h"
 #include "VolumeColorbar.h"
 
@@ -92,18 +93,29 @@ void paintBar(QPainter &p, const QRectF &target, const RaytraceOverlay &o)
                                          std::clamp(c.y(), 0.0f, 1.0f),
                                          std::clamp(c.z(), 0.0f, 1.0f));
     const bool log = o.log && o.lo > 0;
-    const auto value = [&](double f) {
-        return log ? o.lo * std::pow(o.hi / o.lo, f) : o.lo + (o.hi - o.lo) * f;
-    };
-    // Labelled as the 3-D view's.
-    const QVector<double> at{ 0.0, 0.25, 0.5, 0.75, 1.0 };
-    QVector<double> values;
-    for (const double f : at)
-        values << value(f);
-    const QStringList labels = visivo::tickLabels(values);
-    for (int i = 0; i < at.size(); ++i)
-        look.ticks << qMakePair(at[i], labels[i]);
-    look.title = o.title;
+    if (o.constant) {
+        // A column that does not vary: the colour its points have and its one
+        // value, not the range made around it (#563); as the 3-D view's bar.
+        const double f = visivo::pointtable::fractionAlong(*o.constant, o.lo, o.hi, log);
+        const QColor colour = look.colours.value(
+                int(std::lround(f * double(look.colours.size() - 1))));
+        look.colours = QVector<QColor>(256, colour);
+        look.ticks << qMakePair(0.5, visivo::tickLabels({ *o.constant }).value(0));
+        look.title = visivo::pointtable::constantBarTitle(o.title);
+    } else {
+        const auto value = [&](double f) {
+            return log ? o.lo * std::pow(o.hi / o.lo, f) : o.lo + (o.hi - o.lo) * f;
+        };
+        // Labelled as the 3-D view's.
+        const QVector<double> at{ 0.0, 0.25, 0.5, 0.75, 1.0 };
+        QVector<double> values;
+        for (const double f : at)
+            values << value(f);
+        const QStringList labels = visivo::tickLabels(values);
+        for (int i = 0; i < at.size(); ++i)
+            look.ticks << qMakePair(at[i], labels[i]);
+        look.title = o.title;
+    }
     const double s = std::max(0.1, o.scale);
     const QFont &font = o.font;
     p.save();

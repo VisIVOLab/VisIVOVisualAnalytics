@@ -156,3 +156,23 @@ void TestPointTableDisplay::aColumnThatVariesKeepsItsRange()
     QCOMPARE(span.lo, 1.0);
     QCOMPARE(span.hi, 3.0);
 }
+
+void TestPointTableDisplay::aConstantBarIsOneValueAndItsOwnColour()
+{
+    QCOMPARE(constantBarTitle(QStringLiteral("mass")), QStringLiteral("mass (constant)"));
+    // The value of a constant column sits in the middle of the span made
+    // around it: the middle colour, linear; on a log scale it is further up.
+    const ColourSpan span = colourSpan(4.07e-7, 4.07e-7);
+    QVERIFY(qAbs(fractionAlong(4.07e-7, span.lo, span.hi, false) - 0.5) < 1e-9);
+    const double onLog = fractionAlong(4.07e-7, span.lo, span.hi, true);
+    QVERIFY(onLog > 0.5 && onLog < 1.0);
+    // A value outside the range takes the end colour; a flat range, the middle.
+    QCOMPARE(fractionAlong(9.0, 1.0, 2.0, false), 1.0);
+    QCOMPARE(fractionAlong(0.0, 1.0, 2.0, false), 0.0);
+    QCOMPARE(fractionAlong(1.0, 2.0, 2.0, false), 0.5);
+    // What the backend reports for a constant column (lo == hi) goes through
+    // the same rule as the rows loaded here.
+    const ColourSpan reported = colourSpan(4.07169e-7, 4.07169e-7);
+    QVERIFY(reported.constant.has_value());
+    QVERIFY(reported.hi < 1e-6);
+}

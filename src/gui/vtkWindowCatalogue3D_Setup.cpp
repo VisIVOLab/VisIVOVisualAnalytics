@@ -828,7 +828,7 @@ void vtkWindowCatalogue3D::ensureCatalogueDock()
         // The range and the scale were for the previous column: a new column
         // opens on its own range, and a table of points chooses Log again.
         this->m_colorUserRange[0] = this->m_colorUserRange[1] = 0.0;
-        this->m_colorRemoteRange[0] = this->m_colorRemoteRange[1] = 0.0;
+        this->clearRemoteColourRange();
         if (this->comboColorScale) {
             const QSignalBlocker block(this->comboColorScale);
             this->comboColorScale->setCurrentIndex(static_cast<int>(LutScale::Mode::Linear));

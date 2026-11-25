@@ -57,7 +57,10 @@ keeps `(Mpc)` on its axes. Session Data names the table by its format, RAMSES
 here, and the window opens coloured by the first of density, temperature, mass,
 and so on that varies over the rows loaded: the mass of dark-matter particles is
 one value, so the colour column is then another that varies or *Single colour*,
-and choosing a constant column yourself gives a bar with that one value.
+and choosing a constant column yourself gives a bar with that one value. The
+same holds when the backend draws the points (the axis titles and the bar are
+the same) and over a ray-traced picture, whose bar reads *mass (constant)* with
+the value.
 
 ## Not read yet
 

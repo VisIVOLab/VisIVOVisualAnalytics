@@ -446,7 +446,9 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     const double bounds[6] = { xMin, xMax, yMin, yMax, zMin, zMax };
     cubeAxesActor->SetBounds(bounds);
     cubeAxesActor->SetCamera(renderer->GetActiveCamera());
-    this->updateAxisTitles(this->mapXKey, this->mapYKey, this->mapZKey);
+    this->updateAxisTitles(validatedAxisKey(this->mapXKey, QStringLiteral("computed:x")),
+                           validatedAxisKey(this->mapYKey, QStringLiteral("computed:y")),
+                           validatedAxisKey(this->mapZKey, QStringLiteral("computed:z")));
     cubeAxesActor->SetXUnits("");
     cubeAxesActor->SetYUnits("");
     cubeAxesActor->SetZUnits("");
@@ -685,8 +687,8 @@ QString vtkWindowCatalogue3D::fallbackDetailsText(const Catalogue3DEntry &entry)
     return text.trimmed();
 }
 
-void vtkWindowCatalogue3D::updateAxisTitles(const QString &xKey, const QString &yKey,
-                                            const QString &zKey)
+QStringList vtkWindowCatalogue3D::axisTitles(const QString &xKey, const QString &yKey,
+                                             const QString &zKey) const
 {
     // The numbers on an axis are the column's as stored (this window has no
     // physical-units switch), so the title names the unit the table states for
@@ -696,6 +698,7 @@ void vtkWindowCatalogue3D::updateAxisTitles(const QString &xKey, const QString &
     const QStringList positions{ this->schema.xFieldName, this->schema.yFieldName,
                                  this->schema.zFieldName };
     const QStringList keys{ xKey, yKey, zKey };
+    QStringList titles;
     for (int axis = 0; axis < 3; ++axis) {
         const QString &key = keys.at(axis);
         QString column;
@@ -707,18 +710,49 @@ void vtkWindowCatalogue3D::updateAxisTitles(const QString &xKey, const QString &
         // A computed position of a table that states no unit is in Mpc, as
         // ever (a sky catalogue's distance, a VBT); a mapped column without one
         // has no unit to name.
-        const QString title = visivo::pointtable::axisTitle(
+        titles << visivo::pointtable::axisTitle(
                 QString(QChar(u'X' + axis)),
                 column.isEmpty() ? QString() : units.value(column).toString(),
                 computed ? u"Mpc"_s : QString());
-        const QByteArray bytes = title.toUtf8();
-        if (axis == 0)
-            this->cubeAxesActor->SetXTitle(bytes.constData());
-        else if (axis == 1)
-            this->cubeAxesActor->SetYTitle(bytes.constData());
-        else
-            this->cubeAxesActor->SetZTitle(bytes.constData());
     }
+    return titles;
+}
+
+void vtkWindowCatalogue3D::updateAxisTitles(const QString &xKey, const QString &yKey,
+                                            const QString &zKey)
+{
+    const QStringList titles = this->axisTitles(xKey, yKey, zKey);
+    const QByteArray x = titles.at(0).toUtf8(), y = titles.at(1).toUtf8(),
+                     z = titles.at(2).toUtf8();
+    this->cubeAxesActor->SetXTitle(x.constData());
+    this->cubeAxesActor->SetYTitle(y.constData());
+    this->cubeAxesActor->SetZTitle(z.constData());
+}
+
+QString vtkWindowCatalogue3D::validatedAxisKey(const QString &requestedKey,
+                                               const QString &fallbackKey) const
+{
+    if (!requestedKey.startsWith(QStringLiteral("raw:"))) {
+        return requestedKey;
+    }
+    int validCount = 0;
+    double minValue = std::numeric_limits<double>::max();
+    double maxValue = std::numeric_limits<double>::lowest();
+    for (const auto &entry : this->entries) {
+        const double value = this->mappedAxisValue(entry, requestedKey);
+        if (!std::isfinite(value)) {
+            continue;
+        }
+        ++validCount;
+        minValue = std::min(minValue, value);
+        maxValue = std::max(maxValue, value);
+    }
+    if (validCount < 3 || !(minValue < maxValue)) {
+        qWarning() << "[catalogue3d] invalid axis mapping" << requestedKey
+                   << "-> fallback to" << fallbackKey;
+        return fallbackKey;
+    }
+    return requestedKey;
 }
 
 void vtkWindowCatalogue3D::updatePointPositions(bool newSplatBasis)
@@ -726,30 +760,6 @@ void vtkWindowCatalogue3D::updatePointPositions(bool newSplatBasis)
     if (this->entries.empty()) {
         return;
     }
-
-    const auto validatedAxisKey = [this](const QString &requestedKey, const QString &fallbackKey) {
-        if (!requestedKey.startsWith(QStringLiteral("raw:"))) {
-            return requestedKey;
-        }
-        int validCount = 0;
-        double minValue = std::numeric_limits<double>::max();
-        double maxValue = std::numeric_limits<double>::lowest();
-        for (const auto &entry : this->entries) {
-            const double value = this->mappedAxisValue(entry, requestedKey);
-            if (!std::isfinite(value)) {
-                continue;
-            }
-            ++validCount;
-            minValue = std::min(minValue, value);
-            maxValue = std::max(maxValue, value);
-        }
-        if (validCount < 3 || !(minValue < maxValue)) {
-            qWarning() << "[catalogue3d] invalid axis mapping" << requestedKey
-                       << "-> fallback to" << fallbackKey;
-            return fallbackKey;
-        }
-        return requestedKey;
-    };
 
     const QString resolvedXKey = validatedAxisKey(this->mapXKey, QStringLiteral("computed:x"));
     const QString resolvedYKey = validatedAxisKey(this->mapYKey, QStringLiteral("computed:y"));
@@ -889,18 +899,18 @@ void vtkWindowCatalogue3D::updateColorMapping()
     // uses ForceBuild(), so it stays idempotent across repeated mapping updates.
     // Min..Max set in the LUT editor, else the column's range: over the whole
     // table when it is drawn on the backend, else over the rows loaded.
+    // The bar shows the single value only while its range is a made-up one:
+    // the backend's range is held with the same rule, so it says so itself.
     if (this->m_colorUserRange[1] > this->m_colorUserRange[0]) {
         minValue = this->m_colorUserRange[0];
         maxValue = this->m_colorUserRange[1];
+        constantValue.reset();
     } else if (this->m_remoteView && this->m_colorRemoteRange[1] > this->m_colorRemoteRange[0]) {
         minValue = this->m_colorRemoteRange[0];
         maxValue = this->m_colorRemoteRange[1];
+        constantValue = this->m_colorRemoteConstant;
     }
-    // The bar shows the single value only while its range is the made-up one.
-    this->m_colourConstant = (constantValue && !(this->m_colorUserRange[1] > this->m_colorUserRange[0])
-                              && !(this->m_remoteView
-                                   && this->m_colorRemoteRange[1] > this->m_colorRemoteRange[0]))
-            ? constantValue : std::nullopt;
+    this->m_colourConstant = constantValue;
     // A table of points coloured by a quantity spanning three decades or more,
     // all positive (a density, a mass), opens in Log, as a cube does.
     if (this->m_cartesian && !this->m_defaultScaleChosen && this->comboColorScale) {

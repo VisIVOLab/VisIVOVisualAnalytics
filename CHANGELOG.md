@@ -13,7 +13,9 @@ are preserved here unedited; the branch names they refer to are historical.
   0 to 1), Session Data names a table by its format (RAMSES, GADGET) instead of
   VBT, and a table no longer opens coloured by a constant column (the mass of
   dark-matter particles): another column that varies, or a single colour; a
-  constant column's colour bar shows its one value, not a made-up range.
+  constant column's colour bar shows its one value, not a made-up range, in
+  the local view, on a backend that draws the points, and over a ray-traced
+  picture.
 - **Published backend images (#66).** Each release publishes the backend on
   the GitHub Container Registry as `ghcr.io/visivolab/visivo-backend:<version>`
   (CPU, amd64 and arm64) and `:<version>-egl` (server-side EGL rendering for
