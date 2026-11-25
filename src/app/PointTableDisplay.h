@@ -13,6 +13,7 @@
 // tests/test_point_table_display.cpp.
 
 #include <QString>
+#include <QtGlobal>
 #include <QStringList>
 
 #include <algorithm>
@@ -160,6 +161,72 @@ inline double fractionAlong(double value, double lo, double hi, bool log)
             ? std::log(value / lo) / std::log(hi / lo)
             : (value - lo) / (hi - lo);
     return std::clamp(f, 0.0, 1.0);
+}
+
+// ── Where the points are drawn (issue #570) ──────────────────────────────────
+
+/// View ▸ Rendering.
+enum class RenderChoice { Auto, Local, Remote };
+
+struct RenderFacts
+{
+    RenderChoice choice{ RenderChoice::Auto };
+    bool backendRenders{ false };     ///< the open said it can draw points server-side
+    bool backendIsLocal{ false };     ///< this machine's own backend: its GPU is this one
+    qint64 tableRows{ 0 };            ///< rows of the table, filters applied
+    qint64 loadedRows{ 0 };           ///< rows this window holds
+    bool fitsHere{ true };            ///< every row would fit in this window's memory
+};
+
+struct RenderPlan
+{
+    bool remote{ false };             ///< streamed from the backend
+    bool loadAll{ false };            ///< Local was asked for: bring the rest of the rows here
+    QString note;                     ///< why the choice was not followed, "" when it was
+};
+
+/// What each choice does for a table of points. Local draws in the client,
+/// every row of it: the rows still on the backend are loaded first (loadAll),
+/// as "Load all" does. When they do not fit, a backend that can draw them
+/// keeps the view (and says why), and this machine's own backend draws the rows
+/// loaded. Remote and Auto never leave a machine's own backend: it is drawn
+/// here, never mixed.
+inline RenderPlan planRender(const RenderFacts &f)
+{
+    RenderPlan plan;
+    const bool partial = f.tableRows > f.loadedRows;
+    const bool canRemote = f.backendRenders && !f.backendIsLocal;
+    switch (f.choice) {
+    case RenderChoice::Remote:
+        plan.remote = canRemote;
+        if (!canRemote)
+            plan.note = !f.backendRenders
+                    ? QStringLiteral("Only a backend that renders server-side (EGL) can draw "
+                                     "the points: showing the loaded rows.")
+                    : QStringLiteral("This is the local backend: its points are drawn on this "
+                                     "machine.");
+        break;
+    case RenderChoice::Auto:
+        plan.remote = canRemote && partial;
+        break;
+    case RenderChoice::Local:
+        if (!partial)
+            break;
+        if (f.fitsHere) {
+            plan.loadAll = true;
+        } else if (canRemote) {
+            plan.remote = true;
+            plan.note = QStringLiteral(
+                    "All %L1 rows are too many to hold in this window: they stay drawn on "
+                    "the backend.").arg(f.tableRows);
+        } else {
+            plan.note = QStringLiteral(
+                    "All %L1 rows are too many to hold in this window: drawing the %L2 "
+                    "loaded.").arg(f.tableRows).arg(f.loadedRows);
+        }
+        break;
+    }
+    return plan;
 }
 
 }   // namespace visivo::pointtable

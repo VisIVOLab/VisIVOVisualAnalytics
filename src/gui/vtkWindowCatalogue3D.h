@@ -11,6 +11,7 @@
 #include "app/BackendClient.h"
 #include "app/SampProtocol.h"
 #include "app/CosmologyModel.h"
+#include "app/PointTableDisplay.h"
 #include "app/VrLink.h"
 
 #include <vtkNew.h>
@@ -881,6 +882,9 @@ private:
     QPointer<QLabel> m_renderBadge;
     void setupRemoteRendering();
     bool wantsRemote() const;
+    /// What the chosen mode does for this table now (PointTableDisplay.h).
+    visivo::pointtable::RenderPlan renderPlan() const;
+    QString m_renderNote;   ///< why the mode chosen is not the one drawn, or ""
     int rowsToShow() const;
 
     // ── A table of points (issue #83): a VBT, cartesian ──────────────────────
@@ -938,7 +942,8 @@ private:
     /// Save View As… (#528): the particle view as PNG, PDF or SVG.
     void saveViewAs3d();
     void showLutEditor();
-    void applyRenderMode(RenderMode mode);
+    /// @p chosen: from View > Rendering, not a reload of the rows.
+    void applyRenderMode(RenderMode mode, bool chosen = false);
     void updateRenderBadge();
     /// The view's state as commands for the backend (sent when changed).
     void pushRemoteState();

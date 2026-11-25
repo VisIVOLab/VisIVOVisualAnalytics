@@ -27,4 +27,10 @@ private slots:
     void aConstantColumnHasOneValueNotAMadeUpRange();
     void aColumnThatVariesKeepsItsRange();
     void aConstantBarIsOneValueAndItsOwnColour();
+    void autoDrawsOnARemoteBackendWhileRowsAreMissing();
+    void autoAndRemoteNeverLeaveTheLocalBackend();
+    void localBringsTheRestOfTheRowsWhenTheyFit();
+    void localOnAWholeTableIsLocalAndAsksForNothing();
+    void localThatDoesNotFitStaysOnTheBackendAndSaysWhy();
+    void localThatDoesNotFitOnTheLocalBackendDrawsTheLoadedRows();
 };

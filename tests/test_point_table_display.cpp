@@ -176,3 +176,79 @@ void TestPointTableDisplay::aConstantBarIsOneValueAndItsOwnColour()
     QVERIFY(reported.constant.has_value());
     QVERIFY(reported.hi < 1e-6);
 }
+
+namespace {
+RenderFacts facts(RenderChoice choice, bool backendRenders, bool isLocal, qint64 rows,
+                  qint64 loaded, bool fits)
+{
+    RenderFacts f;
+    f.choice = choice;
+    f.backendRenders = backendRenders;
+    f.backendIsLocal = isLocal;
+    f.tableRows = rows;
+    f.loadedRows = loaded;
+    f.fitsHere = fits;
+    return f;
+}
+}   // namespace
+
+void TestPointTableDisplay::autoDrawsOnARemoteBackendWhileRowsAreMissing()
+{
+    RenderPlan plan = planRender(facts(RenderChoice::Auto, true, false, 2097152, 75000, true));
+    QVERIFY(plan.remote);
+    QVERIFY(!plan.loadAll);
+    // Every row loaded: nothing the backend would add.
+    QVERIFY(!planRender(facts(RenderChoice::Auto, true, false, 75000, 75000, true)).remote);
+    // A backend that cannot draw them.
+    QVERIFY(!planRender(facts(RenderChoice::Auto, false, false, 2097152, 75000, true)).remote);
+    plan = planRender(facts(RenderChoice::Remote, true, false, 1000, 1000, true));
+    QVERIFY(plan.remote);
+}
+
+void TestPointTableDisplay::autoAndRemoteNeverLeaveTheLocalBackend()
+{
+    for (const RenderChoice choice : { RenderChoice::Auto, RenderChoice::Remote }) {
+        const RenderPlan plan = planRender(facts(choice, true, true, 2097152, 75000, true));
+        QVERIFY(!plan.remote);
+        QVERIFY(!plan.loadAll);
+    }
+}
+
+void TestPointTableDisplay::localBringsTheRestOfTheRowsWhenTheyFit()
+{
+    // The RAMSES table of #570: 2 097 152 rows, 75 000 loaded, on either kind
+    // of backend: Local is not Auto.
+    for (const bool isLocal : { false, true }) {
+        const RenderPlan plan =
+                planRender(facts(RenderChoice::Local, true, isLocal, 2097152, 75000, true));
+        QVERIFY(!plan.remote);
+        QVERIFY(plan.loadAll);
+        QVERIFY(plan.note.isEmpty());
+    }
+}
+
+void TestPointTableDisplay::localOnAWholeTableIsLocalAndAsksForNothing()
+{
+    const RenderPlan plan = planRender(facts(RenderChoice::Local, true, false, 5000, 5000, true));
+    QVERIFY(!plan.remote);
+    QVERIFY(!plan.loadAll);
+    QVERIFY(plan.note.isEmpty());
+}
+
+void TestPointTableDisplay::localThatDoesNotFitStaysOnTheBackendAndSaysWhy()
+{
+    const RenderPlan plan =
+            planRender(facts(RenderChoice::Local, true, false, 900000000, 75000, false));
+    QVERIFY(plan.remote);
+    QVERIFY(!plan.loadAll);
+    QVERIFY(plan.note.contains(u"too many"_s));
+}
+
+void TestPointTableDisplay::localThatDoesNotFitOnTheLocalBackendDrawsTheLoadedRows()
+{
+    const RenderPlan plan =
+            planRender(facts(RenderChoice::Local, true, true, 900000000, 75000, false));
+    QVERIFY(!plan.remote);
+    QVERIFY(!plan.loadAll);
+    QVERIFY(plan.note.contains(u"drawing the"_s));
+}

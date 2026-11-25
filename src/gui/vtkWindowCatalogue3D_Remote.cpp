@@ -98,14 +98,19 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
         a->setCheckable(true);
         a->setToolTip(tip);
         group->addAction(a);
+        // A choice of the user's: only then may Local load the rest of the rows.
         QObject::connect(a, &QAction::triggered, this,
-                         [this, mode]() { this->applyRenderMode(mode); });
+                         [this, mode]() { this->applyRenderMode(mode, true); });
         return a;
     };
-    add(u"Auto"_s, u"On the backend when the table has more rows than this window loaded"_s,
+    add(u"Auto"_s,
+        u"On a remote backend when the table has more rows than this window loaded, "
+        u"else here"_s,
         RenderMode::Auto)
             ->setChecked(true);
-    add(u"Local (CPU/GPU on this machine)"_s, u"The rows loaded in this window, drawn here"_s,
+    add(u"Local (CPU/GPU on this machine)"_s,
+        u"Every row drawn here: the rows still on the backend are loaded first, if they "
+        u"fit in this window's memory"_s,
         RenderMode::Local);
     this->m_actRenderRemote = add(u"Remote (GPU on backend)"_s,
                                   u"Every row, drawn on the backend and streamed"_s,
@@ -125,20 +130,27 @@ int vtkWindowCatalogue3D::rowsToShow() const
     return this->m_totalCount >= 0 ? this->m_totalCount : this->m_tableRows;
 }
 
-bool vtkWindowCatalogue3D::wantsRemote() const
+visivo::pointtable::RenderPlan vtkWindowCatalogue3D::renderPlan() const
 {
-    // Never with the local backend: it draws here; never mixed.
-    if (!this->m_serverSideRendering || visivo::backendIsLocal(this->backendUrl))
-        return false;
-    if (this->m_renderMode == RenderMode::Remote)
-        return true;
-    // Auto: the table (with the filters applied) holds more rows than this
-    // window loaded.
-    return this->m_renderMode == RenderMode::Auto
-            && this->rowsToShow() > static_cast<int>(this->entries.size());
+    using visivo::pointtable::RenderChoice;
+    visivo::pointtable::RenderFacts facts;
+    facts.choice = this->m_renderMode == RenderMode::Local    ? RenderChoice::Local
+            : this->m_renderMode == RenderMode::Remote        ? RenderChoice::Remote
+                                                              : RenderChoice::Auto;
+    facts.backendRenders = this->m_serverSideRendering;
+    facts.backendIsLocal = visivo::backendIsLocal(this->backendUrl);
+    facts.tableRows = this->rowsToShow();
+    facts.loadedRows = static_cast<qint64>(this->entries.size());
+    facts.fitsHere = this->canLoadAllLocally();
+    return visivo::pointtable::planRender(facts);
 }
 
-void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
+bool vtkWindowCatalogue3D::wantsRemote() const
+{
+    return this->renderPlan().remote;
+}
+
+void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode, bool chosen)
 {
     this->m_renderMode = mode;
     if (this->m_actRenderRemote) {
@@ -151,7 +163,13 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
                             ? u"Only on a backend that renders server-side (EGL)"_s
                             : u"The local backend: the points are drawn on this machine"_s);
     }
-    if (!this->wantsRemote()) {
+    const visivo::pointtable::RenderPlan plan = this->renderPlan();
+    this->m_renderNote = plan.note;
+    // A choice that is not followed says why, where the user looks; the badge
+    // keeps the reason for as long as it holds.
+    if (chosen && !plan.note.isEmpty())
+        this->statusBar()->showMessage(plan.note, 10000);
+    if (!plan.remote) {
         if (RemotePointView *view = this->m_remoteView) {
             this->m_remoteView = nullptr;
             const bool wasWaiting = !view->isActive();
@@ -180,6 +198,20 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode)
             this->renderWindow->Render();
         }
         this->updateRenderBadge();
+        // Local draws every row: the ones still on the backend come here. Only
+        // when asked for (the loads that follow, and the filters, call this
+        // again with the same mode and must not start another).
+        if (chosen && plan.loadAll) {
+            this->loadAllEntries();
+            // Declined, or a load already running: the loaded rows stay drawn,
+            // and the user is told so rather than left to wonder.
+            if (!this->filterBusy && this->rowsToShow() > static_cast<int>(this->entries.size()))
+                this->statusBar()->showMessage(
+                        u"Drawing the %L1 rows loaded of %L2: Load all brings the rest."_s
+                                .arg(this->entries.size())
+                                .arg(this->rowsToShow()),
+                        10000);
+        }
         return;
     }
     if (!this->m_remoteView) {
@@ -284,6 +316,7 @@ void vtkWindowCatalogue3D::updateRenderBadge()
         return;
     }
     const bool remote = this->m_remoteView && this->m_remoteView->isActive();
+    this->m_renderBadge->setToolTip(this->m_renderNote);
     this->m_renderBadge->setText(
             remote ? u"Remote · all %L1 rows"_s.arg(this->rowsToShow())
                    : u"Local · %L1 of %L2 rows"_s.arg(this->entries.size()).arg(this->rowsToShow()));

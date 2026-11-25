@@ -8,6 +8,12 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **View ▸ Rendering ▸ Local draws every row (#570).** In the 3-D points window
+  *Local* was the same as *Auto* on the local backend (both drew the loaded
+  sample, 75 000 of 2 097 152 rows). It now loads the rest of the rows and
+  draws them all here when they fit in the window's memory; when they do not,
+  the status bar says why the view stays on the backend (or shows the loaded
+  rows, on the local backend). The rule is one tested function.
 - **RAMSES in the 3-D points window (#563).** The axis titles name the unit the
   column is stored in (`X (box units)` for RAMSES, not `X (Mpc)` over ticks of
   0 to 1), Session Data names a table by its format (RAMSES, GADGET) instead of

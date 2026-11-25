@@ -101,6 +101,12 @@ from z (comoving, Planck18)*).
   drops (sleep, network, tunnel), the view reconnects by itself and the status
   bar shows the attempts; after about two minutes it falls back to the loaded
   rows.
+  *Local* draws every row here: the rows still on the backend are loaded first
+  (the same as *Load all*, which asks before loading more than half a million),
+  as long as they fit in this window's memory. When they do not, a remote
+  backend keeps drawing the view and the status bar and the badge's tooltip say
+  why; with the local backend, the loaded rows are drawn. The local backend
+  always draws here, so *Auto* and *Remote* never use a backend of this machine.
 
 ### 3-D regions and selection diagnostics
 

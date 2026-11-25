@@ -1226,7 +1226,7 @@ bool vtkWindowCatalogue3D::canLoadAllLocally() const
     // desktop allocation, while still allowing the 2.3 M x 9 catalogue used by
     // the progressive-loading workflow to be materialised on demand.
     constexpr qint64 localCellBudget = 50000000;
-    const qint64 rows = std::max<qint64>(0, this->m_totalCount);
+    const qint64 rows = std::max<qint64>(0, this->rowsToShow());
     const qint64 columns = std::max<qint64>(1, this->schema.headers.size());
     return rows == 0 || rows <= localCellBudget / columns;
 }
