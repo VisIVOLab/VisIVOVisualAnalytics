@@ -190,18 +190,23 @@ void TestWcsAxisTicks::tickLabelsAreThinnedToTheRoomTheyHave()
     // Five ticks, four intervals, labels 60 px wide with 10 px between them.
     // Room for all five: every label.
     QCOMPARE(visivo::tickLabelStride(400.0, 60.0, 10.0, 4), 1);
-    // About 175 px wide (issue #544): 44 px per interval, so every other label.
-    QCOMPARE(visivo::tickLabelStride(175.0, 60.0, 10.0, 4), 2);
-    // Barely room for two: the ends only.
-    QCOMPARE(visivo::tickLabelStride(100.0, 60.0, 10.0, 4), 4);
+    // About 250 px wide: 62 px per interval, too little next to the right-
+    // justified last label (1.5 × 60 + 10 = 100), so every other label.
+    QCOMPARE(visivo::tickLabelStride(250.0, 60.0, 10.0, 4), 2);
+    // About 175 px wide (issue #544): the ends only.
+    QCOMPARE(visivo::tickLabelStride(175.0, 60.0, 10.0, 4), 4);
+    // 300 px: 75 px per interval would fit centred labels, but the last pair
+    // (centred, then right-justified) would overlap by 15 px: every other label.
+    QCOMPARE(visivo::tickLabelStride(300.0, 60.0, 10.0, 4), 2);
     // Wider labels (more digits) need more room for the same axis.
     QCOMPARE(visivo::tickLabelStride(400.0, 95.0, 10.0, 4), 2);
+    QCOMPARE(visivo::tickLabelStride(250.0, 95.0, 10.0, 4), 4);
     // The chosen stride always leaves the gap, unless only the ends are left.
     for (double axisPx = 120.0; axisPx < 900.0; axisPx += 7.0) {
         const int k = visivo::tickLabelStride(axisPx, 70.0, 10.0, 4);
         QVERIFY(k == 1 || k == 2 || k == 4);
         if (k < 4)
-            QVERIFY(k * axisPx / 4.0 >= 80.0);
+            QVERIFY(k * axisPx / 4.0 >= 1.5 * 70.0 + 10.0);
     }
     // Unusable input keeps the ends.
     QCOMPARE(visivo::tickLabelStride(0.0, 60.0, 10.0, 4), 4);

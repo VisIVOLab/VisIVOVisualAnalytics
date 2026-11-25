@@ -96,12 +96,15 @@ inline QString formatLinearTick(double value, double axisSpan)
 /// @p gapPx between neighbours. When even that does not fit, only the two ends
 /// are drawn (k = @p intervals). A small image on screen has little room, and
 /// its labels carry many digits ("136.9141" next to "136.9114", issue #544).
+/// Every viewer right-justifies the last label so it stays inside the axis, so
+/// the last pair (a centred label, then one that ends at its tick) needs one and
+/// a half label widths plus the gap; that pair is always drawn, so it decides.
 inline int tickLabelStride(double axisPx, double widestLabelPx, double gapPx, int intervals)
 {
     if (intervals <= 1 || !(axisPx > 0.0) || !std::isfinite(axisPx))
         return std::max(1, intervals);
     for (int k = 1; k < intervals; ++k) {
-        if (intervals % k == 0 && k * axisPx / intervals >= widestLabelPx + gapPx)
+        if (intervals % k == 0 && k * axisPx / intervals >= 1.5 * widestLabelPx + gapPx)
             return k;
     }
     return intervals;
