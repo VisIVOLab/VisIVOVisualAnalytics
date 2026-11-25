@@ -178,6 +178,7 @@
     "POST /v1/products/moment_fits",
     "POST /v1/products/mosaic",
     "POST /v1/products/publication_figure",
+    "POST /v1/products/publication_figure/colour_maps",
     "POST /v1/products/pv_fits",
     "POST /v1/products/spectrum_table",
     "POST /v1/pv/result/binary",

@@ -3030,6 +3030,11 @@ public:
      *  ``preview`` in it the answer carries a small PNG and no file is written. */
     BackendPublicationFigureResult publicationFigure(const QJsonObject &body) const;
 
+    /** POST /v1/products/publication_figure/colour_maps — which of @p names (the
+     *  viewer's colour-map registry) a figure can set, in order. Empty when the
+     *  backend cannot answer (an older one): the caller then offers all. */
+    QStringList publicationFigureColourMaps(const QStringList &names) const;
+
     /** POST /v1/products/image_quality — quality/artifact metrics (UC 4.2). */
     BackendImageQualityResult imageQuality(const QString &datasetId) const;
 

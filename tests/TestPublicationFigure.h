@@ -22,6 +22,7 @@ private slots:
     void contourLinesKeepTheirColourWidthAndDash();
     void contourLinesAreJoinedOnceAndKept();
     void colourMapsOfTheWindowMapToTheBackendsOrInferno();
+    void theWindowsFrameIsTheFiguresFrame();
     void formatsAreThoseTheBackendWrites();
     void theClientPostsTheBodyAndReadsThePreview();
     void theClientReportsARefusal();

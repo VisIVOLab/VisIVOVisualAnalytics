@@ -108,6 +108,22 @@ BackendPublicationFigureResult BackendClient::publicationFigure(const QJsonObjec
     return r;
 }
 
+QStringList BackendClient::publicationFigureColourMaps(const QStringList &names) const
+{
+    QString error;
+    const QByteArray payload = performPostRetryingBackpressure(
+            QUrl(m_baseUrl + QStringLiteral("/v1/products/publication_figure/colour_maps")),
+            QJsonDocument(QJsonObject{ { QStringLiteral("names"), QJsonArray::fromStringList(names) } }),
+            error);
+    QStringList out;
+    if (!error.isEmpty())
+        return out;
+    for (const QJsonValue &n : QJsonDocument::fromJson(payload).object()
+                                       .value(QStringLiteral("names")).toArray())
+        out << n.toString();
+    return out;
+}
+
 BackendImageQualityResult BackendClient::imageQuality(const QString &datasetId) const
 {
     QJsonObject body{ { QStringLiteral("dataset_id"), datasetId } };

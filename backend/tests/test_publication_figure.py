@@ -459,3 +459,266 @@ def test_horizontal_colour_bar_labels_do_not_overlap(position, tick_size, stretc
             assert not a.overlaps(b), (a, b)
     # short: nothing like -0.00015 is printed
     assert all(len(t.get_text()) <= 6 for t in labels), [t.get_text() for t in labels]
+
+
+# ── Review round on PR #540 ──────────────────────────────────────────────────
+
+
+def _luma(color) -> float:
+    from matplotlib.colors import to_rgb
+    r, g, b = to_rgb(color)
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+@pytest.mark.parametrize("cmap_name", ["Purples", "Inferno", "Greys_r", "Gray"])
+def test_text_annotation_box_is_the_opposite_tone_of_its_text(cmap_name):
+    """Black text (the 'auto' colour on a light map) was on a dark box, white text on a
+    dark one: the box takes the other tone, on a light colour map as on a dark one."""
+    from matplotlib.figure import Figure
+    from app.figure_overlays import draw_regions
+    from app.publication_figure import _overlay_color, resolve_cmap
+    color = _overlay_color(resolve_cmap(cmap_name), "auto")
+    ax = Figure().add_subplot(1, 1, 1)
+    n = draw_regions(ax, [{"shape": "text", "frame": "image", "unit": "pix", "center": [5, 5],
+                           "text": "Nucleus"}], default_color=color)
+    assert n == 1
+    text = ax.texts[0]
+    assert abs(_luma(text.get_color()) - _luma(text.get_bbox_patch().get_facecolor())) > 0.6
+    assert text.get_bbox_patch().get_facecolor()[3] == 1.0   # opaque: EPS has no transparency
+
+
+@pytest.mark.parametrize("color", ["black", "white", "#ffcc00", "#800000", "#00e5ff"])
+def test_text_annotation_box_for_any_region_colour(color):
+    from matplotlib.figure import Figure
+    from app.figure_overlays import draw_regions
+    ax = Figure().add_subplot(1, 1, 1)
+    draw_regions(ax, [{"shape": "text", "frame": "image", "unit": "pix", "center": [5, 5],
+                       "text": "x", "props": {"color": color}}])
+    text = ax.texts[0]
+    assert abs(_luma(text.get_color()) - _luma(text.get_bbox_patch().get_facecolor())) > 0.4
+
+
+def _tilted_wcs(cdelt1=-1 / 3600, rot_deg=0.0, system="fk5", crval=(150.0, 2.0)):
+    from astropy.wcs import WCS
+    w = WCS(naxis=2)
+    w.wcs.ctype = ("RA---TAN", "DEC--TAN") if system == "fk5" else ("GLON-TAN", "GLAT-TAN")
+    w.wcs.crval = crval
+    w.wcs.crpix = (100.5, 80.5)
+    w.wcs.cdelt = (cdelt1, abs(cdelt1))
+    t = np.radians(rot_deg)
+    w.wcs.pc = [[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]]
+    if system == "fk5":
+        w.wcs.radesys, w.wcs.equinox = "FK5", 2000.0
+    return w
+
+
+def _reference_pixel_angle(w, x, y, pa_deg, eps=1e-3):
+    """The angle of a position angle on the pixel grid, by stepping on the sky with the
+    WCS alone (the method the figure used before it shared regions.py's)."""
+    lng, lat = int(w.wcs.lng), int(w.wcs.lat)
+    world = np.array(w.wcs_pix2world([[x, y]], 0), dtype=float)[0]
+    t = np.radians(pa_deg)
+    step = world.copy()
+    step[lat] += eps * np.cos(t)
+    step[lng] += eps * np.sin(t) / np.cos(np.radians(world[lat]))
+    p = np.array(w.wcs_world2pix([step], 0), dtype=float)[0] - np.array([x, y])
+    return np.degrees(np.arctan2(p[1], p[0]))
+
+
+@pytest.mark.parametrize("cdelt1", [-1 / 3600, 1 / 3600])
+@pytest.mark.parametrize("rot", [0.0, 30.0, 50.0])
+@pytest.mark.parametrize("pa", [0.0, 30.0, 90.0, 215.0])
+def test_beam_angle_follows_the_sky_for_flips_and_rotations(cdelt1, rot, pa):
+    """The beam's position angle is on the sky, so on the grid it turns with the WCS:
+    mirrored (CDELT1 either sign) and rotated (PC) alike."""
+    from app.figure_overlays import pixel_frame, sky_pixel_angle
+    w = _tilted_wcs(cdelt1, rot)
+    got = sky_pixel_angle(pixel_frame(w), 40.0, 30.0, pa)
+    want = _reference_pixel_angle(w, 40.0, 30.0, pa)
+    assert abs((got - want + 180.0) % 360.0 - 180.0) < 0.05, (got, want)
+
+
+def test_pixel_scale_is_the_one_regions_uses_and_is_none_without_sky():
+    from astropy.wcs import WCS
+    from app.figure_overlays import pixel_frame
+    assert pixel_frame(_tilted_wcs()).scale_deg == pytest.approx(1 / 3600)
+    assert pixel_frame(WCS(naxis=2)) is None
+
+
+def _compass_arrows(wcs, frame, shape=(160, 200)):
+    """(labels, pixel angles of the north and east arrows) the compass draws."""
+    from matplotlib.figure import Figure
+    from matplotlib.text import Annotation
+    from app.figure_overlays import draw_compass
+    ax = Figure().add_subplot(1, 1, 1)
+    ax.set_xlim(-0.5, shape[1] - 0.5)
+    ax.set_ylim(-0.5, shape[0] - 0.5)
+    notes: list[str] = []
+    assert draw_compass(ax, wcs, frame, "top-right", "white", 10.0, notes), notes
+    arrows = [t for t in ax.texts if isinstance(t, Annotation)]
+    labels = [t.get_text() for t in ax.texts if not isinstance(t, Annotation)]
+    angles = [np.degrees(np.arctan2(a.xy[1] - a.xyann[1], a.xy[0] - a.xyann[0])) for a in arrows]
+    return labels, angles
+
+
+def _reference_compass(wcs, native: str, shown: str, shape=(160, 200), eps_arcsec=20.0):
+    """North and east of ``shown`` at the image centre on the grid of a ``native`` WCS,
+    by an offset on the sky made with astropy's frames alone."""
+    import astropy.units as u
+    from astropy.coordinates import FK5, Galactic, SkyCoord
+    frames = {"fk5": FK5(equinox="J2000"), "galactic": Galactic()}
+    x, y = 0.5 * (shape[1] - 1), 0.5 * (shape[0] - 1)
+    lon, lat = wcs.wcs_pix2world([[x, y]], 0)[0]
+    c = SkyCoord(lon * u.deg, lat * u.deg, frame=frames[native]).transform_to(frames[shown])
+    out = []
+    for dlon, dlat in ((0.0, eps_arcsec), (eps_arcsec / np.cos(c.spherical.lat.rad), 0.0)):
+        s = SkyCoord(c.spherical.lon + dlon * u.arcsec, c.spherical.lat + dlat * u.arcsec,
+                     frame=frames[shown]).transform_to(frames[native])
+        p = np.array(wcs.wcs_world2pix([[s.spherical.lon.deg, s.spherical.lat.deg]], 0)[0]) - [x, y]
+        out.append(np.degrees(np.arctan2(p[1], p[0])))
+    return out
+
+
+@pytest.mark.parametrize("native, shown, labels", [
+    ("galactic", "fk5", ["N", "E"]),      # a Galactic image whose axes are labelled RA/Dec
+    ("fk5", "galactic", ["b", "l"]),      # and the other way round
+    ("fk5", "fk5", ["N", "E"]),
+    ("galactic", "galactic", ["b", "l"]),
+])
+def test_compass_follows_the_frame_of_the_axes(native, shown, labels):
+    wcs = _tilted_wcs(-1 / 3600, 20.0, system=native,
+                      crval=(150.0, 2.0) if native == "fk5" else (210.0, 40.0))
+    names, got = _compass_arrows(wcs, "" if shown == native else shown)
+    assert names == labels
+    want = _reference_compass(wcs, native, shown)
+    for g, w_ in zip(got, want):
+        assert abs((g - w_ + 180.0) % 360.0 - 180.0) < 0.5, (got, want)
+    if native != shown:
+        # The two norths are apart by a real angle: this is not the native compass.
+        own = _compass_arrows(wcs, "")[1]
+        assert abs((own[0] - got[0] + 180.0) % 360.0 - 180.0) > 5.0, (own, got)
+
+
+def test_compass_in_the_ecliptic_frame_is_named_n_e_and_turned():
+    wcs = _tilted_wcs(-1 / 3600, 0.0)
+    names, got = _compass_arrows(wcs, "ecliptic")
+    assert names == ["N", "E"]
+    assert abs((got[0] - _compass_arrows(wcs, "")[1][0] + 180.0) % 360.0 - 180.0) > 5.0
+
+
+@pytest.mark.asyncio
+async def test_ecliptic_frame_is_asked_for_and_drawn(client, ds):
+    body = await _fig(client, ds, output_basename="ecl41.svg", frame="ecliptic", compass=True)
+    assert body["valid"], body["error"]
+    text = Path(body["output_path"]).read_text()
+    assert "Ecliptic longitude" in text and "Ecliptic latitude" in text
+    assert "Right Ascension" not in text
+    # The ticks are the ecliptic's: a different picture from the native one.
+    _, native = await _preview(client, ds)
+    _, ecl = await _preview(client, ds, frame="ecliptic")
+    assert _changed(native, ecl).sum() > 100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame, expect", [("native", ""), ("galactic", "galactic"),
+                                           ("ecliptic", "ecliptic"), ("icrs", "")])
+async def test_compass_is_asked_for_the_frame_of_the_axes(client, ds, monkeypatch, frame, expect):
+    """The figure hands the compass the frame the ticks are in ("" for the image's own,
+    here ICRS), so the arrows and their names are those of the axes."""
+    from app import figure_overlays as ov
+    seen = []
+    real = ov.draw_compass
+    monkeypatch.setattr(ov, "draw_compass", lambda ax, wcs, fr, *a, **k: (seen.append(fr),
+                                                                          real(ax, wcs, fr, *a, **k))[1])
+    body = await _fig(client, ds, preview=True, frame=frame, compass=True)
+    assert body["valid"], body["error"]
+    assert seen == [expect] and body["notes"] == []
+
+
+def test_scale_bar_unit_follows_the_size_of_the_image():
+    from app.figure_overlays import auto_unit
+    assert [auto_unit(d) for d in (30 / 3600, 59.9 / 3600, 1 / 60, 59 / 60, 1.0, 20.0)] == [
+        "arcsec", "arcsec", "arcmin", "arcmin", "deg", "deg"]
+
+
+@pytest.mark.parametrize("cdelt_arcsec, expect", [
+    (1.0, "20″"),           # 200 px of 1": a fifth is 40"
+    (20.0, "10′"),          # 200 px of 20": a fifth is 800" = 13.3'
+    (0.5 * 3600.0, "20°"),  # 200 px of half a degree: a fifth is 20 degrees
+])
+def test_scale_bar_round_length_picks_its_unit(cdelt_arcsec, expect):
+    from matplotlib.figure import Figure
+    from app.figure_overlays import draw_scale_bar
+    wcs = _tilted_wcs(-cdelt_arcsec / 3600)
+    ax = Figure().add_subplot(1, 1, 1)
+    ax.set_xlim(-0.5, 199.5)
+    ax.set_ylim(-0.5, 159.5)
+    notes: list[str] = []
+    assert draw_scale_bar(ax, wcs, 0.0, "auto", "bottom-right", "white", 10.0, notes), notes
+    assert [t.get_text() for t in ax.texts] == [expect]
+
+
+def test_scale_bar_unit_picked_by_the_user_is_kept():
+    from matplotlib.figure import Figure
+    from app.figure_overlays import draw_scale_bar
+    ax = Figure().add_subplot(1, 1, 1)
+    ax.set_xlim(-0.5, 199.5)
+    ax.set_ylim(-0.5, 159.5)
+    assert draw_scale_bar(ax, _tilted_wcs(-20 / 3600), 0.0, "arcsec", "bottom-right", "white", 10.0, [])
+    assert ax.texts[0].get_text().endswith("″")
+
+
+def _req(**kw):
+    from types import SimpleNamespace
+    base = dict(stretch="log", vmin=None, vmax=None, percent=99.5, gamma=1.0)
+    return SimpleNamespace(**{**base, **kw})
+
+
+def test_log_stretch_is_the_windows_pure_logarithm():
+    """Colours evenly spaced in log10 of the value over the range, as the window's
+    VTK log table, and matplotlib's LogNorm: astropy's LogStretch is another curve."""
+    from matplotlib.colors import LogNorm
+    from app.publication_figure import _norm
+    data = np.array([[1e-3, 5e-3, 2e-2], [0.1, 0.5, 1.0]])
+    norm = _norm(data, _req(vmin=1e-3, vmax=1.0))
+    ref = LogNorm(vmin=1e-3, vmax=1.0)
+    v = np.array([1e-3, 3e-3, 1e-2, 0.07, 0.3, 1.0])
+    assert np.allclose(np.asarray(norm(v)), np.asarray(ref(v)), atol=1e-9)
+    # The inverse is what the colour bar's ticks are read from.
+    assert np.allclose(norm.inverse(np.linspace(0, 1, 5)), ref.inverse(np.linspace(0, 1, 5)),
+                       rtol=1e-9)
+
+
+def test_log_stretch_floors_a_range_that_reaches_zero_or_below():
+    """Radio data are negative wherever there is only noise: the minimum is raised to a
+    positive floor, as the window does, and the pixels below it take the lowest colour."""
+    from app.publication_figure import _norm
+    rng = np.random.default_rng(3)
+    data = np.abs(rng.standard_normal((50, 50))) * 0.01
+    data[0, 0] = 1.0
+    data = data - 0.003     # some pixels negative
+    norm = _norm(data, _req(vmin=-0.02, vmax=1.0))
+    assert norm.vmin > 0.0 and norm.vmax == 1.0
+    assert float(norm(norm.vmin)) == pytest.approx(0.0, abs=1e-12)
+    assert float(norm(1.0)) == pytest.approx(1.0)
+    norm2 = _norm(data, _req())    # percentile mode: the lower clip is below zero here
+    assert norm2.vmin > 0.0
+    with pytest.raises(ValueError, match="positive maximum"):
+        _norm(-np.abs(data) - 1e-3, _req(vmin=-1.0, vmax=-1e-3))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("position", ["right", "bottom"])
+async def test_log_stretch_renders_with_a_colour_bar_and_a_signed_range(client, ds, position):
+    body = await _fig(client, ds, preview=True, stretch="log", vmin=-0.02, vmax=1.0,
+                      colorbar_position=position)
+    assert body["valid"], body["error"]
+
+
+@pytest.mark.asyncio
+async def test_supported_colour_maps_are_those_the_figure_can_set(client, ds):
+    r = await client.post("/v1/products/publication_figure/colour_maps", headers=ds["headers"],
+                          json={"names": ["Inferno", "AllRed", "purples", "Glow", "NoSuchMap",
+                                          "Blues_r"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["names"] == ["Inferno", "purples", "Glow", "Blues_r"]

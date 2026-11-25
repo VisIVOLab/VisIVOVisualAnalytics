@@ -11,6 +11,7 @@
 
 #include <QDialog>
 #include <QString>
+#include <QStringList>
 
 #include <functional>
 #include <memory>
@@ -36,6 +37,12 @@ struct Context
     QString datasetId;
     QString fileStem;                    ///< output name without extension
     Options defaults;
+    /// The colour maps the figure can set (orderedColourMaps); empty offers only
+    /// the default's.
+    QStringList colourMaps;
+    /// The name of the window's colour map; empty when it has none. The dialog
+    /// starts from it, or from Inferno with a note when the figure cannot set it.
+    QString windowColourMap;
     std::shared_ptr<Overlays> overlays;  ///< a null one is taken as no overlays
 };
 

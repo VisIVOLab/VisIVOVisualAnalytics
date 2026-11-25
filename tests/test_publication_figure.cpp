@@ -288,12 +288,32 @@ void TestPublicationFigure::contourLinesAreJoinedOnceAndKept()
 
 void TestPublicationFigure::colourMapsOfTheWindowMapToTheBackendsOrInferno()
 {
-    QCOMPARE(vf::colourMapFor(u"CoolWarm"_s), u"CoolWarm"_s);
-    QCOMPARE(vf::colourMapFor(u"coolwarm"_s), u"CoolWarm"_s);
-    QCOMPARE(vf::colourMapFor(u"Blues_r"_s), u"Blues_r"_s);
-    QCOMPARE(vf::colourMapFor(u"Rainbow"_s), u"Inferno"_s);   // no matplotlib counterpart
-    QCOMPARE(vf::colourMapFor(QString()), u"Inferno"_s);
-    QVERIFY(vf::colourMaps().contains(u"Purples"_s));
+    // What the backend answered for the viewer's registry: the dialog's list.
+    const QStringList available = vf::orderedColourMaps(
+            { u"Purples"_s, u"Glow"_s, u"Blues_r"_s, u"Viridis"_s, u"CoolWarm"_s, u"Inferno"_s });
+    // The uniform maps first, the rest alphabetically.
+    QCOMPARE(available, (QStringList{ u"Inferno"_s, u"Viridis"_s, u"CoolWarm"_s, u"Blues_r"_s,
+                                      u"Glow"_s, u"Purples"_s }));
+    QCOMPARE(vf::colourMapFor(u"CoolWarm"_s, available), u"CoolWarm"_s);
+    QCOMPARE(vf::colourMapFor(u"coolwarm"_s, available), u"CoolWarm"_s);
+    QCOMPARE(vf::colourMapFor(u"Glow"_s, available), u"Glow"_s);      // the backend's stand-in
+    QCOMPARE(vf::colourMapFor(u"Purples"_s, available), u"Purples"_s);
+    QCOMPARE(vf::colourMapFor(u"Rainbow"_s, available), u"Inferno"_s);   // not offered: Inferno
+    QCOMPARE(vf::colourMapFor(u"MyLut"_s, available), u"Inferno"_s);
+    QCOMPARE(vf::colourMapFor(QString(), available), u"Inferno"_s);
+    QVERIFY(vf::orderedColourMaps({}).isEmpty());
+}
+
+void TestPublicationFigure::theWindowsFrameIsTheFiguresFrame()
+{
+    QCOMPARE(vf::frameForWindow(false, false), u"native"_s);
+    QCOMPARE(vf::frameForWindow(true, false), u"galactic"_s);
+    QCOMPARE(vf::frameForWindow(false, true), u"ecliptic"_s);
+    // The body carries it and the default scale bar unit is the backend's automatic one.
+    vf::Options o;
+    o.frame = vf::frameForWindow(false, true);
+    QCOMPARE(body(o).value(u"frame"_s).toString(), u"ecliptic"_s);
+    QCOMPARE(body(vf::Options{}).value(u"scale_bar_unit"_s).toString(), u"auto"_s);
 }
 
 void TestPublicationFigure::formatsAreThoseTheBackendWrites()

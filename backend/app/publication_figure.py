@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import io
+import math
 import struct
 import threading
 from typing import Any
@@ -55,6 +56,20 @@ def resolve_cmap(name: str):
     raise ValueError(f"Unknown colour map '{name}'.")
 
 
+def supported_cmaps(names: list[str]) -> list[str]:
+    """The ``names`` that ``resolve_cmap`` knows, in the order given: the desktop
+    asks with its colour-map registry, so its figure dialog offers only maps the
+    figure can set."""
+    out = []
+    for n in names:
+        try:
+            resolve_cmap(n)
+        except ValueError:
+            continue
+        out.append(n)
+    return out
+
+
 def check_font(family: str) -> str:
     """``family`` when matplotlib can set text in it. A name that is not installed
     would fall back silently to the default, and a figure for a journal must not
@@ -86,19 +101,72 @@ def _png_size(png: bytes) -> tuple[int, int]:
     return struct.unpack(">II", png[16:24]) if png[:8] == b"\x89PNG\r\n\x1a\n" else (0, 0)
 
 
+def _log_stretch(lo: float, hi: float):
+    """The window's logarithm on the range [lo, hi] (both positive): colours evenly
+    spaced in log10 of the value, ``log(x / lo) / log(hi / lo)``, as VTK's log10
+    lookup table gives them. astropy's own ``LogStretch`` is a different curve
+    (log(1 + a t) / log(1 + a) of the linear position), which is why it is not used."""
+    from astropy.visualization import BaseStretch  # noqa: PLC0415
+    span, decades = hi - lo, math.log(hi / lo)
+
+    class _Log10Stretch(BaseStretch):
+        def __call__(self, values, clip=True, out=None):
+            v = np.asarray(values, dtype=float)
+            x = np.maximum(lo + v * span, lo)
+            res = np.log(x / lo) / decades
+            if clip:
+                res = np.clip(res, 0.0, 1.0)
+            if out is not None:
+                out[...] = res
+                return out
+            return res
+
+        @property
+        def inverse(self):
+            class _Inverse(BaseStretch):
+                def __call__(self, values, clip=True, out=None):
+                    res = (lo * np.exp(np.asarray(values, dtype=float) * decades) - lo) / span
+                    if clip:
+                        res = np.clip(res, 0.0, 1.0)
+                    if out is not None:
+                        out[...] = res
+                        return out
+                    return res
+            return _Inverse()
+
+    return _Log10Stretch()
+
+
+def _log_range(lo: float, hi: float, finite: np.ndarray) -> tuple[float, float]:
+    """The range of a log stretch: ``lo`` and ``hi`` with a non-positive ``lo`` raised
+    to a positive floor, as the window does (radio data are negative wherever there
+    is only noise). The floor is the 1st percentile of the positive pixels, the
+    window's own rule, or a millionth of the maximum when there are none."""
+    if not hi > 0.0:
+        raise ValueError("A log stretch needs a positive maximum: use another stretch "
+                         "or raise the maximum.")
+    if lo > 0.0:
+        return lo, hi
+    pos = finite[finite > 0.0]
+    floor = float(np.percentile(pos, 1.0)) if pos.size else 0.0
+    if not 0.0 < floor < hi:
+        floor = hi * 1e-6
+    return floor, hi
+
+
 def _norm(data: np.ndarray, req):
     """The colour normalisation: the range of the window (vmin/vmax) or the
     percentile clip, then the stretch. Built from astropy's ImageNormalize and
     stretch classes, which keep their names across versions (simple_norm renamed
-    its range arguments)."""
+    its range arguments). ``log`` is the window's pure logarithm (``_log_stretch``)."""
     from astropy.visualization import (  # noqa: PLC0415
-        AsinhStretch, ImageNormalize, LinearStretch, LogStretch, PercentileInterval,
+        AsinhStretch, ImageNormalize, LinearStretch, PercentileInterval,
         PowerStretch, SinhStretch, SqrtStretch)
-    stretches = {"linear": LinearStretch, "sqrt": SqrtStretch, "log": LogStretch,
+    stretches = {"linear": LinearStretch, "sqrt": SqrtStretch,
                  "asinh": AsinhStretch, "sinh": SinhStretch,
                  "squared": lambda: PowerStretch(2.0),   # the viewer's Square stretch
                  "power": lambda: PowerStretch(req.gamma)}
-    if req.stretch not in stretches:
+    if req.stretch not in stretches and req.stretch != "log":
         raise ValueError(f"Unknown stretch '{req.stretch}': use one of {', '.join(STRETCHES)}.")
     finite = data[np.isfinite(data)]
     if finite.size == 0:
@@ -110,6 +178,9 @@ def _norm(data: np.ndarray, req):
         hi = float(req.vmax) if req.vmax is not None else float(finite.max())
     if not lo < hi:
         raise ValueError("The range needs a minimum below the maximum.")
+    if req.stretch == "log":
+        lo, hi = _log_range(lo, hi, finite)
+        return ImageNormalize(vmin=lo, vmax=hi, stretch=_log_stretch(lo, hi), clip=False)
     # No clip=True here: astropy's clip drops the mask, so a blank pixel (outside the
     # image disc) would come out as the top colour. The data are clipped to the range
     # by ``_masked`` instead, which keeps the blanks blank.
@@ -242,7 +313,9 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
             if overlay_frame:
                 # The native ticks give way to those of the frame asked for, which
                 # are drawn on the same edges (astropy's coordinate overlay).
-                ov_axes = ax.get_coords_overlay(overlay_frame)
+                # An instance, not the name: astropy has no frame called "ecliptic".
+                from .regions import sky_frame  # noqa: PLC0415
+                ov_axes = ax.get_coords_overlay(sky_frame(overlay_frame))
                 for c in (ax.coords[0], ax.coords[1]):
                     c.set_ticks_visible(False)
                     c.set_ticklabel_visible(False)
@@ -292,7 +365,7 @@ def render(data: np.ndarray, header, wcs, beam, req, *, output_path: str | None,
             ov.draw_scale_bar(ax, wcs, req.scale_bar_length, req.scale_bar_unit,
                               req.scale_bar_position, color, req.label_size, notes)
         if req.compass:
-            ov.draw_compass(ax, wcs, req.compass_position, color, req.label_size, notes)
+            ov.draw_compass(ax, wcs, overlay_frame, req.compass_position, color, req.label_size, notes)
 
         if req.add_colorbar:
             # The gap to the axes holds that side's tick labels and axis label.

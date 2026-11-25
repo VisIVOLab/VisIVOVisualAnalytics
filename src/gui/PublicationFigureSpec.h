@@ -4,8 +4,8 @@
 // What the Publication Figure dialog asks of the backend (issue #41), as pure
 // logic with no widget and no VTK so that it can be unit-tested: the options and
 // their defaults (the one-click figure the tool always made), the request body of
-// POST /v1/products/publication_figure, the output formats, the colour-map names
-// the backend can set, and the window's overlays (contour lines, regions, text and
+// POST /v1/products/publication_figure, the output formats, the colour-map choice,
+// and the window's overlays (contour lines, regions, text and
 // arrow annotations) in the canonical region form the backend draws
 // (backend/app/figure_overlays.py), so that nothing is drawn twice by two rules.
 
@@ -41,30 +41,43 @@ inline const std::vector<FormatInfo> &formats()
     return f;
 }
 
-/// The names the backend resolves through matplotlib, in the spelling of the
-/// viewer's colour-map registry (src/vtk/ColorMaps.cpp): those of the registry
-/// that matplotlib also has, the white-to-hue maps last because they print well.
-inline const QStringList &colourMaps()
+/// The colour maps a figure offers, from the names the backend can set (its answer
+/// to the viewer's registry, src/vtk/ColorMaps.cpp, POST
+/// /v1/products/publication_figure/colour_maps): the perceptually uniform ones
+/// first, the rest alphabetically.
+inline QStringList orderedColourMaps(const QStringList &names)
 {
-    static const QStringList m{ "Inferno", "Viridis", "Magma", "Plasma", "Cividis", "CoolWarm",
-                                "Gray", "Purples", "Blues", "Greens", "Reds", "Greys", "Oranges",
-                                "Purples_r", "Blues_r", "Greens_r", "Reds_r", "Greys_r",
-                                "Oranges_r", "hot", "cubehelix" };
-    return m;
+    static const QStringList first{ "Inferno", "Viridis", "Magma", "Plasma", "Cividis", "CoolWarm",
+                                    "Gray" };
+    QStringList head, rest;
+    for (const QString &f : first)
+        for (const QString &n : names)
+            if (n == f)
+                head << n;
+    for (const QString &n : names)
+        if (!first.contains(n))
+            rest << n;
+    rest.sort(Qt::CaseInsensitive);
+    return head + rest;
 }
 
-/// The figure's colour map for the window's: the registry name when the backend
-/// has it, else Inferno (the viewer's own maps, such as Rainbow or Glow, have no
-/// matplotlib counterpart).
-inline QString colourMapFor(const QString &windowMap)
+/// The figure's colour map for the window's: the name in @p available (the dialog's
+/// list) that spells it, in any case, else Inferno. A map of the viewer's that the
+/// backend cannot set (a hand-made or unnamed table) has none.
+inline QString colourMapFor(const QString &windowMap, const QStringList &available)
 {
-    for (const QString &m : colourMaps())
+    for (const QString &m : available)
         if (m.compare(windowMap, Qt::CaseInsensitive) == 0)
             return m;
-    // The stand-ins the volume renderer's table (render_session/_common.py) has.
-    if (windowMap.compare(QStringLiteral("Glow"), Qt::CaseInsensitive) == 0)
-        return QStringLiteral("hot");
     return QStringLiteral("Inferno");
+}
+
+/// The sky frame of a figure's ticks and grid for the window's coordinate choice
+/// (its Galactic and Ecliptic actions; Equatorial and the rest are native).
+inline QString frameForWindow(bool galactic, bool ecliptic)
+{
+    return galactic ? QStringLiteral("galactic")
+                    : ecliptic ? QStringLiteral("ecliptic") : QStringLiteral("native");
 }
 
 /// Everything the dialog edits. The defaults are the one-click figure's.
@@ -89,7 +102,7 @@ struct Options
     double colorbarLabelSize{ 10.0 };
     // Axes and colour bar
     bool grid{ true };
-    QString frame{ QStringLiteral("native") };     ///< native fk5 icrs galactic
+    QString frame{ QStringLiteral("native") };     ///< native fk5 icrs galactic ecliptic
     QString tickFormat{ QStringLiteral("auto") };  ///< auto sexagesimal degrees
     bool colorbar{ true };
     QString colorbarPosition{ QStringLiteral("right") };
@@ -99,7 +112,7 @@ struct Options
     QString beamPosition{ QStringLiteral("bottom-left") };
     bool scaleBar{ false };
     double scaleBarLength{ 0.0 };                  ///< 0 = a round length
-    QString scaleBarUnit{ QStringLiteral("arcsec") };
+    QString scaleBarUnit{ QStringLiteral("auto") };   ///< auto arcsec arcmin deg
     QString scaleBarPosition{ QStringLiteral("bottom-right") };
     bool compass{ false };
     QString compassPosition{ QStringLiteral("top-right") };

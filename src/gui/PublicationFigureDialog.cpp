@@ -74,6 +74,10 @@ PublicationFigureDialog::PublicationFigureDialog(const Context &context, QWidget
 {
     if (!m_ctx.overlays)
         m_ctx.overlays = std::make_shared<Overlays>();
+    if (m_ctx.colourMaps.isEmpty())
+        m_ctx.colourMaps = QStringList{ m_ctx.defaults.cmap };
+    if (!m_ctx.windowColourMap.isEmpty())
+        m_ctx.defaults.cmap = colourMapFor(m_ctx.windowColourMap, m_ctx.colourMaps);
     setWindowTitle(u"Publication Figure"_s);
     build();
 }
@@ -88,7 +92,7 @@ void PublicationFigureDialog::build()
     // ── Image ────────────────────────────────────────────────────────────────
     auto *image = new QWidget(tabs);
     auto *fi = new QFormLayout(image);
-    w->cmap = combo(colourMaps(), d.cmap, image);
+    w->cmap = combo(m_ctx.colourMaps, d.cmap, image);
     w->stretch = combo(kStretches, d.stretch, image);
     w->gamma = spin(0.1, 10.0, d.gamma, 2, image);
     w->gamma->setToolTip(u"Exponent of the power stretch."_s);
@@ -103,6 +107,15 @@ void PublicationFigureDialog::build()
     w->percent = spin(50.0, 100.0, d.percent, 1, image, u" %"_s);
     w->percent->setToolTip(u"Without a range, the colours span this percentile of the pixels."_s);
     fi->addRow(u"Colour map"_s, w->cmap);
+    // The window's map when the figure cannot set it: said, not replaced silently.
+    if (!m_ctx.windowColourMap.isEmpty()
+        && m_ctx.windowColourMap.compare(d.cmap, Qt::CaseInsensitive) != 0) {
+        auto *note = new QLabel(u"The window's colour map (%1) is not available in figures; "
+                                u"using %2."_s.arg(m_ctx.windowColourMap, d.cmap),
+                                image);
+        note->setWordWrap(true);
+        fi->addRow(QString(), note);
+    }
     fi->addRow(u"Stretch"_s, w->stretch);
     fi->addRow(u"Power exponent"_s, w->gamma);
     fi->addRow(QString(), w->useRange);
@@ -140,7 +153,8 @@ void PublicationFigureDialog::build()
     auto *fa = new QFormLayout(axes);
     w->grid = new QCheckBox(u"WCS sky grid"_s, axes);
     w->grid->setChecked(d.grid);
-    w->frame = combo({ u"native"_s, u"fk5"_s, u"icrs"_s, u"galactic"_s }, d.frame, axes);
+    w->frame = combo({ u"native"_s, u"fk5"_s, u"icrs"_s, u"galactic"_s, u"ecliptic"_s }, d.frame,
+                     axes);
     w->frame->setToolTip(u"The sky frame of the ticks and the grid; native is the image's own."_s);
     w->tickFormat = combo({ u"auto"_s, u"sexagesimal"_s, u"degrees"_s }, d.tickFormat, axes);
     w->colorbar = new QCheckBox(u"Colour bar"_s, axes);
@@ -167,7 +181,8 @@ void PublicationFigureDialog::build()
     w->scaleBar->setChecked(d.scaleBar);
     w->scaleBarLength = spin(0.0, 1e6, d.scaleBarLength, 2, over);
     w->scaleBarLength->setSpecialValueText(u"round length"_s);
-    w->scaleBarUnit = combo({ u"arcsec"_s, u"arcmin"_s, u"deg"_s }, d.scaleBarUnit, over);
+    w->scaleBarUnit = combo({ u"auto"_s, u"arcsec"_s, u"arcmin"_s, u"deg"_s }, d.scaleBarUnit, over);
+    w->scaleBarUnit->setToolTip(u"auto: arcsec below 60\", arcmin below 60', else degrees."_s);
     w->scaleBarPosition = combo(kCorners, d.scaleBarPosition, over);
     w->compass = new QCheckBox(u"Compass (north and east)"_s, over);
     w->compass->setChecked(d.compass);
@@ -352,6 +367,10 @@ void PublicationFigureDialog::runPreview()
     // picture stays and the status says what is waited for.
     if (w->useRange->isChecked() && w->vmin->value() >= w->vmax->value()) {
         m_status->setText(u"The minimum must be below the maximum."_s);
+        // A request still out on the old options must not repaint over this: it
+        // finishes as stale (dirty), and the retry it triggers comes back here.
+        if (m_inFlight)
+            m_dirty = true;
         return;
     }
     if (m_inFlight) {

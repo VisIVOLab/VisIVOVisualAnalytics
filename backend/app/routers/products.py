@@ -482,7 +482,7 @@ class PublicationFigureRequest(BaseModel):
     xlabel: str = ""                # "" = the sky axes' names, or X/Y (pixels)
     ylabel: str = ""
     add_grid: bool = True
-    frame: Literal["native", "fk5", "icrs", "galactic"] = "native"   # frame of ticks and grid
+    frame: Literal["native", "fk5", "icrs", "galactic", "ecliptic"] = "native"   # frame of ticks and grid
     tick_format: Literal["auto", "sexagesimal", "degrees"] = "auto"
     add_colorbar: bool = True
     colorbar_position: Literal["right", "left", "top", "bottom"] = "right"
@@ -501,7 +501,7 @@ class PublicationFigureRequest(BaseModel):
     beam_position: Corner = "bottom-left"
     scale_bar: bool = False
     scale_bar_length: float = Field(0.0, ge=0.0)    # in scale_bar_unit; 0 = a round length
-    scale_bar_unit: Literal["arcsec", "arcmin", "deg"] = "arcsec"
+    scale_bar_unit: Literal["auto", "arcsec", "arcmin", "deg"] = "auto"   # auto: arcsec, arcmin or deg by size
     scale_bar_position: Corner = "bottom-right"
     compass: bool = False
     compass_position: Corner = "top-right"
@@ -527,6 +527,26 @@ class PublicationFigureResponse(BaseModel):
     png_base64: str = ""            # preview only
     png_width: int = 0
     png_height: int = 0
+
+
+class FigureColourMapsRequest(BaseModel):
+    names: list[str] = Field(default_factory=list, max_length=500)
+
+
+class FigureColourMapsResponse(BaseModel):
+    names: list[str]                # those of the request the figure can set, in order
+
+
+@router.post("/v1/products/publication_figure/colour_maps",
+             response_model=FigureColourMapsResponse, tags=["products"])
+async def publication_figure_colour_maps(
+    request: FigureColourMapsRequest,
+    _: None = _auth,
+) -> FigureColourMapsResponse:
+    """Which of the given colour-map names a publication figure can use (the
+    desktop sends its registry: its dialog then offers exactly these)."""
+    from ..publication_figure import supported_cmaps  # noqa: PLC0415
+    return FigureColourMapsResponse(names=supported_cmaps(request.names))
 
 
 @router.post("/v1/products/publication_figure",

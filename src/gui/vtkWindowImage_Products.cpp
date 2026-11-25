@@ -264,12 +264,12 @@ visivo::figure::Context vtkWindowImage::publicationFigureContext()
     ctx.fileStem = QFileInfo(this->filepath).completeBaseName() + u"_figure"_s;
     vf::Options &o = ctx.defaults;
 
-    // The colours as the window shows them. A map the backend has not (the
-    // viewer's Rainbow, Glow…) stays the one-click Inferno.
+    // The colours as the window shows them. The dialog resolves the map's name
+    // against what the backend can set, and says when it has to use Inferno.
     const int master = this->layers ? this->layers->getMasterIndex() : -1;
     if (master >= 0 && master < this->layers->rowCount()) {
         if (auto *lut = this->layers->getLookupTable(master)) {
-            o.cmap = vf::colourMapFor(QString::fromStdString(lut->GetObjectName()));
+            ctx.windowColourMap = QString::fromStdString(lut->GetObjectName());
             const double *r = lut->GetTableRange();
             if (r && std::isfinite(r[0]) && std::isfinite(r[1]) && r[0] < r[1]) {
                 o.useRange = true;
@@ -288,8 +288,7 @@ visivo::figure::Context vtkWindowImage::publicationFigureContext()
         case LutScale::Mode::Linear: break;
         }
     }
-    if (ui->actionGalactic->isChecked())
-        o.frame = u"galactic"_s;
+    o.frame = vf::frameForWindow(ui->actionGalactic->isChecked(), ui->actionEcliptic->isChecked());
 
     // Over the image. The lines of a contour layer are taken here, on the GUI
     // thread, as the export does; they are joined later, off it.

@@ -30,6 +30,19 @@ def _color(value: Any, fallback: str) -> str:
     return str(value) if isinstance(value, str) and is_color_like(value) else fallback
 
 
+def is_light(color: str) -> bool:
+    """Whether ``color`` is closer to white than to black (Rec. 601 luma)."""
+    from matplotlib.colors import to_rgb  # noqa: PLC0415
+    r, g, b = to_rgb(color)
+    return 0.299 * r + 0.587 * g + 0.114 * b > 0.5
+
+
+def _box_color(text_color: str) -> str:
+    """Opaque background of a text annotation: dark for a light text, pale for a
+    dark one, so the text reads on a light colour map as on a dark one."""
+    return "#2b2b2b" if is_light(text_color) else "#f2f2f2"
+
+
 def _xy(p) -> tuple[float, float]:
     return float(p[0]) - 1.0, float(p[1]) - 1.0
 
@@ -115,7 +128,9 @@ def draw_regions(ax, regions: list[dict[str, Any]], *, default_color: str = DEFA
                 ax.text(cx, cy, str(r.get("text", "")), color=st["color"], fontsize=font_size,
                         ha="left", va="bottom",
                         # Opaque: EPS has no transparency and would print a black box.
-                        bbox={"boxstyle": "round,pad=0.2", "fc": "#2b2b2b", "ec": "none"})
+                        # The opposite tone of the text, so it reads on any colour map.
+                        bbox={"boxstyle": "round,pad=0.2", "fc": _box_color(st["color"]),
+                              "ec": "none"})
             else:
                 continue
             drawn += 1
@@ -129,57 +144,41 @@ def draw_regions(ax, regions: list[dict[str, Any]], *, default_color: str = DEFA
 
 
 # ── Sky geometry from the WCS ────────────────────────────────────────────────
+# Lengths and directions on the pixel grid are read with regions._PixelFrame (the
+# one place that turns a sky angle into a pixel angle through the WCS, whatever
+# the rotation, mirror and skew) and regions._north_rotation (the angle between
+# the north of two frames); nothing here measures a WCS a second way.
 
 
-def sky_axes(wcs):
-    """Longitude and latitude axis indices of a celestial WCS, or None."""
+def pixel_frame(wcs):
+    """The ``regions._PixelFrame`` of the celestial part of ``wcs`` for 0-based
+    pixels, or None when there is no usable sky grid. ``scale_deg`` of it is the
+    mean sky size of a pixel."""
     if not wcs.has_celestial:
         return None
-    return int(wcs.wcs.lng), int(wcs.wcs.lat)
-
-
-def pixel_scale_deg(wcs) -> float | None:
-    """Mean sky size of a pixel in degrees, or None without a celestial WCS."""
-    if not wcs.has_celestial:
+    from . import regions as R  # noqa: PLC0415
+    try:
+        pf = R._PixelFrame(wcs.celestial, 0)  # noqa: SLF001
+    except (ValueError, TypeError):
         return None
-    from astropy.wcs.utils import proj_plane_pixel_scales  # noqa: PLC0415
-    scales = proj_plane_pixel_scales(wcs.celestial)
-    s = float(np.mean(np.abs(scales)))
-    return s if math.isfinite(s) and s > 0 else None
+    return pf if math.isfinite(pf.scale_deg) and pf.scale_deg > 0 else None
 
 
-def sky_directions(wcs, x: float, y: float) -> tuple[np.ndarray, np.ndarray] | None:
-    """Unit pixel vectors toward increasing latitude (north) and longitude (east)
-    of the WCS's own frame at pixel (x, y), 0-based. They follow the grid, so a
-    rotated or flipped image gets the right compass."""
-    if not wcs.has_celestial:
+def sky_pixel_angle(pf, x: float, y: float, pa_deg: float, frame=None) -> float | None:
+    """Angle from pixel +x, counter-clockwise, of the direction at position angle
+    ``pa_deg`` (from north through east) at 0-based pixel (x, y), or None off the
+    projection. The position angle is that of the WCS's own frame, or of ``frame``
+    (an astropy frame) when one is given: the north of the two differ by an angle
+    that depends on where in the sky the pixel is."""
+    from . import regions as R  # noqa: PLC0415
+    try:
+        lon, lat = (float(v[0]) for v in pf.to_sky([x], [y]))
+        if frame is not None:
+            pa_deg = pa_deg - float(R._north_rotation(lon, lat, pf.frame, frame))  # noqa: SLF001
+        # ds9's sky angle is the position angle plus 90.
+        return pf.sky_angle_to_pix(lon, lat, pa_deg + 90.0)
+    except (R.RegionParseError, ValueError):
         return None
-    w = wcs.celestial
-    lng, lat = int(w.wcs.lng), int(w.wcs.lat)
-    world = np.array(w.wcs_pix2world([[x, y]], 0), dtype=float)[0]
-    eps = 1e-3  # degrees: small against any image, large against round-off
-    out = []
-    for axis in (lat, lng):
-        step = world.copy()
-        step[axis] += eps / (math.cos(math.radians(world[lat])) if axis == lng and abs(world[lat]) < 89.0 else 1.0)
-        p = np.array(w.wcs_world2pix([step], 0), dtype=float)[0] - np.array([x, y])
-        n = float(np.hypot(*p))
-        if not math.isfinite(n) or n == 0:
-            return None
-        out.append(p / n)
-    return out[0], out[1]
-
-
-def position_angle_axis(wcs, x: float, y: float, pa_deg: float) -> float | None:
-    """Angle from pixel +x, counter-clockwise, of a direction at position angle
-    ``pa_deg`` (from north through east) at pixel (x, y)."""
-    d = sky_directions(wcs, x, y)
-    if d is None:
-        return None
-    north, east = d
-    t = math.radians(pa_deg)
-    v = math.cos(t) * north + math.sin(t) * east
-    return math.degrees(math.atan2(v[1], v[0]))
 
 
 # ── Corner placement ─────────────────────────────────────────────────────────
@@ -203,20 +202,18 @@ def halo(color: str):
     """A thin outline in the opposite tone, so a white mark reads over the white of
     a blanked corner and a black one over a dark map."""
     from matplotlib import patheffects  # noqa: PLC0415
-    from matplotlib.colors import to_rgb  # noqa: PLC0415
-    r, g, b = to_rgb(color)
-    light = 0.299 * r + 0.587 * g + 0.114 * b > 0.5
-    return [patheffects.withStroke(linewidth=3.0, foreground="black" if light else "white")]
+    return [patheffects.withStroke(linewidth=3.0, foreground="black" if is_light(color) else "white")]
 
 
 def draw_beam(ax, wcs, beam, corner: str, color: str, notes: list[str]) -> bool:
     """The beam as an ellipse of its true size and orientation (BMAJ, BMIN, BPA
     of the header, or the beam typed for the dataset), in a corner."""
     from matplotlib.patches import Ellipse  # noqa: PLC0415
-    scale = pixel_scale_deg(wcs)
-    if scale is None:
+    pf = pixel_frame(wcs)
+    if pf is None:
         notes.append("Beam: the image has no sky coordinates, so its size cannot be drawn.")
         return False
+    scale = pf.scale_deg
     if not beam or not beam.major or not beam.minor:
         notes.append("Beam: the header has no BMAJ/BMIN (and none was typed for the dataset).")
         return False
@@ -227,7 +224,7 @@ def draw_beam(ax, wcs, beam, corner: str, color: str, notes: list[str]) -> bool:
     pad = 0.6 * major + 0.03 * min(x1 - x0, y1 - y0)
     cx = cx + dx * pad
     cy = cy + dy * pad
-    angle = position_angle_axis(wcs, cx, cy, float(beam.pa or 0.0))
+    angle = sky_pixel_angle(pf, cx, cy, float(beam.pa or 0.0))
     if angle is None:
         angle = float(beam.pa or 0.0) + 90.0
     if major > 0.4 * min(x1 - x0, y1 - y0):
@@ -252,17 +249,30 @@ def nice_length(target: float) -> float:
     return mag
 
 
+def auto_unit(length_deg: float) -> str:
+    """The unit a bar of ``length_deg`` is written in: arcsec below 60", arcmin below
+    60', else degrees, so a survey image does not get a bar of 5000"."""
+    if length_deg * 3600.0 < 60.0:
+        return "arcsec"
+    return "arcmin" if length_deg * 60.0 < 60.0 else "deg"
+
+
 def draw_scale_bar(ax, wcs, length: float, unit: str, corner: str, color: str,
                    font_size: float, notes: list[str]) -> bool:
     """An angular scale bar along x. ``length`` 0 picks 1, 2 or 5 x 10^n of
-    ``unit`` that is about a fifth of the image width."""
-    scale = pixel_scale_deg(wcs)
-    if scale is None:
+    ``unit`` that is about a fifth of the image width. ``unit`` ``auto`` is the
+    unit that suits that fifth (``auto_unit``); a length typed with it is in that
+    unit, which the label states."""
+    pf = pixel_frame(wcs)
+    if pf is None:
         notes.append("Scale bar: the image has no sky coordinates.")
         return False
-    if unit not in _UNIT_DEG:
-        raise ValueError(f"Scale bar unit must be one of {sorted(_UNIT_DEG)}.")
+    scale = pf.scale_deg
+    if unit != "auto" and unit not in _UNIT_DEG:
+        raise ValueError(f"Scale bar unit must be auto or one of {sorted(_UNIT_DEG)}.")
     x0, x1 = sorted(ax.get_xlim())
+    if unit == "auto":
+        unit = auto_unit(0.2 * (x1 - x0) * scale)
     width_unit = (x1 - x0) * scale / _UNIT_DEG[unit]
     length = float(length)
     if length <= 0:
@@ -285,26 +295,36 @@ def draw_scale_bar(ax, wcs, length: float, unit: str, corner: str, color: str,
     return True
 
 
-def draw_compass(ax, wcs, corner: str, color: str, font_size: float, notes: list[str]) -> bool:
-    """North and east arrows at the pixel grid's own orientation, labelled N, E
-    (b, l for a Galactic grid)."""
-    x0, x1 = sorted(ax.get_xlim())
-    y0, y1 = sorted(ax.get_ylim())
-    cx, cy, dx, dy = corner_xy(ax, corner, 0.12)
-    d = sky_directions(wcs, 0.5 * (x0 + x1), 0.5 * (y0 + y1))
-    if d is None:
+def draw_compass(ax, wcs, frame: str, corner: str, color: str, font_size: float,
+                 notes: list[str]) -> bool:
+    """North and east arrows of the sky frame the axes are labelled in (``frame``,
+    "" for the WCS's own), drawn at the pixel grid's orientation at the centre of
+    the image and named after the frame: N, E, or b, l for Galactic. A frame other
+    than the WCS's is turned to by the angle between the two norths."""
+    from . import regions as R  # noqa: PLC0415
+    pf = pixel_frame(wcs)
+    if pf is None:
         notes.append("Compass: the image has no sky coordinates.")
         return False
-    from .regions import native_frame_name  # noqa: PLC0415
     try:
-        galactic = native_frame_name(wcs.celestial) == "galactic"
+        native = R.native_frame_name(wcs.celestial)
     except ValueError:
-        galactic = False
-    names = ("b", "l") if galactic else ("N", "E")
+        native = ""
+    target = R.sky_frame(frame) if frame and frame != native else None
+    x0, x1 = sorted(ax.get_xlim())
+    y0, y1 = sorted(ax.get_ylim())
+    centre = (0.5 * (x0 + x1), 0.5 * (y0 + y1))
+    angles = [sky_pixel_angle(pf, *centre, pa, target) for pa in (0.0, 90.0)]
+    if None in angles:
+        notes.append("Compass: the centre of the image is off its sky projection.")
+        return False
+    names = ("b", "l") if (frame or native) == "galactic" else ("N", "E")
+    cx, cy, dx, dy = corner_xy(ax, corner, 0.12)
     length = 0.08 * min(x1 - x0, y1 - y0)
     # Anchored so that both arrows stay inside the corner they are put in.
     ox, oy = cx + dx * 1.2 * length, cy + dy * 1.2 * length
-    for vec, name in zip(d, names):
+    for ang, name in zip(angles, names):
+        vec = (math.cos(math.radians(ang)), math.sin(math.radians(ang)))
         tip = (ox + vec[0] * length, oy + vec[1] * length)
         arrow = ax.annotate("", xy=tip, xytext=(ox, oy), zorder=5,
                             arrowprops={"arrowstyle": "-|>", "color": color, "lw": 1.5,
