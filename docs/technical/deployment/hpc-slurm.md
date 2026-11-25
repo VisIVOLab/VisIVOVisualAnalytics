@@ -201,7 +201,12 @@ the client shipped the launcher has no such key and loads as a clone, an empty
 *VisIVO clone* meaning `~/VisIVOVisualAnalytics`, as it did then.
 
 **Sites.** The *Site* box fills in what a known site defines and leaves your
-login, account, data root and workspace alone. *Leonardo (CINECA)*: the
+login and account alone. Switching from one known site to another
+(`ClusterProfile::changeSite`) first clears the clone, the backend image file,
+the data root, the workspace, the SRC node code and the further options, which
+belong to the old cluster, switches *Send the launcher* on, and lists the
+fields it reset under the box; an image to pull stays when it is a `docker://`
+reference. Choosing the same site, or *Other*, clears nothing. *Leonardo (CINECA)*: the
 frontend `login.leonardo.cineca.it`, partition `boost_usr_prod`, one GPU,
 `--site leonardo`, 8 CPUs, 120 GB, four hours, and a 30-minute wait in the
 queue; the account is required. No QOS is set, so SLURM's default applies: the
@@ -215,7 +220,16 @@ clusters) it says to renew the CINECA SSH certificate (smallstep
 been talking, the connection dropped (sleep, network) and the message says the
 job is cancelled when the window closes (or by the next window for the profile). A host key that `ssh` has not accepted yet ("Host key verification
 failed") is reported first, with the instruction to connect once from a
-terminal and answer yes: BatchMode never asks.
+terminal and answer yes: BatchMode never asks. A key that differs from the
+recorded one (`REMOTE HOST IDENTIFICATION HAS CHANGED`, or "Host key for ...
+has changed") ends with the same "Host key verification failed", so it is
+tested before it and gets its own message: the key differs from `known_hosts`,
+which can mean an attack, so the fingerprint is to be checked against the
+site's published ones before `ssh-keygen -R <host>` and a first connection from a
+terminal. On Leonardo the message adds that `login.leonardo.cineca.it` points
+to several login nodes with different host keys, each of which must be
+recorded once (a connection to each `loginNN-ext` node, or `ssh-keyscan`, with
+the fingerprints verified against CINECA's).
 
 **Waiting.** The connection window shows what the job is doing: *Waiting in the
 queue: <SLURM reason>* while it is pending, *Pulling the backend image* with
