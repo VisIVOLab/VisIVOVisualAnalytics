@@ -174,8 +174,13 @@ done
 # site stays usable with plain options. Detection is by host name (the launcher
 # runs on the frontend); --site or VISIVO_SITE decides when it is wrong.
 if [[ -z "$SITE" ]]; then
-    case "$(hostname -f 2>/dev/null || hostname)" in
-        *leonardo*)          SITE=leonardo ;;
+    # Leonardo: the login hosts (login01.leonardo.local, login01-ext.leonardo.cineca.it)
+    # and the node names (lrdn..., lrdl...); a host that merely has the word in
+    # its name stays generic.
+    SITE_HOST="$(hostname -f 2>/dev/null || hostname)"
+    SITE_HOST="$(printf '%s' "$SITE_HOST" | tr '[:upper:]' '[:lower:]')"
+    case "$SITE_HOST" in
+        login*.leonardo.local|*.leonardo.cineca.it|lrdn*|lrdl*) SITE=leonardo ;;
         *pleiadi*)           SITE=pleiadi ;;
         *)                   SITE=generic ;;
     esac
@@ -361,12 +366,14 @@ if [[ -n "$IMAGE" ]]; then
         # Pulled under a temporary name, so that an interrupted pull leaves no
         # file that the next run would take for the image.
         PULL_TMP="$SIF.pulling.$$"
+        trap 'rm -f "$PULL_TMP"; exit 130' INT HUP TERM
         echo "[visivo] Pulling $IMAGE to $SIF (a few GB; this can take minutes)..."
         if ! "$RUNTIME" pull "$PULL_TMP" "$IMAGE" || ! mv -f "$PULL_TMP" "$SIF"; then
             rm -f "$PULL_TMP"
             echo "[visivo] ERROR: could not pull $IMAGE." >&2
             exit 1
         fi
+        trap - INT HUP TERM
     fi
 fi
 SIF="${SIF:-$(dirname "$0")/../apptainer/backend.sif}"
@@ -470,9 +477,12 @@ if [[ -n "$BACKEND_SRC" ]]; then
     else
         SRC_INFO+=", not a git checkout"
     fi
-    SRC_NEWEST="$(find "$BACKEND_SRC" -name '*.py' -type f -print0 | xargs -0 ls -t 2>/dev/null | head -1 || true)"
-    if [[ -n "$SRC_NEWEST" ]]; then
-        SRC_INFO+=", newest file $(date -r "$SRC_NEWEST" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
+    # Newest modification time over the whole tree (GNU find; on a find without
+    # -printf the line is left out).
+    SRC_NEWEST="$(find "$BACKEND_SRC" -name '*.py' -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 || true)"
+    SRC_NEWEST="${SRC_NEWEST%%.*}"
+    if [[ "$SRC_NEWEST" =~ ^[0-9]+$ ]]; then
+        SRC_INFO+=", newest file $(date -d "@$SRC_NEWEST" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$SRC_NEWEST" '+%Y-%m-%d %H:%M' 2>/dev/null || echo '?')"
     fi
     SRC_BIND_FLAG="--bind $(q "${BACKEND_SRC}:/app/app")"
     echo "[visivo] Overlaying /app/app with host source: $SRC_INFO"
@@ -527,7 +537,12 @@ fi
 
 # --cleanenv keeps the host's environment (REQUESTS_CA_BUNDLE and pip's CA
 # variables break Python inside a Debian-based image) out of the container.
-# What the backend reads from SLURM and CUDA is passed on by name.
+# What the backend reads is passed on by name: the SLURM and CUDA variables of
+# the job (read inside the job), and the operator's VISIVO_* settings and
+# VTK_EGL_DEVICE_INDEX as they are at submit time (written into the job
+# script). The launcher's own VISIVO_* options (account, partition, image...)
+# and the token (handled above) are not forwarded; a variable the job script
+# has already set explicitly is not overridden.
 CLEANENV_FLAG=""
 CLEANENV_PASS=""
 if [[ "$CLEANENV" == "1" ]]; then
@@ -536,6 +551,11 @@ if [[ "$CLEANENV" == "1" ]]; then
     CLEANENV_PASS='for v in SLURM_JOB_ID SLURM_MEM_PER_NODE SLURM_MEM_PER_CPU SLURM_CPUS_ON_NODE SLURM_CPUS_PER_TASK CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES; do
     [[ -n "${!v+x}" ]] && export "APPTAINERENV_${v}=${!v}"
 done'
+    LAUNCHER_ONLY=" VISIVO_TOKEN VISIVO_ACCOUNT VISIVO_ASSIGN_TIMEOUT VISIVO_BACKEND_SRC_OVERRIDE VISIVO_BIND VISIVO_CLEANENV VISIVO_CONTAINER_RUNTIME VISIVO_CPUS VISIVO_GRES VISIVO_IMAGE VISIVO_JOB_NAME VISIVO_LOGIN_SHELL VISIVO_LOG_DIR VISIVO_MEM VISIVO_PARTITION VISIVO_PORT VISIVO_QOS VISIVO_SIF VISIVO_SITE VISIVO_TIME VISIVO_WORKSPACE "
+    for v in "${!VISIVO_@}" VTK_EGL_DEVICE_INDEX; do
+        [[ -n "${!v+x}" && "$LAUNCHER_ONLY" != *" $v "* ]] || continue
+        CLEANENV_PASS+=$'\n'"[[ -n \"\${APPTAINERENV_${v}+x}\" ]] || export APPTAINERENV_${v}=$(q "${!v}")"
+    done
 fi
 
 # ── Write the SLURM job script ────────────────────────────────────────────────
@@ -648,7 +668,7 @@ echo "[visivo] Compute node: $NODE"
 probe_health() {
     local cmd
     cmd="curl -sf -H $(q "X-Visivo-Token: ${TOKEN}") http://localhost:${PORT}/v1/health"
-    if ssh -o StrictHostKeyChecking=no -o BatchMode=yes "$NODE" "$cmd" >/dev/null 2>&1; then
+    if ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "$NODE" "$cmd" >/dev/null 2>&1; then
         return 0
     fi
     [[ "$PROBE_SRUN" == "true" ]] || return 1

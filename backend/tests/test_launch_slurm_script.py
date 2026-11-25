@@ -76,6 +76,26 @@ def _job(out: Path) -> str:
     return (out / "job.sh").read_text()
 
 
+def _run_job(tmp_path: Path, out: Path, extra_env=None):
+    """Run the written job script against the stand-in runtime; return (argv, environment seen)."""
+    bindir = next(tmp_path.glob("bin*"))
+    env = {
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+        "STUB_OUT": str(out),
+        "SLURM_JOB_ID": "4242",
+        "REQUESTS_CA_BUNDLE": "/host/ca.pem",
+    }
+    env.update(extra_env or {})
+    p = subprocess.run(["bash", str(out / "job.sh")], env=env, capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stdout + p.stderr
+    args = (out / "run.args").read_text().split("\n")
+    seen = dict(
+        line.split("=", 1) for line in (out / "run.env").read_text().splitlines() if "=" in line
+    )
+    return args, seen
+
+
 def test_generic_site_keeps_the_pleiadi_behaviour(run_launcher):
     r, out = run_launcher("--site", "generic")
     assert r.returncode == 0, r.stdout + r.stderr
@@ -138,6 +158,25 @@ def test_site_is_detected_from_the_host_name(run_launcher, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "Site profile: leonardo (detected)" in r.stdout
     assert "boost_usr_prod" in _job(out)
+
+
+@pytest.mark.parametrize("host", [
+    "leonardo-dev.example.org", "my-leonardo-box", "login.example.org",
+])
+def test_other_hosts_are_generic(run_launcher, host):
+    r, out = run_launcher("--account", "A", env={"STUB_HOSTNAME": host})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Site profile: generic (detected)" in r.stdout
+    assert "boost_usr_prod" not in _job(out)
+
+
+@pytest.mark.parametrize("host", [
+    "login01-ext.leonardo.cineca.it", "LOGIN02.LEONARDO.LOCAL", "lrdn0042",
+])
+def test_cineca_leonardo_hosts_are_detected(run_launcher, tmp_path, host):
+    r, _ = run_launcher("--account", "A", env={"STUB_HOSTNAME": host, "WORK": str(tmp_path)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Site profile: leonardo (detected)" in r.stdout
 
 
 def test_options_beat_the_profile(run_launcher, tmp_path):
@@ -203,24 +242,12 @@ def test_job_script_runs_with_singularity_and_cleanenv(run_launcher, tmp_path):
         runtimes=("singularity",), env={"CINECA_SCRATCH": str(scratch)},
     )
     assert r.returncode == 0, r.stdout + r.stderr
-    bindir = next(tmp_path.glob("bin*"))
-    env = {
-        "PATH": f"{bindir}:{os.environ['PATH']}",
-        "HOME": str(tmp_path / "home"),
-        "STUB_OUT": str(out),
-        "SLURM_JOB_ID": "4242",
+    args, seen = _run_job(tmp_path, out, {
         "SLURM_MEM_PER_NODE": "65536",
         "CUDA_VISIBLE_DEVICES": "0",
-        "REQUESTS_CA_BUNDLE": "/host/ca.pem",
         "APPTAINERENV_VISIVO_RENDER_MAX_SESSIONS": "4",   # an operator's own setting
-    }
-    p = subprocess.run(["bash", str(out / "job.sh")], env=env, capture_output=True, text=True, timeout=60)
-    assert p.returncode == 0, p.stdout + p.stderr
-    args = (out / "run.args").read_text().split("\n")
+    })
     assert args[0] == "run" and "--cleanenv" in args and "--nv" in args
-    seen = dict(
-        line.split("=", 1) for line in (out / "run.env").read_text().splitlines() if "=" in line
-    )
     assert seen["SINGULARITYENV_VISIVO_TOKEN"] == "tok123"
     assert seen["SINGULARITYENV_PORT"] == "8000"
     assert seen["SINGULARITYENV_SLURM_JOB_ID"] == "4242"
@@ -240,3 +267,53 @@ def test_leonardo_without_scratch_variables_warns(run_launcher):
     )
     assert r.returncode == 0, r.stdout + r.stderr
     assert "no scratch area found" in r.stderr
+
+
+def test_cleanenv_forwards_the_operators_visivo_settings(run_launcher, tmp_path):
+    """VISIVO_* and VTK_EGL_DEVICE_INDEX exported at submit time reach the container, plainly named."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    r, out = run_launcher(
+        "--site", "leonardo", "--account", "A", "--token", "tok123",
+        runtimes=("singularity",),
+        env={
+            "CINECA_SCRATCH": str(scratch),
+            "VISIVO_RENDER_MAX_SESSIONS": "3",
+            "VISIVO_HEAVY_TIMEOUT_S": "90",
+            "VISIVO_LLM_URL": "http://llm host/v1 ; echo $HOME",   # quoting survives
+            "VTK_EGL_DEVICE_INDEX": "1",
+            "VISIVO_SITE": "leonardo",                             # the launcher's own option
+        },
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    # The values are in the script, so the job's own environment is not needed.
+    args, seen = _run_job(tmp_path, out)
+    assert "--cleanenv" in args
+    assert seen["SINGULARITYENV_VISIVO_RENDER_MAX_SESSIONS"] == "3"
+    assert seen["SINGULARITYENV_VISIVO_HEAVY_TIMEOUT_S"] == "90"
+    assert seen["SINGULARITYENV_VISIVO_LLM_URL"] == "http://llm host/v1 ; echo $HOME"
+    assert seen["SINGULARITYENV_VTK_EGL_DEVICE_INDEX"] == "1"
+    assert seen["SINGULARITYENV_VISIVO_TOKEN"] == "tok123"        # the launcher's token
+    assert "SINGULARITYENV_VISIVO_SITE" not in seen
+    assert "SINGULARITYENV_REQUESTS_CA_BUNDLE" not in seen
+
+
+@pytest.mark.parametrize("site,runtime,cleanenv", [
+    ("leonardo", "singularity", True),
+    ("pleiadi", "apptainer", False),
+    ("generic", "apptainer", False),
+])
+def test_cleanenv_flag_follows_the_site(run_launcher, tmp_path, site, runtime, cleanenv):
+    r, out = run_launcher(
+        "--site", site, "--account", "A", runtimes=(runtime,),
+        env={"CINECA_SCRATCH": str(tmp_path), "VISIVO_RENDER_MAX_SESSIONS": "3"},
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    args, _ = _run_job(tmp_path, out)
+    assert ("--cleanenv" in args) is cleanenv
+
+
+def test_other_sites_job_script_has_no_forwarding_block(run_launcher):
+    r, out = run_launcher("--site", "generic", env={"VISIVO_RENDER_MAX_SESSIONS": "3"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "APPTAINERENV_VISIVO_RENDER_MAX_SESSIONS" not in _job(out)
