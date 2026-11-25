@@ -23,9 +23,10 @@
 //     `snap_010.0.hdf5`), so the group matches the names Gadget writes by
 //     default, by their beginning (`snap_`, `snapshot_`). A snapshot under
 //     another name opens all the same: the classifier reads its header.
-//   - RAMSES outputs (#549): a folder `output_NNNNN` (pick the folder, or any
-//     file in it) of `info_NNNNN.txt`, `amr_NNNNN.out00001`, `hydro_...`,
-//     `part_...`: no suffix of their own, so by the beginning of the name.
+//   - RAMSES outputs (#549): any file of a folder `output_NNNNN` (the dialog
+//     opens files, not folders) of `info_NNNNN.txt`, `amr_NNNNN.out00001`,
+//     `hydro_...`, `part_...`: no suffix of their own, so by the beginning of
+//     the name.
 //
 // These are a VIEW filter. The backend classifies a file by its content, so a
 // FITS or a CSV under some other name still opens: it is listed under

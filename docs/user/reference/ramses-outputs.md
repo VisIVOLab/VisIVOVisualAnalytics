@@ -11,7 +11,8 @@ converted first, and yt is not needed.
 An output is a folder `output_NNNNN` with `info_NNNNN.txt`, one
 `part_NNNNN.outCCCCC` per process (and `amr_`, `hydro_`, `grav_` files for the
 gas and the mesh). In *File ▸ Open…*, choose *File type* ▸ *RAMSES outputs* and
-pick any of `info_…`, `part_…` or `amr_…` in the folder, or pick the folder. The
+pick any of `info_…`, `part_…` or `amr_…` in the folder (the dialog opens files,
+not folders). The
 backend recognises an output by its info file, not by a name. A folder of
 outputs (`output_00080`, `output_00081`, ...) is a series: the timeline of the
 VR page steps through them, skipping an output that has no particles of the
