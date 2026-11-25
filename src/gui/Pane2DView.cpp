@@ -842,12 +842,18 @@ void Pane2DView::updateWcsOverlay()
 
     const double d = dpr();
     const auto gutter = computeGutter(m_window, m_lut, m_showWcsAxes, d, m_bottomReserve);
-    // Derive the data area at the CURRENT viewport size — never a cached member (§2.7).
-    const auto data = CubeGeom::dataAreaFor(size, imageData, gutter);
-    const double axisX = data.valid ? data.x : gutter.left;
-    const double xRight = data.valid ? data.x + data.width : size[0] - gutter.right;
-    const double yTop = data.valid ? data.y + data.height : size[1] - gutter.top;
-    const double bottomMargin = data.valid ? data.y : gutter.bottom;
+    // The axes run along the image as it is on screen, the same frame as the cube
+    // and image viewers (CubeGeom::axisFrameFor), at the CURRENT viewport size (§2.7).
+    const auto frame = CubeGeom::axisFrameFor(size, m_renderer->GetActiveCamera(), imageData,
+                                              gutter, 16.);
+    if (!frame.valid) {
+        this->setOverlayVisible(false);
+        return;
+    }
+    const double axisX = frame.left;
+    const double xRight = frame.right;
+    const double yTop = frame.top;
+    const double bottomMargin = frame.bottom;
 
     CubeWcs::configureAxisActor(m_overlayXAxis, axisX, bottomMargin, xRight, bottomMargin);
     CubeWcs::configureAxisActor(m_overlayYAxis, axisX, yTop, axisX, bottomMargin);
@@ -862,11 +868,11 @@ void Pane2DView::updateWcsOverlay()
     m_overlayYTitle->SetDisplayPosition(static_cast<int>(std::max(axisX - 74. * d, 12. * d)),
                                         static_cast<int>((bottomMargin + yTop) / 2.));
 
-    // The image exactly fills the data area — range and ticks from the visible bounds.
-    const double rxMin = visible.xmin;
-    const double rxMax = visible.xmax;
-    const double ryMin = visible.ymin;
-    const double ryMax = visible.ymax;
+    // The frame's ends carry the image coordinates under them, panned, zoomed or fitted.
+    const double rxMin = frame.xmin;
+    const double rxMax = frame.xmax;
+    const double ryMin = frame.ymin;
+    const double ryMax = frame.ymax;
     bool xOk = false;
     bool yOk = false;
     const double xMin = m_wcs.voxelToWcs(0, rxMin, &xOk);

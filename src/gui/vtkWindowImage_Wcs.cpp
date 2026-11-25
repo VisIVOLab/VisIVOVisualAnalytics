@@ -284,7 +284,8 @@ void vtkWindowImage::updateWcsOverlay()
     gutter.bottom = 58.;
     gutter.top = 28.;
     const CubeGeom::AxisFrame frame =
-            CubeGeom::axisFrameFor(size, renderer->GetActiveCamera(), imageData, gutter);
+            CubeGeom::axisFrameFor(size, renderer->GetActiveCamera(), imageData, gutter,
+                                    16.);
     if (!frame.valid) {
         // Too little of the image on screen to label. Axes laid to the
         // viewport's edges would read the wrong coordinates, so show none.
