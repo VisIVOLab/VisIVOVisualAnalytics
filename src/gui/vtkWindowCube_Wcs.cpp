@@ -574,7 +574,7 @@ double vtkWindowCube::remoteFrameCoordinate(int axis, double voxelX, double voxe
 QString vtkWindowCube::formatRemoteOverlayCoordinate(int axis, double value, double axisSpan) const
 {
     if (!this->remoteHasCelestialAxes()) {
-        return QString::number(value, 'g', 8);
+        return visivo::formatLinearTick(value, axisSpan);
     }
     if (!this->useSexagesimalWcsFormat) {
         return this->formatDegreeCoordinate(value, axisSpan);
@@ -606,6 +606,10 @@ QString vtkWindowCube::formatDegreeCoordinate(double value, double axisSpan) con
 
 QString vtkWindowCube::currentWcsFrameLabel() const
 {
+    // X, Y, Z of a simulation are not on the sky: say so instead of naming
+    // the frame the menu happens to have selected.
+    if (!this->remoteHasCelestialAxes())
+        return visivo::linearFrameLabel(this->remoteDatasetCtype[0], this->remoteDatasetCtype[1]);
     const int frame = this->selectedWcsFrame();
     return frame == WCS_GALACTIC ? u"Galactic"_s
             : (frame == WCS_J2000 ? u"FK5"_s : u"Ecliptic"_s);
@@ -907,11 +911,25 @@ void vtkWindowCube::updateSliceWcsOverlay()
     const double dpr = this->dprFor(/*slice=*/true);   // offsets below are logical px × dpr
     // Derive the data area at the CURRENT viewport size — never a cached member,
     // which goes stale across the multiple resizes a dock toggle produces (§2.7).
-    const auto data = CubeGeom::dataAreaFor(size, imageData, gutter);
-    const double axisX = data.valid ? data.x : gutter.left;
-    const double xRight = data.valid ? data.x + data.width : size[0] - gutter.right;
-    const double yTop = data.valid ? data.y + data.height : size[1] - gutter.top;
-    const double bottomMargin = data.valid ? data.y : gutter.bottom;
+    const auto frame = CubeGeom::axisFrameFor(size, renderer->GetActiveCamera(), imageData,
+                                              gutter, 16.);
+    if (!frame.valid) {
+        this->sliceOverlayXAxis->VisibilityOff();
+        this->sliceOverlayYAxis->VisibilityOff();
+        this->sliceOverlayXTitleActor->VisibilityOff();
+        this->sliceOverlayYTitleActor->VisibilityOff();
+        for (auto &tick : this->sliceOverlayXTickActors)
+            if (tick)
+                tick->VisibilityOff();
+        for (auto &tick : this->sliceOverlayYTickActors)
+            if (tick)
+                tick->VisibilityOff();
+        return;
+    }
+    const double axisX = frame.left;
+    const double xRight = frame.right;
+    const double yTop = frame.top;
+    const double bottomMargin = frame.bottom;
     configureAxisActor(this->sliceOverlayXAxis, axisX, bottomMargin, xRight, bottomMargin);
     configureAxisActor(this->sliceOverlayYAxis, axisX, yTop, axisX, bottomMargin);
     this->sliceOverlayXAxis->SetTitle("");
@@ -925,12 +943,12 @@ void vtkWindowCube::updateSliceWcsOverlay()
     this->sliceOverlayYTitleActor->SetDisplayPosition(static_cast<int>(std::max(axisX - 74. * dpr, 12. * dpr)),
                                                       static_cast<int>((bottomMargin + yTop) / 2.));
 
-    // The image exactly fills the data area, so its full visible extent maps to the
-    // axis endpoints — range and ticks come straight from the visible bounds.
-    const double rxMin = visible.xmin;
-    const double rxMax = visible.xmax;
-    const double ryMin = visible.ymin;
-    const double ryMax = visible.ymax;
+    // The axes run along the image as it is on screen (CubeGeom::axisFrameFor): the
+    // frame's ends carry the coordinates under them, panned, zoomed or fitted.
+    const double rxMin = frame.xmin;
+    const double rxMax = frame.xmax;
+    const double ryMin = frame.ymin;
+    const double ryMax = frame.ymax;
     bool xOk = false;
     bool yOk = false;
     const double xMin = this->remoteVoxelToWcs(pa[0], rxMin, &xOk);
@@ -1084,11 +1102,25 @@ void vtkWindowCube::updateMomentWcsOverlay()
     const auto gutter = this->gutter2dFor(/*slice=*/false);
     const double dpr = this->dprFor(/*slice=*/false);   // offsets below are logical px × dpr
     // Derive the data area at the CURRENT viewport size — never a cached member (§2.7).
-    const auto data = CubeGeom::dataAreaFor(size, imageData, gutter);
-    const double axisX = data.valid ? data.x : gutter.left;
-    const double xRight = data.valid ? data.x + data.width : size[0] - gutter.right;
-    const double yTop = data.valid ? data.y + data.height : size[1] - gutter.top;
-    const double bottomMargin = data.valid ? data.y : gutter.bottom;
+    const auto frame = CubeGeom::axisFrameFor(size, renderer->GetActiveCamera(), imageData,
+                                              gutter, 16.);
+    if (!frame.valid) {
+        this->momentOverlayXAxis->VisibilityOff();
+        this->momentOverlayYAxis->VisibilityOff();
+        this->momentOverlayXTitleActor->VisibilityOff();
+        this->momentOverlayYTitleActor->VisibilityOff();
+        for (auto &tick : this->momentOverlayXTickActors)
+            if (tick)
+                tick->VisibilityOff();
+        for (auto &tick : this->momentOverlayYTickActors)
+            if (tick)
+                tick->VisibilityOff();
+        return;
+    }
+    const double axisX = frame.left;
+    const double xRight = frame.right;
+    const double yTop = frame.top;
+    const double bottomMargin = frame.bottom;
     configureAxisActor(this->momentOverlayXAxis, axisX, bottomMargin, xRight, bottomMargin);
     configureAxisActor(this->momentOverlayYAxis, axisX, yTop, axisX, bottomMargin);
     this->momentOverlayXAxis->SetTitle("");
@@ -1101,11 +1133,11 @@ void vtkWindowCube::updateMomentWcsOverlay()
     this->momentOverlayYTitleActor->SetDisplayPosition(static_cast<int>(std::max(axisX - 74. * dpr, 12. * dpr)),
                                                        static_cast<int>((bottomMargin + yTop) / 2.));
 
-    // The image exactly fills the data area — range and ticks from the visible bounds.
-    const double rxMin = visible.xmin;
-    const double rxMax = visible.xmax;
-    const double ryMin = visible.ymin;
-    const double ryMax = visible.ymax;
+    // Range and ticks from the frame's ends (see updateSliceWcsOverlay).
+    const double rxMin = frame.xmin;
+    const double rxMax = frame.xmax;
+    const double ryMin = frame.ymin;
+    const double ryMax = frame.ymax;
     bool xOk = false;
     bool yOk = false;
     const double xMin = this->remoteVoxelToWcs(0, rxMin, &xOk);

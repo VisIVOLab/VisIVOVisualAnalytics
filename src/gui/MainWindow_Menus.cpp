@@ -374,6 +374,13 @@ void MainWindow::buildDataMenu()
             u"and open the result as a cube."_s);
     QObject::connect(actArepo, &QAction::triggered, this, &MainWindow::openArepoSnapshot);
 
+    auto *actPlutoCartesian = dataMenu->addAction(u"Cartesian View of a PLUTO Output…"_s);
+    actPlutoCartesian->setToolTip(
+            u"Resample a PLUTO output on polar, cylindrical, spherical or stretched cells onto "
+            u"a uniform x-y-z grid, on the backend, and open it like any other volume."_s);
+    QObject::connect(actPlutoCartesian, &QAction::triggered, this,
+                     &MainWindow::openPlutoCartesianView);
+
     dataMenu->addSeparator();
 
     // The archive services: they fetch a file rather than open one, which is

@@ -215,7 +215,11 @@ and validation: [Cube viewer: methods](../../technical/methods/cube-viewer.md).
   every product pane: moment, line-width and Faraday maps, and the PV
   diagram. The colour bar follows it. Each pane keeps its own; the product
   remembers the last choice when it is shown again or recomputed. *Log* is
-  refused, with a message, on an image with no positive values.
+  refused, with a message, on an image with no positive values. Its lower end
+  is the faint end of the positive values (their 1st percentile), but never
+  more than twelve decades under the peak, so rounding residuals in an
+  otherwise empty map do not flatten the display. The rule is relative to the
+  data, so it also holds for physical units (a density of 1e-24 g/cm3).
 - *Same range on every channel* (*DISPLAY* of the 2-D Slice): keeps one colour
   range across channels instead of stretching each channel to its own range.
   *Cube range* sets the range to the whole loaded cube. Choosing any range

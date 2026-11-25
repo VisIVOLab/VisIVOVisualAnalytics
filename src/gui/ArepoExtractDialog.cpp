@@ -3,6 +3,7 @@
 #include "ArepoExtractDialog.h"
 
 #include "ToolProgressSheet.h"
+#include "app/ByteSize.h"
 
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -23,21 +24,6 @@
 #include <cmath>
 
 using namespace Qt::Literals::StringLiterals;
-
-namespace {
-
-QString formatBytes(qint64 bytes)
-{
-    constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
-    constexpr double kMiB = 1024.0 * 1024.0;
-    if (bytes >= kGiB)
-        return u"%1 GiB"_s.arg(bytes / kGiB, 0, 'f', 2);
-    if (bytes >= kMiB)
-        return u"%1 MiB"_s.arg(bytes / kMiB, 0, 'f', 1);
-    return u"%1 KiB"_s.arg(bytes / 1024.0, 0, 'f', 0);
-}
-
-}   // namespace
 
 ArepoExtractDialog::ArepoExtractDialog(const QString &snapshotPath, const QString &backendUrl,
                                        const QString &backendToken, QWidget *parent)
@@ -315,7 +301,7 @@ void ArepoExtractDialog::onPlanFinished()
         cells.append(QString::number(size, 'f', 2));
     QString text = u"<b>Grid:</b> %1 cells &nbsp; <b>Cell:</b> %2 pc &nbsp; "
                    u"<b>Per field:</b> %3"_s.arg(dims.join(u" × "_s), cells.join(u" × "_s),
-                                                formatBytes(plan.bytesEstimate));
+                                                visivo::formatBytes(plan.bytesEstimate));
     // The cell size is fixed by the level, so the extracted extent is the
     // requested window rounded to whole cells. Say so when they differ, rather
     // than letting the cube quietly cover a slightly different volume.

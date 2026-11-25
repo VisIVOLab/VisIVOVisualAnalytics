@@ -16,4 +16,7 @@ private slots:
     void aSmallFieldKeepsEveryTickLabelDistinct();
     void aSpanAcrossZeroIsTheShortWayRound();
     void theYTitleClearsLongLabels();
+    void aLinearAxisPrintsZeroNotRoundingNoise();
+    void aLinearWcsIsNotNamedAfterASkyFrame();
+    void anAxisFollowsTheImageOnScreenAndReadsItsEnds();
 };

@@ -507,3 +507,34 @@ def pluto_fits_header(var: PlutoVariable):
     else:
         hdr["PLUTOGRD"] = ("UNIFORM", "axes are coordinates (code units)")
     return hdr
+
+
+# ── A Cartesian view of a variable (app/compute/pluto_cartesian.py) ──────────
+
+#: A variable resampled onto a uniform Cartesian grid is a FITS cube of this
+#: name, its source variable's reference in the card below.
+VIEW_SUFFIX = ".pluto-cartesian.fits"
+SOURCE_KEY = "PLUTOSRC"
+
+
+def view_source(path: str | Path) -> str | None:
+    """The PLUTO variable reference a Cartesian-view cube was resampled from
+    (its ``PLUTOSRC`` card), so its values and coordinates are shown in that
+    run's physical units; None for any other file."""
+    if not str(path).endswith(VIEW_SUFFIX):
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return _view_source(str(path), st.st_size, st.st_mtime_ns)
+
+
+@lru_cache(maxsize=32)
+def _view_source(path: str, _size: int, _mtime_ns: int) -> str | None:
+    from astropy.io import fits  # noqa: PLC0415
+    try:
+        value = fits.getheader(path).get(SOURCE_KEY)
+    except (OSError, ValueError):
+        return None
+    return str(value) if value else None

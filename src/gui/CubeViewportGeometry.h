@@ -7,6 +7,7 @@
 
 #include <array>
 
+class vtkCamera;
 class vtkImageData;
 class vtkRenderWindow;
 class vtkRenderer;
@@ -92,6 +93,27 @@ ImageGutter fitGutterWithBottomReserve(ImageGutter g, const int size[2], double 
 /// size. Pure — no renderer state, no caching. Both the camera fit and the WCS
 /// overlays call this, so they cannot disagree about where the data is (§2.7).
 ImageRect dataAreaFor(const int size[2], vtkImageData *image, const ImageGutter &g);
+
+/// The frame the WCS axes are drawn in, for ANY camera (fitted, panned or
+/// zoomed): the part of the image that is on screen, in display pixels, kept
+/// inside the room the gutter leaves for labels, and the image coordinate under
+/// each edge. Both 2-D viewers lay their axes along it, so a tick always reads
+/// the coordinate beneath it. With the fitted camera it is dataAreaFor() and
+/// the image's own bounds.
+struct AxisFrame
+{
+    bool valid{ false };   ///< false when under @c minExtent pixels of the image are on screen
+    double left{ 0. };     ///< display x of the y axis
+    double right{ 0. };    ///< display x of the x axis' far end
+    double bottom{ 0. };   ///< display y of the x axis
+    double top{ 0. };      ///< display y of the y axis' far end
+    double xmin{ 0. };     ///< image coordinate under `left`
+    double xmax{ 0. };     ///< ... under `right`
+    double ymin{ 0. };     ///< ... under `bottom`
+    double ymax{ 0. };     ///< ... under `top`
+};
+AxisFrame axisFrameFor(const int size[2], vtkCamera *camera, vtkImageData *image,
+                       const ImageGutter &g, double minExtent = 60.);
 
 /// Aspect-preserving parallel-projection fit of `image` into the gutter's inner
 /// box. Sets ParallelScale + focal point; leaves the view direction alone. When

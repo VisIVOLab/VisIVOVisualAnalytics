@@ -81,10 +81,31 @@ inline double positiveFloor(double maxValue)
     return maxValue * 1e-6;
 }
 
+// How far below the peak a log display may reach: twelve decades. Relative to
+// the data on purpose. A fixed absolute floor (the old 1e-12) sat above a whole
+// physical-units map (rho ~ 1e-24), while no floor at all lets rounding
+// residuals (1e-20..1e-38 in a map that is mostly empty) stretch the display
+// over twenty flat decades.
+inline constexpr double logFloorRatio = 1e-12;
+
+// The one rule for a log floor, used by every viewer: the faint end the data
+// shows (`p1`, a low percentile of its positive samples) but never more than
+// logFloorRatio below the peak `vmax`. Pass p1 <= 0 when only the peak is known:
+// the answer is then the peak-relative floor alone. 0.0 when neither is usable.
+inline double logFloor(double p1, double vmax)
+{
+    const double top = std::isfinite(vmax) ? std::abs(vmax) : 0.0;
+    const double relative = top * logFloorRatio;
+    if (!(p1 > 0.0) || !std::isfinite(p1))
+        return relative;
+    return std::max(p1, relative);
+}
+
 // The log floor sampledPositiveFloor() picks from the positive samples it
 // collected: their 1st percentile, low enough to keep the faint end, high
 // enough that a single hot-adjacent pixel or a residual near zero does not set
-// the floor. 0.0 for an empty sample.
+// the floor, and never more than logFloorRatio under their maximum. 0.0 for an
+// empty sample.
 inline double percentileFloor(std::vector<double> positives)
 {
     if (positives.empty())
@@ -93,7 +114,8 @@ inline double percentileFloor(std::vector<double> positives)
     const std::size_t idx = static_cast<std::size_t>(
             std::clamp<double>(0.01 * static_cast<double>(positives.size() - 1), 0.0,
                                static_cast<double>(positives.size() - 1)));
-    return std::max(1e-12, positives[idx]);
+    // Every sample is already > 0, so there is no absolute floor here.
+    return logFloor(positives[idx], positives.back());
 }
 
 // Apply a scale mode to a vtkLookupTable ALREADY freshly filled with a linear
@@ -140,6 +162,19 @@ inline std::array<double, 2> rangeFor(Mode mode, double min, double max)
     const double flooredMax = (max > 0.0 && std::isfinite(max)) ? max : positiveFloor(max);
     const double flooredMin = (min > 0.0 && std::isfinite(min)) ? min : positiveFloor(flooredMax);
     return { flooredMin, flooredMax };
+}
+
+// True when the table range `cur` is already `want`, to a relative 1e-9 at EACH
+// end. One tolerance taken from the larger end would swallow edits to the
+// smaller one: on a log range 1e-24 .. 1e-3 it is 1e-12, wider than the whole
+// lower bound, so a changed low end looked like no change at all.
+inline bool sameRange(const double cur[2], const std::array<double, 2> &want)
+{
+    for (int i = 0; i < 2; ++i) {
+        if (!(std::fabs(cur[i] - want[i]) <= 1e-9 * std::fabs(want[i])))
+            return false;
+    }
+    return true;
 }
 
 // The data value a colour bar shows at `position` (0 = bottom, 1 = top) when
