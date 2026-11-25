@@ -341,6 +341,21 @@ void TestPublicationFigure::theDialogOpensWithTheWholeRegistryBeforeTheBackendAn
     QCOMPARE(before.first().kind, vf::ColourMapChoice::Kind::Window);
 }
 
+void TestPublicationFigure::aListThatReadsTheSameIsNotRebuilt()
+{
+    const QStringList registry{ u"Glow"_s, u"Viridis"_s, u"Inferno"_s };
+    const auto a = vf::colourMapChoices(registry, BackendFigureColourMaps{}, u"Glow"_s, true);
+    auto b = vf::colourMapChoices(registry, BackendFigureColourMaps{}, u"Glow"_s, true);
+    QVERIFY(vf::sameColourMapChoices(a, b));
+    // A map flagged as a stand-in, or one fewer, is a different list.
+    b[1].exact = false;
+    QVERIFY(!vf::sameColourMapChoices(a, b));
+    b = a;
+    b.removeLast();
+    QVERIFY(!vf::sameColourMapChoices(a, b));
+    QVERIFY(vf::sameColourMapChoices({}, {}));
+}
+
 void TestPublicationFigure::theBackendsAnswerNarrowsTheListAndFlagsStandIns()
 {
     const QStringList registry{ u"Glow"_s, u"Viridis"_s, u"DefaultStep"_s, u"Inferno"_s,

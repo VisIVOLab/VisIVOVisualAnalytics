@@ -84,6 +84,9 @@ public:
     void setColorMap(const QString &name, LutScale::Mode mode, double gamma,
                      bool clampOutliersTransparent);
     void setWcsContext(WcsContext ctx);
+    /// Redraw the axes labels at the next render (or now): call it when the frame or
+    /// the coordinate format the WcsContext closures answer with has changed.
+    void invalidateOverlay(bool renderNow);
     void setWcsAxesVisible(bool on);
     /// Keep @p logicalPx free below the axes (a channel bar sits there).
     void setBottomReserve(int logicalPx);

@@ -709,12 +709,22 @@ void Pane2DView::setCameraStateNormalized(const double dataCenterXY[2], double w
 void Pane2DView::setWcsContext(WcsContext ctx)
 {
     m_wcs = std::move(ctx);
-    // Force the overlay cache to recompute on the next render.
+    this->invalidateOverlay(false);
+}
+
+void Pane2DView::invalidateOverlay(bool renderNow)
+{
+    // Force the overlay cache to recompute on the next render. The cache key is the
+    // visible bounds, the viewport size and the camera; what the labels SAY (the
+    // frame, the coordinate format) lives in the caller's closures and is not in the
+    // key, so a change there has to come through here.
     m_overlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
                                std::numeric_limits<double>::quiet_NaN(),
                                std::numeric_limits<double>::quiet_NaN(),
                                std::numeric_limits<double>::quiet_NaN() };
     m_overlayViewportSize = { -1, -1 };
+    if (renderNow && m_window)
+        m_window->Render();
 }
 
 void Pane2DView::setBottomReserve(int logicalPx)
@@ -771,11 +781,7 @@ void Pane2DView::fit(bool force)
     }
 
     // Invalidate the overlay cache so the next EndEvent recomputes.
-    m_overlayVisibleBounds = { std::numeric_limits<double>::quiet_NaN(),
-                               std::numeric_limits<double>::quiet_NaN(),
-                               std::numeric_limits<double>::quiet_NaN(),
-                               std::numeric_limits<double>::quiet_NaN() };
-    m_overlayViewportSize = { -1, -1 };
+    this->invalidateOverlay(false);
     // A fit is not the user's move: its frame is not sent to the linked views (issue #358).
     if (didFit)
         m_cameraTracker.refit(this->cameraPose());

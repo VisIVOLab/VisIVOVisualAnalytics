@@ -85,6 +85,17 @@ QJsonObject sample()
 }
 }   // namespace
 
+void TestSimulationVolume::quantityLabel_namesTheFieldAndItsUnit()
+{
+    // Every field's colour bar reads the same way: the main field's used to be
+    // titled with the unit alone while the added ones carried their names.
+    QCOMPARE(quantityLabel(QStringLiteral("density"), QStringLiteral("g/cm^3")),
+             QStringLiteral("density (g/cm^3)"));
+    QCOMPARE(quantityLabel(QStringLiteral("density"), QString()), QStringLiteral("density"));
+    QCOMPARE(quantityLabel(QString(), QStringLiteral("g/cm^3")), QStringLiteral("g/cm^3"));
+    QCOMPARE(quantityLabel(QString(), QString()), QString());
+}
+
 void TestSimulationVolume::physicalUnits_parseWhatTheBackendSends()
 {
     const PhysicalUnits u = parsePhysicalUnits(sample());

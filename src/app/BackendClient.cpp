@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <QThread>
 #include "BackendHeaders.h"
+#include "ResponseHeaders.h"
 #include "BackendTaskFollow.h"
 #include "DiagnosticsManager.h"
 #include "SofiaSuggest.h"
@@ -47,30 +48,15 @@
 
 namespace {
 
-// Names whose absence in a binary-endpoint response means the client/server
-// contract has drifted (not merely an optional field): the geometry that sizes
-// the receive buffers, and the scientific units the client displays. When one
-// of these is entirely absent the client used to read it back as 0/"" silently;
-// visivoHeader() now logs it so the drift is visible (see E-02 / test_contract).
-bool isRequiredVisivoHeader(const char *name)
-{
-    static const QSet<QByteArray> kRequired = {
-        QByteArray(VisivoHeaders::WIDTH),
-        QByteArray(VisivoHeaders::HEIGHT),
-        QByteArray(VisivoHeaders::DEPTH),
-        QByteArray(VisivoHeaders::BUNIT),
-        QByteArray(VisivoHeaders::SPECTRAL_AXIS_UNIT),
-    };
-    return kRequired.contains(QByteArray(name));
-}
-
 // Read a response header by its canonical name (use the VisivoHeaders::*
 // constants so a backend rename tracked by the contract snapshot propagates
-// here automatically). Warns when a *required* header is missing.
+// here automatically). Warns when a *required* header is missing; an empty value
+// is a header the backend sent.
 QByteArray visivoHeader(const QMap<QByteArray, QByteArray> &headers, const char *name)
 {
     const QByteArray value = headers.value(QByteArray(name).toLower());
-    if (value.isNull() && isRequiredVisivoHeader(name)) {
+    // "Missing" is no key at all: a unit the file has none of comes empty.
+    if (visivo::responseheaders::isMissingRequired(headers, name)) {
         qWarning().noquote()
                 << "[BackendClient] backend response missing required header" << name
                 << "- client/server contract drift? Regenerate contract snapshots.";

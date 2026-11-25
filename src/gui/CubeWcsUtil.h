@@ -26,6 +26,16 @@ bool axisHasAnyMetadata(const QString &ctype, const QString &cunit, double crval
 bool axisHasLinearWcs(const QString &ctype, double crval, double crpix, double cdelt);
 bool isCelestialLikeAxis(const QString &ctypeRaw);
 
+/// An axis of space in length units, not of the sky and not a spectrum: the X, Y
+/// and Z every simulation export writes (PLUTO runs, VBT fields). The Sanity
+/// check must not take such a third axis for an ambiguous spectral one.
+inline bool isLinearSpatialAxis(const QString &ctypeRaw)
+{
+    const QString ctype = ctypeRaw.trimmed().toUpper();
+    return ctype == QLatin1String("X") || ctype == QLatin1String("Y")
+            || ctype == QLatin1String("Z");
+}
+
 }  // namespace CubeWcs
 
 #endif  // CubeWcsUtil_h

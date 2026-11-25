@@ -76,7 +76,8 @@ the box is drawn on (the preview, or the full grid when that is loaded), so a
 field costs one cube of that size; the box follows the grid if it changes. The
 colour map, *Min*/*Max*, *Threshold* and *Opacity* of this window's own field
 are the window's usual controls. Each field has its own colour bar beside the
-window's. The headset keeps drawing this window's field alone; its *Overlay*
+window's, titled with the field's name and its unit ("density (g/cm^3)"), this
+window's field included. The headset keeps drawing this window's field alone; its *Overlay*
 does the same job there.
 
 Three limits. The extra fields are drawn in *Composite* only, as above. The 3-D box needs the local renderer: in *Remote* the backend draws

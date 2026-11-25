@@ -57,6 +57,14 @@ with several fields and physical units, and figure export.
   A linear WCS is named as such. The floor of a logarithmic stretch is set
   relative to the peak in every viewer, so data in physical units (1e-24)
   and maps with many tiny residuals both display.
+- **Display fixes (#544).** A zoomed product pane redraws its axes when the
+  WCS frame or format changes. The colour bars of a multi-field view are all
+  titled with the field's name and unit. The image viewer's mode hint says
+  that dragging sets the colour range and the middle button pans. The session
+  tree no longer logs a negative font size, files without units no longer
+  log missing unit headers, and the Sanity check reads the X, Y, Z axes of a
+  simulation box as space. In the Publication Figure dialog Return no longer
+  presses Render, and the colour-map list is not rebuilt under an open popup.
 
 **Simulations**
 

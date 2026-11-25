@@ -199,6 +199,15 @@ SimField *vtkWindowCube::fieldNamed(const QString &name) const
     return nullptr;
 }
 
+QString vtkWindowCube::fieldBarTitle(const SimField &f) const
+{
+    // The unit the field's values are shown in (the window's switch of physical
+    // units applies to every field), as the main field's own bar carries it.
+    return visivo::units::quantityLabel(
+            f.name, visivo::units::columnUnitLabel(f.units, visivo::units::valueColumn(),
+                                                   m_showPhysical, QString()));
+}
+
 QString vtkWindowCube::mainFieldName() const
 {
     // The name the other fields carry: the run's own list names this window's
@@ -687,7 +696,8 @@ void vtkWindowCube::refreshFieldBars2d()
                 v.mainBar2d,
                 [this](double value, double *rgb) { this->lutSlice->GetColor(value, rgb); },
                 this->m_sliceScaleMode, this->m_sliceScaleGamma, r[0], r[1],
-                this->mainFieldName(), std::nullopt, QString());
+                visivo::units::quantityLabel(this->mainFieldName(), this->m_brightnessUnit),
+                std::nullopt, QString());
         v.mainBar2d->show();
         order << v.mainBar2d;
     } else if (v.mainBar2d) {
@@ -699,8 +709,8 @@ void vtkWindowCube::refreshFieldBars2d()
             vtkLookupTable *lut = f->lut;
             paintFieldBar(
                     f->bar2d, [lut](double value, double *rgb) { lut->GetColor(value, rgb); },
-                    f->scale, this->m_sliceScaleGamma, f->sliceRange[0], f->sliceRange[1], f->name,
-                    std::nullopt, QString());
+                    f->scale, this->m_sliceScaleGamma, f->sliceRange[0], f->sliceRange[1],
+                    this->fieldBarTitle(*f), std::nullopt, QString());
             f->bar2d->show();
             order << f->bar2d;
         } else if (f->bar2d) {
@@ -1015,7 +1025,7 @@ void vtkWindowCube::refreshFieldBars3d()
         const double threshold = std::clamp(f->threshold.value_or(f->defaultThreshold), lo, hi);
         vtkColorTransferFunction *ctf = f->colours;
         paintFieldBar(f->bar3d, [ctf](double value, double *rgb) { ctf->GetColor(value, rgb); },
-                      f->scale, 2.0, lo, hi, f->name,
+                      f->scale, 2.0, lo, hi, this->fieldBarTitle(*f),
                       scalePositionOn(f->scale, 2.0, threshold, lo, hi),
                       u"threshold %1"_s.arg(QString::number(threshold, 'g', 3)));
         f->bar3d->show();

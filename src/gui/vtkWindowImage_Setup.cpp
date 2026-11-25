@@ -663,7 +663,9 @@ void vtkWindowImage::setupModeStrip()
     layout->addWidget(label);
 
     m_modeStrip = new SegmentedToggle(row);
-    m_modeStrip->addItem(u"Pan"_s, u"Pan and zoom; no tool armed."_s);
+    m_modeStrip->addItem(u"Pan"_s,
+                         u"No tool armed: drag with the left button to set the colour range, "
+                         u"with the middle button to pan; wheel to zoom."_s);
     m_modeStrip->addItem(u"Probe"_s, u"Read pixel values and the profile under the cursor."_s);
     m_modeStrip->addItem(u"Region"_s, u"Drag a region and measure inside it."_s);
     m_modeStrip->addItem(u"Ruler"_s, u"Measure a distance on the sky."_s);
@@ -839,7 +841,7 @@ void vtkWindowImage::syncModeStrip()
         return;
     switch (mode) {
     case ViewerMode::Pan:
-        m_modeHint->setText(u"drag to pan · wheel to zoom"_s);
+        m_modeHint->setText(u"drag: colour range · middle-drag: pan · wheel: zoom"_s);
         break;
     case ViewerMode::Probe:
         m_modeHint->setText(u"move over the image · click to freeze"_s);

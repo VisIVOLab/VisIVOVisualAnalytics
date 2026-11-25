@@ -24,6 +24,7 @@ private slots:
     void colourMapsOfTheWindowMapToTheBackendsOrInferno();
     void theDialogOpensWithTheWholeRegistryBeforeTheBackendAnswers();
     void theBackendsAnswerNarrowsTheListAndFlagsStandIns();
+    void aListThatReadsTheSameIsNotRebuilt();
     void theWindowsTableIsNotOfferedWhereTheNameIsExactOrThereIsNone();
     void theWindowsTableAndTheScaleBarRuleReachTheBody();
     void theColourMapLookupIsNotAHeavyJob();

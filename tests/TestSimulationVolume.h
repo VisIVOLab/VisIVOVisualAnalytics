@@ -17,6 +17,7 @@ private slots:
     void labels_nameTheAxisAndTheUnit();
     void physicalUnits_parseWhatTheBackendSends();
     void physicalUnits_scaleOnlyWhenOnAndKnown();
+    void quantityLabel_namesTheFieldAndItsUnit();
     void timeLabel_isCodeOrPhysical();
     void unitsRequest_sendsOnlyWhatIsSet();
     void columns_serveAnyReaderThroughTheSameTable();

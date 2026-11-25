@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 class QCheckBox;
 class QComboBox;
@@ -85,6 +86,8 @@ private:
     QLabel *m_cmapNote{ nullptr };
     QList<ColourMapChoice> m_choices;   ///< what the combo lists, in order
     bool m_colourMapsFailed{ false };   ///< the backend could not list its maps (older, or down)
+    /// An answer that came while the list was open: applied once it closes.
+    std::optional<BackendFigureColourMaps> m_pendingColourMaps;
     int m_seq{ 0 };           ///< the newest preview asked for
     bool m_inFlight{ false };
     bool m_dirty{ false };
