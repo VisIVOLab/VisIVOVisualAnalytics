@@ -438,7 +438,7 @@ def worker_crossmatch(
         raise ValueError("No celestial WCS axes in this dataset.")
 
     from astropy.coordinates import SkyCoord  # noqa: PLC0415
-    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
+    from app.regions import celestial_frame  # noqa: PLC0415
 
     # The catalogue services take and return ICRS, so the image's own frame
     # has to be crossed both ways. A Galactic image (Hi-GAL cutouts are
@@ -447,7 +447,7 @@ def worker_crossmatch(
     # projected as if they were (l, b) (issue #379). A WCS astropy cannot name
     # a frame for is taken to be ICRS, as photometry does.
     try:
-        image_frame = wcs_to_celestial_frame(celestial)
+        image_frame = celestial_frame(celestial)
     except ValueError:
         image_frame = None
 

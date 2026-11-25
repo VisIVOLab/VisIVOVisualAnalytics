@@ -101,7 +101,12 @@ inline QList<ColourMapChoice> colourMapChoices(const QStringList &registry,
         for (const auto &m : answer.maps)
             names << m.name;
     }
-    if (windowHasTable && !windowMap.isEmpty() && !exactByName(windowMap))
+    // A hand-made or unnamed table has no name for the backend: it is sent as
+    // colours, with Inferno as the name an older backend would fall back to.
+    if (windowHasTable && windowMap.isEmpty())
+        out.append({ Kind::Window, QStringLiteral("Inferno"), QStringLiteral("Window colours"),
+                     true, {} });
+    else if (windowHasTable && !exactByName(windowMap))
         out.append({ Kind::Window, windowMap, windowMap + QStringLiteral(" (window)"), true, {} });
     for (const QString &n : orderedColourMaps(names)) {
         ColourMapChoice c{ Kind::Registry, n, n, true, {} };

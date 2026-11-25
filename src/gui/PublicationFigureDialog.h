@@ -84,6 +84,7 @@ private:
     QLabel *m_status{ nullptr };
     QLabel *m_cmapNote{ nullptr };
     QList<ColourMapChoice> m_choices;   ///< what the combo lists, in order
+    bool m_colourMapsFailed{ false };   ///< the backend could not list its maps (older, or down)
     int m_seq{ 0 };           ///< the newest preview asked for
     bool m_inFlight{ false };
     bool m_dirty{ false };

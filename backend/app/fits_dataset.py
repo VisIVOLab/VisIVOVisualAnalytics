@@ -171,7 +171,7 @@ def pixel_to_icrs(wcs, axis_map: dict[int, int], x: float, y: float,
     centroids. Returns ``{ra_deg, dec_deg, frame, lon_deg, lat_deg}``.
     """
     from astropy.coordinates import SkyCoord  # noqa: PLC0415
-    from astropy.wcs.utils import wcs_to_celestial_frame  # noqa: PLC0415
+    from app.regions import celestial_frame  # noqa: PLC0415
 
     if wcs is None or not wcs.has_celestial:
         return None
@@ -185,7 +185,7 @@ def pixel_to_icrs(wcs, axis_map: dict[int, int], x: float, y: float,
     lat = float(world[wcs.wcs.lat])
     if not (np.isfinite(lon) and np.isfinite(lat)):
         return None
-    frame = wcs_to_celestial_frame(wcs.celestial)
+    frame = celestial_frame(wcs.celestial)   # ecliptic grids too, not only astropy's frames
     sky = SkyCoord(lon * u.deg, lat * u.deg, frame=frame).icrs
     return {"ra_deg": float(sky.ra.deg), "dec_deg": float(sky.dec.deg), "frame": frame.name,
             "lon_deg": lon % 360.0, "lat_deg": lat}

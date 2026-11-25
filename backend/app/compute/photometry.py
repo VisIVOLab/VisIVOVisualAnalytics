@@ -172,11 +172,13 @@ def _image_frame_position(celestial, ra_deg: float, dec_deg: float):
     """
     from astropy import units as u  # noqa: PLC0415
     from astropy.coordinates import SkyCoord  # noqa: PLC0415
-    from astropy.wcs.utils import skycoord_to_pixel, wcs_to_celestial_frame  # noqa: PLC0415
+    from astropy.wcs.utils import skycoord_to_pixel  # noqa: PLC0415
+
+    from app.regions import celestial_frame  # noqa: PLC0415
 
     icrs = SkyCoord(ra_deg * u.deg, dec_deg * u.deg, frame="icrs")
     try:
-        frame = wcs_to_celestial_frame(celestial)
+        frame = celestial_frame(celestial)
     except ValueError:
         frame = None
     if frame is None:

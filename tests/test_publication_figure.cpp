@@ -378,6 +378,11 @@ void TestPublicationFigure::theWindowsTableIsNotOfferedWhereTheNameIsExactOrTher
     // No table to send (a hand-made map under a baked stretch): nothing to offer for it.
     QCOMPARE(labelsOf(vf::colourMapChoices(registry, answer, u"MyLut"_s, false)),
              (QStringList{ u"Inferno"_s, u"Viridis"_s }));
+    // An unnamed (hand-made) table that can be sent is offered as the window's colours.
+    const auto unnamed = vf::colourMapChoices(registry, answer, QString(), true);
+    QCOMPARE(labelsOf(unnamed), (QStringList{ u"Window colours"_s, u"Inferno"_s, u"Viridis"_s }));
+    QCOMPARE(unnamed.first().kind, vf::ColourMapChoice::Kind::Window);
+    QCOMPARE(unnamed.first().name, u"Inferno"_s);
 }
 
 void TestPublicationFigure::theWindowsTableAndTheScaleBarRuleReachTheBody()

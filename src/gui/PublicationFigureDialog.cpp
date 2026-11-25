@@ -445,7 +445,9 @@ QHash<QString, BackendFigureColourMaps> &colourMapAnswers()
 
 void PublicationFigureDialog::requestColourMaps()
 {
-    const QString key = m_ctx.backendUrl;
+    // Per backend and session: a backend restarted at the same address starts a
+    // new session and is asked again.
+    const QString key = m_ctx.backendUrl + u'|' + m_ctx.sessionId;
     const auto cached = colourMapAnswers().constFind(key);
     if (cached != colourMapAnswers().constEnd()) {
         fillColourMaps(*cached);
@@ -459,8 +461,13 @@ void PublicationFigureDialog::requestColourMaps()
     connect(watcher, &QFutureWatcher<BackendFigureColourMaps>::finished, this, [this, watcher, key] {
         watcher->deleteLater();
         const auto r = watcher->result();
-        if (!r.valid)
-            return;   // an older backend, or none: the whole registry stays, a refusal shows in the preview
+        if (!r.valid) {
+            // An older backend, or none: the whole registry stays, but the window's
+            // table is not offered, since such a backend would drop it silently.
+            m_colourMapsFailed = true;
+            fillColourMaps(r);
+            return;
+        }
         colourMapAnswers().insert(key, r);
         fillColourMaps(r);
     });
@@ -480,7 +487,7 @@ void PublicationFigureDialog::fillColourMaps(const BackendFigureColourMaps &answ
     const ColourMapChoice kept = (w->cmap->currentIndex() >= 0 && before >= 0 && before < m_choices.size()) ? m_choices[before]
                                                                             : ColourMapChoice{};
     m_choices = colourMapChoices(m_ctx.colourMaps, answer, m_ctx.windowColourMap,
-                                 !m_ctx.windowLut.isEmpty());
+                                 !m_ctx.windowLut.isEmpty() && !m_colourMapsFailed);
     const auto find = [this](const std::function<bool(const ColourMapChoice &)> &want) {
         for (int i = 0; i < m_choices.size(); ++i)
             if (want(m_choices[i]))

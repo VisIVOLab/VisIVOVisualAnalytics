@@ -202,6 +202,19 @@ class TestFrameConversion(unittest.TestCase):
         img = R.convert_regions([reg], to_frame="image", wcs=wcs, origin=1)[0]
         self.assertAlmostEqual(img["center"][0], 32.0, delta=0.6)
 
+    def test_ecliptic_grid_point_at_is_converted_to_icrs(self):
+        """The SAMP point-at of an ecliptic image is the ecliptic position turned
+        into ICRS, not the ecliptic numbers read as RA/Dec."""
+        from astropy.coordinates import SkyCoord
+        import astropy.units as u
+        from app.fits_dataset import pixel_to_icrs
+        wcs = _wcs(crval=(120.0, 10.0), ctype=("ELON-TAN", "ELAT-TAN"), radesys=None)
+        crpix = wcs.wcs.crpix
+        got = pixel_to_icrs(wcs, {1: 1, 2: 2}, crpix[0] - 1, crpix[1] - 1)
+        want = SkyCoord(120.0 * u.deg, 10.0 * u.deg, frame=R.sky_frame("ecliptic")).icrs
+        self.assertAlmostEqual(got["ra_deg"], want.ra.deg, places=4)
+        self.assertAlmostEqual(got["dec_deg"], want.dec.deg, places=4)
+
     def test_off_projection_is_an_error(self):
         reg = {"shape": "circle", "frame": "fk5", "center": [22.0, -47.0], "radius": 3.0, "unit": "arcsec"}
         with self.assertRaises(R.RegionParseError):
