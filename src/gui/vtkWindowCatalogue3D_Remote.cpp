@@ -118,7 +118,7 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     menu->addSeparator();
     this->m_actLoadAllRows = menu->addAction(u"Load all rows here\u2026"_s);
     QObject::connect(this->m_actLoadAllRows, &QAction::triggered, this,
-                     [this]() { this->loadAllEntries(); });
+                     [this]() { this->loadAllEntries(/*askAlways=*/true); });
     menu->setToolTipsVisible(true);
     ui->menuView->insertMenu(ui->menuView->actions().value(2), menu);
 
@@ -319,15 +319,22 @@ void vtkWindowCatalogue3D::updateRenderBadge()
     }
     if (!this->m_renderBadge)
         return;
-    if (!this->m_serverSideRendering) {
+    // A backend that cannot draw has no mode to show, but a sample must still
+    // say it is one: the badge stays for as long as rows are missing.
+    if (!this->m_serverSideRendering && loaded >= total) {
         this->m_renderBadge->hide();
         return;
     }
     const bool remote = this->m_remoteView && this->m_remoteView->isActive();
     this->m_renderBadge->setText(visivo::pointtable::renderBadgeText(remote, loaded, total));
-    this->m_renderBadge->setToolTip(!remote && loaded < total
-                                            ? visivo::pointtable::sampleBadgeTip()
-                                            : this->m_renderNote);
+    // The sample's explanation, and why a chosen mode is not followed when it
+    // is not: both, not one hiding the other.
+    QStringList tip;
+    if (!remote && loaded < total)
+        tip << visivo::pointtable::sampleBadgeTip();
+    if (!this->m_renderNote.isEmpty())
+        tip << this->m_renderNote;
+    this->m_renderBadge->setToolTip(tip.join(u"\n\n"_s));
     this->m_renderBadge->show();
 }
 

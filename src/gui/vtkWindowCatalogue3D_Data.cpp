@@ -643,7 +643,7 @@ void vtkWindowCatalogue3D::queryAppliedFilters()
             }));
 }
 
-void vtkWindowCatalogue3D::loadAllEntries()
+void vtkWindowCatalogue3D::loadAllEntries(bool askAlways)
 {
     if (this->remoteDatasetId.isEmpty() || this->m_loadingMore || this->filterBusy || this->m_sceneBuilding)
         return;
@@ -658,7 +658,7 @@ void vtkWindowCatalogue3D::loadAllEntries()
                 u"to progressively refine the representative sample."_s);
         return;
     }
-    if (total > 500000) {
+    if (askAlways || total > 500000) {
         const auto answer = QMessageBox::question(
                 this, u"Load all rows"_s,
                 visivo::pointtable::loadAllQuestion(total, this->schema.headers.size()),
@@ -676,7 +676,7 @@ void vtkWindowCatalogue3D::loadAllEntries()
     this->m_pageSize = savedPageSize;
     if (this->filterBusy && this->m_loadMessage)
         this->m_loadMessage->setText(
-                u"Loading all %L1 sources… The scene will update when loading finishes."_s
+                u"Loading all %L1 rows… The scene will update when loading finishes."_s
                         .arg(total));
 }
 

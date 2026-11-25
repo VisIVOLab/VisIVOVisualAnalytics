@@ -772,7 +772,10 @@ private:
     QPointer<QLabel> m_loadMessage;
     QFutureWatcher<Catalogue3DFilterTaskResult> m_loadMoreWatcher;
     void loadMoreEntries();
-    void loadAllEntries();   // load every remaining row in one query (no paging)
+    /// Load every remaining row in one query (no paging). ``askAlways``: the
+    /// View-menu item confirms with the memory estimate whatever the size; the
+    /// Load all button only above 500 000 rows.
+    void loadAllEntries(bool askAlways = false);
     // ── Session-expiry auto-recovery ──────────────────────────────────────────
     QFutureWatcher<BackendCatalogueInfo> m_reopenWatcher;
     void autoReopenThenLoadMore();

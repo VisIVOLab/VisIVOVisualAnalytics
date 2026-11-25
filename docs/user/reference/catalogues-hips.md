@@ -95,8 +95,8 @@ from z (comoving, Planck18)*).
 - *View ▸ Rendering*: *Auto*, *Local* or *Remote*. On a remote backend that
   renders on its GPU, *Remote* (or *Auto*, when not every row is loaded) draws
   every row there while the loaded rows stay in the window for picking and the
-  table; the status bar says which (*Remote · all N rows*, *Local · n of N
-  rows*). The backend draws other shapes as points, morphology colour in one
+  table; the status bar says which (*Remote · all N rows*, *Local · sample n
+  of N rows*, *Local · all N rows*). The backend draws other shapes as points, morphology colour in one
   colour, and applies only numeric filters and 3-D regions. If the stream
   drops (sleep, network, tunnel), the view reconnects by itself and the status
   bar shows the attempts; after about two minutes it falls back to the loaded
