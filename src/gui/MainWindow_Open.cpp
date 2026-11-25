@@ -96,6 +96,7 @@
 #include <limits>
 
 #include "app/DiagnosticsManager.h"
+#include "PublicationFigureDialog.h"
 
 #include <vtkImageData.h>
 
@@ -1072,6 +1073,8 @@ void MainWindow::wireImageViewerProducts(vtkWindowImage *window,
                      [this, owner, backendUrl, backendToken, sessionId, datasetId]() {
                          this->runPublicationFigure(
                                  backendUrl, backendToken, sessionId, datasetId,
+                                 owner ? owner->publicationFigureContext()
+                                       : visivo::figure::Context{},
                                  [owner](const QString &outputPath) {
                                      if (owner)
                                          owner->recordPublicationFigure(outputPath);

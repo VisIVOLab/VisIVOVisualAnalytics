@@ -1110,10 +1110,31 @@ struct BackendPublicationFigureResult
 {
     bool valid{ false };
     QString error;
-    QString outputPath;           ///< Backend-side path of the rendered PNG/PDF/SVG
-    int width{ 0 };
+    QString outputPath;           ///< Backend-side path of the rendered PNG/PDF/SVG/EPS; empty for a preview
+    QString workspaceFilename;    ///< Its name within Workspace Exports (what downloadExport() takes)
+    QString format;               ///< png | pdf | svg | eps
+    int width{ 0 };               ///< of the image, in pixels
     int height{ 0 };
     bool hasWcs{ false };
+    QStringList notes;            ///< what was asked for and could not be drawn, and why
+    int regionsDrawn{ 0 };
+    QByteArray png;               ///< a preview's picture (the decoded PNG)
+};
+
+/// Answer of POST /v1/products/figure_colour_maps: the colour maps a publication
+/// figure can set, each with whether it is the viewer's own table or only a close
+/// matplotlib map, and matplotlib's own maps to offer after them.
+struct BackendFigureColourMaps
+{
+    struct Map
+    {
+        QString name;             ///< as the viewer's registry spells it
+        bool exact{ true };       ///< false: drawn with @ref drawnAs, close but not the same
+        QString drawnAs;          ///< the matplotlib map used
+    };
+    bool valid{ false };          ///< false: the backend could not answer (an older one, a timeout)
+    QList<Map> maps;
+    QStringList extra;
 };
 
 /// Result of POST /v1/products/image_quality (UC 4.2). ``metrics`` carries the
@@ -3040,12 +3061,18 @@ public:
     BackendProductFitsResult mosaic(const QStringList &datasetIds,
                                     const QString &weightMode = QStringLiteral("noise")) const;
 
-    /** POST /v1/products/publication_figure — WCS-gridded, colorbar-labelled
-     *  figure (UC 1.3). ``stretch`` ∈ {linear,log,sqrt,asinh,power}. */
-    BackendPublicationFigureResult publicationFigure(
-            const QString &datasetId, const QString &stretch, const QString &title,
-            bool addGrid, bool addColorbar,
-            const QString &cmap = QStringLiteral("inferno"), int dpi = 200) const;
+    /** POST /v1/products/publication_figure — the figure of UC 1.3 and issue #41:
+     *  WCS grid, colour bar, text, overlays, beam, scale bar, compass. @p body is
+     *  the request (visivo::figure::requestBody, gui/PublicationFigureSpec.h); with
+     *  ``preview`` in it the answer carries a small PNG and no file is written. */
+    BackendPublicationFigureResult publicationFigure(const QJsonObject &body) const;
+
+    /** POST /v1/products/figure_colour_maps — which of @p names (the viewer's
+     *  colour-map registry) a figure can set, in order, whether each is exact, and
+     *  matplotlib's extra maps. A light lookup on a short timeout (it is not a
+     *  heavy path): call it off the GUI thread. Not valid when the backend cannot
+     *  answer (an older one): the caller then offers all. */
+    BackendFigureColourMaps publicationFigureColourMaps(const QStringList &names) const;
 
     /** POST /v1/products/image_quality — quality/artifact metrics (UC 4.2). */
     BackendImageQualityResult imageQuality(const QString &datasetId) const;
@@ -3177,6 +3204,12 @@ public:
     /// so it counts them: heavy is decided by the same path list that gives those
     /// endpoints their long timeout.
     static int heavyRequestsInFlight();
+    /// Whether @p path (a URL path) is one of the long computations: the long
+    /// timeout and the status bar's job counter. A fragment match, so a new light
+    /// route must not contain a heavy fragment (tests/test_publication_figure.cpp).
+    static bool isHeavyPath(const QString &path);
+    /// The client timeout of a request to @p path (requestTimeoutFor, by path).
+    static std::chrono::milliseconds requestTimeoutForPath(const QString &path);
     /// Parse a /v1/image/tile JSON object into a tile result (metadata only;
     /// data_base64 must still be decoded via decodePayload by the caller).
     static BackendImageTileResult parseImageTileObject(const QJsonObject &object);

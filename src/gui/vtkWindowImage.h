@@ -38,6 +38,7 @@
 #include <memory>
 #include <vector>
 
+namespace visivo::figure { struct Context; }
 class WorkspaceChrome;
 class RegionSessionController;
 class ImageLayerController;
@@ -110,6 +111,11 @@ public:
     /// Record what the host computed for THIS window, as products of this
     /// window. Public because MainWindow does the work and calls back.
     void recordPublicationFigure(const QString &outputPath);
+    /// What Tools > Publication Figure starts from (issue #41): the colour map,
+    /// stretch, range and frame the window shows, and what it has over the image
+    /// (its contours, the image's own and the external ones, its regions and its
+    /// annotations). The backend, session and dataset are filled in by the caller.
+    visivo::figure::Context publicationFigureContext();
     void recordImageQuality(const QVariantMap &metrics);
 
     // A dataset must always be opened via the backend (datasetId is required).

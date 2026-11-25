@@ -3874,9 +3874,18 @@ int BackendClient::heavyRequestsInFlight()
     return g_heavyInFlight.load();
 }
 
+bool BackendClient::isHeavyPath(const QString &path)
+{
+    return isHeavyComputePath(path);
+}
+
 std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) const
 {
-    const QString path = url.path();
+    return requestTimeoutForPath(url.path());
+}
+
+std::chrono::milliseconds BackendClient::requestTimeoutForPath(const QString &path)
+{
     if (path.endsWith(QStringLiteral("/health"))
         || path.endsWith(QStringLiteral("/files/list"))
         || path.endsWith(QStringLiteral("/files/header"))) {
@@ -3885,6 +3894,11 @@ std::chrono::milliseconds BackendClient::requestTimeoutFor(const QUrl &url) cons
     if (path.endsWith(QStringLiteral("/datasets/open"))) {
         return std::chrono::milliseconds(10000);
     }
+    // The publication figure's colour-map listing: a lookup, which the dialog asks
+    // for in the background. The first call imports matplotlib (seconds on slow
+    // storage), so more than a health check, far less than a render.
+    if (path.endsWith(QStringLiteral("/products/figure_colour_maps")))
+        return std::chrono::milliseconds(15000);
     if (path.contains(QStringLiteral("/tasks/")))
         return std::chrono::milliseconds(visivo::taskRequestTimeoutMs(path));
     if (path.endsWith(QStringLiteral("/cube/slice")) || path.endsWith(QStringLiteral("/image/preview"))) {

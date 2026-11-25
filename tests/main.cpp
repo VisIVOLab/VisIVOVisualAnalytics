@@ -35,6 +35,7 @@
 #include "TestSedPlotStyle.h"
 #include "TestMolecularLineClient.h"
 #include "TestLteCoRequest.h"
+#include "TestPublicationFigure.h"
 #include "TestVlkbPosString.h"
 #include "TestSkyOverlap.h"
 #ifdef VISIVO_TEST_ASTRO_MATCH
@@ -151,6 +152,7 @@ int main(int argc, char *argv[])
     { TestSedPlotStyle     t; status |= QTest::qExec(&t, argc, argv); }
     { TestMolecularLineClient t; status |= QTest::qExec(&t, argc, argv); }
     { TestLteCoRequest t; status |= QTest::qExec(&t, argc, argv); }
+    { TestPublicationFigure t; status |= QTest::qExec(&t, argc, argv); }
     { TestVlkbPosString    t; status |= QTest::qExec(&t, argc, argv); }
     { TestSkyOverlap       t; status |= QTest::qExec(&t, argc, argv); }
 #ifdef VISIVO_TEST_ASTRO_MATCH

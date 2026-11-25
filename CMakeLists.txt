@@ -548,6 +548,9 @@ set(PROJECT_SOURCES
         src/gui/RenderExportPlan.h
         src/gui/SaveViewDialog.cpp
         src/gui/SaveViewDialog.h
+        src/gui/PublicationFigureDialog.cpp
+        src/gui/PublicationFigureDialog.h
+        src/gui/PublicationFigureSpec.h
         src/vtk/RenderExport.cpp
         src/vtk/RenderExport.h
         src/gui/BusyStatus.cpp
