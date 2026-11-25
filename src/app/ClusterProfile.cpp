@@ -231,9 +231,17 @@ void ClusterProfile::applyPreset(const QString &siteId)
 QStringList ClusterProfile::changeSite(const QString &siteId)
 {
     const QString target = presetSites().contains(siteId) ? siteId : QString();
-    const QString from = effectiveSite();
-    if (target == from)
+    // The site the profile is for now: its own, else the one its host or options
+    // name. Only a known one counts as an origin whose paths are to go.
+    QString from = effectiveSite();
+    if (!presetSites().contains(from))
+        from.clear();
+    if (target == from) {
+        // The profile may only be known as that site by its host: it still gets the preset.
+        if (site.trimmed() != target)
+            applyPreset(siteId);
         return {};
+    }
     QStringList reset;
     if (!target.isEmpty() && !from.isEmpty()) {
         const auto clear = [&reset](QString &value, const QString &label) {

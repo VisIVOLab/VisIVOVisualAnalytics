@@ -129,7 +129,9 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     QObject::connect(m_site, &QComboBox::activated, this, [this](int index) {
         // A site fills in what it defines, over what the fields hold now; moving
         // from another known site also clears that cluster's paths (changeSite).
+        // The combo already shows the new site: the profile is changed from the one shown before.
         ClusterProfile p = current();
+        p.site = m_shownSite;
         const QStringList reset = p.changeSite(m_site->itemData(index).toString());
         showProfile(p);
         m_siteNote->setText(u"Reset for %1: %2."_s.arg(ClusterProfile::presetLabel(p.site), reset.join(u", "_s)));
@@ -185,6 +187,7 @@ void ClusterProfileDialog::reloadNames(const QString &select)
 void ClusterProfileDialog::showProfile(const ClusterProfile &p)
 {
     m_siteNote->setVisible(false);
+    m_shownSite = p.site;
     m_name->setEditText(p.name);
     m_frontend->setText(p.frontend);
     m_user->setText(p.user);

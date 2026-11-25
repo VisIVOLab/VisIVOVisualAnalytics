@@ -161,7 +161,7 @@ QString ClusterConnection::launcherFailure(const ClusterProfile &profile, int ex
     // also for one that differs from the recorded one, so the changed case is
     // tested first: "answer yes" is wrong advice for it.
     if (output.contains(u"REMOTE HOST IDENTIFICATION HAS CHANGED"_s)
-        || QRegularExpression(u"Host key for .+ has changed"_s).match(output).hasMatch()) {
+        || QRegularExpression(u"host key for .+ has changed"_s, QRegularExpression::CaseInsensitiveOption).match(output).hasMatch()) {
         QString message = u"The host key of %1 differs from the one recorded in known_hosts. This "
                           u"can mean that something is intercepting the connection. Do not just "
                           u"replace it: check the new fingerprint against the ones the site "

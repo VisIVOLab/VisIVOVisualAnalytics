@@ -37,6 +37,7 @@ private:
     QString m_settingsPath;
     QComboBox *m_name;
     QCheckBox *m_shipLauncher;   ///< checked: the client sends its launcher; unchecked: a clone on the frontend
+    QString m_shownSite;   ///< the site of the profile on show, before the combo is changed
     QLabel *m_siteNote;   ///< the fields a change of site reset
     QComboBox *m_site;  ///< the ready-made site settings: Leonardo, PLEIADI, Other
     QLineEdit *m_frontend, *m_user, *m_repoDir, *m_partition, *m_account, *m_qos, *m_gres, *m_mem, *m_time, *m_sif,

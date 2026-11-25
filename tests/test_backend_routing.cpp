@@ -731,6 +731,21 @@ void TestBackendRouting::cluster_changingSiteClearsTheOldClustersFields()
     old.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
     old.sif = u"/scratch/me/b.sif"_s;
     QCOMPARE(old.changeSite(u"leonardo"_s), (QStringList{ u"Backend image file"_s }));
+
+    // Known as a site only by its host, and that site chosen: nothing is cleared, the preset applies.
+    ClusterProfile byHost;
+    byHost.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
+    byHost.sif = u"/scratch/me/b.sif"_s;
+    QVERIFY(byHost.changeSite(u"pleiadi"_s).isEmpty());
+    QCOMPARE(byHost.site, u"pleiadi"_s);
+    QCOMPARE(byHost.partition, u"gpu"_s);
+    QCOMPARE(byHost.sif, u"/scratch/me/b.sif"_s);
+    // A --site that is no known site is no origin to clear.
+    ClusterProfile odd;
+    odd.frontend = u"login.example.org"_s;
+    odd.extraArgs = { u"--site"_s, u"elsewhere"_s };
+    QVERIFY(odd.changeSite(u"leonardo"_s).isEmpty());
+    QCOMPARE(odd.extraArgs, (QStringList{ u"--site"_s, u"elsewhere"_s }));
 }
 
 void TestBackendRouting::cluster_changedHostKeyIsNotAnUnknownOne()
@@ -754,6 +769,11 @@ void TestBackendRouting::cluster_changedHostKeyIsNotAnUnknownOne()
     // A newer ssh may print only the "Host key for ... has changed" line.
     const QString changedShort = u"Host key for login.example.org has changed and you have requested "
                                  u"strict checking.\nHost key verification failed.\n"_s;
+    // OpenSSH's other wording for the same case.
+    QVERIFY(ClusterConnection::launcherFailure(
+                    other, 255,
+                    u"The ECDSA host key for login.example.org has changed,\nHost key verification failed.\n"_s, false)
+                    .contains(u"differs from the one recorded"_s));
     const QString unknown = u"No ED25519 host key is known for login.example.org and you have "
                             u"requested strict checking.\nHost key verification failed.\n"_s;
 

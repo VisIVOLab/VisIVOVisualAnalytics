@@ -79,9 +79,11 @@ struct ClusterProfile
     /// further options, which may carry a `--site` or a `--backend-src` path;
     /// an image to pull stays when it is a docker:// reference, which names a
     /// registry, not a path on the cluster) and turns "send the launcher" on, then
-    /// applies the preset. Login and account stay. The same site again changes
-    /// nothing, and "Other" (or a first choice from "Other") clears nothing, as
-    /// the fields may be for that cluster. Returns the names of the fields that
+    /// applies the preset. Login and account stay. The current site is the
+    /// profile's own, else the one its host or options name (effectiveSite()).
+    /// The same site again changes nothing, and "Other", or a first choice
+    /// from a profile that is for no known site, clears nothing, as the fields
+    /// may be for that cluster. Returns the names of the fields that
     /// held a value and were reset, as the dialog labels them, for the user to see.
     QStringList changeSite(const QString &site);
     /// The known sites, as ids ("leonardo", "pleiadi"), and how they are shown.
