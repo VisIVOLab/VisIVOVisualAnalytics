@@ -126,7 +126,7 @@ not the camera when the cubes cover different areas).
 
 An image and a cube of the same sky share the cube viewers' *Link Views*: switch
 *Link Views* on in the image viewer (*Tools ▸ Views*) and in the cube window, and
-the two follow each other in sky coordinates, as CARTA's XY matching does. There
+the two follow each other in sky coordinates. There
 is one link, the same one that keeps cubes in step; the image is another kind of
 peer in it. Turn *Link Views* off in either window to leave the group.
 

@@ -6,6 +6,93 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## Unreleased
+
+Radio image and cube tools refined from user feedback, simulation volumes
+with several fields and physical units, and figure export.
+
+**Images and cubes**
+
+- **Selected layer and contrast (#518).** The FITS header dialog and the
+  Inspector *Unit* follow the selected layer. The axes table reads
+  *CTYPE (CUNIT)* and marks axes beyond the sky plane as *collapsed*.
+  Dragging on the image changes the selected layer's colour range;
+  *View ▸ Reset Display* (or R) restores the initial stretch. Delete removes
+  the ruler or the PV path when no region is selected.
+- **Single-hue colour maps (#523).** Purples, Blues, Greens, Reds, Greys,
+  Oranges and their reverses are in every colour-map picker, including the
+  publication figure.
+- **PV tool (#520).** The width is shown and accepted in pixels or arcsec.
+  Vertices are numbered on the image and on the diagram's offset axis.
+  *Path as region…* puts the path in the region list and opens the region
+  export; *Path from region* takes a selected line as the path. The cut can
+  be limited to a range of channels or of spectral-axis values.
+- **Live region spectra (#521).** Moving or resizing a region updates its
+  spectrum in one transitory pane; on release the full-resolution spectrum
+  replaces it. *Keep as product* or *Analyse Region* makes it permanent, and
+  *Overlay All Region Spectra* lays the other regions over it. *Tools ▸
+  Regions ▸ Live Region Spectrum* switches this off.
+- **Contours (#519, #49).** Levels in n × σ, logarithmic steps or a typed
+  list, optional Gaussian smoothing, one colour, a colour map or a colour per
+  level, dashed negative levels, for the image's own contours, contours from
+  another FITS file and the cube's slice contours. *Export Contours…* writes
+  a ds9 region file or a vertex table in sky coordinates.
+- **Image and cube in sky coordinates (#522).** *Link Views*, switched on in
+  an image window (*Tools ▸ Views*) and in a cube window, makes pan and zoom
+  follow by sky position and angular size, with the cursor shown as a
+  crosshair in the other window. *Send Selected Region* / *Send All Regions to
+  Linked Cube* (or *Linked Image*) converts regions between the two WCS, and
+  *Extract PV in Linked Cube* turns a line drawn on the map into the cube's
+  PV path.
+- **Additive blend and RGB composite (#45).** *View ▸ Additive Blend* sums the
+  visible layers per pixel, each with its own colour map, range and weight.
+  *Make RGB Composite…* sets up black-to-colour maps for the ticked layers,
+  and *Save Blended Image as PNG…* writes the result at full resolution.
+- **Isosurfaces at several levels (#526).** *Levels…* in the volume window's
+  isosurface mode draws up to 8 nested surfaces, linear or log spaced or
+  from a typed list, each with its own colour and opacity and a legend.
+- **Axes and log scale (#542).** Axes on a 2-D image, a cube slice or a
+  product pane follow the image under pan and zoom, so a tick reads the
+  coordinate beneath it, and hide when too little of the image is on screen.
+  A linear WCS is named as such. The floor of a logarithmic stretch is set
+  relative to the peak in every viewer, so data in physical units (1e-24)
+  and maps with many tiny residuals both display.
+
+**Simulations**
+
+- **Slices and physical units (#524).** A simulation volume is sliced along
+  X, Y or Z at a typed coordinate, and the bar reads in coordinates.
+  PLUTO's unit constants are read from `definitions.h` or typed, and
+  *Display ▸ Physical* switches values, coordinates, time, colour bars and
+  thresholds. Moment maps, noise and mask tools stay in code units.
+- **Several fields in one view (#525).** *Add Field…* in the Inspector's
+  Fields section adds up to three fields of the same grid, each with its own
+  colour map, range, threshold and opacity. They are volume-rendered together
+  in 3-D (Composite mode, local backend) and shown in 2-D as layered,
+  additive, split or mirrored; typed limits follow the physical-units switch.
+- **Cartesian view of PLUTO output (#527).** *Data ▸ Cartesian View of a
+  PLUTO Output…* resamples polar, cylindrical, spherical and stretched grids
+  onto a regular grid, so they are seen in their real geometry: a 3-D
+  spherical run becomes a cube, an axisymmetric (r, θ) run the meridional
+  x–z plane (optionally mirrored), a 2-D polar run an x–y image. The result is
+  written in chunks, so large views do not need the whole cube in memory. The
+  source, geometry and interpolation are kept in the FITS header.
+
+**Figures and export**
+
+- **Save View As (#528).** *Save View As…* for the 3-D views writes PNG (with
+  an optional transparent background), PDF or SVG at the view's size, 2×, 4×
+  or a given width. Axes, colour bar and title are optional.
+- **Publication figure (#41).** The dialog shows a live preview and starts
+  from the window's colour map (sent as its colour table, so hand-made maps
+  are drawn exactly), stretch, range and sky frame. It controls
+  figure size, fonts, titles, sky grid and frame (equatorial, Galactic or
+  ecliptic), colour bar, beam, scale bar (arcsec, arcmin or degrees chosen
+  from its size, or a chosen unit), a compass in the grid's frame, and the
+  window's contours, regions and annotations. The output is PNG, PDF, SVG
+  (with editable text) or EPS. Anything asked for and not drawn is listed in
+  the result.
+
 ## 1.3.2 (2026-11-24)
 
 ALMA and ATCA data, checked against an ALMA analysis tutorial for radio

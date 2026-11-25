@@ -41,7 +41,8 @@ command-line toolkit, with which it shares data formats.
 **Spectral cubes** — slice navigation, cutting plane, probe spectra, isosurface
 and GPU volume rendering (composite, MIP, MinIP), camera ROI, animation export.
 Cubes larger than memory open from a brick pyramid: a preview first, then the
-detail where the camera looks.
+detail where the camera looks. Isosurfaces at several levels; stills of any
+3-D view as PNG, PDF or SVG.
 
 **Maps and products** — moment maps of orders 0–10 with channel ranges and RMS
 masking; line-width (FWHM) and equivalent-width maps; polynomial or median
@@ -58,22 +59,26 @@ rotation-measure synthesis over the frequency axis.
 **Molecular lines** — LTE optical depth, excitation temperature, column
 densities, N(H₂) and mass from ¹³CO and C¹⁸O cubes, per region and as maps.
 
-**Simulations** — Gadget snapshots (formats 1, 2 and HDF5) and SubFind/FoF
-halo catalogues, PLUTO output and VBT particle tables, read out of core with
-their units and periodic boxes; AREPO meshes resampled to cubes. Particles
-are drawn as points, splats or ray-traced images, and projected maps
-integrate the SPH kernel along the line of sight. Several quantities or snapshots sit side by side
-on a linked camera and a timeline. Named 3-D selections feed exact
-diagnostics over every selected particle: histograms, radial, cylindrical
-and axial profiles, phase diagrams, and physical totals (mass, momentum,
-kinetic and thermal energy). Velocity fields have streamlines, glyphs and
-basins of attraction; a cosmology calculator and power spectra complete the
-set.
+**Simulations** — Gadget snapshots (formats 1, 2 and HDF5) and SubFind/FoF halo
+catalogues, PLUTO output and VBT particle tables, read out of core with their
+units and periodic boxes; AREPO meshes and PLUTO polar, cylindrical, spherical
+and stretched grids resampled to Cartesian cubes. Several fields of one run
+share a view, slices go along any axis, and values and coordinates can be shown
+in physical units. Particles are drawn as points, splats or ray-traced images,
+and projected maps integrate the SPH kernel along the line of sight. Several
+quantities or snapshots sit side by side on a linked camera and a timeline.
+Named 3-D selections feed exact diagnostics over every selected particle:
+histograms, radial, cylindrical and axial profiles, phase diagrams, and
+physical totals (mass, momentum, kinetic and thermal energy). Velocity fields
+have streamlines, glyphs and basins of attraction; a cosmology calculator and
+power spectra complete the set.
 
-**Images and surveys** — WCS-aware multi-layer 2-D images, all-sky HiPS,
-3-D catalogue scatter, VLKB archive cutouts with compact-source and filament
-overlays, SED fitting, and SAMP with TOPCAT, Aladin and DS9: images and
-catalogues are sent and received, and selected rows are linked both ways.
+**Images and surveys** — WCS-aware multi-layer 2-D images with additive and RGB
+blending, linked in sky coordinates to cubes, and publication figures (PNG,
+PDF, SVG, EPS) with a live preview; all-sky HiPS, 3-D catalogue scatter, VLKB
+archive cutouts with compact-source and filament overlays, SED fitting, and
+SAMP with TOPCAT, Aladin and DS9: images and catalogues are sent and received,
+and selected rows are linked both ways.
 
 **VR headset** — a cube, a simulation snapshot, a catalogue or a velocity
 field explored in a Meta Quest, opened from the desktop by a pairing code or
