@@ -23,6 +23,9 @@
 //     `snap_010.0.hdf5`), so the group matches the names Gadget writes by
 //     default, by their beginning (`snap_`, `snapshot_`). A snapshot under
 //     another name opens all the same: the classifier reads its header.
+//   - Legacy VisIVO Importer raw formats (#551): the `rawPointsDesc` and
+//     `rawGridsDesc` descriptors (`.desc`) and FLY particle files (`.fly`, or
+//     their descriptor); the classifier reads the descriptor's first word.
 //
 // These are a VIEW filter. The backend classifies a file by its content, so a
 // FITS or a CSV under some other name still opens: it is listed under
@@ -48,6 +51,7 @@ enum class FileType {
     DelimitedText,    ///< comma, tab or semicolon text tables, for readers that take nothing else
     Pluto,            ///< PLUTO simulation output (binary data files; the .out/grid.out beside them)
     Gadget,           ///< Gadget particle snapshots (binary or HDF5, one file or several)
+    RawDescriptor,    ///< legacy importer raw points/grids and FLY (descriptor or .fly)
     AllFiles,         ///< every file, dotfiles included; stays LAST (the tests walk up to it)
 };
 
@@ -94,6 +98,9 @@ inline const QList<FileTypeInfo> &fileTypes()
         // tells a snapshot by its header, whatever its name.
         { FileType::Gadget, "gadget"_L1, u"Gadget snapshots"_s, {},
           { u"snap_"_s, u"snapshot_"_s } },
+        // Raw points, raw grids and FLY of the legacy VisIVO Importer (#551).
+        { FileType::RawDescriptor, "raw-descriptor"_L1, u"Raw points, grids and FLY"_s,
+          { u".desc"_s, u".fly"_s } },
         { FileType::AllFiles, "all-files"_L1, u"All files"_s, {} },
     };
     return table;
@@ -209,7 +216,7 @@ inline QString fileTypeDisplayLabel(FileType type)
 inline QList<FileType> openableFileTypes()
 {
     return { FileType::AllSupported, FileType::Fits, FileType::Catalogue, FileType::Vbt,
-             FileType::Hdf5, FileType::Pluto, FileType::Gadget };
+             FileType::Hdf5, FileType::Pluto, FileType::Gadget, FileType::RawDescriptor };
 }
 
 /// What a caller offers, in table order, with AllFiles always there: whatever
