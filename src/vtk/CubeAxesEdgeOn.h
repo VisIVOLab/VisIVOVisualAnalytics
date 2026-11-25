@@ -12,15 +12,15 @@
 // 3-D, so an axis seen nearly end-on foreshortens them to a long diagonal white
 // streak instead of text. The foreshortening of an axis is the sine of the angle
 // between the axis and the line of sight (1 across the view, 0 along it); below
-// EdgeOnSine the axis is left out until the view turns away from it. 0.3 is about
-// 17 degrees: the text is garbled at 12 and legible at 25.
+// EdgeOnSine the axis is left out until the view turns away from it. 0.5 is 30
+// degrees: in the app the title was still squashed and unreadable at 25.
 //
 // The backend's point session applies the same rule (render_session/points.py,
 // hide_edge_on_axes), so a remote view and a local one drop the same axes.
 // ---------------------------------------------------------------------------
 namespace CubeAxesEdgeOn {
 
-constexpr double EdgeOnSine = 0.3;
+constexpr double EdgeOnSine = 0.5;
 
 /// The sine of the angle between each axis of the box and the line of sight
 /// from `eye` to `aim`. A perspective view aims at the middle of the box; a

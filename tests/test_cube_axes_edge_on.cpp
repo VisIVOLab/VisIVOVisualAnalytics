@@ -31,11 +31,11 @@ void TestCubeAxesEdgeOn::anObliqueViewKeepsEveryAxis()
 
 void TestCubeAxesEdgeOn::theAngleDecidesNotTheDistance()
 {
-    // 12 degrees off the Z axis is squeezed into a streak, 25 degrees is not,
+    // 25 degrees off the Z axis is squeezed into a streak, 35 degrees is not,
     // however far the camera is.
     const double pi = std::acos(-1.0);
     for (double dist : { 2.0, 50.0 }) {
-        const double a12 = 12.0 * pi / 180.0, a25 = 25.0 * pi / 180.0;
+        const double a12 = 25.0 * pi / 180.0, a25 = 35.0 * pi / 180.0;
         const double eye12[3] = { 0.5 + dist * std::sin(a12), 0.5, 0.5 + dist * std::cos(a12) };
         const double eye25[3] = { 0.5 + dist * std::sin(a25), 0.5, 0.5 + dist * std::cos(a25) };
         QVERIFY(!CubeAxesEdgeOn::readable(CubeAxesEdgeOn::axisSines(eye12, kMid)[2]));

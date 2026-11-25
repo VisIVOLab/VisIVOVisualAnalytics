@@ -350,9 +350,9 @@ def gaussian_splat(bounds, npts: int, size: float, intensity: int) -> tuple[floa
 # streak instead of text. The foreshortening of an axis is the sine of the angle
 # between it and the line of sight; below this the axis is left out until the
 # view turns away from it (the desktop viewer applies the same rule,
-# vtkWindowCatalogue3D::hideEdgeOnAxes). 0.3 is about 17 degrees: the text is
-# garbled at 12 and legible at 25.
-EDGE_ON_SINE = 0.3
+# vtkWindowCatalogue3D::hideEdgeOnAxes). 0.5 is 30 degrees: in the app the
+# title was still squashed and unreadable at 25.
+EDGE_ON_SINE = 0.5
 
 
 def axis_sines(eye, aim) -> list[float]:

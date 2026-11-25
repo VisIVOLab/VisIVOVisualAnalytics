@@ -1007,8 +1007,8 @@ def test_an_axis_seen_end_on_is_left_out_of_the_box():
     assert points.readable_axes(points.axis_sines((0.5, 0.5, 9.0), mid)) == (True, True, False)
     assert points.readable_axes(points.axis_sines((9.0, 0.5, 0.5), mid)) == (False, True, True)
     assert points.readable_axes(points.axis_sines((3.0, 2.5, 2.0), mid)) == (True, True, True)
-    # 12 degrees off the Z axis is squeezed, 25 degrees is not.
-    for deg, ok in ((12.0, False), (25.0, True)):
+    # 25 degrees off the Z axis is squeezed, 35 degrees is not.
+    for deg, ok in ((25.0, False), (35.0, True)):
         r = np.radians(deg)
         eye = (0.5 + 5 * np.sin(r), 0.5, 0.5 + 5 * np.cos(r))
         assert points.readable_axes(points.axis_sines(eye, mid))[2] is ok
