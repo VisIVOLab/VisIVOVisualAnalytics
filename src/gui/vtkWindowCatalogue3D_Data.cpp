@@ -660,10 +660,8 @@ void vtkWindowCatalogue3D::loadAllEntries()
     }
     if (total > 500000) {
         const auto answer = QMessageBox::question(
-                this, u"Load all sources"_s,
-                QStringLiteral("Load all %1 sources at once?\n\nThis can use significant memory "
-                               "and may temporarily freeze the UI while the scene builds.")
-                        .arg(total),
+                this, u"Load all rows"_s,
+                visivo::pointtable::loadAllQuestion(total, this->schema.headers.size()),
                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (answer != QMessageBox::Yes)
             return;

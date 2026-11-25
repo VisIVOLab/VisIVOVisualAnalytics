@@ -164,6 +164,8 @@ inline double fractionAlong(double value, double lo, double hi, bool log)
 }
 
 // ── Where the points are drawn (issue #570) ──────────────────────────────────
+// The rendering mode chooses where the points are drawn and never moves data:
+// loading rows is a step of its own (View ▸ Rendering ▸ Load all rows here…).
 
 /// View ▸ Rendering.
 enum class RenderChoice { Auto, Local, Remote };
@@ -175,26 +177,20 @@ struct RenderFacts
     bool backendIsLocal{ false };     ///< this machine's own backend: its GPU is this one
     qint64 tableRows{ 0 };            ///< rows of the table, filters applied
     qint64 loadedRows{ 0 };           ///< rows this window holds
-    bool fitsHere{ true };            ///< every row would fit in this window's memory
 };
 
 struct RenderPlan
 {
     bool remote{ false };             ///< streamed from the backend
-    bool loadAll{ false };            ///< Local was asked for: bring the rest of the rows here
     QString note;                     ///< why the choice was not followed, "" when it was
 };
 
-/// What each choice does for a table of points. Local draws in the client,
-/// every row of it: the rows still on the backend are loaded first (loadAll),
-/// as "Load all" does. When they do not fit, a backend that can draw them
-/// keeps the view (and says why), and this machine's own backend draws the rows
-/// loaded. Remote and Auto never leave a machine's own backend: it is drawn
-/// here, never mixed.
+/// Auto streams from a remote backend that renders while the window holds
+/// fewer rows than the table; Local never does; Remote always does when it
+/// can. This machine's own backend is drawn here, never mixed.
 inline RenderPlan planRender(const RenderFacts &f)
 {
     RenderPlan plan;
-    const bool partial = f.tableRows > f.loadedRows;
     const bool canRemote = f.backendRenders && !f.backendIsLocal;
     switch (f.choice) {
     case RenderChoice::Remote:
@@ -207,26 +203,80 @@ inline RenderPlan planRender(const RenderFacts &f)
                                      "machine.");
         break;
     case RenderChoice::Auto:
-        plan.remote = canRemote && partial;
+        plan.remote = canRemote && f.tableRows > f.loadedRows;
         break;
     case RenderChoice::Local:
-        if (!partial)
-            break;
-        if (f.fitsHere) {
-            plan.loadAll = true;
-        } else if (canRemote) {
-            plan.remote = true;
-            plan.note = QStringLiteral(
-                    "All %L1 rows are too many to hold in this window: they stay drawn on "
-                    "the backend.").arg(f.tableRows);
-        } else {
-            plan.note = QStringLiteral(
-                    "All %L1 rows are too many to hold in this window: drawing the %L2 "
-                    "loaded.").arg(f.tableRows).arg(f.loadedRows);
-        }
         break;
     }
     return plan;
+}
+
+/// A full local copy, in cells (rows x columns): fifty million values are a
+/// sizeable desktop allocation, and still allow the 2.3 M x 9 catalogue of the
+/// progressive-loading workflow.
+constexpr qint64 kLocalCellBudget = 50000000;
+
+/// The most rows a table of @p columns columns may have to be loaded whole.
+inline qint64 localRowLimit(qint64 columns)
+{
+    return kLocalCellBudget / std::max<qint64>(1, columns);
+}
+
+inline bool fitsLocally(qint64 rows, qint64 columns)
+{
+    return rows <= localRowLimit(columns);
+}
+
+/// What a row costs here: a QVariant (16 bytes) per column in the entry, about
+/// 100 bytes of the entry's own, and about 50 for the VTK point, its scalar and
+/// its cell. An estimate, to say "about".
+inline double estimatedBytes(qint64 rows, qint64 columns)
+{
+    return static_cast<double>(rows) * (150.0 + 16.0 * static_cast<double>(columns));
+}
+
+inline QString memoryText(double bytes)
+{
+    return bytes >= 1.0e8
+            ? QStringLiteral("%1 GB").arg(bytes / 1.0e9, 0, 'f', 1)
+            : QStringLiteral("%1 MB").arg(std::max(1.0, std::round(bytes / 1.0e6)), 0, 'f', 0);
+}
+
+inline QString loadAllQuestion(qint64 rows, qint64 columns)
+{
+    return QStringLiteral("Load all %L1 rows into this window? About %2 of memory, more while "
+                          "loading.")
+            .arg(rows)
+            .arg(memoryText(estimatedBytes(rows, columns)));
+}
+
+/// The tooltip of "Load all rows here…" when the table is above the limit.
+inline QString tooManyRowsTip(qint64 columns)
+{
+    const qint64 limit = localRowLimit(columns);
+    const QString text = limit >= 1000000
+            ? QStringLiteral("%1M").arg(std::llround(static_cast<double>(limit) / 1.0e6))
+            : QStringLiteral("%1k").arg(std::max<qint64>(1, std::llround(limit / 1000.0)));
+    return QStringLiteral("Too many rows to draw here (limit ≈%1); Remote rendering draws "
+                          "all rows.")
+            .arg(text);
+}
+
+/// The status-bar badge: where the points are drawn and how many of the rows.
+inline QString renderBadgeText(bool remote, qint64 loaded, qint64 total)
+{
+    if (remote)
+        return QStringLiteral("Remote · all %L1 rows").arg(total);
+    return loaded >= total
+            ? QStringLiteral("Local · all %L1 rows").arg(total)
+            : QStringLiteral("Local · sample %L1 of %L2 rows").arg(loaded).arg(total);
+}
+
+inline QString sampleBadgeTip()
+{
+    return QStringLiteral("Drawn on this computer from a random sample of the table. Use View "
+                          "▸ Rendering ▸ Load all rows here… or Remote rendering "
+                          "to see every row.");
 }
 
 }   // namespace visivo::pointtable

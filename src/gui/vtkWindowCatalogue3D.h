@@ -879,6 +879,7 @@ private:
     QPointer<RemoteRenderWidget> m_remoteWidget;
     QPointer<RemotePointView> m_remoteView;
     QPointer<QAction> m_actRenderRemote;
+    QPointer<QAction> m_actLoadAllRows;   ///< View > Rendering > Load all rows here...
     QPointer<QLabel> m_renderBadge;
     void setupRemoteRendering();
     bool wantsRemote() const;
@@ -886,6 +887,7 @@ private:
     visivo::pointtable::RenderPlan renderPlan() const;
     QString m_renderNote;   ///< why the mode chosen is not the one drawn, or ""
     int rowsToShow() const;
+    qint64 loadedRowCount() const;   ///< rows held here, placed or not
 
     // ── A table of points (issue #83): a VBT, cartesian ──────────────────────
     // The same window as a catalogue, without what only a sky catalogue has:
@@ -942,7 +944,7 @@ private:
     /// Save View As… (#528): the particle view as PNG, PDF or SVG.
     void saveViewAs3d();
     void showLutEditor();
-    /// @p chosen: from View > Rendering, not a reload of the rows.
+    /// @p chosen: from View > Rendering (a refusal says why), not a reload of the rows.
     void applyRenderMode(RenderMode mode, bool chosen = false);
     void updateRenderBadge();
     /// The view's state as commands for the backend (sent when changed).

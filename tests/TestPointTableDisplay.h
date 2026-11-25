@@ -29,8 +29,10 @@ private slots:
     void aConstantBarIsOneValueAndItsOwnColour();
     void autoDrawsOnARemoteBackendWhileRowsAreMissing();
     void autoAndRemoteNeverLeaveTheLocalBackend();
-    void localBringsTheRestOfTheRowsWhenTheyFit();
-    void localOnAWholeTableIsLocalAndAsksForNothing();
-    void localThatDoesNotFitStaysOnTheBackendAndSaysWhy();
-    void localThatDoesNotFitOnTheLocalBackendDrawsTheLoadedRows();
+    void localIsNeverRemoteWhateverTheRows();
+    void remoteSaysWhyWhenTheBackendCannotDrawIt();
+    void theLimitFollowsTheCellBudgetAndTheColumns();
+    void loadAllRowsIsOfferedOnlyForMissingRowsThatFit();
+    void theConfirmationSaysRowsAndAboutHowMuchMemory();
+    void theBadgeNamesWhereAndHowManyRows();
 };
