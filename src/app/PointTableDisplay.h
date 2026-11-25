@@ -227,17 +227,18 @@ inline bool fitsLocally(qint64 rows, qint64 columns)
     return rows <= localRowLimit(columns);
 }
 
-/// What a row costs here: a QVariant (16 bytes) per column in the entry, about
-/// 100 bytes of the entry's own, and about 50 for the VTK point, its scalar and
-/// its cell. An estimate, to say "about".
+/// What a row costs here, measured: loading all 2,097,152 rows of an 11-column
+/// RAMSES table raised the app's memory by about 4.3 GB (2026-11-25), about 2 KB
+/// a row: each value costs far more than its QVariant once parsed, kept for the
+/// table and drawn. About 150 bytes a row and 170 a column; to say "about".
 inline double estimatedBytes(qint64 rows, qint64 columns)
 {
-    return static_cast<double>(rows) * (150.0 + 16.0 * static_cast<double>(columns));
+    return static_cast<double>(rows) * (150.0 + 170.0 * static_cast<double>(columns));
 }
 
 inline QString memoryText(double bytes)
 {
-    return bytes >= 1.0e8
+    return bytes >= 1.0e9
             ? QStringLiteral("%1 GB").arg(bytes / 1.0e9, 0, 'f', 1)
             : QStringLiteral("%1 MB").arg(std::max(1.0, std::round(bytes / 1.0e6)), 0, 'f', 0);
 }

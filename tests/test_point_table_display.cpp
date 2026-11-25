@@ -252,9 +252,9 @@ void TestPointTableDisplay::theConfirmationSaysRowsAndAboutHowMuchMemory()
 {
     QLocale::setDefault(QLocale::English);
     QCOMPARE(loadAllQuestion(2097152, 12),
-             u"Load all 2,097,152 rows into this window? About 0.7 GB of memory, more while "
+             u"Load all 2,097,152 rows into this window? About 4.6 GB of memory, more while "
              u"loading."_s);
-    QVERIFY(loadAllQuestion(50000, 12).contains(u"About 17 MB"_s));
+    QVERIFY(loadAllQuestion(50000, 12).contains(u"About 110 MB"_s));
 }
 
 void TestPointTableDisplay::theBadgeNamesWhereAndHowManyRows()
