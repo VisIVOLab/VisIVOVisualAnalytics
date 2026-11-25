@@ -865,6 +865,16 @@ qt_add_resources(${PROJECT_NAME} bundled_spectral_lines
 # Compile bundled Lato fonts into the binary so they load on all platforms
 # without requiring system font installation.
 # Accessible at runtime as :/fonts/Lato-Regular.ttf etc.
+# The cluster launcher the client sends over ssh (ClusterConnection), so that a
+# cluster needs no clone of the repository. Accessible as
+# :/cluster/launch_backend_slurm.sh.
+qt_add_resources(${PROJECT_NAME} cluster_launcher
+        PREFIX "/cluster"
+        BASE "scripts"
+        FILES
+            scripts/launch_backend_slurm.sh
+)
+
 qt_add_resources(${PROJECT_NAME} bundled_fonts
         PREFIX "/fonts"
         BASE "resources/fonts"

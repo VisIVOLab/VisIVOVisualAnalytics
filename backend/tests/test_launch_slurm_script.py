@@ -30,15 +30,15 @@ STUBS = {
     "hostname": 'echo "${STUB_HOSTNAME:-login.example.org}"',
     # `pull FILE REF` writes the file; `run ...` records its arguments and environment.
     "runtime": (
-        'if [ "$1" = pull ]; then echo "$2 $3" >> "$STUB_OUT/pulls"; echo sif > "$2"; exit 0; fi\n'
+        'if [ "$1" = pull ]; then echo "$2 $3" >> "$STUB_OUT/pulls"; sleep "${STUB_PULL_SLEEP:-0}"; echo sif > "$2"; exit 0; fi\n'
         'printf "%s\\n" "$@" > "$STUB_OUT/run.args"; env > "$STUB_OUT/run.env"'
     ),
 }
 
 
-def _install(bindir: Path, runtimes):
+def _install(bindir: Path, runtimes, stubs=None):
     bindir.mkdir()
-    for name, body in STUBS.items():
+    for name, body in {**STUBS, **(stubs or {})}.items():
         for n in runtimes if name == "runtime" else [name]:
             f = bindir / n
             f.write_text("#!/bin/bash\n" + body + "\n")
@@ -47,11 +47,11 @@ def _install(bindir: Path, runtimes):
 
 @pytest.fixture
 def run_launcher(tmp_path):
-    def run(*args, runtimes=("apptainer",), env=None):
+    def run(*args, runtimes=("apptainer",), env=None, stubs=None):
         out = tmp_path / "out"
         out.mkdir(exist_ok=True)
         bindir = tmp_path / f"bin{len(list(tmp_path.glob('bin*')))}"
-        _install(bindir, runtimes)
+        _install(bindir, runtimes, stubs)
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
         sif = tmp_path / "backend.sif"
@@ -317,3 +317,167 @@ def test_other_sites_job_script_has_no_forwarding_block(run_launcher):
     r, out = run_launcher("--site", "generic", env={"VISIVO_RENDER_MAX_SESSIONS": "3"})
     assert r.returncode == 0, r.stdout + r.stderr
     assert "APPTAINERENV_VISIVO_RENDER_MAX_SESSIONS" not in _job(out)
+
+
+# ── The launcher as the client runs it: from standard input ──────────────────
+
+def _bare_env(tmp_path, **extra):
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    e = {"PATH": os.environ["PATH"], "HOME": str(home), "VISIVO_ASSIGN_TIMEOUT": "4"}
+    e.update(extra)
+    return e
+
+
+def test_stdin_mode_needs_an_image(tmp_path):
+    """From a temporary copy marked as stdin mode, the repository's default image is not looked for."""
+    copy = tmp_path / "tmp" / "visivo-launcher.abc"
+    copy.parent.mkdir()
+    copy.write_text(LAUNCHER.read_text())
+    # A default image that would be found if the path were derived from the script's place.
+    (tmp_path / "apptainer").mkdir()
+    (tmp_path / "apptainer" / "backend.sif").write_text("sif")
+    r = subprocess.run(["bash", str(copy), "--site", "generic"],
+                       env=_bare_env(tmp_path, VISIVO_LAUNCHER_STDIN="1"),
+                       capture_output=True, text=True, timeout=30)
+    assert r.returncode == 1 and "no container image" in r.stderr, r.stdout + r.stderr
+
+
+def test_script_from_a_bare_pipe_needs_an_image(tmp_path):
+    """`bash -s` (the script on stdin, $0 = bash) is stdin mode without any marker."""
+    r = subprocess.run(["bash", "-s", "--", "--site", "generic"], input=LAUNCHER.read_text(),
+                       env=_bare_env(tmp_path), capture_output=True, text=True, timeout=30)
+    assert r.returncode == 1 and "no container image" in r.stderr, r.stdout + r.stderr
+
+
+def test_a_clone_run_keeps_its_default_image_path(run_launcher, tmp_path):
+    """The developer path: the script's own place is searched for apptainer/backend.sif, as before."""
+    r = subprocess.run(["bash", str(LAUNCHER), "--site", "generic"],
+                       env=_bare_env(tmp_path), capture_output=True, text=True, timeout=30)
+    assert r.returncode == 1 and "container image not found" in r.stdout
+    assert "apptainer/backend.sif" in r.stdout
+
+
+def test_leonardo_reruns_a_temporary_copy_under_a_login_shell(tmp_path):
+    """No scratch variables over ssh: the copy the client runs is run again with `bash -l`, which reads them."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".bash_profile").write_text(f"export CINECA_SCRATCH={scratch}\n")
+    copy = tmp_path / "visivo-launcher.xyz"
+    copy.write_text(LAUNCHER.read_text())
+    bindir = tmp_path / "bin"
+    _install(bindir, ("singularity",))
+    sif = tmp_path / "backend.sif"
+    sif.write_text("sif")
+    out = tmp_path / "out"
+    out.mkdir()
+    env = {"PATH": f"{bindir}:{os.environ['PATH']}", "HOME": str(home), "STUB_OUT": str(out),
+           "VISIVO_ASSIGN_TIMEOUT": "4", "VISIVO_LAUNCHER_STDIN": "1"}
+    r = subprocess.run(["bash", str(copy), "--site", "leonardo", "--account", "A", "--sif", str(sif)],
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"Scratch area: {scratch.resolve()}" in r.stdout
+    assert "no scratch area found" not in r.stderr
+
+
+def test_a_bare_pipe_cannot_be_rerun_and_says_so(tmp_path):
+    scratch_less = _bare_env(tmp_path, CINECA_SCRATCH="", SCRATCH="", WORK="")
+    r = subprocess.run(["bash", "-s", "--", "--site", "leonardo", "--account", "A", "--sif", "/nonexistent"],
+                       input=LAUNCHER.read_text(), env=scratch_less, capture_output=True, text=True, timeout=30)
+    assert "is not a file" in r.stderr
+    assert "no scratch area found" in r.stderr
+
+
+# ── The image: where it goes, and how its pull is shown ──────────────────────
+
+def test_image_dir_is_where_the_image_goes(run_launcher, tmp_path):
+    shared = tmp_path / "shared"
+    ref = "docker://ghcr.io/example/visivo-backend:1.2.3-egl"
+    r, out = run_launcher("--image", ref, "--workspace", str(tmp_path / "ws"), "--image-dir", str(shared))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert next(shared.glob("*.sif"))
+    assert not (tmp_path / "ws" / "images").exists()
+
+
+def test_leonardo_pulls_into_the_projects_work_area(run_launcher, tmp_path):
+    scratch = tmp_path / "scratch"
+    work = tmp_path / "work"
+    scratch.mkdir()
+    work.mkdir()
+    ref = "docker://ghcr.io/example/visivo-backend:1.2.3-egl"
+    r, out = run_launcher("--site", "leonardo", "--account", "A", "--image", ref, runtimes=("singularity",),
+                          env={"CINECA_SCRATCH": str(scratch), "WORK": str(work)})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert next((work / "visivo" / "images").glob("*.sif"))
+    assert not (scratch / "visivo" / "images").exists()
+
+
+def test_the_pull_reports_its_progress(run_launcher, tmp_path):
+    ref = "docker://ghcr.io/example/visivo-backend:1.2.3-egl"
+    r, out = run_launcher("--image", ref, "--workspace", str(tmp_path / "ws"),
+                          env={"STUB_PULL_SLEEP": "3", "VISIVO_PULL_REPORT_EVERY": "1"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "[visivo] Pull: 1 s" in r.stdout or "[visivo] Pull: 2 s" in r.stdout
+    assert "[visivo] Pull: done in" in r.stdout
+
+
+# ── Waiting in the queue ──────────────────────────────────────────────────────
+
+# PENDING (with a reason) for the first `STUB_PENDING` polls, then a node.
+QUEUE_STUBS = {
+    "squeue": (
+        'case "$*" in *%N*) n=$(cat "$STUB_OUT/n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$STUB_OUT/n";'
+        ' if [ "$n" -le "${STUB_PENDING:-0}" ]; then echo "|PENDING|Priority"; else echo "lrdn0001|RUNNING|None"; fi;;'
+        ' *) echo 4242;; esac'
+    ),
+}
+
+
+def test_the_queue_state_and_reason_are_reported(run_launcher):
+    r, out = run_launcher("--assign-timeout", "30", stubs=QUEUE_STUBS, env={"STUB_PENDING": "3"})
+    assert r.returncode == 0, r.stdout + r.stderr
+    lines = [ln for ln in r.stdout.splitlines() if "Queue:" in ln]
+    # Said when it changes, not at every poll.
+    assert len(lines) == 1 and "PENDING (Priority)" in lines[0]
+    assert "Compute node: lrdn0001" in r.stdout
+
+
+def test_no_node_within_the_assign_timeout_is_an_error_that_names_the_job(run_launcher):
+    r, _ = run_launcher("--assign-timeout", "3", stubs=QUEUE_STUBS, env={"STUB_PENDING": "1000"})
+    assert r.returncode == 1
+    assert "no compute node assigned to job 4242 within 3 s" in r.stderr
+    assert "scancel 4242" in r.stderr
+
+
+def test_the_assign_timeout_zero_waits_for_the_node(run_launcher):
+    r, _ = run_launcher("--assign-timeout", "0", stubs=QUEUE_STUBS, env={"STUB_PENDING": "3"})
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_timeouts_must_be_numbers(run_launcher):
+    r, _ = run_launcher("--assign-timeout", "soon")
+    assert r.returncode == 1 and "ASSIGN_TIMEOUT must be a whole number" in r.stderr
+
+
+def test_the_ready_timeout_is_an_option(run_launcher):
+    r, _ = run_launcher("--ready-timeout", "5", stubs={"ssh": "exit 1"})
+    assert r.returncode == 1 and "did not become ready within 5 seconds" in r.stdout
+
+
+def test_a_job_that_vanishes_ends_even_without_a_time_limit(tmp_path):
+    """No queue entry and no accounting record: a minute of it (shortened here) ends the wait."""
+    copy = tmp_path / "launcher.sh"
+    copy.write_text(LAUNCHER.read_text().replace("SECONDS - GONE_SINCE >= 60", "SECONDS - GONE_SINCE >= 2"))
+    bindir = tmp_path / "bin"
+    _install(bindir, ("apptainer",), {"squeue": 'case "$*" in *%N*) ;; *) echo 4242;; esac'})
+    out = tmp_path / "out"
+    out.mkdir()
+    sif = tmp_path / "backend.sif"
+    sif.write_text("sif")
+    env = _bare_env(tmp_path, STUB_OUT=str(out))
+    env["PATH"] = f"{bindir}:{os.environ['PATH']}"
+    r = subprocess.run(["bash", str(copy), "--sif", str(sif), "--assign-timeout", "0"],
+                       env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 1 and "no longer in the queue" in r.stderr, r.stdout + r.stderr

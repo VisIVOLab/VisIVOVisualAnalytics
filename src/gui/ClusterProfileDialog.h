@@ -34,9 +34,10 @@ private:
 
     QString m_settingsPath;
     QComboBox *m_name;
+    QComboBox *m_site;   ///< the ready-made site settings: Leonardo, PLEIADI, Other
     QLineEdit *m_frontend, *m_user, *m_repoDir, *m_partition, *m_account, *m_qos, *m_gres, *m_mem, *m_time, *m_sif,
-            *m_dataRoot, *m_workspace, *m_nodeCode, *m_extra;
-    QSpinBox *m_cpus;
+            *m_image, *m_dataRoot, *m_workspace, *m_nodeCode, *m_extra;
+    QSpinBox *m_cpus, *m_queueWait;
 };
 
 #endif

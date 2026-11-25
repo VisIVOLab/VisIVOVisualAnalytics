@@ -13,6 +13,12 @@
 # Usage:
 #   bash scripts/launch_backend_slurm.sh [options]
 #
+# The desktop client does not need a clone of the repository on the frontend:
+# it sends this script over the ssh connection (`bash -s -- <options>`, the
+# script on standard input, wrapped so that it runs from a temporary copy).
+# Run that way there is no apptainer/backend.sif next to it, so --image or
+# --sif is required.
+#
 # Options (or env vars):
 #   --partition  PARTITION  SLURM partition           (default: $VISIVO_PARTITION or "gpu")
 #   --time       HH:MM:SS   Wall-clock limit          (default: $VISIVO_TIME or "08:00:00")
@@ -32,9 +38,14 @@
 #                           often have no internet), e.g.
 #                           docker://ghcr.io/visivolab/visivo-backend:<version>-egl
 #                           It is pulled to --sif when given, else to a .sif
-#                           under <workspace>/images, and reused while the file
-#                           exists (delete it to pull again).
-#                           ($VISIVO_IMAGE)
+#                           under --image-dir (default <workspace>/images), and
+#                           reused while the file exists (delete it to pull
+#                           again). The pull prints "[visivo] Pull: ..." lines
+#                           every few seconds. ($VISIVO_IMAGE)
+#   --image-dir  DIR        Where a pulled image goes: a directory shared by a
+#                           project, so that it is pulled once for everyone
+#                           ($VISIVO_IMAGE_DIR; default <workspace>/images; on
+#                           leonardo the project's work area, see below)
 #   --backend-src PATH      Host path to a backend/app source tree to bind over
 #                           /app/app inside the container. Lets you iterate on
 #                           Python code without rebuilding the .sif.
@@ -51,6 +62,14 @@
 #   --job-name   NAME       SLURM job name (default: visivo_backend). A unique
 #                           name lets a client cancel the job by name when it
 #                           never saw the job id (scancel --name).
+#   --assign-timeout SEC    How long to wait for SLURM to give the job a node
+#                           ($VISIVO_ASSIGN_TIMEOUT; default 300; 0: for ever).
+#                           While it waits, the launcher prints "[visivo] Queue:"
+#                           lines with the job's state and SLURM's reason.
+#   --ready-timeout SEC     How long to wait for the backend to answer once the
+#                           job runs ($VISIVO_READY_TIMEOUT; default 300, 600 on
+#                           leonardo: a first start reads the image from a shared
+#                           file system).
 #   --node-code  CODE       The node's code in the SKAVA catalogue, reported
 #                           in /v1/node/status ($VISIVO_NODE_CODE)
 #   --version    TEXT       What the status document reports as the backend
@@ -87,7 +106,9 @@
 #   pleiadi   the same as generic (the defaults above were written for it).
 #   leonardo  partition boost_usr_prod; an account is required (--account;
 #             --qos boost_qos_dbg for a short test); the container runs with
-#             --cleanenv; the workspace (logs, token, caches, exports, images)
+#             --cleanenv; a pulled image goes to the project's work area
+#             (/leonardo_work/<account> when it exists, else $WORK) under
+#             visivo/images, so that a project pulls it once; the workspace (logs, token, caches, exports, images)
 #             and the data root default to the user's scratch area
 #             ($CINECA_SCRATCH, else $SCRATCH, else $WORK), because $HOME has a
 #             small quota; the host's glvnd vendor directory is bound for EGL.
@@ -118,6 +139,7 @@ BIND_PATH="${VISIVO_BIND:-$HOME}"
 DATA_ROOT="${VISIVO_DATA_ROOT:-}"
 SIF="${VISIVO_SIF:-}"        # empty → the pulled image, else apptainer/backend.sif
 IMAGE="${VISIVO_IMAGE:-}"
+IMAGE_DIR="${VISIVO_IMAGE_DIR:-}"
 SITE="${VISIVO_SITE:-}"
 CLEANENV="${VISIVO_CLEANENV:-}"
 RUNTIME="${VISIVO_CONTAINER_RUNTIME:-}"
@@ -130,9 +152,16 @@ QOS="${VISIVO_QOS:-}"
 WORKSPACE="${VISIVO_WORKSPACE:-}"
 VERSION="${VISIVO_VERSION:-}"
 LOG_DIR="${VISIVO_LOG_DIR:-$HOME/.visivo_logs}"
-POLL_MAX=60   # max poll attempts × 5 s = 5 min
-# How long to wait for SLURM to assign a node (a queued job can wait longer).
+# How long to wait for SLURM to assign a node (a queued job can wait longer);
+# 0 waits for ever (the client's Cancel then ends it).
 ASSIGN_TIMEOUT="${VISIVO_ASSIGN_TIMEOUT:-300}"
+# How long to wait for the backend to answer once the job runs (empty: the
+# site's, else 300 s). Polled every 5 s.
+READY_TIMEOUT="${VISIVO_READY_TIMEOUT:-}"
+# Run from standard input (the client's way), $0 is then a temporary copy or
+# not a file at all, and the repository is not next to it.
+STDIN_MODE=false
+[[ -n "${VISIVO_LAUNCHER_STDIN:-}" || ! -f "$0" ]] && STDIN_MODE=true
 USE_GPU=true
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
@@ -149,6 +178,9 @@ while [[ $# -gt 0 ]]; do
         --data-root) DATA_ROOT="$2"; shift 2 ;;
         --sif)       SIF="$2";       shift 2 ;;
         --image)     IMAGE="$2";     shift 2 ;;
+        --image-dir) IMAGE_DIR="$2"; shift 2 ;;
+        --assign-timeout) ASSIGN_TIMEOUT="$2"; shift 2 ;;
+        --ready-timeout)  READY_TIMEOUT="$2";  shift 2 ;;
         --site)      SITE="$2";      shift 2 ;;
         --cleanenv)    CLEANENV=1;   shift ;;
         --no-cleanenv) CLEANENV=0;   shift ;;
@@ -162,7 +194,7 @@ while [[ $# -gt 0 ]]; do
         --version)   VERSION="$2";   shift 2 ;;
         --no-gpu)    USE_GPU=false; GRES=""; shift ;;
         --help|-h)
-            grep '^#' "$0" | sed 's/^# \{0,2\}//'
+            if [[ -f "$0" ]]; then grep '^#' "$0" | sed 's/^# \{0,2\}//'; else echo "See scripts/launch_backend_slurm.sh"; fi
             exit 0
             ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -192,6 +224,8 @@ SITE_PARTITION="gpu"      # partition when none is given
 SITE_CLEANENV=0           # --cleanenv when neither option nor variable says
 SITE_NEEDS_ACCOUNT=false  # --account is mandatory on the site
 SITE_SCRATCH=false        # workspace and data root default to the scratch area
+SITE_SHARED_IMAGES=false  # pulled images default to the project's shared work area
+SITE_READY_TIMEOUT=300    # seconds for the backend to answer once the job runs
 # Host libraries EGL needs. /usr/lib64 is where PLEIADI (ppc64le) keeps them;
 # the Debian-based image on an x86 site finds them through --nv and the vendor
 # directory, and /usr/lib64 would only shadow its own.
@@ -207,6 +241,8 @@ case "$SITE" in
         SITE_CLEANENV=1
         SITE_NEEDS_ACCOUNT=true
         SITE_SCRATCH=true
+        SITE_SHARED_IMAGES=true
+        SITE_READY_TIMEOUT=600
         EGL_LD_LIBRARY_PATH=""
         EGL_VENDOR_DIR=true
         PROBE_SRUN=true
@@ -220,6 +256,7 @@ echo "[visivo] Site profile: $SITE ($SITE_HOW)"
 
 PARTITION="${PARTITION:-$SITE_PARTITION}"
 CLEANENV="${CLEANENV:-$SITE_CLEANENV}"
+READY_TIMEOUT="${READY_TIMEOUT:-$SITE_READY_TIMEOUT}"
 if [[ "$SITE_NEEDS_ACCOUNT" == "true" && -z "$ACCOUNT" ]]; then
     echo "[visivo] ERROR: the $SITE site needs your project account: --account <ACCOUNT> (or VISIVO_ACCOUNT)." >&2
     exit 1
@@ -237,8 +274,13 @@ if [[ "$SITE_SCRATCH" == "true" ]]; then
     done
     # Over a non-interactive ssh the shell is not a login shell, and the
     # variables the site's /etc/profile.d sets are missing: read them once.
+    # The script must be a file to be run again: the client runs it from a
+    # temporary copy for that reason; from a bare pipe there is nothing to re-run.
     if [[ -z "$SCRATCH_DIR" && -z "${VISIVO_LOGIN_SHELL:-}" ]]; then
-        VISIVO_LOGIN_SHELL=1 exec bash -l "$0" "${ORIG_ARGS[@]}"
+        if [[ -f "$0" ]]; then
+            VISIVO_LOGIN_SHELL=1 exec bash -l "$0" "${ORIG_ARGS[@]}"
+        fi
+        echo "[visivo] WARNING: the scratch variables are not set and the script is not a file, so it cannot be run again under a login shell." >&2
     fi
     if [[ -n "$SCRATCH_DIR" ]]; then
         [[ -z "$WORKSPACE" ]] && WORKSPACE="$SCRATCH_DIR/visivo"
@@ -254,6 +296,18 @@ if [[ "$SITE_SCRATCH" == "true" ]]; then
     else
         echo "[visivo] WARNING: no scratch area found (\$CINECA_SCRATCH, \$SCRATCH, \$WORK); pass --workspace and --data-root." >&2
     fi
+fi
+
+# Pulled images in a directory the whole project shares (CINECA keeps a work
+# area per project, /leonardo_work/<account>; $WORK is the user's default
+# project), so that the project pulls an image once. --image-dir wins.
+if [[ "$SITE_SHARED_IMAGES" == "true" && -z "$IMAGE_DIR" ]]; then
+    for cand in "${ACCOUNT:+/leonardo_work/$ACCOUNT}" "${WORK:-}"; do
+        if [[ -n "$cand" && -d "$cand" && -w "$cand" ]]; then
+            IMAGE_DIR="$cand/visivo/images"
+            break
+        fi
+    done
 fi
 
 # The container runtime: Apptainer where it exists, else Singularity (CINECA
@@ -288,13 +342,13 @@ fi
 # quoted (printf %q), the numbers must be numbers, and nothing may hold a
 # line break (an #SBATCH line would end there and the rest run as commands).
 for name in PARTITION TIME MEM CPUS WORKERS GRES PORT BIND_PATH DATA_ROOT SIF IMAGE BACKEND_SRC \
-            TOKEN NODE_CODE JOB_NAME ACCOUNT QOS WORKSPACE VERSION LOG_DIR RUNTIME; do
+            TOKEN NODE_CODE JOB_NAME ACCOUNT QOS WORKSPACE VERSION LOG_DIR RUNTIME IMAGE_DIR; do
     if [[ "${!name}" == *$'\n'* || "${!name}" == *$'\r'* ]]; then
         echo "[visivo] ERROR: ${name} holds a line break" >&2
         exit 1
     fi
 done
-for name in CPUS WORKERS PORT; do
+for name in CPUS WORKERS PORT ASSIGN_TIMEOUT READY_TIMEOUT; do
     if ! [[ "${!name}" =~ ^[0-9]+$ ]]; then
         echo "[visivo] ERROR: ${name} must be a whole number, not '${!name}'" >&2
         exit 1
@@ -347,12 +401,14 @@ fi
 # ── The image ────────────────────────────────────────────────────────────────
 # --image is pulled once, here on the frontend (compute nodes often have no
 # internet), to --sif when given, else to a .sif named after the reference
-# under <workspace>/images (or ~/.visivo_images). An existing file is reused;
-# delete it to pull again, e.g. for a moving tag.
+# under --image-dir (default <workspace>/images, or ~/.visivo_images). An
+# existing file is reused; delete it to pull again, e.g. for a moving tag.
 if [[ -n "$IMAGE" ]]; then
     if [[ -z "$SIF" ]]; then
-        IMAGE_DIR="${WORKSPACE:+$WORKSPACE/images}"
-        IMAGE_DIR="${IMAGE_DIR:-$HOME/.visivo_images}"
+        if [[ -z "$IMAGE_DIR" ]]; then
+            IMAGE_DIR="${WORKSPACE:+$WORKSPACE/images}"
+            IMAGE_DIR="${IMAGE_DIR:-$HOME/.visivo_images}"
+        fi
         SIF="$IMAGE_DIR/$(printf '%s' "${IMAGE#*://}" | tr -c 'A-Za-z0-9._-' '_').sif"
     fi
     if [[ -f "$SIF" ]]; then
@@ -366,15 +422,40 @@ if [[ -n "$IMAGE" ]]; then
         # Pulled under a temporary name, so that an interrupted pull leaves no
         # file that the next run would take for the image.
         PULL_TMP="$SIF.pulling.$$"
-        trap 'rm -f "$PULL_TMP"; exit 130' INT HUP TERM
+        PULL_PID=""
+        trap '[[ -n "$PULL_PID" ]] && kill "$PULL_PID" 2>/dev/null; rm -f "$PULL_TMP"; exit 130' INT HUP TERM
         echo "[visivo] Pulling $IMAGE to $SIF (a few GB; this can take minutes)..."
-        if ! "$RUNTIME" pull "$PULL_TMP" "$IMAGE" || ! mv -f "$PULL_TMP" "$SIF"; then
+        # The runtime prints its progress bars only on a terminal, which an ssh
+        # command has not: a line every few seconds says it is alive and how much
+        # has been fetched (the layers land in the runtime's cache first).
+        PULL_CACHE="${APPTAINER_CACHEDIR:-${SINGULARITY_CACHEDIR:-$HOME/.apptainer/cache}}"
+        pull_kb() { (du -sk "$@" 2>/dev/null || true) | awk '{s += $1} END {print s + 0}'; }
+        PULL_BASE_KB="$(pull_kb "$PULL_CACHE")"
+        "$RUNTIME" pull "$PULL_TMP" "$IMAGE" &
+        PULL_PID=$!
+        SECONDS=0
+        while kill -0 "$PULL_PID" 2>/dev/null; do
+            sleep "${VISIVO_PULL_REPORT_EVERY:-10}" &
+            wait $! || true
+            kill -0 "$PULL_PID" 2>/dev/null || break
+            PULL_KB=$(( $(pull_kb "$PULL_CACHE" "$PULL_TMP") - PULL_BASE_KB ))
+            (( PULL_KB < 0 )) && PULL_KB=0
+            echo "[visivo] Pull: $SECONDS s, $(( PULL_KB / 1024 )) MB fetched"
+        done
+        if ! wait "$PULL_PID" || ! mv -f "$PULL_TMP" "$SIF"; then
             rm -f "$PULL_TMP"
             echo "[visivo] ERROR: could not pull $IMAGE." >&2
             exit 1
         fi
+        PULL_PID=""
+        echo "[visivo] Pull: done in $SECONDS s"
         trap - INT HUP TERM
     fi
+fi
+if [[ -z "$SIF" && "$STDIN_MODE" == "true" ]]; then
+    # Run from standard input: there is no repository to take an image from.
+    echo "[visivo] ERROR: no container image: pass --image docker://... (pulled once) or --sif <file>." >&2
+    exit 1
 fi
 SIF="${SIF:-$(dirname "$0")/../apptainer/backend.sif}"
 if [[ ! -f "$SIF" ]]; then
@@ -551,7 +632,7 @@ if [[ "$CLEANENV" == "1" ]]; then
     CLEANENV_PASS='for v in SLURM_JOB_ID SLURM_MEM_PER_NODE SLURM_MEM_PER_CPU SLURM_CPUS_ON_NODE SLURM_CPUS_PER_TASK CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES; do
     [[ -n "${!v+x}" ]] && export "APPTAINERENV_${v}=${!v}"
 done'
-    LAUNCHER_ONLY=" VISIVO_TOKEN VISIVO_ACCOUNT VISIVO_ASSIGN_TIMEOUT VISIVO_BACKEND_SRC_OVERRIDE VISIVO_BIND VISIVO_CLEANENV VISIVO_CONTAINER_RUNTIME VISIVO_CPUS VISIVO_GRES VISIVO_IMAGE VISIVO_JOB_NAME VISIVO_LOGIN_SHELL VISIVO_LOG_DIR VISIVO_MEM VISIVO_PARTITION VISIVO_PORT VISIVO_QOS VISIVO_SIF VISIVO_SITE VISIVO_TIME VISIVO_WORKSPACE "
+    LAUNCHER_ONLY=" VISIVO_TOKEN VISIVO_ACCOUNT VISIVO_ASSIGN_TIMEOUT VISIVO_BACKEND_SRC_OVERRIDE VISIVO_BIND VISIVO_CLEANENV VISIVO_CONTAINER_RUNTIME VISIVO_CPUS VISIVO_GRES VISIVO_IMAGE VISIVO_IMAGE_DIR VISIVO_JOB_NAME VISIVO_LAUNCHER_STDIN VISIVO_LOGIN_SHELL VISIVO_PULL_REPORT_EVERY VISIVO_READY_TIMEOUT VISIVO_LOG_DIR VISIVO_MEM VISIVO_PARTITION VISIVO_PORT VISIVO_QOS VISIVO_SIF VISIVO_SITE VISIVO_TIME VISIVO_WORKSPACE "
     for v in "${!VISIVO_@}" VTK_EGL_DEVICE_INDEX; do
         [[ -n "${!v+x}" && "$LAUNCHER_ONLY" != *" $v "* ]] || continue
         CLEANENV_PASS+=$'\n'"[[ -n \"\${APPTAINERENV_${v}+x}\" ]] || export APPTAINERENV_${v}=$(q "${!v}")"
@@ -632,16 +713,35 @@ rm -f "$JOB_SCRIPT"
 echo "[visivo] Job ID: $JOB_ID"
 
 # ── Wait for the compute node to be assigned ──────────────────────────────────
+# A job on a production QOS can queue for minutes. The job's state and SLURM's
+# reason are printed when they change, and now and then while they do not, so
+# that a client can say what the job is waiting for. 0 waits for ever.
 echo "[visivo] Waiting for compute node assignment..."
 NODE=""
-for _ in $(seq 1 $(( (ASSIGN_TIMEOUT + 1) / 2 ))); do
-    NODE="$(squeue -j "$JOB_ID" -h -o '%N' 2>/dev/null || true)"
+LAST_QUEUE_LINE=""
+LAST_QUEUE_AT=0
+GONE_SINCE=-1
+SECONDS=0
+while :; do
+    QUEUE_LINE="$(squeue -j "$JOB_ID" -h -o '%N|%T|%r' 2>/dev/null || true)"
+    NODE="${QUEUE_LINE%%|*}"
     if [[ -n "$NODE" && "$NODE" != "None" ]]; then
         break
     fi
-    # Out of the queue already: the job ended (a failure at start-up ends it
-    # within the second), and waiting for a node would only hide why.
-    if [[ -z "$(squeue -j "$JOB_ID" -h -o '%i' 2>/dev/null || true)" ]]; then
+    NODE=""
+    if [[ -n "$QUEUE_LINE" ]]; then
+        GONE_SINCE=-1
+        QUEUE_STATE="${QUEUE_LINE#*|}"
+        QUEUE_REASON="${QUEUE_STATE#*|}"
+        QUEUE_STATE="${QUEUE_STATE%%|*}"
+        if [[ "$QUEUE_LINE" != "$LAST_QUEUE_LINE" ]] || (( SECONDS - LAST_QUEUE_AT >= 30 )); then
+            echo "[visivo] Queue: $QUEUE_STATE ($QUEUE_REASON), $SECONDS s since submission"
+            LAST_QUEUE_LINE="$QUEUE_LINE"
+            LAST_QUEUE_AT=$SECONDS
+        fi
+    else
+        # Out of the queue already: the job ended (a failure at start-up ends it
+        # within the second), and waiting for a node would only hide why.
         STATE="$(sacct -j "$JOB_ID" -X -n -o State 2>/dev/null | awk 'NF {print $1; exit}' || true)"
         if [[ -n "$STATE" && "$STATE" != PENDING && "$STATE" != RUNNING ]]; then
             echo "[visivo] ERROR: job $JOB_ID ended before the backend started (state: $STATE)." >&2
@@ -649,14 +749,26 @@ for _ in $(seq 1 $(( (ASSIGN_TIMEOUT + 1) / 2 ))); do
             tail -n 20 "$LOG_DIR/visivo_backend_${JOB_ID}.log" 2>/dev/null | sed 's/^/[visivo]   /' >&2
             exit 1
         fi
+        # Neither queued nor ended as far as sacct says (accounting may be off):
+        # with no time limit on the wait, a minute of this is the end of it.
+        (( GONE_SINCE >= 0 )) || GONE_SINCE=$SECONDS
+        if (( SECONDS - GONE_SINCE >= 60 )); then
+            echo "[visivo] ERROR: job $JOB_ID is no longer in the queue and its state is unknown." >&2
+            exit 1
+        fi
     fi
-    sleep 2
+    if (( ASSIGN_TIMEOUT > 0 && SECONDS >= ASSIGN_TIMEOUT )); then
+        break
+    fi
+    # Often at first, gently once the wait is long: a whole project shares the
+    # scheduler.
+    if (( SECONDS < 60 )); then sleep 2; else sleep 10; fi
 done
 
-if [[ -z "$NODE" || "$NODE" == "None" ]]; then
+if [[ -z "$NODE" ]]; then
     echo "[visivo] ERROR: no compute node assigned to job $JOB_ID within ${ASSIGN_TIMEOUT} s." >&2
     echo "[visivo]        The job is still queued and starts when the resources free up; cancel" >&2
-    echo "[visivo]        it with: scancel $JOB_ID (or wait longer: VISIVO_ASSIGN_TIMEOUT=<seconds>)." >&2
+    echo "[visivo]        it with: scancel $JOB_ID (or wait longer: --assign-timeout <seconds>, 0 for ever)." >&2
     exit 1
 fi
 
@@ -668,16 +780,18 @@ echo "[visivo] Compute node: $NODE"
 probe_health() {
     local cmd
     cmd="curl -sf -H $(q "X-Visivo-Token: ${TOKEN}") http://localhost:${PORT}/v1/health"
-    if ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "$NODE" "$cmd" >/dev/null 2>&1; then
+    if ssh -n -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 "$NODE" "$cmd" >/dev/null 2>&1; then
         return 0
     fi
     [[ "$PROBE_SRUN" == "true" ]] || return 1
     ${TIMEOUT_CMD:+"$TIMEOUT_CMD" 30} srun --jobid="$JOB_ID" --overlap --gres=none --nodes=1 --ntasks=1 \
-        --quiet bash -c "$cmd" >/dev/null 2>&1
+        --quiet bash -c "$cmd" </dev/null >/dev/null 2>&1
 }
 TIMEOUT_CMD="$(command -v timeout || true)"
 echo "[visivo] Waiting for backend to become ready (polling every 5 s)..."
 READY=false
+POLL_MAX=$(( (READY_TIMEOUT + 4) / 5 ))
+(( POLL_MAX >= 1 )) || POLL_MAX=1
 for attempt in $(seq 1 "$POLL_MAX"); do
     if probe_health; then
         READY=true

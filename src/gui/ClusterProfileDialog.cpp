@@ -28,9 +28,11 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     auto *intro = new QLabel(
             u"Submits the VisIVO backend as a SLURM job on the cluster and opens a new window "
             u"on it, through an SSH tunnel. This window stays on its current backend. Closing "
-            u"the new window closes the tunnel and cancels the job.\n\nNeeds key-based SSH "
-            u"access to the frontend and a clone of VisIVO there (for "
-            u"scripts/launch_backend_slurm.sh)."_s,
+            u"the new window closes the tunnel and cancels the job.\n\nNeeds SSH access to the "
+            u"frontend that asks for nothing when it connects (a key, or the site's SSH "
+            u"certificate: sign in to it first). Nothing has to be installed on the cluster: "
+            u"this client sends the launcher and pulls the backend image of its own version. "
+            u"Choose your site, then fill in your login, project account and data folder."_s,
             this);
     intro->setWordWrap(true);
     layout->addWidget(intro);
@@ -40,6 +42,13 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     m_name->setEditable(true);
     m_name->setToolTip(u"The name shown in the status bar; type a new one for a new profile."_s);
     form->addRow(u"Name"_s, m_name);
+    m_site = new QComboBox(this);
+    m_site->addItem(ClusterProfile::presetLabel({}), QString());
+    for (const QString &site : ClusterProfile::presetSites())
+        m_site->addItem(ClusterProfile::presetLabel(site), site);
+    m_site->setToolTip(u"A known site fills in its login node, partition, GPU, resources and "
+                       u"time; your login, account and data folder stay yours."_s);
+    form->addRow(u"Site"_s, m_site);
     const auto line = [this, form](const QString &label, const QString &placeholder,
                                    const QString &tip = {}) {
         auto *e = new QLineEdit(this);
@@ -51,8 +60,9 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     };
     m_frontend = line(u"Frontend"_s, u"pleiadi-gpu.oact.inaf.it"_s, u"The SLURM login node, reached with ssh."_s);
     m_user = line(u"User"_s, u"your login on the frontend (empty: the local user)"_s);
-    m_repoDir = line(u"VisIVO clone"_s, u"VisIVOVisualAnalytics"_s,
-                     u"Path of the VisIVO clone on the frontend, relative to the home or absolute."_s);
+    m_repoDir = line(u"VisIVO clone"_s, u"empty: this client sends the launcher"_s,
+                     u"Only for developers: a VisIVO clone on the frontend, relative to the home "
+                     u"or absolute, whose own launcher is run instead of the client's."_s);
     m_partition = line(u"Partition"_s, u"gpu"_s);
     m_account = line(u"Account"_s, u"SLURM project, if the cluster requires one"_s,
                      u"Charged for the job (sbatch --account); required on Leonardo and MareNostrum 5."_s);
@@ -64,7 +74,19 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
     form->addRow(u"CPUs"_s, m_cpus);
     m_mem = line(u"Memory"_s, u"96G"_s);
     m_time = line(u"Time limit"_s, u"08:00:00 (empty: the launcher's default)"_s);
-    m_sif = line(u"Backend image"_s, u"/scratch/<user>/backend-egl.sif"_s);
+    m_queueWait = new QSpinBox(this);
+    m_queueWait->setRange(0, 24 * 60);
+    m_queueWait->setSuffix(u" min"_s);
+    m_queueWait->setSpecialValueText(u"launcher default (5 min)"_s);
+    m_queueWait->setToolTip(u"How long to wait for the cluster to give the job a node. Cancel "
+                            u"in the connection window stops earlier."_s);
+    form->addRow(u"Wait in queue"_s, m_queueWait);
+    m_image = line(u"Image to pull"_s, u"empty: ghcr.io/visivolab/visivo-backend:<this client's version>"_s,
+                   u"A docker://... reference, pulled once on the frontend. Empty: the published image "
+                   u"of this client's version (with the -egl tag when a GPU is requested). Set it "
+                   u"for a client that is not a release, or to pin another version."_s);
+    m_sif = line(u"Backend image file"_s, u"/scratch/<user>/backend-egl.sif"_s,
+                 u"An image file already on the cluster; used instead of pulling."_s);
     m_dataRoot = line(u"Data root"_s, u"/scratch/<user>/data"_s, u"The folder the backend may open data from."_s);
     m_workspace = line(u"Workspace"_s, u"/scratch/<user>/visivo-ws"_s,
                        u"Exports, pyramids and logs of the backend; on a large disk, not the home."_s);
@@ -85,6 +107,12 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
         if (p.isValid())
             showProfile(p);
     });
+    QObject::connect(m_site, &QComboBox::activated, this, [this](int index) {
+        // A site fills in what it defines, over what the fields hold now.
+        ClusterProfile p = current();
+        p.applyPreset(m_site->itemData(index).toString());
+        showProfile(p);
+    });
     QObject::connect(saveBtn, &QPushButton::clicked, this, [this]() { saveCurrent(); });
     QObject::connect(deleteBtn, &QPushButton::clicked, this, [this]() {
         const QString name = m_name->currentText().trimmed();
@@ -97,6 +125,11 @@ ClusterProfileDialog::ClusterProfileDialog(const QString &settingsPath, QWidget 
         reloadNames(QString());
     });
     QObject::connect(connectBtn, &QPushButton::clicked, this, [this]() {
+        if (const QString problem = current().launcherProblem(QCoreApplication::applicationVersion());
+            !problem.isEmpty()) {
+            QMessageBox::warning(this, u"Connect to a cluster"_s, problem);
+            return;
+        }
         if (!saveCurrent())
             return;
         QString error;
@@ -133,6 +166,9 @@ void ClusterProfileDialog::showProfile(const ClusterProfile &p)
     m_frontend->setText(p.frontend);
     m_user->setText(p.user);
     m_repoDir->setText(p.repoDir);
+    // What the profile stores, not what its host suggests: saving an older profile
+    // must not add a --site that its clone may not know.
+    m_site->setCurrentIndex(std::max(0, m_site->findData(p.site)));
     m_partition->setText(p.partition);
     m_account->setText(p.account);
     m_qos->setText(p.qos);
@@ -141,6 +177,8 @@ void ClusterProfileDialog::showProfile(const ClusterProfile &p)
     m_mem->setText(p.mem);
     m_time->setText(p.time);
     m_sif->setText(p.sif);
+    m_image->setText(p.image);
+    m_queueWait->setValue(p.queueWaitMin);
     m_dataRoot->setText(p.dataRoot);
     m_workspace->setText(p.workspace);
     m_nodeCode->setText(p.nodeCode);
@@ -154,6 +192,7 @@ ClusterProfile ClusterProfileDialog::current() const
     p.frontend = m_frontend->text().trimmed();
     p.user = m_user->text().trimmed();
     p.repoDir = m_repoDir->text().trimmed();
+    p.site = m_site->currentData().toString();
     p.partition = m_partition->text().trimmed();
     p.account = m_account->text().trimmed();
     p.qos = m_qos->text().trimmed();
@@ -162,6 +201,8 @@ ClusterProfile ClusterProfileDialog::current() const
     p.mem = m_mem->text().trimmed();
     p.time = m_time->text().trimmed();
     p.sif = m_sif->text().trimmed();
+    p.image = m_image->text().trimmed();
+    p.queueWaitMin = m_queueWait->value();
     p.dataRoot = m_dataRoot->text().trimmed();
     p.workspace = m_workspace->text().trimmed();
     p.nodeCode = m_nodeCode->text().trimmed();

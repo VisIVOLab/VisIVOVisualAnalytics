@@ -8,6 +8,15 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **Connect to a cluster with nothing set up on it (#561).** The client carries
+  the SLURM launcher and runs it over ssh from standard input, so the frontend
+  needs no clone of the repository; with no image in the profile it pulls the
+  published backend image of its own version (`-egl` when a GPU is asked for),
+  into the project's work area on Leonardo. *Connect to a cluster…* has ready-made
+  sites (Leonardo, PLEIADI), says how to renew an expired Leonardo SSH
+  certificate or accept a new host key, and shows the queue wait with SLURM's
+  reason, the image pull and the backend start; the wait for a node is the
+  profile's and *Cancel* ends it. Profiles that name a clone work as before.
 - **Published backend images (#66).** Each release publishes the backend on
   the GitHub Container Registry as `ghcr.io/visivolab/visivo-backend:<version>`
   (CPU, amd64 and arm64) and `:<version>-egl` (server-side EGL rendering for

@@ -11,6 +11,7 @@
 #include "skava/BackendRouting.h"
 #include "skava/SkavaClient.h"
 
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
@@ -366,6 +367,9 @@ void TestBackendRouting::cluster_profilesRoundTrip()
     p.cpus = 16;
     p.mem = u"96G"_s;
     p.sif = u"/scratch/fv/backend-egl.sif"_s;
+    p.image = u"docker://example.org/backend:1"_s;
+    p.site = u"pleiadi"_s;
+    p.queueWaitMin = 30;
     p.dataRoot = u"/scratch/fv/data"_s;
     p.workspace = u"/scratch/fv/visivo-ws"_s;
     p.extraArgs = { u"--backend-src"_s, u"/scratch/fv/app"_s };
@@ -381,13 +385,264 @@ void TestBackendRouting::cluster_profilesRoundTrip()
     const ClusterProfile back = ClusterProfiles::find(s, u"PLEIADI"_s);
     QCOMPARE(back.mem, u"128G"_s);
     QCOMPARE(back.sshTarget(), u"fv@pleiadi-gpu.oact.inaf.it"_s);
+    QCOMPARE(back.site, u"pleiadi"_s);
+    QCOMPARE(back.image, u"docker://example.org/backend:1"_s);
+    QCOMPARE(back.queueWaitMin, 30);
     QCOMPARE(back.launcherArgs(),
-             (QStringList{ u"--partition"_s, u"gpu"_s, u"--account"_s, u"INA25_proj"_s, u"--qos"_s,
+             (QStringList{ u"--site"_s, u"pleiadi"_s, u"--partition"_s, u"gpu"_s, u"--account"_s,
+                           u"INA25_proj"_s, u"--qos"_s,
                            u"boost_qos_dbg"_s, u"--gres"_s, u"gpu:1"_s, u"--cpus"_s, u"16"_s,
                            u"--mem"_s, u"128G"_s, u"--sif"_s, u"/scratch/fv/backend-egl.sif"_s,
-                           u"--data-root"_s, u"/scratch/fv/data"_s, u"--workspace"_s,
+                           u"--image"_s, u"docker://example.org/backend:1"_s,
+                           u"--assign-timeout"_s, u"1800"_s, u"--data-root"_s, u"/scratch/fv/data"_s, u"--workspace"_s,
                            u"/scratch/fv/visivo-ws"_s, u"--backend-src"_s, u"/scratch/fv/app"_s }));
     QVERIFY(!ClusterProfiles::find(s, u"missing"_s).isValid());
+}
+
+void TestBackendRouting::cluster_shippedLauncherIsRunFromStandardInput()
+{
+    // A profile with no clone: `bash -s -- <options>`, the launcher on standard input.
+    ClusterProfile p;
+    p.name = u"Leonardo"_s;
+    p.frontend = u"login.leonardo.cineca.it"_s;
+    p.applyPreset(u"leonardo"_s);
+    p.account = u"PROJ_x"_s;
+    QVERIFY(p.usesShippedLauncher());
+    const QStringList argv = ClusterConnection::remoteArgv(p, u"visivo-job"_s, u"1.4.0"_s);
+    QCOMPARE(argv.mid(0, 3), (QStringList{ u"bash"_s, u"-s"_s, u"--"_s }));
+    QCOMPARE(argv.mid(argv.size() - 2), (QStringList{ u"--job-name"_s, u"visivo-job"_s }));
+    // The image of this client's version, with the GPU tag, and the queue wait.
+    const int image = argv.indexOf(u"--image"_s);
+    QVERIFY(image > 0);
+    QCOMPARE(argv.at(image + 1), u"docker://ghcr.io/visivolab/visivo-backend:1.4.0-egl"_s);
+    QCOMPARE(argv.at(argv.indexOf(u"--assign-timeout"_s) + 1), u"1800"_s);
+    QCOMPARE(argv.at(argv.indexOf(u"--site"_s) + 1), u"leonardo"_s);
+    QCOMPARE(argv.at(argv.indexOf(u"--account"_s) + 1), u"PROJ_x"_s);
+    QVERIFY(!argv.join(u' ').contains(u"scripts/launch_backend_slurm.sh"_s));
+}
+
+void TestBackendRouting::cluster_cloneProfileRunsTheClonesLauncher()
+{
+    // The developer path: unchanged. The clone's launcher, no image from the client.
+    ClusterProfile p;
+    p.name = u"PLEIADI"_s;
+    p.frontend = u"pleiadi-gpu.oact.inaf.it"_s;
+    p.repoDir = u"~/VisIVOVisualAnalytics"_s;
+    p.sif = u"/scratch/x/backend-egl.sif"_s;
+    QVERIFY(!p.usesShippedLauncher());
+    const QStringList argv = ClusterConnection::remoteArgv(p, u"visivo-job"_s, u"1.4.0"_s);
+    QCOMPARE(argv.mid(0, 2),
+             (QStringList{ u"bash"_s, u"VisIVOVisualAnalytics/scripts/launch_backend_slurm.sh"_s }));
+    QVERIFY(!argv.contains(u"--image"_s));
+    QCOMPARE(argv.at(argv.indexOf(u"--sif"_s) + 1), u"/scratch/x/backend-egl.sif"_s);
+    p.repoDir = u"/home/x/clone"_s;
+    p.sif.clear();
+    const QStringList noImage = ClusterConnection::remoteArgv(p, u"j"_s, u"1.4.0"_s);
+    QCOMPARE(noImage.at(1), u"/home/x/clone/scripts/launch_backend_slurm.sh"_s);
+    QVERIFY(!noImage.contains(u"--image"_s));   // the clone's own image, as before
+    // Only a clone can be older than the client.
+    QVERIFY(ClusterConnection::launcherFailure(p, 1, u"Unknown option: --job-name"_s, false)
+                    .contains(u"older than this client"_s));
+    p.repoDir.clear();
+    QVERIFY(!ClusterConnection::launcherFailure(p, 1, u"Unknown option: --job-name"_s, false)
+                     .contains(u"older than this client"_s));
+}
+
+void TestBackendRouting::cluster_imageIsTheClientsVersion()
+{
+    ClusterProfile p;
+    p.name = u"X"_s;
+    p.frontend = u"login.example.org"_s;
+    p.gres = u"gpu:1"_s;
+    const QString ghcr = u"docker://ghcr.io/visivolab/visivo-backend:"_s;
+    QCOMPARE(p.defaultImage(u"1.4.0"_s), ghcr + u"1.4.0-egl"_s);
+    // No GPU asked for: the CPU image.
+    p.gres.clear();
+    QCOMPARE(p.defaultImage(u"1.4.0"_s), ghcr + u"1.4.0"_s);
+    p.gres = u"0"_s;
+    QCOMPARE(p.defaultImage(u"1.4.0"_s), ghcr + u"1.4.0"_s);
+    p.gres = u"gpu:2"_s;
+    // A client that is not a release has no image: the profile names one.
+    QVERIFY(p.defaultImage(u"1.5.0-dev"_s).isEmpty());
+    QVERIFY(p.defaultImage(QString()).isEmpty());
+    QVERIFY(!p.launcherProblem(u"1.5.0-dev"_s).isEmpty());
+    p.image = u"docker://ghcr.io/visivolab/visivo-backend:1.3.0-egl"_s;
+    QVERIFY(p.launcherProblem(u"1.5.0-dev"_s).isEmpty());
+    QVERIFY(p.defaultImage(u"1.4.0"_s).isEmpty());
+    QVERIFY(p.launcherArgs(u"1.4.0"_s).contains(p.image));   // the profile's own, not the client's
+    // An image file, or an image or file in the further options, is not replaced.
+    p.image.clear();
+    p.sif = u"/scratch/a.sif"_s;
+    QVERIFY(p.defaultImage(u"1.4.0"_s).isEmpty());
+    p.sif.clear();
+    p.extraArgs = { u"--image=docker://x/y:1"_s };
+    QVERIFY(p.defaultImage(u"1.4.0"_s).isEmpty());
+    QVERIFY(p.launcherProblem(u"1.5.0-dev"_s).isEmpty());
+    // PLEIADI is POWER9: no published image, the profile or clone gives one.
+    p.extraArgs.clear();
+    p.site = u"pleiadi"_s;
+    QVERIFY(p.defaultImage(u"1.4.0"_s).isEmpty());
+    QVERIFY(!p.launcherProblem(u"1.4.0"_s).isEmpty());
+    p.repoDir = u"VisIVOVisualAnalytics"_s;   // a clone brings its own image file
+    QVERIFY(p.launcherProblem(u"1.4.0"_s).isEmpty());
+}
+
+void TestBackendRouting::cluster_sitePresets()
+{
+    ClusterProfile p;
+    p.user = u"me"_s;
+    p.account = u"MY_PROJECT"_s;
+    p.dataRoot = u"/data/mine"_s;
+    p.workspace = u"/ws/mine"_s;
+    p.repoDir = u"clone"_s;
+    p.qos = u"left_over"_s;
+    p.applyPreset(u"leonardo"_s);
+    QCOMPARE(p.name, u"Leonardo"_s);
+    QCOMPARE(p.site, u"leonardo"_s);
+    QCOMPARE(p.frontend, u"login.leonardo.cineca.it"_s);
+    QCOMPARE(p.partition, u"boost_usr_prod"_s);
+    QCOMPARE(p.gres, u"gpu:1"_s);
+    QVERIFY(p.qos.isEmpty());
+    QVERIFY(!p.time.isEmpty() && !p.mem.isEmpty() && p.cpus > 0);
+    QVERIFY(p.queueWaitMin >= 30);   // a production queue: much longer than the launcher's 5 min
+    // The user's own entries stay.
+    QCOMPARE(p.user, u"me"_s);
+    QCOMPARE(p.account, u"MY_PROJECT"_s);
+    QCOMPARE(p.dataRoot, u"/data/mine"_s);
+    QCOMPARE(p.workspace, u"/ws/mine"_s);
+    QCOMPARE(p.repoDir, u"clone"_s);
+    QVERIFY(p.launcherArgs(u"1.4.0"_s).contains(u"--site"_s));
+    // A name the user chose is kept.
+    p.name = u"my cluster"_s;
+    p.applyPreset(u"pleiadi"_s);
+    QCOMPARE(p.name, u"my cluster"_s);
+    QCOMPARE(p.site, u"pleiadi"_s);
+    QCOMPARE(p.frontend, u"pleiadi-gpu.oact.inaf.it"_s);
+    QCOMPARE(p.partition, u"gpu"_s);
+    QCOMPARE(p.queueWaitMin, 0);
+    // "Other" keeps what is there and names no site.
+    const QString frontend = p.frontend;
+    p.applyPreset(QString());
+    QVERIFY(p.site.isEmpty());
+    QCOMPARE(p.frontend, frontend);
+    QCOMPARE(ClusterProfile::presetLabel(u"leonardo"_s), u"Leonardo (CINECA)"_s);
+    QCOMPARE(ClusterProfile::presetLabel(u"pleiadi"_s), u"PLEIADI (INAF)"_s);
+    QCOMPARE(ClusterProfile::presetLabel(QString()), u"Other"_s);
+    // Leonardo needs the project account.
+    ClusterProfile l;
+    l.applyPreset(u"leonardo"_s);
+    QVERIFY(!l.launcherProblem(u"1.4.0"_s).isEmpty());
+    l.account = u"A"_s;
+    QVERIFY(l.launcherProblem(u"1.4.0"_s).isEmpty());
+    // The site is also known from an older profile's options or host.
+    ClusterProfile old;
+    old.frontend = u"login01-ext.leonardo.cineca.it"_s;
+    QCOMPARE(old.effectiveSite(), u"leonardo"_s);
+    old.frontend = u"somewhere.example"_s;
+    old.extraArgs = { u"--site"_s, u"pleiadi"_s };
+    QCOMPARE(old.effectiveSite(), u"pleiadi"_s);
+    old.extraArgs = { u"--site=leonardo"_s };
+    QCOMPARE(old.effectiveSite(), u"leonardo"_s);
+    QVERIFY(!old.launcherArgs().contains(u"--site"_s));   // the options carry it
+}
+
+void TestBackendRouting::cluster_sshFailureMessages()
+{
+    ClusterProfile leonardo;
+    leonardo.frontend = u"login.leonardo.cineca.it"_s;
+    leonardo.user = u"me"_s;
+    leonardo.site = u"leonardo"_s;
+    const QString renew = ClusterConnection::launcherFailure(leonardo, 255, u"Permission denied"_s, false);
+    QVERIFY(renew.contains(u"renew your CINECA SSH certificate"_s));
+    QVERIFY(renew.contains(u"step ssh login"_s));
+    QVERIFY(!renew.contains(u"ssh-copy-id"_s));
+    ClusterProfile other;
+    other.frontend = u"login.example.org"_s;
+    const QString generic = ClusterConnection::launcherFailure(other, 255, QString(), false);
+    QVERIFY(generic.contains(u"ssh-copy-id"_s));
+    QVERIFY(!generic.contains(u"CINECA"_s));
+    // A host key that is not accepted yet: said first, on any site, and told how.
+    const QString hostKey = u"Host key verification failed.\n"_s;
+    for (const ClusterProfile &p : { leonardo, other }) {
+        const QString m = ClusterConnection::launcherFailure(p, 255, hostKey, false);
+        QVERIFY(m.contains(u"host key"_s));
+        QVERIFY(m.contains(u"from a terminal"_s));
+        QVERIFY(!m.contains(u"step ssh login"_s));
+    }
+    // The launcher's own failures are not ssh's.
+    QVERIFY(ClusterConnection::launcherFailure(leonardo, 1, u"x"_s, true).contains(u"failed (exit 1)"_s));
+    QVERIFY(ClusterConnection::launcherFailure(leonardo, 1, u"x"_s, false).contains(u"did not report"_s));
+}
+
+void TestBackendRouting::cluster_progressLinesBecomeStatus()
+{
+    using C = ClusterConnection;
+    QCOMPARE(C::progressStatus(u"[visivo] Queue: PENDING (Priority), 125 s since submission"_s),
+             u"Waiting in the queue: Priority (2 min)"_s);
+    QCOMPARE(C::progressStatus(u"[visivo] Queue: PENDING (ReqNodeNotAvail, May be reserved), 0 s since submission"_s),
+             u"Waiting in the queue: ReqNodeNotAvail, May be reserved (0 min)"_s);
+    QVERIFY(C::progressStatus(u"[visivo] Queue: SUSPENDED (None), 40 s since submission"_s)
+                    .contains(u"suspended"_s));
+    QCOMPARE(C::progressStatus(u"[visivo] Pull: 40 s, 1200 MB fetched"_s),
+             u"Pulling the backend image: 1200 MB fetched (40 s)"_s);
+    QVERIFY(C::progressStatus(u"[visivo] Pull: done in 95 s"_s).contains(u"95"_s));
+    QVERIFY(C::progressStatus(u"[visivo] Pulling docker://x/y:1 to /w/x.sif (a few GB; this can take minutes)..."_s)
+                    .startsWith(u"Pulling"_s));
+    QVERIFY(C::progressStatus(u"[visivo] Compute node: lrdn0001"_s).contains(u"lrdn0001"_s));
+    QVERIFY(C::progressStatus(u"[visivo]  attempt 3/120 – not ready yet..."_s).contains(u"3 of 120"_s));
+    // Anything else is a plain log line.
+    QVERIFY(C::progressStatus(u"[visivo] Job ID: 42"_s).isEmpty());
+    QVERIFY(C::progressStatus(QString()).isEmpty());
+}
+
+void TestBackendRouting::cluster_stdinPayloadRunsFromAFileWithItsOwnInput()
+{
+    // What the frontend's `bash -s` does with the payload, run for real: the
+    // script runs from a file ($0 names it, so it can run itself again), a
+    // command in it that reads standard input finds it closed, the arguments
+    // arrive, and the copy is gone afterwards.
+    const QString script = u"#!/usr/bin/env bash\n"
+                           u"[ -f \"$0\" ] && echo \"file=yes\"\n"
+                           u"echo \"stdin=${VISIVO_LAUNCHER_STDIN:-}\"\n"
+                           u"echo \"args=$*\"\n"
+                           u"cat > /dev/null\n"          // would swallow the rest of the payload
+                           u"echo \"after-cat\"\n"
+                           u"echo \"self=$0\"\n"
+                           u"echo 'VISIVO_LAUNCHER_END'\n"   // the default tag, inside the script
+                           u"exit 3\n"_s;
+    QTemporaryDir tmp;
+    QProcess bash;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(u"TMPDIR"_s, tmp.path());
+    bash.setProcessEnvironment(env);
+    bash.start(u"/bin/bash"_s, { u"-s"_s, u"--"_s, u"--partition"_s, u"a b"_s });
+    QVERIFY(bash.waitForStarted(5000));
+    bash.write(ClusterConnection::stdinPayload(script));
+    bash.closeWriteChannel();
+    QVERIFY(bash.waitForFinished(10000));
+    const QString out = QString::fromUtf8(bash.readAllStandardOutput());
+    QCOMPARE(bash.exitCode(), 3);   // the launcher's exit status comes back
+    QVERIFY2(out.contains(u"file=yes"_s), qPrintable(out));
+    QVERIFY(out.contains(u"stdin=1"_s));
+    QVERIFY(out.contains(u"args=--partition a b"_s));
+    QVERIFY(out.contains(u"after-cat"_s));
+    QVERIFY(out.contains(u"self="_s + tmp.path()));
+    QVERIFY(QDir(tmp.path()).entryList(QDir::Files).isEmpty());
+
+    // The real launcher through the same payload: it runs from the copy, reads
+    // its options and answers with its own exit status (an unknown site is refused).
+    QFile real(QStringLiteral(VISIVO_REPO_ROOT) + u"/scripts/launch_backend_slurm.sh"_s);
+    QVERIFY(real.open(QIODevice::ReadOnly));
+    QProcess launcher;
+    launcher.setProcessEnvironment(env);
+    launcher.start(u"/bin/bash"_s, { u"-s"_s, u"--"_s, u"--site"_s, u"nowhere"_s });
+    QVERIFY(launcher.waitForStarted(5000));
+    launcher.write(ClusterConnection::stdinPayload(QString::fromUtf8(real.readAll())));
+    launcher.closeWriteChannel();
+    QVERIFY(launcher.waitForFinished(10000));
+    QCOMPARE(launcher.exitCode(), 1);
+    QVERIFY(QString::fromUtf8(launcher.readAllStandardError()).contains(u"unknown site 'nowhere'"_s));
+    QVERIFY(QDir(tmp.path()).entryList(QDir::Files).isEmpty());
 }
 
 void TestBackendRouting::launchOptions_connectCluster()

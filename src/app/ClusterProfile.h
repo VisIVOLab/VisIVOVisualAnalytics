@@ -19,7 +19,8 @@ struct ClusterProfile
     QString name;            ///< shown in the status bar ("PLEIADI"); also the key
     QString frontend;        ///< SSH host of the SLURM frontend
     QString user;            ///< SSH login; empty: the local user name
-    QString repoDir;         ///< the clone on the frontend, relative to its home
+    QString repoDir;         ///< a clone on the frontend, relative to its home; empty: the client sends its own launcher
+    QString site;            ///< "leonardo", "pleiadi" or empty: a known site (the launcher's --site)
     QString partition;
     QString account;         ///< SLURM account (project); needed on Leonardo, MareNostrum 5
     QString qos;             ///< SLURM quality of service; optional
@@ -27,7 +28,9 @@ struct ClusterProfile
     int cpus = 16;
     QString mem;             ///< e.g. "96G"
     QString time;            ///< SLURM time limit; empty: the launcher's default
-    QString sif;             ///< the backend image on the cluster
+    QString sif;             ///< the backend image file on the cluster
+    QString image;           ///< an image to pull (docker://...); empty: the one of this client's version
+    int queueWaitMin = 0;    ///< minutes to wait for a node; 0: the launcher's default (5)
     QString dataRoot;        ///< the data the backend may open
     QString workspace;       ///< the backend's workspace (exports, pyramids, logs)
     QString nodeCode;        ///< SRC node code, for SKAVA; optional
@@ -36,8 +39,30 @@ struct ClusterProfile
     bool isValid() const { return !name.trimmed().isEmpty() && !frontend.trimmed().isEmpty(); }
     /// The SSH destination: user@frontend, or the frontend alone.
     QString sshTarget() const;
+    /// True when the profile names no clone: the client sends the launcher it
+    /// ships and runs it from standard input, so nothing is needed on the frontend.
+    bool usesShippedLauncher() const { return repoDir.trimmed().isEmpty(); }
+    /// The site, from the profile, else from a `--site` in the further options,
+    /// else from the frontend's name; empty for any other cluster.
+    QString effectiveSite() const;
+    /// The image to pull when the profile names none: this client's version of
+    /// the published backend image, with the EGL tag when it asks for a GPU.
+    /// Empty when @p clientVersion is not X.Y.Z, or the profile names its own
+    /// image or file, or a clone supplies one (as before the client shipped the launcher).
+    QString defaultImage(const QString &clientVersion) const;
     /// The options for scripts/launch_backend_slurm.sh, in order.
-    QStringList launcherArgs() const;
+    /// @p clientVersion picks the image when the profile has none.
+    QStringList launcherArgs(const QString &clientVersion = {}) const;
+    /// What stops the launcher from being run, or empty: a missing project
+    /// account on a site that needs one, no image to start.
+    QString launcherProblem(const QString &clientVersion) const;
+    /// Fills in what a known site defines (frontend, partition, GRES, QOS,
+    /// resources, time, queue wait); the user's own entries (login, account,
+    /// data and workspace) and the clone are left as they are.
+    void applyPreset(const QString &site);
+    /// The known sites, as ids ("leonardo", "pleiadi"), and how they are shown.
+    static QStringList presetSites();
+    static QString presetLabel(const QString &site);
     /// @p args as one line that QProcess::splitCommand reads back as they are
     /// (an argument with a space or a quote is quoted).
     static QString joinCommand(const QStringList &args);

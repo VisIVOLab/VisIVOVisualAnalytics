@@ -7,15 +7,35 @@ changes while you work.
 ## You need
 
 - An account on a SLURM cluster with a GPU partition, and SSH access to its
-  login node (the frontend) with a key, so that nothing has to be typed. Set
-  the key up once with `ssh-copy-id <user>@<frontend>`.
-- On the frontend: a copy of the VisIVO Visual Analytics repository (its
-  `scripts/launch_backend_slurm.sh` starts the backend), and the backend's
-  container image, `backend-egl.sif`. Your site's support team or the
-  [cluster deployment page](../../technical/deployment/hpc-slurm.md) tells you where
-  they are.
+  login node (the frontend) that asks for nothing when it connects: a key set
+  up once with `ssh-copy-id <user>@<frontend>`, or the site's SSH certificate
+  (see below).
 - Your data on the cluster's disk, for example a large cube under
   `/scratch/<user>/data`.
+
+Nothing has to be installed on the cluster. The client sends the launcher that
+starts the backend, and pulls the backend's container image of its own version
+the first time.
+
+## CINECA Leonardo in three steps
+
+1. Sign in to Leonardo's SSH certificate from a terminal with two-factor
+   authentication (smallstep `step ssh login`, as CINECA describes). The
+   certificate lasts for a while, so this is not needed at every connection.
+2. In *Connect to a cluster…*, set *Site* to *Leonardo (CINECA)*. The login
+   node, partition, GPU, resources, time and queue wait are filled in. Enter
+   your *User*, the project *Account* and the *Data root* (a folder under your
+   work or scratch area).
+3. Press *Connect*. The first time the client pulls its backend image into the
+   project's work area, which takes minutes and is shown as *Pulling the
+   backend image*; the next connections reuse it. A job can wait in the queue
+   for a while: the window says *Waiting in the queue* with SLURM's reason, and
+   *Cancel* gives it up.
+
+If `ssh` is refused, the window says so: on Leonardo it means the certificate
+expired, so repeat step 1. The first connection to a host also needs its key
+accepted once from a terminal (`ssh <user>@login.leonardo.cineca.it`, answer
+yes).
 
 ## Steps
 
@@ -24,20 +44,22 @@ changes while you work.
 
 2. Fill in a profile:
    - *Name*: the name shown in the status bar, for example the cluster's.
+   - *Site*: *Leonardo (CINECA)* or *PLEIADI (INAF)* fill in the fields the
+     site defines; *Other* leaves them to you.
    - *Frontend* and *User*: the login node and your login there.
-   - *VisIVO clone*: where the repository is on the frontend.
-   - *Partition*, *Account*, *QOS*, *GPUs (gres)*, *CPUs*, *Memory* and *Time
-     limit*: the SLURM resources of the job. *Account* is required on some
-     sites.
-   - *Backend image*: the path of `backend-egl.sif`.
+   - *Partition*, *Account*, *QOS*, *GPUs (gres)*, *CPUs*, *Memory*, *Time
+     limit* and *Wait in queue*: the SLURM resources of the job and how long
+     to wait for a node. *Account* is required on some sites.
+   - *Image to pull*: leave empty to use the backend image of this client's
+     version (the `-egl` one when you ask for a GPU). A development build, or
+     a version of your choice, takes a `docker://...` reference here.
+   - *Backend image file*: a `.sif` already on the cluster, used instead of
+     pulling (for example PLEIADI's own build).
    - *Data root*: the folder the backend may open data from.
    - *Workspace*: where the backend writes exports, brick pyramids and logs.
      Put it on a large disk, not in your home.
-
-   On CINECA Leonardo, put `--site leonardo` in *More options* (with
-   `--image docker://...` instead of *Backend image* to pull the image once):
-   it sets the partition, the scratch paths and the container flags there.
-   *Account* is then required.
+   - *VisIVO clone*: only for developers, to run the launcher of a clone on
+     the frontend instead of the client's.
 
    Press *Save* to keep the profile.
 
@@ -53,8 +75,9 @@ changes while you work.
    window submits the backend job over SSH, waits for SLURM to give it a
    node, opens an SSH tunnel to it and waits for the backend to answer. The
    progress screen says which step it is on (*Submitting the backend job
-   on…*, then the job and node, then the tunnel). *Cancel* stops at any step
-   and cancels the job.
+   on…*, *Waiting in the queue* with SLURM's reason, *Pulling the backend
+   image*, *Starting the backend*, then the tunnel). *Cancel* stops at any
+   step and cancels the job.
 
 4. When the window opens, its status bar and backend chip name the cluster
    (*Backend: NAME*). Choose *File ▸ Open…*: the file browser lists the
