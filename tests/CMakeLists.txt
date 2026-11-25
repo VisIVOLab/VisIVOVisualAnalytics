@@ -263,6 +263,8 @@ add_executable(VisIVOTests
     test_particle_profiles.cpp
     TestParticleTableRule.h
     test_particle_table_rule.cpp
+    TestPointTableDisplay.h
+    test_point_table_display.cpp
     TestSamp.h
     test_samp.cpp
     ${VISIVO_ROOT}/src/app/SampCallbackServer.cpp

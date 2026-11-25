@@ -520,6 +520,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              this->buildLabels();
                          }
                          this->refreshCatalogueTable();
+                         // The other columns have arrived: the colour that was
+                         // constant on the first paint's one column may now be
+                         // replaced by one that varies (#563).
+                         if (hydration && this->m_defaultColourPending)
+                             this->chooseDefaultColour();
                          // The command bar counts what is on screen, so it has to
                          // follow a filter: it used to keep claiming the number
                          // the window opened with.

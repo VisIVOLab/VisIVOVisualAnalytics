@@ -12,6 +12,7 @@
 #include <QVector3D>
 
 #include <array>
+#include <optional>
 #include <vector>
 
 class QPainter;
@@ -33,6 +34,9 @@ struct RaytraceOverlay
     double lo = 0.0, hi = 1.0;
     bool log = false;
     QString title;
+    /// The colour column's one value when it does not vary: the bar is one
+    /// colour with that value, over [lo, hi] made around it (#563).
+    std::optional<double> constant;
     /// The bar's type: the view's, which the window's style sheet sets.
     QFont font;
     /// The picture's size over the view's on screen: the bar keeps its size

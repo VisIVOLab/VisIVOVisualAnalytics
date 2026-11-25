@@ -453,6 +453,7 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
             o.log = m_tone.hue == Hue::Index
                     ? m_tone.hueLog
                     : visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog).log;
+            o.constant = m_tone.hueConstant;
         }
         o.hasBar = !o.lut.empty() && o.hi > o.lo;
         return o;
@@ -463,6 +464,7 @@ visivo::RaytraceOverlay ParticleGLView::overlay() const
     o.hi = m_tone.hueMax;
     // Linear when a log range reaches zero, as the splats are coloured.
     o.log = visivo::scalarColourRange(m_tone.hueMin, m_tone.hueMax, m_tone.hueLog).log;
+    o.constant = m_tone.hueConstant;
     o.hasBar = !o.lut.empty() && o.hi > o.lo;
     return o;
 }

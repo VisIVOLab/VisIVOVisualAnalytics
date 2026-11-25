@@ -890,6 +890,11 @@ private:
     bool m_pointTable{ false };   ///< a simulation's particles: a VBT of points, a snapshot's particle type
     QString m_tableFormat;        ///< the format the backend read ("vbt", "gadget", "csv", ...)
     bool m_defaultScaleChosen{ false };   ///< the opening Log/Linear choice, made once
+    bool m_defaultColourPending{ false }; ///< chooseDefaultColour waits for the other columns
+    bool m_choosingDefaultColour{ false };
+    /// The one value of the colour column when it does not vary over the rows
+    /// drawn: the bar shows it alone, not the range made around it.
+    std::optional<double> m_colourConstant;
     bool m_cartesian{ false };    ///< positions are X/Y/Z columns
     /// A table of points without classes: colour means a column, or one
     /// colour for all (no morphology checkbox).
@@ -899,6 +904,18 @@ private:
     QFormLayout *m_encForm{ nullptr };
     void applyPointTableLayout();
     void choosePointTableDefaults();
+    /// The colour a table of points opens with: its preferred quantity, unless
+    /// that is constant over the rows loaded (a mass every dark-matter particle
+    /// shares), then one that varies, or none (#563). Asked again when the
+    /// other columns have arrived and none was known to vary.
+    void chooseDefaultColour();
+    /// The axis titles, from the unit each mapped column is stored in (#563).
+    /// The same words go to the backend's view (set_axis_titles).
+    QStringList axisTitles(const QString &xKey, const QString &yKey, const QString &zKey) const;
+    void updateAxisTitles(const QString &xKey, const QString &yKey, const QString &zKey);
+    /// A requested axis mapping, or @p fallbackKey when its column has fewer
+    /// than three finite values or does not vary.
+    QString validatedAxisKey(const QString &requestedKey, const QString &fallbackKey) const;
 
     // ── Colour bar and LUT editor, as in the cube viewer's 3-D view ───────────
     QPointer<VolumeColorbar> m_colorbar;
@@ -909,6 +926,14 @@ private:
     /// Drawn on the backend: the colour column's range over every row drawn
     /// there, as it reports it (the rows loaded here are only a page).
     double m_colorRemoteRange[2]{ 0.0, 0.0 };
+    /// Set with that range when the column has the one value throughout: the
+    /// range is then the one made around it (visivo::pointtable::colourSpan).
+    std::optional<double> m_colorRemoteConstant;
+    void clearRemoteColourRange()
+    {
+        m_colorRemoteRange[0] = m_colorRemoteRange[1] = 0.0;
+        m_colorRemoteConstant.reset();
+    }
     void refreshColorbar();
     /// Save View As… (#528): the particle view as PNG, PDF or SVG.
     void saveViewAs3d();

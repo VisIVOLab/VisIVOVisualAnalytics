@@ -283,6 +283,44 @@ def test_the_render_route_starts_a_point_session(tmp_path, monkeypatch):
     assert seen["factory"] == "app.render_session.points:PointRenderSession"
 
 
+def test_a_constant_column_reports_its_one_value_not_a_widened_span(tmp_path):
+    """RAMSES dark matter: every particle has the same mass. The colours need a
+    span, but the range the client's bar is built from is the real one
+    (issue #563)."""
+    n = 500
+    data = np.stack([np.arange(n), np.arange(n) % 7, np.arange(n) % 5,
+                     np.full(n, 4.07169e-7)]).astype("<f4")
+    data.tofile(tmp_path / "snap.bin")
+    (tmp_path / "snap.bin.head").write_text(f"float\n4\n{n}\nlittle\nX\nY\nZ\nMass\n")
+    s, run, loop = _session(str(tmp_path / "snap.bin.head"))
+    try:
+        run(s.apply_command({"type": "set_color", "field": "Mass", "lut": "Viridis"}))
+        lv = s.levels()
+        assert lv["data_min"] == lv["data_max"] == pytest.approx(4.07169e-7, rel=1e-6)
+        # The table still spans something, so the points get a colour.
+        lo, hi = s._colorbar.GetLookupTable().GetRange()
+        assert hi > lo
+    finally:
+        run(s.close())
+        loop.close()
+
+
+def test_the_client_names_the_axes(tmp_path):
+    s, run, loop = _session(_table(tmp_path))
+    try:
+        assert s._outline.GetXTitle() == "X"
+        run(s.apply_command({"type": "set_axis_titles", "x": "X (box units)",
+                             "y": "Y (box units)", "z": "Z (Mpc)"}))
+        assert (s._outline.GetXTitle(), s._outline.GetYTitle(), s._outline.GetZTitle()) == (
+            "X (box units)", "Y (box units)", "Z (Mpc)")
+        # A missing title is the bare letter.
+        run(s.apply_command({"type": "set_axis_titles", "x": "", "y": "Y (kpc)"}))
+        assert (s._outline.GetXTitle(), s._outline.GetZTitle()) == ("X", "Z")
+    finally:
+        run(s.close())
+        loop.close()
+
+
 def test_a_bad_command_is_refused_and_changes_nothing(tmp_path):
     s, run, loop = _session(_table(tmp_path))
     try:

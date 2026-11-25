@@ -8,6 +8,14 @@ are preserved here unedited; the branch names they refer to are historical.
 
 ## Unreleased
 
+- **RAMSES in the 3-D points window (#563).** The axis titles name the unit the
+  column is stored in (`X (box units)` for RAMSES, not `X (Mpc)` over ticks of
+  0 to 1), Session Data names a table by its format (RAMSES, GADGET) instead of
+  VBT, and a table no longer opens coloured by a constant column (the mass of
+  dark-matter particles): another column that varies, or a single colour; a
+  constant column's colour bar shows its one value, not a made-up range, in
+  the local view, on a backend that draws the points, and over a ray-traced
+  picture.
 - **Connect to a cluster with nothing set up on it (#561).** The client carries
   the SLURM launcher and runs it over ssh from standard input, so the frontend
   needs no clone of the repository; with no image in the profile it pulls the

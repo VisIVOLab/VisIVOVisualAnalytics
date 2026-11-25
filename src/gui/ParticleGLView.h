@@ -29,6 +29,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <vector>
 
 class QOpenGLBuffer;
@@ -75,6 +76,9 @@ public:
         /// A 3-D render's bar is the view's colours: ``lut`` over
         /// [hueMin, hueMax], on a log scale with ``hueLog``; none without a lut.
         QString barTitle;
+        /// The colour column's one value when it does not vary: the bar then
+        /// shows that value alone, not the range made around it (#563).
+        std::optional<double> hueConstant;
     };
 
     explicit ParticleGLView(QWidget *parent = nullptr);
