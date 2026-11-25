@@ -17,6 +17,12 @@ are preserved here unedited; the branch names they refer to are historical.
   so a token alone never reaches the rest of the user's files. The
   self-hosted copilot backend (`deploy/copilot-llm`) is built from the same
   recipe: it now runs as a non-root user on Python 3.12, confined to `/data`.
+- **Building the backend image yourself (#66).** `docker/build_sif.sh` builds
+  the image on any x86_64 machine with Docker or Podman and converts it to a
+  `.sif` for Apptainer or Singularity. On a cluster, `apptainer/backend-conda-egl.def`
+  builds in two steps (`VTK_STAGE=deps`, then `build`) and takes a VTK source tree
+  prepared on the login node (`VTK_SRC`), for sites whose compute nodes have no
+  internet. Documented in `docs/technical/deployment/hpc-slurm.md`.
 
 ## 1.4.0 (2026-11-25)
 
