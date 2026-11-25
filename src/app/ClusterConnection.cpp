@@ -1,5 +1,6 @@
 #include "ClusterConnection.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -105,6 +106,114 @@ QString ClusterConnection::cancelCommand(const QString &jobId, const QString &jo
     return {};
 }
 
+QStringList ClusterConnection::remoteArgv(const ClusterProfile &profile, const QString &jobName,
+                                          const QString &clientVersion)
+{
+    QStringList remote;
+    if (profile.usesShippedLauncher()) {
+        remote = { u"bash"_s, u"-s"_s, u"--"_s };
+    } else {
+        // ssh starts in the home directory, so a home-relative path needs no "~/"
+        // (which the quoting would keep literal).
+        QString repo = profile.repoDir.trimmed();
+        if (repo.startsWith(u"~/"_s))
+            repo = repo.mid(2);
+        if (repo.isEmpty() || repo == u"~"_s)
+            repo = u"VisIVOVisualAnalytics"_s;   // the default clone, as before the client shipped the launcher
+        remote = { u"bash"_s, repo + u"/scripts/launch_backend_slurm.sh"_s };
+    }
+    remote << profile.launcherArgs(clientVersion) << u"--job-name"_s << jobName;
+    return remote;
+}
+
+QByteArray ClusterConnection::stdinPayload(const QString &script)
+{
+    // A heredoc ends at its tag on a line of its own: one the script does not hold.
+    QString tag = u"VISIVO_LAUNCHER_END"_s;
+    while (script.contains(tag))
+        tag += u'_';
+    // Line ends as in the repository: a checkout with CRLF (Windows) would break bash.
+    QString text = script;
+    text.replace(u"\r\n"_s, u"\n"_s);
+    if (!text.endsWith(u'\n'))
+        text += u'\n';
+    // Standard input is the script, which bash reads as it goes: the copy is run
+    // with its own input closed, or an ssh in it (the readiness check) would
+    // swallow what is left of this one.
+    // The copy is removed however the shell ends: a hang-up, a termination, an
+    // interrupt or a broken pipe (ssh dropped) exits with the usual 128+signal
+    // code, and the EXIT trap removes the file without changing the exit code.
+    return (u"visivo_f=\"$(mktemp \"${TMPDIR:-/tmp}/visivo-launcher.XXXXXX\")\" || exit 1\n"
+            u"trap 'rm -f \"$visivo_f\"' EXIT\n"
+            u"trap 'exit 129' HUP; trap 'exit 143' TERM; trap 'exit 130' INT; trap 'exit 141' PIPE\n"
+            u"cat > \"$visivo_f\" <<'%1'\n%2%1\n"
+            u"VISIVO_LAUNCHER_STDIN=1 bash \"$visivo_f\" \"$@\" </dev/null\n"
+            u"visivo_rc=$?\nrm -f \"$visivo_f\"\nexit $visivo_rc\n"_s)
+            .arg(tag, text)
+            .toUtf8();
+}
+
+QString ClusterConnection::launcherFailure(const ClusterProfile &profile, int exitCode,
+                                           const QString &output, bool reported)
+{
+    const QString target = profile.sshTarget();
+    if (output.contains(u"Host key verification failed"_s))
+        return u"ssh does not know the host key of %1 yet. Connect once from a terminal "
+               u"(ssh %1), check the host and answer yes, then connect again from here."_s
+                .arg(target);
+    if (exitCode == 255) {
+        // The launcher talks as soon as it runs: any of its lines in the output
+        // means ssh did get in, so the certificate is not the problem.
+        if (output.contains(u"[visivo]"_s))
+            return u"The connection to %1 dropped while the backend job was starting (the "
+                   u"computer went to sleep, or the network failed). The job is cancelled when "
+                   u"this window closes, or when the next window for this profile starts: "
+                   u"connect again to start a new one."_s.arg(target);
+        if (profile.effectiveSite() == u"leonardo"_s)
+            return u"ssh could not log in to %1. On Leonardo this is usually an expired or "
+                   u"missing SSH certificate: renew your CINECA SSH certificate (smallstep "
+                   u"`step ssh login`, with the two-factor code), then connect again."_s
+                    .arg(target);
+        return u"ssh could not reach or log in to %1, or the connection dropped. It needs "
+               u"key-based access (ssh-copy-id), as nothing can be typed here."_s.arg(target);
+    }
+    // Only a clone can be older than the client: the shipped launcher is its own copy.
+    if (!profile.usesShippedLauncher() && output.contains(u"Unknown option: --"_s))
+        return u"The VisIVO clone on the frontend is older than this client: update it "
+               u"(git pull) and connect again."_s;
+    return reported ? u"The launcher on the frontend failed (exit %1)."_s.arg(exitCode)
+                    : u"The launcher did not report the job, node, port and token "
+                      u"(exit %1); see the messages above."_s.arg(exitCode);
+}
+
+QString ClusterConnection::progressStatus(const QString &line)
+{
+    static const QRegularExpression queue(u"\\[visivo\\] Queue: (\\S+) \\((.*)\\), (\\d+) s"_s);
+    static const QRegularExpression pull(u"\\[visivo\\] Pull: (\\d+) s, (\\d+) MB fetched"_s);
+    static const QRegularExpression pullDone(u"\\[visivo\\] Pull: done in (\\d+) s"_s);
+    static const QRegularExpression attempt(u"\\[visivo\\]\\s+attempt (\\d+)/(\\d+)"_s);
+    static const QRegularExpression node(u"\\[visivo\\] Compute node: (\\S+)"_s);
+    if (const auto m = queue.match(line); m.hasMatch()) {
+        const QString state = m.captured(1);
+        const QString reason = m.captured(2);
+        const QString minutes = u"%1 min"_s.arg(m.captured(3).toInt() / 60);
+        if (state == u"PENDING"_s)
+            return u"Waiting in the queue: %1 (%2)"_s.arg(reason, minutes);
+        return u"The job is %1 (%2)"_s.arg(state.toLower(), reason);
+    }
+    if (const auto m = pull.match(line); m.hasMatch())
+        return u"Pulling the backend image: %1 MB fetched (%2 s)"_s.arg(m.captured(2), m.captured(1));
+    if (const auto m = pullDone.match(line); m.hasMatch())
+        return u"Backend image pulled (%1 s)."_s.arg(m.captured(1));
+    if (line.contains(u"[visivo] Pulling "_s))
+        return u"Pulling the backend image (the first time takes minutes)…"_s;
+    if (const auto m = node.match(line); m.hasMatch())
+        return u"The job runs on %1; starting the backend…"_s.arg(m.captured(1));
+    if (const auto m = attempt.match(line); m.hasMatch())
+        return u"Starting the backend on the node (check %1 of %2)…"_s.arg(m.captured(1), m.captured(2));
+    return {};
+}
+
 QString ClusterConnection::profileProblem(const ClusterProfile &profile)
 {
     static const QRegularExpression bad(u"^-|\\s"_s);
@@ -150,6 +259,22 @@ void ClusterConnection::start()
         fail(problem);
         return;
     }
+    if (const QString problem = m_profile.launcherProblem(ClusterProfile::clientImageVersion());
+        !problem.isEmpty()) {
+        fail(problem);
+        return;
+    }
+    // The launcher this client carries; a clone's own is run for a profile that names one.
+    QByteArray launcher;
+    if (m_profile.usesShippedLauncher()) {
+        QFile script(u":/cluster/launch_backend_slurm.sh"_s);
+        if (!script.open(QIODevice::ReadOnly)) {
+            fail(u"This build of VisIVO does not carry the launcher; name a VisIVO clone on "
+                 u"the frontend (VisIVO clone) instead."_s);
+            return;
+        }
+        launcher = stdinPayload(QString::fromUtf8(script.readAll()));
+    }
     m_ssh = QStandardPaths::findExecutable(u"ssh"_s);
     if (m_ssh.isEmpty()) {
         fail(u"No ssh client found. Install OpenSSH (on Windows: Settings ▸ Apps ▸ Optional "
@@ -169,21 +294,14 @@ void ClusterConnection::start()
     // A job recorded by an earlier window that did not get to cancel it.
     cancelRecordedJob();
 
-    // ssh starts in the home directory, so a home-relative path needs no "~/"
-    // (which the quoting would keep literal).
-    QString repo = m_profile.repoDir.trimmed();
-    if (repo.startsWith(u"~/"_s))
-        repo = repo.mid(2);
-    if (repo.isEmpty() || repo == u"~"_s)
-        repo = u"VisIVOVisualAnalytics"_s;
     m_jobName = u"visivo-%1-%2"_s.arg(profileKey(m_profile.name).left(8))
                         .arg(QString::fromLatin1(QUuid::createUuid().toRfc4122().toHex().left(8)));
     // Recorded before anything is submitted: a job whose id never arrives (a
     // Cancel or a crash right after sbatch) is still cancelled, by its name.
     writeJobRecord();
-    QStringList remote{ u"bash"_s, repo + u"/scripts/launch_backend_slurm.sh"_s };
-    remote << m_profile.launcherArgs() << u"--job-name"_s << m_jobName;
+    const QStringList remote = remoteArgv(m_profile, m_jobName, ClusterProfile::clientImageVersion());
     emit message(u"Submitting the backend job on %1…"_s.arg(m_profile.sshTarget()));
+    emit progress(u"Submitting the backend job on %1…"_s.arg(m_profile.sshTarget()));
 
     m_launcher = new QProcess(this);
     m_launcher->setProcessChannelMode(QProcess::MergedChannels);
@@ -194,6 +312,11 @@ void ClusterConnection::start()
             fail(u"Could not start ssh (%1)."_s.arg(m_ssh));
     });
     m_launcher->start(m_ssh, sshOptions() << m_profile.sshTarget() << remoteCommandLine(remote));
+    if (!launcher.isEmpty()) {
+        // The launcher goes in as standard input, then it is closed: `bash -s` runs it.
+        m_launcher->write(launcher);
+        m_launcher->closeWriteChannel();
+    }
 }
 
 void ClusterConnection::onLauncherOutput()
@@ -205,8 +328,11 @@ void ClusterConnection::onLauncherOutput()
     while ((nl = m_pendingLine.indexOf(u'\n')) >= 0) {
         const QString line = m_pendingLine.left(nl).trimmed();
         m_pendingLine.remove(0, nl + 1);
-        if (!line.isEmpty())
+        if (!line.isEmpty()) {
             emit message(redacted(line));
+            if (const QString text = progressStatus(line); !text.isEmpty())
+                emit progress(text);
+        }
     }
     // Recorded as soon as it is known: a job is never left without a record.
     if (m_info.jobId.isEmpty()) {
@@ -226,17 +352,8 @@ void ClusterConnection::onLauncherFinished(int exitCode, QProcess::ExitStatus st
     if (!info.jobId.isEmpty())
         m_info.jobId = info.jobId;
     if (status != QProcess::NormalExit || exitCode != 0 || !info.complete()) {
-        if (exitCode == 255)
-            fail(u"ssh could not reach or log in to %1, or the connection dropped. It needs "
-                 u"key-based access (ssh-copy-id), as nothing can be typed here."_s
-                         .arg(m_profile.sshTarget()));
-        else if (m_launcherOutput.contains("Unknown option: --job-name"))
-            fail(u"The VisIVO clone on the frontend is older than this client: update it "
-                 u"(git pull) and connect again."_s);
-        else
-            fail(info.complete() ? u"The launcher on the frontend failed (exit %1)."_s.arg(exitCode)
-                                 : u"The launcher did not report the job, node, port and token "
-                                   u"(exit %1); see the messages above."_s.arg(exitCode));
+        fail(launcherFailure(m_profile, exitCode, QString::fromUtf8(m_launcherOutput),
+                             info.complete()));
         return;
     }
     m_info = info;
@@ -248,6 +365,7 @@ void ClusterConnection::onLauncherFinished(int exitCode, QProcess::ExitStatus st
     m_url = u"http://127.0.0.1:%1"_s.arg(m_localPort);
     emit message(u"Job %1 runs on %2. Opening the tunnel on localhost:%3…"_s.arg(
             m_info.jobId, m_info.node).arg(m_localPort));
+    emit progress(u"Opening the tunnel to %1…"_s.arg(m_info.node));
     openTunnel();
     m_healthTries = 0;
     m_healthTimer.start();
