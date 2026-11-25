@@ -563,6 +563,10 @@ jobs:
         env:
           VLKB_CLIENT_ID: ${{ secrets.VLKB_CLIENT_ID }}
           VLKB_CLIENT_SECRET: ${{ secrets.VLKB_CLIENT_SECRET }}
+          # The client may start the published backend image of its own version
+          # on a cluster only in the package of a tag: that is when the images
+          # are published (backend-image.yml). A manual run builds without.
+          RELEASE_BUILD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && 'ON' || 'OFF' }}
         run: |
           # On Windows, Git Bash $PWD returns POSIX paths (/d/a/…) that CMake
           # mishandles when joined with ';' in CMAKE_PREFIX_PATH. `pwd -W` is a
@@ -583,7 +587,8 @@ jobs:
             -DCMAKE_PREFIX_PATH="$WS/vtk-install;$CFITSIO_PREFIX" \
             -DCMAKE_INSTALL_PREFIX="$WS/dist" \
             -DVISIVO_VLKB_CLIENT_ID="$VLKB_CLIENT_ID" \
-            -DVISIVO_VLKB_CLIENT_SECRET="$VLKB_CLIENT_SECRET"
+            -DVISIVO_VLKB_CLIENT_SECRET="$VLKB_CLIENT_SECRET" \
+            -DVISIVO_RELEASE_BUILD="$RELEASE_BUILD"
 
       - name: Build
         run: cmake --build build --parallel

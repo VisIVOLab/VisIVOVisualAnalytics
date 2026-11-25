@@ -31,6 +31,12 @@ ClusterConnectDialog::ClusterConnectDialog(ClusterConnection *connection, QWidge
 
     QObject::connect(connection, &ClusterConnection::message, this,
                      [this](const QString &text) { m_log->appendPlainText(text); });
+    // The step it is on, in the line above the log: the queue wait (with
+    // SLURM's reason), the image pull, the start of the backend.
+    QObject::connect(connection, &ClusterConnection::progress, this, [this, name](const QString &text) {
+        if (!m_finished)
+            m_status->setText(u"%1: %2"_s.arg(name, text));
+    });
     QObject::connect(connection, &ClusterConnection::connected, this, [this]() {
         m_finished = true;
         accept();
