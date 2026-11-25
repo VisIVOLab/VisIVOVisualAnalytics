@@ -32,6 +32,8 @@ private slots:
     void cluster_profileSavedBeforeTheShippedLauncherKeepsItsClone();
     void cluster_sitePresets();
     void cluster_sshFailureMessages();
+    void cluster_changingSiteClearsTheOldClustersFields();
+    void cluster_changedHostKeyIsNotAnUnknownOne();
     void cluster_progressLinesBecomeStatus();
     void cluster_stdinPayloadRunsFromAFileWithItsOwnInput();
     void launchOptions_connectCluster();

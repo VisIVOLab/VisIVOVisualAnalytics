@@ -157,6 +157,25 @@ QString ClusterConnection::launcherFailure(const ClusterProfile &profile, int ex
                                            const QString &output, bool reported)
 {
     const QString target = profile.sshTarget();
+    // ssh prints "Host key verification failed" for a key it does not know and
+    // also for one that differs from the recorded one, so the changed case is
+    // tested first: "answer yes" is wrong advice for it.
+    if (output.contains(u"REMOTE HOST IDENTIFICATION HAS CHANGED"_s)
+        || QRegularExpression(u"Host key for .+ has changed"_s).match(output).hasMatch()) {
+        QString message = u"The host key of %1 differs from the one recorded in known_hosts. This "
+                          u"can mean that something is intercepting the connection. Do not just "
+                          u"replace it: check the new fingerprint against the ones the site "
+                          u"publishes, then remove the old entry (ssh-keygen -R %2), connect once "
+                          u"from a terminal (ssh %1) and compare the fingerprint ssh shows before "
+                          u"answering yes."_s
+                                  .arg(target, profile.frontend.trimmed());
+        if (profile.effectiveSite() == u"leonardo"_s)
+            message += u" On Leonardo the login name points to several login nodes, each with its "
+                       u"own host keys, so every node's keys must be recorded once: connect once "
+                       u"to each loginNN-ext.leonardo.cineca.it node, or ssh-keyscan them, and "
+                       u"verify the fingerprints against CINECA's published ones."_s;
+        return message;
+    }
     if (output.contains(u"Host key verification failed"_s))
         return u"ssh does not know the host key of %1 yet. Connect once from a terminal "
                u"(ssh %1), check the host and answer yes, then connect again from here."_s
