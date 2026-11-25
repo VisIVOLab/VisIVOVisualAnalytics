@@ -330,7 +330,8 @@ def _physical_units_info(path: str) -> PhysicalUnitsInfo:
     sources = [e.get("source", "") for e in table.values()]
     return PhysicalUnitsInfo(
         active=any(sources),
-        source="user" if "user" in sources else (run.source if any(sources) else "none"),
+        source="user" if "user" in sources else (
+            run.source if run.source != "none" else next((x for x in sources if x), "none")),
         origin=run.origin, variable=name or "",
         unit_density=run.density, unit_length=run.length, unit_velocity=run.velocity,
         value_quantity=pu.variable_quantity(name) if name is not None else "",

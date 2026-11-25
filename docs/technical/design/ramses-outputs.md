@@ -96,9 +96,14 @@ Built on `AmrHierarchy`, so any producer gets them (#554 adds `open_hierarchy`).
   reusing the limits of `compute/pluto_cartesian.py`; slabs of whole planes, one
   pass over the leaves that reach each slab, so memory is the slab. Leaves
   coarser or equal to the target level fill their voxels, finer ones are
-  volume-weighted: the mass cube is exact up to float32.
+  averaged with the weight of the field (`weighting()`: volume for density,
+  pressure and mass; density for velocities, metallicity, passive scalars; as
+  yt): the mass and the momentum are exact up to float32. Values are stored in
+  code units in a `*.amr-uniform.fits` whose `AMRSRC` card lets the units table
+  (`physical_units.view_scales`, producers listed in `VIEW_PRODUCERS`) return
+  the run's factors, as for the PLUTO Cartesian view.
 - **Level map**: `level_map` returns the rectangles of the leaves a plane cuts,
-  per level, with counts; sweeping the planes of a level gives its leaf count.
+  per level, with counts (capped while reading, coarsest levels kept); sweeping the planes of a level gives its leaf count.
 - **Finest level in a box**: `AmrHierarchy.finest_level_in(lo, hi)`, by overlap
   (a coarse cell that reaches into the box counts).
 

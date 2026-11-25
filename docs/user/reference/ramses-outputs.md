@@ -71,7 +71,10 @@ and the passive scalars the output has (`metallicity`, ...). A mesh with gas and
 no particle files opens as its cells. The ray-traced view draws each cell with
 its own size, at the resolution the run wrote, without resampling. Uniform
 cubes of a field at a chosen level, the refinement level of a slice and
-"refine a box" come from the same cells; the backend routes are in
+"refine a box" come from the same cells (a uniform cube averages the cells
+finer than a voxel by volume for density, pressure and mass, and by mass for
+velocities and passive scalars; it is stored in code units and Display >
+Physical shows the run's units); the backend routes are in
 [AMR outputs](../../technical/backend-api/sed-simulations.md).
 
 ## A uniform cube of one field

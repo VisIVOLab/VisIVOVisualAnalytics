@@ -218,7 +218,8 @@ struct AxisScale
     double voxel(double coordinate) const { return (coordinate - origin) / step; }
 };
 
-/// The region, in the cube's own axes ("physical"), of the voxels @p box
+/// The region, in the cube's own axes (box units: an AMR cube is written in the
+/// run's code units, its axes a fraction of the box), of the voxels @p box
 /// ({x0, x1, y0, y1, z0, z1}, inclusive, 0-based): the outer faces of its end
 /// voxels, so the plan covers every voxel the box shows. Unset when an axis has
 /// no usable step.
@@ -233,7 +234,7 @@ inline Region regionFromVoxelBox(const std::array<int, 6> &box, const std::array
         region.lo[std::size_t(i)] = std::min(a, b);
         region.hi[std::size_t(i)] = std::max(a, b);
     }
-    region.unit = QStringLiteral("physical");
+    region.unit = QStringLiteral("box");
     region.set = true;
     return region;
 }
@@ -241,14 +242,15 @@ inline Region regionFromVoxelBox(const std::array<int, 6> &box, const std::array
 // ── The refinement-level map of a slice ─────────────────────────────────────
 
 /// The body of POST /v1/simulations/amr/level-map for the plane of @p axis
-/// ("x", "y" or "z") at @p coordinate, in the cube's own axes.
+/// ("x", "y" or "z") at @p coordinate, in the cube's own axes (box units); the
+/// rectangles come back in the same unit.
 inline QJsonObject levelMapBody(const QString &path, const QString &axis, double coordinate,
                                 int maxRects)
 {
     return QJsonObject{ { QStringLiteral("path"), path },
                         { QStringLiteral("axis"), axis },
                         { QStringLiteral("coordinate"), coordinate },
-                        { QStringLiteral("unit"), QStringLiteral("physical") },
+                        { QStringLiteral("unit"), QStringLiteral("box") },
                         { QStringLiteral("max_rects"), maxRects } };
 }
 

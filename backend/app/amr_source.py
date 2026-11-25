@@ -45,6 +45,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+#: A cube resampled from a mesh (app/compute/amr_views.py) is a FITS file of
+#: this name whose ``AMRSRC`` card is the mesh's path and ``AMRFLD`` the field,
+#: so the units table (app/physical_units.py) shows it in the run's units.
+VIEW_SUFFIX = ".amr-uniform.fits"
+SOURCE_KEY, FIELD_KEY = "AMRSRC", "AMRFLD"
+
 #: Cells :meth:`AmrHierarchy.leaf_cells` joins at most (a 512^3 cube's worth
 #: would be 134 million: that is a job for ``leaf_blocks``).
 MAX_JOINED_CELLS = 64_000_000
@@ -208,3 +214,29 @@ def open_hierarchy(path, allowed=None) -> AmrHierarchy:
     if directory is not None:
         return rm.open_output(directory).amr()
     raise ValueError(f"{path} holds no AMR mesh this backend reads (a RAMSES output).")
+
+
+def view_source(path) -> str | None:
+    """The mesh a uniform-cube view was resampled from (its ``AMRSRC`` card);
+    None for any other file."""
+    from .physical_units import view_card  # noqa: PLC0415
+    return view_card(path, VIEW_SUFFIX, SOURCE_KEY)
+
+
+def view_scales(path, ref: str) -> dict[str, dict]:
+    """The columns of the view ``path`` (made from the mesh ``ref``) as the
+    units table has them: its coordinates (box units to the run's length) and
+    its one data column ``"value"``, the producer's own factor of the field
+    (the cell mass's for ``mass``, none for ``level``). The cube stores code
+    values, so these are the run's factors unchanged. Empty when the mesh can
+    no longer be opened."""
+    from .physical_units import VALUE, view_card  # noqa: PLC0415
+    try:
+        table = open_hierarchy(ref).scales()
+    except (OSError, ValueError, KeyError):
+        return {}
+    out = {c: {**table[c], "source": "run info"} for c in ("x", "y", "z") if c in table}
+    field = view_card(path, VIEW_SUFFIX, FIELD_KEY)
+    if field in table:
+        out[VALUE] = {**table[field], "source": "run info"}
+    return out

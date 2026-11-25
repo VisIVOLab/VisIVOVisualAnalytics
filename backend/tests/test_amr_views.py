@@ -145,26 +145,27 @@ def test_a_cube_is_the_definition_at_every_level(level):
     h = MemoryAmr(LEAVES)
     plan, cube = run_cube(h, "density", level)
     assert cube.shape == (2 ** level,) * 3 and plan.shape == (2 ** level,) * 3
-    # Physical values: density times its factor of 2.
-    np.testing.assert_allclose(cube, 2.0 * brute(LEAVES, level), rtol=1e-6)
+    # Code units: the cube holds the code density, the physical factor is the run's.
+    np.testing.assert_allclose(cube, brute(LEAVES, level), rtol=1e-6)
 
 
 def test_a_cube_coarser_than_the_mesh_averages_and_below_the_root_too():
     h = MemoryAmr(LEAVES)
     _, cube = run_cube(h, "density", 0)       # one voxel: the volume-weighted mean
     total = sum(v["density"] * (2.0 ** -lv) ** 3 for lv, _, v in LEAVES)
-    assert cube.shape == (1, 1, 1) and float(cube[0, 0, 0]) == pytest.approx(2.0 * total, rel=1e-6)
+    assert cube.shape == (1, 1, 1) and float(cube[0, 0, 0]) == pytest.approx(total, rel=1e-6)
 
 
 @pytest.mark.parametrize("level", [0, 1, 2, 3])
 def test_the_mass_is_conserved_at_every_level(level):
     h = MemoryAmr(LEAVES)
     plan, mass = run_cube(h, "mass", level)
-    want = sum(v["density"] * (2.0 ** -lv) ** 3 for lv, _, v in LEAVES) * 2.0e6
+    want = sum(v["density"] * (2.0 ** -lv) ** 3 for lv, _, v in LEAVES)
     assert float(mass.astype(np.float64).sum()) == pytest.approx(want, rel=1e-6)
-    # A voxel's mass is its density times its volume.
+    # A voxel's mass is its density times its volume (code units; the mass factor is
+    # the run's, applied by the units table).
     _, dens = run_cube(h, "density", level)
-    np.testing.assert_allclose(mass, dens / 2.0 * 2.0e6 * plan.dx ** 3, rtol=1e-5)
+    np.testing.assert_allclose(mass, dens * plan.dx ** 3, rtol=1e-5)
 
 
 def test_the_level_field_is_the_finest_leaf_in_a_voxel():
@@ -206,7 +207,113 @@ def test_a_hole_in_the_mesh_is_nan():
     h = MemoryAmr([l for l in LEAVES if l[1][0] > 0.6 or l[0] > 1])    # the x > 0.5 half only, partly
     _, cube = run_cube(h, "density", 2)
     assert np.isnan(cube).any() and np.isfinite(cube).any()
-    np.testing.assert_allclose(cube, 2.0 * brute(h.leaves, 2), rtol=1e-6)
+    np.testing.assert_allclose(cube, brute(h.leaves, 2), rtol=1e-6)
+
+
+# ── Weighting: velocities and scalars are mass-weighted ─────────────────────
+
+#: Level 1 with the cell (0,0,0) split once: a dense, slow fine cell sits beside
+#: light, fast ones, so a volume mean and a mass-weighted mean differ a lot.
+def _gas(refine):
+    out = []
+    for lv, c, v in _mesh(refine):
+        rho = 1.0 + 10 * c[0] + 100 * c[1] + 1000 * c[2] + lv
+        out.append((lv, c, {"density": rho, "vx": 3.0 - 7.0 * c[2] * (1 + lv) - c[0],
+                            "metallicity": 0.02 * (1 + c[1])}))
+    return out
+
+
+GAS = _gas({(1, (0, 0, 0)), (2, (0, 0, 0))})
+GAS_FIELDS = ("density", "vx", "metallicity")
+
+
+def brute_density_weighted(leaves, level, name):
+    """The mass-weighted mean over a voxel's finer leaves, a coarser leaf's own value."""
+    n = 2 ** level
+    dxl = 1.0 / n
+    out = np.full((n, n, n), np.nan)
+    for k in range(n):
+        for j in range(n):
+            for i in range(n):
+                lo = np.array([i, j, k]) * dxl
+                num = den = 0.0
+                for lv, c, vals in leaves:
+                    c, half = np.asarray(c), 0.5 * 2.0 ** -lv
+                    if lv <= level and (c - half <= lo + 1e-12).all() and (c + half >= lo + dxl - 1e-12).all():
+                        num, den = vals[name], 1.0
+                        break
+                    if lv > level and (c >= lo).all() and (c <= lo + dxl).all():
+                        m = vals["density"] * (2.0 ** -lv) ** 3
+                        num, den = num + m * vals[name], den + m
+                out[k, j, i] = num / den if den else np.nan
+    return out
+
+
+def test_the_weighting_of_each_field():
+    h = MemoryAmr(GAS, GAS_FIELDS)
+    assert [av.weighting(h, f) for f in ("density", "mass", "vx", "metallicity", "level")] == [
+        "volume", "volume", "density", "density", "finest"]
+    assert av.weighting(MemoryAmr(LEAVES), "density") == "volume"
+    for f in ("vy", "vz", "velocity_x", "scalar_2", "scalar_17"):
+        assert av.weighting(MemoryAmr(GAS, ("density", f)), f) == "density"
+    # A pressure is volume-weighted; with no density there is nothing to weigh by.
+    assert av.weighting(MemoryAmr(GAS, ("density", "pressure")), "pressure") == "volume"
+    assert av.weighting(MemoryAmr(GAS, ("vx",)), "vx") == "volume"
+
+
+@pytest.mark.parametrize("field", ["vx", "metallicity"])
+@pytest.mark.parametrize("level", [0, 1, 2, 3])
+def test_a_velocity_is_the_mass_weighted_mean_of_the_finer_leaves(field, level):
+    h = MemoryAmr(GAS, GAS_FIELDS)
+    plan, cube = run_cube(h, field, level)
+    assert plan.weighting == "density"
+    np.testing.assert_allclose(cube, brute_density_weighted(GAS, level, field), rtol=1e-6)
+
+
+def test_the_dense_fine_cell_sets_the_velocity_not_the_light_coarse_one():
+    # One voxel at level 0: a mass-weighted vx is the momentum over the mass.
+    h = MemoryAmr(GAS, GAS_FIELDS)
+    _, cube = run_cube(h, "vx", 0)
+    mass = sum(v["density"] * 8.0 ** -lv for lv, _, v in GAS)
+    mom = sum(v["density"] * v["vx"] * 8.0 ** -lv for lv, _, v in GAS)
+    assert float(cube[0, 0, 0]) == pytest.approx(mom / mass, rel=1e-6)
+    vol = sum(v["vx"] * 8.0 ** -lv for lv, _, v in GAS)
+    assert abs(float(cube[0, 0, 0]) - vol) > 1e-3            # not the volume mean
+
+
+@pytest.mark.parametrize("level", [0, 1, 2, 3])
+def test_the_momentum_of_the_cube_is_that_of_the_cells(level):
+    h = MemoryAmr(GAS, GAS_FIELDS)
+    plan, vx = run_cube(h, "vx", level)
+    _, rho = run_cube(h, "density", level)
+    cells = sum(v["density"] * v["vx"] * 8.0 ** -lv for lv, _, v in GAS)
+    scale = sum(v["density"] * abs(v["vx"]) * 8.0 ** -lv for lv, _, v in GAS)
+    cube = float((vx.astype(np.float64) * rho).sum()) * plan.dx ** 3
+    assert abs(cube - cells) / scale < 1e-6
+
+
+def test_a_weighted_cube_is_the_same_in_slabs_and_a_massless_voxel_is_nan(monkeypatch):
+    h = MemoryAmr(GAS, GAS_FIELDS)
+    _, one = run_cube(h, "vx", 3)
+    monkeypatch.setattr(av, "SLAB_VOXELS", 64)
+    monkeypatch.setattr(av, "_VECTOR_FILL", 1)
+    _, slabs = run_cube(h, "vx", 3)
+    np.testing.assert_array_equal(slabs, one)
+    empty = MemoryAmr([(lv, c, {**v, "density": 0.0 if lv == 3 else v["density"]})
+                       for lv, c, v in GAS], GAS_FIELDS)
+    _, cube = run_cube(empty, "vx", 2)
+    assert np.isnan(cube[0, 0, 0]) and np.isfinite(cube[1:, 1:, 1:]).all()
+
+
+def test_the_header_and_plan_state_the_weighting():
+    h = MemoryAmr(GAS, GAS_FIELDS)
+    plan, answer = av.plan_view(h, "vx", 2)
+    assert answer["weighting"] == "density" and plan.slab_bytes == plan.slab_planes * 16 * 17
+    hdr = av.build_header(h, plan, "x")
+    assert hdr["AMRWGT"] == "density" and hdr["AMRMODE"] == "mean"
+    assert hdr["BUNIT"] == "code velocity" and hdr["AMRUNIT"] == "code units"
+    assert av.build_header(h, av.plan_uniform(h, "mass", 2), "x")["AMRWGT"] == "volume"
+    assert av.build_header(h, av.plan_uniform(h, "level", 2), "x")["AMRWGT"] == "finest"
 
 
 # ── The plan ─────────────────────────────────────────────────────────────────
@@ -260,14 +367,17 @@ def test_the_header_records_how_the_cube_was_made():
     plan = av.plan_uniform(h, "density", 2, lo=[0.25, 0.0, 0.0], hi=[0.75, 0.5, 0.5])
     hdr = av.build_header(h, plan, "somewhere/output_00001")
     assert (hdr["NAXIS1"], hdr["NAXIS2"], hdr["NAXIS3"]) == plan.shape == (2, 2, 2)
-    assert hdr["CUNIT1"] == "kpc" and hdr["BUNIT"] == "g/cm^3"
-    assert hdr["CDELT1"] == pytest.approx(25.0) and hdr["CRVAL1"] == pytest.approx(37.5)
-    assert hdr["CRVAL2"] == pytest.approx(12.5)
+    # Code units: the axes are box units, the values the code density.
+    assert hdr["CUNIT1"] == "box" and hdr["BUNIT"] == "code density"
+    assert hdr["CDELT1"] == pytest.approx(0.25) and hdr["CRVAL1"] == pytest.approx(0.375)
+    assert hdr["CRVAL2"] == pytest.approx(0.125)
+    assert hdr["AMRUNIT"] == "g/cm^3" and hdr["AMRWGT"] == "volume" and hdr["AMRMODE"] == "mean"
     assert (hdr["AMRLEV"], hdr["AMRFLD"], hdr["AMRCODE"]) == (2, "density", "memory")
     assert (hdr["AMRLO1"], hdr["AMRHI1"]) == (0.25, 0.75) and hdr["AMRFCT"] == 2.0
     assert hdr["AMRSRC"] == "somewhere/output_00001" and hdr["AEXP"] == 0.5
     mass = av.build_header(h, av.plan_uniform(h, "mass", 2), "x")
-    assert mass["BUNIT"] == "Msun" and mass["AMRFCT"] == pytest.approx(2.0e6 * 0.25 ** 3)
+    assert mass["BUNIT"] == "code density x box volume" and mass["AMRUNIT"] == "Msun"
+    assert mass["AMRFCT"] == pytest.approx(2.0e6)
 
 
 # ── The level map ────────────────────────────────────────────────────────────
@@ -410,13 +520,108 @@ def test_the_cells_total_mass_matches_the_cube(tmp_path):
     from app import physical_units
     mass_points = float(np.sum(cells.column("mass"))) * physical_units.scales(
         ro.ramses_ref(directory, "cells"))["mass"]["factor"]
+    factor = physical_units.scales(ro.ramses_ref(directory, "cells"))["mass"]["factor"]
     for level in (1, 2):
         _, cube = run_cube(h, "mass", level)
-        assert float(cube.astype(np.float64).sum()) == pytest.approx(mass_points, rel=1e-6)
+        assert float(cube.astype(np.float64).sum()) * factor == pytest.approx(mass_points,
+                                                                               rel=1e-6)
     # The cube is the definition on the real reader's leaves too.
     leaves = [(lv, c, {"density": v[0]}) for lv, c, v in exp.leaves]
     _, dens = run_cube(h, "density", 2)
-    np.testing.assert_allclose(dens, W.UNIT_D * brute(leaves, 2), rtol=1e-5)
+    np.testing.assert_allclose(dens, brute(leaves, 2), rtol=1e-5)
+
+
+# ── The level map under a cap ────────────────────────────────────────────────
+
+def _flat(m):
+    return [(int(lv), r) for lv in sorted(m["levels"], key=int) for r in m["levels"][lv]]
+
+
+@pytest.mark.parametrize("cap", [0, 1, 3, 4, 9, 10_000])
+def test_a_capped_level_map_keeps_the_coarsest_rects_and_the_exact_counts(cap, monkeypatch):
+    leaves = _mesh({(1, (0, 0, 0)), (2, (0, 0, 0)), (2, (1, 1, 1)), (1, (1, 0, 0)),
+                    (2, (2, 0, 0)), (2, (3, 1, 0))}, base=1)
+    h = MemoryAmr(leaves)
+    full = av.level_map(h, "z", 0.1, max_rects=10 ** 9)
+    # Whatever the cap, nothing above it is ever held.
+    held = []
+    real = av._drop_finest
+
+    def watch(by_level, excess):
+        out = real(by_level, excess)
+        held.append(sum(c.shape[0] for chunks in by_level.values() for c in chunks))
+        return out
+
+    monkeypatch.setattr(av, "_drop_finest", watch)
+    capped = av.level_map(h, "z", 0.1, max_rects=cap)
+    assert max(held) <= cap
+    assert capped["counts"] == full["counts"] and capped["cells"] == full["cells"]
+    assert _flat(capped) == _flat(full)[:cap]
+    assert capped["truncated"] == (cap < full["cells"]) and capped["area"] == full["area"]
+    assert set(capped["levels"]) == set(full["levels"])
+
+
+def test_a_capped_level_map_reads_blocks_of_any_order(monkeypatch):
+    """A block of a coarser level after a finer one still wins its place."""
+    h = MemoryAmr(_mesh({(1, (0, 0, 0))}))
+    real = MemoryAmr.leaf_blocks
+
+    def reversed_blocks(self, *a, **k):
+        yield from sorted(real(self, *a, **k), key=lambda b: -b.level)
+
+    monkeypatch.setattr(MemoryAmr, "leaf_blocks", reversed_blocks)
+    capped = av.level_map(h, "z", 0.1, max_rects=2)
+    assert capped["truncated"] and sum(capped["counts"].values()) > 2
+    assert len(capped["levels"]["1"]) == 2 and capped["levels"]["2"] == []
+
+
+# ── Units: the cube is in code units and the units table converts ───────────
+
+def test_an_amr_cube_has_the_units_of_its_run(tmp_path):
+    from app import physical_units as pu
+    directory, _ = W.write_output(tmp_path / "run", particles=None)
+    h = ro.open_output(directory).amr()
+    table = h.scales()
+    for field in ("density", "pressure", "vx", "mass", "level"):
+        made = av.worker_amr_uniform(str(directory), field, 2, None, None, "box", 1 << 20,
+                                     str(tmp_path / "out"))
+        cube = made["outputs"][0]["path"]
+        assert cube.endswith(".amr-uniform.fits")
+        got = pu.scales(cube)
+        want = {"x": table["x"], "y": table["y"], "z": table["z"]}
+        if field != "level":
+            want["value"] = table[field]
+        assert set(got) == set(want), field
+        for column, entry in want.items():
+            assert got[column]["factor"] == pytest.approx(entry["factor"]), (field, column)
+            assert got[column]["unit"] == entry["unit"]
+        # Stored values are code values: the factor is the run's, not baked in.
+        with fits.open(cube) as hdul:
+            assert hdul[0].header["AMRFCT"] == pytest.approx(
+                table.get(field, {"factor": 1.0})["factor"])
+            assert hdul[0].header["CUNIT1"] == "box"
+    # A typed override on the cube replaces the run's factor for that column only.
+    cube = av.worker_amr_uniform(str(directory), "density", 1, None, None, "box", 1 << 20,
+                                 str(tmp_path / "out2"))["outputs"][0]["path"]
+    pu.set_user(cube, columns={"value": (7.0, "my unit")}, by="test")
+    typed = pu.scales(cube)
+    assert typed["value"] == {"factor": 7.0, "unit": "my unit", "source": "user"}
+    assert typed["x"]["factor"] == pytest.approx(table["x"]["factor"])
+    pu.set_user(cube, clear=True, by="test")
+    assert pu.scales(cube)["value"]["factor"] == pytest.approx(table["density"]["factor"])
+
+
+def test_a_cube_whose_run_is_gone_or_a_plain_fits_has_no_amr_units(tmp_path):
+    import shutil
+    from app import physical_units as pu
+    directory, _ = W.write_output(tmp_path / "run", particles=None)
+    cube = av.worker_amr_uniform(str(directory), "density", 1, None, None, "box", 1 << 20,
+                                 str(tmp_path / "out"))["outputs"][0]["path"]
+    shutil.rmtree(directory)
+    assert pu.scales(cube) == {}
+    other = tmp_path / "plain.fits"
+    fits.PrimaryHDU(np.zeros((2, 2, 2), dtype=np.float32)).writeto(other)
+    assert pu.scales(other) == {}
 
 
 # ── Drawing the cells ────────────────────────────────────────────────────────
@@ -491,9 +696,10 @@ async def test_the_routes_plan_run_and_map(client, auth_headers, tmp_path):
         data = hdul[0].data
         header = hdul[0].header
     assert data.shape == (4, 4, 4) and header["AMRFLD"] == "density" and header["AMRLEV"] == 2
-    assert header["BUNIT"] == "g/cm^3" and header["CUNIT1"] == "kpc"
+    assert header["BUNIT"] == "code density" and header["CUNIT1"] == "box"
+    assert header["AMRUNIT"] == "g/cm^3" and out["path"].endswith(".amr-uniform.fits")
     leaves = [(lv, c, {"density": v[0]}) for lv, c, v in exp.leaves]
-    np.testing.assert_allclose(data, W.UNIT_D * brute(leaves, 2), rtol=1e-5)
+    np.testing.assert_allclose(data, brute(leaves, 2), rtol=1e-5)
     # A region without a level: that box at the finest level it holds.
     refined = await client.post("/v1/simulations/amr/uniform", json={
         "path": ref, "field": "density", "lo": [0.6, 0.6, 0.6], "hi": [0.9, 0.9, 0.9]},
@@ -537,11 +743,36 @@ def test_the_real_output_cells_cube_and_level_map_agree():
 
         av.resample(h, plan, sink)
         # density * voxel volume, in box units and code density.
-        assert total * plan.dx ** 3 / h.scales()["density"]["factor"] == pytest.approx(
-            mass_cells, rel=1e-6), level
+        assert total * plan.dx ** 3 == pytest.approx(mass_cells, rel=1e-6), level
     # The level map's cells of each level over a plane are consistent with the counts.
     m = av.level_map(h, "z", 0.5)
     assert m["area"] == pytest.approx(1.0, rel=1e-9)
     assert set(map(int, m["counts"])) <= set(counts) and all(
         n <= counts[int(lv)] for lv, n in m["counts"].items())
     assert h.finest_level_in() == max(lv for lv, n in counts.items() if n)
+
+
+@needs_real
+def test_the_real_output_conserves_momentum_and_level_map_caps_are_exact():
+    h = ro.open_output(REAL).amr()
+    momentum = scale = 0.0
+    for b in h.leaf_blocks(["density", "vx"]):
+        m = b.fields["density"].astype(np.float64) * b.dx ** 3
+        momentum += float((m * b.fields["vx"]).sum())
+        scale += float((m * np.abs(b.fields["vx"])).sum())
+    cubes = {}
+    for field in ("density", "vx"):
+        plan = av.plan_uniform(h, field, 7, max_voxels=1 << 27)
+        slabs = []
+        av.resample(h, plan, slabs.append)
+        cubes[field] = np.concatenate(slabs)
+    assert plan.weighting == "density"
+    cube = float((cubes["density"].astype(np.float64) * cubes["vx"]).sum()) * plan.dx ** 3
+    # Sum of m v over the cells against the cube's rho v voxel-volume sum: float32 storage only.
+    assert abs(cube - momentum) / scale < 1e-6
+    # A tiny cap keeps the coarsest rectangles, and the counts stay those of the slice.
+    full = av.level_map(h, "z", 0.5)
+    for cap in (1, 5000):
+        small = av.level_map(h, "z", 0.5, max_rects=cap)
+        assert small["counts"] == full["counts"] and small["truncated"]
+        assert _flat(small) == _flat(full)[:cap]

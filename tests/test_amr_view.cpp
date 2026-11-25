@@ -122,7 +122,7 @@ void TestAmrView::regionFromVoxelBox_isTheOuterFacesOfTheEndVoxels()
                                          AxisScale{ 11.0, 2.0 } };
     const Region region = regionFromVoxelBox({ 0, 3, 1, 1, 2, 4 }, axes);
     QVERIFY(region.set);
-    QCOMPARE(region.unit, QStringLiteral("physical"));
+    QCOMPARE(region.unit, QStringLiteral("box"));
     QCOMPARE(region.lo[0], 0.0);
     QCOMPARE(region.hi[0], 8.0);
     QCOMPARE(region.lo[1], 2.0);   // a one-voxel box is one voxel wide
