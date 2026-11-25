@@ -1,4 +1,5 @@
 #include "vtkWindowCatalogue3D.h"
+#include "BackendLocality.h"
 #include "CatalogueFormat.h"
 #include "app/DatasetName.h"
 #include "ColormapIcon.h"
@@ -1003,9 +1004,15 @@ void vtkWindowCatalogue3D::setupViewerChrome()
             : QStringLiteral("CAT · %1 sources").arg(this->entries.size());
     // A concatenated catalogue is several files behaving as one, which is worth
     // saying here: the path pill can only show the first of them.
+    // Where the table is held: "remote" alone read as where it is drawn, next to
+    // the rendering badge (Local · sample …), and was shown on this machine's own
+    // backend too.
+    const QString held = visivo::backendIsLocal(this->backendUrl)
+            ? QStringLiteral("local backend")
+            : QStringLiteral("remote backend");
     spec.secondaryTag = this->m_cataloguePaths.size() > 1
-            ? QStringLiteral("%1 files · remote").arg(this->m_cataloguePaths.size())
-            : QStringLiteral("remote");
+            ? QStringLiteral("%1 files · %2").arg(this->m_cataloguePaths.size()).arg(held)
+            : held;
 
     VisivoTheme::ViewerToolbarWidgets widgets;
     this->m_workspaceChrome = WorkspaceChrome::installCommandBar(
