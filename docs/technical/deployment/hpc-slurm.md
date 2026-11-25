@@ -27,6 +27,8 @@ bash scripts/visivo_slurm_tunnel.sh \
     --port 18900
 ```
 
+On CINECA Leonardo use `--site leonardo`, see [CINECA Leonardo](#cineca-leonardo).
+
 When it reports the tunnel ready, register the backend in the desktop under
 **Settings ▸ Backends ▸ Remote Backends** with the URL it prints
 (`http://localhost:18900`), the token (also saved in `~/.visivo_slurm_token`
@@ -54,7 +56,8 @@ and the entries for the desktop's Backends page.
 
 | Option | Environment default | Default | Meaning |
 |---|---|---|---|
-| `--partition P` | `VISIVO_PARTITION` | `gpu` | SLURM partition. |
+| `--site NAME` | `VISIVO_SITE` | detected from the host name, else `generic` | The [site profile](#site-profiles): `leonardo`, `pleiadi` or `generic`. |
+| `--partition P` | `VISIVO_PARTITION` | `gpu` (the site's, with a profile) | SLURM partition. |
 | `--time HH:MM:SS` | `VISIVO_TIME` | `08:00:00` | Wall-clock limit of the job. |
 | `--mem M` | `VISIVO_MEM` | `64G` | Memory per node, passed to `sbatch --mem` as given. |
 | `--cpus N` | `VISIVO_CPUS` | `8` | `--cpus-per-task` of the job. |
@@ -64,8 +67,11 @@ and the entries for the desktop's Backends page.
 | `--port N` | `VISIVO_PORT` | `8000` | Port the backend listens on, on the compute node. |
 | `--bind PATH` | `VISIVO_BIND` | `$HOME` | A host path bound into the container at the same path. |
 | `--data-root PATH` | `VISIVO_DATA_ROOT` | unset | The data directory, bound at the same path and set as `VISIVO_DATA_ROOT` in the container, so the backend opens nothing outside it. Recommended for any shared or SRC deployment. |
-| `--sif PATH` | `VISIVO_SIF` | `apptainer/backend.sif` next to the script | The Apptainer image. |
-| `--backend-src PATH` | `VISIVO_BACKEND_SRC_OVERRIDE` | unset | A `backend/app` source tree bound over `/app/app` in the container, to try Python changes without rebuilding the image. |
+| `--sif PATH` | `VISIVO_SIF` | `apptainer/backend.sif` next to the script, or the file `--image` pulls | The container image (a `.sif`). |
+| `--image REF` | `VISIVO_IMAGE` | unset | An image to pull once on the frontend, for example `docker://ghcr.io/visivolab/visivo-backend:<version>-egl`. It goes to `--sif` when given, else to `<workspace>/images/` (`~/.visivo_images` without a workspace), and is reused while the file exists: delete it to pull a moving tag again. Pulling happens in the launcher, on the frontend, because compute nodes often have no internet. |
+| `--cleanenv`, `--no-cleanenv` | `VISIVO_CLEANENV` (`1` or `0`) | on for `leonardo`, off elsewhere | Run the container with `--cleanenv`, so that the host's environment (proxy and CA-bundle variables, for example) does not reach it. The variables the backend needs are passed by name: its own settings, `SLURM_JOB_ID`, `SLURM_MEM_PER_NODE`, `SLURM_MEM_PER_CPU`, `SLURM_CPUS_ON_NODE`, `SLURM_CPUS_PER_TASK`, `CUDA_VISIBLE_DEVICES`. |
+| | `VISIVO_CONTAINER_RUNTIME` | `apptainer`, else `singularity` | The container command, when neither the default nor the fallback is the one to use. |
+| `--backend-src PATH` | `VISIVO_BACKEND_SRC_OVERRIDE` | unset | A `backend/app` source tree bound over `/app/app` in the container, to try Python changes without rebuilding the image. The launcher refuses a directory that is not the package (no `__init__.py`), and prints which copy runs (path, git commit, uncommitted changes, newest file) in its output, in the job log and in the ready box: a stale copy on the cluster looks like a new route answering 404. |
 | `--token T` | `VISIVO_TOKEN` | generated | The backend token; a random one is generated when none is given. |
 | `--workspace DIR` | `VISIVO_WORKSPACE` | unset | A writable directory for everything the backend and the launcher write (see below). Needed where `$HOME` is read-only. |
 | `--node-code CODE` | `VISIVO_NODE_CODE` | unset | The node's code in the SKAVA catalogue, reported in `/v1/node/status`. |
@@ -278,6 +284,88 @@ an earlier tunnel or job is recorded or a local port is taken (and when
 drops, records the job as soon as the launcher prints its id, and is ready
 only when the backend answers through the tunnel.
 
+## Site profiles
+
+`--site` (or `VISIVO_SITE`) picks a profile; without it the launcher looks at
+the frontend's host name (`leonardo` in it selects `leonardo`, `pleiadi` selects `pleiadi`) and prints what it chose. A profile only supplies
+defaults for what no option or variable gives, so a site with no profile works
+with plain options (`generic`).
+
+| Profile | What it sets |
+|---|---|
+| `generic` | Nothing: the options and the defaults of the table above. |
+| `pleiadi` | The same as `generic`: those defaults were written for PLEIADI-GPU. |
+| `leonardo` | Partition `boost_usr_prod`; `--account` required; `--cleanenv`; the workspace (`<scratch>/visivo`: logs, token, caches, exports, pulled images) and the data root (`<scratch>`) on the user's scratch area; image caches (`APPTAINER_CACHEDIR`, `SINGULARITY_CACHEDIR` and their `TMPDIR`) there too; the host's glvnd vendor directory bound for EGL; no `LD_LIBRARY_PATH=/usr/lib64`; the readiness check falls back to `srun` when `ssh` to the node is refused. |
+
+The container runtime is found at launch: `apptainer` if it exists, else
+`singularity`. With Singularity (SingularityCE, SingularityPRO) the job script
+hands every `APPTAINERENV_<NAME>` on as `SINGULARITYENV_<NAME>`, so the
+variables of [Other backend settings](#other-backend-settings) work with either
+runtime.
+
+## CINECA Leonardo
+
+The backend runs on a GPU node of the booster partition (A100) next to the
+simulation data on the shared scratch, and renders on it. On Leonardo the
+runtime is `singularity` (SingularityPRO; there is no `apptainer`), the
+partition is `boost_usr_prod` (24 h limit), a project account is mandatory
+(`--account`), and the quality of service `boost_qos_dbg` is for a short
+test. The visualisation nodes of `lrd_all_viz` are used with
+`--partition lrd_all_viz`; the CPU partition is `dcgp_usr_prod` with `--no-gpu`.
+
+From a login node, with a clone of the repository in your home (a few
+megabytes), start a GPU backend. The image is pulled once, on the login node:
+
+```bash
+bash VisIVOVisualAnalytics/scripts/launch_backend_slurm.sh \
+    --site leonardo --account <ACCOUNT> \
+    --image docker://ghcr.io/visivolab/visivo-backend:<version>-egl \
+    --data-root /path/to/the/simulation/data
+```
+
+It prints the compute node, the log file (on scratch) and the tunnel command
+for your laptop. From the laptop, the same in one step, tunnel included:
+
+```bash
+bash scripts/visivo_slurm_tunnel.sh --frontend <login host> --user <user> \
+    --site leonardo --account <ACCOUNT> \
+    --image docker://ghcr.io/visivolab/visivo-backend:<version>-egl \
+    --data-root /path/to/the/simulation/data
+```
+
+* **The account and paths** are yours: nothing of them is written into the
+  repository. `--data-root` jails the backend to that directory: by default it
+  is your scratch area (`$CINECA_SCRATCH`, else `$SCRATCH`, else `$WORK`), so
+  pass the directory that holds the data when it lies elsewhere. A snapshot is
+  opened in place, nothing is copied.
+* **Access.** The login nodes are reached with a short-lived certificate (the
+  site's two-factor step). The tunnel helper is non-interactive, so obtain the
+  certificate first and keep it valid: the tunnel reopens itself only while it
+  is. The tunnel goes through the login node to the compute node's port; it
+  does not need `ssh` to the compute node, but the launcher's readiness check
+  tries it, and runs the check through `srun` when it is refused.
+* **The image.** `--image` needs a login node (compute nodes may have no
+  internet). To use an image pulled earlier, give `--sif <file>`.
+  The image must be the EGL build for amd64 (`...-egl`): the 3-D view is
+  rendered on the node only with it.
+* **Why `--cleanenv`.** The host exports `REQUESTS_CA_BUNDLE` and pip's CA
+  variables; inside a Debian-based image they point at files that are not
+  there and break Python's TLS. The profile therefore cleans the environment
+  and passes only what the backend needs (listed under `--cleanenv`).
+* **EGL.** `--nv` binds `libEGL`, `libEGL_nvidia` and `libGLdispatch`, but not
+  the glvnd vendor file that points at `libEGL_nvidia`. The job binds the
+  host's `/usr/share/glvnd/egl_vendor.d` and sets
+  `__EGL_VENDOR_LIBRARY_FILENAMES` to its `10_nvidia.json`.
+* **Trying a branch.** `--backend-src <checkout>/backend/app` overlays the
+  image's backend code; the launcher prints which copy runs. Copy a fresh
+  checkout each time: a copy left from an earlier day is the usual reason a
+  new route answers 404.
+* **Stopping.** `scancel <job id>`, or `bash scripts/visivo_slurm_tunnel.sh
+  --stop` from the laptop (tunnel and job).
+
+The multi-node Dask launcher has no site profile yet: it takes plain options
+only (and no `--account` or `--qos`).
+
 ## Apptainer images
 
 The definitions are in `apptainer/`. Build them from the repository root (the
@@ -330,6 +418,7 @@ Every job (the bindings are harmless where the libraries do not exist) gets:
   `/usr/lib64` or `/usr/lib/powerpc64le-linux-gnu`) and the glvnd vendor file
   `10_nvidia.json`, bound at their host paths, because Apptainer's `--nv`
   misses several of them on some ppc64le installs; `LD_LIBRARY_PATH=/usr/lib64`
+  (not with the `leonardo` profile, which binds the vendor directory instead)
   and `__EGL_VENDOR_LIBRARY_FILENAMES` pointing at the NVIDIA vendor file;
 * `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `MPLCONFIGDIR` under
   `/tmp`, because fontconfig takes a file lock in `~/.cache`, and on an

@@ -14,10 +14,21 @@
 # Usage:
 #   bash scripts/visivo_slurm_tunnel.sh \
 #       --frontend pleiadi-gpu.oact.inaf.it \
-#       --user     fvitello \
+#       --user     <user> \
 #       --partition gpu --gres gpu:1 \
 #       --data-root /data \
 #       --sif ~/VisIVOVisualAnalytics/backend-gpu.sif
+#
+#   # CINECA Leonardo (options the launcher knows pass through; --site leonardo
+#   # sets the partition, scratch paths and container flags there):
+#   bash scripts/visivo_slurm_tunnel.sh \
+#       --frontend <leonardo login host> --user <user> \
+#       --site leonardo --account <ACCOUNT> \
+#       --image docker://ghcr.io/visivolab/visivo-backend:<version>-egl \
+#       --data-root /path/to/simulation/data
+#   The SSH access must work without a prompt (BatchMode): on Leonardo, get a
+#   valid short-lived certificate first (the two-factor step), and keep it
+#   loaded while the tunnel runs; the tunnel reopens itself only while it is valid.
 #
 # After it returns, the SSH tunnel is running in the background; kill it
 # (and free the local port) with:
@@ -198,6 +209,9 @@ JOB_ID="$(grep -oE 'Job ID: [0-9]+' "$TMP" | head -1 | awk '{print $3}' || true)
 NODE="$(grep -oE 'Compute node: [^ ]+' "$TMP" | head -1 | awk '{print $3}' || true)"
 REMOTE_PORT="$(grep -oE 'Port: +[0-9]+' "$TMP" | head -1 | awk '{print $2}' || true)"
 TOKEN="$(grep -oE 'Token: +[A-Za-z0-9_.-]+' "$TMP" | head -1 | awk '{print $2}' || true)"
+# Where the launcher put the job log: under the workspace, which a site profile
+# may choose (scratch on Leonardo), so it is read rather than guessed.
+REMOTE_LOG="$(sed -n 's/^ *Log file: *//p' "$TMP" | head -1 || true)"
 
 if [[ "$LAUNCH_RC" -ne 0 || -z "$JOB_ID" || -z "$NODE" || -z "$REMOTE_PORT" || -z "$TOKEN" ]]; then
     if [[ "$LAUNCH_RC" -ne 0 ]]; then
@@ -289,7 +303,7 @@ cat <<EOF
 
   Tail the SLURM job log:
       ssh ${SSH_USER}@${FRONTEND} \\
-          tail -f ${WORKSPACE_DIR:-\\\$HOME/.visivo_logs}${WORKSPACE_DIR:+/logs}/visivo_backend_${JOB_ID}.log
+          tail -f ${REMOTE_LOG:-${WORKSPACE_DIR:-\\\$HOME/.visivo_logs}${WORKSPACE_DIR:+/logs}/visivo_backend_${JOB_ID}.log}
 
   Stop everything (tunnel + scancel):
       bash scripts/visivo_slurm_tunnel.sh --stop
