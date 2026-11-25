@@ -237,6 +237,8 @@ add_executable(VisIVOTests
     test_pv_path_geometry.cpp
     TestOrbitPath.h
     test_orbit_path.cpp
+    TestCubeAxesEdgeOn.h
+    test_cube_axes_edge_on.cpp
     TestParticleFrame.h
     test_particle_frame.cpp
     TestRenderExportPlan.h

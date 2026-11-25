@@ -440,7 +440,10 @@ private:
     double highlightRadiusInData(int idx, double radiusFactor, bool wrapsGlyph) const;
     /// Re-sizes the hover and selection markers for the current camera.
     void refreshHighlightSizes();
-    unsigned long m_markerObserverTag{ 0 };   ///< renderer StartEvent → refreshHighlightSizes
+    /// Leaves out the box axis the camera looks along, whose title and labels
+    /// would be drawn as a streak (CubeAxesEdgeOn.h).
+    void hideEdgeOnAxes();
+    unsigned long m_markerObserverTag{ 0 };   ///< renderer StartEvent → markers, edge-on axes
     void updateHighlightSphere(vtkSphereSource *sphere, vtkActor *actor, int idx,
                                double radiusFactor);
 

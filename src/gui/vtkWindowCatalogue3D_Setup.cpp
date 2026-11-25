@@ -705,13 +705,16 @@ void vtkWindowCatalogue3D::setupRenderer()
     inter->AddObserver(vtkCommand::LeftButtonPressEvent,   cb);
     inter->AddObserver(vtkCommand::LeftButtonReleaseEvent, cb);
     inter->AddObserver(vtkCommand::LeftButtonDoubleClickEvent, cb);
-    // Before each render, the hover and selection markers are re-sized for the
+    // Before each render, the box axis the camera looks along is left out
+    // (hideEdgeOnAxes), and the hover and selection markers are re-sized for the
     // camera, so they keep a few pixels on screen through zoom and rotation.
     // Setting the same radius again does not modify the source: a render with
     // no camera change re-executes nothing.
     auto markerCb = vtkSmartPointer<vtkCallbackCommand>::New();
     markerCb->SetCallback([](vtkObject *, unsigned long, void *clientData, void *) {
-        static_cast<vtkWindowCatalogue3D *>(clientData)->refreshHighlightSizes();
+        auto *self = static_cast<vtkWindowCatalogue3D *>(clientData);
+        self->refreshHighlightSizes();
+        self->hideEdgeOnAxes();
     });
     markerCb->SetClientData(this);
     // Removed in the destructor: the renderer is a member, but a render during

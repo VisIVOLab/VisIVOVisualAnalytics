@@ -6,6 +6,7 @@
 #include "RemoteRenderWidget.h"
 #include "RaytraceViewport.h"
 #include "SubfindTargetFraming.h"
+#include "vtk/CubeAxesEdgeOn.h"
 #include "RaytraceSettingsPanel.h"
 #include <vtkPointGaussianMapper.h>
 #include "ui_vtkWindowCatalogue3D.h"
@@ -286,6 +287,38 @@ double vtkWindowCatalogue3D::highlightRadius(int idx, double radiusFactor)
     range.minPx *= ringScale;
     range.maxPx *= ringScale;
     return visivo::clampMarkerRadius(inData, perPixel, range);
+}
+
+void vtkWindowCatalogue3D::hideEdgeOnAxes()
+{
+    // An axis seen nearly end-on has its title and labels foreshortened into a
+    // diagonal streak (issue #569): leave it out while the view looks along it.
+    // The setters change nothing when the value stays, so a render with no
+    // camera change modifies nothing.
+    vtkCamera *camera = this->renderer->GetActiveCamera();
+    const double *bounds = this->cubeAxesActor->GetBounds();
+    const double middle[3] = { 0.5 * (bounds[0] + bounds[1]), 0.5 * (bounds[2] + bounds[3]),
+                               0.5 * (bounds[4] + bounds[5]) };
+    // A parallel view looks along its direction of projection, a perspective
+    // one from the eye at the middle of the box.
+    const auto sines = CubeAxesEdgeOn::axisSines(
+            camera->GetPosition(), camera->GetParallelProjection() ? camera->GetFocalPoint() : middle);
+    const bool shown[3] = { CubeAxesEdgeOn::readable(sines[0]), CubeAxesEdgeOn::readable(sines[1]),
+                            CubeAxesEdgeOn::readable(sines[2]) };
+    // The axis switch alone leaves the title and labels of a near end-on axis
+    // drawn; the labels switch takes the title with it.
+    this->cubeAxesActor->SetXAxisVisibility(shown[0]);
+    this->cubeAxesActor->SetXAxisLabelVisibility(shown[0]);
+    this->cubeAxesActor->SetXAxisTickVisibility(shown[0]);
+    this->cubeAxesActor->SetXAxisMinorTickVisibility(shown[0]);
+    this->cubeAxesActor->SetYAxisVisibility(shown[1]);
+    this->cubeAxesActor->SetYAxisLabelVisibility(shown[1]);
+    this->cubeAxesActor->SetYAxisTickVisibility(shown[1]);
+    this->cubeAxesActor->SetYAxisMinorTickVisibility(shown[1]);
+    this->cubeAxesActor->SetZAxisVisibility(shown[2]);
+    this->cubeAxesActor->SetZAxisLabelVisibility(shown[2]);
+    this->cubeAxesActor->SetZAxisTickVisibility(shown[2]);
+    this->cubeAxesActor->SetZAxisMinorTickVisibility(shown[2]);
 }
 
 void vtkWindowCatalogue3D::refreshHighlightSizes()

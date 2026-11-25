@@ -998,3 +998,56 @@ def test_the_splat_shader_carries_the_unquantised_gain():
     for bad in (-1e-3, float("nan"), float("inf")):
         with pytest.raises(ValueError):
             vtk_splat_shader(bad)
+
+
+def test_an_axis_seen_end_on_is_left_out_of_the_box():
+    # An axis that projects to a few pixels would have its title and labels
+    # squeezed into a diagonal streak (issue #569): pure rule, no GL needed.
+    mid = (0.5, 0.5, 0.5)
+    assert points.readable_axes(points.axis_sines((0.5, 0.5, 9.0), mid)) == (True, True, False)
+    assert points.readable_axes(points.axis_sines((9.0, 0.5, 0.5), mid)) == (False, True, True)
+    assert points.readable_axes(points.axis_sines((3.0, 2.5, 2.0), mid)) == (True, True, True)
+    # 12 degrees off the Z axis is squeezed, 25 degrees is not.
+    for deg, ok in ((12.0, False), (25.0, True)):
+        r = np.radians(deg)
+        eye = (0.5 + 5 * np.sin(r), 0.5, 0.5 + 5 * np.cos(r))
+        assert points.readable_axes(points.axis_sines(eye, mid))[2] is ok
+
+
+def test_the_axis_along_the_view_is_hidden_and_the_others_stay(tmp_path, can_render):
+    s, run, loop = _session(_table(tmp_path))
+
+    def shown():
+        o = s._outline
+        return [[getattr(o, f"Get{a}Axis{part}Visibility")()
+                 for part in ("", "Label", "Tick", "MinorTick")] for a in "XYZ"]
+
+    def render():
+        run(s._run(s._render_rgb_on_thread))      # on the thread that owns the GL context
+
+    try:
+        cam = s._renderer.GetActiveCamera()
+        centre = [(s._bounds[2 * i] + s._bounds[2 * i + 1]) / 2.0 for i in range(3)]
+        for axis, up in ((0, (0, 0, 1)), (1, (0, 0, 1)), (2, (0, 1, 0))):
+            eye = list(centre)
+            eye[axis] += 100.0                         # looking along that axis
+            cam.SetFocalPoint(*centre)
+            cam.SetPosition(*eye)
+            cam.SetViewUp(*up)
+            render()
+            for i, flags in enumerate(shown()):
+                assert all(flags) == (i != axis) and any(flags) == (i != axis), (axis, shown())
+        cam.SetPosition(centre[0] + 60, centre[1] + 50, centre[2] + 40)   # oblique
+        cam.SetViewUp(0, 0, 1)
+        render()
+        assert all(all(f) for f in shown())
+        # A parallel view panned off the box centre still looks along Z.
+        cam.ParallelProjectionOn()
+        cam.SetFocalPoint(centre[0] + 30, centre[1], centre[2])
+        cam.SetPosition(centre[0] + 30, centre[1], centre[2] + 100)
+        cam.SetViewUp(0, 1, 0)
+        render()
+        assert [any(f) for f in shown()] == [True, True, False]
+    finally:
+        run(s.close())
+        loop.close()
