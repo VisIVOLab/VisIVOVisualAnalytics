@@ -1433,7 +1433,7 @@ void vtkWindowCube::requestFullResolutionRegionSpectrum(
     const QString url = this->remoteBackendUrl, token = this->remoteBackendToken;
     const QString session = this->remoteSessionId, dataset = this->remoteDatasetId;
     auto *watcher = new QFutureWatcher<BackendSpectrumResult>(this);
-    QObject::connect(watcher, &QFutureWatcherBase::finished, this, [=, this]() mutable {
+    QObject::connect(watcher, &QFutureWatcherBase::finished, this, [=]() mutable {
         watcher->deleteLater();
         // The product may have been closed, or the cube's spectral axis changed.
         if (!this->m_products1d.contains(productId))
