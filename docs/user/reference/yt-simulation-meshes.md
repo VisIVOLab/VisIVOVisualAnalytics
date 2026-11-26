@@ -16,7 +16,7 @@ missing. Nothing else changes without it.
 Choose the output itself in *File ▸ Open…*: the checkpoint or plot file of
 FLASH, GAMER and Chombo (an HDF5 file), the `.vtk` of Athena, the parameter
 file of an Enzo output (`DD0011/DD0011`, the folder works too), the plot folder
-of AMReX (the one with a `Header` and a `Level_0` folder; any other folder with a file called `Header` stays a plain folder). The backend asks yt's own checks which code
+of AMReX, or its `Header` file, which stands for the folder (the dialog opens files, not folders; a folder holding a `Header` and a `Level_0` folder; any other folder with a file called `Header` stays a plain folder). The backend asks yt's own checks which code
 wrote it; a RAMSES output keeps its own reader and a Gadget or AREPO snapshot
 its own, and neither is taken by yt.
 

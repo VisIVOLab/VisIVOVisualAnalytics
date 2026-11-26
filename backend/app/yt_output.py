@@ -136,9 +136,14 @@ def split_ref(path: str | Path) -> tuple[str, str | None]:
 def mesh_path(path: str | Path) -> str:
     """The file or directory yt is given for ``path`` (a reference's mesh): an
     Enzo output's directory (``DD0011/``) is the parameter file inside it
-    (``DD0011/DD0011``), which is what yt loads."""
+    (``DD0011/DD0011``), which is what yt loads; an AMReX plot's ``Header``
+    is its directory."""
     base = Path(split_ref(path)[0])
     try:
+        # An AMReX / BoxLib plot is a directory, and the open dialog picks
+        # files: its Header stands for the directory.
+        if base.name == "Header" and base.is_file() and _is_boxlib_dir(base.parent):
+            return str(base.parent)
         inner = base / base.name
         if base.is_dir() and inner.is_file() and Path(str(inner) + ".hierarchy").is_file():
             return str(inner)

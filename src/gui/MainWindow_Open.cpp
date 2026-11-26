@@ -1898,10 +1898,13 @@ void MainWindow::openAmrUniformView()
     }
 
     // The output is on the BACKEND's filesystem; any file of its output_NNNNN
-    // folder names it.
+    // folder names it (RAMSES), as does the file of a mesh read through yt
+    // (FLASH or GAMER HDF5, Enzo's parameter file, an AMReX plot's Header),
+    // which has no suffix of its own: all files are shown first.
     RemoteFileBrowserDialog browser(client.baseUrl(), client.token(), this);
     browser.setPurpose(u"Uniform Cube of an AMR Output"_s);
-    browser.setFileTypes({ visivo::FileType::Ramses }, visivo::FileType::Ramses, u"amr"_s);
+    browser.setFileTypes({ visivo::FileType::Ramses, visivo::FileType::Hdf5 },
+                         visivo::FileType::AllFiles, u"amr"_s);
     if (browser.exec() != QDialog::Accepted)
         return;
     const QString path = browser.selectedFilePath();

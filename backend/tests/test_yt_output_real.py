@@ -67,3 +67,17 @@ async def test_a_real_refined_mesh_opens_as_cells_and_serves_the_routes(client, 
                                                                   "field": "density"},
                               headers=auth_headers)).json()
     assert plan["valid"] and plan["code"] == "yt:flash" and plan["plan"]["level"] == 4
+
+
+@needs_yt
+@needs_samples
+def test_an_amrex_plot_opens_by_its_header_file_as_by_its_folder():
+    # The open dialog picks files, not folders: the plot's Header stands for it.
+    folder = SAMPLES / "nyx_sedov_plt00086/nyx_sedov_plt00086"
+    header = folder / "Header"
+    assert yo.mesh_path(header) == str(folder)
+    from app.classify import classify_path
+    by_header, by_folder = classify_path(header), classify_path(folder)
+    assert by_header["kind"] == by_folder["kind"] and by_header["kind"] != "directory"
+    assert amr_source.open_hierarchy(str(header)).leaf_counts() == \
+        amr_source.open_hierarchy(str(folder)).leaf_counts()
