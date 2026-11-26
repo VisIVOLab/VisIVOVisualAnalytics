@@ -47,6 +47,8 @@ in a line or two. For a task explained step by step, start from the
   snapshot, one file or several, with units and derived gas columns.
 - [RAMSES outputs](ramses-outputs.md): the particles of an `output_NNNNN`
   folder, one family at a time, with units from its info file.
+- [Other simulation codes (yt)](yt-simulation-meshes.md): Enzo, FLASH, Athena,
+  Chombo, AMReX, GAMER and ART meshes as gas cells, when yt is installed.
 - [Ray-traced particles](raytraced-particles.md) and
   [ray-traced volumes](raytraced-volumes.md)
 
@@ -83,6 +85,7 @@ raw-descriptors
 hdf5-files
 gadget-snapshots
 ramses-outputs
+yt-simulation-meshes
 raytraced-particles
 raytraced-volumes
 publication-output
