@@ -500,6 +500,16 @@ def scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
     if _gadget_split(path)[1] is not None:
         from . import gadget_snapshot  # noqa: PLC0415
         return gadget_snapshot.resolve(path).physical()
+    from . import hdf5_source  # noqa: PLC0415
+    if hdf5_source.is_table_ref(path):
+        # A table of a generic HDF5 file (issue #552): the unit attributes of
+        # its columns, shown as stored.
+        table = hdf5_source.resolve(path).physical()
+        return with_typed(path, table, columns=tuple(table))
+    if hdf5_source.is_volume_ref(path):
+        unit = hdf5_source.volume_units(path)
+        return with_typed(path, {VALUE: {"factor": 1.0, "unit": unit,
+                                         "source": "HDF5 attribute"}} if unit else {})
     view = view_scales(path)
     return with_typed(path, _volume_scales(path) if view is None else view)
 

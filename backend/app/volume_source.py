@@ -1,8 +1,9 @@
 """A volume read where it is: an HDU of a FITS file, a field of a VisIVO
 Binary Table volume (issue #83), or a variable of a PLUTO binary output
 (issue #315, app/pluto_source.py), or a raw grid of the legacy VisIVO
-Importer's descriptor (issue #551, app/raw_descriptor.py). The last three are
-raw fields (:class:`RawField`): samples at an offset of a file, read in place.
+Importer's descriptor (issue #551, app/raw_descriptor.py), or a dataset of a
+generic HDF5 file (issue #552, app/hdf5_source.py). The last four are raw
+fields (:class:`RawField`): samples at an offset of a file, read in place.
 
 A VBT volume is a cube already: each field is ``nx * ny * nz`` scalars, x
 fastest, one field after the other in the ``.bin`` beside its ``.head``. It is
@@ -22,7 +23,7 @@ from typing import Iterator
 
 import numpy as np
 
-from . import raw_descriptor
+from . import hdf5_source, raw_descriptor
 
 
 # ── The byte order a VBT is read in (issue #165) ─────────────────────────────
@@ -252,7 +253,7 @@ class RawField:
     #: PLUTO .out, which a running simulation appends a line to at every
     #: output: its own line is in :attr:`layout`.
     sidecars: tuple[str, ...] = ()
-    kind: str = ""                  # "vbt" | "pluto" | "rawgrid"
+    kind: str = ""                  # "vbt" | "pluto" | "rawgrid" | "hdf5"
 
     @property
     def layout(self) -> str:
@@ -287,6 +288,12 @@ def raw_field(path: str | Path, hdu: int | None = None) -> RawField | None:
         # data is another source.
         return RawField(rf.path, rf.index, 0, rf.desc.dtype, rf.shape, (rf.desc.path,),
                         "rawgrid")
+    if hdf5_source.is_volume_ref(path):
+        # A dataset of a generic HDF5 file (issue #552): mapped in place, or a
+        # raw copy of it when it is chunked, compressed or a hyperslab.
+        placed = hdf5_source.volume_placement(path)
+        return RawField(placed.path, 0, placed.offset, placed.dtype, placed.shape,
+                        placed.sidecars, "hdf5")
     return None
 
 
@@ -295,7 +302,7 @@ def is_field_ref(path: str | Path) -> bool:
     string alone."""
     from .pluto_source import split_ref as split_pluto  # noqa: PLC0415
     return (split_ref(path)[1] is not None or split_pluto(path)[1] is not None
-            or raw_descriptor.is_grid_ref(path))
+            or raw_descriptor.is_grid_ref(path) or hdf5_source.is_volume_ref(path))
 
 
 def field_data_file(path: str | Path) -> str:
@@ -308,6 +315,8 @@ def field_data_file(path: str | Path) -> str:
     base, name = split_pluto(path)
     if name is not None:
         return base
+    if hdf5_source.is_volume_ref(path):
+        return hdf5_source.ref_base(path)
     # A raw grid's reference begins with its descriptor: the file the data
     # roots check; the data file it lists is checked when it is opened.
     return raw_descriptor.split_grid_ref(path)[0]
@@ -318,7 +327,7 @@ def field_file(path: str | Path) -> str:
     file. :func:`field_data_file` is the reference's leading path, which the
     routes check against the data roots; the two differ for a raw grid, whose
     reference begins with its descriptor."""
-    if raw_descriptor.is_grid_ref(path):
+    if raw_descriptor.is_grid_ref(path) or hdf5_source.is_volume_ref(path):
         return raw_field(path).path
     return field_data_file(path)
 
@@ -334,6 +343,11 @@ def field_dataset_path(path: str | Path, allowed=None) -> str | None:
         try:
             return raw_descriptor.grid_dataset_path(path, allowed)
         except (OSError, ValueError):
+            return None
+    if hdf5_source.is_volume_ref(path):
+        try:
+            return hdf5_source.canonical_ref(path, "volume")
+        except (OSError, ValueError, RuntimeError):
             return None
     base, field = split_ref(path)
     if field is not None:
@@ -355,7 +369,7 @@ def field_listing(path: str | Path) -> tuple[list[dict], str]:
         return [], ""
     fields = field_siblings(path)
     _base, index = split_ref(path)
-    if raw_descriptor.is_grid_ref(path):
+    if raw_descriptor.is_grid_ref(path) or hdf5_source.is_volume_ref(path):
         name = next((f["name"] for f in fields if f["path"] == path), "")
     elif index is not None:
         name = fields[index]["name"] if 0 <= index < len(fields) else ""
@@ -371,6 +385,8 @@ def field_siblings(path: str | Path) -> list[dict]:
     base, field = split_ref(path)
     if field is not None:
         return vbt_fields(base)
+    if hdf5_source.is_volume_ref(path):
+        return hdf5_source.volume_siblings(path)
     if pluto_source.split_ref(path)[1] is not None:
         return pluto_source.pluto_fields(path)
     if raw_descriptor.is_grid_ref(path):
@@ -495,6 +511,31 @@ def raw_grid_fits_header(rf):
     return hdr
 
 
+def hdf5_fits_header(ref, shape):
+    """The header a dataset of an HDF5 file is read with as a FITS cube: its
+    axes as linear X, Y, Z, one unit a sample from 0 at the first (the file
+    states no grid), its path as a card and its unit attribute as BUNIT."""
+    from astropy.io import fits  # noqa: PLC0415
+
+    hdr = fits.Header()
+    hdr["SIMPLE"] = True
+    hdr["BITPIX"] = -32
+    hdr["NAXIS"] = 3
+    for axis, (n, name) in enumerate(zip(shape[::-1], "XYZ"), start=1):
+        hdr[f"NAXIS{axis}"] = int(n)
+        hdr[f"CTYPE{axis}"] = name
+        hdr[f"CRPIX{axis}"] = 1.0
+        hdr[f"CRVAL{axis}"] = 0.0
+        hdr[f"CDELT{axis}"] = 1.0
+    name = hdf5_source.split_volume_ref(ref)[1] or ""
+    hdr["OBJECT"] = name[-68:]
+    hdr["H5DSET"] = (name[-68:], "dataset of the HDF5 file")
+    unit = hdf5_source.volume_units(ref)
+    if unit and unit.isascii():
+        hdr["BUNIT"] = unit[:68]
+    return hdr
+
+
 def open_fits(path: str | Path, **kwargs):
     """``fits.open(path, **kwargs)``; for a field reference (a VBT field, a
     PLUTO variable, a raw grid), an HDUList with the field memory-mapped in place as its
@@ -520,6 +561,11 @@ def open_fits(path: str | Path, **kwargs):
         hdu = fits.PrimaryHDU(data=raw_field(path).memmap(), header=raw_grid_fits_header(rf),
                               do_not_scale_image_data=True)
         return fits.HDUList([hdu])
+    if hdf5_source.is_volume_ref(path):
+        raw = raw_field(path)
+        hdu = fits.PrimaryHDU(data=raw.memmap(), header=hdf5_fits_header(path, raw.shape),
+                              do_not_scale_image_data=True)
+        return fits.HDUList([hdu])
     return fits.open(str(path), **kwargs)
 
 
@@ -533,6 +579,9 @@ def volume_shape(path: str | Path, hdu: int | None = None) -> tuple[tuple[int, .
         header = vbt_volume_header(vbt[0])
         nx, ny, nz = header["dimensions"]
         return (nz, ny, nx), vbt[1]
+    if hdf5_source.is_volume_ref(path):
+        # From the file's metadata: a chunked dataset is not unpacked to say its shape.
+        return hdf5_source.volume_shape(path), 0
     raw = raw_field(path, hdu)
     if raw is not None:
         return raw.shape, raw.index

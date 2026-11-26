@@ -37,13 +37,29 @@ inline const QString &ramsesFamilySeparator()
     return sep;
 }
 
+/// A dataset of a generic HDF5 file (#552, backend/app/hdf5_source.py): a volume
+/// or an image, "<file>::hdf5=/group/dataset[hyperslab]", and a table (a group of
+/// 1-D datasets, or a compound dataset), "<file>::hdf5-table=/group".
+inline const QString &hdf5DatasetSeparator()
+{
+    static const QString sep = QStringLiteral("::hdf5=");
+    return sep;
+}
+
+inline const QString &hdf5TableSeparator()
+{
+    static const QString sep = QStringLiteral("::hdf5-table=");
+    return sep;
+}
+
 namespace detail {
 /// Where a reference's separator starts in @p path and which one it is; -1
 /// for a path that is no reference.
 inline int referenceAt(const QString &path, const QString **separator = nullptr)
 {
     for (const QString *sep : { &vbtFieldSeparator(), &gadgetTypeSeparator(),
-                                 &ramsesFamilySeparator() }) {
+                                 &ramsesFamilySeparator(), &hdf5DatasetSeparator(),
+                                 &hdf5TableSeparator() }) {
         const int at = path.lastIndexOf(*sep);
         if (at >= 0) {
             if (separator)
@@ -130,8 +146,10 @@ inline QString datasetDisplayName(const QString &path)
     if (volume.endsWith(QLatin1String(".bin")))
         volume.chop(4);
     // Before the backend listed the names, the index.
+    const bool hdf5 = separator == &hdf5DatasetSeparator() || separator == &hdf5TableSeparator();
     const QString what = separator == &gadgetTypeSeparator()  ? QStringLiteral("type %1")
                          : separator == &ramsesFamilySeparator() ? QStringLiteral("family %1")
+                         : hdf5                                  ? QStringLiteral("%1")
                                                                  : QStringLiteral("field %1");
     const QString field = fieldNames().value(path, what.arg(path.mid(at + separator->size())));
     return QStringLiteral("%1 · %2").arg(volume, field);

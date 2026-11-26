@@ -62,4 +62,15 @@ void TestDatasetName::aParticleTypeIsShownAsSnapshotAndType()
     QVERIFY(visivo::isFieldReference(dm));
     QCOMPARE(visivo::datasetFilePath(dm), output);
     QCOMPARE(visivo::datasetDisplayName(dm), QStringLiteral("output_00185 · family dm"));
+
+    // A dataset of a generic HDF5 file (#552): the file, then the dataset's
+    // name (a hyperslab stays with it); a table is told from a volume.
+    const QString cube = QStringLiteral("/data/run.h5::hdf5=/grid/rho[0:8,:,:]");
+    QVERIFY(visivo::isFieldReference(cube));
+    QCOMPARE(visivo::datasetFilePath(cube), QStringLiteral("/data/run.h5"));
+    QCOMPARE(visivo::datasetDisplayName(cube), QStringLiteral("run.h5 · /grid/rho[0:8,:,:]"));
+    const QString table = QStringLiteral("/data/run.h5::hdf5-table=/halos");
+    QVERIFY(visivo::isFieldReference(table));
+    QCOMPARE(visivo::datasetFilePath(table), QStringLiteral("/data/run.h5"));
+    QCOMPARE(visivo::datasetDisplayName(table), QStringLiteral("run.h5 · /halos"));
 }

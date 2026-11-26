@@ -62,7 +62,8 @@ def map_units(component, *, axes, weight: str | None, power: float, clipped: int
     if component is None:
         return out
     physical, stored = component.physical(), component.units()
-    snapshot = component.snapshot
+    # A table of a generic HDF5 file (issue #552) has no snapshot: no frame.
+    snapshot = getattr(component, "snapshot", None)
     lengths = {physical.get(a, {}).get("unit") for a in axes}
     if lengths == {"kpc"}:
         out["kpc_per_unit"] = float(physical[axes[0]]["factor"])
@@ -75,7 +76,8 @@ def map_units(component, *, axes, weight: str | None, power: float, clipped: int
             out["density_factor"] = float(light_unit) * float(physical[weight]["factor"])
     out["value_unit"], out["value_factor"] = _value_unit(colour_by, value_field, velocity,
                                                          physical, stored)
-    out.update(_frame(snapshot))
+    if snapshot is not None:
+        out.update(_frame(snapshot))
     return out
 
 

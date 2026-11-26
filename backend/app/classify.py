@@ -136,6 +136,41 @@ def _classify_raw(path: Path, allowed=None) -> dict | None:
                    "opens as a table of points.", open_path=ref)
 
 
+def _classify_hdf5(path: Path) -> dict | None:
+    """The verdict on a generic HDF5 file (issue #552), from its layout alone:
+    one thing that opens is opened; several are offered as ``components`` (the
+    client asks which, and classifies the reference it is given). None for a
+    file that is a dynamic spectrum or cannot be read as HDF5 (the legacy
+    answer stands)."""
+    from . import hdf5_source as h5s  # noqa: PLC0415
+
+    layout = h5s.generic(path)
+    if layout is None:
+        return None
+    found = layout.candidates
+    if not found:
+        return _result("hdf5", "unsupported", True,
+                       "HDF5 with no table (1-D datasets of one length in a group, or a "
+                       "compound dataset) and no 2-D or 3-D numeric dataset to show.")
+
+    def ref(c) -> str:
+        return h5s.make_ref(str(path), "table" if c.kind == "table" else "volume", c.path)
+
+    if len(found) == 1:
+        c = found[0]
+        if c.kind == "table":
+            return _result("catalogue", "catalogue", True,
+                           f"HDF5 table {c.path}: {c.shape[0]} rows, {len(c.columns)} columns "
+                           "(read in place).", open_path=ref(c))
+        return _result(c.kind, "dataset", True,
+                       f"HDF5 {c.kind} {c.label.strip()} (read in place).", open_path=ref(c))
+    components = [{"name": c.label, "path": ref(c), "num_rows": c.rows} for c in found]
+    return _result("hdf5", "ask", False,
+                   f"HDF5 file with {len(found)} datasets that can open; pick one. A hyperslab "
+                   f"can follow the name: {h5s.VOLUME_SEP}/group/dataset[offset:count,...].",
+                   open_path=components[0]["path"], components=components)
+
+
 def classify_path(path: str | Path, allowed=None) -> dict:
     """``{kind, opener, confident, detail, open_path}`` for one path.
 
@@ -211,8 +246,12 @@ def classify_path(path: str | Path, allowed=None) -> dict:
     with open(path, "rb") as handle:
         head = handle.read(_SNIFF_BYTES)
 
-    # ── HDF5: beamformed dynamic spectra come this way ───────────────────────
+    # ── HDF5: a table, a volume or an image of any file that is not a Gadget
+    # snapshot (above) or a beamformed dynamic spectrum, which comes this way ─
     if head.startswith(b"\x89HDF\r\n\x1a\n"):
+        generic = _classify_hdf5(path)
+        if generic is not None:
+            return generic
         return _result("dynspec", "dataset", True,
                        "HDF5 — opened as a dynamic spectrum.")
 

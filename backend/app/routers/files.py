@@ -195,10 +195,25 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
     from ..classify import classify_path  # noqa: PLC0415
     from ..pluto_source import is_pluto_ref  # noqa: PLC0415
     from ..raw_descriptor import is_grid_ref  # noqa: PLC0415
+    from ..hdf5_source import is_volume_ref  # noqa: PLC0415
     from ..volume_source import (field_data_file, field_dataset_path,  # noqa: PLC0415
                                  is_field_ref, volume_shape)
     from ..point_table import (particle_components, particle_dataset_path,  # noqa: PLC0415
                                split_component)
+    from ..hdf5_source import canonical_ref, is_ref, ref_base  # noqa: PLC0415
+
+    # A table or dataset of a generic HDF5 file (issue #552), by a reference:
+    # checked against the file and given the separator of what it names.
+    if is_ref(request.path):
+        base = ref_base(request.path)
+        try:
+            canon = await asyncio.to_thread(
+                canonical_ref, str(_normalize_path(base)) + request.path[len(base):])
+        except ValueError as exc:
+            return FileClassifyResponse(valid=False, error=str(exc))
+        except Exception:   # noqa: BLE001 - refused and missing answer alike
+            return FileClassifyResponse(valid=False, error="File not found.")
+        request = request.model_copy(update={"path": canon})
 
     # A particle type of a snapshot (issue #31; a Recent entry, a Session Data
     # row) opens as the table of points it was.
@@ -228,6 +243,7 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
             valid=True, error="", path=request.path, kind="particles", opener="catalogue",
             confident=True, open_path=found[0], components=components,
             detail=("A file of a raw-points descriptor." if found[1] == "rawpoints"
+                    else "A table of an HDF5 file." if found[1] == "hdf5"
                     else "A particle type of a simulation snapshot."))
 
     # A field of a VBT volume (issue #83) or a PLUTO variable (#315) (a Recent
@@ -244,13 +260,16 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
             return FileClassifyResponse(valid=False, error="File not found.")
         pluto = is_pluto_ref(ref)
         raw = is_grid_ref(ref)
-        # A PLUTO run or a raw grid may be 2-D: an image. A VBT volume is a
-        # cube, as it was.
-        kind = "image" if (pluto or raw) and sum(1 for n in shape if n > 1) < 3 else "cube"
+        h5 = is_volume_ref(ref)
+        # A PLUTO run, a raw grid or an HDF5 dataset may be 2-D: an image. A
+        # VBT volume is a cube, as it was.
+        kind = ("image" if (pluto or raw or h5) and sum(1 for n in shape if n > 1) < 3
+                else "cube")
         return FileClassifyResponse(
             valid=True, error="", path=request.path, kind=kind, opener="dataset",
             confident=True, detail=("A variable of a PLUTO output." if pluto
                                     else "A raw grid of a descriptor." if raw
+                                    else "A dataset of an HDF5 file." if h5
                                     else "A field of a VisIVO Binary Table volume."))
     try:
         path = _normalize_path(request.path)

@@ -90,14 +90,17 @@ class SourceSignature:
 
         raw = raw_field(path, hdu)
         order = byte_order_override(path) if raw is not None and raw.kind == "vbt" else ""
-        if raw is not None and raw.kind != "rawgrid":
+        by_ref = raw is not None and raw.kind in ("rawgrid", "hdf5")
+        if raw is not None and not by_ref:
             # A field reference names the data and the field: the same
             # pyramid as the data file's own, whichever way it was opened.
             path, hdu = raw.path, raw.index
         elif raw is not None:
-            # A raw grid (issue #551) is only known by its descriptor: the
-            # reference stays the source (its data file alone could not be
-            # read again), the data file's version is the source's.
+            # A raw grid (issue #551) is only known by its descriptor, a
+            # dataset of an HDF5 file (issue #552) by its name and hyperslab:
+            # the reference stays the source (its data file alone could not be
+            # read again, and two datasets share a file), the data file's
+            # version is the source's.
             from .volume_source import field_data_file  # noqa: PLC0415
             base = field_data_file(path)
             path, hdu = str(canonical_path(base)) + str(path)[len(base):], raw.index
@@ -109,12 +112,12 @@ class SourceSignature:
             for sidecar in raw.sidecars:
                 side = os.stat(sidecar)
                 size, mtime = size + int(side.st_size), max(mtime, int(side.st_mtime_ns))
-        layout = raw.layout if raw is not None and raw.kind in ("pluto", "rawgrid") else ""
+        layout = raw.layout if raw is not None and raw.kind in ("pluto", "rawgrid", "hdf5") else ""
         if raw is None:
             layout = _fits_layout(path, hdu)
         # Keyed on the stored name: on a case-insensitive file system the
         # same file named in another case is the same pyramid (#325).
-        if raw is not None and raw.kind == "rawgrid":
+        if by_ref:
             return cls(path, int(hdu), size, mtime, order, layout)
         return cls(str(canonical_path(path)), int(hdu), size, mtime, order, layout)
 
