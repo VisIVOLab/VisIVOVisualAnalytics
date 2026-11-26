@@ -317,6 +317,7 @@ with particles for a file or a folder) as a table of particles, read in place
 ([Gadget snapshots](../design/gadget-snapshots.md)). A reference to a type
 with no particles answers `valid: false`, and a snapshot opens one type at a
 time (not with `paths`).
+A generic HDF5 file (issue #552) opens with `format` `hdf5` through a table reference `<file>::hdf5-table=/group[offset:count]` (either separator is accepted), or by the file when it holds one table; with several the answer is `valid: false` listing the references. Columns of a contiguous, uncompressed dataset are views of the file's map; the others are read by rows in whole chunks (the Gadget reader's windows and cache budget), so opening reads no data. It is a component of the particle seam, so sampling, filters, profiles and the ray-traced renders read it as they read a snapshot.
 `csv` is any delimited text table: the separator (comma, tab or semicolon) is
 detected as `/v1/files/classify` detects it, on the same first 8 KB — the
 first one that splits the first lines (up to ten, `#` comments and blank lines

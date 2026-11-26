@@ -82,6 +82,17 @@ def file_identity(path: str | os.PathLike) -> str:
                          f"{st.st_mtime_ns}.{st.st_ctime_ns}")
         return "|".join(parts + [f"ref={path}"])
 
+    from . import hdf5_source  # noqa: PLC0415
+    if hdf5_source.is_ref(path):
+        # A dataset or table of a generic HDF5 file (issue #552): the file, and
+        # the reference, which names the dataset and hyperslab read.
+        try:
+            st = os.stat(hdf5_source.ref_base(path))
+        except OSError:
+            return ""
+        return (f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
+                f"|ref={path}")
+
     base = field_data_file(path)
     sidecars = [vbt_head(base)]
     layout = ""

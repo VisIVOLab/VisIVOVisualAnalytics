@@ -41,6 +41,8 @@ in a line or two. For a task explained step by step, start from the
 - [PLUTO simulation output](pluto-output.md)
 - [Raw points, raw grids and FLY files](raw-descriptors.md): the VisIVO
   Importer's descriptor formats, read without conversion.
+- [HDF5 tables, volumes and images](hdf5-files.md): any HDF5 file, read in
+  place, with a dataset picker and hyperslabs.
 - [Gadget snapshots](gadget-snapshots.md): particle types of a Gadget
   snapshot, one file or several, with units and derived gas columns.
 - [RAMSES outputs](ramses-outputs.md): the particles of an `output_NNNNN`
@@ -78,6 +80,7 @@ skava-discovery
 simulations
 pluto-output
 raw-descriptors
+hdf5-files
 gadget-snapshots
 ramses-outputs
 raytraced-particles
