@@ -130,6 +130,39 @@ async def close_dataset(
     return {"valid": True, "error": "", "closed": entry is not None}
 
 
+async def _yt_uniform_request(request: OpenDatasetRequest) -> OpenDatasetRequest:
+    """The request, pointed at the cube of the density of a uniform-grid
+    output of another code read through yt (issue #554: a unigrid Enzo, a
+    uniform FLASH or Athena output): the AMR uniform view written at the
+    grid's own level, cell for cell, in the exports directory, reused while
+    the output is unchanged. The request itself for anything else, and for
+    every file when yt is not installed."""
+    from .. import yt_output  # noqa: PLC0415
+    from ..compute.amr_views import DEFAULT_MAX_VOXELS, worker_amr_uniform  # noqa: PLC0415
+    from ..dependencies import _normalize_path, _run_heavy, _within_data_roots  # noqa: PLC0415
+
+    if "::" in request.path or not yt_output.looks_like_mesh(request.path):
+        return request
+    _normalize_path(yt_output.mesh_path(request.path))        # the data roots first
+    try:
+        found = await asyncio.to_thread(yt_output.uniform_field, request.path, _within_data_roots)
+    except ValueError as exc:          # a mesh yt takes that this backend does not map (2-D...)
+        raise HTTPException(422, str(exc)) from exc
+    if found is None:
+        return request
+    mesh, level, field = found
+    cached = yt_output.cached_cube(mesh, field)
+    if cached is None:
+        out_dir = get_exports_dir() / "amr-uniform"
+        try:
+            result = await _run_heavy(worker_amr_uniform, mesh, field, level, None, None, "box",
+                                      DEFAULT_MAX_VOXELS, str(out_dir))
+        except ValueError as exc:      # a grid above the cube limit, a field yt cannot read
+            raise HTTPException(422, str(exc)) from exc
+        cached = yt_output.remember_cube(mesh, field, result["outputs"][0]["path"])
+    return request.model_copy(update={"path": cached})
+
+
 @router.post("/v1/datasets/open", response_model=OpenDatasetResponse, tags=["datasets"])
 async def open_dataset(
     request: OpenDatasetRequest,
@@ -139,6 +172,9 @@ async def open_dataset(
     from ..pluto_source import pluto_dataset_path  # noqa: PLC0415
     from ..volume_source import field_data_file, split_ref, vbt_dataset_path, with_order  # noqa: PLC0415
 
+    # A classic uniform-grid output of another code (Enzo, FLASH, Athena...,
+    # issue #554) opens as the cube of its density at its own level.
+    request = await _yt_uniform_request(request)
     # A field of a VBT volume: the file checked as any path, the field kept.
     base, field = split_ref(request.path)
     path = _normalize_path(base)

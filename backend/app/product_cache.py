@@ -50,6 +50,17 @@ def file_identity(path: str | os.PathLike) -> str:
         return "|".join(f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
                         for st in stats)
 
+    if component_format(path) == "yt":
+        # The gas cells of a mesh of another code read through yt (issue
+        # #554): every file of the mesh (its siblings and levels included).
+        from .yt_output import files  # noqa: PLC0415
+        try:
+            stats = [os.stat(f) for f in files(split_component(path)[0])]
+        except OSError:
+            return ""
+        return "|".join(f"{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}.{st.st_ctime_ns}"
+                        for st in stats)
+
     if component_format(path) == "gadget":
         # A snapshot's particle type (issue #31): every file of the snapshot,
         # and the run's parameter file and the environment's units, which

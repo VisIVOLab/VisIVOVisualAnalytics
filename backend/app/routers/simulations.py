@@ -290,6 +290,9 @@ class AmrLevelMapRequest(BaseModel):
 
 
 def _amr_error(exc: Exception, path: str) -> HTTPException:
+    from ..yt_output import YtUnavailable  # noqa: PLC0415
+    if isinstance(exc, YtUnavailable):   # an output of another code, and no yt (issue #554)
+        return HTTPException(503, str(exc))
     if isinstance(exc, FileNotFoundError):
         return HTTPException(404, f"No such file: {path}")
     if isinstance(exc, ValueError):   # AmrViewError, an unreadable mesh, a wrong request
@@ -301,7 +304,8 @@ def _amr_hierarchy(path: str):
     """The mesh ``path`` names, every file of it inside the data roots."""
     from ..amr_source import open_hierarchy  # noqa: PLC0415
     from ..dependencies import _within_data_roots  # noqa: PLC0415
-    _normalize_path(path.split("::ramses-family=")[0])
+    from ..yt_output import split_ref  # noqa: PLC0415
+    _normalize_path(split_ref(path.split("::ramses-family=")[0])[0])
     return open_hierarchy(path, _within_data_roots)
 
 

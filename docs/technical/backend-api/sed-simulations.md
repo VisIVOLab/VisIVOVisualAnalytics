@@ -190,10 +190,45 @@ length. Heavy-task throttle, as AREPO's. Implementation:
 ## AMR outputs (issue #550)
 
 Views of an AMR mesh that need no code's file layout: they read
-`app.amr_source.AmrHierarchy` (RAMSES now; the producers of #554 add
-`open_hierarchy`). Paths are a RAMSES output (folder, a file of it or a
-`::ramses-family=cells` reference); every file of it must lie inside the data
-roots (403 otherwise). Implementation: `app/compute/amr_views.py`.
+`app.amr_source.AmrHierarchy`, which `open_hierarchy` returns for a RAMSES
+output (folder, a file of it or a `::ramses-family=cells` reference) and, when
+yt is installed, for the output of another code (issue #554: Enzo, FLASH,
+Athena and Athena++, Chombo including PLUTO-AMR, AMReX/BoxLib/Nyx, GAMER, ART;
+`app/yt_output.py`, below). Every file of the output must lie inside the data
+roots (403 otherwise). A file that may be one of those codes' when yt is not
+installed answers **503** with what to install; any other file without a mesh,
+422. Implementation: `app/compute/amr_views.py`.
+
+#### Other codes through yt (issue #554)
+
+yt is optional: in no requirements file and no release, as for the AREPO
+extraction. `app/yt_output.py` maps yt's hierarchy to leaf blocks: a grid cell
+is a leaf when no finer grid covers it (`child_mask`), level 0 is yt's root
+level (its cell is the box unit, `dx = 2^-level`), an octree mesh (ART, RAMSES
+through yt) gives the cells yt selects. A mesh that is not 3-D, does not refine
+by 2 or has cells that are not cubes is refused (422) saying so. The fields
+are yt's `("gas", ...)` fields (`density` g/cm^3, `temperature`, `pressure`,
+`vx vy vz` km/s, cgs for a box under 0.3 pc, then the code's other aliases), so
+`scales()` has the factor 1 for each and a length and the cell `mass` carry the
+box unit's size; for a frontend that gives yt no gas fields (a Nyx plot file)
+the code's own fluid fields are read in the unit yt has for them. The origin of
+the box units is the box's lower corner (`describe()["origin"]`). `code` is
+`yt:<frontend>` (the `AMRCODE` card of a cube).
+
+* Detection (`app/classify.py`, `_classify_yt`): only when yt imports, after
+  RAMSES, raw descriptors and Gadget and **before the generic HDF5 verdicts**
+  (FLASH, Chombo, AMReX and GAMER files are HDF5), by the frontends' own
+  `_is_valid` checks, restricted to the codes above, on files that pass a
+  few-byte pre-check (HDF5 or VTK magic, an Enzo `.hierarchy`, a BoxLib
+  `Header`); one verdict per file version is cached. A refined mesh is
+  `particles`/`catalogue` with the component `gas cells`
+  (`<mesh>::yt-family=cells`, format `yt`, opened by `/v1/catalogue/open`
+  like the RAMSES cells); a mesh whose leaves all lie on one level (unigrid
+  Enzo, uniform FLASH or Athena) is a `cube`/`dataset`.
+* `POST /v1/datasets/open` on such a uniform output writes the cube of its
+  density at its own level with the uniform view, cell for cell (kept in the
+  exports directory, reused while the output is unchanged) and opens that, so
+  it is a plain cube: any other field through `/amr/uniform`.
 
 ### `POST /v1/simulations/amr/plan`
 `{path, field?, level?, lo?, hi?, region_unit?, max_voxels?}` → `{valid, error,

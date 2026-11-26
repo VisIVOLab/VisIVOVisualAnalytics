@@ -281,11 +281,17 @@ def _ramses_split(path: str | os.PathLike) -> tuple[str, str | None]:
     return ramses_output.split_ref(path)
 
 
+def _yt_split(path: str | os.PathLike) -> tuple[str, str | None]:
+    """A mesh of another code read through yt (issue #554), its cells' reference."""
+    from . import yt_output  # noqa: PLC0415
+    return yt_output.split_ref(path)
+
+
 def run_key(path: str | os.PathLike) -> str:
     """What the run-wide units are kept under: the directory of a PLUTO run
     (every variable and every output of it shares them), else the file (a
     RAMSES output's directory, whichever family names it)."""
-    base, name = _pluto_split(_ramses_split(path)[0])
+    base, name = _pluto_split(_yt_split(_ramses_split(path)[0])[0])
     real = os.path.realpath(base)
     return ("dir:" + os.path.dirname(real)) if name is not None else ("file:" + real)
 
@@ -295,7 +301,7 @@ def dataset_key(path: str | os.PathLike) -> str:
     resolved in the file part; every particle type of a Gadget snapshot shares
     the snapshot's, as its columns do, and every family of a RAMSES output the
     output directory's."""
-    path = _ramses_split(path)[0]
+    path = _yt_split(_ramses_split(path)[0])[0]
     base, ptype = _gadget_split(path)
     if ptype is not None:
         return os.path.realpath(base)
@@ -491,6 +497,9 @@ def scales(path: str | os.PathLike) -> dict[str, ColumnScale]:
     if _ramses_split(path)[1] is not None:
         from . import ramses_output  # noqa: PLC0415
         return ramses_output.resolve(path).physical()
+    if _yt_split(path)[1] is not None:
+        from . import yt_output  # noqa: PLC0415
+        return yt_output.resolve(path).physical()
     if os.path.isdir(path):
         from . import ramses_output  # noqa: PLC0415
         if ramses_output.output_of(path) is not None:
