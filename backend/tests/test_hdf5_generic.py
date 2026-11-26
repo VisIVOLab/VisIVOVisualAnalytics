@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import zlib
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -483,3 +484,27 @@ async def test_a_file_with_two_tables_lists_them(client, auth_headers, tmp_path)
     ok = await _post(client, auth_headers, "/v1/catalogue/open",
                      {"path": f"{path}::hdf5-table=/b", "format": "csv"})
     assert ok["valid"], ok["error"]
+
+
+def test_old_copies_make_room_under_the_cache_limit(tmp_path, monkeypatch):
+    import os
+    import time
+    monkeypatch.setenv("VISIVO_DECOMPRESS_CACHE_MAX_BYTES", str(CUBE.nbytes + 16))
+    old = cube_file(tmp_path, "old.h5", chunks=(2, 3, 2), compression="gzip")
+    first = Path(raw_field(f"{old}::hdf5=/grid/rho").path)
+    # Last used well before the grace period.
+    past = time.time() - 3600
+    os.utime(first, (past, past))
+    new = cube_file(tmp_path, "new.h5", chunks=(2, 3, 2), compression="gzip")
+    second = Path(raw_field(f"{new}::hdf5=/grid/rho").path)
+    assert second.is_file() and not first.exists()
+    np.testing.assert_array_equal(np.asarray(raw_field(f"{new}::hdf5=/grid/rho").memmap()), CUBE)
+
+
+def test_a_copy_in_use_is_kept_over_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("VISIVO_DECOMPRESS_CACHE_MAX_BYTES", str(CUBE.nbytes + 16))
+    a = cube_file(tmp_path, "a.h5", chunks=(2, 3, 2), compression="gzip")
+    first = Path(raw_field(f"{a}::hdf5=/grid/rho").path)
+    b = cube_file(tmp_path, "b.h5", chunks=(2, 3, 2), compression="gzip")
+    raw_field(f"{b}::hdf5=/grid/rho")
+    assert first.is_file()   # written a moment ago: within the grace period

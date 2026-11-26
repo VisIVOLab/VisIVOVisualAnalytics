@@ -41,7 +41,9 @@ are the file's.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import time
 import re
 import threading
 from dataclasses import dataclass
@@ -49,6 +51,8 @@ from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 TABLE_SEP = "::hdf5-table="
 VOLUME_SEP = "::hdf5="
@@ -473,9 +477,41 @@ class Placement:
 
 def copy_dir() -> Path:
     """Where chunked or compressed volumes are kept as raw files (a sibling of
-    the decompression cache: its eviction does not know these)."""
+    the decompression cache, bounded by the same limit: :func:`_make_copy_room`)."""
     from .compressed_fits import cache_dir   # noqa: PLC0415
     return Path(str(cache_dir()) + "-hdf5")
+
+
+def _make_copy_room(needed: int, keep: Path) -> None:
+    """Remove the least recently used copies until ``needed`` more bytes fit
+    VISIVO_DECOMPRESS_CACHE_MAX_BYTES (0: no limit), as the decompression cache
+    does. A copy used in the last minutes stays (a session reads it); a removed
+    one that is still mapped stays readable until it is closed (POSIX), and is
+    copied again when next opened."""
+    import shutil   # noqa: PLC0415
+    from .compressed_fits import _EVICT_GRACE_SECONDS, cache_max_bytes   # noqa: PLC0415
+    limit = cache_max_bytes()
+    root = copy_dir()
+    if limit <= 0 or not root.is_dir():
+        return
+    entries = []
+    for d in root.iterdir():
+        data = d / "data.bin"
+        if d == keep or not data.is_file():
+            continue
+        used = d / "used"
+        when = (used if used.is_file() else data).stat().st_mtime
+        entries.append((when, data.stat().st_size, d))
+    total = sum(size for _, size, _ in entries)
+    now = time.time()
+    for used, size, d in sorted(entries):
+        if total + needed <= limit:
+            break
+        if now - used < _EVICT_GRACE_SECONDS:
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+        logger.info("[hdf5] removed the copy %s (%.1f MB) to make room", d.name, size / 1e6)
+        total -= size
 
 
 #: Bytes read from a dataset at once while it is copied.
@@ -546,7 +582,12 @@ def volume_placement(ref) -> Placement:
     with _COPY_GUARD:
         lock = _COPY_LOCKS.setdefault(str(target), threading.Lock())
     with lock:
-        if not target.is_file():
+        if target.is_file():
+            # Used now: the last to be removed (a marker beside it, so the
+            # copy's own time still says when it was written).
+            (target.parent / "used").touch()
+        else:
+            _make_copy_room(int(np.prod(out)) * native.itemsize, target.parent)
             _copy_volume(base, name, window, native, target)
     return Placement(str(target), 0, native, out)   # type: ignore[arg-type]
 
