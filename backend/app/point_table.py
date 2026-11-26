@@ -192,14 +192,16 @@ def positions_within(columns, axes, rows: np.ndarray, lo, hi,
 
 #: Catalogue formats that are a simulation's particles read in place: always
 #: cartesian, drawn ray-traced by default, opened by a header or a reference.
-PARTICLE_FORMATS = ("vbt", "gadget", "ramses", "yt", "rawpoints")
+PARTICLE_FORMATS = ("vbt", "gadget", "ramses", "yt", "rawpoints", "hdf5")
 
 #: The formats whose particles are components of a snapshot or an output,
 #: each a module with ``split_ref``, ``resolve``, ``components`` and
 #: ``has_*`` (the particle seam below dispatches on them). A file of a
 #: raw-points descriptor (``"rawpoints"``, issue #551) is a component
-#: reference too but is read by raw_descriptor, not through this dispatch.
-COMPONENT_FORMATS = ("gadget", "ramses", "yt")
+#: reference too but is read by raw_descriptor, not through this dispatch. A
+#: table of a generic HDF5 file (``"hdf5"``, issue #552, app/hdf5_source.py)
+#: is a component like a Gadget type: named columns read where they lie.
+COMPONENT_FORMATS = ("gadget", "ramses", "yt", "hdf5")
 
 
 def is_particle_format(fmt: str | None) -> bool:
@@ -212,12 +214,15 @@ def component_format(path: str | Path) -> str | None:
     from the string alone; None for any other path."""
     from .gadget_snapshot import split_ref   # noqa: PLC0415
     from .ramses_output import REF_SEP, split_ref as split_ramses   # noqa: PLC0415
+    from .hdf5_source import is_table_ref   # noqa: PLC0415
     from .raw_descriptor import is_points_ref   # noqa: PLC0415
     if REF_SEP in str(path) and split_ramses(path)[1] is not None:
         return "ramses"
     from .yt_output import REF_SEP as YT_SEP, split_ref as split_yt   # noqa: PLC0415
     if YT_SEP in str(path) and split_yt(path)[1] is not None:
         return "yt"
+    if is_table_ref(path):
+        return "hdf5"
     if split_ref(path)[1] is not None:
         return "gadget"
     return "rawpoints" if is_points_ref(path) else None
@@ -231,6 +236,9 @@ def component_module(fmt: str):
     if fmt == "yt":
         from . import yt_output   # noqa: PLC0415
         return yt_output
+    if fmt == "hdf5":
+        from . import hdf5_source   # noqa: PLC0415
+        return hdf5_source
     from . import gadget_snapshot   # noqa: PLC0415
     return gadget_snapshot
 
@@ -292,6 +300,14 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
     raw = raw_descriptor.points_dataset_path(path, allowed)
     if raw is not None:
         return raw, "rawpoints"
+    # A table of a generic HDF5 file (issue #552) named by its reference.
+    # A plain file is tried last, after every code that claims HDF5 files of
+    # its own (Gadget/AREPO, a mesh read through yt), as classify does.
+    from . import hdf5_source   # noqa: PLC0415
+    if hdf5_source.is_table_ref(path):
+        table = hdf5_source.table_dataset_path(path, allowed)
+        if table is not None:
+            return table, "hdf5"
     base, ptype = gs.split_ref(path)
     ramses = _ramses_dataset_path(path, allowed)
     if ramses is not None:
@@ -300,7 +316,12 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
     if ptype is None and not (p.is_dir() and gs.first_in_dir(p, allowed) is not None) \
             and not (p.is_file() and gs.detect(p) is not None):
         # Not a particle snapshot: the mesh of another code, read through yt?
-        return _yt_dataset_path(path, allowed)
+        mesh = _yt_dataset_path(path, allowed)
+        if mesh is not None:
+            return mesh
+        # Last: a table of a generic HDF5 file, when one table is all it holds.
+        table = hdf5_source.table_dataset_path(path, allowed)
+        return (table, "hdf5") if table is not None else None
     if allowed is not None:
         # Before any of them is read beyond its first bytes.
         if p.is_dir():
@@ -393,6 +414,8 @@ def particle_metadata(path: str | Path) -> dict:
     if component_format(path) not in COMPONENT_FORMATS:
         return {}
     component = resolve_component(path)
+    if component_format(path) == "hdf5":
+        return {"snapshot": component.describe(), "component": {}}
     return {"snapshot": component.snapshot.describe(), "component": component.describe()}
 
 

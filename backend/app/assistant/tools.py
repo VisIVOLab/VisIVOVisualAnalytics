@@ -202,8 +202,9 @@ def _catalogue_summary(path: str | None, params: dict[str, Any],
     if context is not None:
         frame = context.get("dataframe")
         fmt = context.get("format")
-    from ..point_table import component_format, is_particle_format  # noqa: PLC0415
-    if frame is None and path and component_format(path) in ("gadget", "ramses"):
+    from ..point_table import (COMPONENT_FORMATS, component_format,  # noqa: PLC0415
+                               is_particle_format)
+    if frame is None and path and component_format(path) in COMPONENT_FORMATS:
         # A snapshot's particle type is opened out of core (no frame): its
         # statistics are streamed from the shards, a slice of rows at a time.
         out = _particle_catalogue_summary(path, params, context or {})

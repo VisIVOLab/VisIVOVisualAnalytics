@@ -214,6 +214,27 @@ async def open_dataset(
                         valid=False, error="byte_order does not apply to a raw grid: it is "
                                            "read in the byte order its descriptor gives.")
                 path, field, pluto = Path(grid), None, grid
+    if vbt is None and pluto is None:
+        # A dataset of a generic HDF5 file (issue #552), by a reference or by
+        # the file when one volume or image is all it holds: read in place (a
+        # chunked or compressed one is unpacked once). A Gadget snapshot and a
+        # dynamic spectrum are not this: they answer None and keep their route.
+        from ..hdf5_source import canonical_ref, ref_base  # noqa: PLC0415
+        h5_base = ref_base(request.path)
+        try:
+            h5 = await asyncio.to_thread(
+                canonical_ref, str(_normalize_path(h5_base)) + request.path[len(h5_base):],
+                "volume")
+        except ValueError as exc:
+            return OpenDatasetResponse(valid=False, error=str(exc))
+        except OSError:
+            return OpenDatasetResponse(valid=False, error="File not found.")
+        if h5 is not None:
+            if request.byte_order is not None:
+                return OpenDatasetResponse(
+                    valid=False, error="byte_order does not apply to an HDF5 dataset: the "
+                                       "file states its own.")
+            path, field, pluto = Path(h5), None, h5
     orders: dict = {}
     if vbt is not None:
         path = Path(vbt)

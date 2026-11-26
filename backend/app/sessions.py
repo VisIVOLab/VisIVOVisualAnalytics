@@ -92,6 +92,11 @@ def release_particle_cache(entry: dict, others) -> None:
     (gadget_snapshot.PIECE_CACHE) when none of ``others`` reads the same
     snapshot file."""
     path = str(entry.get("path") or "")
+    if entry.get("format") == "hdf5" and path:
+        # A table of a generic HDF5 file (issue #552): the columns it kept whole.
+        from .hdf5_source import release as release_table  # noqa: PLC0415
+        release_table(path)
+        return
     if entry.get("format") != "gadget" or not path:
         return
     try:

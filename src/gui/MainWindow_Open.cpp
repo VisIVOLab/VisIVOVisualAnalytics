@@ -1617,6 +1617,7 @@ void MainWindow::dispatchOpenForPath(const QString &path)
     // the user picks one, unless the path already names one (Recent, Session
     // Data). Each opens as a table of points of its own.
     visivo::rememberFieldNames(verdict.components);
+    QString hdf5Opener;
     if (verdict.valid && verdict.components.size() > 1 && !visivo::isFieldReference(path)) {
         QStringList labels;
         int current = 0;
@@ -1656,11 +1657,51 @@ void MainWindow::dispatchOpenForPath(const QString &path)
             return;
         }
         target = verdict.components.at(static_cast<int>(labels.indexOf(picked))).second;
+        // A generic HDF5 file offers its tables and its volumes together (#552):
+        // what the chosen one opens as is its own answer, and the user may cut
+        // it to a hyperslab (offset:count for each axis, as the importer's
+        // --hyperslab).
+        if (verdict.kind == u"hdf5"_s) {
+            bool entered = false;
+            QString slab;
+            {
+                const visivo::BusyPause asking;
+                slab = QInputDialog::getText(
+                               this, u"Open HDF5 dataset"_s,
+                               u"%1\n\nHyperslab (optional): offset:count for each axis of the "
+                               u"dataset, e.g. 0:64,:,:. Leave empty to open it all."_s.arg(picked),
+                               QLineEdit::Normal, QString(), &entered)
+                               .trimmed();
+            }
+            this->m_openRequestClock.start();
+            if (!entered) {
+                record->record = false;   // dismissed: nothing was asked
+                return;
+            }
+            if (!slab.isEmpty())
+                target += u"["_s + slab + u"]"_s;
+            const BackendClassifyResult chosenDataset = client.classifyFile(target);
+            if (!chosenDataset.valid) {
+                // A hyperslab the file cannot give, or a dataset it no longer has:
+                // say so, rather than offer a viewer for it.
+                noteOpenEnded(record, u"failed"_s);
+                QMessageBox box(QMessageBox::Warning, u"Cannot open this dataset"_s,
+                                chosenDataset.error, QMessageBox::Ok, this);
+                box.setTextFormat(Qt::PlainText);
+                box.exec();
+                return;
+            }
+            hdf5Opener = chosenDataset.opener;
+            if (!chosenDataset.openPath.isEmpty())
+                target = chosenDataset.openPath;
+        }
     }
     this->m_openRequestPath = target;
     record->path = target;
 
-    const QString opener = verdict.valid ? verdict.opener : QString();
+    const QString opener = !hdf5Opener.isEmpty()
+            ? hdf5Opener
+            : (verdict.valid ? verdict.opener : QString());
     if (opener == u"dataset"_s) {
         doOpenDataPath(target, record);
         return;

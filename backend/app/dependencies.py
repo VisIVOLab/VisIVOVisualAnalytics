@@ -1300,7 +1300,7 @@ def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
         return frame
     if fmt_lower == "vbt":
         return _read_vbt_points(path)
-    if fmt_lower in ("gadget", "ramses", "yt", "rawpoints"):
+    if fmt_lower in ("gadget", "ramses", "yt", "rawpoints", "hdf5"):
         # One particle type of a Gadget snapshot (issue #31), one family of a
         # RAMSES output (issue #549), or a file of a legacy-importer descriptor
         # (issue #551), read in place.
@@ -2165,8 +2165,9 @@ def _fits_metadata(path: Path) -> tuple[str, dict[str, Any]]:
         geometry["fields"] = field_siblings(path)
         if raw.kind == "vbt":
             geometry["field_name"] = geometry["fields"][raw.index]["name"]
-        else:   # a PLUTO output: its variables present on disk, by name
-            geometry["field_name"] = str(dataset.header.get("PLUTOVAR", ""))
+        else:   # a PLUTO output, a raw grid, an HDF5 dataset: its name
+            geometry["field_name"] = str(dataset.header.get("PLUTOVAR")
+                                         or dataset.header.get("H5DSET") or "")
         return str(geometry["kind"]), geometry
     from .hdf5_dynspec import (  # noqa: PLC0415 (lazy h5py import)
         convert_hdf5_to_sidecar_fits, is_hdf5_path,
