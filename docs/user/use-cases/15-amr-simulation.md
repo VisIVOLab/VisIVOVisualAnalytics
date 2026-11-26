@@ -8,7 +8,8 @@ mesh is refined, and pull out the densest knot at a finer level.
 
 - The RAMSES output `DemoData/Ramses/output_00185`: a cosmological zoom with 16
   files per kind (`amr_`, `hydro_`, `part_`), 2,097,152 dark-matter particles
-  and a mesh of 15,974,645 leaf cells on levels 7 to 13. Its box is about
+  and a mesh of 15,974,645 leaf cells on levels 7 to 13 (the run allows
+  levels up to 15, but none of its cells reached 14 or 15). Its box is about
   147,400 kpc across. It has no `*_file_descriptor.txt`, so its hydro and
   particle fields are read by their position, the layout RAMSES used before
   descriptors.
@@ -92,7 +93,8 @@ mesh is refined, and pull out the densest knot at a finer level.
    densest knot of the box. In the Inspector, under *AMR MESH* (it reads
    *density at level 9 of 13, from ramses.*), tick *Show AMR blocks*. The cells
    this slice cuts are outlined, coloured by their level, and the status line
-   reads *48844 cells cut by this slice, levels 7 to 13.* The blocks follow
+   says for a few seconds how many cells the slice cuts and on which levels
+   (here *48844 cells cut by this slice, levels 7 to 13.*). The blocks follow
    the slice as you move it.
 
    ```{figure} img/15-amr-simulation-4.png
