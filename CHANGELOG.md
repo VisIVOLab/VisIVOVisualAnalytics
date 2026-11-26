@@ -6,7 +6,43 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
-## Unreleased
+## 1.5.0 (2026-11-26)
+
+Every format of the legacy VisIVO Importer opens in place, without a VBT step,
+and adaptive-mesh simulations get their own views (epic #556).
+
+- **RAMSES outputs, read natively (#549).** Pick any file of an `output_NNNNN`
+  folder (`info_…`, `part_…`, `amr_…`): the particles open one family at a time
+  (dark matter, stars, sinks) and the AMR cells as a *gas cells* component.
+  Units come from `info_*.txt` (kpc, Msun, km/s, proper at `aexp`). Outputs
+  without `*_file_descriptor.txt` are read by position. No yt needed.
+- **AMR views (#550).** *Gas cells* draw as points sized by their own cell in
+  the ray-traced view. *Data ▸ Uniform Cube of an AMR Output…* resamples a
+  field at a chosen level, over the box or a region, into a cube (mass
+  conserved; velocities and scalars density-weighted), with the run's units
+  under *Display ▸ Physical*. In that cube, *Inspector ▸ AMR mesh ▸ Show AMR
+  blocks* outlines the cells the slice cuts, coloured by level, and *Refine
+  this box…* re-extracts the crop box at the finest level it holds.
+- **Other simulation codes through yt (#554).** With yt installed beside the
+  backend (it stays optional), FLASH, Enzo, Athena, GAMER, AMReX/Nyx and others
+  open the same way: refined outputs get every AMR view, one-level outputs open
+  directly as a cube. An AMReX plot opens by its `Header` file.
+- **Raw points, raw grids and FLY (#551).** `rawPointsDesc` / `rawGridsDesc`
+  descriptors and FLY files (bare or with a descriptor) open in place: grids as
+  volumes, points as tables, time-tagged lists as series; both byte orders,
+  float and double. The open dialog has a *Raw points, grids and FLY* group.
+- **Any HDF5 file (#552).** Rank-3 and rank-2 datasets open as volumes and
+  images (mapped in place when contiguous, unpacked once when compressed),
+  1-D or compound datasets as tables. With several datasets the open dialog
+  asks which, and takes an optional hyperslab (`0:64,:,:`). Units come from the
+  `units`/`unit`/`BUNIT` attributes.
+- **An axis seen end-on is hidden (#569)** instead of being drawn as a diagonal
+  streak, in the local and the backend-drawn 3-D points views.
+- **The snapshot component dialog wraps its description (#567)** instead of
+  growing wider than the screen.
+- **A use case on an adaptive-mesh simulation (#555)**: the RAMSES demo run
+  from its gas cells to a uniform cube, its AMR blocks and a refined box,
+  with screenshots.
 
 - **Where the points are drawn is not how many rows are loaded (#570).** In the
   3-D points window *Local* and *Auto* looked the same on the local backend:
