@@ -163,3 +163,13 @@ Local backend, a GPU view on this machine. `snap_p50n576_z0.tbl` and `snap_comaI
 | `14-simulation-particles-2.png` | Same window size, `snap_comaII_z0.tbl` with `LogT > 0`, *Ray-traced light* cleared (Gaussian splats, colour `LogT`), zoomed so the central cluster fills about a third of the view, one particle in its bright core selected with its ring, and the Inspector's *Properties* tab showing *SOURCE INFO* with x near 348.6, y near 346.6, z near 350.8. |
 | `14-simulation-particles-3.png` | The *Range and scale…* editor over the same window after `LogT > 0` and the 4 Mpc box from *Select 3-D region…* (*Box*, x 346.6 to 350.6, y 344.6 to 348.6, z 348.8 to 352.8) and *Load all*: the `LogT` histogram with its single peak near 7.5 to 7.8, the *ACTIVE FILTERS* list with the two rows visible in the Inspector's *Analysis* tab. Capture the window and the editor together. |
 | `14-simulation-particles-4.png` | Same filtered box, *Ray-traced light* ticked, *Mode* *Projected map*, *Colour by* *Velocity dispersion*, *Map* *Viridis*, camera down Z centred on the cluster with the box filling about 80 % of the view, *Colour bar* on (velocity dispersion). 1600 × 1000. |
+
+## 15-amr-simulation.md
+
+| File | What must be on screen |
+|---|---|
+| `15-amr-simulation-1.png` | The *Open simulation snapshot* dialog after *File ▸ Open…* on `DemoData/Ramses/output_00185/info_00185.txt`: its description (2097152 dark matter, 15974645 gas cells, levels and hydro variables) and *Component to open* on *dark matter*. Capture the dialog only. |
+| `15-amr-simulation-2.png` | 3-D points window of the *gas cells* component, *Ray-traced light* ticked, *Mode* *Projected map*, *Colour by* *Density*, *Map* *Magma*, *Log scale* ticked; the box filling about half the view; the *RAY-TRACED* card visible in the dock; the status bar reading *Local · sample 70,000 of 15,974,645 rows*. Catalogue table closed. Crop the window below its path toolbar. |
+| `15-amr-simulation-3.png` | *Data ▸ Uniform Cube of an AMR Output…* on the same output: *Field* `density`, *Level* *Level 9*, *Limit* 256 million voxels, the plan reading 512 × 512 × 512 voxels, voxel 288 kpc, finest level in the region 13. Capture the dialog only. |
+| `15-amr-simulation-4.png` | The level-9 cube at full resolution, *2D* at *Z* 326 (z = 93737 kpc), *Inferno*, *Log*; *Show AMR blocks* ticked in the Inspector's *AMR MESH* section, blocks over the slice. Crop the window below its path toolbar. |
+| `15-amr-simulation-5.png` | The refined level-12 cube (264³) from *Refine this box…* with *X* 209–241, *Y* 305–337, *Z* 309–341 of the level-9 cube, *2D* at *Z* 132 through the knot, *Inferno*, *Log*. Crop the window below its path toolbar. |
