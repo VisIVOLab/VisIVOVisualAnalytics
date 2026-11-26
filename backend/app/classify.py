@@ -154,7 +154,8 @@ def classify_path(path: str | Path, allowed=None) -> dict:
         # A snapdir: the snapshot it holds (issue #31). One whose files
         # reach outside the data roots is shown as a plain directory.
         try:
-            particles = _classify_ramses(path, allowed) or _classify_particles(path, allowed)
+            particles = (_classify_ramses(path, allowed) or _classify_particles(path, allowed)
+                         or _classify_yt(path, allowed))
         except PermissionError:
             particles = None
         if particles is not None:
@@ -204,6 +205,14 @@ def classify_path(path: str | Path, allowed=None) -> dict:
     particles = _classify_particles(path, allowed)
     if particles is not None:
         return particles
+
+    # ── A mesh of another code, through yt when it is installed (issue #554) ──
+    # Enzo, FLASH, Athena, Chombo, AMReX, GAMER, ART. BEFORE the generic HDF5
+    # verdicts below (FLASH, Chombo, AMReX and GAMER files are HDF5): yt's own
+    # validity checks decide, and a file they do not take falls through.
+    mesh = _classify_yt(path, allowed)
+    if mesh is not None:
+        return mesh
 
     if suffix == ".speck":
         return _result("catalogue", "catalogue", True, "speck point catalogue.")
@@ -412,6 +421,57 @@ def _classify_ramses(path: Path, allowed=None) -> dict | None:
                    "uniform cube of any field can be resampled from them.")
     return _result("particles", "catalogue", True, detail, open_path=found[0],
                    components=components)
+
+
+def _classify_yt(path: Path, allowed=None) -> dict | None:
+    """The verdict on the mesh of another code that yt reads (issue #554,
+    app/yt_output.py), or None: for any other file, and always when yt is not
+    installed. Cheap for every other file (a few bytes are looked at; yt's
+    frontends judge the rest, once per file version). A uniform-grid output is a
+    cube (its density, read at its level); a refined mesh opens as its gas
+    cells, and the AMR views build on it."""
+    from . import yt_output as yo  # noqa: PLC0415
+    from .point_table import particle_components  # noqa: PLC0415
+
+    if not yo.yt_available():
+        return None
+    base = yo.mesh_path(path)
+    if not yo.looks_like_mesh(base):
+        return None
+    yo.check_allowed(base, allowed)        # the data roots before yt parses a file
+    frontend = yo.detect(base)
+    if frontend is None:
+        return None
+    name = yo.FRONTENDS[frontend]
+    try:
+        mesh = yo.open_mesh(base)
+    except PermissionError:
+        raise
+    except (OSError, ValueError) as exc:
+        return _result("amr", "unsupported", True, f"{name} output (read through yt) that "
+                       f"cannot be opened: {exc}")
+    levels = mesh.levels
+    box = " x ".join(f"{int(n)}" for n in mesh.extent)
+    level = mesh.uniform_level()
+    if level is not None and mesh.fields:
+        shape = " x ".join(f"{int(n * 2 ** level)}" for n in mesh.extent)
+        return _result("cube", "dataset", True,
+                       f"{name} output (read through yt): a uniform grid of {shape} cells with "
+                       f"{len(mesh.fields)} fields. It opens as the cube of its density; "
+                       "/v1/simulations/amr/uniform writes any other field as a cube.",
+                       open_path=base)
+    if "density" not in mesh.fields:
+        return _result("amr", "unsupported", True,
+                       f"{name} output (read through yt): a mesh of levels {levels[0]}-"
+                       f"{levels[-1]} with no gas density to open as cells.")
+    ref = yo.yt_ref(base, yo.CELLS)
+    components = particle_components(ref)
+    return _result("particles", "catalogue", True,
+                   f"{name} output (read through yt): a mesh of {box} root cells, levels "
+                   f"{levels[0]}-{levels[-1]}, {mesh.n_leaf()} leaf cells, {len(mesh.fields)} "
+                   "fields. It opens as its gas cells (the cells' sizes are their smoothing "
+                   "lengths), and a uniform cube of any field can be resampled from them.",
+                   open_path=ref, components=components)
 
 
 def _classify_particles(path: Path, allowed=None) -> dict | None:

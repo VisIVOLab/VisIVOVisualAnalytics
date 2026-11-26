@@ -192,14 +192,14 @@ def positions_within(columns, axes, rows: np.ndarray, lo, hi,
 
 #: Catalogue formats that are a simulation's particles read in place: always
 #: cartesian, drawn ray-traced by default, opened by a header or a reference.
-PARTICLE_FORMATS = ("vbt", "gadget", "ramses", "rawpoints")
+PARTICLE_FORMATS = ("vbt", "gadget", "ramses", "yt", "rawpoints")
 
 #: The formats whose particles are components of a snapshot or an output,
 #: each a module with ``split_ref``, ``resolve``, ``components`` and
 #: ``has_*`` (the particle seam below dispatches on them). A file of a
 #: raw-points descriptor (``"rawpoints"``, issue #551) is a component
 #: reference too but is read by raw_descriptor, not through this dispatch.
-COMPONENT_FORMATS = ("gadget", "ramses")
+COMPONENT_FORMATS = ("gadget", "ramses", "yt")
 
 
 def is_particle_format(fmt: str | None) -> bool:
@@ -215,6 +215,9 @@ def component_format(path: str | Path) -> str | None:
     from .raw_descriptor import is_points_ref   # noqa: PLC0415
     if REF_SEP in str(path) and split_ramses(path)[1] is not None:
         return "ramses"
+    from .yt_output import REF_SEP as YT_SEP, split_ref as split_yt   # noqa: PLC0415
+    if YT_SEP in str(path) and split_yt(path)[1] is not None:
+        return "yt"
     if split_ref(path)[1] is not None:
         return "gadget"
     return "rawpoints" if is_points_ref(path) else None
@@ -225,6 +228,9 @@ def component_module(fmt: str):
     if fmt == "ramses":
         from . import ramses_output   # noqa: PLC0415
         return ramses_output
+    if fmt == "yt":
+        from . import yt_output   # noqa: PLC0415
+        return yt_output
     from . import gadget_snapshot   # noqa: PLC0415
     return gadget_snapshot
 
@@ -293,7 +299,8 @@ def particle_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | N
     p = Path(base)
     if ptype is None and not (p.is_dir() and gs.first_in_dir(p, allowed) is not None) \
             and not (p.is_file() and gs.detect(p) is not None):
-        return None
+        # Not a particle snapshot: the mesh of another code, read through yt?
+        return _yt_dataset_path(path, allowed)
     if allowed is not None:
         # Before any of them is read beyond its first bytes.
         if p.is_dir():
@@ -346,6 +353,26 @@ def _ramses_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | No
     elif slug not in out.families():
         raise ValueError(f"{directory.name} has no {slug!r} particles.")
     return rm.ramses_ref(out.path, slug), "ramses"
+
+
+def _yt_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | None:
+    """``particle_dataset_path`` for the mesh of another code read through yt
+    (issue #554, app/yt_output.py): its gas cells, a mesh with a gas density.
+    None when ``path`` is no such mesh, or yt is not installed (nothing is
+    claimed without it); a mesh yt cannot make cells of raises ValueError."""
+    from . import yt_output as yo   # noqa: PLC0415
+    if not yo.yt_available():
+        return None
+    base = yo.mesh_path(path)
+    if not yo.looks_like_mesh(base):
+        return None
+    yo.check_allowed(base, allowed)       # the data roots before yt parses a file
+    if yo.detect(base) is None:
+        return None
+    mesh = yo.open_mesh(base)
+    if "density" not in mesh.fields:
+        raise ValueError(f"{Path(base).name} has no gas density to open as cells.")
+    return yo.yt_ref(base, yo.CELLS), "yt"
 
 
 def particle_components(path: str | Path) -> list[dict]:

@@ -1300,7 +1300,7 @@ def _catalogue_load_dataframe(path: Path, fmt: str) -> pd.DataFrame:
         return frame
     if fmt_lower == "vbt":
         return _read_vbt_points(path)
-    if fmt_lower in ("gadget", "ramses", "rawpoints"):
+    if fmt_lower in ("gadget", "ramses", "yt", "rawpoints"):
         # One particle type of a Gadget snapshot (issue #31), one family of a
         # RAMSES output (issue #549), or a file of a legacy-importer descriptor
         # (issue #551), read in place.

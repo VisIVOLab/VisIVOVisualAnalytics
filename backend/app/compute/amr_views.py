@@ -453,7 +453,16 @@ def build_header(h: AmrHierarchy, plan: UniformPlan, source: str):
         hdr[f"CRPIX{axis}"] = 1.0
         hdr[f"CRVAL{axis}"] = (i0 + 0.5) * step
         hdr[f"CDELT{axis}"] = step
-    if _code_unit(plan.field):
+    # The unit the stored numbers are in: a run's code unit when its scales
+    # convert (RAMSES), the physical unit itself when the producer stores
+    # physical values (factor 1: a mesh read through yt).
+    unit = str(scale.get("unit") or "")
+    stored_physical = (scale.get("factor") == 1.0 and plan.field != LEVEL
+                       and unit not in ("", "dimensionless", "none")
+                       and not unit.startswith("code"))
+    if stored_physical:
+        hdr["BUNIT"] = scale["unit"]
+    elif _code_unit(plan.field):
         hdr["BUNIT"] = _code_unit(plan.field)
     hdr["OBJECT"] = plan.field
     hdr["CREATOR"] = "VisIVO (AMR uniform cube)"

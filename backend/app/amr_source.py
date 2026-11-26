@@ -203,17 +203,25 @@ class AmrHierarchy(ABC):
 
 def open_hierarchy(path, allowed=None) -> AmrHierarchy:
     """The mesh a path names: a RAMSES output (its directory, a file of it or
-    a component reference). The one place a further producer (issue #554)
-    is added, so the views and their routes need no change.
+    a component reference), else, when yt is installed, the output of another
+    code yt reads (Enzo, FLASH, Athena, Chombo, AMReX, GAMER, ART: issue
+    #554, app/yt_output.py). The one place a producer is added, so the views
+    and their routes need no change.
 
     ``allowed`` (path -> bool): every file of the output must pass it, else
     PermissionError, before any is parsed. ValueError when ``path`` holds no
-    mesh."""
+    mesh; :class:`app.yt_output.YtUnavailable` (a RuntimeError: the routes
+    answer 503) for a file that is probably one yt would read, without yt."""
     from . import ramses_output as rm   # noqa: PLC0415
+    from . import yt_output   # noqa: PLC0415
     directory = rm.checked_output(path, allowed)
     if directory is not None:
         return rm.open_output(directory).amr()
-    raise ValueError(f"{path} holds no AMR mesh this backend reads (a RAMSES output).")
+    mesh = yt_output.open_mesh(path, allowed)
+    if mesh is not None:
+        return mesh
+    raise ValueError(f"{path} holds no AMR mesh this backend reads (a RAMSES output"
+                     "; Enzo, FLASH, Athena, Chombo, AMReX, GAMER and ART through yt).")
 
 
 def view_source(path) -> str | None:
