@@ -361,10 +361,10 @@ def _yt_dataset_path(path: str | Path, allowed=None) -> tuple[str, str] | None:
     None when ``path`` is no such mesh, or yt is not installed (nothing is
     claimed without it); a mesh yt cannot make cells of raises ValueError."""
     from . import yt_output as yo   # noqa: PLC0415
-    if not yo.yt_available():
-        return None
     base = yo.mesh_path(path)
-    if not yo.looks_like_mesh(base):
+    if not yo.looks_like_mesh(base):       # a few bytes first: yt is not imported for a CSV
+        return None
+    if not yo.yt_available():
         return None
     yo.check_allowed(base, allowed)       # the data roots before yt parses a file
     if yo.detect(base) is None:

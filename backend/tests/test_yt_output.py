@@ -438,6 +438,126 @@ async def test_the_plan_and_level_map_routes_work_on_a_mesh(
     assert lm["valid"] and lm["area"] == pytest.approx(16.0)
 
 
+# ── review fixes: cost, false positives, cache identity, memory ──────────────
+
+def _boxlib_dir(tmp_path, header="HyperCLaw-V1.1\n", levels=True, name="plt00010"):
+    plot = tmp_path / name
+    plot.mkdir()
+    (plot / "Header").write_text(header)
+    if levels:
+        (plot / "Level_0").mkdir()
+        (plot / "Level_0" / "Cell_D_00000").write_bytes(b"x" * 16)
+    return plot
+
+
+def test_classifying_a_csv_never_asks_whether_yt_is_there(tmp_path, monkeypatch):
+    from app.classify import classify_path
+    from app.point_table import particle_dataset_path
+    csv = tmp_path / "t.csv"
+    csv.write_text("a,b\n1,2\n3,4\n")
+
+    def boom():
+        raise AssertionError("yt_available() (an import of yt) for a file that is no mesh")
+    monkeypatch.setattr(yo, "yt_available", boom)
+    assert classify_path(csv)["kind"] != "particles"
+    assert particle_dataset_path(csv) is None
+
+
+@needs_yt
+def test_classifying_a_csv_does_not_import_yt(tmp_path):
+    import subprocess
+    import sys
+    csv = tmp_path / "t.csv"
+    csv.write_text("a,b\n1,2\n3,4\n")
+    code = ("import sys\nfrom app.classify import classify_path\n"
+            f"classify_path({str(csv)!r})\nassert 'yt' not in sys.modules, 'yt was imported'\n")
+    backend = Path(__file__).resolve().parents[1]
+    done = subprocess.run([sys.executable, "-c", code], cwd=backend, capture_output=True,
+                          text=True, env={**os.environ, "VISIVO_TOKEN": "x"})
+    assert done.returncode == 0, done.stderr[-400:]
+
+
+def test_a_folder_with_a_junk_header_is_no_mesh_and_stays_a_folder(tmp_path, monkeypatch):
+    from app.classify import classify_path
+    junk = _boxlib_dir(tmp_path, header="this is my notes file\n", name="junk")
+    assert not yo.looks_like_mesh(junk)
+    assert not yo.looks_like_mesh(_boxlib_dir(tmp_path, levels=False, name="nolevels"))
+    assert yo.looks_like_mesh(_boxlib_dir(tmp_path, name="plt00020"))
+    assert yo.looks_like_mesh(_boxlib_dir(tmp_path, header="Checkpoint version: 3\n", name="chk"))
+    monkeypatch.setattr(yo, "yt_available", lambda: True)
+    assert classify_path(junk)["kind"] == "directory"
+
+
+def test_a_folder_that_looks_like_amrex_but_yt_cannot_open_stays_a_folder(tmp_path, monkeypatch):
+    from app.classify import classify_path
+    plot = _boxlib_dir(tmp_path)
+    monkeypatch.setattr(yo, "yt_available", lambda: True)
+    monkeypatch.setattr(yo, "detect", lambda p: "amrex")
+
+    def refuse(p, allowed=None, **kw):
+        raise ValueError("yt cannot read it")
+    monkeypatch.setattr(yo, "open_mesh", refuse)
+    assert classify_path(plot)["kind"] == "directory"
+
+
+def test_the_cache_key_changes_when_any_file_of_a_mesh_is_rewritten(tmp_path):
+    plot = _boxlib_dir(tmp_path)
+    member = plot / "Level_0" / "Cell_D_00000"
+    before = yo._stamp(plot)
+    assert before == yo._stamp(plot) and before != ""
+    member.write_bytes(b"y" * 16)                         # same size, rewritten in place
+    os.utime(member, ns=(1, 1))
+    assert yo._stamp(plot) != before
+    # An Enzo-style output: the main file untouched, its .hierarchy rewritten.
+    main = tmp_path / "DD0001"
+    main.write_bytes(b"p")
+    side = tmp_path / "DD0001.hierarchy"
+    side.write_bytes(b"h")
+    first = yo._stamp(main)
+    side.write_bytes(b"hh")
+    assert yo._stamp(main) != first
+    # ... and a cube written for one version is not served for the next.
+    cube = tmp_path / "cube.fits"
+    cube.write_bytes(b"c")
+    yo.remember_cube(str(main), "density", str(cube))
+    assert yo.cached_cube(str(main), "density") == str(cube)
+    side.write_bytes(b"hhh")
+    assert yo.cached_cube(str(main), "density") is None
+    assert yo._stamp(tmp_path / "missing") == ""
+
+
+@needs_yt
+def test_a_grid_is_cut_into_slabs_so_the_cell_indices_stay_bounded(monkeypatch):
+    import yt
+    n = 16
+    values = np.arange(n ** 3, dtype=float).reshape(n, n, n) + 1
+    ds = yt.load_uniform_grid({"density": (values, "g/cm**3")}, [n, n, n],
+                              bbox=np.array([[0, n]] * 3), length_unit="kpc")
+    mesh = yo.YtGridAmr(ds, "flash")
+    rows = []
+    real = np.argwhere
+
+    def spy(a):
+        r = real(a)
+        rows.append(len(r))
+        return r
+    monkeypatch.setattr(np, "argwhere", spy)
+    got = {}
+    for block in mesh.leaf_blocks(["density"], max_block=300):
+        assert block.centre.shape[0] <= 300
+        for c, v in zip(block.centre, block.fields["density"]):
+            got[tuple(float(x) for x in c)] = v
+    assert max(rows) <= 300 and len(rows) >= n               # one slab at a time, not a whole grid
+    assert len(got) == n ** 3
+    # every centre keeps its own value (the slabs are cut consistently)
+    for (x, y, z), v in got.items():
+        assert v == values[int(x), int(y), int(z)]
+    # a window still selects the same cells
+    win = sum(b.centre.shape[0] for b in mesh.leaf_blocks(
+        ["density"], lo=(2, 2, 2), hi=(5, 5, 5), max_block=50))
+    assert win == 27
+
+
 # ── real outputs of the codes ────────────────────────────────────────────────
 
 REAL = {"flash": "Sedov3D/Sedov_3d/sedov_hdf5_chk_0003",

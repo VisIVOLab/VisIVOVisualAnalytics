@@ -40,6 +40,7 @@ thread-safe: every read of one holds its lock).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import threading
@@ -152,16 +153,32 @@ _HDF5 = b"\x89HDF\r\n\x1a\n"
 _VTK = b"# vtk Da"
 
 
+#: First line of a BoxLib / AMReX plot or checkpoint ``Header`` ("HyperCLaw-V1.1",
+#: "NavierStokes-V1.1", "Checkpoint version: 3"): any other file called Header is no mesh.
+_BOXLIB_HEADER = re.compile(rb"^(?:[A-Za-z][\w.]*-V\d[\w.]*|Checkpoint version:\s*\d+)\s*$")
+
+
+def _is_boxlib_dir(p: Path) -> bool:
+    """A BoxLib / AMReX plot directory: a ``Header`` whose first line is one of
+    the format strings, and a ``Level_0`` beside it."""
+    try:
+        with open(p / "Header", "rb") as fh:
+            first = fh.readline(200)
+        return bool(_BOXLIB_HEADER.match(first)) and (p / "Level_0").is_dir()
+    except OSError:
+        return False
+
+
 def looks_like_mesh(path: str | Path) -> bool:
     """Whether ``path`` could be a yt-readable mesh, from a few bytes and
     names alone, so that yt is not even imported for a FITS file or a CSV: an
     HDF5 file (FLASH, Chombo, GAMER, AMReX plot files), a legacy VTK file
     (Athena), an Enzo parameter file (its ``.hierarchy`` beside it), a BoxLib
-    plot directory (its ``Header``) or an ART file."""
+    plot directory (a known ``Header`` and its ``Level_0``) or an ART file."""
     p = Path(mesh_path(path))
     try:
         if p.is_dir():
-            return (p / "Header").is_file()
+            return _is_boxlib_dir(p)
         with open(p, "rb") as fh:
             head = fh.read(8)
         return (head == _HDF5 or head == _VTK
@@ -171,12 +188,27 @@ def looks_like_mesh(path: str | Path) -> bool:
         return False
 
 
-def _stamp(path: Path) -> tuple:
+def _stamp(path: Path) -> str:
+    """The version of the mesh ``path`` names, a cache key: the identity (device,
+    inode, size, mtime, ctime: product_cache.file_identity's) of every file of
+    the mesh (:func:`files`, capped at :data:`MAX_FILES`), because a multi-file
+    output (AMReX ``Level_*/Cell_D_*``, Enzo ``.cpu*``, FLASH sidecars) can be
+    rewritten in place with its main file untouched. Empty when ``path``
+    cannot be stat'ed."""
     try:
-        st = os.stat(path)
+        members = files(path)
+        os.stat(path)
     except OSError:
-        return ()
-    return (st.st_size, st.st_mtime_ns)
+        return ""
+    digest = hashlib.blake2b(digest_size=16)
+    for member in members:
+        try:
+            st = os.stat(member)
+        except OSError:
+            continue    # gone between the listing and now: the next stamp differs anyway
+        digest.update(f"{member}|{st.st_dev}.{st.st_ino}.{st.st_size}.{st.st_mtime_ns}."
+                      f"{st.st_ctime_ns}\n".encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()
 
 
 @lru_cache(maxsize=256)
@@ -442,23 +474,34 @@ class YtGridAmr(_YtMesh):
                     mask = self._leaf_mask(g)
                     if not mask.any():
                         continue
-                    ijk = np.argwhere(mask)
                     base = (np.asarray(g.LeftEdge.d, dtype=np.float64) - self._left) / self._dx0
+                    full = self._values(g, fields) if fields else {}
+                    if fields:
+                        g.clear_data()
+                # The grid is cut into slabs along its slowest axis, so that the
+                # cell indices and centres (24 bytes a cell each) that are built
+                # never exceed about ``max_block`` rows: a single 512^3 grid
+                # would need gigabytes at once.
+                plane = max(1, int(np.prod(mask.shape[1:])))
+                step = max(1, max_block // plane)
+                for a in range(0, mask.shape[0], step):
+                    sub = mask[a:a + step]
+                    if not sub.any():
+                        continue
+                    ijk = np.argwhere(sub)
+                    ijk[:, 0] += a
                     centre = base[None, :] + (ijk + 0.5) * dx
                     keep = self._inside(centre, lo, hi)
                     if not keep.any():
                         continue
-                    values = {}
-                    if fields:
-                        full = self._values(g, fields)
-                        values = {n: v[mask][keep] for n, v in full.items()}
-                        g.clear_data()
+                    values = {n: v[a:a + step][sub][keep] for n, v in full.items()}
                     centre = centre[keep]
-                pending.append((centre, values))
-                held += centre.shape[0]
-                if held >= max_block:
-                    yield from self._flush(level, dx, pending, fields, max_block)
-                    pending, held = [], 0
+                    pending.append((centre, values))
+                    held += centre.shape[0]
+                    if held >= max_block:
+                        pending = yield from self._flush(level, dx, pending, fields, max_block,
+                                                         final=False)
+                        held = sum(c.shape[0] for c, _ in pending)
             if pending:
                 yield from self._flush(level, dx, pending, fields, max_block)
 
@@ -477,12 +520,18 @@ class YtGridAmr(_YtMesh):
         return True
 
     @staticmethod
-    def _flush(level, dx, pending, fields, max_block) -> Iterator[LeafBlock]:
+    def _flush(level, dx, pending, fields, max_block, final: bool = True):
+        """Yield the pending rows as blocks of ``max_block``; the last, shorter
+        one too when ``final``, else it is returned as the new pending list."""
         centre = np.concatenate([c for c, _ in pending])
         values = {n: np.concatenate([v[n] for _, v in pending]) for n in fields}
-        for a in range(0, centre.shape[0], max_block):
+        stop = centre.shape[0] if final else centre.shape[0] - centre.shape[0] % max_block
+        for a in range(0, stop, max_block):
             b = a + max_block
             yield LeafBlock(level, dx, centre[a:b], {n: v[a:b] for n, v in values.items()})
+        if final or stop == centre.shape[0]:
+            return []
+        return [(centre[stop:], {n: v[stop:] for n, v in values.items()})]
 
 
 class YtOctreeAmr(_YtMesh):

@@ -433,10 +433,10 @@ def _classify_yt(path: Path, allowed=None) -> dict | None:
     from . import yt_output as yo  # noqa: PLC0415
     from .point_table import particle_components  # noqa: PLC0415
 
-    if not yo.yt_available():
-        return None
     base = yo.mesh_path(path)
-    if not yo.looks_like_mesh(base):
+    if not yo.looks_like_mesh(base):        # a few bytes first: yt is not imported for a CSV
+        return None
+    if not yo.yt_available():
         return None
     yo.check_allowed(base, allowed)        # the data roots before yt parses a file
     frontend = yo.detect(base)
@@ -448,6 +448,8 @@ def _classify_yt(path: Path, allowed=None) -> dict | None:
     except PermissionError:
         raise
     except (OSError, ValueError) as exc:
+        if Path(base).is_dir():
+            return None     # a folder that only looks like a mesh: the plain folder answer
         return _result("amr", "unsupported", True, f"{name} output (read through yt) that "
                        f"cannot be opened: {exc}")
     levels = mesh.levels

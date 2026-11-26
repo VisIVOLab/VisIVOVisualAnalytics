@@ -211,9 +211,12 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
             return FileClassifyResponse(valid=False, error="File not found.")
         if not local.exists():
             return FileClassifyResponse(valid=False, error="File not found.")
-        try:
+        def _snapshot():
             found = particle_dataset_path(str(local) + suffix, _within_data_roots)
-            components = particle_components(found[0]) if found else []
+            return found, (particle_components(found[0]) if found else [])
+        try:
+            # Off the event loop: a mesh read through yt imports yt and parses the output.
+            found, components = await asyncio.to_thread(_snapshot)
         except PermissionError:
             # A file of the snapshot outside the roots: as a refused path.
             return FileClassifyResponse(valid=False, error="File not found.")
@@ -262,7 +265,8 @@ async def classify_file(request: FileClassifyRequest, _: None = _auth) -> FileCl
         return FileClassifyResponse(valid=False, error="File not found.")
 
     try:
-        verdict = classify_path(path, _within_data_roots)
+        # Off the event loop: a mesh of another code imports yt and loads the output.
+        verdict = await asyncio.to_thread(classify_path, path, _within_data_roots)
     except PermissionError:
         # As for _normalize_path above: classification must not reveal which
         # snapshot member a symlink placed outside the data roots reaches.
