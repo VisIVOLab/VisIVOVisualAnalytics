@@ -116,6 +116,10 @@ add_executable(VisIVOTests
     test_slice_detail_plan.cpp
     TestLinkedWindowRegistry.h
     test_linked_window_registry.cpp
+    TestPaneLayout.h
+    test_pane_layout.cpp
+    TestSharedRows.h
+    test_shared_rows.cpp
     TestLinkedCameraSync.h
     test_linked_camera_sync.cpp
     TestSnapshotTimelineSteps.h

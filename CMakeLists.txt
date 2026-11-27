@@ -434,6 +434,9 @@ set(PROJECT_SOURCES
         src/gui/WorkspaceChrome.h
         src/gui/SessionDataTree.cpp
         src/gui/SessionDataTree.h
+        src/gui/PaneGrid.cpp
+        src/gui/PaneGrid.h
+        src/gui/PaneLayoutModel.h
         src/gui/InspectorPanel.cpp
         src/gui/InspectorPanel.h
         src/gui/AssistantPanel.cpp
@@ -684,6 +687,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCatalogue3D_Remote.cpp
         src/gui/vtkWindowCatalogue3D_Interaction.cpp
         src/gui/vtkWindowCatalogue3D_Compare.cpp
+        src/gui/vtkWindowCatalogue3D_Panes.cpp
         src/gui/vtkWindowCatalogue3D_Samp.cpp
         src/gui/vtkWindowCatalogue3D_Data.cpp
         src/gui/vtkWindowCatalogue3D.h

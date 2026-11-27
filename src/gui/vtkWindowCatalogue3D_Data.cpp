@@ -107,7 +107,7 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
         // (Galactic mode overwrites sceneX/Y/Z in-place, so we must recompute
         // rather than just returning, otherwise switching back from Galactic
         // leaves the Galactic coordinates in the entries.)
-        for (auto &e : this->entries)
+        for (auto &e : this->entries.mut())
             Catalogue3DParser::detail::fillCartesian(e, this->schema);
         return;
     }
@@ -119,7 +119,7 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
     // (Mpc from redshift/distance) is preserved. R-13.
     constexpr double pi = 3.14159265358979323846;
     const bool toSuper = (this->activeFrame == CoordFrame::Supergalactic);
-    for (auto &e : this->entries) {
+    for (auto &e : this->entries.mut()) {
         double lon = e.raDeg;
         double lat = e.decDeg;
         wcscon(kWCS_J2000, kWCS_GALACTIC, 2000.0, 2000.0, &lon, &lat, 2000.0);
@@ -140,7 +140,7 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     // distance, then rebuild the scene + labels from scratch. Shared by the local
     // Planck18 cosmology path and the R-14 distance-mode toggle.
     constexpr double pi = 3.14159265358979323846;
-    for (auto &e : this->entries) {
+    for (auto &e : this->entries.mut()) {
         const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
         const double ra  = e.raDeg  * pi / 180.0;
         const double dec = e.decDeg * pi / 180.0;
@@ -154,7 +154,7 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     this->morphologyIndexOf.clear();
     this->labelActors.clear();
     this->shellActors.clear();
-    this->mappedPositions.clear();
+    this->mappedPositions.reset();
     this->hoveredIndex  = -1;
     // Same rows in the same order, only moved: the selected source stays
     // selected (issue #298). It used to be dropped in silence, while its panel
@@ -311,7 +311,7 @@ void vtkWindowCatalogue3D::triggerCosmologyUpdate()
     if (this->m_cosmologyModel == QStringLiteral("Planck18")) {
         this->m_appliedCosmologyModel = this->m_cosmologyModel;
         this->applyHubbleConstant();
-        for (auto &e : this->entries)
+        for (auto &e : this->entries.mut())
             e.distanceMpc = std::numeric_limits<double>::quiet_NaN();
         this->recomputeScenePositionsAndRebuild();
         const QString message =
@@ -471,11 +471,11 @@ void vtkWindowCatalogue3D::onCosmologyFinished()
         // is fall back to its catalogue distance or to the local Planck18 integral.
         if (!std::isfinite(d)) {
             ++refused;
-            this->entries[static_cast<size_t>(i)].distanceMpc =
+            this->entries.mut()[static_cast<size_t>(i)].distanceMpc =
                     std::numeric_limits<double>::quiet_NaN();
             continue;
         }
-        this->entries[static_cast<size_t>(i)].distanceMpc = d;
+        this->entries.mut()[static_cast<size_t>(i)].distanceMpc = d;
     }
     this->m_appliedCosmologyModel = result.model.isEmpty() ? this->m_cosmologyModel : result.model;
     if (this->m_appliedCosmologyModel == visivo::cosmology::customName())
@@ -538,6 +538,18 @@ void vtkWindowCatalogue3D::applyFilter()
     // list as edited now; a failed query puts the previous one back.
     this->m_appliedFilters.begin(this->activeFilters);
     this->queryAppliedFilters();
+    // The filters are the group's (#604): the panes of this window that are linked
+    // query their rows with the same ones, so every pane shows the same particles.
+    if (this->m_paneGrid && this->m_comparisonLinked) {
+        for (int i = 0; i < 4; ++i) {
+            vtkWindowCatalogue3D *pane = this->m_paneWindows[i];
+            if (!pane || pane == this || !pane->m_comparisonLinked)
+                continue;
+            pane->activeFilters = this->activeFilters;
+            pane->syncFilterList();
+            pane->applyFilter();
+        }
+    }
 }
 
 void vtkWindowCatalogue3D::queryAppliedFilters()

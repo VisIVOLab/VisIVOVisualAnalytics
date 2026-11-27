@@ -1145,6 +1145,29 @@ as products.
 
 ---
 
+## Pane grid (`PaneGrid`) — one 1 / 2 / 4 workspace for the cube and the particle window
+
+`src/gui/PaneGrid.{h,cpp}` owns the chrome of the four slots (frame with the
+active border, header with title dropdown, control slot, maximise and pop-out
+buttons, the host a view is mounted in), the two columns, the pop-out of a
+pane into its own window with a placeholder in the grid, and the in-workspace
+maximise. It owns no views: the window decides what a slot shows and listens to
+`headerPressed`, `maximiseToggled`, `paneDetached` and `paneDocked`. The rules
+that need no widget are in `PaneLayoutModel.h` (which slots a layout shows, how
+it grows, `GridState` for pop-out and maximise), unit-tested in
+`TestPaneLayout`. `vtkWindowCube` and the particle window
+(`vtkWindowCatalogue3D_Panes.cpp`) both use it; a particle pane is a window of
+the comparison group whose view sits in the host's grid.
+
+The panes of a particle window share their rows (`SharedRows.h`, copy on
+write): a pane made from another adopts its `entries` and `mappedPositions` by
+pointer, and `adoptDonorGeometry()` takes the donor's points, vertex cells and
+velocity array while both look at the same rows with the same axis mapping.
+A published `vtkPoints` / velocity array is never rewritten in place; a view
+that places or builds again makes new ones. A streamed pane whose view is not
+visible for `kPauseGraceMs` calls `RemotePointView::pause()`, which releases
+its backend session and keeps its state and camera for `resume()`.
+
 ## Cube viewer — tool availability and where results land
 
 Two rules govern the ~30 cube tools. Both were per-pane heuristics scattered

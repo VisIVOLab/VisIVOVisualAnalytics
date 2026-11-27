@@ -414,6 +414,15 @@ void WorkspaceChrome::installSessionDock(const QString &datasetKey,
     applyDockWidth(m_sessionDock, m_sessionStack, /*collapsed=*/false, VisivoTheme::kLeftDockWidth);
 }
 
+void WorkspaceChrome::removeSessionLayers(QWidget *w, QWidget *newParent)
+{
+    if (!w || !m_sessionLayersLayout)
+        return;
+    m_sessionLayersLayout->removeWidget(w);
+    w->hide();
+    w->setParent(newParent);
+}
+
 void WorkspaceChrome::addSessionLayers(QWidget *w)
 {
     if (!w || !m_sessionLayersLayout)

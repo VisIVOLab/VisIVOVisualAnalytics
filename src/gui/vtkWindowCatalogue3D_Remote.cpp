@@ -76,6 +76,7 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     auto *layout = ui->vtk->parentWidget() ? ui->vtk->parentWidget()->layout() : nullptr;
     if (!layout)
         return;
+    this->m_viewHome = ui->vtk->parentWidget();   // where a pane grid gives the view back
     this->m_renderStack = new QStackedWidget(ui->vtk->parentWidget());
     layout->replaceWidget(ui->vtk, this->m_renderStack);
     this->m_renderStack->addWidget(ui->vtk);
@@ -83,6 +84,8 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     this->m_renderStack->addWidget(this->m_remoteWidget);
     // A double-click on a marker selects it there too (eventFilter).
     this->m_remoteWidget->installEventFilter(this);
+    // A pane the layout hides stops streaming (onRenderStackVisibility).
+    this->m_renderStack->installEventFilter(this);
 
     // The colour bar of the cube viewer's 3-D view, over whichever view shows.
     this->m_colorbar = new VolumeColorbar(this);
@@ -1242,4 +1245,31 @@ void vtkWindowCatalogue3D::saveViewAs3d()
     const QString saved = visivo::saveViewAs(source);
     if (!saved.isEmpty())
         this->statusBar()->showMessage(u"Saved %1"_s.arg(QDir::toNativeSeparators(saved)), 8000);
+}
+
+void vtkWindowCatalogue3D::onRenderStackVisibility(bool visible)
+{
+    if (visible) {
+        if (this->m_streamPauseTimer)
+            this->m_streamPauseTimer->stop();
+        if (this->m_remoteView && this->m_remoteView->isPaused())
+            this->m_remoteView->resume();
+        return;
+    }
+    if (!this->m_remoteView)
+        return;
+    // Not at once: a layout change moves the views through hidden for a moment.
+    if (!this->m_streamPauseTimer) {
+        this->m_streamPauseTimer = new QTimer(this);
+        this->m_streamPauseTimer->setSingleShot(true);
+        QObject::connect(this->m_streamPauseTimer, &QTimer::timeout, this, [this]() {
+            const vtkWindowCatalogue3D *host = this->paneHostOrSelf();
+            if (this->m_remoteView && this->m_renderStack
+                && visivo::particlepanes::pauseStream(host->m_paneGrid != nullptr,
+                                                      this->m_renderStack->isVisible(),
+                                                      host->isVisible() && !host->isMinimized()))
+                this->m_remoteView->pause();
+        });
+    }
+    this->m_streamPauseTimer->start(visivo::particlepanes::kPauseGraceMs);
 }

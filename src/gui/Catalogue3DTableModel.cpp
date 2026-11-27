@@ -2,7 +2,7 @@
 
 Catalogue3DTableModel::Catalogue3DTableModel(QObject *parent) : QAbstractTableModel(parent) {}
 
-void Catalogue3DTableModel::setCatalogue(const std::vector<Catalogue3DEntry> *newEntries,
+void Catalogue3DTableModel::setCatalogue(const SharedRows<Catalogue3DEntry> *newEntries,
                                          const Catalogue3DSchema *newSchema)
 {
     beginResetModel();

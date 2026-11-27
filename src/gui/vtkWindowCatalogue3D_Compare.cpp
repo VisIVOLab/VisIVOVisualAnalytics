@@ -51,6 +51,11 @@ LinkedWindowRegistry<vtkWindowCatalogue3D> &comparisonWindows()
 
 void vtkWindowCatalogue3D::openQuantityComparison()
 {
+    // From a pane's own controls: the window whose grid it sits in adds the pane.
+    if (this->m_paneHost) {
+        this->m_paneHost->openQuantityComparison();
+        return;
+    }
     if (!this->m_pointTable || this->remoteDatasetId.isEmpty())
         return;
     if (this->filterBusy || this->m_sceneBuilding) {
@@ -59,22 +64,32 @@ void vtkWindowCatalogue3D::openQuantityComparison()
                 6000);
         return;
     }
+    if (this->m_paneGrid) {
+        std::array<bool, visivo::panes::kSlots> taken{};
+        for (int i = 0; i < visivo::panes::kSlots; ++i)
+            taken[i] = this->m_paneWindows[i] != nullptr;
+        if (visivo::panes::slotForNewPane(this->m_paneCount, this->paneStacked(), taken) < 0) {
+            this->statusBar()->showMessage(
+                    u"The layout holds four panes. Close one (its header menu) or pop one out first."_s,
+                    8000);
+            return;
+        }
+    }
+    // The new pane is made from what the user is looking at: the active pane.
+    vtkWindowCatalogue3D *source = this->activePaneWindow();
 
     if (this->m_comparisonGroup.isEmpty())
         this->m_comparisonGroup = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    if (source->m_comparisonGroup.isEmpty())
+        source->m_comparisonGroup = this->m_comparisonGroup;
     this->m_comparisonLinked = true;
     this->m_comparisonCameraTracker.refit(this->comparisonCameraPose());
     this->updateWindowTitle();
 
     auto *peer = new vtkWindowCatalogue3D(
             this->filepath, this->backendUrl, this->backendToken, this->m_cataloguePaths,
-            this->m_label, this->parentWidget(), this);
+            this->m_label, this->parentWidget(), source);
     peer->setAttribute(Qt::WA_DeleteOnClose);
-    peer->setWindowFlag(Qt::Window, true);
-    peer->resize(this->size());
-    peer->move(this->pos() + QPoint(36, 36));
-    peer->show();
-    peer->raise();
 
     // Prefer the three quantities proposed for the MVP, then other physical
     // scalars. Repeating the action therefore opens density, temperature and
@@ -86,40 +101,42 @@ void vtkWindowCatalogue3D::openQuantityComparison()
             && window->comboMapColor)
             used.insert(window->comboMapColor->currentData().toString());
     }
-    const QStringList preferred{ u"rho"_s, u"density"_s, u"temperature"_s, u"temp"_s,
-                                 u"entropy"_s, u"k"_s, u"u"_s, u"pressure"_s,
-                                 u"metallicity"_s, u"mass"_s, u"sfr"_s, u"age"_s };
-    int quantity = -1;
-    const auto usable = [peer, &used](int item) {
-        const QString key = peer->comboMapColor->itemData(item).toString();
-        if (!key.startsWith(u"raw:"_s) || used.contains(key))
-            return false;
-        const QString name = peer->rawHeaders.value(key.mid(4).toInt());
-        const QStringList coordinates{ peer->schema.xFieldName, peer->schema.yFieldName,
-                                       peer->schema.zFieldName, u"vx"_s, u"vy"_s, u"vz"_s };
-        return !coordinates.contains(name, Qt::CaseInsensitive);
-    };
-    for (const QString &wanted : preferred) {
-        for (int i = 0; i < peer->comboMapColor->count(); ++i) {
-            if (!usable(i))
-                continue;
-            const QString key = peer->comboMapColor->itemData(i).toString();
-            if (peer->rawHeaders.value(key.mid(4).toInt()).compare(
-                        wanted, Qt::CaseInsensitive) == 0) {
-                quantity = i;
-                break;
-            }
-        }
-        if (quantity >= 0)
-            break;
+    QList<visivo::particlepanes::QuantityChoice> choices;
+    for (int i = 0; i < peer->comboMapColor->count(); ++i) {
+        const QString key = peer->comboMapColor->itemData(i).toString();
+        choices.append({ key, key.startsWith(u"raw:"_s)
+                                  ? peer->rawHeaders.value(key.mid(4).toInt())
+                                  : QString() });
     }
-    for (int i = 0; quantity < 0 && i < peer->comboMapColor->count(); ++i)
-        if (usable(i))
-            quantity = i;
+    const int quantity = visivo::particlepanes::nextQuantity(
+            choices, used,
+            { peer->schema.xFieldName, peer->schema.yFieldName, peer->schema.zFieldName,
+              u"vx"_s, u"vy"_s, u"vz"_s });
     if (quantity >= 0)
         peer->comboMapColor->setCurrentIndex(quantity);
     if (this->m_comparisonRepresentationLinked)
-        peer->applyComparisonRepresentation(this->comparisonRepresentation());
+        peer->applyComparisonRepresentation(source->comparisonRepresentation());
+
+    // The new view's camera and selection are the group's: it opens on precisely the
+    // same region rather than asking the user to align it by hand. (The constructor
+    // builds the scene before it can join the group.)
+    if (source->m_rtView && !source->m_rtView->camera().isEmpty())
+        peer->applyComparisonRaytraceCamera(source->m_rtView->camera());
+    else
+        peer->applyComparisonCamera(source->comparisonCameraPose());
+
+    // A pane in this window, not another window: its view goes into the grid and the
+    // window itself stays (hidden) as the owner of the pane's controls and link state.
+    this->ensurePaneGrid();
+    const bool placed = this->addPaneWindow(peer);
+    if (!placed) {
+        // No grid to put it in: a window of its own, linked as it always was.
+        peer->setWindowFlag(Qt::Window, true);
+        peer->resize(this->size());
+        peer->move(this->pos() + QPoint(36, 36));
+        peer->show();
+        peer->raise();
+    }
 
     // The count and quantity are persistent in every member of the group. This
     // is deliberately stronger than the transient status-bar message below.
@@ -128,20 +145,14 @@ void vtkWindowCatalogue3D::openQuantityComparison()
         if (window && window->m_comparisonGroup == this->m_comparisonGroup)
             window->updateComparisonUi();
     }
-
-    // The constructor builds the scene before it can join the group. Give the
-    // new view the already-framed camera now, so it opens on precisely the
-    // same region rather than briefly asking the user to align it by hand.
-    if (this->m_rtView && !this->m_rtView->camera().isEmpty())
-        peer->applyComparisonRaytraceCamera(this->m_rtView->camera());
-    else
-        peer->applyComparisonCamera(this->comparisonCameraPose());
-    if (this->selectedIndex >= 0)
-        this->broadcastComparisonSelection(this->selectedIndex);
+    if (source->selectedIndex >= 0)
+        source->broadcastComparisonSelection(source->selectedIndex);
 
     this->statusBar()->showMessage(
-            u"Comparison opened: camera and source selection are linked; colour, range and "
-            u"scale remain independent."_s,
+            placed ? u"Pane added: camera and source selection are linked; colour, range and "
+                     u"scale remain independent. The header menu closes, pops out or unlinks it."_s
+                   : u"Comparison opened: camera and source selection are linked; colour, range "
+                     u"and scale remain independent."_s,
             8000);
 }
 
@@ -228,6 +239,9 @@ void vtkWindowCatalogue3D::updateComparisonUi()
                 this->m_comparisonRepresentationLinked);
         this->m_comparisonRepresentationToggle->setEnabled(linked);
     }
+    // Panes show the state in their headers too.
+    if (vtkWindowCatalogue3D *host = this->paneHostOrSelf())
+        host->refreshPaneHeaders();
     if (!inGroup) {
         this->updateWindowTitle();
         return;
@@ -682,7 +696,7 @@ void vtkWindowCatalogue3D::adoptHydratedRows(const vtkWindowCatalogue3D &source)
     this->morphologyIndexOf.clear();
     this->labelActors.clear();
     this->shellActors.clear();
-    this->mappedPositions.clear();
+    this->mappedPositions.reset();
     this->hoveredIndex = -1;
     this->selectedIndex = CatalogueSelection::indexOf(this->entries, this->schema, selected);
     if (!this->entries.empty()) {
@@ -736,6 +750,12 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
         LinkedCameraSync::Pose camera;
         QJsonObject rayCamera;
         QRect windowGeometry;
+        // Where its view sat in a pane grid (#604): the slot (-1: in a window of its own),
+        // and for the window that held the grid, the layout and the active pane.
+        int paneSlot{ -1 };
+        bool paneHost{ false };
+        int paneCount{ 1 };
+        int paneActive{ 0 };
     };
     QList<ViewState> states;
     const auto registered = comparisonWindows().snapshot();
@@ -768,6 +788,14 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
         state.camera = window->comparisonCameraPose();
         state.rayCamera = window->m_rtView ? window->m_rtView->camera() : QJsonObject{};
         state.windowGeometry = window->geometry();
+        if (window->m_paneGrid) {
+            state.paneHost = true;
+            state.paneSlot = window->paneSlotOf(window);
+            state.paneCount = window->m_paneCount;
+            state.paneActive = window->m_activePane;
+        } else if (window->m_paneHost) {
+            state.paneSlot = window->m_paneHost->paneSlotOf(window);
+        }
         states.append(state);
     }
     if (states.isEmpty())
@@ -902,6 +930,23 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
             replacements.append(peer);
         }
     }
+    // Panes stay panes: the replacement of the window that held the grid takes the
+    // replacements of its panes into the slots theirs had.
+    QList<int> paneSlots;
+    int hostIndex = -1;
+    for (int i = 0; i < states.size(); ++i) {
+        paneSlots.append(states.at(i).paneSlot);
+        if (states.at(i).paneHost)
+            hostIndex = i;
+    }
+    QList<bool> shownByGrid(replacements.size(), false);
+    if (hostIndex >= 0 && hostIndex < replacements.size() && replacements.at(hostIndex)) {
+        replacements.at(hostIndex)->rebuildPanesFor(replacements, paneSlots,
+                                                    states.at(hostIndex).paneCount,
+                                                    states.at(hostIndex).paneActive);
+        for (int i = 0; i < replacements.size(); ++i)
+            shownByGrid[i] = i != hostIndex && states.at(i).paneSlot >= 0;
+    }
     for (int i = 0; i < replacements.size(); ++i) {
         const QPointer<vtkWindowCatalogue3D> &window = replacements.at(i);
         if (!window)
@@ -916,6 +961,8 @@ void vtkWindowCatalogue3D::switchSnapshotIndex(int requested)
             window->applyComparisonCamera(state.camera);
         window->updateComparisonUi();
         window->updateSnapshotTimelineUi();
+        if (shownByGrid.at(i))
+            continue;   // a pane: its view is in the host's grid, the window stays hidden
         window->show();
         window->raise();
     }

@@ -6,6 +6,9 @@
 #include "CatalogueSelectionKey.h"
 #include "CatalogueSelectionState.h"
 #include "LinkedCameraSync.h"
+#include "PaneGrid.h"
+#include "ParticlePaneState.h"
+#include "SharedRows.h"
 #include "SnapshotTimelineSteps.h"
 
 #include "app/BackendClient.h"
@@ -31,6 +34,7 @@
 #include <vector>
 
 class WorkspaceChrome;
+class SegmentedToggle;
 
 // VTK forward declarations
 class vtkActor;
@@ -80,6 +84,7 @@ class RaytraceOutput;
 class RaytraceSettingsPanel;
 class RaytraceViewport;
 class QFrame;
+struct AnalysisProduct;
 class QFormLayout;
 class QVBoxLayout;
 class RemoteRenderWidget;
@@ -273,6 +278,8 @@ private:
     /// Session Data on the left, Inspector on the right — the same two docks as
     /// the image and cube viewers, with this window's pages mounted in them.
     void setupWorkspaceDocks();
+    /// The filter list widget shows @p activeFilters (a pane that took the host's).
+    void syncFilterList();
     /// Re-word the command bar's kind tag and the cosmology status line from the
     /// CURRENT state. Both were written once at startup, so a filter or another
     /// page of sources left the bar claiming the number the window opened with.
@@ -475,6 +482,92 @@ private:
     void openCosmologyCalculator();
     /// Open a second quantity of this simulation without reopening its backend dataset.
     void openQuantityComparison();
+
+    // ── Comparison panes (#604, vtkWindowCatalogue3D_Panes.cpp) ──────────────
+    // Compare Quantity adds a PANE to this window rather than opening another one: the
+    // window that was asked becomes the HOST of a 1 / 2 / 4 pane grid (PaneGrid, shared
+    // with the cube window). Each pane is the view of a comparison window of the same
+    // group; that window stays, hidden, as the owner of the pane's controls, rows and
+    // link state. So the linking above (camera, selection, representation, unlink per
+    // view) is unchanged: a pane is a group member whose view sits in the host's grid.
+    QPointer<PaneGrid> m_paneGrid;                 ///< host only, once the first pane is added
+    QPointer<QWidget> m_paneRoot;                  ///< the strip + grid that replaced the view
+    QPointer<SegmentedToggle> m_paneCountToggle;
+    std::array<QPointer<vtkWindowCatalogue3D>, 4> m_paneWindows;   ///< host: slot -> window
+    int m_paneCount{ 1 };
+    int m_activePane{ 0 };
+    /// The window whose grid shows this window's view (a pane), else null.
+    QPointer<vtkWindowCatalogue3D> m_paneHost;
+    /// This window's product scope in ProductRegistry: its Session Data lists what it owns.
+    QString m_ownerScope;
+    /// The controls page the host's left dock shows now (the active pane's).
+    QPointer<QWidget> m_paneControlsPage;
+    /// closeEvent ran: a second close (a timeline step closes every old window, and
+    /// a host closes its panes) must not release the dataset twice.
+    bool m_closed{ false };
+    QPointer<QTimer> m_paneRestoreTimer;
+    /// The window that adds panes: this one, or the host of the grid this view sits in.
+    vtkWindowCatalogue3D *paneHostOrSelf();
+    vtkWindowCatalogue3D *activePaneWindow();
+    int paneSlotOf(const vtkWindowCatalogue3D *window) const;
+    void ensurePaneGrid();
+    /// Add @p peer's view as a new pane (growing the layout 1 -> 2 -> 4). False: no room.
+    bool addPaneWindow(vtkWindowCatalogue3D *peer, int slot = -1);
+    void mountPane(int slot);
+    /// Give the view back to this window (before it is closed or put in another grid).
+    void returnPaneView();
+    void removePane(int slot);
+    /// A pane's window closed (or is about to): its view comes back, the layout shrinks.
+    void forgetPane(vtkWindowCatalogue3D *window);
+    bool m_closingPanes{ false };   ///< the host is closing: its panes' bookkeeping is moot
+    /// The page of this window the view sat in before a grid took it.
+    QPointer<QWidget> m_viewHome;
+    /// Made from another window (a comparison peer): not a window that restores a session.
+    bool m_madeAsPeer{ false };
+    /// The view whose rows this one was made from (#604): while both look at the same
+    /// rows and place them by the same axes, this one takes its positions instead of
+    /// computing and holding another copy.
+    QPointer<vtkWindowCatalogue3D> m_geometryDonor;
+    /// A pane whose view the layout hides gives its backend session back after a grace
+    /// period and takes one again when shown (RemotePointView::pause).
+    QPointer<QTimer> m_streamPauseTimer;
+    void onRenderStackVisibility(bool visible);
+    /// The axes the positions in sourcePoints were computed for; empty while they are
+    /// being (re)computed, so nobody adopts half-written points.
+    QString m_positionKey;
+    /// sourcePoints is a view's own, not yet shared: updatePointPositions may fill it in place.
+    bool m_pointsPrivate{ false };
+    QString currentPositionKey() const;
+    /// Takes the donor's points, vertex cells, velocities and positions when they are the same
+    /// for these rows; false when this view has to build its own.
+    bool adoptDonorGeometry();
+    void setActivePane(int slot);
+    void setPaneCount(int panes);
+    bool paneStacked() const;
+    void refreshPaneHeaders();
+    void showPaneControls(vtkWindowCatalogue3D *window);
+    void populatePaneMenu(int slot, QMenu *menu);
+    /// Session Data rows of the host: the particle type, a row per pane's quantity, and
+    /// the SubFind catalogue of this session when one is open.
+    void refreshPaneProducts();
+    QStringList m_paneProductIds;
+    QString m_componentProductId;
+    QString paneProductId(const vtkWindowCatalogue3D *window) const;
+    /// Removal from Session Data (#580), the two halves a visivo::removal::Handler takes:
+    /// why a row of this window cannot be removed (empty: it can), and removing rows (a
+    /// quantity row closes its pane). Installing them is one line once SessionDataTree has
+    /// setRemovalHandler: sessionTree()->setRemovalHandler({refuse, remove}).
+    QString paneRemovalRefusal(const AnalysisProduct &product) const;
+    void removePaneProducts(const QStringList &productIds);
+    void onSessionRowActivated(const QString &viewTag, const QString &productId);
+    visivo::particlepanes::PaneSession paneSession() const;
+    void savePaneSession() const;
+    /// The panes of the last session on this table, once its rows are loaded.
+    void scheduleRestorePanes();
+    /// A timeline step replaced the windows of the group: put the new ones where the old
+    /// ones were. @p slots: the old slot of each of @p windows (-1: not a pane).
+    void rebuildPanesFor(const QList<QPointer<vtkWindowCatalogue3D>> &windows,
+                         const QList<int> &paneSlots, int count, int active);
     void setupComparisonLink(vtkWindowCatalogue3D *source);
     void teardownComparisonLink();
     /// Keep the persistent comparison card and window title in step with the group.
@@ -596,9 +689,12 @@ private:
     /// The copilot's actions reach this window by this key: comparison views
     /// share their dataset id, so it cannot be the key.
     QString m_copilotRouteKey;
-    std::vector<Catalogue3DEntry> entries;
+    /// The loaded rows. The panes of a particle window look at the same rows (a
+    /// comparison view adopts its source's, no row is copied): reads are free, a
+    /// change goes through entries.mut() and leaves the others as they were (#604).
+    SharedRows<Catalogue3DEntry> entries;
     /// Rows with no distance (issue #265), never in entries: not drawn.
-    std::vector<Catalogue3DEntry> unplacedEntries;
+    SharedRows<Catalogue3DEntry> unplacedEntries;
     Catalogue3DSchema schema;
     QStringList rawHeaders;
     std::vector<int> numericRawFieldIndices;
@@ -608,7 +704,8 @@ private:
     // the column set changes (BEFORE any buildScene/updateColorMapping).
     int m_velocityColIdx[3]{ -1, -1, -1 };
     void detectVelocityColumns();
-    std::vector<std::array<double, 3>> mappedPositions;
+    /// Where each entry sits in this view; shared by the panes that place the rows alike.
+    SharedRows<std::array<double, 3>> mappedPositions;
     // Ordered list of unique morphology names (determines LUT index).
     QStringList morphologyNames;
     // Name → LUT index
@@ -627,13 +724,16 @@ private:
 
     // Main source cloud — GPU-instanced glyphs (vtkGlyph3DMapper) so large
     // catalogues render fast without materialising per-point geometry on the CPU.
-    vtkNew<vtkPoints> sourcePoints;
+    // Published, never changed in place once another pane may look at it: a pane of the same
+    // rows adopts the points, the vertex cells and the velocities of the view it was made from
+    // (adoptDonorGeometry), a view that places or builds them again makes new ones.
+    vtkSmartPointer<vtkPoints> sourcePoints = vtkSmartPointer<vtkPoints>::New();
     // One scalar per source feeding the active colour LUT. Float (not int) so
     // continuous colour modes (raw columns, "Speed |v|") aren't truncated;
     // morphology stores integer class indices, which float holds exactly.
     vtkNew<vtkFloatArray> morphScalars;
     vtkNew<vtkFloatArray> glyphScaleVectors;
-    vtkNew<vtkFloatArray> velocityVectors;   // vx/vy/vz per source (named "VelocityVector")
+    vtkSmartPointer<vtkFloatArray> velocityVectors = vtkSmartPointer<vtkFloatArray>::New();   // vx/vy/vz per source (named "VelocityVector"); see sourcePoints
     vtkNew<vtkPolyData> sourcesPolyData;
     vtkNew<vtkSphereSource> sphereSource;
     vtkNew<vtkArrowSource> arrowSource;       // glyph source for the Velocity mode

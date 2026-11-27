@@ -11,6 +11,7 @@
 #include "CubeOpenPreviewTask.h"
 #include "CubeStatRows.h"
 #include "LutScale.h"
+#include "PaneGrid.h"
 #include "LassoReplay.h"
 #include "SharedSelection.h"
 #include "VrHeadsetFollow.h"
@@ -831,10 +832,8 @@ private:
     void detachPane(int slot);
     void bringBackPane(int slot);
     bool paneDetached(int slot) const;
-    // Remember each detached window's geometry (size/position/screen) for the session, so a
-    // bring-back → re-detach re-opens where the user left it.
-    std::array<QByteArray, 4> m_detachedGeom;
-    QWidget *makeDetachPlaceholder(int slot);
+    // The detached window's geometry is remembered by the PaneGrid, so a bring-back →
+    // re-detach re-opens where the user left it.
     void refitDetachablePane(int slot);   ///< post-reparent render/refit per view kind
     void syncSessionTreeToActivePane();   ///< reverse sync: highlight the active pane's tree row
     void pushProductPaneBadges();         ///< (#4) which pane(s) show each product → tree badges
@@ -870,12 +869,10 @@ private:
         QHBoxLayout *controls{ nullptr };   ///< per-view control slot in the header
         QPointer<QToolButton> maxBtn;    ///< ⤢ maximize / ⤡ restore (§3.2)
         QPointer<QToolButton> lutBtn;    ///< §5.4 header LUT strip → colormap popover (2D panes)
-        QPointer<QToolButton> detachBtn; ///< pop-out to its own window / re-attach
-        // Pop-out: the SAME frame (slot/product/LUT/badge preserved) lives temporarily in its
-        // own top-level window; the grid keeps its place with a "Pane N · detached" placeholder
-        // (no layout re-flow). Both null when the pane is docked in the grid.
-        QPointer<QWidget> detachedWindow;
-        QPointer<QWidget> placeholder;
+        // The chrome pointers above belong to the shared PaneGrid (m_paneGrid), which also
+        // owns the pop-out: the SAME frame (slot/product/LUT/badge preserved) lives
+        // temporarily in its own top-level window and the grid keeps its place with a
+        // "Pane N · detached" placeholder (no layout re-flow).
         PaneView view;
     };
     std::array<PaneSlot, 4> m_slots;
@@ -1221,8 +1218,9 @@ private:
     void propagatePaneRangeWithinWindow(int srcSlot); ///< §5.5: range only (cheap, for live drag)
     void propagate2DCamera(int srcSlot);              ///< Linked 2D: sync pan/zoom to same-WCS image panes
     int m_paneCount{ 1 };                 ///< 1 / 2 / 4 (spec §3.1 default is 1)
-    QPointer<QSplitter> m_leftColumn;     ///< slot 0 (top) + slot 2 (bottom)
-    QPointer<QSplitter> m_rightColumn;    ///< slot 1 (top) + slot 3 (bottom)
+    QPointer<PaneGrid> m_paneGrid;        ///< the slots' chrome, columns and pop-out (shared with the particle window)
+    QPointer<QSplitter> m_leftColumn;     ///< slot 0 (top) + slot 2 (bottom): the grid's
+    QPointer<QSplitter> m_rightColumn;    ///< slot 1 (top) + slot 3 (bottom): the grid's
     QPointer<QWidget> m_viewParkingLot;   ///< hidden holder for off-screen views
     // 2-pane direction: Auto derives from the container width; Rows/Cols is the
     // user's explicit override (second click on the "2" glyph), persisted (§3.1).

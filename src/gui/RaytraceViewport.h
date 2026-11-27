@@ -108,6 +108,7 @@ signals:
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    void showEvent(QShowEvent *event) override;
 
 private:
     void fetch(const QString &key, const QJsonObject &request);
@@ -155,6 +156,9 @@ private:
     QPointer<QNetworkReply> m_reply;
     QPoint m_dragFrom;
     bool m_failed{ false };
+    /// A camera or tone change arrived while the view was not on screen (a hidden pane):
+    /// it is drawn once, when the view is shown.
+    bool m_redrawPending{ false };
     QStackedLayout *m_pages{ nullptr };
     QLabel *m_image{ nullptr };     ///< a still, or the backend's frame without a GPU view
     QWidget *m_loadingOverlay{ nullptr };

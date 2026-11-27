@@ -141,6 +141,8 @@ QString productBadge(const QString &kind)
         { u"pv"_s, u"PV"_s },         { u"noise"_s, u"NOISE"_s },
         { u"stack"_s, u"STACK"_s },   { u"spectrum"_s, u"SPEC"_s },
         { u"lasso"_s, u"LASSO"_s },
+        { u"quantity"_s, u"QTY"_s },   { u"component"_s, u"TYPE"_s },
+        { u"subfind"_s, u"SUBF"_s },
     };
     const QString b = map.value(kind);
     return b.isEmpty() ? kind.left(4).toUpper() : b;
