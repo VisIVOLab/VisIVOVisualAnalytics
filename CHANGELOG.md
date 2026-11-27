@@ -6,6 +6,29 @@ These notes were kept in the README until the README became a front door for
 people who want to *use* the software rather than follow its development. They
 are preserved here unedited; the branch names they refer to are historical.
 
+## 1.5.1 (2026-11-27)
+
+Session Data gains removal in every viewer, and the particle window compares
+quantities in panes, as the cube window does.
+
+- **Remove from Session (#580).** In the cube and 2-D image windows, Delete or
+  *Remove from Session* on Session Data rows removes products: moment maps, PV
+  diagrams, spectra, channel maps, derived maps. Several rows can be selected
+  at once. The panes showing a product close, a popped-out pane comes back
+  first, and a temporary file is deleted once no window reads it. A copy saved
+  in Workspace Exports is never touched. Products that others were made from
+  ask first. In the image window a layer other than the base image can be
+  removed from the layer list too.
+- **Compare quantities in panes (#604).** In the particle window *Compare
+  Quantity* adds a pane to a 1 / 2 / 4 grid instead of opening a new window.
+  Each pane has its own quantity, colour map and rendering. The camera,
+  selection, filters and snapshot step stay linked and can be unlinked per
+  pane. Panes pop out and dock back, and the particles are loaded once for all
+  of them. Session Data lists the particle types, the quantities with their
+  pane numbers and the SubFind catalogue; removing a quantity row closes its
+  pane. The layout, quantities, slots and active pane are remembered for each
+  table. The pane grid and pop-out are now shared with the cube window.
+
 ## 1.5.0 (2026-11-26)
 
 Every format of the legacy VisIVO Importer opens in place, without a VBT step,
