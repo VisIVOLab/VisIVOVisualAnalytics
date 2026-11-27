@@ -171,13 +171,9 @@ inline PaneSession fromJson(const QJsonObject &o)
         s.panes.append({ p.value(QStringLiteral("quantity")).toString(),
                          p.value(QStringLiteral("linked")).toBool(true) });
     }
-    // A layout holds at least as many panes as the list says and is 1, 2 or 4.
-    int count = visivo::panes::normalisedCount(o.value(QStringLiteral("count")).toInt(1));
-    while (count < s.panes.size() && visivo::panes::canGrow(count))
-        count = visivo::panes::grownCount(count);
-    s.count = count;
-    while (s.panes.size() > s.count)
-        s.panes.removeLast();
+    // The layout is 1, 2 or 4 and may show fewer panes than were kept: the others stay in
+    // hidden slots, as they were (the list is capped at the slots above).
+    s.count = visivo::panes::normalisedCount(o.value(QStringLiteral("count")).toInt(1));
     s.active = qBound(0, o.value(QStringLiteral("active")).toInt(0), qMax(0, s.panes.size() - 1));
     return s;
 }

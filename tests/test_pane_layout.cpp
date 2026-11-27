@@ -175,7 +175,7 @@ void TestPaneLayout::session_toleratesGarbage()
 
     const PaneSession odd = fromJson({ { u"count"_s, 3 }, { u"active"_s, 9 },
                                        { u"panes"_s, QJsonArray{ 5, QJsonObject{ { u"quantity"_s, u"rho"_s } } } } });
-    QCOMPARE(odd.count, 2);                  // three panes listed -> room for them
+    QCOMPARE(odd.count, 1);                  // not a layout: one pane shown, the rest kept
     QCOMPARE(odd.panes.size(), 2);
     QCOMPARE(odd.panes[1].quantity, u"rho"_s);
     QVERIFY(odd.panes[1].linked);            // linked unless said otherwise
@@ -187,14 +187,15 @@ void TestPaneLayout::session_countCoversThePaneList()
     QJsonArray many;
     for (int i = 0; i < 9; ++i)
         many.append(QJsonObject{ { u"quantity"_s, QString::number(i) } });
+    // Four quantities kept in a one-pane layout: the list is capped at the grid's slots,
+    // the layout stays as saved (the other panes wait in hidden slots).
     const PaneSession s = fromJson({ { u"count"_s, 1 }, { u"panes"_s, many } });
-    QCOMPARE(s.count, 4);                    // never more than the grid has
+    QCOMPARE(s.count, 1);
     QCOMPARE(s.panes.size(), 4);
-    // And a pane list longer than the count is cut to it.
-    const PaneSession cut = fromJson({ { u"count"_s, 2 },
-                                       { u"panes"_s, QJsonArray{ QJsonObject{}, QJsonObject{} } } });
-    QCOMPARE(cut.count, 2);
-    QCOMPARE(cut.panes.size(), 2);
+    const QJsonArray four{ QJsonObject{}, QJsonObject{}, QJsonObject{}, QJsonObject{} };
+    const PaneSession two = fromJson({ { u"count"_s, 2 }, { u"panes"_s, four } });
+    QCOMPARE(two.count, 2);
+    QCOMPARE(two.panes.size(), 4);
 }
 
 void TestPaneLayout::layoutSlots_visiblePanesStay()

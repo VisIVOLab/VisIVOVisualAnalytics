@@ -568,6 +568,7 @@ void vtkWindowCatalogue3D::applyFilter()
     // take them from it (shareFilteredRows) instead of asking for the same query each.
     this->m_shareFilterResult = this->filterBusy;
     this->m_filterShareSource = nullptr;   // this pane's own newer filter wins over one waiting
+    this->m_ownFilterRevision = this->m_filterRevision = nextFilterRevision();
 }
 
 void vtkWindowCatalogue3D::queryAppliedFilters()

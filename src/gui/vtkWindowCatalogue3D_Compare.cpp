@@ -392,7 +392,11 @@ void vtkWindowCatalogue3D::setComparisonLinked(bool linked)
             && (this->m_paneHost || this->m_paneGrid)
             && !visivo::selection::sameFilters(this->m_appliedFilters.settled(),
                                                reference->m_appliedFilters.settled()))
-            this->adoptFilteredRows(reference);
+        {
+            // Relinking follows the group whatever this pane asked before.
+            this->m_filterRevision = 0;
+            this->adoptFilteredRows(reference, reference->m_rowsRevision);
+        }
         const CatalogueSelection::Key selected = CatalogueSelection::keyOf(
                 reference->entries, reference->schema, reference->selectedIndex);
         const int index = CatalogueSelection::indexOf(this->entries, this->schema, selected);
@@ -755,15 +759,26 @@ void vtkWindowCatalogue3D::shareFilteredRows()
 {
     for (const QPointer<vtkWindowCatalogue3D> &pane : this->linkedPaneWindows())
         if (pane)
-            pane->adoptFilteredRows(this);
+            pane->adoptFilteredRows(this, this->m_rowsRevision);
 }
 
-void vtkWindowCatalogue3D::adoptFilteredRows(vtkWindowCatalogue3D *source, int attempt)
+quint64 vtkWindowCatalogue3D::nextFilterRevision()
+{
+    static quint64 revision = 0;
+    return ++revision;
+}
+
+void vtkWindowCatalogue3D::adoptFilteredRows(vtkWindowCatalogue3D *source, quint64 revision,
+                                             int attempt)
 {
     constexpr int kRetryMs = 250;
     constexpr int kMaxAttempts = 240;   // a minute: longer than a large scene takes to build
     if (!source || source == this || this->remoteDatasetId != source->remoteDatasetId)
         return;
+    // An older filter than the one this pane already follows: obsolete.
+    if (revision < this->m_filterRevision)
+        return;
+    this->m_filterRevision = revision;
     this->m_filterShareSource = source;   // the latest filter wins over one still waiting
     const bool sourceBusy = source->filterBusy || source->m_sceneBuilding || source->m_loadingMore;
     const bool busy = this->filterBusy || this->m_sceneBuilding || this->m_loadingMore;
@@ -777,8 +792,10 @@ void vtkWindowCatalogue3D::adoptFilteredRows(vtkWindowCatalogue3D *source, int a
             return;
         }
         QTimer::singleShot(kRetryMs, this,
-                           [this, src = QPointer<vtkWindowCatalogue3D>(source), attempt]() {
-                               if (!src || this->m_filterShareSource != src)
+                           [this, src = QPointer<vtkWindowCatalogue3D>(source), revision,
+                            attempt]() {
+                               if (!src || this->m_filterShareSource != src
+                                   || this->m_filterRevision != revision)
                                    return;
                                // Unlinked, closed or moved out of the grid while it waited:
                                // the filters are no longer this pane's to follow.
@@ -786,11 +803,16 @@ void vtkWindowCatalogue3D::adoptFilteredRows(vtkWindowCatalogue3D *source, int a
                                    this->m_filterShareSource = nullptr;
                                    return;
                                }
-                               this->adoptFilteredRows(src, attempt + 1);
+                               this->adoptFilteredRows(src, revision, attempt + 1);
                            });
         return;
     }
     this->m_filterShareSource = nullptr;
+    // The source moved on to a newer filter of its own: that one is shared when it
+    // answers, these rows are not taken now.
+    if (source->m_rowsRevision != revision)
+        return;
+    this->m_rowsRevision = revision;
     const bool sameFilters = visivo::selection::sameFilters(this->m_appliedFilters.settled(),
                                                               source->m_appliedFilters.settled());
     if (sameFilters && this->entries.sharesWith(source->entries))

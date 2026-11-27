@@ -546,8 +546,14 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                              this->shareHydratedRows(hydration ? HydrationShare::Rows
                                                                : HydrationShare::LoadOwn);
                          if (shareFilter && !hydration) {
-                             this->m_filterShareSource = nullptr;   // these rows are the newest
-                             this->shareFilteredRows();
+                             this->m_rowsRevision = this->m_ownFilterRevision;
+                             // Shared only while it is the newest filter this pane
+                             // knows: a newer one from another pane, waiting to be
+                             // adopted here, must not be replaced by it.
+                             if (this->m_ownFilterRevision == this->m_filterRevision) {
+                                 this->m_filterShareSource = nullptr;
+                                 this->shareFilteredRows();
+                             }
                          }
                      });
 
@@ -1411,6 +1417,7 @@ void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString
     this->queryAppliedFilters();
     this->m_shareFilterResult = this->filterBusy;   // the linked panes follow (shareFilteredRows)
     this->m_filterShareSource = nullptr;
+    this->m_ownFilterRevision = this->m_filterRevision = nextFilterRevision();
 }
 
 void vtkWindowCatalogue3D::syncFilterList()

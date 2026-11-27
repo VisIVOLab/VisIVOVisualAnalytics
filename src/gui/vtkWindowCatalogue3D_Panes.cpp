@@ -328,6 +328,7 @@ void vtkWindowCatalogue3D::setPaneCount(int panes)
     }
     for (int i = 0; i < kSlots; ++i)
         this->mountPane(i);
+    this->refreshPaneProducts();   // the Session Data badges name the slots the panes are in now
     this->m_paneGrid->applyVisibility(visibleSlots(panes, stacked));
     this->m_paneGrid->equaliseSplits(panes, stacked);
     if (this->m_paneCountToggle) {
@@ -763,8 +764,6 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
         if (made > 0) {
             // What the session kept besides the quantities: the layout, which pane was
             // active, and which panes were unlinked (the first one too).
-            if (session.count > this->m_paneCount)
-                this->setPaneCount(session.count);
             for (int i = 0; i < restored.size(); ++i)
                 if (restored[i] && !session.panes[i].linked)
                     restored[i]->setComparisonLinked(false);
@@ -773,6 +772,11 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
                 if (slot >= 0)
                     this->setActivePane(slot);
             }
+            // The saved layout may show fewer panes than were kept (four quantities in a
+            // one-pane layout): applied once every pane exists, and after the active pane,
+            // which a smaller layout keeps in view.
+            if (session.count != this->m_paneCount)
+                this->setPaneCount(session.count);
             this->statusBar()->showMessage(
                     u"Comparison of your last session restored: %1 panes. Close the ones you do not need."_s
                             .arg(made + 1),

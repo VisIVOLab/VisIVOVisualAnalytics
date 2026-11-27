@@ -638,7 +638,16 @@ private:
     void shareFilteredRows();
     /// Take @p source's filters and the rows they gave. A pane that is loading or building
     /// is tried again until it is free: the filter is never skipped.
-    void adoptFilteredRows(vtkWindowCatalogue3D *source, int attempt = 0);
+    void adoptFilteredRows(vtkWindowCatalogue3D *source, quint64 revision, int attempt = 0);
+    /// Filter revisions order the filters of linked panes by when Apply was pressed, so an
+    /// older query that answers last never replaces a newer one across the group.
+    static quint64 nextFilterRevision();
+    /// The revision of this pane's own last Apply.
+    quint64 m_ownFilterRevision{ 0 };
+    /// The newest revision this pane follows: its own, or one it is adopting.
+    quint64 m_filterRevision{ 0 };
+    /// The revision of the rows this pane shows.
+    quint64 m_rowsRevision{ 0 };
     /// The user's filter query is out: its answer is shared with the linked panes.
     bool m_shareFilterResult{ false };
     /// The pane whose filtered rows this one is waiting to take (the latest filter wins).
