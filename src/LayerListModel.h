@@ -54,6 +54,15 @@ public:
     vtkImageSlice *updateMasterLayer(const ImageLayerLoadResult &result);
 
     /**
+   * Remove a layer from the model and free its image. The master layer cannot
+   * be removed. The row names the user gave to the layers below it move up with
+   * them.
+   * @param row layer row
+   * @return false for the master layer or a row out of range
+   */
+    bool removeLayer(int row);
+
+    /**
    * @param index inside the model
    * @param x pixel coordinate
    * @param y pixel coordinate

@@ -1076,6 +1076,24 @@ protected:
     void openProduct(const QString &productId);
     void showSessionRowContextMenu(const QString &viewTag, const QString &productId,
                                    const QPoint &globalPos);
+    /// (#580) Take layer @p row out of the window: the stack, the layer list,
+    /// its image, the per-layer state kept by row, and the Session Data product
+    /// bound to it. False for the master layer, which every other layer is
+    /// aligned to. The one place both the layer list and Session Data end in.
+    bool removeLayerRow(int row);
+    /// (#580) What "Remove from Session" does here, as the tree's handler.
+    void removeSessionProducts(const QStringList &productIds);
+    /// (#580) Hand Session Data this window's removal handler, and give the
+    /// layer list the same Delete key and menu entry.
+    void setupSessionRemoval();
+    /// (#580) A removal asked from the layer list: through Session Data's
+    /// question when the layer is one of its products, straight away for a
+    /// layer that is just a file the user opened.
+    void requestLayerRemoval(int row);
+    /// (#580) "Remove from Session" at the end of a row's context menu.
+    void appendSessionRemoveAction(QMenu &menu, const QString &productId);
+    /// The Session Data product bound to layer @p row, or empty.
+    QString productIdForLayer(int row) const;
 
     QVector<ImageTool> imageTools() const;
     /// Rebuild the Tools menu from imageTools(), grouped into submenus.

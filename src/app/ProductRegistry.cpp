@@ -69,6 +69,15 @@ void ProductRegistry::setResultView(const QString &productId, const QVariantMap 
     emit productUpdated(m_products[i]);
 }
 
+void ProductRegistry::setDependsOn(const QString &productId, const QStringList &sources)
+{
+    const int i = indexOf(productId);
+    if (i < 0)
+        return;
+    m_products[i].dependsOn = sources;
+    emit productUpdated(m_products[i]);
+}
+
 void ProductRegistry::removeProduct(const QString &productId)
 {
     const int i = indexOf(productId);

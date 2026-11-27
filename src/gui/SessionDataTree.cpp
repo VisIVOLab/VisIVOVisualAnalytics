@@ -9,9 +9,15 @@
 #include <QHash>
 #include <QHeaderView>
 
+#include <algorithm>
 #include <functional>
 #include <QIcon>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPointer>
+#include <QPushButton>
 #include <QFont>
 #include <QMouseEvent>
 #include <QPainter>
@@ -181,7 +187,9 @@ SessionDataTree::SessionDataTree(QWidget *parent)
     m_tree->setModel(m_model);
     m_tree->setHeaderHidden(true);
     m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Several products at once (#580): Cmd/Ctrl or Shift click, then Delete. A
+    // plain click still selects one row, so nothing else about the tree changes.
+    m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setIconSize(QSize(40, 26));
     m_tree->setIndentation(14);                // tight indent; branch chevron is 10px (§3.2)
     m_tree->setExpandsOnDoubleClick(false);   // double-click activates products
@@ -223,6 +231,7 @@ SessionDataTree::SessionDataTree(QWidget *parent)
                                        : QLatin1StringView("_light")));
     m_tree->setItemDelegate(new PaneBadgeDelegate(m_tree));   // (#4) paints pane-number badges
     m_tree->viewport()->installEventFilter(this);             // (#4) badge clicks → activate pane
+    m_tree->installEventFilter(this);                         // (#580) Delete / Backspace on rows
     m_tree->setContextMenuPolicy(Qt::CustomContextMenu);      // right-click → Show in ▸ menu
     connect(m_tree, &QTreeView::customContextMenuRequested, this, [this](const QPoint &pos) {
         const QModelIndex idx = m_tree->indexAt(pos);
@@ -554,7 +563,114 @@ bool SessionDataTree::eventFilter(QObject *watched, QEvent *event)
             }
         }
     }
+    // (#580) Delete or Backspace on the selected product rows. Region rows keep
+    // the region list's own Delete (#388); a selection with no product in it
+    // does nothing here.
+    if (m_tree && watched == m_tree && event->type() == QEvent::KeyPress && m_removal.remove) {
+        const auto *ke = static_cast<QKeyEvent *>(event);
+        if (ke->key() == Qt::Key_Delete || ke->key() == Qt::Key_Backspace) {
+            const QStringList ids = selectedProductIds();
+            if (!ids.isEmpty()) {
+                // After the key event: the removal changes the selection and may
+                // open a question, neither of which belongs inside this handler.
+                QTimer::singleShot(0, this, [this, ids]() { requestRemoval(ids); });
+                return true;
+            }
+        }
+    }
     return QWidget::eventFilter(watched, event);
+}
+
+QStringList SessionDataTree::selectedProductIds() const
+{
+    QStringList ids;
+    if (!m_tree || !m_tree->selectionModel())
+        return ids;
+    QModelIndexList rows = m_tree->selectionModel()->selectedIndexes();
+    // Tree order, not the order the user clicked in.
+    std::sort(rows.begin(), rows.end(), [](const QModelIndex &a, const QModelIndex &b) {
+        const int pa = a.parent().isValid() ? a.parent().row() : -1;
+        const int pb = b.parent().isValid() ? b.parent().row() : -1;
+        return pa != pb ? pa < pb : a.row() < b.row();
+    });
+    for (const QModelIndex &idx : std::as_const(rows)) {
+        if (regionNodeOf(idx) != NotRegion)
+            continue;
+        const QString id = idx.data(kProductIdRole).toString();
+        if (!id.isEmpty() && !ids.contains(id))
+            ids << id;
+    }
+    return ids;
+}
+
+void SessionDataTree::appendRemoveAction(QMenu *menu, const QString &productId)
+{
+    if (!menu || productId.isEmpty() || !m_removal.remove)
+        return;
+    QStringList ids = selectedProductIds();
+    if (!ids.contains(productId))
+        ids = QStringList{ productId };
+    if (!menu->isEmpty())
+        menu->addSeparator();
+    QAction *remove = menu->addAction(ids.size() == 1
+                                              ? tr("Remove from Session")
+                                              : tr("Remove %1 Items from Session").arg(ids.size()));
+    remove->setToolTip(tr("Close what shows it and forget it. A permanent copy saved on disk "
+                          "is never deleted."));
+    connect(remove, &QAction::triggered, this, [this, ids]() { requestRemoval(ids); });
+}
+
+void SessionDataTree::requestRemoval(const QStringList &productIds)
+{
+    if (!m_removal.remove || productIds.isEmpty() || m_removing)
+        return;
+    // One removal at a time: a held Delete key queues several, and a second
+    // question must not open inside the first one's event loop.
+    QScopedValueRollback<bool> removing(m_removing, true);
+    QPointer<SessionDataTree> self(this);
+    ProductRegistry &reg = ProductRegistry::instance();
+    const QList<AnalysisProduct> all = reg.all();
+    visivo::removal::Plan plan = visivo::removal::planRemoval(all, productIds, m_removal.refuse);
+
+    if (plan.ids.isEmpty()) {
+        // Nothing can go: say why rather than leave the key or the entry silent.
+        if (!plan.refused.isEmpty())
+            QMessageBox::information(this, tr("Remove from Session"),
+                                     tr("Cannot be removed now.\n\n%1")
+                                             .arg(plan.refused.join(u"\n"_s)));
+        return;
+    }
+
+    if (plan.needsConfirmation()) {
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Question);
+        box.setWindowTitle(tr("Remove from Session"));
+        box.setText(visivo::removal::confirmationText(all, plan));
+        if (!plan.refused.isEmpty())
+            box.setInformativeText(tr("Left in place: %1.").arg(plan.refused.join(u"; "_s)));
+        QPushButton *only = box.addButton(plan.dependants.isEmpty() ? tr("Remove")
+                                                                    : tr("Remove Only These"),
+                                          QMessageBox::DestructiveRole);
+        QPushButton *withDependants = nullptr;
+        if (!plan.dependants.isEmpty())
+            withDependants = box.addButton(tr("Remove With What Was Made From Them"),
+                                           QMessageBox::DestructiveRole);
+        QPushButton *cancel = box.addButton(QMessageBox::Cancel);
+        box.setDefaultButton(cancel);
+        box.exec();
+        if (!self)
+            return;   // the window closed under the question
+        if (withDependants && box.clickedButton() == withDependants)
+            plan.ids += plan.dependants;
+        else if (box.clickedButton() != only)
+            return;
+    }
+
+    // The window frees what it holds first; whatever it left in the registry
+    // goes now, which is what takes the row out of this tree.
+    m_removal.remove(plan.ids);
+    for (const QString &id : std::as_const(plan.ids))
+        reg.removeProduct(id);
 }
 
 void SessionDataTree::selectForView(const QString &viewTag, const QString &productId)

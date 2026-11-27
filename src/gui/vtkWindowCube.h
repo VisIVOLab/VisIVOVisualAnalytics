@@ -2693,6 +2693,19 @@ protected:
     /// Take a product this window registered (by its stable key) out of Session
     /// Data, its cache and any pane showing it.
     void removeImageProduct(const QString &stableKey);
+    /// (#580) Take one product, by its full id, out of this window whatever it
+    /// is (a map, a spectrum, the PV diagram, a tool window): every pane showing
+    /// it, a detached pane's window, the caches and the registry. The one place
+    /// that knows everything a product leaves behind in this window.
+    void dropSessionProduct(const QString &productId);
+    /// (#580) What "Remove from Session" does here: drop each product, delete
+    /// the temporary file a baseline cube left, and save the layout so a
+    /// restart does not look for the product again.
+    void removeSessionProducts(const QStringList &productIds);
+    /// (#580) Hand the Session Data tree this window's removal handler.
+    void setupSessionRemoval();
+    /// (#580) "Remove from Session" at the end of a row's context menu.
+    void appendSessionRemoveAction(QMenu &menu, const QString &productId);
     /// Enable the dialog's "Fit from the lasso selection" when there is a
     /// selection to fit and no grow in flight.
     void refreshKinematicFitAvailability();

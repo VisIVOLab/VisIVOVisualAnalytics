@@ -239,6 +239,7 @@ void vtkWindowImage::showSessionRowContextMenu(const QString &viewTag, const QSt
         QObject::connect(menu.addAction(u"Show the Numbers Again"_s), &QAction::triggered, this,
                          [this, productId]() { this->openProduct(productId); });
     }
+    this->appendSessionRemoveAction(menu, productId);
     if (menu.isEmpty())
         return;
     menu.exec(globalPos);

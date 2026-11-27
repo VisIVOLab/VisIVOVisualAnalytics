@@ -36,6 +36,7 @@
 #include "WorkspaceChrome.h"
 #include "ProductRegistry.h"
 #include "ToolResultDialog.h"
+#include <QKeyEvent>
 #include "vtkInteractorStyleProfile.h"
 #include "ImageLayerContext.h"
 #include "LutWindowLevelStyle.h"
@@ -1834,6 +1835,9 @@ vtkWindowImage::vtkWindowImage(const QString &filepath, const QString &backendUr
     // was until an unrelated event (a click on the VTK widget) forced a render.
     QObject::connect(this->layers, &LayerListModel::rowsMoved, this, &vtkWindowImage::vtkRender);
     QObject::connect(this->layers, &LayerListModel::modelReset, this, &vtkWindowImage::vtkRender);
+    // A layer taken out changes what is drawn without changing any row's data.
+    QObject::connect(this->layers, &LayerListModel::rowsRemoved, this, &vtkWindowImage::vtkRender);
+    this->setupSessionRemoval();   // (#580) layer list menu + Delete, and Session Data's handler
     // Keep a layer always selected: if the current row is cleared while layers
     // remain, re-select the first one (deferred to avoid reentrancy).
     QObject::connect(ui->listLayer->selectionModel(), &QItemSelectionModel::currentChanged, this,
@@ -2115,6 +2119,16 @@ bool vtkWindowImage::eventFilter(QObject *watched, QEvent *event)
     if (ui && watched == ui->labelLayerHdr
         && (event->type() == QEvent::Resize || event->type() == QEvent::FontChange)) {
         elideLayerSettingsHeader();
+    }
+    // (#580) Delete / Backspace on the layer list removes the selected layer.
+    if (ui && watched == ui->listLayer && event->type() == QEvent::KeyPress) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        const int row = ui->listLayer->currentIndex().row();
+        if ((key == Qt::Key_Delete || key == Qt::Key_Backspace) && row >= 0) {
+            // After the key event: the removal changes the list under it.
+            QTimer::singleShot(0, this, [this, row]() { this->requestLayerRemoval(row); });
+            return true;
+        }
     }
     return QMainWindow::eventFilter(watched, event);
 }

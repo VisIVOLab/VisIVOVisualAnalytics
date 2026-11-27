@@ -833,10 +833,15 @@ void vtkWindowCube::publishKinematicFit(const BackendKinematicFitResult &r,
     rf.insert(u"|v − v_model|"_s, u"median %1, p90 %2 km/s over %3 px"_s
                                           .arg(f(r.residualFlat.median), f(r.residualFlat.p90))
                                           .arg(r.residualFlat.nPix));
-    if (auto img = fitPlaneImage(fitResidualPlane(r.velocityField, r.modelFlat), r.width, r.height))
-        this->addImageProduct(u"kinematics"_s, u"kinfit-resid-flat"_s,
-                              u"Residual v − v_model (flat disc)"_s, img, u"km/s"_s, rf,
-                              u"CoolWarm"_s, /*symmetricRange=*/true);
+    if (auto img = fitPlaneImage(fitResidualPlane(r.velocityField, r.modelFlat), r.width, r.height)) {
+        const QString residual = this->addImageProduct(
+                u"kinematics"_s, u"kinfit-resid-flat"_s, u"Residual v − v_model (flat disc)"_s, img,
+                u"km/s"_s, rf, u"CoolWarm"_s, /*symmetricRange=*/true);
+        // Made from the velocity field and the model: removing either asks first (#580).
+        ProductRegistry::instance().setDependsOn(
+                residual, { this->scopedProductId(u"kinfit-vfield"_s),
+                            this->scopedProductId(u"kinfit-model-flat"_s) });
+    }
 
     if (r.modelWarp.isEmpty()) {
         // No warped model this time: the previous fit's must not stay as if it were this one's.
@@ -859,10 +864,14 @@ void vtkWindowCube::publishKinematicFit(const BackendKinematicFitResult &r,
                                                 .arg(f(r.residualWarp.median), f(r.residualWarp.p90))
                                                 .arg(r.residualWarp.nPix));
         if (auto img = fitPlaneImage(fitResidualPlane(r.velocityField, r.modelWarp),
-                                     r.width, r.height))
-            this->addImageProduct(u"kinematics"_s, u"kinfit-resid-warp"_s,
-                                  u"Residual v − v_model (rings)"_s, img, u"km/s"_s, warp,
-                                  u"CoolWarm"_s, /*symmetricRange=*/true);
+                                     r.width, r.height)) {
+            const QString residual = this->addImageProduct(
+                    u"kinematics"_s, u"kinfit-resid-warp"_s, u"Residual v − v_model (rings)"_s, img,
+                    u"km/s"_s, warp, u"CoolWarm"_s, /*symmetricRange=*/true);
+            ProductRegistry::instance().setDependsOn(
+                    residual, { this->scopedProductId(u"kinfit-vfield"_s),
+                                this->scopedProductId(u"kinfit-model-warp"_s) });
+        }
     }
 
     if (!r.spectrum.isEmpty() && r.spectrum.size() == r.spectrumVelocity.size()) {
