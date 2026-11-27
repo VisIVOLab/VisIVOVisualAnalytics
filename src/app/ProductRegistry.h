@@ -16,6 +16,7 @@
 #include <QObject>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QVariantMap>
 #include <QList>
 
@@ -77,6 +78,10 @@ struct AnalysisProduct
     /// reopen in another order does not change it.
     QString parentByteOrder;
     QString parentByteOrderDeclared;
+    /// The ids of the products this one was made from (a residual map from the
+    /// model it was subtracted from). Removing a product asks first when others
+    /// list it here (SessionRemoval.h). Empty for a product that stands alone.
+    QStringList dependsOn;
 };
 
 /// Fill @p p's parentByteOrder from what the last open of its dataset on its
@@ -111,6 +116,9 @@ public:
     /// registers its row when it STARTS — so the user sees it running — and only
     /// learns the recipe / output location when the result lands.
     void setParams(const QString &productId, const QVariantMap &params);
+
+    /// Name the products @p productId was made from (emits productUpdated).
+    void setDependsOn(const QString &productId, const QStringList &sources);
 
     /// Attach the result-window recipe (emits productUpdated).
     void setResultView(const QString &productId, const QVariantMap &record);

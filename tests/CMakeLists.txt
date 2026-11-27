@@ -247,6 +247,8 @@ add_executable(VisIVOTests
     test_render_export_plan.cpp
     TestProductRecipe.h
     test_product_recipe.cpp
+    TestSessionRemoval.h
+    test_session_removal.cpp
     TestLassoReplay.h
     test_lasso_replay.cpp
     TestSofiaSuggest.h
@@ -415,6 +417,31 @@ if (TARGET Qt6::Widgets)
     add_test(NAME VisIVOStatusMessageRoom COMMAND VisIVOStatusMessageRoomTest)
     set_tests_properties(VisIVOStatusMessageRoom PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 60)
+
+    # Remove from Session in the Session Data tree (issue #580): the Delete
+    # key, the menu entry, the question and what the handler is handed. The
+    # tree draws with the application theme, which reads the SVG icons.
+    find_package(Qt6 QUIET COMPONENTS Svg)
+    if (TARGET Qt6::Svg)
+        add_executable(VisIVOSessionTreeRemovalTest
+            test_session_tree_removal.cpp
+            ${VISIVO_ROOT}/src/gui/SessionDataTree.cpp
+            ${VISIVO_ROOT}/src/gui/theme/VisivoTheme.cpp
+            ${VISIVO_ROOT}/src/app/ProductRegistry.cpp
+        )
+        set_target_properties(VisIVOSessionTreeRemovalTest PROPERTIES AUTOMOC ON)
+        target_include_directories(VisIVOSessionTreeRemovalTest PRIVATE
+            ${VISIVO_ROOT}/src
+            ${VISIVO_ROOT}/src/app
+            ${VISIVO_ROOT}/src/gui
+            ${VISIVO_ROOT}/src/gui/theme
+        )
+        target_link_libraries(VisIVOSessionTreeRemovalTest PRIVATE
+            Qt::Widgets Qt::Svg Qt::Test)
+        add_test(NAME VisIVOSessionTreeRemoval COMMAND VisIVOSessionTreeRemovalTest)
+        set_tests_properties(VisIVOSessionTreeRemoval PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+    endif()
 endif()
 
 # ── Save View As render test (issue #528) ────────────────────────────────────

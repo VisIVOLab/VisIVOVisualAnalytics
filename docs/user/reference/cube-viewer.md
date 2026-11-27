@@ -50,6 +50,20 @@ for regions, [Regions](../use-cases/04-regions.md).
 - The *Regions* node lists the window's regions, grouped by the file they
   were imported from, each with a check box that shows or hides it; see
   [Regions in Session Data](region-pv-noise.md#regions-in-session-data).
+- *Remove from Session* (right-click, or Delete or Backspace on the selected
+  rows; Cmd/Ctrl or Shift click selects several): takes a moment map, a PV
+  diagram, a spectrum, a channel-map grid or any other product out of the
+  window. The panes showing it close (a pane popped out to its own window
+  comes back first), its data is freed, and the layout saved for the next
+  start no longer mentions it. A baseline-subtracted cube that sits in the
+  backend's temporary directory on this machine is deleted with its row,
+  unless another window has it open; a copy saved with *Save a Permanent
+  Copy*, or anything in Workspace Exports, is never deleted. A product that
+  is not saved permanently asks first. When other products were made from it
+  (a residual map from its model), the question lists them and offers to
+  remove them too. A product still running, or a live preview, cannot be
+  removed until it ends. Regions keep their own Delete, in the region list
+  and on the image.
 
 The *DISPLAY* section acts on the active pane, so check which pane is active
 before changing a colour map.

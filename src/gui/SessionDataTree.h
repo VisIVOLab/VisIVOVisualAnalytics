@@ -7,12 +7,15 @@
 // from. Double-clicking a product raises its result window. Modelled on
 // VLKBInventoryTree's QStandardItemModel usage.
 
+#include "app/SessionRemoval.h"
+
 #include <QHash>
 #include <QList>
 #include <QString>
 #include <QWidget>
 
 class QEvent;
+class QMenu;
 class QTreeView;
 class QStandardItemModel;
 class QStandardItem;
@@ -33,6 +36,27 @@ public:
     /// products (whose render widgets live in the OTHER window). With it, the tree ignores any
     /// product whose ownerId differs. Empty scope (default) = show everything (back-compat).
     void setOwnerScope(const QString &ownerScope) { m_ownerScope = ownerScope; }
+
+    /// (#580) Say what removing a row means for this window. Without a handler
+    /// the tree offers no removal. See app/SessionRemoval.h: the tree owns the
+    /// gesture and the question, the handler what happens to what the window
+    /// holds, so every viewer gets the same Delete key, menu entry, multi-
+    /// selection and confirmation.
+    void setRemovalHandler(visivo::removal::Handler handler) { m_removal = std::move(handler); }
+
+    /// (#580) The product rows selected now, in tree order (never a dataset
+    /// root, a view row or a region).
+    QStringList selectedProductIds() const;
+
+    /// (#580) Add "Remove from Session" to a row's context menu: for the
+    /// selection when @p productId is part of it, else for @p productId alone.
+    /// Does nothing without a handler, or for a row that is not a product.
+    void appendRemoveAction(QMenu *menu, const QString &productId);
+
+    /// (#580) Remove these products after the confirmation the plan calls for
+    /// (the Delete key and the menu entry end here; a window can call it for
+    /// a removal that starts elsewhere, such as its layer list).
+    void requestRemoval(const QStringList &productIds);
 
     /// Ensure a root exists for this dataset (and select it). Safe to call once
     /// per viewer window at startup. @p kind drives the small badge ("CUBE"/…).
@@ -159,6 +183,8 @@ private:
     int m_lastRegionSelected = -1;     ///< the list's selection setRegions() last showed
     QStandardItemModel *m_model = nullptr;
     QString m_ownerScope;              ///< this tree's window scope; empty = unscoped (show all)
+    visivo::removal::Handler m_removal;   ///< (#580) what the window does on removal
+    bool m_removing = false;              ///< (#580) a removal (and its question) is under way
 };
 
 #endif // SESSIONDATATREE_H

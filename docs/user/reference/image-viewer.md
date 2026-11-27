@@ -51,6 +51,16 @@ Each layer is a card with its visibility box, name, colour-map strip, stretch
 and opacity; the base layer is tagged `base`. Drag the cards to change the
 stacking order.
 
+*Right-click ▸ Remove Layer from Session*, or Delete or Backspace on the
+selected card, takes a layer out of the window: it leaves the stack and the
+list and its data is freed. The file it was loaded from is never touched. The
+base layer cannot be removed; close the window instead. A derived map (a
+Faraday, polarisation or spectral-index layer) is also a product in *Session
+Data*, where *Remove from Session* does the same and, as it is not saved
+anywhere, asks first. Other products in Session Data (a measurement, a
+spectrum, a power spectrum, a figure) are removed the same way; Cmd/Ctrl or
+Shift click selects several rows.
+
 ## Header
 
 Click the *IMAGE* tag in the toolbar to see the FITS header of the layer
