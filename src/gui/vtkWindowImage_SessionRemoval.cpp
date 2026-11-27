@@ -123,6 +123,9 @@ bool vtkWindowImage::removeLayerRow(int row)
     // The stack's active layer and the colour bar follow the selection by ROW,
     // and the rows have just moved: bring them back in step.
     this->showCurrentLayerSettings();
+    // The selection moved while the row was still counted (the model reports
+    // the new current row before the removal ends): count the layers again.
+    this->refreshUnitAndBeamRows();
     this->vtkRender();
     return true;
 }
