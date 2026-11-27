@@ -66,6 +66,19 @@ void vtkWindowCube::dropSessionProduct(const QString &id)
                 m_paneSpectra[i]->updateSpectrumPlot({}, {}, QString(), /*live=*/false);
             m_paneProductId[i].clear();
         }
+        // m_paneProductId names only the product mounted last, whichever
+        // renderer it used: an image parked behind a spectrum (or the reverse)
+        // is not named there any more. Empty every renderer the slot is not
+        // showing right now; it only held a stale cache, and the next mount
+        // of anything fills it again (its id no longer matches).
+        if (!showing) {
+            const QString shown = m_slots[i].view.kind == ViewId::Product
+                    ? m_slots[i].view.productId : QString();
+            if (m_paneViews[i] && !m_products2d.contains(shown))
+                m_paneViews[i]->setImageData(nullptr, 0.0, 1.0);
+            if (m_paneSpectra[i] && !m_products1d.contains(shown))
+                m_paneSpectra[i]->updateSpectrumPlot({}, {}, QString(), /*live=*/false);
+        }
         if (showing)
             mountView(i);
     }
@@ -157,24 +170,40 @@ void vtkWindowCube::removeSessionProducts(const QStringList &productIds)
 
     // A baseline cube opened as a cube of its own reads that file for as long
     // as its window lives: leave the file when any other window is on it.
-    for (const QString &file : std::as_const(files)) {
-        bool inUse = false;
-        for (QWidget *w : QApplication::topLevelWidgets()) {
-            auto *other = qobject_cast<vtkWindowCube *>(w);
-            // A window on its way out (hidden, waiting for its work to end) is
-            // about to let go of the file: it must not keep it on disk.
-            if (other && other != this && other->isVisible() && !other->m_closeWhenIdle
-                && QFileInfo(other->datasetPersistKey()).canonicalFilePath() == file)
-                inUse = true;
-        }
-        if (!inUse)
-            QFile::remove(file);
-    }
+    // A window on its way out (hidden, waiting for its work to end) still reads
+    // the file until it is destroyed, so the delete waits for the last one.
+    for (const QString &file : std::as_const(files))
+        removeTemporaryFileWhenUnused(file, this);
     this->statusBar()->showMessage(productIds.size() == 1
                                            ? u"Removed from this session."_s
                                            : u"Removed %1 items from this session."_s.arg(
                                                      QString::number(productIds.size())),
                                    4000);
+}
+
+void vtkWindowCube::removeTemporaryFileWhenUnused(const QString &file, const QObject *except)
+{
+    QList<vtkWindowCube *> holders;
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        auto *other = qobject_cast<vtkWindowCube *>(w);
+        if (other && other != except
+            && QFileInfo(other->datasetPersistKey()).canonicalFilePath() == file)
+            holders << other;
+    }
+    if (holders.isEmpty()) {
+        QFile::remove(file);
+        return;
+    }
+    // A live viewer keeps the file for good: it is that window's data now.
+    for (vtkWindowCube *holder : std::as_const(holders))
+        if (holder->isVisible() && !holder->m_closeWhenIdle)
+            return;
+    // Only closing viewers hold it: check again as each one is destroyed (it
+    // is out of topLevelWidgets by then, so the last one lets the file go).
+    for (vtkWindowCube *holder : std::as_const(holders))
+        QObject::connect(holder, &QObject::destroyed, qApp, [file](QObject *gone) {
+            removeTemporaryFileWhenUnused(file, gone);
+        });
 }
 
 void vtkWindowCube::setupSessionRemoval()

@@ -2702,6 +2702,9 @@ protected:
     /// the temporary file a baseline cube left, and save the layout so a
     /// restart does not look for the product again.
     void removeSessionProducts(const QStringList &productIds);
+    /// Delete a temporary cube once no viewer other than @p except reads it;
+    /// viewers still closing keep it until they are destroyed.
+    static void removeTemporaryFileWhenUnused(const QString &file, const QObject *except);
     /// (#580) Hand the Session Data tree this window's removal handler.
     void setupSessionRemoval();
     /// (#580) "Remove from Session" at the end of a row's context menu.
