@@ -793,6 +793,8 @@ void vtkWindowCatalogue3D::updateGeometryMode()
     }
     this->setRaytraced(this->geometryMode == GeometryMode::Raytraced);
     this->pushRemoteState();
+    // A pane's header names the shape or "ray-traced": it follows the mode as it changes.
+    this->paneHostOrSelf()->refreshPaneHeaders();
 }
 
 void vtkWindowCatalogue3D::updateSizeMode()
@@ -1156,6 +1158,9 @@ void vtkWindowCatalogue3D::frameSourceAtViewPoint(QWidget *view, const QPoint &p
 
 bool vtkWindowCatalogue3D::eventFilter(QObject *watched, QEvent *event)
 {
+    if (this->m_renderStack && watched == this->m_renderStack
+        && (event->type() == QEvent::Show || event->type() == QEvent::Hide))
+        this->onRenderStackVisibility(event->type() == QEvent::Show);
     // The Remote and ray-traced views draw the markers but have no picker of
     // their own: a double-click there selects (and frames a SubFind target)
     // as one in the local view does. Not consumed, so the views' own mouse

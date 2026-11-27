@@ -81,6 +81,11 @@ public:
     /// (design #1d: the view/rendering controls live here, not in the Inspector).
     void addSessionLayers(QWidget *w);
 
+    /// Take a page added with addSessionLayers() out of the LAYERS block again, hidden,
+    /// under @p newParent (which then owns it). The particle window swaps the page of the
+    /// active pane in and out.
+    void removeSessionLayers(QWidget *w, QWidget *newParent);
+
     /// Create the right "Inspector" dock (Properties / Analysis / Provenance +
     /// cloud chip). Returns the panel so the window can populate its tabs and
     /// wire the pane-layout / Linked controls. Cloud chip is fed by the poll.

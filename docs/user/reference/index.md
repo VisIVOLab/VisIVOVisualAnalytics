@@ -49,6 +49,8 @@ in a line or two. For a task explained step by step, start from the
   folder, one family at a time, with units from its info file.
 - [Other simulation codes (yt)](yt-simulation-meshes.md): Enzo, FLASH, Athena,
   Chombo, AMReX, GAMER and ART meshes as gas cells, when yt is installed.
+- [Compare quantities in panes](particle-panes.md): 1, 2 or 4 panes of one
+  particle window, pop-out, Session Data.
 - [Ray-traced particles](raytraced-particles.md) and
   [ray-traced volumes](raytraced-volumes.md)
 
@@ -84,6 +86,7 @@ pluto-output
 raw-descriptors
 hdf5-files
 gadget-snapshots
+particle-panes
 ramses-outputs
 yt-simulation-meshes
 raytraced-particles

@@ -44,6 +44,16 @@ public:
     /// Disconnects and deletes the session, or gives up the place in the queue.
     void stop();
     bool isActive() const { return !m_renderSessionId.isEmpty(); }
+    /// A view that is not on screen (a pane its layout hides) gives the backend's session
+    /// and the stream back, and keeps what it would send; resume() asks for a session
+    /// again and the view comes back as it was (state, and the camera it had).
+    void pause();
+    void resume();
+    bool isPaused() const { return m_paused; }
+    /// The points are drawn on the backend: a session is live, or it was given back while
+    /// the view is off screen and comes back when it is shown (paused). What the window
+    /// says about where its view is drawn does not flicker with a pause.
+    bool onBackend() const { return isActive() || m_paused; }
     /// The backend's render session, empty before it starts.
     QString renderSessionId() const { return m_renderSessionId; }
 
@@ -98,6 +108,10 @@ private:
     bool m_requesting{ false };
     visivo::RenderQueuePlace m_place;
     bool m_live{ false };
+    /// pause() was called and resume() has not: no session, nothing sent.
+    bool m_paused{ false };
+    /// A camera state arrived while paused (the group moved): newer than m_camera.
+    bool m_cameraSetWhilePaused{ false };
     /// A live stream that dropped is reconnected: the same session if it is
     /// still there, else a new one, with bounded retries; then failed() and the
     /// window shows its loaded rows (RemoteSessionRecovery.h, issue #411).

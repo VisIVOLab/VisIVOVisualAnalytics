@@ -1,5 +1,7 @@
 #include "RaytraceViewport.h"
 
+#include <QShowEvent>
+
 #include "BackendLocality.h"
 #include "OrbitPath.h"
 #include "RaytraceSettingsPanel.h"
@@ -180,6 +182,15 @@ void RaytraceViewport::resizeEvent(QResizeEvent *event)
     QWidget::resizeEvent(event);
     showLoadingState();
     placeLightNote();
+}
+
+void RaytraceViewport::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    if (m_redrawPending) {
+        m_redrawPending = false;
+        redraw(true);
+    }
 }
 
 void RaytraceViewport::showLightReport(const visivo::ParticleLightReport &report)
@@ -499,6 +510,12 @@ void RaytraceViewport::redraw(bool settle)
     }
     if (!m_gl->hasParticles() || m_camera.isEmpty())
         return;
+    // A ray-traced view that is not on screen (a pane the layout hides, a window not
+    // shown) has nothing to draw: the camera is kept and drawn when it is shown.
+    if (!isVisible()) {
+        m_redrawPending = true;
+        return;
+    }
     const double aspect = double(std::max(1, width())) / std::max(1, height());
     m_gl->setImageAspect(aspect);
     if (m_source.tone)

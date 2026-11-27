@@ -2,6 +2,7 @@
 #define Catalogue3DTableModel_h
 
 #include "Catalogue3DParser.h"
+#include "SharedRows.h"
 
 #include <QAbstractTableModel>
 #include <QStringList>
@@ -15,7 +16,7 @@ class Catalogue3DTableModel : public QAbstractTableModel
 public:
     explicit Catalogue3DTableModel(QObject *parent = nullptr);
 
-    void setCatalogue(const std::vector<Catalogue3DEntry> *entries, const Catalogue3DSchema *schema);
+    void setCatalogue(const SharedRows<Catalogue3DEntry> *entries, const Catalogue3DSchema *schema);
 
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     int columnCount(const QModelIndex &parent = QModelIndex()) const override;
@@ -36,7 +37,7 @@ private:
         FixedColumnCount
     };
 
-    const std::vector<Catalogue3DEntry> *entries{ nullptr };
+    const SharedRows<Catalogue3DEntry> *entries{ nullptr };
     const Catalogue3DSchema *schema{ nullptr };
 };
 

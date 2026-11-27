@@ -72,4 +72,8 @@ private slots:
     void redshiftSpaceMode_bypassesDistanceOverride();
     void redshiftSpaceMode_noRedshift_fallsBackToRealSpace();
     void redshiftSpaceMode_usesTheModelsH0();
+
+    // ── placing rows that are shared by panes (#604): written only when a row moves ─
+    void sceneAt_isTrueWhereTheRowAlreadySits();
+    void sceneAt_anUnplacedDistanceStaysUnplaced();
 };

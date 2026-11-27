@@ -76,6 +76,7 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     auto *layout = ui->vtk->parentWidget() ? ui->vtk->parentWidget()->layout() : nullptr;
     if (!layout)
         return;
+    this->m_viewHome = ui->vtk->parentWidget();   // where a pane grid gives the view back
     this->m_renderStack = new QStackedWidget(ui->vtk->parentWidget());
     layout->replaceWidget(ui->vtk, this->m_renderStack);
     this->m_renderStack->addWidget(ui->vtk);
@@ -83,6 +84,8 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     this->m_renderStack->addWidget(this->m_remoteWidget);
     // A double-click on a marker selects it there too (eventFilter).
     this->m_remoteWidget->installEventFilter(this);
+    // A pane the layout hides stops streaming (onRenderStackVisibility).
+    this->m_renderStack->installEventFilter(this);
 
     // The colour bar of the cube viewer's 3-D view, over whichever view shows.
     this->m_colorbar = new VolumeColorbar(this);
@@ -296,6 +299,10 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode, bool chosen)
         if (this->linkedWithPeers())
             this->followCameraInShownView(this->localCameraJson());
         this->m_remoteView->start();
+        // Started while its view is off screen (a pane the layout hides, a Hide that came
+        // before there was a view): the pause is armed now, not only on the next Hide.
+        if (this->m_renderStack)
+            this->onRenderStackVisibility(this->m_renderStack->isVisible());
     }
     this->updateRenderBadge();
 }
@@ -321,7 +328,11 @@ void vtkWindowCatalogue3D::updateRenderBadge()
         return;
     // Always says what is drawn, on a backend that cannot draw too: a sample,
     // or all the rows once they are loaded here.
-    const bool remote = this->m_remoteView && this->m_remoteView->isActive();
+    // A paused view is still the backend's, while its page is the one shown.
+    const bool remote = this->m_remoteView
+            && (this->m_remoteView->isActive()
+                || (this->m_remoteView->onBackend() && this->m_renderStack
+                    && this->m_renderStack->currentWidget() == this->m_remoteWidget));
     this->m_renderBadge->setText(visivo::pointtable::renderBadgeText(remote, loaded, total));
     // The sample's explanation, and why a chosen mode is not followed when it
     // is not: both, not one hiding the other.
@@ -837,7 +848,8 @@ QJsonObject vtkWindowCatalogue3D::localCameraJson() const
 
 bool vtkWindowCatalogue3D::drawnOnBackend() const
 {
-    return this->m_renderStack && this->m_remoteView && this->m_remoteView->isActive()
+    // A view paused while it is off screen is still the backend's: it comes back with it.
+    return this->m_renderStack && this->m_remoteView && this->m_remoteView->onBackend()
             && this->m_renderStack->currentWidget() == this->m_remoteWidget;
 }
 
@@ -892,6 +904,8 @@ void vtkWindowCatalogue3D::viewCamera(
         done(this->m_rtView->camera(), QString());
         return;
     }
+    // A paused view has no session to ask: its camera is the group's, which this window's
+    // VTK camera follows, exactly as for a view that is not live yet.
     const bool remote = this->m_renderStack && this->m_remoteView
             && this->m_renderStack->currentWidget() == this->m_remoteWidget
             && !this->m_remoteView->renderSessionId().isEmpty();
@@ -1242,4 +1256,31 @@ void vtkWindowCatalogue3D::saveViewAs3d()
     const QString saved = visivo::saveViewAs(source);
     if (!saved.isEmpty())
         this->statusBar()->showMessage(u"Saved %1"_s.arg(QDir::toNativeSeparators(saved)), 8000);
+}
+
+void vtkWindowCatalogue3D::onRenderStackVisibility(bool visible)
+{
+    if (visible) {
+        if (this->m_streamPauseTimer)
+            this->m_streamPauseTimer->stop();
+        if (this->m_remoteView && this->m_remoteView->isPaused())
+            this->m_remoteView->resume();
+        return;
+    }
+    if (!this->m_remoteView)
+        return;
+    // Not at once: a layout change moves the views through hidden for a moment.
+    if (!this->m_streamPauseTimer) {
+        this->m_streamPauseTimer = new QTimer(this);
+        this->m_streamPauseTimer->setSingleShot(true);
+        QObject::connect(this->m_streamPauseTimer, &QTimer::timeout, this, [this]() {
+            const vtkWindowCatalogue3D *host = this->paneHostOrSelf();
+            if (this->m_remoteView && this->m_renderStack
+                && visivo::particlepanes::pauseStream(host->m_paneGrid != nullptr,
+                                                      this->m_renderStack->isVisible(),
+                                                      host->isVisible() && !host->isMinimized()))
+                this->m_remoteView->pause();
+        });
+    }
+    this->m_streamPauseTimer->start(visivo::particlepanes::kPauseGraceMs);
 }

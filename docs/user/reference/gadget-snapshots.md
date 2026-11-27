@@ -157,14 +157,15 @@ claimed to be the same particle in the next.
 
 ### Compare physical quantities
 
-*Tools ▸ Compare Quantity…* opens another view of the **same loaded
-particles**, coloured by a different quantity (for example `rho` beside
-`temperature`). The comparison card at the top of the Visualization panel
+*Tools ▸ Compare Quantity…* adds a pane to the window: another view of the
+**same loaded particles**, coloured by a different quantity (for example `rho`
+beside `temperature`), in a 1, 2 or 4 pane layout with pop-out
+([Compare quantities in panes](particle-panes.md)). The comparison card at the top of the Visualization panel
 names the view's quantity and offers *Add another quantity…*. In *Visual
 Encoding*, **Colour by** chooses the quantity, **Colormap** only the palette,
 and **Range and scale…** the view's range and stretch.
 
-- **Linked** (on by default): the views share camera, selection, shape, size,
+- **Linked** (on by default): the panes share camera, selection, shape, size,
   render budget and ray-traced light. Quantity, colour map, range and stretch
   stay per view. Turn it off to make one view `UNLINKED`.
 - **Match rendering** (on by default): turn it off to keep camera and

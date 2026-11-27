@@ -103,9 +103,36 @@ RemotePointView::~RemotePointView()
     stop();
 }
 
+void RemotePointView::pause()
+{
+    if (m_paused)
+        return;
+    m_paused = true;
+    // Like stop(), but asked for to come back: the state kept here is what the next
+    // session is given, so nothing is lost.
+    m_reconnect.cancel();
+    m_attemptConnecting = false;
+    ++m_checkSerial;
+    m_reconnectTimer->stop();
+    m_cameraRestore = false;
+    release();
+}
+
+void RemotePointView::resume()
+{
+    if (!m_paused)
+        return;
+    m_paused = false;
+    // The camera the group gave while it was paused is in the state and is sent with it;
+    // otherwise the view goes back to the one the user last turned it to.
+    m_cameraRestore = !m_camera.isEmpty() && !m_cameraSetWhilePaused;
+    m_cameraSetWhilePaused = false;
+    start();
+}
+
 void RemotePointView::start()
 {
-    if (isActive() || m_requesting || !m_widget)
+    if (isActive() || m_requesting || !m_widget || m_paused)
         return;
     ++m_generation;
     m_requesting = true;
@@ -244,6 +271,8 @@ void RemotePointView::setState(const QVariantMap &command)
     if (type.isEmpty())
         return;
     m_state.insert(type, command);
+    if (m_paused && type == u"set_camera"_s)
+        m_cameraSetWhilePaused = true;
     flush();
 }
 

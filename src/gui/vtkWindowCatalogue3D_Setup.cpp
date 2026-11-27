@@ -1,3 +1,7 @@
+#include "SessionDataTree.h"
+#include "app/ProductRegistry.h"
+#include "app/SessionRemoval.h"
+#include <QMenu>
 #include "vtkWindowCatalogue3D.h"
 #include "BackendLocality.h"
 #include "CatalogueFormat.h"
@@ -1054,7 +1058,40 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
     chrome->installSessionDock(this->filepath, this->shownName(),
                                this->m_pointTable && !this->m_particlesByRule
                                        ? this->particleTag().toLower()
-                                       : u"catalogue"_s);
+                                       : u"catalogue"_s,
+                               this->m_ownerScope);
+    // What the panes show is listed under the dataset (a quantity row focuses its pane).
+    QObject::connect(chrome, &WorkspaceChrome::sessionRowActivated, this,
+                     &vtkWindowCatalogue3D::onSessionRowActivated);
+    QObject::connect(chrome, &WorkspaceChrome::sessionRowSelected, this,
+                     &vtkWindowCatalogue3D::onSessionRowActivated);
+    QObject::connect(chrome, &WorkspaceChrome::sessionPaneBadgeActivated, this,
+                     [this](int number) { this->setActivePane(number - 1); });
+    // (#580) Delete and "Remove from Session" on a quantity row close its pane; the
+    // particles and the SubFind catalogue rows refuse with a reason.
+    if (SessionDataTree *tree = chrome->sessionTree()) {
+        visivo::removal::Handler handler;
+        handler.refuse = [this](const AnalysisProduct &p) { return this->paneRemovalRefusal(p); };
+        handler.remove = [this](const QStringList &ids) { this->removePaneProducts(ids); };
+        tree->setRemovalHandler(std::move(handler));
+        QObject::connect(chrome, &WorkspaceChrome::sessionRowContextMenu, this,
+                         [tree](const QString &, const QString &productId, const QPoint &at) {
+                             if (productId.isEmpty())
+                                 return;
+                             QMenu menu;
+                             tree->appendRemoveAction(&menu, productId);
+                             if (!menu.isEmpty())
+                                 menu.exec(at);
+                         });
+    }
+    // A pane's own combo is connected by its host (addPaneWindow): only a window that is not
+    // a pane updates the rows here, so a change is not listed twice.
+    if (this->comboMapColor)
+        QObject::connect(this->comboMapColor, &QComboBox::currentIndexChanged, this, [this]() {
+            if (!this->m_paneHost)
+                this->refreshPaneProducts();
+        });
+    this->refreshPaneProducts();
     // Design #1d: what is drawn and how it is drawn lives in the LEFT column,
     // under the dataset it belongs to.
     if (this->m_pageViz) {

@@ -1,4 +1,5 @@
 #include "vtkWindowCatalogue3D.h"
+#include "app/ProductRegistry.h"
 #include "ParticleSplatDefaults.h"
 #include "ParticleSplatVtk.h"
 #include "SnapshotTimelineSteps.h"
@@ -182,6 +183,38 @@ void vtkWindowCatalogue3D::closeEvent(QCloseEvent *event)
         event->ignore();   // closing now would delete the window mid-buildScene()
         return;
     }
+    for (int i = 0; i < 4; ++i) {
+        const vtkWindowCatalogue3D *pane = this->m_paneWindows[i];
+        if (pane && pane != this && pane->m_sceneBuilding) {
+            event->ignore();   // a pane ignores its close mid-build: the host waits for it
+            return;
+        }
+    }
+    // A second close (a step closes every window it replaced, and a host closes its
+    // panes) must not release the dataset again.
+    if (this->m_closed) {
+        QMainWindow::closeEvent(event);
+        return;
+    }
+    this->m_closed = true;
+    // A pane gives its view back and leaves the host's grid; a host closes its panes first.
+    if (this->m_paneHost)
+        this->m_paneHost->forgetPane(this);
+    if (this->m_paneGrid) {
+        this->m_closingPanes = true;
+        for (int i = 0; i < 4; ++i)
+            this->m_paneGrid->dock(i);
+        for (int i = 0; i < 4; ++i) {
+            vtkWindowCatalogue3D *pane = this->m_paneWindows[i];
+            if (pane && pane != this)
+                pane->close();   // forgetPane (above) hands its view back
+        }
+        this->m_paneWindows = {};
+    }
+    // Its rows in Session Data go with it.
+    for (const QString &id : std::as_const(this->m_paneProductIds))
+        ProductRegistry::instance().removeProduct(id);
+    this->m_paneProductIds.clear();
     this->releaseDataset();
     // Out of the comparison now, not when deleted: the views left must not
     // count this one (the last one leaves the group).
@@ -229,6 +262,12 @@ void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
+struct vtkWindowCatalogue3D::DonorGeometry
+{
+    vtkSmartPointer<vtkCellArray> verts;
+    vtkSmartPointer<vtkFloatArray> velocity;
+};
+
 void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
 {
     // For very large catalogues, build with the glyph/points actors hidden and
@@ -243,10 +282,22 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     }
 
     buildMorphologyLut();
-    this->mappedPositions.resize(entries.size());
 
     // ── Populate point cloud ──────────────────────────────────────────────────
-    sourcePoints->SetNumberOfPoints(static_cast<vtkIdType>(entries.size()));
+    // A pane of the same rows takes the positions, vertex cells and velocities of the view
+    // it was made from: only its colour (and size) arrays are its own (#604).
+    // Everything shared is taken in this one call, before the loops below pump the event
+    // loop: a donor that finishes a filter meanwhile cannot leave this pane with the points
+    // of one revision and the vertex cells or velocities of another.
+    DonorGeometry donor;
+    const bool adopted = this->adoptDonorGeometry(donor);
+    if (!adopted) {
+        // Fresh points, never the previous ones rewritten: another pane may hold those.
+        this->sourcePoints = vtkSmartPointer<vtkPoints>::New();
+        this->sourcePoints->SetNumberOfPoints(static_cast<vtkIdType>(entries.size()));
+        this->m_pointsPrivate = true;
+        this->m_positionKey.clear();
+    }
 
     morphScalars->SetName("Morphology");
     morphScalars->SetNumberOfValues(static_cast<vtkIdType>(entries.size()));
@@ -279,10 +330,15 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     sizeNormalizationValue = 1.0;
 
     // Vertices cell array so vtkGlyph3D recognises each point.
-    vtkNew<vtkCellArray> verts;
-    for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i) {
-        this->pumpSceneBuild(static_cast<int>(i));
-        verts->InsertNextCell(1, &i);
+    vtkSmartPointer<vtkCellArray> verts;
+    if (adopted && donor.verts) {
+        verts = donor.verts;
+    } else {
+        verts = vtkSmartPointer<vtkCellArray>::New();
+        for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i) {
+            this->pumpSceneBuild(static_cast<int>(i));
+            verts->InsertNextCell(1, &i);
+        }
     }
 
     sourcesPolyData->SetPoints(sourcePoints);
@@ -300,7 +356,13 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     this->detectVelocityColumns();
     const bool hasVelocity = this->m_velocityColIdx[0] >= 0 && this->m_velocityColIdx[1] >= 0
             && this->m_velocityColIdx[2] >= 0;
-    if (hasVelocity) {
+    if (hasVelocity && adopted && donor.velocity
+        && donor.velocity->GetNumberOfTuples() == static_cast<vtkIdType>(entries.size())) {
+        this->velocityVectors = donor.velocity;
+        sourcesPolyData->GetPointData()->AddArray(this->velocityVectors);
+    } else if (hasVelocity) {
+        // New array: the donor (or a pane) may still hold the previous one.
+        this->velocityVectors = vtkSmartPointer<vtkFloatArray>::New();
         this->velocityVectors->SetName("VelocityVector");
         this->velocityVectors->SetNumberOfComponents(3);
         this->velocityVectors->SetNumberOfTuples(static_cast<vtkIdType>(entries.size()));
@@ -755,6 +817,33 @@ QString vtkWindowCatalogue3D::validatedAxisKey(const QString &requestedKey,
     return requestedKey;
 }
 
+QString vtkWindowCatalogue3D::currentPositionKey() const
+{
+    return this->mapXKey + u'|' + this->mapYKey + u'|' + this->mapZKey;
+}
+
+bool vtkWindowCatalogue3D::adoptDonorGeometry(DonorGeometry &out)
+{
+    vtkWindowCatalogue3D *donor = this->m_geometryDonor;
+    if (!donor || donor == this || this->entries.empty() || donor->m_sceneBuilding
+        || !donor->entries.sharesWith(this->entries)
+        || donor->m_positionKey != this->currentPositionKey()
+        || donor->sourcePoints->GetNumberOfPoints() != static_cast<vtkIdType>(this->entries.size())
+        || donor->mappedPositions.size() != this->entries.size())
+        return false;
+    // Smart pointers, all taken together: the donor may rebuild later, this pane keeps
+    // the revision it took.
+    out.verts = donor->sourcesPolyData->GetVerts();
+    out.velocity = donor->velocityVectors;
+    this->sourcePoints = donor->sourcePoints;
+    this->mappedPositions = donor->mappedPositions;
+    this->m_positionKey = donor->m_positionKey;
+    // Both views hold the points now: neither may fill them in place again.
+    this->m_pointsPrivate = false;
+    donor->m_pointsPrivate = false;
+    return true;
+}
+
 void vtkWindowCatalogue3D::updatePointPositions(bool newSplatBasis)
 {
     if (this->entries.empty()) {
@@ -772,22 +861,51 @@ void vtkWindowCatalogue3D::updatePointPositions(bool newSplatBasis)
     double yMax = xMax;
     double zMax = xMax;
 
-    for (vtkIdType i = 0; i < static_cast<vtkIdType>(this->entries.size()); ++i) {
-        this->pumpSceneBuild(static_cast<int>(i));
-        const auto &entry = this->entries[static_cast<std::size_t>(i)];
-        const double x = this->mappedAxisValue(entry, resolvedXKey);
-        const double y = this->mappedAxisValue(entry, resolvedYKey);
-        const double z = this->mappedAxisValue(entry, resolvedZKey);
-        this->mappedPositions[static_cast<std::size_t>(i)] = { x, y, z };
-        this->sourcePoints->SetPoint(i, x, y, z);
-        xMin = std::min(xMin, x); xMax = std::max(xMax, x);
-        yMin = std::min(yMin, y); yMax = std::max(yMax, y);
-        zMin = std::min(zMin, z); zMax = std::max(zMax, z);
-        if (i < static_cast<vtkIdType>(this->labelActors.size())) {
-            this->labelActors[static_cast<std::size_t>(i)]->SetPosition(x, y, z);
+    // The points of a pane that adopted them (same rows, same axes) are already right:
+    // only the extent is read. Otherwise they are computed into points nobody else holds.
+    const QString positionKey = this->currentPositionKey();
+    const bool adoptedPoints = !this->m_pointsPrivate && this->m_positionKey == positionKey
+            && this->sourcePoints->GetNumberOfPoints()
+                       == static_cast<vtkIdType>(this->entries.size())
+            && this->mappedPositions.size() == this->entries.size();
+    if (adoptedPoints) {
+        double b[6];
+        this->sourcePoints->GetBounds(b);
+        xMin = b[0]; xMax = b[1]; yMin = b[2]; yMax = b[3]; zMin = b[4]; zMax = b[5];
+        for (std::size_t i = 0; i < this->labelActors.size() && i < this->mappedPositions.size();
+             ++i) {
+            const auto &p = this->mappedPositions[i];
+            this->labelActors[i]->SetPosition(p[0], p[1], p[2]);
         }
+    } else {
+        this->m_positionKey.clear();
+        if (!this->m_pointsPrivate) {
+            this->sourcePoints = vtkSmartPointer<vtkPoints>::New();
+            this->sourcePoints->SetNumberOfPoints(static_cast<vtkIdType>(this->entries.size()));
+            this->sourcesPolyData->SetPoints(this->sourcePoints);
+            this->m_pointsPrivate = true;
+        }
+        this->mappedPositions.reset();   // not copied: every position is written below
+        auto &mapped = this->mappedPositions.mut();
+        mapped.resize(this->entries.size());
+        for (vtkIdType i = 0; i < static_cast<vtkIdType>(this->entries.size()); ++i) {
+            this->pumpSceneBuild(static_cast<int>(i));
+            const auto &entry = this->entries[static_cast<std::size_t>(i)];
+            const double x = this->mappedAxisValue(entry, resolvedXKey);
+            const double y = this->mappedAxisValue(entry, resolvedYKey);
+            const double z = this->mappedAxisValue(entry, resolvedZKey);
+            mapped[static_cast<std::size_t>(i)] = { x, y, z };
+            this->sourcePoints->SetPoint(i, x, y, z);
+            xMin = std::min(xMin, x); xMax = std::max(xMax, x);
+            yMin = std::min(yMin, y); yMax = std::max(yMax, y);
+            zMin = std::min(zMin, z); zMax = std::max(zMax, z);
+            if (i < static_cast<vtkIdType>(this->labelActors.size())) {
+                this->labelActors[static_cast<std::size_t>(i)]->SetPosition(x, y, z);
+            }
+        }
+        this->sourcePoints->Modified();
+        this->m_positionKey = positionKey;
     }
-    this->sourcePoints->Modified();
     this->sourcesPolyData->Modified();
     const double bounds[6] = { xMin, xMax, yMin, yMax, zMin, zMax };
     this->cubeAxesActor->SetBounds(bounds);

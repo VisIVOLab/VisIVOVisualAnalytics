@@ -399,6 +399,15 @@ void InspectorPanel::addAnalysisSection(QWidget *section)
     m_analysisLayout->insertWidget(0, section);   // top of the tab, above the tool groups
 }
 
+void InspectorPanel::removeAnalysisSection(QWidget *section, QWidget *newParent)
+{
+    if (!section)
+        return;
+    m_analysisLayout->removeWidget(section);
+    section->hide();
+    section->setParent(newParent);
+}
+
 void InspectorPanel::addToolGroup(const QString &caption)
 {
     groupLayout(caption);

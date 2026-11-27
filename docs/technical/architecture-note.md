@@ -1172,6 +1172,48 @@ as products.
 
 ---
 
+## Pane grid (`PaneGrid`) — one 1 / 2 / 4 workspace for the cube and the particle window
+
+`src/gui/PaneGrid.{h,cpp}` owns the chrome of the four slots (frame with the
+active border, header with title dropdown, control slot, maximise and pop-out
+buttons, the host a view is mounted in), the two columns, the pop-out of a
+pane into its own window with a placeholder in the grid, and the in-workspace
+maximise. It owns no views: the window decides what a slot shows and listens to
+`headerPressed`, `maximiseToggled`, `paneDetached` and `paneDocked`. The rules
+that need no widget are in `PaneLayoutModel.h` (which slots a layout shows, how
+it grows, `GridState` for pop-out and maximise), unit-tested in
+`TestPaneLayout`. `vtkWindowCube` and the particle window
+(`vtkWindowCatalogue3D_Panes.cpp`) both use it; a particle pane is a window of
+the comparison group whose view sits in the host's grid.
+
+The panes of a particle window share their rows (`SharedRows.h`, copy on
+write): a pane made from another adopts its `entries` and `mappedPositions` by
+pointer, and `adoptDonorGeometry()` takes the donor's points, vertex cells and
+velocity array while both look at the same rows with the same axis mapping.
+A published `vtkPoints` / velocity array is never rewritten in place; a view
+that places or builds again makes new ones. `adoptDonorGeometry()` takes the points,
+positions, vertex cells and velocities together, before `buildScene()` pumps the
+event loop, so a donor that finishes a filter meanwhile cannot leave a pane with two
+revisions. `SharedRows::update(needs, apply)` writes rows (a frame or cosmology
+placement) only when one actually moves, so placing the rows of a Cartesian table
+does not give each pane a private copy.
+
+A filter edited in any linked pane runs once: the pane that asked the backend
+shares the answer (`shareFilteredRows()`), and every other linked pane of the same
+table takes the rows and the donor geometry (`adoptFilteredRows()`, the filtered
+counterpart of `adoptHydratedRows()`; both go through `replaceRowsFrom()`). A pane
+that is loading or building is tried again every 250 ms, and a pane that is linked
+again takes the group's filters. Who follows whom is the pure rule `filterTargets()`
+in `ParticlePaneState.h`. The layout orientation is decided once in `setPaneCount()`
+(`m_paneStacked`); a pane in a slot the new layout hides moves to a free visible one
+(`slotsForLayout()` in `PaneLayoutModel.h`). A saved session lists the host's pane
+first (`makeSession()`); a restore applies its count, active pane and link flags and
+stores nothing until it is complete. A streamed pane whose view is not
+visible for `kPauseGraceMs` calls `RemotePointView::pause()`, which releases
+its backend session and keeps its state and camera for `resume()`; a paused view
+still counts as drawn on the backend (`RemotePointView::onBackend()`), and the pause
+is armed whenever a view is started while its pane is hidden.
+
 ## Cube viewer — tool availability and where results land
 
 Two rules govern the ~30 cube tools. Both were per-pane heuristics scattered

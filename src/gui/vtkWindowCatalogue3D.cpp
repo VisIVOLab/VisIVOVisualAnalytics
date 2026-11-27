@@ -6,6 +6,7 @@
 #include "VbtByteOrderPrompt.h"
 #include "app/DatasetName.h"
 #include "app/DatasetUsers.h"
+#include "app/ProductRegistry.h"
 #include <QDateTime>
 #include "CosmologyCalculatorDialog.h"
 #include "vtkWindowCatalogue3D.h"
@@ -371,6 +372,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     // Before anything shows a name: the title and the chrome are built from it.
     this->m_label = label;
     this->m_label.displayName = this->m_label.displayName.trimmed();
+    this->m_madeAsPeer = comparisonSource != nullptr;
+    // Session Data lists what this window owns; a pane takes the scope of its host (#604).
+    this->m_ownerScope = ProductRegistry::instance().newOwnerScope();
     ui->setupUi(this);
     this->buildControlPages();
 
@@ -378,6 +382,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     QObject::connect(&this->filterWatcher, &QFutureWatcher<Catalogue3DFilterTaskResult>::finished,
                      this, [this]() {
                          this->filterBusy = false;
+                         // A filter the user applied here: its answer goes to the linked panes.
+                         const bool shareFilter = std::exchange(this->m_shareFilterResult, false);
                          // The background query for the first rows' other
                          // columns, if this was it: read by buildScene() (the
                          // camera stays), cleared on every way out.
@@ -507,7 +513,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          this->morphologyIndexOf.clear();
                          this->labelActors.clear();
                          this->shellActors.clear();
-                         this->mappedPositions.clear();
+                         this->mappedPositions.reset();
                          this->hoveredIndex = -1;
                          // Still selected when the filter kept it, else none.
                          this->selectedIndex = CatalogueSelection::indexOf(
@@ -539,6 +545,16 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          if (std::exchange(this->m_awaitingHydration, false))
                              this->shareHydratedRows(hydration ? HydrationShare::Rows
                                                                : HydrationShare::LoadOwn);
+                         if (shareFilter && !hydration) {
+                             this->m_rowsRevision = this->m_ownFilterRevision;
+                             // Shared only while it is the newest filter this pane
+                             // knows: a newer one from another pane, waiting to be
+                             // adopted here, must not be replaced by it.
+                             if (this->m_ownFilterRevision == this->m_filterRevision) {
+                                 this->m_filterShareSource = nullptr;
+                                 this->shareFilteredRows();
+                             }
+                         }
                      });
 
     // ── Connect "load more" watcher ───────────────────────────────────────────
@@ -572,10 +588,11 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 const CatalogueSelection::Key selected = CatalogueSelection::keyOf(
                         this->entries, this->schema, this->selectedIndex);
                 // Append new entries
-                this->entries.insert(this->entries.end(),
-                                     result.entries.begin(), result.entries.end());
-                this->unplacedEntries.insert(this->unplacedEntries.end(),
-                                             result.unplaced.begin(), result.unplaced.end());
+                // (A change: the rows of the panes that shared them stay as they were.)
+                auto &rows = this->entries.mut();
+                rows.insert(rows.end(), result.entries.begin(), result.entries.end());
+                auto &unplaced = this->unplacedEntries.mut();
+                unplaced.insert(unplaced.end(), result.unplaced.begin(), result.unplaced.end());
                 this->m_currentOffset += result.returnedRows;   // rows consumed, skipped ones too
                 if (this->m_sampleStep > 1)
                     ++this->m_samplePhase;   // the next disjoint sample
@@ -612,7 +629,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                 this->morphologyIndexOf.clear();
                 this->labelActors.clear();
                 this->shellActors.clear();
-                this->mappedPositions.clear();
+                this->mappedPositions.reset();
                 this->hoveredIndex  = -1;
                 this->selectedIndex = CatalogueSelection::indexOf(
                         this->entries, this->schema, selected);
@@ -702,8 +719,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->m_tableRows = comparisonSource->m_tableRows;
         this->schema = comparisonSource->schema;
         this->rawHeaders = comparisonSource->rawHeaders;
+        // The same rows, not a copy of them: the panes of a comparison hold the particles once.
         this->entries = comparisonSource->entries;
         this->unplacedEntries = comparisonSource->unplacedEntries;
+        this->m_geometryDonor = comparisonSource;
         this->m_currentOffset = comparisonSource->m_currentOffset;
         this->m_sampleStep = comparisonSource->m_sampleStep;
         this->m_samplePhase = comparisonSource->m_samplePhase;
@@ -1300,7 +1319,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
         this->morphologyIndexOf.clear();
         this->labelActors.clear();
         this->shellActors.clear();
-        this->mappedPositions.clear();
+        this->mappedPositions.reset();
         this->hoveredIndex  = -1;
         // Same rows, only turned: the selected source stays selected (#298).
         if (!this->entries.empty()) {
@@ -1369,6 +1388,9 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleShells);
     this->setupComparisonLink(comparisonSource);
     this->setupSnapshotTimeline(comparisonSource);
+    // The comparison of the last session on this table, when the rows are in.
+    if (!comparisonSource && !this->m_openedByStep)
+        this->scheduleRestorePanes();
 }
 
 void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString &value)
@@ -1393,6 +1415,18 @@ void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString
     this->m_appliedFilters.begin(visivo::selection::withOnlyCondition(
             this->m_appliedFilters.filters(), field, u"="_s, value));
     this->queryAppliedFilters();
+    this->m_shareFilterResult = this->filterBusy;   // the linked panes follow (shareFilteredRows)
+    this->m_filterShareSource = nullptr;
+    this->m_ownFilterRevision = this->m_filterRevision = nextFilterRevision();
+}
+
+void vtkWindowCatalogue3D::syncFilterList()
+{
+    if (!this->filterList)
+        return;
+    this->filterList->clear();
+    for (const BackendTabularFilter &f : this->activeFilters)
+        this->filterList->addItem(filterDisplayText(f));
 }
 
 void vtkWindowCatalogue3D::setParticleChoice(bool particles)
