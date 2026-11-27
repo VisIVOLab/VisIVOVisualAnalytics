@@ -460,6 +460,7 @@ set(PROJECT_SOURCES
         src/app/HostMemory.cpp
         src/app/ProductRegistry.h
         src/app/ProductRecipe.h
+        src/app/SessionRemoval.h
         src/app/LassoReplay.h
         src/app/SharedSelection.h
         src/app/SharedSelectionLink.h
@@ -725,6 +726,7 @@ set(PROJECT_SOURCES
         src/gui/vtkWindowCube_RegionList.cpp
         src/gui/vtkWindowCube_LinkImage.cpp
         src/gui/vtkWindowCube_LiveRegionSpectrum.cpp
+        src/gui/vtkWindowCube_SessionRemoval.cpp
         src/gui/Pane2DView.cpp
         src/gui/Pane2DView.h
         src/gui/CubeViewportGeometry.cpp
@@ -791,6 +793,7 @@ set(PROJECT_SOURCES
         src/gui/ContourExport.h
         src/gui/vtkWindowImage_Annotations.cpp
         src/gui/vtkWindowImage_Products.cpp
+        src/gui/vtkWindowImage_SessionRemoval.cpp
         src/gui/vtkWindowImage_Blend.cpp
         src/gui/LayerBlend.h
         src/gui/LayerBlendLut.h

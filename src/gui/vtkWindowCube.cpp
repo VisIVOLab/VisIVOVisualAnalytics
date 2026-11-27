@@ -1322,6 +1322,8 @@ vtkWindowCube::vtkWindowCube(const QString &filepath, const QString &backendUrl,
         // "Show in ▸": right-click a product → mount it in a chosen pane.
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionRowContextMenu, this,
                 &vtkWindowCube::showSessionRowContextMenu);
+        // (#580) Delete key and "Remove from Session" on the product rows.
+        this->setupSessionRemoval();
         connect(this->m_workspaceChrome, &WorkspaceChrome::sessionProductReopen, this,
                 &vtkWindowCube::reopenProductFromFile);
         // Reverse sync: activating a pane by any route highlights its Session-tree row.
@@ -11295,6 +11297,7 @@ void vtkWindowCube::showSessionRowContextMenu(const QString &viewTag, const QStr
                                  }
                              });
         }
+        this->appendSessionRemoveAction(menu, productId);
         menu.exec(globalPos);
         return;
     }
@@ -11321,6 +11324,7 @@ void vtkWindowCube::showSessionRowContextMenu(const QString &viewTag, const QStr
         QObject::connect(showIn->addAction(u"New pane"_s), &QAction::triggered, this,
                          [this, target]() { showViewInPane(target, -1); });
     }
+    this->appendSessionRemoveAction(menu, productId);
     menu.exec(globalPos);
 }
 
@@ -12346,26 +12350,6 @@ void vtkWindowCube::stopLiveSpectrum()
     // m_lastProbe*, with the pixel in its Provenance, and places it).
     if (promote)
         this->pinCurrentSpectrum();
-    refreshPaneChrome();
-}
-
-void vtkWindowCube::removeImageProduct(const QString &stableKey)
-{
-    const QString id = this->scopedProductId(stableKey);
-    if (!m_products2d.contains(id) && !m_products1d.contains(id))
-        return;
-    // The slice may be wearing this map as its background: give the slice its
-    // channels back first, or it keeps showing a product that no longer exists.
-    if (id == this->m_sliceBackdropProductId)
-        this->setSliceBackdrop(QString());
-    m_products2d.remove(id);
-    m_products1d.remove(id);
-    ProductRegistry::instance().removeProduct(id);
-    for (int i = 0; i < 4; ++i)
-        if (m_slots[i].view.kind == ViewId::Product && m_slots[i].view.productId == id) {
-            m_slots[i].view = {};
-            mountView(i);
-        }
     refreshPaneChrome();
 }
 

@@ -53,6 +53,9 @@ public:
     vtkImageSlice *replaceMasterLayer(const ImageLayerLoadResult &result);
     vtkImageSlice *updateMasterLayer(const ImageLayerLoadResult &result);
     bool moveLayer(int sourceIndex, int destinationRow);
+    /// Drop a layer and free its image. The master layer cannot go: every other
+    /// layer is aligned to it. False for the master or an index out of range.
+    bool removeLayer(int index);
 
 private:
     std::string masterFilepath;

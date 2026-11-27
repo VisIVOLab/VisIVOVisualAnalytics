@@ -645,6 +645,33 @@ invisible until someone loses a pane:
 | right-click | `rowContextMenuRequested(viewTag, productId, pos)` | the viewer builds "Show in ▸ Pane N" (and "Bring window to front" for a window-only product) |
 | pane-badge click | `paneBadgeActivated(pane)` | activates the pane that already shows the row |
 
+### Removing rows (#580): the tree owns the gesture, the window the meaning
+
+Delete / Backspace on the selected product rows, and the "Remove from Session"
+entry the viewer adds to a row's menu with `appendRemoveAction()`, end in
+`SessionDataTree::requestRemoval()`. Selection is extended (Cmd/Ctrl, Shift),
+so a removal can cover several rows. The tree plans it with
+`visivo::removal::planRemoval()` (`app/SessionRemoval.h`, widget-free and unit
+tested): a product that is running or a live preview stays; the window can
+refuse others (`Handler::refuse`); products listing a removed one in
+`AnalysisProduct::dependsOn` are offered for removal too; and the user is asked
+only when a removed product is not saved permanently (`Storage` is not a
+Workspace Export) or something was made from it.
+
+What removing means for what a window holds is the window's `Handler::remove`,
+set with `SessionDataTree::setRemovalHandler()`. After it returns, the tree
+drops whatever is still in the registry, which takes the rows out. A new viewer
+(the particle window, say) registers its products and sets a handler; it gets
+the key, the menu entry, multi-selection, the question and the dependants for
+free. The cube window's handler is `vtkWindowCube::removeSessionProducts()`
+(panes, a popped-out pane's window, `m_products2d` / `m_products1d`, the PV
+widget, tool windows, the temporary file); the image window's is
+`vtkWindowImage::removeSessionProducts()`, and its layer list calls
+`removeLayerRow()`, the same code Session Data reaches for a layer-bound
+product. `temporaryFileToDelete()` only ever names a file the product itself
+calls temporary and that lies under the system's temporary directory, so a
+permanent copy is never a candidate.
+
 `currentChanged` used to emit **both** `productSelected` and `rowActivated`, so
 selection *was* activation. Two consequences: clicking a row to read its
 provenance replaced whatever the active pane was showing, and — because Qt makes

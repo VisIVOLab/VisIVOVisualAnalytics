@@ -96,6 +96,11 @@ QString vtkWindowImage::registerAnalysisProduct(const QString &kind, const QStri
     const QString id = ProductRegistry::instance().registerProduct(std::move(p));
     if (layerIndex >= 0) {
         m_productLayer.insert(id, layerIndex);
+        // The identity of the layer itself: two runs of one tool give two
+        // layers with one name, so a name alone would find the older one.
+        if (this->layers)
+            if (vtkImageSlice *actor = this->layers->getLayerActor(layerIndex))
+                m_productLayerActor.insert(id, actor);
         // The row number is not a layer identity: the list is drag-reorderable
         // (LayerListModel::dropMimeData), so remember the NAME as well and
         // resolve through it first when the product is opened.
@@ -127,8 +132,15 @@ int vtkWindowImage::productLayerRow(const QString &productId) const
     const auto byIndex = m_productLayer.constFind(productId);
     if (byIndex == m_productLayer.cend())
         return -1;
-    // Names first: a reorder moves the layer, not its name. Fall back to the
-    // recorded row when the layer was never named or the name is gone.
+    // The layer's own actor decides: it follows reorders and renames, and two
+    // layers of one name stay apart. A freed actor means the layer is gone.
+    const auto byActor = m_productLayerActor.constFind(productId);
+    if (byActor != m_productLayerActor.cend()) {
+        return this->layerRowOfActor(byActor.value().GetPointer());
+    }
+    // No actor was known: names, as a reorder moves the layer, not its name.
+    // Fall back to the recorded row when the layer was never named or the name
+    // is gone.
     const QString name = m_productLayerName.value(productId);
     if (!name.isEmpty() && this->layers) {
         for (int r = 0; r < this->layers->rowCount(); ++r) {
@@ -239,6 +251,7 @@ void vtkWindowImage::showSessionRowContextMenu(const QString &viewTag, const QSt
         QObject::connect(menu.addAction(u"Show the Numbers Again"_s), &QAction::triggered, this,
                          [this, productId]() { this->openProduct(productId); });
     }
+    this->appendSessionRemoveAction(menu, productId);
     if (menu.isEmpty())
         return;
     menu.exec(globalPos);

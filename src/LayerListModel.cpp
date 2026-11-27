@@ -67,6 +67,30 @@ vtkImageSlice *LayerListModel::updateMasterLayer(const ImageLayerLoadResult &res
     return actor;
 }
 
+bool LayerListModel::removeLayer(int row)
+{
+    if (row < 0 || row >= this->rowCount() || row == this->getMasterIndex()) {
+        return false;
+    }
+
+    this->beginRemoveRows(QModelIndex(), row, row);
+    const bool removed = this->layerSet->removeLayer(row);
+    if (removed) {
+        // The names are keyed by row: those below the removed one move up.
+        QHash<int, QString> shifted;
+        for (auto it = m_displayNameOverrides.cbegin(); it != m_displayNameOverrides.cend(); ++it) {
+            if (it.key() < row) {
+                shifted.insert(it.key(), it.value());
+            } else if (it.key() > row) {
+                shifted.insert(it.key() - 1, it.value());
+            }
+        }
+        m_displayNameOverrides = shifted;
+    }
+    this->endRemoveRows();
+    return removed;
+}
+
 float LayerListModel::getPixelValue(int index, int x, int y) const
 {
     return this->layerSet->pixelValue(index, x, y);

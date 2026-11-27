@@ -103,6 +103,7 @@
 #include "TestParticleFrame.h"
 #include "TestRenderExportPlan.h"
 #include "TestProductRecipe.h"
+#include "TestSessionRemoval.h"
 #include "TestLassoReplay.h"
 #include "TestSharedSelection.h"
 #include "TestSharedSelectionLink.h"
@@ -224,6 +225,7 @@ int main(int argc, char *argv[])
     { TestCubeAxesEdgeOn   t; status |= QTest::qExec(&t, argc, argv); }
     { TestParticleFrame    t; status |= QTest::qExec(&t, argc, argv); }
     { TestProductRecipe    t; status |= QTest::qExec(&t, argc, argv); }
+    { TestSessionRemoval   t; status |= QTest::qExec(&t, argc, argv); }
     { TestLassoReplay      t; status |= QTest::qExec(&t, argc, argv); }
     { TestSharedSelection  t; status |= QTest::qExec(&t, argc, argv); }
     { TestSharedSelectionLink t; status |= QTest::qExec(&t, argc, argv); }

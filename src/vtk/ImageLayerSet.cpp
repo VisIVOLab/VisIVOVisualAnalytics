@@ -258,6 +258,20 @@ bool ImageLayerSet::moveLayer(int sourceIndex, int destinationRow)
     return true;
 }
 
+bool ImageLayerSet::removeLayer(int index)
+{
+    if (!this->isValidIndex(index) || index == this->masterIdx) {
+        return false;
+    }
+
+    this->layers.erase(this->layers.begin() + index);
+    if (index < this->masterIdx) {
+        --this->masterIdx;
+    }
+    this->refreshLayerNumbers();
+    return true;
+}
+
 bool ImageLayerSet::isValidIndex(int index) const
 {
     return index >= 0 && index < this->size();
