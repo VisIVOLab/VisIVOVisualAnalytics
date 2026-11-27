@@ -26,6 +26,7 @@
 #include <QListView>
 #include <algorithm>
 #include <QMenu>
+#include <QTimer>
 #include <vtkImageSlice.h>
 #include <vtkImageStack.h>
 
@@ -93,10 +94,15 @@ bool vtkWindowImage::removeLayerRow(int row)
     if (!this->layers->removeLayer(row) || this->layers->rowCount() != before - 1)
         return false;
 
+    // The additive blend keeps each layer's resampled pixels and holds its image:
+    // a removed layer must not stay in it, in memory or in the next composite.
+    this->dropBlendCache();
+
     // The product that was this layer has nothing left to show.
     for (const QString &id : std::as_const(bound)) {
         m_productLayer.remove(id);
         m_productLayerName.remove(id);
+        m_productLayerActor.remove(id);
         if (auto *recorded = this->findChild<ToolResultDialog *>(u"recorded-result:"_s + id))
             recorded->close();
         ProductRegistry::instance().removeProduct(id);
@@ -175,6 +181,30 @@ void vtkWindowImage::requestLayerRemoval(int row)
         tree->requestRemoval({ productId });
     else
         this->removeLayerRow(row);
+}
+
+int vtkWindowImage::layerRowOfActor(const vtkImageSlice *actor) const
+{
+    if (!actor || !this->layers)
+        return -1;
+    QList<const void *> actors;
+    for (int r = 0; r < this->layers->rowCount(); ++r)
+        actors << this->layers->getLayerActor(r);
+    return visivo::removal::rowOfIdentity(actors, actor);
+}
+
+void vtkWindowImage::requestLayerRemovalLater(int row)
+{
+    if (!this->layers || row < 0 || row >= this->layers->rowCount())
+        return;
+    vtkWeakPointer<vtkImageSlice> actor = this->layers->getLayerActor(row);
+    QTimer::singleShot(0, this, [this, actor]() {
+        // Looked up again: another removal may have moved the row, or taken the
+        // layer (two key presses before the first request ran).
+        const int now = this->layerRowOfActor(actor.GetPointer());
+        if (now >= 0)
+            this->requestLayerRemoval(now);
+    });
 }
 
 void vtkWindowImage::appendSessionRemoveAction(QMenu &menu, const QString &productId)

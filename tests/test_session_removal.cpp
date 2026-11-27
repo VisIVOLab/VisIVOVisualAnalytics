@@ -47,8 +47,52 @@ void TestSessionRemoval::savedPermanently_onlyAWorkspaceExportCounts()
     QVERIFY(!visivo::removal::savedPermanently(p));   // held in memory only
     p.params.insert(u"Storage"_s, u"temporary file on the backend, export to keep it"_s);
     QVERIFY(!visivo::removal::savedPermanently(p));
+    p.params.insert(u"Storage"_s, u"kept in the session cache"_s);
+    QVERIFY(!visivo::removal::savedPermanently(p));   // unknown wording: ask
     p.params.insert(u"Storage"_s, u"Workspace Exports"_s);
     QVERIFY(visivo::removal::savedPermanently(p));
+}
+
+void TestSessionRemoval::rowOfIdentity_followsTheLayerNotTheRow()
+{
+    int a = 0, b = 0, c = 0;   // three layers' identities
+    const void *none = nullptr;
+    QList<const void *> rows{ &a, &b, &c };
+    QCOMPARE(visivo::removal::rowOfIdentity(rows, &b), 1);
+    QCOMPARE(visivo::removal::rowOfIdentity(rows, none), -1);
+
+    // A tool run twice: two layers, one name. Each product keeps the identity
+    // of ITS layer, so removing the newer one removes row 2, not the older row 1.
+    const void *olderProduct = &b, *newerProduct = &c;
+    QCOMPARE(visivo::removal::rowOfIdentity(rows, newerProduct), 2);
+    rows.removeAt(visivo::removal::rowOfIdentity(rows, newerProduct));
+    QCOMPARE(rows, (QList<const void *>{ &a, &b }));
+    QCOMPARE(visivo::removal::rowOfIdentity(rows, olderProduct), 1);   // untouched
+    QCOMPARE(visivo::removal::rowOfIdentity(rows, newerProduct), -1);  // gone
+
+    // Reordered by drag and drop: the row moves, the identity does not.
+    rows.move(1, 0);
+    QCOMPARE(visivo::removal::rowOfIdentity(rows, olderProduct), 0);
+}
+
+void TestSessionRemoval::aQueuedRemoval_isLookedUpAgainWhenItRuns()
+{
+    int a = 0, b = 0, c = 0;
+    QList<const void *> rows{ &a, &b, &c };
+    // Two Delete presses land before the first request runs: both carry the
+    // identity of the layer that was current, not its row.
+    const void *current = &b;
+    const QList<const void *> queued{ current, current };
+    int removals = 0;
+    for (const void *identity : queued) {
+        const int row = visivo::removal::rowOfIdentity(rows, identity);
+        if (row < 0)
+            continue;   // already gone: the neighbour is not taken instead
+        rows.removeAt(row);
+        ++removals;
+    }
+    QCOMPARE(removals, 1);
+    QCOMPARE(rows, (QList<const void *>{ &a, &c }));
 }
 
 void TestSessionRemoval::plan_dropsUnknownAndRepeatedIds()

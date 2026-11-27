@@ -16,9 +16,11 @@
 #include "LinkedWindowRegistry.h"
 #include "RegionImport.h"
 
+#include <vtkImageSlice.h>
 #include <vtkInteractorStyleImage.h>
 #include <vtkNew.h>
 #include <vtkSmartPointer.h>
+#include <vtkWeakPointer.h>
 
 #include <QCloseEvent>
 #include <QElapsedTimer>
@@ -1090,6 +1092,12 @@ protected:
     /// question when the layer is one of its products, straight away for a
     /// layer that is just a file the user opened.
     void requestLayerRemoval(int row);
+    /// (#580) The Delete key on the layer list. A row number would be stale by
+    /// the time the queued request runs (a second key press, a removal in
+    /// between), so the layer's actor is carried instead and looked up again.
+    void requestLayerRemovalLater(int row);
+    /// Row of the layer whose image actor is @p actor, or -1 when it is gone.
+    int layerRowOfActor(const vtkImageSlice *actor) const;
     /// (#580) "Remove from Session" at the end of a row's context menu.
     void appendSessionRemoveAction(QMenu &menu, const QString &productId);
     /// The Session Data product bound to layer @p row, or empty.
@@ -1154,8 +1162,13 @@ protected:
     /// Layer display name per product: the row index above is not an identity,
     /// the layer list can be reordered by drag and drop.
     QHash<QString, QString> m_productLayerName;
-    /// Current row of the layer a product produced, or -1. Resolves by name and
-    /// falls back to the recorded row.
+    /// The layer's image actor per product: the one identity that survives a
+    /// reorder, a rename and two layers called the same (a tool run twice).
+    /// Weak, so it reads as gone once the layer is removed.
+    QHash<QString, vtkWeakPointer<vtkImageSlice>> m_productLayerActor;
+    /// Current row of the layer a product produced, or -1. Resolves by the
+    /// layer's actor; a product registered with no actor falls back to the
+    /// layer name, then the recorded row.
     int productLayerRow(const QString &productId) const;
     QPointer<QAction> m_actHistogram;
     QPointer<QAction> m_actAddText;
@@ -1232,6 +1245,10 @@ protected:
     /// a frame is drawn, so every way a layer can change (the cards, a
     /// window-level drag, a reload) is covered without hooking each one.
     void onBlendRenderStart();
+    /// (#580) Forget the layers' resampled pixels (they hold the layers' images
+    /// alive) and what the last composite was built from: after a layer is
+    /// removed, so none of its pixels stay, and the next blend is built afresh.
+    void dropBlendCache();
     void makeRgbComposite();
     void saveBlendPng();
 

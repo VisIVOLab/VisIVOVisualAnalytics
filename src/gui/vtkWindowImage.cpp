@@ -2126,7 +2126,7 @@ bool vtkWindowImage::eventFilter(QObject *watched, QEvent *event)
         const int row = ui->listLayer->currentIndex().row();
         if ((key == Qt::Key_Delete || key == Qt::Key_Backspace) && row >= 0) {
             // After the key event: the removal changes the list under it.
-            QTimer::singleShot(0, this, [this, row]() { this->requestLayerRemoval(row); });
+            this->requestLayerRemovalLater(row);
             return true;
         }
     }
@@ -2611,10 +2611,20 @@ void vtkWindowImage::updateLargeImageMode(vtkImageData *imageData, const char *c
 
 void vtkWindowImage::applyRemoteMasterLayer(const ImageLayerLoadResult &result, bool preserveView)
 {
+    // The master's actor is replaced: products bound to it follow to the new one.
+    QStringList onMaster;
+    {
+        vtkImageSlice *oldMaster = this->layers->getLayerActor(this->layers->getMasterIndex());
+        for (auto it = m_productLayerActor.cbegin(); it != m_productLayerActor.cend(); ++it)
+            if (oldMaster && it.value().GetPointer() == oldMaster)
+                onMaster << it.key();
+    }
     auto *newActor = this->layers->updateMasterLayer(result);
     if (!newActor) {
         return;
     }
+    for (const QString &id : std::as_const(onMaster))
+        m_productLayerActor[id] = newActor;
 
     this->stack->SetActiveLayer(this->layers->getMasterIndex());
     this->layerController->activateLayer(this->layers->getMasterIndex());

@@ -360,6 +360,17 @@ void vtkWindowImage::setBlendAdditive(bool on)
             4000);
 }
 
+void vtkWindowImage::dropBlendCache()
+{
+    if (!this->m_blend)
+        return;
+    BlendState &b = *this->m_blend;
+    b.cache.clear();
+    b.baseData = nullptr;
+    b.step = 0;   // differs from any real step: the next blend is rebuilt in full
+    b.colourSignature.clear();
+}
+
 void vtkWindowImage::onBlendRenderStart()
 {
     if (!this->m_blend || !this->layers)

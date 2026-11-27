@@ -52,11 +52,24 @@ inline QString displayName(const AnalysisProduct &p)
 
 /// True when the product has a permanent home on disk (a Workspace Export): a
 /// removal then costs nothing. A product held only in memory, or in a
-/// temporary file, is not.
+/// temporary file, is not. A whitelist: any other wording of "Storage" is not
+/// known to be safe, so it is asked about.
 inline bool savedPermanently(const AnalysisProduct &p)
 {
     const QString storage = p.params.value(QStringLiteral("Storage")).toString();
-    return !storage.isEmpty() && !storage.contains(QStringLiteral("temporary"), Qt::CaseInsensitive);
+    return storage.startsWith(QStringLiteral("Workspace Exports"), Qt::CaseInsensitive);
+}
+
+/// Row of the layer whose identity is @p identity among @p rowIdentities (one
+/// per row, in row order), or -1 when it is null or no row has it. Layers are
+/// found by what they are, never by name or by a row number kept from before:
+/// two runs of one tool give two layers with one name, and a row moves when a
+/// layer above it goes or the list is reordered.
+inline int rowOfIdentity(const QList<const void *> &rowIdentities, const void *identity)
+{
+    if (!identity)
+        return -1;
+    return static_cast<int>(rowIdentities.indexOf(identity));
 }
 
 /// Why a product cannot be removed right now, regardless of the window: a

@@ -9,6 +9,7 @@
 // touched, whatever the product's parameters say (app/SessionRemoval.h).
 
 #include "vtkWindowCube.h"
+#include "vtkWindowImage.h"
 
 #include <QDockWidget>
 #include <QStatusBar>
@@ -47,13 +48,17 @@ void vtkWindowCube::dropSessionProduct(const QString &id)
     // Every pane showing it, a popped-out one included: the pane is brought
     // back into the grid first, so no window is left open on a product that is
     // gone, and its widget is emptied so the pixels are not kept alive by a
-    // parked view.
+    // parked view. A pane currently showing another view still caches what it
+    // last displayed (its widget and product id are kept when the slot is
+    // reassigned), so the cache is cleared for every slot: a product computed
+    // again under the same id must not inherit that stale display state.
     for (int i = 0; i < 4; ++i) {
-        if (m_slots[i].view.kind != ViewId::Product || m_slots[i].view.productId != id)
-            continue;
-        if (paneDetached(i))
+        const bool showing = m_slots[i].view.kind == ViewId::Product
+                && m_slots[i].view.productId == id;
+        if (showing && paneDetached(i))
             bringBackPane(i);
-        m_slots[i].view = {};
+        if (showing)
+            m_slots[i].view = {};
         if (m_paneProductId[i] == id) {
             if (m_paneViews[i])
                 m_paneViews[i]->setImageData(nullptr, 0.0, 1.0);
@@ -61,7 +66,8 @@ void vtkWindowCube::dropSessionProduct(const QString &id)
                 m_paneSpectra[i]->updateSpectrumPlot({}, {}, QString(), /*live=*/false);
             m_paneProductId[i].clear();
         }
-        mountView(i);
+        if (showing)
+            mountView(i);
     }
 
     // The PV diagram is one widget hosted in a pane, not a cache entry: it
@@ -99,11 +105,21 @@ void vtkWindowCube::dropSessionProduct(const QString &id)
         m_lastStatisticsProductId.clear();
 
     // What was open on it: the tool's own window (a channel-map grid), and the
-    // recorded-numbers window a row's double-click opens. Never this window,
-    // which pane products name as theirs.
+    // recorded-numbers window a row's double-click opens. Only a tool or result
+    // dialog goes: a product may also name a whole viewer as its window (a
+    // baseline opened as a cube of its own, this window for pane products), and
+    // a viewer holds more than this product. A dialog another product still
+    // shows stays too.
     const AnalysisProduct p = ProductRegistry::instance().product(id);
-    if (p.window && p.window.data() != this && p.window.data() != pvWidget)
-        p.window->close();
+    if (QWidget *win = p.window.data()) {
+        const bool isViewer = qobject_cast<vtkWindowCube *>(win) || qobject_cast<vtkWindowImage *>(win);
+        bool usedByOther = false;
+        for (const AnalysisProduct &other : ProductRegistry::instance().all())
+            if (other.productId != id && other.window.data() == win)
+                usedByOther = true;
+        if (win != this && win != pvWidget && !isViewer && !usedByOther)
+            win->close();
+    }
     if (auto *recorded = this->findChild<ToolResultDialog *>(u"recorded-result:"_s + id))
         recorded->close();
 
@@ -145,7 +161,9 @@ void vtkWindowCube::removeSessionProducts(const QStringList &productIds)
         bool inUse = false;
         for (QWidget *w : QApplication::topLevelWidgets()) {
             auto *other = qobject_cast<vtkWindowCube *>(w);
-            if (other && other != this
+            // A window on its way out (hidden, waiting for its work to end) is
+            // about to let go of the file: it must not keep it on disk.
+            if (other && other != this && other->isVisible() && !other->m_closeWhenIdle
                 && QFileInfo(other->datasetPersistKey()).canonicalFilePath() == file)
                 inUse = true;
         }

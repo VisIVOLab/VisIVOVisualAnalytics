@@ -20,6 +20,8 @@
 #include <QTimer>
 #include <QTreeView>
 
+#include <functional>
+
 using namespace Qt::StringLiterals;
 
 // The tree asks the cache for a dataset's thumbnail. The real one grabs OpenGL
@@ -242,6 +244,36 @@ private slots:
         QTRY_VERIFY(asked);
         QTRY_COMPARE(m_removed, (QStringList{ u"model,resid"_s }));
         QVERIFY(!rowOf(m_view, u"resid"_s).isValid());
+    }
+
+    void theOwnerGoingAwayUnderTheQuestion_isSafe()
+    {
+        build();
+        addProduct(u"m"_s, false);
+        m_tree->setRemovalHandler(recordingHandler());
+        select(m_view, { u"m"_s });
+
+        // Delete the tree while its confirmation is open: the box goes with its
+        // parent and the removal must neither touch the freed tree nor remove.
+        bool gone = false;
+        std::function<void(int)> closeOwner = [&](int attempts) {
+            QTimer::singleShot(25, [&, attempts]() {
+                if (QApplication::activeModalWidget()) {
+                    delete m_tree;
+                    m_tree = nullptr;
+                    m_view = nullptr;
+                    gone = true;
+                } else if (attempts > 0) {
+                    closeOwner(attempts - 1);
+                }
+            });
+        };
+        closeOwner(40);
+        QTest::keyClick(m_view, Qt::Key_Delete);
+        QTRY_VERIFY(gone);
+        QTest::qWait(100);
+        QVERIFY(m_removed.isEmpty());
+        QVERIFY(!ProductRegistry::instance().product(u"m"_s).productId.isEmpty());
     }
 
     void theWindowCanRefuse_andTheUserIsTold()

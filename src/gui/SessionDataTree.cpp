@@ -22,6 +22,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QStandardItem>
+#include <QScopeGuard>
 #include <QScopedValueRollback>
 #include <QStandardItemModel>
 #include <QStyledItemDelegate>
@@ -625,44 +626,63 @@ void SessionDataTree::requestRemoval(const QStringList &productIds)
     if (!m_removal.remove || productIds.isEmpty() || m_removing)
         return;
     // One removal at a time: a held Delete key queues several, and a second
-    // question must not open inside the first one's event loop.
-    QScopedValueRollback<bool> removing(m_removing, true);
+    // question must not open inside the first one's event loop. The question
+    // runs an event loop and the tree can be destroyed inside it, so the flag
+    // is put back only if the tree is still there.
+    m_removing = true;
     QPointer<SessionDataTree> self(this);
+    auto release = qScopeGuard([self]() {
+        if (self)
+            self->m_removing = false;
+    });
     ProductRegistry &reg = ProductRegistry::instance();
     const QList<AnalysisProduct> all = reg.all();
     visivo::removal::Plan plan = visivo::removal::planRemoval(all, productIds, m_removal.refuse);
 
+    // The boxes live on the heap behind a guarded pointer: a stack box would be
+    // deleted a second time by its parent when the tree goes away mid-question.
+    auto makeBox = [this]() {
+        auto *box = new QMessageBox(this);
+        box->setWindowTitle(tr("Remove from Session"));
+        return QPointer<QMessageBox>(box);
+    };
+
     if (plan.ids.isEmpty()) {
         // Nothing can go: say why rather than leave the key or the entry silent.
-        if (!plan.refused.isEmpty())
-            QMessageBox::information(this, tr("Remove from Session"),
-                                     tr("Cannot be removed now.\n\n%1")
-                                             .arg(plan.refused.join(u"\n"_s)));
+        if (!plan.refused.isEmpty()) {
+            QPointer<QMessageBox> box = makeBox();
+            box->setIcon(QMessageBox::Information);
+            box->setText(tr("Cannot be removed now.\n\n%1").arg(plan.refused.join(u"\n"_s)));
+            box->exec();
+            if (box)
+                box->deleteLater();
+        }
         return;
     }
 
     if (plan.needsConfirmation()) {
-        QMessageBox box(this);
-        box.setIcon(QMessageBox::Question);
-        box.setWindowTitle(tr("Remove from Session"));
-        box.setText(visivo::removal::confirmationText(all, plan));
+        QPointer<QMessageBox> box = makeBox();
+        box->setIcon(QMessageBox::Question);
+        box->setText(visivo::removal::confirmationText(all, plan));
         if (!plan.refused.isEmpty())
-            box.setInformativeText(tr("Left in place: %1.").arg(plan.refused.join(u"; "_s)));
-        QPushButton *only = box.addButton(plan.dependants.isEmpty() ? tr("Remove")
-                                                                    : tr("Remove Only These"),
-                                          QMessageBox::DestructiveRole);
+            box->setInformativeText(tr("Left in place: %1.").arg(plan.refused.join(u"; "_s)));
+        QPushButton *only = box->addButton(plan.dependants.isEmpty() ? tr("Remove")
+                                                                     : tr("Remove Only These"),
+                                           QMessageBox::DestructiveRole);
         QPushButton *withDependants = nullptr;
         if (!plan.dependants.isEmpty())
-            withDependants = box.addButton(tr("Remove With What Was Made From Them"),
-                                           QMessageBox::DestructiveRole);
-        QPushButton *cancel = box.addButton(QMessageBox::Cancel);
-        box.setDefaultButton(cancel);
-        box.exec();
-        if (!self)
+            withDependants = box->addButton(tr("Remove With What Was Made From Them"),
+                                            QMessageBox::DestructiveRole);
+        QPushButton *cancel = box->addButton(QMessageBox::Cancel);
+        box->setDefaultButton(cancel);
+        box->exec();
+        if (!self || !box)
             return;   // the window closed under the question
-        if (withDependants && box.clickedButton() == withDependants)
+        const QAbstractButton *clicked = box->clickedButton();
+        box->deleteLater();
+        if (withDependants && clicked == withDependants)
             plan.ids += plan.dependants;
-        else if (box.clickedButton() != only)
+        else if (clicked != only)
             return;
     }
 

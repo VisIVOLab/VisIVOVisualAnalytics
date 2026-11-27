@@ -11,6 +11,8 @@ class TestSessionRemoval : public QObject
 
 private slots:
     void savedPermanently_onlyAWorkspaceExportCounts();
+    void rowOfIdentity_followsTheLayerNotTheRow();
+    void aQueuedRemoval_isLookedUpAgainWhenItRuns();
     void plan_dropsUnknownAndRepeatedIds();
     void plan_aRunningOrLiveProductStays();
     void plan_aToolThatNamesItselfRunningInItsParametersStays();
