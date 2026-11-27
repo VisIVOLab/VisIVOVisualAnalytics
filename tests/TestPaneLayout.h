@@ -37,6 +37,8 @@ private slots:
     void grid_panesPopOutIndependently();
 
     void pauseStream_onlyAHiddenPaneOfAVisibleGrid();
+    void releaseView_onlyAnIdleViewOfAWindowThatIsUp();
+    void multiSamples_onlyALonePaneOfSolidShapes();
 
     void session_roundTrips();
     void session_toleratesGarbage();
@@ -49,6 +51,9 @@ private slots:
     void restoredSlots_putEachPaneBack();
     void restoredSlots_followTheOrientationOfNow();
     void restoredSlots_unusableSessionKeepsCreationOrder();
+    void session_activePaneIsPartOfTheSession();
+    void stackedForWidth_gridWidthOnceLaidOutElseTheWindow();
+    void restore_pairFollowsTheWidthOfNowNotTheSavedOne();
 
     void filterTargets_linkedPanesOfTheSameTable();
     void filterTargets_anyLinkedPaneCanBeTheSource();

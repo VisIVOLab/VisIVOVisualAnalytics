@@ -83,9 +83,13 @@ int vtkWindowCatalogue3D::paneSlotOf(const vtkWindowCatalogue3D *window) const
 
 bool vtkWindowCatalogue3D::paneStacked() const
 {
-    // Narrow grid: two panes one above the other (as the cube window decides).
-    const int w = this->m_paneRoot ? this->m_paneRoot->width() : 0;
-    return w > 0 ? (w < 900) : (this->width() < 1100);
+    // Narrow grid: two panes one above the other (as the cube window decides). The grid's
+    // own width is only true once it has been laid out; a grid just built (a restored
+    // comparison builds it and asks at once) still has the default size of a new widget.
+    // The page it sits in is laid out with the window, and is as wide as the grid will be.
+    const QWidget *place = this->m_paneRoot ? this->m_paneRoot->parentWidget() : nullptr;
+    const int gridWidth = place && place->isVisible() ? place->width() : 0;
+    return visivo::panes::stackedForWidth(gridWidth, this->width());
 }
 
 void vtkWindowCatalogue3D::ensurePaneGrid()
@@ -270,6 +274,7 @@ bool vtkWindowCatalogue3D::addPaneWindow(vtkWindowCatalogue3D *peer, int slot)
     this->m_paneWindows[slot] = peer;
     peer->m_paneHost = this;
     peer->m_ownerScope = this->m_ownerScope;
+    peer->applyMultiSamples();   // (setPaneCount below does it again for a layout that grows)
     // The pane's quantity names its header and its Session Data row (the host lists them).
     QObject::connect(peer->comboMapColor, &QComboBox::currentIndexChanged, this, [this]() {
         this->refreshPaneHeaders();
@@ -330,6 +335,10 @@ void vtkWindowCatalogue3D::setPaneCount(int panes)
     }
     for (int i = 0; i < kSlots; ++i)
         this->mountPane(i);
+    // The layout decides how many samples each pane's view asks for.
+    for (int i = 0; i < kSlots; ++i)
+        if (this->m_paneWindows[i])
+            this->m_paneWindows[i]->applyMultiSamples();
     this->refreshPaneProducts();   // the Session Data badges name the slots the panes are in now
     this->m_paneGrid->applyVisibility(visibleSlots(panes, stacked));
     this->m_paneGrid->equaliseSplits(panes, stacked);
@@ -349,6 +358,7 @@ void vtkWindowCatalogue3D::setActivePane(int slot)
 {
     if (!this->m_paneGrid || slot < 0 || slot >= kSlots || !this->m_paneWindows[slot])
         return;
+    const bool changed = this->m_activePane != slot;
     this->m_activePane = slot;
     for (int i = 0; i < kSlots; ++i)
         this->m_paneGrid->styleSlot(i, i == slot);
@@ -357,6 +367,10 @@ void vtkWindowCatalogue3D::setActivePane(int slot)
     // The Session Data row of the pane's quantity follows (without re-activating it).
     if (this->m_workspaceChrome)
         this->m_workspaceChrome->selectSessionProduct(this->paneProductId(w));
+    // The pane in use is part of the session: the next window on this table opens on it.
+    // (A restore saves once, at its end; savePaneSession skips it.)
+    if (changed)
+        this->savePaneSession();
 }
 
 void vtkWindowCatalogue3D::showPaneControls(vtkWindowCatalogue3D *window)
@@ -807,9 +821,10 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
             }
             // The saved layout may show fewer panes than were kept (four quantities in a
             // one-pane layout): applied once every pane exists, and after the active pane,
-            // which a smaller layout keeps in view.
-            if (session.count != this->m_paneCount)
-                this->setPaneCount(session.count);
+            // which a smaller layout keeps in view. Always applied, even when the count is
+            // the one the panes were made in: it decides a pair's orientation again, from
+            // the width of this window and not the one it was saved in.
+            this->setPaneCount(session.count);
             this->statusBar()->showMessage(
                     u"Comparison of your last session restored: %1 panes. Close the ones you do not need."_s
                             .arg(made + 1),

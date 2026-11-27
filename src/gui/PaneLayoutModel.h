@@ -33,6 +33,21 @@ constexpr std::array<bool, kSlots> visibleSlots(int panes, bool stacked)
     return { true, true, true, true };
 }
 
+/// Whether two panes sit one above the other. A grid narrower than this many pixels (or,
+/// while the grid has not been laid out yet, a window narrower than @ref kStackBelowWindow)
+/// stacks them.
+constexpr int kStackBelowGrid = 900;
+constexpr int kStackBelowWindow = 1100;
+
+/// @p gridWidth is the width the grid has once it is laid out, 0 while it is not (a grid
+/// that was just built still has the default size of a new widget, which says nothing of
+/// the window); then the window's width decides. A reopened window has to follow the
+/// width it is shown in now, not the orientation it was saved in.
+constexpr bool stackedForWidth(int gridWidth, int windowWidth)
+{
+    return gridWidth > 0 ? gridWidth < kStackBelowGrid : windowWidth < kStackBelowWindow;
+}
+
 constexpr bool inLeftColumn(int slot) { return slot == 0 || slot == 2; }
 
 /// The layout one more pane needs: 1 -> 2 -> 4; 4 has no room for another.

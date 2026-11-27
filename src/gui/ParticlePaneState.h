@@ -41,6 +41,26 @@ constexpr bool pauseStream(bool inGrid, bool viewVisible, bool hostVisible)
     return inGrid && !viewVisible && hostVisible;
 }
 
+/// Whether one of a window's views (the local VTK view, the ray-traced one) should give
+/// its GPU memory back: it is not on screen while its window is (a pane the layout hides,
+/// or the page of another view). The same grace as pauseStream applies, and a window that
+/// is itself hidden or minimised keeps everything, so coming back is instant.
+constexpr bool releaseView(bool viewVisible, bool hostVisible)
+{
+    return !viewVisible && hostVisible;
+}
+
+/// The hardware anti-aliasing (samples) a local view asks of its render window. Every
+/// sample multiplies the colour and depth buffers VTK keeps for the view, which is
+/// hundreds of megabytes for a pane at the screen's native resolution: splats are drawn
+/// into a float target that has no samples anyway, and panes side by side are small
+/// views of many points, so those go without. A lone pane of solid shapes keeps
+/// @p defaultSamples (what the window had when it was made).
+constexpr int multiSamplesFor(bool splats, int shownPanes, int defaultSamples)
+{
+    return (splats || shownPanes > 1) ? 0 : defaultSamples;
+}
+
 /// One colour choice of the window's "colour by" list.
 struct QuantityChoice
 {

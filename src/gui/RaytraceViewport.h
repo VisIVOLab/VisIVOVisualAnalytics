@@ -74,6 +74,10 @@ public:
     /// The request or the settings changed: fetches the particles when what
     /// shapes them changed, else draws them again.
     void refresh();
+    /// The view is not drawn (a pane the layout hides, ray tracing turned off): gives back
+    /// the particles or grid held on the GPU and the float targets, and stops a fetch in
+    /// flight. The camera stays. The next refresh, or showing the view, fetches again.
+    void releaseGpu();
     /// Only the tone changed.
     void retone();
     double autoExposure() const;
@@ -156,6 +160,8 @@ private:
     QPointer<QNetworkReply> m_reply;
     QPoint m_dragFrom;
     bool m_failed{ false };
+    /// releaseGpu gave the data back: the view fetches it again when it is shown.
+    bool m_released{ false };
     /// A camera or tone change arrived while the view was not on screen (a hidden pane):
     /// it is drawn once, when the view is shown.
     bool m_redrawPending{ false };

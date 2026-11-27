@@ -67,10 +67,24 @@ added panes), where four separate copies would have needed 75 % more. After a fi
 the panes still share: on the same table filtered to about half its rows, four panes
 took about 7 % more than one (1351 MB against 1261 MB), where four panes that each
 asked for the filtered rows took 3.4 times as much (4339 MB). A pane whose view is not on screen
-draws nothing, and a ray-traced pane renders only when it is shown. A
-streamed pane (*View ▸ Rendering ▸ Remote*) that stays hidden for a couple of
-seconds gives its backend session back and asks for a new one, with its camera
-and settings, when it is shown again.
+draws nothing, and a ray-traced pane renders only when it is shown.
+
+What a pane does cost is mostly on the graphics card: each pane's view has its own
+buffers, whatever the rows are. Two things keep that small. Panes side by side, and
+Gaussian splats in any layout, are drawn without hardware anti-aliasing (a lone pane of
+solid shapes keeps it): every anti-aliasing sample multiplies the colour and depth
+buffers of the view. And a view that stays off screen for a couple of seconds gives its
+graphics memory back and makes it again when it is shown: a pane the layout hides (the
+other panes of a four-pane window shown as one), the local view while the ray-traced or
+streamed one is on, and the ray-traced view's particles and float image once ray tracing
+is turned off or its pane is hidden (they are fetched again from the backend when it is
+shown). A streamed pane (*View ▸ Rendering ▸ Remote*) that stays hidden for a couple of
+seconds also gives its backend session back and asks for a new one, with its camera
+and settings, when it is shown again. A pane that is hidden does not draw when the
+camera of the group moves; it shows the group's camera when it is shown.
+
+In Gaussian splats and Point shapes the per-row size vectors are not filled, since
+those shapes read none; they are filled when a glyph shape is chosen.
 
 Axis mapping is per pane: a pane whose axes differ from the first pane's
 computes its own positions; panes with the same axes share them.
@@ -93,8 +107,10 @@ pane.
 The layout, the quantity of each pane (by column name), the slot each pane sat in,
 the linked flags and the active pane are remembered for each table: the next window on it offers
 the same comparison, with every pane back in its slot, and says so in the status bar.
-A two-pane layout keeps whether it was one above the other or side by side; opened in
-a window of the other shape, the same two panes are shown. The first pane in the
+Choosing another pane to work in is remembered too, not only layout changes. A two-pane
+layout keeps whether it was one above the other or side by side; it is laid out again for
+the width of the window it is opened in (side by side in a wide window, one above the
+other in a narrow one), with each pane keeping its quantity. The first pane in the
 saved list is the one of the window itself, wherever it sat in the grid. A layout saved
 by an earlier version has no slots and comes back with the panes in the order they were made.
 A table opened with fewer than two panes remembers nothing.
