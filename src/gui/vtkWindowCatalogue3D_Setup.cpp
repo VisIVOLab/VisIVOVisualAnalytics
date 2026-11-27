@@ -1063,9 +1063,13 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
                      &vtkWindowCatalogue3D::onSessionRowActivated);
     QObject::connect(chrome, &WorkspaceChrome::sessionPaneBadgeActivated, this,
                      [this](int number) { this->setActivePane(number - 1); });
+    // A pane's own combo is connected by its host (addPaneWindow): only a window that is not
+    // a pane updates the rows here, so a change is not listed twice.
     if (this->comboMapColor)
-        QObject::connect(this->comboMapColor, &QComboBox::currentIndexChanged, this,
-                         [this]() { this->refreshPaneProducts(); });
+        QObject::connect(this->comboMapColor, &QComboBox::currentIndexChanged, this, [this]() {
+            if (!this->m_paneHost)
+                this->refreshPaneProducts();
+        });
     this->refreshPaneProducts();
     // Design #1d: what is drawn and how it is drawn lives in the LEFT column,
     // under the dataset it belongs to.

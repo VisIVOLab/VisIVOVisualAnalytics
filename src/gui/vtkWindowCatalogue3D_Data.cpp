@@ -107,8 +107,20 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
         // (Galactic mode overwrites sceneX/Y/Z in-place, so we must recompute
         // rather than just returning, otherwise switching back from Galactic
         // leaves the Galactic coordinates in the entries.)
-        for (auto &e : this->entries.mut())
-            Catalogue3DParser::detail::fillCartesian(e, this->schema);
+        // Written only where a row is not already there: the rows a pane shares with the
+        // others are not copied for nothing.
+        const Catalogue3DSchema &schema = this->schema;
+        const auto target = [&schema](const Catalogue3DEntry &e) {
+            return Catalogue3DParser::detail::cartesianAt(
+                    e, Catalogue3DParser::detail::entryDistanceMpc(e, schema));
+        };
+        this->entries.update(
+                [&target](const Catalogue3DEntry &e) {
+                    return !Catalogue3DParser::detail::sceneAt(e, target(e));
+                },
+                [&schema](Catalogue3DEntry &e) {
+                    Catalogue3DParser::detail::fillCartesian(e, schema);
+                });
         return;
     }
 
@@ -119,19 +131,31 @@ void vtkWindowCatalogue3D::applyFrameToEntries()
     // (Mpc from redshift/distance) is preserved. R-13.
     constexpr double pi = 3.14159265358979323846;
     const bool toSuper = (this->activeFrame == CoordFrame::Supergalactic);
-    for (auto &e : this->entries.mut()) {
+    const Catalogue3DSchema &schema = this->schema;
+    const auto target = [&schema, toSuper](const Catalogue3DEntry &e) {
         double lon = e.raDeg;
         double lat = e.decDeg;
         wcscon(kWCS_J2000, kWCS_GALACTIC, 2000.0, 2000.0, &lon, &lat, 2000.0);
         if (toSuper)
             galacticToSupergalactic(lon, lat, lon, lat);
-        const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
+        const double d = Catalogue3DParser::detail::entryDistanceMpc(e, schema);
         const double lonRad = lon * pi / 180.0;
         const double latRad = lat * pi / 180.0;
-        e.sceneX = d * std::cos(latRad) * std::cos(lonRad);
-        e.sceneY = d * std::cos(latRad) * std::sin(lonRad);
-        e.sceneZ = d * std::sin(latRad);
-    }
+        return std::array<double, 3>{ d * std::cos(latRad) * std::cos(lonRad),
+                                      d * std::cos(latRad) * std::sin(lonRad),
+                                      d * std::sin(latRad) };
+    };
+    // Only a row that is not already placed is written (and the shared rows copied).
+    this->entries.update(
+            [&target](const Catalogue3DEntry &e) {
+                return !Catalogue3DParser::detail::sceneAt(e, target(e));
+            },
+            [&target](Catalogue3DEntry &e) {
+                const std::array<double, 3> p = target(e);
+                e.sceneX = p[0];
+                e.sceneY = p[1];
+                e.sceneZ = p[2];
+            });
 }
 
 void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
@@ -139,15 +163,17 @@ void vtkWindowCatalogue3D::recomputeScenePositionsAndRebuild()
     // Recompute each source's Cartesian scene position from its (mode-aware) radial
     // distance, then rebuild the scene + labels from scratch. Shared by the local
     // Planck18 cosmology path and the R-14 distance-mode toggle.
-    constexpr double pi = 3.14159265358979323846;
-    for (auto &e : this->entries.mut()) {
-        const double d = Catalogue3DParser::detail::entryDistanceMpc(e, this->schema);
-        const double ra  = e.raDeg  * pi / 180.0;
-        const double dec = e.decDeg * pi / 180.0;
-        e.sceneX = d * std::cos(dec) * std::cos(ra);
-        e.sceneY = d * std::cos(dec) * std::sin(ra);
-        e.sceneZ = d * std::sin(dec);
-    }
+    // The rows are copied (not shared any more) only when one actually moves.
+    const Catalogue3DSchema &schema = this->schema;
+    this->entries.update(
+            [&schema](const Catalogue3DEntry &e) {
+                return !Catalogue3DParser::detail::sceneAt(
+                        e, Catalogue3DParser::detail::cartesianAt(
+                                   e, Catalogue3DParser::detail::entryDistanceMpc(e, schema)));
+            },
+            [&schema](Catalogue3DEntry &e) {
+                Catalogue3DParser::detail::fillCartesian(e, schema);
+            });
     this->applyFrameToEntries();
     this->renderer->RemoveAllViewProps();
     this->morphologyNames.clear();
@@ -538,18 +564,10 @@ void vtkWindowCatalogue3D::applyFilter()
     // list as edited now; a failed query puts the previous one back.
     this->m_appliedFilters.begin(this->activeFilters);
     this->queryAppliedFilters();
-    // The filters are the group's (#604): the panes of this window that are linked
-    // query their rows with the same ones, so every pane shows the same particles.
-    if (this->m_paneGrid && this->m_comparisonLinked) {
-        for (int i = 0; i < 4; ++i) {
-            vtkWindowCatalogue3D *pane = this->m_paneWindows[i];
-            if (!pane || pane == this || !pane->m_comparisonLinked)
-                continue;
-            pane->activeFilters = this->activeFilters;
-            pane->syncFilterList();
-            pane->applyFilter();
-        }
-    }
+    // The filters are the group's (#604): once this pane has the rows, the linked panes
+    // take them from it (shareFilteredRows) instead of asking for the same query each.
+    this->m_shareFilterResult = this->filterBusy;
+    this->m_filterShareSource = nullptr;   // this pane's own newer filter wins over one waiting
 }
 
 void vtkWindowCatalogue3D::queryAppliedFilters()

@@ -129,3 +129,44 @@ void TestSharedRows::appendThroughMut_afterSharing()
     QCOMPARE(a.size(), std::size_t(3));
     QCOMPARE(b[3].id, 9);
 }
+
+void TestSharedRows::update_copiesNothingWhenNoRowNeedsIt()
+{
+    SharedRows<Row> a(make(5));
+    SharedRows<Row> b = a;
+    // Every row is already where it should be: the rows stay shared.
+    const bool written = b.update([](const Row &r) { return r.x < 0.0; },
+                                  [](Row &r) { r.x = 0.0; });
+    QVERIFY(!written);
+    QVERIFY(a.sharesWith(b));
+    QCOMPARE(a.handles(), 2L);
+    SharedRows<Row> none;
+    QVERIFY(!none.update([](const Row &) { return true; }, [](Row &) {}));
+}
+
+void TestSharedRows::update_writesFromTheFirstRowThatNeedsIt()
+{
+    SharedRows<Row> a(make(6));
+    SharedRows<Row> b = a;
+    int applied = 0;
+    const bool written = b.update([](const Row &r) { return r.id >= 3; },
+                                  [&applied](Row &r) {
+                                      r.x = -1.0;
+                                      ++applied;
+                                  });
+    QVERIFY(written);
+    QCOMPARE(applied, 3);              // rows 3, 4, 5
+    QCOMPARE(b[2].x, 1.0);             // untouched
+    QCOMPARE(b[3].x, -1.0);
+    QCOMPARE(b[5].x, -1.0);
+}
+
+void TestSharedRows::update_leavesTheOthersTheirRows()
+{
+    SharedRows<Row> a(make(4));
+    SharedRows<Row> b = a;
+    b.update([](const Row &) { return true; }, [](Row &r) { r.x = 99.0; });
+    QVERIFY(!a.sharesWith(b));         // b copied before it wrote
+    QCOMPARE(a[1].x, 0.5);
+    QCOMPARE(b[1].x, 99.0);
+}

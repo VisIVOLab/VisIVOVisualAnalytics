@@ -20,6 +20,10 @@ private slots:
     void newPane_stackedPairGrowsIntoTheRightColumn();
     void newPane_refusedWhenFull();
     void survivor_activePaneMovesToSlotZero();
+    void layoutSlots_visiblePanesStay();
+    void layoutSlots_fourToTwoSideBySideKeepsPaneBesideTheFirst();
+    void layoutSlots_stackedPairWidenedMovesTheLowerPane();
+    void layoutSlots_morePanesThanRoomStayHidden();
 
     void nextQuantity_prefersDensityThenTemperatureThenEntropy();
     void nextQuantity_skipsShownAndCoordinates();
@@ -37,4 +41,11 @@ private slots:
     void session_roundTrips();
     void session_toleratesGarbage();
     void session_countCoversThePaneList();
+    void session_hostGoesFirstWhateverItsSlot();
+    void session_activeFollowsItsPaneInTheNewOrder();
+    void session_noHostSlotKeepsSlotOrder();
+
+    void filterTargets_linkedPanesOfTheSameTable();
+    void filterTargets_anyLinkedPaneCanBeTheSource();
+    void filterTargets_unlinkedSourceKeepsItsFiltersToItself();
 };

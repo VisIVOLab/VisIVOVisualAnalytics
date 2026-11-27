@@ -197,6 +197,118 @@ void TestPaneLayout::session_countCoversThePaneList()
     QCOMPARE(cut.panes.size(), 2);
 }
 
+void TestPaneLayout::layoutSlots_visiblePanesStay()
+{
+    const Slots taken{ true, true, false, false };
+    const std::array<int, kSlots> to = slotsForLayout(taken, visibleSlots(2, false));
+    QCOMPARE(to, (std::array<int, kSlots>{ 0, 1, 2, 3 }));
+}
+
+void TestPaneLayout::layoutSlots_fourToTwoSideBySideKeepsPaneBesideTheFirst()
+{
+    // Four panes shrunk to two side by side show slots {0, 1}; the second pane sat in slot 2.
+    const Slots taken{ true, false, true, false };
+    const std::array<int, kSlots> to = slotsForLayout(taken, visibleSlots(2, false));
+    QCOMPARE(to[0], 0);
+    QCOMPARE(to[2], 1);
+}
+
+void TestPaneLayout::layoutSlots_stackedPairWidenedMovesTheLowerPane()
+{
+    // A stacked pair (slots 0 and 2) in a window that was widened: side by side shows {0, 1}.
+    const Slots taken{ true, false, true, false };
+    QCOMPARE(slotsForLayout(taken, visibleSlots(2, true))[2], 2);    // stacked: stays
+    QCOMPARE(slotsForLayout(taken, visibleSlots(2, false))[2], 1);   // wide: moves up
+    // And the other way: a side by side pair in a narrowed window.
+    const Slots wide{ true, true, false, false };
+    QCOMPARE(slotsForLayout(wide, visibleSlots(2, true))[1], 2);
+}
+
+void TestPaneLayout::layoutSlots_morePanesThanRoomStayHidden()
+{
+    // Three panes in a two-pane layout: the third has no free visible slot and stays put.
+    const Slots taken{ true, true, true, false };
+    const std::array<int, kSlots> to = slotsForLayout(taken, visibleSlots(2, false));
+    QCOMPARE(to[0], 0);
+    QCOMPARE(to[1], 1);
+    QCOMPARE(to[2], 2);
+    // Panes in hidden slots fill the free visible ones in slot order, never two in one.
+    const Slots many{ false, true, true, true };
+    const std::array<int, kSlots> m = slotsForLayout(many, visibleSlots(2, false));
+    QCOMPARE(m[1], 1);
+    QCOMPARE(m[2], 0);
+    QCOMPARE(m[3], 3);
+}
+
+void TestPaneLayout::session_hostGoesFirstWhateverItsSlot()
+{
+    // The host's window sat in slot 2 (the layout moved it); the session lists it first.
+    std::array<PaneSlotState, kSlots> cells;
+    cells[0] = { true, u"temperature"_s, true };
+    cells[1] = { true, u"entropy"_s, false };
+    cells[2] = { true, u"rho"_s, true };
+    const PaneSession s = makeSession(4, 0, 2, cells);
+    QCOMPARE(s.count, 4);
+    QCOMPARE(s.panes.size(), 3);
+    QCOMPARE(s.panes[0].quantity, u"rho"_s);
+    QCOMPARE(s.panes[1].quantity, u"temperature"_s);
+    QCOMPARE(s.panes[2].quantity, u"entropy"_s);
+    QVERIFY(!s.panes[2].linked);
+    // It reads back as the same session.
+    QCOMPARE(fromJson(toJson(s)), s);
+}
+
+void TestPaneLayout::session_activeFollowsItsPaneInTheNewOrder()
+{
+    std::array<PaneSlotState, kSlots> cells;
+    cells[0] = { true, u"temperature"_s, true };
+    cells[2] = { true, u"rho"_s, true };
+    QCOMPARE(makeSession(2, 2, 2, cells).active, 0);   // the host is active: first
+    QCOMPARE(makeSession(2, 0, 2, cells).active, 1);   // the other pane: second
+}
+
+void TestPaneLayout::session_noHostSlotKeepsSlotOrder()
+{
+    std::array<PaneSlotState, kSlots> cells;
+    cells[1] = { true, u"b"_s, true };
+    cells[3] = { true, u"d"_s, true };
+    const PaneSession s = makeSession(4, 3, -1, cells);
+    QCOMPARE(s.panes.size(), 2);
+    QCOMPARE(s.panes[0].quantity, u"b"_s);
+    QCOMPARE(s.active, 1);
+}
+
+void TestPaneLayout::filterTargets_linkedPanesOfTheSameTable()
+{
+    std::array<PaneFilterLink, kSlots> panes;
+    panes[0] = { true, true, true };
+    panes[1] = { true, true, true };
+    panes[2] = { true, false, true };    // unlinked: keeps its own filters
+    panes[3] = { true, true, false };    // another table
+    QCOMPARE(filterTargets(0, panes), (QList<int>{ 1 }));
+}
+
+void TestPaneLayout::filterTargets_anyLinkedPaneCanBeTheSource()
+{
+    // The filter was edited in a pane that is not the host: the others (host included) follow.
+    std::array<PaneFilterLink, kSlots> panes;
+    panes[0] = { true, true, true };
+    panes[1] = { true, true, true };
+    panes[2] = { true, true, true };
+    QCOMPARE(filterTargets(2, panes), (QList<int>{ 0, 1 }));
+    QCOMPARE(filterTargets(1, panes), (QList<int>{ 0, 2 }));
+}
+
+void TestPaneLayout::filterTargets_unlinkedSourceKeepsItsFiltersToItself()
+{
+    std::array<PaneFilterLink, kSlots> panes;
+    panes[0] = { true, true, true };
+    panes[1] = { true, false, true };
+    QVERIFY(filterTargets(1, panes).isEmpty());
+    QVERIFY(filterTargets(3, panes).isEmpty());    // an empty slot is no source
+    QVERIFY(filterTargets(-1, panes).isEmpty());
+}
+
 // ── GridState: pop-out / dock-back / maximise rules the cube window always had ──
 
 void TestPaneLayout::grid_detachDockMaximiseState()

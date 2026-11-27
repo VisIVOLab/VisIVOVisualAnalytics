@@ -50,6 +50,10 @@ public:
     void pause();
     void resume();
     bool isPaused() const { return m_paused; }
+    /// The points are drawn on the backend: a session is live, or it was given back while
+    /// the view is off screen and comes back when it is shown (paused). What the window
+    /// says about where its view is drawn does not flicker with a pause.
+    bool onBackend() const { return isActive() || m_paused; }
     /// The backend's render session, empty before it starts.
     QString renderSessionId() const { return m_renderSessionId; }
 

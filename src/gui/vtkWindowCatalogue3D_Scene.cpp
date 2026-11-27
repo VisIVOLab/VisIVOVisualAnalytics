@@ -262,6 +262,12 @@ void vtkWindowCatalogue3D::pumpSceneBuild(int processed)
     QApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
 }
 
+struct vtkWindowCatalogue3D::DonorGeometry
+{
+    vtkSmartPointer<vtkCellArray> verts;
+    vtkSmartPointer<vtkFloatArray> velocity;
+};
+
 void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
 {
     // For very large catalogues, build with the glyph/points actors hidden and
@@ -280,7 +286,11 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     // ── Populate point cloud ──────────────────────────────────────────────────
     // A pane of the same rows takes the positions, vertex cells and velocities of the view
     // it was made from: only its colour (and size) arrays are its own (#604).
-    const bool adopted = this->adoptDonorGeometry();
+    // Everything shared is taken in this one call, before the loops below pump the event
+    // loop: a donor that finishes a filter meanwhile cannot leave this pane with the points
+    // of one revision and the vertex cells or velocities of another.
+    DonorGeometry donor;
+    const bool adopted = this->adoptDonorGeometry(donor);
     if (!adopted) {
         // Fresh points, never the previous ones rewritten: another pane may hold those.
         this->sourcePoints = vtkSmartPointer<vtkPoints>::New();
@@ -321,8 +331,8 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
 
     // Vertices cell array so vtkGlyph3D recognises each point.
     vtkSmartPointer<vtkCellArray> verts;
-    if (adopted && this->m_geometryDonor && this->m_geometryDonor->sourcesPolyData->GetVerts()) {
-        verts = this->m_geometryDonor->sourcesPolyData->GetVerts();
+    if (adopted && donor.verts) {
+        verts = donor.verts;
     } else {
         verts = vtkSmartPointer<vtkCellArray>::New();
         for (vtkIdType i = 0; i < static_cast<vtkIdType>(entries.size()); ++i) {
@@ -346,10 +356,9 @@ void vtkWindowCatalogue3D::buildScene(SnapshotTimelineSteps::Rebuild why)
     this->detectVelocityColumns();
     const bool hasVelocity = this->m_velocityColIdx[0] >= 0 && this->m_velocityColIdx[1] >= 0
             && this->m_velocityColIdx[2] >= 0;
-    if (hasVelocity && adopted && this->m_geometryDonor
-        && this->m_geometryDonor->velocityVectors->GetNumberOfTuples()
-                   == static_cast<vtkIdType>(entries.size())) {
-        this->velocityVectors = this->m_geometryDonor->velocityVectors;
+    if (hasVelocity && adopted && donor.velocity
+        && donor.velocity->GetNumberOfTuples() == static_cast<vtkIdType>(entries.size())) {
+        this->velocityVectors = donor.velocity;
         sourcesPolyData->GetPointData()->AddArray(this->velocityVectors);
     } else if (hasVelocity) {
         // New array: the donor (or a pane) may still hold the previous one.
@@ -813,7 +822,7 @@ QString vtkWindowCatalogue3D::currentPositionKey() const
     return this->mapXKey + u'|' + this->mapYKey + u'|' + this->mapZKey;
 }
 
-bool vtkWindowCatalogue3D::adoptDonorGeometry()
+bool vtkWindowCatalogue3D::adoptDonorGeometry(DonorGeometry &out)
 {
     vtkWindowCatalogue3D *donor = this->m_geometryDonor;
     if (!donor || donor == this || this->entries.empty() || donor->m_sceneBuilding
@@ -822,6 +831,10 @@ bool vtkWindowCatalogue3D::adoptDonorGeometry()
         || donor->sourcePoints->GetNumberOfPoints() != static_cast<vtkIdType>(this->entries.size())
         || donor->mappedPositions.size() != this->entries.size())
         return false;
+    // Smart pointers, all taken together: the donor may rebuild later, this pane keeps
+    // the revision it took.
+    out.verts = donor->sourcesPolyData->GetVerts();
+    out.velocity = donor->velocityVectors;
     this->sourcePoints = donor->sourcePoints;
     this->mappedPositions = donor->mappedPositions;
     this->m_positionKey = donor->m_positionKey;

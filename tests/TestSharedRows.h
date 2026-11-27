@@ -18,4 +18,7 @@ private slots:
     void conversionToVector_isTheSameStorage();
     void resetThenMut_startsFresh();
     void appendThroughMut_afterSharing();
+    void update_copiesNothingWhenNoRowNeedsIt();
+    void update_writesFromTheFirstRowThatNeedsIt();
+    void update_leavesTheOthersTheirRows();
 };

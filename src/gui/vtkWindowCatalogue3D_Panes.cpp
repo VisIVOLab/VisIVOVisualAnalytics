@@ -259,22 +259,28 @@ bool vtkWindowCatalogue3D::addPaneWindow(vtkWindowCatalogue3D *peer, int slot)
     for (int i = 0; i < kSlots; ++i)
         taken[i] = this->m_paneWindows[i] != nullptr;
     int count = this->m_paneCount;
+    // The layout as it is drawn (its orientation was decided when it was last laid out).
     if (slot < 0)
-        slot = slotForNewPane(this->m_paneCount, this->paneStacked(), taken, &count);
+        slot = slotForNewPane(this->m_paneCount, this->m_paneStacked, taken, &count);
     if (slot < 0 || taken[slot])
         return false;
 
     this->m_paneWindows[slot] = peer;
     peer->m_paneHost = this;
     peer->m_ownerScope = this->m_ownerScope;
-    QObject::connect(peer->comboMapColor, &QComboBox::currentIndexChanged, this,
-                     [this]() { this->refreshPaneHeaders(); });
+    // The pane's quantity names its header and its Session Data row (the host lists them).
+    QObject::connect(peer->comboMapColor, &QComboBox::currentIndexChanged, this, [this]() {
+        this->refreshPaneHeaders();
+        this->refreshPaneProducts();
+    });
     if (count != this->m_paneCount || this->m_paneGrid->isMaximised())
         this->setPaneCount(count);   // shows the slot, mounts every pane (and leaves maximise)
     else
         this->mountPane(slot);
+    // A new layout may have moved the pane to a slot it shows.
+    const int placedAt = this->paneSlotOf(peer);
     this->refreshPaneProducts();
-    this->setActivePane(slot);
+    this->setActivePane(placedAt >= 0 ? placedAt : slot);
     this->savePaneSession();
     return true;
 }
@@ -296,7 +302,30 @@ void vtkWindowCatalogue3D::setPaneCount(int panes)
     this->m_paneCount = panes;
     if (panes == 1)
         this->m_activePane = 0;
+    // The orientation is decided here, from the width now; everything else that asks which
+    // slots are shown uses this answer (m_paneStacked), so a window widened after opening
+    // does not hide a pane.
     const bool stacked = panes == 2 && this->paneStacked();
+    this->m_paneStacked = stacked;
+    // A pane in a slot this layout hides moves into one it shows (4 -> 2, or a stacked pair
+    // that is now side by side), with its view, before the views are mounted.
+    {
+        std::array<bool, kSlots> taken{};
+        for (int i = 0; i < kSlots; ++i)
+            taken[i] = this->m_paneWindows[i] != nullptr;
+        const std::array<int, kSlots> to = slotsForLayout(taken, visibleSlots(panes, stacked));
+        std::array<QPointer<vtkWindowCatalogue3D>, kSlots> moved;
+        int active = this->m_activePane;
+        for (int i = 0; i < kSlots; ++i) {
+            if (!taken[i])
+                continue;
+            moved[to[i]] = this->m_paneWindows[i];
+            if (i == this->m_activePane)
+                active = to[i];
+        }
+        this->m_paneWindows = moved;
+        this->m_activePane = active;
+    }
     for (int i = 0; i < kSlots; ++i)
         this->mountPane(i);
     this->m_paneGrid->applyVisibility(visibleSlots(panes, stacked));
@@ -580,6 +609,10 @@ void vtkWindowCatalogue3D::refreshPaneProducts()
     this->m_paneProductIds = ids;
 }
 
+// paneRemovalRefusal and removePaneProducts are the two halves of a Session Data removal
+// handler (#580). They are not installed yet: SessionDataTree gets setRemovalHandler with
+// PR #605, and wiring them is then one line (see the header). Until it is merged nothing
+// calls them, on purpose, so they are kept here and covered by that line's test.
 QString vtkWindowCatalogue3D::paneRemovalRefusal(const AnalysisProduct &product) const
 {
     if (product.productId == this->m_componentProductId)
@@ -616,7 +649,7 @@ void vtkWindowCatalogue3D::onSessionRowActivated(const QString &, const QString 
             if (this->m_paneGrid) {
                 // A pane hidden by a smaller layout comes back with the layout it needs.
                 const std::array<bool, kSlots> visible =
-                        visibleSlots(this->m_paneCount, this->m_paneCount == 2 && this->paneStacked());
+                        visibleSlots(this->m_paneCount, this->m_paneStacked);
                 if (!visible[i])
                     this->setPaneCount(4);
                 this->setActivePane(i);
@@ -630,8 +663,7 @@ void vtkWindowCatalogue3D::onSessionRowActivated(const QString &, const QString 
 
 visivo::particlepanes::PaneSession vtkWindowCatalogue3D::paneSession() const
 {
-    visivo::particlepanes::PaneSession s;
-    s.count = this->m_paneCount;
+    std::array<visivo::particlepanes::PaneSlotState, kSlots> cells;
     for (int i = 0; i < kSlots; ++i) {
         const vtkWindowCatalogue3D *w = this->m_paneWindows[i];
         if (!w)
@@ -642,16 +674,19 @@ visivo::particlepanes::PaneSession vtkWindowCatalogue3D::paneSession() const
             if (key.startsWith(u"raw:"_s))
                 name = w->rawHeaders.value(key.mid(4).toInt());
         }
-        if (i == this->m_activePane)
-            s.active = s.panes.size();
-        s.panes.append({ name, w->m_comparisonLinked || w->m_comparisonGroup.isEmpty() });
+        cells[i] = { true, name, w->m_comparisonLinked || w->m_comparisonGroup.isEmpty() };
     }
-    return s;
+    // The host's pane first: a restore starts from the host's own window, wherever the
+    // pane sat in the grid when the session was saved.
+    return visivo::particlepanes::makeSession(this->m_paneCount, this->m_activePane,
+                                              this->paneSlotOf(this), cells);
 }
 
 void vtkWindowCatalogue3D::savePaneSession() const
 {
-    if (this->m_paneHost || !this->m_pointTable || this->filepath.isEmpty())
+    // A restore in progress saves once, at its end: a half-built layout is not the session.
+    if (this->m_paneHost || this->m_restoringPanes || !this->m_pointTable
+        || this->filepath.isEmpty())
         return;
     // By table, so the next window on it opens with the same comparison.
     QSettings settings;
@@ -705,23 +740,48 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
             if (item >= 0)
                 w->comboMapColor->setCurrentIndex(item);
         };
+        const auto paneCount = [this]() {
+            int n = 0;
+            for (const QPointer<vtkWindowCatalogue3D> &w : this->m_paneWindows)
+                n += w ? 1 : 0;
+            return std::max(n, 1);
+        };
+        // The panes are rebuilt one after another, and the saved layout is only complete at
+        // the end: until then nothing overwrites it.
+        this->m_restoringPanes = true;
         select(this, session.panes.first().quantity);
-        int made = 0;
+        QList<QPointer<vtkWindowCatalogue3D>> restored{ this };   // in session order
         for (int i = 1; i < session.panes.size(); ++i) {
-            const int before = this->m_paneWindows[0] ? this->paneSession().panes.size() : 1;
+            const int before = paneCount();
             this->openQuantityComparison();
-            if (this->paneSession().panes.size() <= before)
+            if (paneCount() <= before)
                 break;
-            ++made;
+            restored << this->activePaneWindow();
             select(this->activePaneWindow(), session.panes[i].quantity);
-            if (!session.panes[i].linked)
-                this->activePaneWindow()->setComparisonLinked(false);
         }
-        if (made > 0)
+        const int made = static_cast<int>(restored.size()) - 1;
+        if (made > 0) {
+            // What the session kept besides the quantities: the layout, which pane was
+            // active, and which panes were unlinked (the first one too).
+            if (session.count > this->m_paneCount)
+                this->setPaneCount(session.count);
+            for (int i = 0; i < restored.size(); ++i)
+                if (restored[i] && !session.panes[i].linked)
+                    restored[i]->setComparisonLinked(false);
+            if (session.active >= 0 && session.active < restored.size() && restored[session.active]) {
+                const int slot = this->paneSlotOf(restored[session.active]);
+                if (slot >= 0)
+                    this->setActivePane(slot);
+            }
             this->statusBar()->showMessage(
                     u"Comparison of your last session restored: %1 panes. Close the ones you do not need."_s
                             .arg(made + 1),
                     10000);
+        }
+        this->m_restoringPanes = false;
+        this->refreshPaneProducts();
+        this->refreshPaneHeaders();
+        this->savePaneSession();
     });
     timer->start(500);
 }
@@ -748,6 +808,12 @@ void vtkWindowCatalogue3D::rebuildPanesFor(const QList<QPointer<vtkWindowCatalog
             this->addPaneWindow(w, slot);   // a step's windows start hidden: the grid shows them
     }
     this->setPaneCount(count);
-    this->setActivePane(std::clamp(active, 0, kSlots - 1));
+    // The pane that was active, wherever the layout put it now.
+    int activeSlot = std::clamp(active, 0, kSlots - 1);
+    for (int i = 0; i < windows.size() && i < paneSlots.size(); ++i)
+        if (paneSlots.at(i) == active && windows.at(i))
+            if (const int moved = this->paneSlotOf(windows.at(i)); moved >= 0)
+                activeSlot = moved;
+    this->setActivePane(activeSlot);
     this->refreshPaneProducts();
 }

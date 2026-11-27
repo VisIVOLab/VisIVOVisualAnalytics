@@ -382,6 +382,8 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
     QObject::connect(&this->filterWatcher, &QFutureWatcher<Catalogue3DFilterTaskResult>::finished,
                      this, [this]() {
                          this->filterBusy = false;
+                         // A filter the user applied here: its answer goes to the linked panes.
+                         const bool shareFilter = std::exchange(this->m_shareFilterResult, false);
                          // The background query for the first rows' other
                          // columns, if this was it: read by buildScene() (the
                          // camera stays), cleared on every way out.
@@ -543,6 +545,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                          if (std::exchange(this->m_awaitingHydration, false))
                              this->shareHydratedRows(hydration ? HydrationShare::Rows
                                                                : HydrationShare::LoadOwn);
+                         if (shareFilter && !hydration) {
+                             this->m_filterShareSource = nullptr;   // these rows are the newest
+                             this->shareFilteredRows();
+                         }
                      });
 
     // ── Connect "load more" watcher ───────────────────────────────────────────
@@ -1403,6 +1409,8 @@ void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString
     this->m_appliedFilters.begin(visivo::selection::withOnlyCondition(
             this->m_appliedFilters.filters(), field, u"="_s, value));
     this->queryAppliedFilters();
+    this->m_shareFilterResult = this->filterBusy;   // the linked panes follow (shareFilteredRows)
+    this->m_filterShareSource = nullptr;
 }
 
 void vtkWindowCatalogue3D::syncFilterList()

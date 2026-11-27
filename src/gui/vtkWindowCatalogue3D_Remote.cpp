@@ -299,6 +299,10 @@ void vtkWindowCatalogue3D::applyRenderMode(RenderMode mode, bool chosen)
         if (this->linkedWithPeers())
             this->followCameraInShownView(this->localCameraJson());
         this->m_remoteView->start();
+        // Started while its view is off screen (a pane the layout hides, a Hide that came
+        // before there was a view): the pause is armed now, not only on the next Hide.
+        if (this->m_renderStack)
+            this->onRenderStackVisibility(this->m_renderStack->isVisible());
     }
     this->updateRenderBadge();
 }
@@ -324,7 +328,11 @@ void vtkWindowCatalogue3D::updateRenderBadge()
         return;
     // Always says what is drawn, on a backend that cannot draw too: a sample,
     // or all the rows once they are loaded here.
-    const bool remote = this->m_remoteView && this->m_remoteView->isActive();
+    // A paused view is still the backend's, while its page is the one shown.
+    const bool remote = this->m_remoteView
+            && (this->m_remoteView->isActive()
+                || (this->m_remoteView->onBackend() && this->m_renderStack
+                    && this->m_renderStack->currentWidget() == this->m_remoteWidget));
     this->m_renderBadge->setText(visivo::pointtable::renderBadgeText(remote, loaded, total));
     // The sample's explanation, and why a chosen mode is not followed when it
     // is not: both, not one hiding the other.
@@ -840,7 +848,8 @@ QJsonObject vtkWindowCatalogue3D::localCameraJson() const
 
 bool vtkWindowCatalogue3D::drawnOnBackend() const
 {
-    return this->m_renderStack && this->m_remoteView && this->m_remoteView->isActive()
+    // A view paused while it is off screen is still the backend's: it comes back with it.
+    return this->m_renderStack && this->m_remoteView && this->m_remoteView->onBackend()
             && this->m_renderStack->currentWidget() == this->m_remoteWidget;
 }
 
@@ -895,6 +904,8 @@ void vtkWindowCatalogue3D::viewCamera(
         done(this->m_rtView->camera(), QString());
         return;
     }
+    // A paused view has no session to ask: its camera is the group's, which this window's
+    // VTK camera follows, exactly as for a view that is not live yet.
     const bool remote = this->m_renderStack && this->m_remoteView
             && this->m_renderStack->currentWidget() == this->m_remoteWidget
             && !this->m_remoteView->renderSessionId().isEmpty();

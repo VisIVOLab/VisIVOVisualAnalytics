@@ -8,6 +8,8 @@
 
 #include "PaneLayoutModel.h"
 
+#include <array>
+
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
@@ -68,6 +70,29 @@ inline int nextQuantity(const QList<QuantityChoice> &choices, const QSet<QString
     return -1;
 }
 
+/// What a pane's filter answer needs to know about another pane of the grid.
+struct PaneFilterLink
+{
+    bool present{ false };     ///< the slot holds a pane
+    bool linked{ false };      ///< its camera, selection and filters follow the group
+    bool sameTable{ false };   ///< it looks at the same backend dataset
+};
+
+/// The slots that take the rows a filter answered in @p source: the other linked panes of
+/// the same table, whichever pane the filter was edited in. An unlinked source keeps its
+/// filters to itself, and an unlinked pane keeps its own.
+inline QList<int> filterTargets(int source, const std::array<PaneFilterLink, visivo::panes::kSlots> &panes)
+{
+    QList<int> out;
+    if (source < 0 || source >= visivo::panes::kSlots || !panes[source].present
+        || !panes[source].linked)
+        return out;
+    for (int i = 0; i < visivo::panes::kSlots; ++i)
+        if (i != source && panes[i].present && panes[i].linked && panes[i].sameTable)
+            out << i;
+    return out;
+}
+
 /// What a session keeps of the panes: the layout, each pane's quantity (by column name,
 /// which outlives the column order), whether it is linked to the group, and which pane
 /// was active. Camera and filters are the group's, so they are not stored per pane.
@@ -92,6 +117,35 @@ struct PaneSession
         return true;
     }
 };
+
+/// One slot of the grid as a session sees it.
+struct PaneSlotState
+{
+    bool present{ false };
+    QString quantity;
+    bool linked{ true };
+};
+
+/// The session of a grid: the HOST's pane first (a session is restored from the host's
+/// window, whichever slot it sat in), then the others in slot order. @p active is a slot;
+/// the session names it by its place in that order.
+inline PaneSession makeSession(int count, int activeSlot, int hostSlot,
+                               const std::array<PaneSlotState, visivo::panes::kSlots> &cells)
+{
+    PaneSession s;
+    s.count = visivo::panes::normalisedCount(count);
+    const auto add = [&](int slot) {
+        if (slot == activeSlot)
+            s.active = s.panes.size();
+        s.panes.append({ cells[slot].quantity, cells[slot].linked });
+    };
+    if (hostSlot >= 0 && hostSlot < visivo::panes::kSlots && cells[hostSlot].present)
+        add(hostSlot);
+    for (int i = 0; i < visivo::panes::kSlots; ++i)
+        if (cells[i].present && i != hostSlot)
+            add(i);
+    return s;
+}
 
 inline QJsonObject toJson(const PaneSession &s)
 {

@@ -78,6 +78,33 @@ constexpr int slotForNewPane(int panes, bool stacked, const std::array<bool, kSl
     return slot;
 }
 
+/// Where each pane goes when the layout shows @p visible: a pane in a visible slot stays;
+/// one in a hidden slot takes a free visible slot, in slot order (4 -> 2 side by side keeps
+/// the second view beside the first instead of in slot 2, which that layout hides; a
+/// stacked pair that is widened moves its lower view to slot 1). Returns, per slot, the
+/// slot its pane goes to: an empty slot maps to itself, and so does a pane that finds no
+/// free visible slot (more panes than the layout shows: it stays, hidden).
+constexpr std::array<int, kSlots> slotsForLayout(const std::array<bool, kSlots> &taken,
+                                                 const std::array<bool, kSlots> &visible)
+{
+    std::array<int, kSlots> to{ 0, 1, 2, 3 };
+    std::array<bool, kSlots> used{};
+    for (int i = 0; i < kSlots; ++i)
+        used[i] = taken[i] && visible[i];
+    for (int i = 0; i < kSlots; ++i) {
+        if (!taken[i] || visible[i])
+            continue;
+        for (int j = 0; j < kSlots; ++j) {
+            if (visible[j] && !used[j]) {
+                to[i] = j;
+                used[j] = true;
+                break;
+            }
+        }
+    }
+    return to;
+}
+
 /// Layout state shrinking to @p panes: when going 4/2 -> 1 the active pane's view
 /// moves to slot 0. Returns the slot to swap into 0, or -1 for no swap.
 constexpr int survivorSwapSlot(int panes, int currentCount, int activeSlot)

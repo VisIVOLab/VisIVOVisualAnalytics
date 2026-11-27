@@ -9,6 +9,7 @@
 #include <QVariant>
 #include <QVariantList>
 
+#include <array>
 #include <cmath>
 #include <initializer_list>
 #include <limits>
@@ -634,14 +635,28 @@ inline double entryLlsMinorKpc(const Catalogue3DEntry &entry, const Catalogue3DS
 
 // FK5 scene position at radial distance @p d (NaN for an unplaced source, which
 // is never in a window's entries).
-inline void fillCartesian(Catalogue3DEntry &e, double d)
+inline std::array<double, 3> cartesianAt(const Catalogue3DEntry &e, double d)
 {
     constexpr double pi = 3.14159265358979323846;
     const double ra  = e.raDeg * pi / 180.0;
     const double dec = e.decDeg * pi / 180.0;
-    e.sceneX = d * std::cos(dec) * std::cos(ra);
-    e.sceneY = d * std::cos(dec) * std::sin(ra);
-    e.sceneZ = d * std::sin(dec);
+    return { d * std::cos(dec) * std::cos(ra), d * std::cos(dec) * std::sin(ra),
+             d * std::sin(dec) };
+}
+
+inline void fillCartesian(Catalogue3DEntry &e, double d)
+{
+    const std::array<double, 3> p = cartesianAt(e, d);
+    e.sceneX = p[0];
+    e.sceneY = p[1];
+    e.sceneZ = p[2];
+}
+
+/// Whether the row already sits at @p p (NaN equals NaN: an unplaced distance stays so).
+inline bool sceneAt(const Catalogue3DEntry &e, const std::array<double, 3> &p)
+{
+    const auto same = [](double a, double b) { return a == b || (std::isnan(a) && std::isnan(b)); };
+    return same(e.sceneX, p[0]) && same(e.sceneY, p[1]) && same(e.sceneZ, p[2]);
 }
 
 inline void fillCartesian(Catalogue3DEntry &e, const Catalogue3DSchema &schema)

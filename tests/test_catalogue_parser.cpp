@@ -2,6 +2,7 @@
 
 #include "TestCatalogueParser.h"
 #include "gui/Catalogue3DParser.h"
+#include "gui/SharedRows.h"
 #include "gui/CataloguePlacement.h"
 #include "gui/CatalogueSelectionKey.h"
 #include "app/CosmologyModel.h"
@@ -9,6 +10,7 @@
 #include <QTest>
 
 #include <cmath>
+#include <limits>
 
 using namespace Qt::StringLiterals;
 
@@ -675,6 +677,34 @@ void TestCatalogueParser::redshiftSpaceMode_usesTheModelsH0()
     QCOMPARE(visivo::cosmology::presetH0(u"Planck13"_s), 67.77);
     QCOMPARE(visivo::cosmology::presetH0(u"WMAP9"_s), 69.32);
     QVERIFY(std::isnan(visivo::cosmology::presetH0(u"Custom"_s)));
+}
+
+void TestCatalogueParser::sceneAt_isTrueWhereTheRowAlreadySits()
+{
+    Catalogue3DEntry e;
+    e.raDeg = 33.0;
+    e.decDeg = -12.0;
+    Catalogue3DParser::detail::fillCartesian(e, 40.0);
+    const auto p = Catalogue3DParser::detail::cartesianAt(e, 40.0);
+    QVERIFY(Catalogue3DParser::detail::sceneAt(e, p));
+    // Another distance is another place: it has to be written.
+    QVERIFY(!Catalogue3DParser::detail::sceneAt(e, Catalogue3DParser::detail::cartesianAt(e, 41.0)));
+    // The same rows in a SharedRows are not copied when they already sit there.
+    SharedRows<Catalogue3DEntry> rows(std::vector<Catalogue3DEntry>(3, e));
+    SharedRows<Catalogue3DEntry> other = rows;
+    QVERIFY(!other.update(
+            [&p](const Catalogue3DEntry &r) { return !Catalogue3DParser::detail::sceneAt(r, p); },
+            [](Catalogue3DEntry &) {}));
+    QVERIFY(rows.sharesWith(other));
+}
+
+void TestCatalogueParser::sceneAt_anUnplacedDistanceStaysUnplaced()
+{
+    // A NaN distance puts the row at NaN, and NaN is where it already is: no write, no copy.
+    Catalogue3DEntry e;
+    Catalogue3DParser::detail::fillCartesian(e, std::numeric_limits<double>::quiet_NaN());
+    QVERIFY(Catalogue3DParser::detail::sceneAt(
+            e, Catalogue3DParser::detail::cartesianAt(e, std::numeric_limits<double>::quiet_NaN())));
 }
 
 // ── issue #298: the selection across a filter or another page ─────────────────

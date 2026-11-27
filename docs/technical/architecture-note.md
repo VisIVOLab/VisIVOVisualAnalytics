@@ -1164,9 +1164,28 @@ write): a pane made from another adopts its `entries` and `mappedPositions` by
 pointer, and `adoptDonorGeometry()` takes the donor's points, vertex cells and
 velocity array while both look at the same rows with the same axis mapping.
 A published `vtkPoints` / velocity array is never rewritten in place; a view
-that places or builds again makes new ones. A streamed pane whose view is not
+that places or builds again makes new ones. `adoptDonorGeometry()` takes the points,
+positions, vertex cells and velocities together, before `buildScene()` pumps the
+event loop, so a donor that finishes a filter meanwhile cannot leave a pane with two
+revisions. `SharedRows::update(needs, apply)` writes rows (a frame or cosmology
+placement) only when one actually moves, so placing the rows of a Cartesian table
+does not give each pane a private copy.
+
+A filter edited in any linked pane runs once: the pane that asked the backend
+shares the answer (`shareFilteredRows()`), and every other linked pane of the same
+table takes the rows and the donor geometry (`adoptFilteredRows()`, the filtered
+counterpart of `adoptHydratedRows()`; both go through `replaceRowsFrom()`). A pane
+that is loading or building is tried again every 250 ms, and a pane that is linked
+again takes the group's filters. Who follows whom is the pure rule `filterTargets()`
+in `ParticlePaneState.h`. The layout orientation is decided once in `setPaneCount()`
+(`m_paneStacked`); a pane in a slot the new layout hides moves to a free visible one
+(`slotsForLayout()` in `PaneLayoutModel.h`). A saved session lists the host's pane
+first (`makeSession()`); a restore applies its count, active pane and link flags and
+stores nothing until it is complete. A streamed pane whose view is not
 visible for `kPauseGraceMs` calls `RemotePointView::pause()`, which releases
-its backend session and keeps its state and camera for `resume()`.
+its backend session and keeps its state and camera for `resume()`; a paused view
+still counts as drawn on the backend (`RemotePointView::onBackend()`), and the pause
+is armed whenever a view is started while its pane is hidden.
 
 ## Cube viewer — tool availability and where results land
 

@@ -84,6 +84,25 @@ public:
     }
     /// Lets go of the rows without copying them; the other handles keep theirs.
     void reset() { m_rows.reset(); }
+    /// Applies @p apply to the rows, but only when a row needs it: @p needs(const T&) says
+    /// so. Nothing is written, and no private copy made, when no row needs it (placing
+    /// rows that already sit where they should). From the first row that does, every row
+    /// goes through @p apply(T&). True when rows were written.
+    template<class Needs, class Apply>
+    bool update(Needs needs, Apply apply)
+    {
+        if (!m_rows)
+            return false;
+        std::size_t first = 0;
+        while (first < m_rows->size() && !needs(std::as_const((*m_rows)[first])))
+            ++first;
+        if (first == m_rows->size())
+            return false;
+        Storage &rows = mut();
+        for (std::size_t i = first; i < rows.size(); ++i)
+            apply(rows[i]);
+        return true;
+    }
 
 private:
     const Storage &view() const

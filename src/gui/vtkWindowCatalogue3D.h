@@ -39,6 +39,7 @@ class SegmentedToggle;
 // VTK forward declarations
 class vtkActor;
 class vtkBillboardTextActor3D;
+class vtkCellArray;
 class vtkCamera;
 class vtkCubeAxesActor;
 class vtkCubeSource;
@@ -496,6 +497,11 @@ private:
     std::array<QPointer<vtkWindowCatalogue3D>, 4> m_paneWindows;   ///< host: slot -> window
     int m_paneCount{ 1 };
     int m_activePane{ 0 };
+    /// Whether the two-pane layout drawn now is one above the other: decided in setPaneCount
+    /// from the width at that moment, and used by everything that asks which slots are shown.
+    bool m_paneStacked{ false };
+    /// A saved layout is being rebuilt: nothing is stored until it is complete.
+    bool m_restoringPanes{ false };
     /// The window whose grid shows this window's view (a pane), else null.
     QPointer<vtkWindowCatalogue3D> m_paneHost;
     /// This window's product scope in ProductRegistry: its Session Data lists what it owns.
@@ -539,8 +545,11 @@ private:
     bool m_pointsPrivate{ false };
     QString currentPositionKey() const;
     /// Takes the donor's points, vertex cells, velocities and positions when they are the same
-    /// for these rows; false when this view has to build its own.
-    bool adoptDonorGeometry();
+    /// for these rows; false when this view has to build its own. The vertex cells and the
+    /// velocities come back in @p out; the points and positions are set here, all four from
+    /// the same revision of the donor.
+    struct DonorGeometry;
+    bool adoptDonorGeometry(DonorGeometry &out);
     void setActivePane(int slot);
     void setPaneCount(int panes);
     bool paneStacked() const;
@@ -619,6 +628,21 @@ private:
     void shareHydratedRows(HydrationShare how);
     /// Take @p source's rows, now with every column: same rows, same camera.
     void adoptHydratedRows(const vtkWindowCatalogue3D &source);
+    /// Put @p source's rows, offsets and totals in this view and build its scene again.
+    void replaceRowsFrom(const vtkWindowCatalogue3D &source, SnapshotTimelineSteps::Rebuild how);
+    /// The other panes of this window's grid that follow this pane's filters (linked,
+    /// same table); empty for a pane that is not linked or not in a grid.
+    QList<QPointer<vtkWindowCatalogue3D>> linkedPaneWindows();
+    /// A filter was answered here: the linked panes take these rows (one query, one copy
+    /// of the rows) instead of asking the backend for the same ones each.
+    void shareFilteredRows();
+    /// Take @p source's filters and the rows they gave. A pane that is loading or building
+    /// is tried again until it is free: the filter is never skipped.
+    void adoptFilteredRows(vtkWindowCatalogue3D *source, int attempt = 0);
+    /// The user's filter query is out: its answer is shared with the linked panes.
+    bool m_shareFilterResult{ false };
+    /// The pane whose filtered rows this one is waiting to take (the latest filter wins).
+    QPointer<vtkWindowCatalogue3D> m_filterShareSource;
     /// Release this window's hold on its backend dataset, closing it there
     /// when no other window holds it (closeEvent, a step that failed).
     void releaseDataset();
