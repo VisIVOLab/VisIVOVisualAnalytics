@@ -1119,7 +1119,6 @@ void vtkWindowCatalogue3D::applyRenderBudget()
 
 void vtkWindowCatalogue3D::updateSplatPass()
 {
-    this->applyMultiSamples();
     if (this->geometryMode == GeometryMode::Gaussian) {
         if (!this->m_splatPass)
             this->m_splatPass = ParticleSplatVtk::floatTargetPass();
@@ -1248,18 +1247,6 @@ void vtkWindowCatalogue3D::updateGlyphScales()
         }
         this->sizeMode = SizeMode::Fixed;
         sizeNormalizationValue = 1.0;
-    }
-
-    // Points and splats are sized by their own property and the mean spacing; the per-row
-    // glyph sizes are read by the glyph shapes only. Not filled for the others: a pane of
-    // a large table in splats would write 12 bytes a row it never reads (the array's pages
-    // stay untouched until a glyph shape asks for them).
-    if (this->geometryMode == GeometryMode::Gaussian || this->geometryMode == GeometryMode::Point) {
-        this->pointsActor->GetProperty()->SetPointSize(this->pointSizeFromScale());
-        updateHighlightSphere(hoverSphere.Get(), hoverActor.Get(), hoveredIndex, 1.45);
-        updateHighlightSphere(selectSphere.Get(), selectActor.Get(), selectedIndex, 1.28);
-        this->updateSampSubset(false);
-        return;
     }
 
     const double sliderScale = ui->sliderScale->value() / 100.0;

@@ -198,6 +198,17 @@ void TestPaneLayout::session_countCoversThePaneList()
     QCOMPARE(two.panes.size(), 4);
 }
 
+void TestPaneLayout::stackedForWidth_followsTheWindowUntilTheGridIsLaidOut()
+{
+    // A grid not laid out yet (width 0): the window decides, so a reopened wide window
+    // shows a pair side by side whatever orientation it was saved in.
+    QVERIFY(!stackedForWidth(0, 3000));
+    QVERIFY(stackedForWidth(0, 800));
+    // Once laid out, the grid's own width decides.
+    QVERIFY(stackedForWidth(700, 3000));
+    QVERIFY(!stackedForWidth(1600, 800));
+}
+
 void TestPaneLayout::layoutSlots_visiblePanesStay()
 {
     const Slots taken{ true, true, false, false };
@@ -523,89 +534,4 @@ void TestPaneLayout::pauseStream_onlyAHiddenPaneOfAVisibleGrid()
     QVERIFY(!pauseStream(true, false, false));
     // The grace is long enough for a layout change to move views through hidden.
     QVERIFY(kPauseGraceMs >= 1000);
-}
-
-void TestPaneLayout::releaseView_onlyAnIdleViewOfAWindowThatIsUp()
-{
-    // A view off screen while its window is up (a hidden pane, another page of the stack):
-    // its GPU memory is given back.
-    QVERIFY(releaseView(/*viewVisible=*/false, /*hostVisible=*/true));
-    // On screen: kept. A window that is itself hidden or minimised keeps all its views, so
-    // that coming back is instant.
-    QVERIFY(!releaseView(true, true));
-    QVERIFY(!releaseView(false, false));
-    QVERIFY(!releaseView(true, false));
-    // It is the stream's condition without the grid: a window of its own gives back the GPU
-    // memory of a view it does not show (the page of another view), but keeps its stream.
-    QVERIFY(releaseView(false, true) && !pauseStream(false, false, true));
-}
-
-void TestPaneLayout::multiSamples_onlyALonePaneOfSolidShapes()
-{
-    constexpr int kDefault = 8;
-    // One pane of solid shapes keeps what the window had.
-    QCOMPARE(multiSamplesFor(false, 1, kDefault), kDefault);
-    // Splats are drawn into a float target with no samples: the samples would only be
-    // buffers nobody uses. Panes side by side are small views of many points.
-    QCOMPARE(multiSamplesFor(true, 1, kDefault), 0);
-    QCOMPARE(multiSamplesFor(false, 2, kDefault), 0);
-    QCOMPARE(multiSamplesFor(false, 4, kDefault), 0);
-    QCOMPARE(multiSamplesFor(true, 4, kDefault), 0);
-    // A window made without samples stays without.
-    QCOMPARE(multiSamplesFor(false, 1, 0), 0);
-}
-
-void TestPaneLayout::session_activePaneIsPartOfTheSession()
-{
-    std::array<PaneSlotState, kSlots> cells;
-    cells[0] = { true, u"LogMass"_s, true };
-    cells[1] = { true, u"LogT"_s, true };
-    cells[2] = { true, u"LogD"_s, true };
-    // Choosing another pane changes the session (so setActivePane has something to save)...
-    const PaneSession first = makeSession(4, 0, 0, cells);
-    const PaneSession third = makeSession(4, 2, 0, cells);
-    QVERIFY(!(first == third));
-    // ...and that is what the next window on the table opens on.
-    QCOMPARE(fromJson(toJson(first)).active, 0);
-    QCOMPARE(fromJson(toJson(third)).active, 2);
-    const PaneSession again = fromJson(toJson(third));
-    QCOMPARE(again.panes.at(again.active).quantity, u"LogD"_s);
-    // The active pane of a layout that shows fewer panes than were kept is kept too.
-    QCOMPARE(fromJson(toJson(makeSession(1, 2, 0, cells))).active, 2);
-}
-
-void TestPaneLayout::stackedForWidth_gridWidthOnceLaidOutElseTheWindow()
-{
-    // A laid out grid decides by its own width.
-    QVERIFY(stackedForWidth(899, 3440));
-    QVERIFY(!stackedForWidth(900, 400));
-    QVERIFY(!stackedForWidth(1720, 3440));
-    // A grid that has not been laid out says 0: the window decides, not the default size
-    // of a new widget (which is narrower than any window and would stack every pair).
-    QVERIFY(!stackedForWidth(0, 3440));
-    QVERIFY(!stackedForWidth(0, 1100));
-    QVERIFY(stackedForWidth(0, 1099));
-}
-
-void TestPaneLayout::restore_pairFollowsTheWidthOfNowNotTheSavedOne()
-{
-    std::array<PaneSlotState, kSlots> cells;
-    cells[0] = { true, u"LogMass"_s, true };
-    cells[2] = { true, u"LogT"_s, true };
-    // Saved in a narrow window: one pane above the other, in slots 0 and 2.
-    const PaneSession saved = makeSession(2, 2, 0, cells, /*stacked=*/true);
-    QVERIFY(saved.stacked);
-    // Reopened in a wide window whose new grid is not laid out yet: the pair sits side by
-    // side, in the slots 0 and 1 that layout shows, each quantity in its own pane.
-    const bool wideNow = stackedForWidth(0, 3440);
-    QVERIFY(!wideNow);
-    const QList<int> wide = restoredSlots(saved, 2, wideNow);
-    QCOMPARE(wide, (QList<int>{ 0, 1 }));
-    QVERIFY(visibleSlots(2, wideNow)[wide[0]] && visibleSlots(2, wideNow)[wide[1]]);
-    // Reopened in a narrow one: as it was.
-    const bool narrowNow = stackedForWidth(700, 3440);
-    QVERIFY(narrowNow);
-    QCOMPARE(restoredSlots(saved, 2, narrowNow), (QList<int>{ 0, 2 }));
-    // The active pane is the second one of the session either way.
-    QCOMPARE(saved.active, 1);
 }

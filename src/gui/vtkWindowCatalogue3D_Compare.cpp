@@ -1149,10 +1149,6 @@ LinkedCameraSync::Pose vtkWindowCatalogue3D::comparisonCameraPose() const
 
 void vtkWindowCatalogue3D::onComparisonCameraFrame()
 {
-    // A view that is not on screen was drawn (any of the many Render() calls): its buffers
-    // are given back after the grace period, as they are when it is hidden.
-    if (this->localViewIdle())
-        this->scheduleIdleRelease(false);
     const LinkedCameraSync::Pose pose = this->comparisonCameraPose();
     if (!this->m_comparisonLinked || this->m_comparisonGroup.isEmpty()) {
         this->m_comparisonCameraTracker.refit(pose);
@@ -1191,10 +1187,7 @@ void vtkWindowCatalogue3D::applyComparisonCamera(const LinkedCameraSync::Pose &p
         camera->SetParallelScale(pose.parallelScale);
     this->renderer->ResetCameraClippingRange();
     this->m_comparisonCameraTracker.adopt(pose);
-    // A pane the layout hides is not drawn for the group's camera: it has the pose, and its
-    // widget draws it when it is shown (drawing it would make the buffers it gave back).
-    if (!this->localViewIdle())
-        this->renderWindow->Render();
+    this->renderWindow->Render();
     // A ray-traced or backend-drawn view shows its own camera, not this one.
     this->followCameraInShownView(this->localCameraJson());
 }

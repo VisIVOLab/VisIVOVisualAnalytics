@@ -360,34 +360,6 @@ void ParticleGLView::setParticles(const QByteArray &rows, int count, Mode mode,
     update();
 }
 
-void ParticleGLView::releaseData()
-{
-    m_rows = QByteArray();
-    m_grid = {};
-    m_count = 0;
-    m_hasGrid = false;
-    m_hasBounds = false;
-    m_upload = false;
-    m_gridUpload = false;
-    m_stats = false;
-    m_kappaStale = true;
-    m_framePending = false;
-    // No context: nothing was made on the GPU (the view was never shown), or it is gone.
-    if (!isValid())
-        return;
-    makeCurrent();
-    if (m_vbo) {
-        // A buffer of nothing: the next upload binds the attributes to it again.
-        m_vbo->destroy();
-        m_vbo->create();
-    }
-    m_accum.reset();
-    m_quarter.reset();
-    m_emissionTexture.reset();
-    m_indexTexture.reset();
-    doneCurrent();
-}
-
 void ParticleGLView::setGrid(Grid grid, Mode mode)
 {
     m_grid = std::move(grid);

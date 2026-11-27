@@ -105,10 +105,6 @@ public:
     void setGrid(Grid grid, Mode mode);
     /// Something to draw: particles or a grid.
     bool hasParticles() const { return m_count > 0 || m_hasGrid; }
-    /// Lets go of what is held for the data: the particle buffer, a grid's textures and the
-    /// float targets (the frame's size in 32-bit floats), here and on the GPU. The shaders
-    /// stay. The view draws nothing until it is given particles or a grid again.
-    void releaseData();
     void setCamera(const QJsonObject &camera);
     void setTone(const Tone &tone);
     /// The picture's shape, letterboxed in the widget.

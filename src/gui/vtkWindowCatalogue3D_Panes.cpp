@@ -274,7 +274,6 @@ bool vtkWindowCatalogue3D::addPaneWindow(vtkWindowCatalogue3D *peer, int slot)
     this->m_paneWindows[slot] = peer;
     peer->m_paneHost = this;
     peer->m_ownerScope = this->m_ownerScope;
-    peer->applyMultiSamples();   // (setPaneCount below does it again for a layout that grows)
     // The pane's quantity names its header and its Session Data row (the host lists them).
     QObject::connect(peer->comboMapColor, &QComboBox::currentIndexChanged, this, [this]() {
         this->refreshPaneHeaders();
@@ -335,10 +334,6 @@ void vtkWindowCatalogue3D::setPaneCount(int panes)
     }
     for (int i = 0; i < kSlots; ++i)
         this->mountPane(i);
-    // The layout decides how many samples each pane's view asks for.
-    for (int i = 0; i < kSlots; ++i)
-        if (this->m_paneWindows[i])
-            this->m_paneWindows[i]->applyMultiSamples();
     this->refreshPaneProducts();   // the Session Data badges name the slots the panes are in now
     this->m_paneGrid->applyVisibility(visibleSlots(panes, stacked));
     this->m_paneGrid->equaliseSplits(panes, stacked);

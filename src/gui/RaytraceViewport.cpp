@@ -187,10 +187,6 @@ void RaytraceViewport::resizeEvent(QResizeEvent *event)
 void RaytraceViewport::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
-    // Given back while it was out of sight: prepared again, as a camera it is waiting
-    // for will then be drawn (a view turned off has none and waits for ray tracing).
-    if (m_released && !m_camera.isEmpty())
-        refresh();
     if (m_redrawPending) {
         m_redrawPending = false;
         redraw(true);
@@ -463,29 +459,8 @@ void RaytraceViewport::setCameraPreset(double azimuth, double elevation)
     redraw(true);
 }
 
-void RaytraceViewport::releaseGpu()
-{
-    // A still on show is what the view is for now: it is not drawn from the GPU, and
-    // putting it away when the view is shown again would lose the picture.
-    if (m_showingStill)
-        return;
-    if (m_reply)
-        m_reply->abort();
-    m_loadingKey.clear();
-    m_key.clear();   // nothing on the GPU is the data of any settings
-    m_redrawPending = false;
-    m_gl->releaseData();
-    m_released = true;
-    finishLoading();   // an aborted fetch ends quietly: no cover is left up for it
-}
-
 void RaytraceViewport::refresh()
 {
-    // Given back while out of sight, and still out of sight (a linked filter reaches a hidden
-    // pane): the particles are fetched when the view is shown (showEvent), not held here.
-    if (m_released && !isVisible())
-        return;
-    m_released = false;
     if (!m_source.request)
         return;
     if (m_failed) {

@@ -84,12 +84,8 @@ void vtkWindowCatalogue3D::setupRemoteRendering()
     this->m_renderStack->addWidget(this->m_remoteWidget);
     // A double-click on a marker selects it there too (eventFilter).
     this->m_remoteWidget->installEventFilter(this);
-    // A pane the layout hides stops streaming (onRenderStackVisibility), and a view that
-    // is not on screen gives its GPU memory back (the stack's page changes do not hide the
-    // stack, so the local view is watched on its own).
+    // A pane the layout hides stops streaming (onRenderStackVisibility).
     this->m_renderStack->installEventFilter(this);
-    ui->vtk->installEventFilter(this);
-    this->m_defaultMultiSamples = this->renderWindow->GetMultiSamples();
 
     // The colour bar of the cube viewer's 3-D view, over whichever view shows.
     this->m_colorbar = new VolumeColorbar(this);
@@ -1024,12 +1020,8 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
             this->refreshColorbar();
         }
         // Taken by the view shown again, if it was on show: forgotten.
-        if (this->m_rtView) {
+        if (this->m_rtView)
             this->m_rtView->clearCamera();
-            // Its particles and float target stay on the GPU otherwise, for a view that is
-            // not drawn (and, in a grid of panes, for as many panes as were ray-traced).
-            this->m_rtView->releaseGpu();
-        }
         return;
     }
     if (this->remoteDatasetId.isEmpty() || !this->m_renderStack) {
@@ -1111,7 +1103,6 @@ void vtkWindowCatalogue3D::setRaytraced(bool on)
         QObject::connect(this->m_rtView, &RaytraceViewport::cameraChanged, this,
                          &vtkWindowCatalogue3D::broadcastComparisonRaytraceCamera);
         this->m_renderStack->addWidget(this->m_rtView);
-        this->m_rtView->installEventFilter(this);   // not on screen: gives its GPU memory back
         // Its pages (the GPU view, or the backend's frames) take the mouse:
         // a double-click on a marker selects it there too (eventFilter). Not
         // the loading overlay over them, which has nothing to pick.
@@ -1270,66 +1261,26 @@ void vtkWindowCatalogue3D::saveViewAs3d()
 void vtkWindowCatalogue3D::onRenderStackVisibility(bool visible)
 {
     if (visible) {
-        // The timer is left to run out: it looks at what is on screen when it does, so a
-        // view that is still hidden (another page of the stack) is still given back.
+        if (this->m_streamPauseTimer)
+            this->m_streamPauseTimer->stop();
         if (this->m_remoteView && this->m_remoteView->isPaused())
             this->m_remoteView->resume();
         return;
     }
+    if (!this->m_remoteView)
+        return;
     // Not at once: a layout change moves the views through hidden for a moment.
-    this->scheduleIdleRelease(true);
-}
-
-void vtkWindowCatalogue3D::scheduleIdleRelease(bool restart)
-{
     if (!this->m_streamPauseTimer) {
         this->m_streamPauseTimer = new QTimer(this);
         this->m_streamPauseTimer->setSingleShot(true);
-        QObject::connect(this->m_streamPauseTimer, &QTimer::timeout, this,
-                         &vtkWindowCatalogue3D::releaseIdleViews);
+        QObject::connect(this->m_streamPauseTimer, &QTimer::timeout, this, [this]() {
+            const vtkWindowCatalogue3D *host = this->paneHostOrSelf();
+            if (this->m_remoteView && this->m_renderStack
+                && visivo::particlepanes::pauseStream(host->m_paneGrid != nullptr,
+                                                      this->m_renderStack->isVisible(),
+                                                      host->isVisible() && !host->isMinimized()))
+                this->m_remoteView->pause();
+        });
     }
-    if (restart || !this->m_streamPauseTimer->isActive())
-        this->m_streamPauseTimer->start(visivo::particlepanes::kPauseGraceMs);
-}
-
-bool vtkWindowCatalogue3D::localViewIdle()
-{
-    const vtkWindowCatalogue3D *host = this->paneHostOrSelf();
-    return ui->vtk
-            && visivo::particlepanes::releaseView(ui->vtk->isVisible(),
-                                                  host->isVisible() && !host->isMinimized());
-}
-
-void vtkWindowCatalogue3D::releaseIdleViews()
-{
-    const vtkWindowCatalogue3D *host = this->paneHostOrSelf();
-    const bool hostShown = host->isVisible() && !host->isMinimized();
-    if (this->m_remoteView && this->m_renderStack
-        && visivo::particlepanes::pauseStream(host->m_paneGrid != nullptr,
-                                              this->m_renderStack->isVisible(), hostShown))
-        this->m_remoteView->pause();
-    // The ray-traced view: its particles are on the GPU and its target is a float image of
-    // the view's size. Fetched again (from the backend's cache) when it is shown.
-    if (this->m_rtView
-        && visivo::particlepanes::releaseView(this->m_rtView->isVisible(), hostShown))
-        this->m_rtView->releaseGpu();
-    // The local view: the buffers VTK keeps for the render window (the view's colour and
-    // depth, the splats' float target, the points of each mapper). Made again at the next
-    // draw, which a widget that is shown asks for itself. A widget that never had its
-    // context has nothing to give back.
-    if (this->localViewIdle() && ui->vtk->isValid()) {
-        this->renderWindow->MakeCurrent();
-        this->renderWindow->ReleaseGraphicsResources(this->renderWindow);
-    }
-}
-
-void vtkWindowCatalogue3D::applyMultiSamples()
-{
-    const vtkWindowCatalogue3D *host = this->paneHostOrSelf();
-    const int shown = host->m_paneGrid ? host->m_paneCount : 1;
-    const int want = visivo::particlepanes::multiSamplesFor(
-            this->geometryMode == GeometryMode::Gaussian, shown, this->m_defaultMultiSamples);
-    // VTK makes its buffers again at the next draw with the new number of samples.
-    if (this->renderWindow->GetMultiSamples() != want)
-        this->renderWindow->SetMultiSamples(want);
+    this->m_streamPauseTimer->start(visivo::particlepanes::kPauseGraceMs);
 }

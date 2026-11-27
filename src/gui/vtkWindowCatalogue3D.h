@@ -536,25 +536,9 @@ private:
     /// computing and holding another copy.
     QPointer<vtkWindowCatalogue3D> m_geometryDonor;
     /// A pane whose view the layout hides gives its backend session back after a grace
-    /// period and takes one again when shown (RemotePointView::pause). The same timer
-    /// gives back the GPU memory of a view that is not on screen (releaseIdleViews).
+    /// period and takes one again when shown (RemotePointView::pause).
     QPointer<QTimer> m_streamPauseTimer;
     void onRenderStackVisibility(bool visible);
-    /// Starts the grace period of the idle views (@p restart: from now, else only when it
-    /// is not running).
-    void scheduleIdleRelease(bool restart);
-    /// Whatever of this window's views is not on screen while the window is: the local view
-    /// gives back the buffers VTK holds for it (it makes them again when it is drawn), the
-    /// ray-traced view its particles and targets (fetched again when it is shown).
-    void releaseIdleViews();
-    /// The window's render window asks for hardware anti-aliasing only where it pays
-    /// (multiSamplesFor); the layout and the shape decide.
-    void applyMultiSamples();
-    int m_defaultMultiSamples{ 8 };
-    /// The local view is not on screen while its window is (a pane the layout hides, or
-    /// the page of the ray-traced or streamed view is up): drawing it would only make
-    /// the buffers releaseIdleViews gives back.
-    bool localViewIdle();
     /// The axes the positions in sourcePoints were computed for; empty while they are
     /// being (re)computed, so nobody adopts half-written points.
     QString m_positionKey;
