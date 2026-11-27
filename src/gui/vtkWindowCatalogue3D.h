@@ -508,6 +508,7 @@ private:
     QString m_ownerScope;
     /// The controls page the host's left dock shows now (the active pane's).
     QPointer<QWidget> m_paneControlsPage;
+    QPointer<QWidget> m_paneFiltersPage;   ///< the Inspector's filter section: the active pane's
     /// closeEvent ran: a second close (a timeline step closes every old window, and
     /// a host closes its panes) must not release the dataset twice.
     bool m_closed{ false };
@@ -575,6 +576,13 @@ private:
     void scheduleRestorePanes();
     /// A timeline step replaced the windows of the group: put the new ones where the old
     /// ones were. @p slots: the old slot of each of @p windows (-1: not a pane).
+    /// Puts the panes just made (session order) into the slots @p targets; empty or equal:
+    /// nothing moves.
+    void placeRestoredPanes(const QList<QPointer<vtkWindowCatalogue3D>> &panes,
+                            const QList<int> &targets);
+    /// The left dock's controls and the Inspector's filters show those of the active pane.
+    void swapPaneControlsPage(QWidget *next);
+    void swapPaneFiltersPage(QWidget *filters);
     void rebuildPanesFor(const QList<QPointer<vtkWindowCatalogue3D>> &windows,
                          const QList<int> &paneSlots, int count, int active);
     void setupComparisonLink(vtkWindowCatalogue3D *source);

@@ -7,6 +7,7 @@
 
 #include "vtkWindowCatalogue3D.h"
 
+#include "InspectorPanel.h"
 #include "PaneGrid.h"
 #include "WorkspaceChrome.h"
 #include "app/ProductRegistry.h"
@@ -194,6 +195,7 @@ void vtkWindowCatalogue3D::ensurePaneGrid()
 
     this->m_paneWindows[0] = this;
     this->m_paneControlsPage = this->m_pageViz;
+    this->m_paneFiltersPage = this->m_pageFilters;
     QObject::connect(this->comboMapColor, &QComboBox::currentIndexChanged, this,
                      [this]() { this->refreshPaneHeaders(); });
     this->mountPane(0);
@@ -362,8 +364,13 @@ void vtkWindowCatalogue3D::showPaneControls(vtkWindowCatalogue3D *window)
     if (!this->m_workspaceChrome || !window || !window->m_pageViz)
         return;
     QWidget *next = window->m_pageViz;
-    if (this->m_paneControlsPage == next)
-        return;
+    if (this->m_paneControlsPage != next)
+        this->swapPaneControlsPage(next);
+    this->swapPaneFiltersPage(window->m_pageFilters);
+}
+
+void vtkWindowCatalogue3D::swapPaneControlsPage(QWidget *next)
+{
     // The host's left dock shows the controls of the ACTIVE pane's window: its quantity,
     // colour map, range and scale, shape, ray-traced light and the comparison card.
     if (QWidget *current = this->m_paneControlsPage) {
@@ -377,6 +384,27 @@ void vtkWindowCatalogue3D::showPaneControls(vtkWindowCatalogue3D *window)
     next->show();
     this->m_workspaceChrome->addSessionLayers(next);
     this->m_paneControlsPage = next;
+}
+
+void vtkWindowCatalogue3D::swapPaneFiltersPage(QWidget *filters)
+{
+    // The filters of the Inspector's Analysis tab are the active pane's too: its Add, Remove,
+    // Clear All and Apply act on that pane's own list, so an unlinked pane filters itself
+    // only and a linked one shares with the group (the host's list took every click before).
+    InspectorPanel *inspector = this->m_workspaceChrome ? this->m_workspaceChrome->inspectorPanel()
+                                                         : nullptr;
+    if (!inspector || !filters || this->m_paneFiltersPage == filters)
+        return;
+    if (QWidget *current = this->m_paneFiltersPage) {
+        vtkWindowCatalogue3D *owner = this;
+        for (int i = 0; i < kSlots; ++i)
+            if (this->m_paneWindows[i] && this->m_paneWindows[i]->m_pageFilters == current)
+                owner = this->m_paneWindows[i];
+        inspector->removeAnalysisSection(current, owner);
+    }
+    filters->show();
+    inspector->addAnalysisSection(filters);
+    this->m_paneFiltersPage = filters;
 }
 
 void vtkWindowCatalogue3D::populatePaneMenu(int slot, QMenu *menu)
@@ -503,7 +531,8 @@ void vtkWindowCatalogue3D::refreshPaneHeaders()
         }
         slot.titleBtn->setText(quantityText(w->comboMapColor) + u" ▾"_s);
         QStringList shape;
-        if (w->m_rtLightCheck && w->m_rtLightCheck->isChecked())
+        // The mode the pane is drawn in, not the shape kept for when ray-traced light is off.
+        if (w->geometryMode == GeometryMode::Raytraced)
             shape << u"ray-traced"_s;
         else if (w->comboGeometry)
             shape << w->comboGeometry->currentText().toLower();
@@ -680,7 +709,7 @@ visivo::particlepanes::PaneSession vtkWindowCatalogue3D::paneSession() const
     // The host's pane first: a restore starts from the host's own window, wherever the
     // pane sat in the grid when the session was saved.
     return visivo::particlepanes::makeSession(this->m_paneCount, this->m_activePane,
-                                              this->paneSlotOf(this), cells);
+                                              this->paneSlotOf(this), cells, this->m_paneStacked);
 }
 
 void vtkWindowCatalogue3D::savePaneSession() const
@@ -767,6 +796,12 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
             for (int i = 0; i < restored.size(); ++i)
                 if (restored[i] && !session.panes[i].linked)
                     restored[i]->setComparisonLinked(false);
+            // Each pane back in the slot it sat in (a session without slots keeps the order
+            // the panes were made in), before the active pane is picked and the layout applied.
+            this->placeRestoredPanes(restored,
+                                     visivo::particlepanes::restoredSlots(
+                                             session, static_cast<int>(restored.size()),
+                                             this->paneStacked()));
             if (session.active >= 0 && session.active < restored.size() && restored[session.active]) {
                 const int slot = this->paneSlotOf(restored[session.active]);
                 if (slot >= 0)
@@ -788,6 +823,34 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
         this->savePaneSession();
     });
     timer->start(500);
+}
+
+void vtkWindowCatalogue3D::placeRestoredPanes(const QList<QPointer<vtkWindowCatalogue3D>> &panes,
+                                              const QList<int> &targets)
+{
+    if (!this->m_paneGrid || targets.size() != panes.size())
+        return;
+    bool moved = false;
+    for (int i = 0; i < panes.size(); ++i)
+        moved = moved || this->paneSlotOf(panes[i]) != targets[i];
+    if (!moved)
+        return;
+    // Every slot is shown while the panes are moved, so none of them is parked in a hidden
+    // one; the layout the session saved is applied afterwards (setPaneCount).
+    this->setPaneCount(4);
+    const vtkWindowCatalogue3D *active = this->m_paneWindows[this->m_activePane];
+    std::array<QPointer<vtkWindowCatalogue3D>, kSlots> placed;
+    for (int i = 0; i < panes.size(); ++i)
+        placed[targets[i]] = panes[i];
+    this->m_paneWindows = placed;
+    // The active pane goes with its window (the caller picks another one afterwards when
+    // the session names it).
+    const int activeSlot = this->paneSlotOf(active);
+    this->m_activePane = activeSlot >= 0 ? activeSlot : 0;
+    for (int i = 0; i < kSlots; ++i)
+        this->mountPane(i);
+    this->refreshPaneProducts();
+    this->setActivePane(this->m_activePane);
 }
 
 void vtkWindowCatalogue3D::rebuildPanesFor(const QList<QPointer<vtkWindowCatalogue3D>> &windows,

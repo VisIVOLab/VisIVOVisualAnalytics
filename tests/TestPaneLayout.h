@@ -44,8 +44,15 @@ private slots:
     void session_hostGoesFirstWhateverItsSlot();
     void session_activeFollowsItsPaneInTheNewOrder();
     void session_noHostSlotKeepsSlotOrder();
+    void session_keepsEachPanesSlotAndTheLayout();
+    void session_withoutSlotsReadsAsNotKept();
+    void restoredSlots_putEachPaneBack();
+    void restoredSlots_followTheOrientationOfNow();
+    void restoredSlots_unusableSessionKeepsCreationOrder();
 
     void filterTargets_linkedPanesOfTheSameTable();
     void filterTargets_anyLinkedPaneCanBeTheSource();
     void filterTargets_unlinkedSourceKeepsItsFiltersToItself();
+    void filterTargets_unlinkedPaneIsNeverATarget();
+    void filterTargets_pairWithOneUnlinkedPane();
 };

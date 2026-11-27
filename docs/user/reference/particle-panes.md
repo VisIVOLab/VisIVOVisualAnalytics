@@ -83,12 +83,20 @@ still loading takes them as soon as it is free, and a pane that you link again
 takes the filters of the others. An unlinked pane keeps its own filters, and a
 filter set in it does not reach the others.
 
+The filter controls of the Inspector (*Analysis ▸ Filters*: Add, Remove, Clear All,
+Apply) belong to the active pane and change with it. Applying or clearing from an
+unlinked pane filters that pane only; from a linked pane it filters every linked
+pane.
+
 ## Saved layout
 
-The layout, the quantity of each pane (by column name), the linked flags and
-the active pane are remembered for each table: the next window on it offers
-the same comparison and says so in the status bar. The first pane in the
-saved list is the one of the window itself, wherever it sat in the grid.
+The layout, the quantity of each pane (by column name), the slot each pane sat in,
+the linked flags and the active pane are remembered for each table: the next window on it offers
+the same comparison, with every pane back in its slot, and says so in the status bar.
+A two-pane layout keeps whether it was one above the other or side by side; opened in
+a window of the other shape, the same two panes are shown. The first pane in the
+saved list is the one of the window itself, wherever it sat in the grid. A layout saved
+by an earlier version has no slots and comes back with the panes in the order they were made.
 A table opened with fewer than two panes remembers nothing.
 
 ## Known limits

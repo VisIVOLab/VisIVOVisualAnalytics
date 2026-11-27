@@ -67,6 +67,9 @@ public:
     /// used for controls that act on the ACTIVE pane (e.g. the migrated Spectrum controls). The
     /// caller owns the widget and toggles its visibility as the active pane changes.
     void addAnalysisSection(QWidget *section);
+    /// Takes a section mounted with addAnalysisSection() out of the tab (hidden, re-parented
+    /// to @p newParent) so the section of another pane can take its place.
+    void removeAnalysisSection(QWidget *section, QWidget *newParent);
 
     /// Parameters tab, top half: the ACTIVE tool's live settings. @p settings is
     /// re-homed under this panel - mounted while the tool is on, parked hidden

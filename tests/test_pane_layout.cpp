@@ -279,6 +279,109 @@ void TestPaneLayout::session_noHostSlotKeepsSlotOrder()
     QCOMPARE(s.active, 1);
 }
 
+void TestPaneLayout::session_keepsEachPanesSlotAndTheLayout()
+{
+    // Four quantities in slots 0-3 (LogMass is the host's), a stacked two-pane layout that
+    // shows slots 0 and 2, and the pane in slot 2 active.
+    std::array<PaneSlotState, kSlots> cells;
+    cells[0] = { true, u"LogMass"_s, true };
+    cells[1] = { true, u"LogT"_s, true };
+    cells[2] = { true, u"LogD"_s, true };
+    cells[3] = { true, u"vx"_s, true };
+    const PaneSession s = makeSession(2, 2, 0, cells, true);
+    QCOMPARE(s.count, 2);
+    QVERIFY(s.stacked);
+    QCOMPARE(s.panes.size(), 4);
+    QCOMPARE(s.panes[2].quantity, u"LogD"_s);
+    QCOMPARE(s.panes[2].slot, 2);
+    QCOMPARE(s.active, 2);
+    const PaneSession back = fromJson(toJson(s));
+    QCOMPARE(back, s);
+    QCOMPARE(back.panes[1].slot, 1);
+    QVERIFY(back.stacked);
+    // The host sat in slot 2: it is listed first and says so.
+    const PaneSession moved = makeSession(4, 3, 2, cells);
+    QCOMPARE(moved.panes[0].quantity, u"LogD"_s);
+    QCOMPARE(moved.panes[0].slot, 2);
+    QCOMPARE(moved.active, 3);     // slot 3 is the last pane in that order
+    QVERIFY(!moved.stacked);
+    // Only a two-pane layout is stacked.
+    QVERIFY(!makeSession(4, 0, 0, cells, true).stacked);
+    QVERIFY(!fromJson({ { u"count"_s, 4 }, { u"stacked"_s, true } }).stacked);
+}
+
+void TestPaneLayout::session_withoutSlotsReadsAsNotKept()
+{
+    // What an earlier build saved: quantity and link only, no slot, no orientation.
+    const PaneSession old = fromJson(
+            { { u"version"_s, 1 }, { u"count"_s, 2 }, { u"active"_s, 1 },
+              { u"panes"_s, QJsonArray{ QJsonObject{ { u"quantity"_s, u"rho"_s } },
+                                         QJsonObject{ { u"quantity"_s, u"u"_s },
+                                                      { u"slot"_s, 9 } } } } });
+    QCOMPARE(old.panes.size(), 2);
+    QCOMPARE(old.panes[0].slot, -1);
+    QCOMPARE(old.panes[1].slot, -1);     // out of range reads as not kept
+    QVERIFY(!old.stacked);
+    QCOMPARE(old.active, 1);
+}
+
+void TestPaneLayout::restoredSlots_putEachPaneBack()
+{
+    std::array<PaneSlotState, kSlots> cells;
+    cells[0] = { true, u"LogMass"_s, true };
+    cells[1] = { true, u"LogT"_s, true };
+    cells[2] = { true, u"LogD"_s, true };
+    cells[3] = { true, u"vx"_s, true };
+    // Saved stacked, restored in a window that is stacked too: slots as they were.
+    const PaneSession s = makeSession(2, 2, 0, cells, true);
+    QCOMPARE(restoredSlots(s, 4, true), (QList<int>{ 0, 1, 2, 3 }));
+    // Fewer panes made than were saved: the first ones, still unique.
+    QCOMPARE(restoredSlots(s, 2, true), (QList<int>{ 0, 1 }));
+    // A session whose host sat in slot 2.
+    const PaneSession moved = makeSession(4, 3, 2, cells);
+    QCOMPARE(restoredSlots(moved, 4, false), (QList<int>{ 2, 0, 1, 3 }));
+}
+
+void TestPaneLayout::restoredSlots_followTheOrientationOfNow()
+{
+    std::array<PaneSlotState, kSlots> cells;
+    cells[0] = { true, u"LogMass"_s, true };
+    cells[1] = { true, u"LogT"_s, true };
+    cells[2] = { true, u"LogD"_s, true };
+    cells[3] = { true, u"vx"_s, true };
+    // Saved stacked (slots 0 and 2 shown), restored side by side (0 and 1 shown): the shown
+    // pair stays the shown pair and the hidden ones stay hidden.
+    const PaneSession stacked = makeSession(2, 2, 0, cells, true);
+    const QList<int> to = restoredSlots(stacked, 4, false);
+    QCOMPARE(to, (QList<int>{ 0, 2, 1, 3 }));
+    QVERIFY(visibleSlots(2, false)[to[0]]);
+    QVERIFY(visibleSlots(2, false)[to[2]]);      // LogD, the active pane
+    QVERIFY(!visibleSlots(2, false)[to[1]]);
+    QVERIFY(!visibleSlots(2, false)[to[3]]);
+    // And the other way round.
+    const PaneSession wide = makeSession(2, 1, 0, cells, false);
+    const QList<int> back = restoredSlots(wide, 4, true);
+    QCOMPARE(back, (QList<int>{ 0, 2, 1, 3 }));
+    QVERIFY(visibleSlots(2, true)[back[1]]);     // the second pane
+    // Four panes (or one) have no orientation: nothing moves.
+    QCOMPARE(restoredSlots(makeSession(4, 0, 0, cells, false), 4, true),
+             (QList<int>{ 0, 1, 2, 3 }));
+}
+
+void TestPaneLayout::restoredSlots_unusableSessionKeepsCreationOrder()
+{
+    PaneSession s;
+    s.count = 2;
+    s.panes = { { u"a"_s, true, -1 }, { u"b"_s, true, -1 } };
+    QVERIFY(restoredSlots(s, 2, false).isEmpty());          // no slots kept
+    s.panes = { { u"a"_s, true, 1 }, { u"b"_s, true, 1 } };
+    QVERIFY(restoredSlots(s, 2, false).isEmpty());          // a slot twice
+    s.panes = { { u"a"_s, true, 0 }, { u"b"_s, true, 1 } };
+    QVERIFY(restoredSlots(s, 3, false).isEmpty());          // more made than saved
+    QVERIFY(restoredSlots(s, 0, false).isEmpty());
+    QCOMPARE(restoredSlots(s, 2, false), (QList<int>{ 0, 1 }));
+}
+
 void TestPaneLayout::filterTargets_linkedPanesOfTheSameTable()
 {
     std::array<PaneFilterLink, kSlots> panes;
@@ -308,6 +411,34 @@ void TestPaneLayout::filterTargets_unlinkedSourceKeepsItsFiltersToItself()
     QVERIFY(filterTargets(1, panes).isEmpty());
     QVERIFY(filterTargets(3, panes).isEmpty());    // an empty slot is no source
     QVERIFY(filterTargets(-1, panes).isEmpty());
+}
+
+void TestPaneLayout::filterTargets_unlinkedPaneIsNeverATarget()
+{
+    // Four panes, the fourth unlinked (it is the active one when its filter is edited):
+    // a filter edited in a linked pane reaches the other linked panes, not the fourth.
+    std::array<PaneFilterLink, kSlots> panes;
+    panes[0] = { true, true, true };
+    panes[1] = { true, true, true };
+    panes[2] = { true, true, true };
+    panes[3] = { true, false, true };
+    QCOMPARE(filterTargets(0, panes), (QList<int>{ 1, 2 }));
+    QCOMPARE(filterTargets(2, panes), (QList<int>{ 0, 1 }));
+    // And the fourth's own filter reaches nobody.
+    QVERIFY(filterTargets(3, panes).isEmpty());
+}
+
+void TestPaneLayout::filterTargets_pairWithOneUnlinkedPane()
+{
+    // The host (slot 0) is the unlinked one: its filter stays with it, and the linked pane
+    // beside it has no one to share with.
+    std::array<PaneFilterLink, kSlots> panes;
+    panes[0] = { true, false, true };
+    panes[1] = { true, true, true };
+    panes[2] = { true, true, true };
+    QVERIFY(filterTargets(0, panes).isEmpty());
+    QCOMPARE(filterTargets(1, panes), (QList<int>{ 2 }));
+    QCOMPARE(filterTargets(2, panes), (QList<int>{ 1 }));
 }
 
 // ── GridState: pop-out / dock-back / maximise rules the cube window always had ──

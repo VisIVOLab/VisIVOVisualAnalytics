@@ -793,6 +793,8 @@ void vtkWindowCatalogue3D::updateGeometryMode()
     }
     this->setRaytraced(this->geometryMode == GeometryMode::Raytraced);
     this->pushRemoteState();
+    // A pane's header names the shape or "ray-traced": it follows the mode as it changes.
+    this->paneHostOrSelf()->refreshPaneHeaders();
 }
 
 void vtkWindowCatalogue3D::updateSizeMode()
