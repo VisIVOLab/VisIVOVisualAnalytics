@@ -17,7 +17,9 @@
 #include "app/PointTableDisplay.h"
 #include "app/VrLink.h"
 
+#include <vtkFloatArray.h>   // vtkSmartPointer<vtkFloatArray>::New() in a member initialiser
 #include <vtkNew.h>
+#include <vtkPoints.h>   // vtkSmartPointer<vtkPoints>::New() in a member initialiser
 #include <vtkSmartPointer.h>
 
 #include <QDockWidget>
