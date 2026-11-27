@@ -1,3 +1,7 @@
+#include "SessionDataTree.h"
+#include "app/ProductRegistry.h"
+#include "app/SessionRemoval.h"
+#include <QMenu>
 #include "vtkWindowCatalogue3D.h"
 #include "BackendLocality.h"
 #include "CatalogueFormat.h"
@@ -1063,6 +1067,23 @@ void vtkWindowCatalogue3D::setupWorkspaceDocks()
                      &vtkWindowCatalogue3D::onSessionRowActivated);
     QObject::connect(chrome, &WorkspaceChrome::sessionPaneBadgeActivated, this,
                      [this](int number) { this->setActivePane(number - 1); });
+    // (#580) Delete and "Remove from Session" on a quantity row close its pane; the
+    // particles and the SubFind catalogue rows refuse with a reason.
+    if (SessionDataTree *tree = chrome->sessionTree()) {
+        visivo::removal::Handler handler;
+        handler.refuse = [this](const AnalysisProduct &p) { return this->paneRemovalRefusal(p); };
+        handler.remove = [this](const QStringList &ids) { this->removePaneProducts(ids); };
+        tree->setRemovalHandler(std::move(handler));
+        QObject::connect(chrome, &WorkspaceChrome::sessionRowContextMenu, this,
+                         [tree](const QString &, const QString &productId, const QPoint &at) {
+                             if (productId.isEmpty())
+                                 return;
+                             QMenu menu;
+                             tree->appendRemoveAction(&menu, productId);
+                             if (!menu.isEmpty())
+                                 menu.exec(at);
+                         });
+    }
     // A pane's own combo is connected by its host (addPaneWindow): only a window that is not
     // a pane updates the rows here, so a change is not listed twice.
     if (this->comboMapColor)

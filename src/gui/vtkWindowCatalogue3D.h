@@ -565,8 +565,7 @@ private:
     QString paneProductId(const vtkWindowCatalogue3D *window) const;
     /// Removal from Session Data (#580), the two halves a visivo::removal::Handler takes:
     /// why a row of this window cannot be removed (empty: it can), and removing rows (a
-    /// quantity row closes its pane). Installing them is one line once SessionDataTree has
-    /// setRemovalHandler: sessionTree()->setRemovalHandler({refuse, remove}).
+    /// quantity row closes its pane). Installed in setupWorkspaceDocks.
     QString paneRemovalRefusal(const AnalysisProduct &product) const;
     void removePaneProducts(const QStringList &productIds);
     void onSessionRowActivated(const QString &viewTag, const QString &productId);

@@ -639,10 +639,8 @@ void vtkWindowCatalogue3D::refreshPaneProducts()
     this->m_paneProductIds = ids;
 }
 
-// paneRemovalRefusal and removePaneProducts are the two halves of a Session Data removal
-// handler (#580). They are not installed yet: SessionDataTree gets setRemovalHandler with
-// PR #605, and wiring them is then one line (see the header). Until it is merged nothing
-// calls them, on purpose, so they are kept here and covered by that line's test.
+// paneRemovalRefusal and removePaneProducts are the window's Session Data removal handler
+// (#580), installed in setupWorkspaceDocks.
 QString vtkWindowCatalogue3D::paneRemovalRefusal(const AnalysisProduct &product) const
 {
     if (product.productId == this->m_componentProductId)
