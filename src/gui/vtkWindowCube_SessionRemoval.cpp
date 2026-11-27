@@ -78,6 +78,11 @@ void vtkWindowCube::dropSessionProduct(const QString &id)
                 m_paneViews[i]->setImageData(nullptr, 0.0, 1.0);
             if (m_paneSpectra[i] && !m_products1d.contains(shown))
                 m_paneSpectra[i]->updateSpectrumPlot({}, {}, QString(), /*live=*/false);
+            // The renderer that held m_paneProductId was just emptied: forget
+            // it, or mounting that product again would keep the placeholder
+            // range instead of restoring its own.
+            if (m_paneProductId[i] != shown)
+                m_paneProductId[i].clear();
         }
         if (showing)
             mountView(i);
@@ -198,12 +203,11 @@ void vtkWindowCube::removeTemporaryFileWhenUnused(const QString &file, const QOb
     for (vtkWindowCube *holder : std::as_const(holders))
         if (holder->isVisible() && !holder->m_closeWhenIdle)
             return;
-    // Only closing viewers hold it: check again as each one is destroyed (it
-    // is out of topLevelWidgets by then, so the last one lets the file go).
-    for (vtkWindowCube *holder : std::as_const(holders))
-        QObject::connect(holder, &QObject::destroyed, qApp, [file](QObject *gone) {
-            removeTemporaryFileWhenUnused(file, gone);
-        });
+    // Only closing viewers hold it: watch one, and look again when it is
+    // destroyed (one connection at a time, so the checks do not multiply).
+    QObject::connect(holders.first(), &QObject::destroyed, qApp, [file](QObject *gone) {
+        removeTemporaryFileWhenUnused(file, gone);
+    });
 }
 
 void vtkWindowCube::setupSessionRemoval()
