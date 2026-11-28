@@ -265,7 +265,7 @@ switching to *Point* restores 100 while the user has not moved the slider
 Quantity-comparison windows share one backend dataset. Each window has its own
 link flag. A change of camera, selected source or representation is broadcast
 only when both sender and receiver are linked. Representation has a second,
-independent `Match rendering` facet that must also be enabled at both ends. It
+independent rendering facet (the `render` chip of the shared `PaneToolbar`) that must also be enabled at both ends. It
 comprises shape, the shared size slider, render budget and ray-traced-light
 mode; the physical quantity, colormap, colour range and stretch are
 deliberately excluded. On relink, the joining view first adopts the enabled

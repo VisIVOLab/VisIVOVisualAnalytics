@@ -32,11 +32,12 @@
 #include <QPointer>
 #include <QStringList>
 #include <array>
+#include <optional>
 
 #include <vector>
 
 class WorkspaceChrome;
-class SegmentedToggle;
+class PaneToolbar;
 
 // VTK forward declarations
 class vtkActor;
@@ -487,15 +488,20 @@ private:
     void openQuantityComparison();
 
     // ── Comparison panes (#604, vtkWindowCatalogue3D_Panes.cpp) ──────────────
-    // Compare Quantity adds a PANE to this window rather than opening another one: the
-    // window that was asked becomes the HOST of a 1 / 2 / 4 pane grid (PaneGrid, shared
-    // with the cube window). Each pane is the view of a comparison window of the same
+    // The window is the HOST of a 1 / 2 / 4 pane grid (PaneGrid, with the toolbar above it
+    // PaneToolbar, both shared with the cube window) from the moment it opens, on one pane:
+    // itself. Compare Quantity (or choosing 2 / 4 in the toolbar) adds a PANE to this window
+    // rather than opening another one. Each pane is the view of a comparison window of the same
     // group; that window stays, hidden, as the owner of the pane's controls, rows and
     // link state. So the linking above (camera, selection, representation, unlink per
     // view) is unchanged: a pane is a group member whose view sits in the host's grid.
-    QPointer<PaneGrid> m_paneGrid;                 ///< host only, once the first pane is added
-    QPointer<QWidget> m_paneRoot;                  ///< the strip + grid that replaced the view
-    QPointer<SegmentedToggle> m_paneCountToggle;
+    QPointer<PaneGrid> m_paneGrid;                 ///< host only (a pane made for comparison has none)
+    QPointer<QWidget> m_paneRoot;                  ///< the toolbar + grid that replaced the view
+    QPointer<PaneToolbar> m_paneToolbar;           ///< 1/2/4, Linked, chips: the cube's strip
+    /// A second click on the "2" segment flips the split: the user's choice for two panes
+    /// (true: one above the other) over the width heuristic. Not kept between windows.
+    std::optional<bool> m_paneStackedOverride;
+    QPointer<QToolButton> m_paneRenderChip;        ///< the toolbar's "render" chip (Match rendering)
     std::array<QPointer<vtkWindowCatalogue3D>, 4> m_paneWindows;   ///< host: slot -> window
     int m_paneCount{ 1 };
     int m_activePane{ 0 };
@@ -504,6 +510,9 @@ private:
     bool m_paneStacked{ false };
     /// A saved layout is being rebuilt: nothing is stored until it is complete.
     bool m_restoringPanes{ false };
+    /// A second pane was added at some point: only then does a change of layout rewrite (or
+    /// clear) the comparison saved for the table.
+    bool m_hadComparisonPanes{ false };
     /// The window whose grid shows this window's view (a pane), else null.
     QPointer<vtkWindowCatalogue3D> m_paneHost;
     /// This window's product scope in ProductRegistry: its Session Data lists what it owns.
@@ -557,6 +566,18 @@ private:
     void setPaneCount(int panes);
     bool paneStacked() const;
     void refreshPaneHeaders();
+    /// Panes that hold a view now (the host's own counts).
+    int livePaneCount() const;
+    /// Toolbar 1 / 2 / 4: a layout with more slots than panes adds panes with the next
+    /// quantities, as Compare Quantity does; fewer slots hide panes (they keep their quantity).
+    void requestPaneCount(int panes);
+    /// The toolbar's Linked and the render chip follow the panes' own link state.
+    void refreshPaneToolbar();
+    /// Linked in the toolbar: every pane joins the comparison group's camera, selection and
+    /// filters (or leaves it).
+    void setPanesLinked(bool linked);
+    /// The "render" chip: every pane matches the group's rendering (or keeps its own).
+    void setPanesRenderingLinked(bool linked);
     void showPaneControls(vtkWindowCatalogue3D *window);
     void populatePaneMenu(int slot, QMenu *menu);
     /// Session Data rows of the host: the particle type, a row per pane's quantity, and
@@ -866,8 +887,6 @@ private:
     QPointer<QComboBox> comboSizeMode;
     QPointer<QFrame> m_comparisonCard;
     QPointer<QLabel> m_comparisonSummary;
-    QPointer<QPushButton> m_comparisonLinkToggle;
-    QPointer<QCheckBox> m_comparisonRepresentationToggle;
     QPointer<QFrame> m_timelineCard;
     QPointer<QLabel> m_timelineSummary;
     QPointer<QSlider> m_timelineSlider;

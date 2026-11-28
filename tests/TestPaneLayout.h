@@ -15,6 +15,7 @@ private slots:
     void visibleSlots_twoPanesStackedUseTheLeftColumn();
     void columns_leftHoldsSlotsZeroAndTwo();
     void growth_goesOneTwoFour();
+    void linkChips_needTargetsAndTheMaster();
     void newPane_takesTheFirstFreeVisibleSlot();
     void newPane_growsWhenEverySlotIsTaken();
     void newPane_stackedPairGrowsIntoTheRightColumn();

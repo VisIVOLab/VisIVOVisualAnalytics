@@ -1170,7 +1170,7 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             // Asked each time the menu opens: a comparison is saved while the window is used.
             QObject::connect(toolsMenu, &QMenu::aboutToShow, actionRestore, [this, actionRestore]() {
                 actionRestore->setEnabled(this->m_pointTable && !this->remoteDatasetId.isEmpty()
-                                          && !this->m_paneHost && !this->m_paneGrid
+                                          && !this->m_paneHost && this->livePaneCount() < 2
                                           && this->savedPaneSession().panes.size() >= 2);
             });
             QObject::connect(actionRestore, &QAction::triggered, this,
@@ -1400,6 +1400,10 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleShells);
     this->setupComparisonLink(comparisonSource);
     this->setupSnapshotTimeline(comparisonSource);
+    // The pane grid and its toolbar (1 / 2 / 4, Linked) are there from the start, on one
+    // pane: this window. A comparison pane has no grid of its own: it sits in its host's.
+    if (!this->m_madeAsPeer && this->m_pointTable && !this->remoteDatasetId.isEmpty())
+        this->ensurePaneGrid();
     // A table opens on one quantity: the comparison of the last session comes back only
     // when asked for (Tools > Restore Last Comparison).
 }

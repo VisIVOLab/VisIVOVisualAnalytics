@@ -60,6 +60,14 @@ void TestPaneLayout::growth_goesOneTwoFour()
     QVERIFY(!canGrow(4));
 }
 
+void TestPaneLayout::linkChips_needTargetsAndTheMaster()
+{
+    QVERIFY(linkChipsEnabled(true, true));
+    QVERIFY(!linkChipsEnabled(true, false));    // Linked off
+    QVERIFY(!linkChipsEnabled(false, true));    // nothing to link
+    QVERIFY(!linkChipsEnabled(false, false));
+}
+
 void TestPaneLayout::newPane_takesTheFirstFreeVisibleSlot()
 {
     int count = 0;

@@ -6,18 +6,33 @@ in one window, with the same panes the [cube viewer](cube-viewer.md) has.
 Every pane shows the **same loaded particles**, coloured by a different
 quantity.
 
+## The toolbar
+
+The strip above the panes is the cube window's, and it is there as soon as the
+window opens, on one pane:
+
+- **1 / 2 / 4**: the layout. Choosing two or four panes while fewer quantities
+  are shown adds panes with the next quantities (the same as *Tools ▸ Compare
+  Quantity…*); choosing fewer hides panes, which keep their quantity and come
+  back with the layout. With two panes, a second click on the "2" turns the
+  split from side by side to one above the other, and back.
+- **Linked**: the panes follow each other's camera, selection, filters and
+  snapshot step. It is dimmed while there is one pane. It is on when every pane
+  is linked; a pane's own *Linked* button (below) leaves or joins alone.
+- **render**: linked panes also match their rendering (shape, size, render
+  budget, ray-traced light). Switch it off to compare rendering alternatives
+  while the camera and selection stay linked. It follows **Linked**, as in the
+  cube window.
+
 ## Add a pane
 
-*Tools ▸ Compare Quantity…*, or *Compare another quantity* in the strip above
-the panes, adds a pane. The layout grows from one pane to two and then to
-four, and the new pane takes the next quantity that is not shown yet
-(density, temperature, entropy, then other physical columns; coordinates and
-velocity components are skipped). The new pane opens on the camera and the
-selection of the pane you were looking at.
-
-The pane-layout toggle in the strip (one, two or four panes, the same glyphs as in the cube window) changes the layout. Going back to one
-pane keeps the active pane's view. With four panes, close one (see below)
-before adding another.
+*Tools ▸ Compare Quantity…*, or choosing two or four panes in the toolbar, adds
+a pane. The layout grows from one pane to two and then to four, and the new
+pane takes the next quantity that is not shown yet (density, temperature,
+entropy, then other physical columns; coordinates and velocity components are
+skipped). The new pane opens on the camera and the selection of the pane you
+were looking at. Going back to one pane keeps the active pane's view. With four
+panes, close one (see below) before adding another.
 
 ## What a pane has
 
@@ -41,8 +56,8 @@ before adding another.
   again. A popped-out pane stays linked.
 
 Quantity, colour map, colour range and scale belong to each pane. Camera and
-selection are shared while panes are linked; *Match rendering* in the
-comparison card also shares shape, size, render budget and ray-traced light
+selection are shared while panes are linked; the *render* chip of the toolbar
+also shares shape, size, render budget and ray-traced light
 (see [Compare physical quantities](gadget-snapshots.md#compare-physical-quantities)).
 
 ## Session Data

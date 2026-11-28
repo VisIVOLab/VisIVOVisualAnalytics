@@ -42,6 +42,7 @@ class InspectorPanel;
 class MomentMapController;
 class NoiseController;
 class PvController;
+class PaneToolbar;
 class RaytraceOutput;
 class RaytraceViewport;
 class VolumeRaytracePanel;
@@ -1235,7 +1236,8 @@ private:
     QWidget *noProductStateWidget(int slot);
     QWidget *emptyStateWidget(const PaneView &v);  ///< lazily builds the "what's missing + action" block
     bool viewHasData(const PaneView &v) const;     ///< false → mount the empty state, not the render
-    QPointer<SegmentedToggle> m_paneCountToggle;
+    QPointer<PaneToolbar> m_paneToolbar;           ///< the strip above the grid (shared with the particle window)
+    QPointer<SegmentedToggle> m_paneCountToggle;   ///< its 1/2/4 toggle
     QPointer<SegmentedToggle> m_pick3d2d;
     QPointer<SegmentedToggle> m_renderModeSeg;   ///< Auto/Local/Remote — re-hosted into the View3D slot
     QPointer<QLabel> m_linkedQualifier;          ///< "camera · channel · LUT" (narrows at 4 panes)

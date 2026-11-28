@@ -238,18 +238,7 @@ void vtkWindowCatalogue3D::updateComparisonUi()
     const bool linked = this->m_comparisonLinked && inGroup;
     if (this->m_comparisonCard)
         this->m_comparisonCard->setVisible(inGroup);
-    if (this->m_comparisonLinkToggle) {
-        const QSignalBlocker block(this->m_comparisonLinkToggle);
-        this->m_comparisonLinkToggle->setChecked(linked);
-        this->m_comparisonLinkToggle->setText(linked ? u"Linked"_s : u"Unlinked"_s);
-    }
-    if (this->m_comparisonRepresentationToggle) {
-        const QSignalBlocker block(this->m_comparisonRepresentationToggle);
-        this->m_comparisonRepresentationToggle->setChecked(
-                this->m_comparisonRepresentationLinked);
-        this->m_comparisonRepresentationToggle->setEnabled(linked);
-    }
-    // Panes show the state in their headers too.
+    // Panes show the state in their headers and in the toolbar above the grid.
     if (vtkWindowCatalogue3D *host = this->paneHostOrSelf())
         host->refreshPaneHeaders();
     if (!inGroup) {

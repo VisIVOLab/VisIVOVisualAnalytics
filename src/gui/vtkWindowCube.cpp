@@ -8,6 +8,7 @@
 #include "vtk/RayVoxelPick.h"
 #include "CubeViewportGeometry.h"
 #include "Pane2DView.h"
+#include "PaneToolbar.h"
 #include "CubeStatsUtil.h"
 #include "CubeStatRows.h"
 #include "CubeToolGate.h"
@@ -10263,21 +10264,13 @@ void vtkWindowCube::refreshLinkedFacetChips()
     // Disabled chips keep their checked state, so re-enabling restores the choice.
     const bool hasLinkTargets =
             (m_paneCount > 1 || s_registry.size() > 1 || vtkWindowImage::openCount() > 0);
-    if (m_paneLinkedBtn)
-        m_paneLinkedBtn->setEnabled(hasLinkTargets);
-    const bool master = m_linkViews && hasLinkTargets;
-    const auto setChip = [master](QToolButton *chip, bool checked) {
-        if (!chip)
-            return;
-        chip->setEnabled(master);
-        QSignalBlocker b(chip);
-        chip->setChecked(checked);
-    };
-    setChip(m_linkCameraChip, m_linkCamera);
-    setChip(m_linkChannelChip, m_linkChannel);
-    setChip(m_linkLutChip, m_linkLut);
-    setChip(m_linkRenderChip, m_linkRender);
-    setChip(m_linkBlendChip, m_linkBlend);
+    if (m_paneToolbar)
+        m_paneToolbar->setLinkAvailable(hasLinkTargets, m_linkViews);
+    PaneToolbar::setChipChecked(m_linkCameraChip, m_linkCamera);
+    PaneToolbar::setChipChecked(m_linkChannelChip, m_linkChannel);
+    PaneToolbar::setChipChecked(m_linkLutChip, m_linkLut);
+    PaneToolbar::setChipChecked(m_linkRenderChip, m_linkRender);
+    PaneToolbar::setChipChecked(m_linkBlendChip, m_linkBlend);
     // Every call site of this function is exactly a moment when the link-target
     // count can have changed (pane layout, a window opening or closing), so it
     // is also where the Link Views ACTION — menu + dock + Inspector — is re-gated.
@@ -13268,34 +13261,18 @@ void vtkWindowCube::setupPaneChrome()
     }
 
     // ── Centre toolbar (h30): 1/2/4 · 3D/2D · Linked · cursor readout ─────────
-    auto *toolbar = new QWidget();
-    toolbar->setObjectName(u"paneToolbar"_s);
-    toolbar->setFixedHeight(30);
-    auto *tb = new QHBoxLayout(toolbar);
-    tb->setContentsMargins(8, 0, 8, 0);
-    tb->setSpacing(8);
-
-    m_paneCountToggle = new SegmentedToggle(toolbar);
-    QColor gl(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
-    m_paneCountToggle->addItem(VisivoTheme::renderThemeIcon(u":/icons/pane_1.svg"_s, 14, &gl),
-                               u"One pane"_s);
-    m_paneCountToggle->addItem(VisivoTheme::renderThemeIcon(u":/icons/pane_2.svg"_s, 14, &gl),
-                               u"Two panes"_s);
-    m_paneCountToggle->addItem(VisivoTheme::renderThemeIcon(u":/icons/pane_4.svg"_s, 14, &gl),
-                               u"Four panes"_s);
-    m_paneCountToggle->setCurrentIndex(0);   // spec §3.1 default: 1 pane
-    m_paneCountToggle->setMaximumWidth(108);
-    QObject::connect(m_paneCountToggle, &SegmentedToggle::currentIndexChanged, this,
-                     [this](int i) { this->applyPaneLayout(i == 0 ? 1 : (i == 1 ? 2 : 4)); });
+    // The strip itself is PaneToolbar, shared with the particle window.
+    auto *toolbar = new PaneToolbar();
+    m_paneToolbar = toolbar;
+    m_paneCountToggle = toolbar->paneCountToggle();
+    QObject::connect(toolbar, &PaneToolbar::paneCountRequested, this,
+                     [this](int panes) { this->applyPaneLayout(panes); });
     // Second click on the "2" glyph flips the split direction (explicit override,
     // persisted). The heuristic is the default, not a cage (§3.1).
-    QObject::connect(m_paneCountToggle, &SegmentedToggle::segmentClicked, this, [this](int idx) {
-        if (idx != 1 || m_paneCount != 2)
-            return;
+    QObject::connect(toolbar, &PaneToolbar::splitFlipRequested, this, [this]() {
         m_paneDirection = paneStacked() ? PaneDirection::Cols : PaneDirection::Rows;
         applyPaneLayout(2);
     });
-    tb->addWidget(m_paneCountToggle);
 
     m_pick3d2d = new SegmentedToggle(toolbar);
     m_pick3d2d->addItem(u"3D"_s);
@@ -13312,93 +13289,42 @@ void vtkWindowCube::setupPaneChrome()
         refreshPaneChrome();
         layout2dPane(true);
     });
-    tb->addWidget(m_pick3d2d);
+    toolbar->addWindowWidget(m_pick3d2d);
 
-    auto *linked = new QToolButton(toolbar);
-    linked->setText(u" Linked"_s);
-    linked->setCheckable(true);
-    linked->setCursor(Qt::PointingHandCursor);
-    linked->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    {
-        QColor c(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
-        linked->setIcon(QIcon(VisivoTheme::renderThemeIcon(u":/icons/rail_viz.svg"_s, 13, &c)));
-    }
-    linked->setStyleSheet(
-            QStringLiteral("QToolButton{background:transparent;border:1px solid %1;border-radius:5px;"
-                           "color:%2;font-size:11px;padding:2px 8px;}"
-                           "QToolButton:checked{color:%3;border-color:%3;}"
-                           "QToolButton:disabled{color:%2;}")
-                    .arg(QLatin1StringView(VisivoTheme::kOutline()), fgMuted, pri));
-    QObject::connect(linked, &QToolButton::toggled, this,
+    m_paneLinkedBtn = toolbar->linkedButton();
+    QObject::connect(m_paneLinkedBtn, &QToolButton::toggled, this,
                      [this](bool on) { this->setLinkViews(on); });
-    m_paneLinkedBtn = linked;
-    tb->addWidget(linked);
     // §5.5: "channel · LUT" is REAL state now — two per-facet toggles. Each gates one
     // propagation kind; both grey out (disabled) when the Linked master is off, so the
     // control reads its own state instead of being a decorative caption.
-    auto makeFacetChip = [&](const QString &txt) {
-        auto *c = new QToolButton(toolbar);
-        c->setText(txt);
-        c->setCheckable(true);
-        c->setChecked(true);
-        c->setCursor(Qt::PointingHandCursor);
-        c->setToolButtonStyle(Qt::ToolButtonTextOnly);
-        // Pill affordance: a bordered chip that clearly reads as a toggle. Off =
-        // muted text + faint outline; on = accent text/border + a faint tint; hover
-        // brightens the outline; disabled (Linked off / nothing to link) greys out.
-        c->setStyleSheet(QStringLiteral(
-                "QToolButton{background:transparent;border:1px solid %1;border-radius:4px;"
-                "font-family:'JetBrains Mono','SF Mono',monospace;font-size:10px;"
-                "padding:1px 6px;color:%2;}"
-                "QToolButton:checked{color:%3;border-color:%3;background:rgba(120,170,187,0.14);}"
-                "QToolButton:hover:enabled{border-color:%3;}"
-                "QToolButton:disabled{color:#3A4247;border-color:#2A3237;background:transparent;}")
-                                 .arg(QLatin1StringView(VisivoTheme::kOutline()), fgMuted, pri));
-        return c;
-    };
     // STEP6-P5: a "camera" facet — camera sync used to be always-on when Linked; now it's a
     // toggle (gates BOTH 2D-pane and 3D camera, intra- and cross-window).
-    m_linkCameraChip = makeFacetChip(u"camera"_s);
-    m_linkCameraChip->setToolTip(u"Linked: sync pan / zoom / rotation across panes and windows"_s);
-    QObject::connect(m_linkCameraChip, &QToolButton::toggled, this, [this](bool on) {
-        m_linkCamera = on;
-        if (!on)
-            m_linked2DValid = false;   // STEP6-P2: drop the shared 2-D camera so re-enabling
-                                        // camera sync doesn't snap panes back to a stale zoom
-    });
-    tb->addWidget(m_linkCameraChip);
-    tb->addSpacing(4);
-    m_linkChannelChip = makeFacetChip(u"channel"_s);
-    m_linkChannelChip->setToolTip(u"Linked: sync the channel / slice index across panes"_s);
-    QObject::connect(m_linkChannelChip, &QToolButton::toggled, this,
-                     [this](bool on) { m_linkChannel = on; });
-    tb->addWidget(m_linkChannelChip);
-    tb->addSpacing(4);
-    m_linkLutChip = makeFacetChip(u"LUT"_s);
-    m_linkLutChip->setToolTip(u"Linked: propagate colour map / range to panes on the same product"_s);
-    QObject::connect(m_linkLutChip, &QToolButton::toggled, this,
-                     [this](bool on) { m_linkLut = on; });
-    tb->addWidget(m_linkLutChip);
-    tb->addSpacing(4);
-    m_linkRenderChip = makeFacetChip(u"render"_s);
-    m_linkRenderChip->setToolTip(u"Linked: sync the 3-D representation (Volume ↔ Isosurface) across windows"_s);
-    QObject::connect(m_linkRenderChip, &QToolButton::toggled, this,
-                     [this](bool on) { m_linkRender = on; });
-    tb->addWidget(m_linkRenderChip);
-    tb->addSpacing(4);
-    m_linkBlendChip = makeFacetChip(u"blend"_s);
-    m_linkBlendChip->setToolTip(u"Linked: sync the volume blend mode (Composite / MIP / MinIP)"_s);
-    QObject::connect(m_linkBlendChip, &QToolButton::toggled, this,
-                     [this](bool on) { m_linkBlend = on; });
-    tb->addWidget(m_linkBlendChip);
+    m_linkCameraChip = toolbar->addChip(
+            { u"camera"_s, u"Linked: sync pan / zoom / rotation across panes and windows"_s, true,
+              [this](bool on) {
+                  m_linkCamera = on;
+                  if (!on)
+                      m_linked2DValid = false;   // STEP6-P2: drop the shared 2-D camera so re-enabling
+                                                  // camera sync doesn't snap panes back to a stale zoom
+              } });
+    m_linkChannelChip = toolbar->addChip(
+            { u"channel"_s, u"Linked: sync the channel / slice index across panes"_s, true,
+              [this](bool on) { m_linkChannel = on; } });
+    m_linkLutChip = toolbar->addChip(
+            { u"LUT"_s, u"Linked: propagate colour map / range to panes on the same product"_s, true,
+              [this](bool on) { m_linkLut = on; } });
+    m_linkRenderChip = toolbar->addChip(
+            { u"render"_s,
+              u"Linked: sync the 3-D representation (Volume ↔ Isosurface) across windows"_s, true,
+              [this](bool on) { m_linkRender = on; } });
+    m_linkBlendChip = toolbar->addChip(
+            { u"blend"_s, u"Linked: sync the volume blend mode (Composite / MIP / MinIP)"_s, true,
+              [this](bool on) { m_linkBlend = on; } });
     refreshLinkedFacetChips();
-    tb->addStretch(1);
 
     if (this->hoverReadoutLabel) {
         this->statusBar()->removeWidget(this->hoverReadoutLabel);
-        this->hoverReadoutLabel->setParent(toolbar);
-        this->hoverReadoutLabel->show();
-        tb->addWidget(this->hoverReadoutLabel);
+        toolbar->setReadoutWidget(this->hoverReadoutLabel);
     }
 
     // ── Central column: [toolbar] above [pane splitter] ──────────────────────
@@ -14321,15 +14247,8 @@ void vtkWindowCube::applyPaneLayout(int panes)
     // The master "Linked" button + facet chips' enabled state (pane- AND
     // cross-window-aware) is set centrally in refreshLinkedFacetChips().
     refreshLinkedFacetChips();
-    if (m_paneCountToggle) {
-        QSignalBlocker b(m_paneCountToggle);
-        m_paneCountToggle->setCurrentIndex(panes == 1 ? 0 : (panes == 2 ? 1 : 2));
-        // The "2" glyph shows the current split direction (two rows vs two columns).
-        QColor gl(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
-        m_paneCountToggle->setItemIcon(
-                1, VisivoTheme::renderThemeIcon(
-                           stacked ? u":/icons/pane_2_rows.svg"_s : u":/icons/pane_2.svg"_s, 14, &gl));
-    }
+    if (m_paneToolbar)
+        m_paneToolbar->setLayoutState(panes, stacked);   // segment + the "2" glyph's direction
 
     refreshPaneChrome();
     // Fit every visible 2-D view — at 4 panes slice AND moment are both on screen,

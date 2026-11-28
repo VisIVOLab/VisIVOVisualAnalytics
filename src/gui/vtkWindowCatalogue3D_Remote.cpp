@@ -1276,7 +1276,7 @@ void vtkWindowCatalogue3D::onRenderStackVisibility(bool visible)
         QObject::connect(this->m_streamPauseTimer, &QTimer::timeout, this, [this]() {
             const vtkWindowCatalogue3D *host = this->paneHostOrSelf();
             if (this->m_remoteView && this->m_renderStack
-                && visivo::particlepanes::pauseStream(host->m_paneGrid != nullptr,
+                && visivo::particlepanes::pauseStream(host->livePaneCount() > 1,
                                                       this->m_renderStack->isVisible(),
                                                       host->isVisible() && !host->isMinimized()))
                 this->m_remoteView->pause();

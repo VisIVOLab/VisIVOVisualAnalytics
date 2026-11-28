@@ -173,21 +173,8 @@ void vtkWindowCatalogue3D::buildControlPages()
         this->m_comparisonSummary->setTextFormat(Qt::RichText);
         comparisonLayout->addWidget(this->m_comparisonSummary);
         auto *comparisonButtons = new QHBoxLayout;
-        this->m_comparisonLinkToggle = new QPushButton(u"Linked"_s,
-                                                       this->m_comparisonCard);
-        this->m_comparisonLinkToggle->setCheckable(true);
-        this->m_comparisonLinkToggle->setChecked(true);
-        this->m_comparisonLinkToggle->setToolTip(
-                u"Link camera and source selection to the comparison group. "
-                 "Rendering follows only while Match rendering is enabled."_s);
-        comparisonButtons->addWidget(this->m_comparisonLinkToggle);
-        this->m_comparisonRepresentationToggle = new QCheckBox(
-                u"Match rendering"_s, this->m_comparisonCard);
-        this->m_comparisonRepresentationToggle->setChecked(true);
-        this->m_comparisonRepresentationToggle->setToolTip(
-                u"Keep shape, size, render budget and ray-traced-light mode equal while linked. "
-                 "Turn this off only to compare intentional rendering alternatives."_s);
-        comparisonLayout->addWidget(this->m_comparisonRepresentationToggle);
+        // Linked and Match rendering are the pane toolbar's (Linked, "render"), and each
+        // pane's header has its own Linked: one control per state, so none here.
         auto *addQuantity = new QPushButton(u"Add another quantity…"_s,
                                             this->m_comparisonCard);
         addQuantity->setToolTip(
@@ -195,10 +182,6 @@ void vtkWindowCatalogue3D::buildControlPages()
                  "will stay linked; its physical quantity and colour settings stay independent."_s);
         comparisonButtons->addWidget(addQuantity);
         comparisonLayout->addLayout(comparisonButtons);
-        QObject::connect(this->m_comparisonLinkToggle, &QPushButton::toggled, this,
-                         &vtkWindowCatalogue3D::setComparisonLinked);
-        QObject::connect(this->m_comparisonRepresentationToggle, &QCheckBox::toggled, this,
-                         &vtkWindowCatalogue3D::setComparisonRepresentationLinked);
         QObject::connect(addQuantity, &QPushButton::clicked, this,
                          &vtkWindowCatalogue3D::openQuantityComparison);
         this->m_comparisonCard->hide();
