@@ -574,7 +574,11 @@ private:
     visivo::particlepanes::PaneSession paneSession() const;
     void savePaneSession() const;
     /// The panes of the last session on this table, once its rows are loaded.
+    /// Rebuild the comparison saved for this table (asked for from the Tools menu; a table
+    /// opens on one quantity).
     void scheduleRestorePanes();
+    /// The comparison saved for this table; empty (no panes) when there is none.
+    visivo::particlepanes::PaneSession savedPaneSession() const;
     /// A timeline step replaced the windows of the group: put the new ones where the old
     /// ones were. @p slots: the old slot of each of @p windows (-1: not a pane).
     /// Puts the panes just made (session order) into the slots @p targets; empty or equal:

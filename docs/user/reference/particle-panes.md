@@ -15,7 +15,7 @@ four, and the new pane takes the next quantity that is not shown yet
 velocity components are skipped). The new pane opens on the camera and the
 selection of the pane you were looking at.
 
-The *1 / 2 / 4* toggle in the strip changes the layout. Going back to one
+The pane-layout toggle in the strip (one, two or four panes, the same glyphs as in the cube window) changes the layout. Going back to one
 pane keeps the active pane's view. With four panes, close one (see below)
 before adding another.
 
@@ -34,7 +34,7 @@ before adding another.
   selection of the others. Unlink it to explore on its own; link it again and
   it takes the others' view.
 - **⤢ / ⤡**: fills the workspace with this pane, and restores it. The
-  *1 / 2 / 4* toggle also leaves it.
+  pane-layout toggle also leaves it.
 - **⤴ / ⤵** (or a double click on the header): the pane moves to a window of
   its own, for a second screen, and the grid keeps its place with a
   *Pane N · detached* card. Closing that window, or *Bring back*, docks it
@@ -90,8 +90,9 @@ pane.
 ## Saved layout
 
 The layout, the quantity of each pane (by column name), the slot each pane sat in,
-the linked flags and the active pane are remembered for each table: the next window on it offers
-the same comparison, with every pane back in its slot, and says so in the status bar.
+the linked flags and the active pane are remembered for each table. A table always opens
+on one quantity; *Tools ▸ Restore Last Comparison* brings the saved comparison back, with
+every pane in its slot.
 A two-pane layout is shown side by side or one above the other according to the
 width of the window it is opened in; the same two panes are shown either way. The first pane in the
 saved list is the one of the window itself, wherever it sat in the grid. A layout saved

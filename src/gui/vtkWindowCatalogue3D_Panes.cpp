@@ -118,11 +118,16 @@ void vtkWindowCatalogue3D::ensurePaneGrid()
                                    .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
     row->addWidget(caption);
     this->m_paneCountToggle = new SegmentedToggle(strip);
-    this->m_paneCountToggle->setItems({ u"1"_s, u"2"_s, u"4"_s });
-    this->m_paneCountToggle->setItemToolTip(0, u"One pane"_s);
-    this->m_paneCountToggle->setItemToolTip(
-            1, u"Two panes. A pane taken out of the layout keeps its quantity."_s);
-    this->m_paneCountToggle->setItemToolTip(2, u"Four panes"_s);
+    // The same glyphs as the cube window's pane toggle.
+    const QColor glyph(QString::fromLatin1(VisivoTheme::kOnSurfaceVariant()));
+    this->m_paneCountToggle->addItem(
+            VisivoTheme::renderThemeIcon(u":/icons/pane_1.svg"_s, 14, &glyph), u"One pane"_s);
+    this->m_paneCountToggle->addItem(
+            VisivoTheme::renderThemeIcon(u":/icons/pane_2.svg"_s, 14, &glyph),
+            u"Two panes. A pane taken out of the layout keeps its quantity."_s);
+    this->m_paneCountToggle->addItem(
+            VisivoTheme::renderThemeIcon(u":/icons/pane_4.svg"_s, 14, &glyph), u"Four panes"_s);
+    this->m_paneCountToggle->setMaximumWidth(108);
     row->addWidget(this->m_paneCountToggle);
     row->addStretch(1);
     auto *add = new QPushButton(u"Compare another quantity"_s, strip);
@@ -739,10 +744,8 @@ void vtkWindowCatalogue3D::savePaneSession() const
     settings.endGroup();
 }
 
-void vtkWindowCatalogue3D::scheduleRestorePanes()
+visivo::particlepanes::PaneSession vtkWindowCatalogue3D::savedPaneSession() const
 {
-    if (this->m_paneHost || !this->m_pointTable || this->m_paneRestoreTimer)
-        return;
     QSettings settings;
     settings.beginGroup(u"layout_v2/particlePanes"_s);
     const QString key = QString::fromLatin1(
@@ -750,11 +753,19 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
     const QString saved = settings.value(key).toString();
     settings.endGroup();
     if (saved.isEmpty())
+        return {};
+    return visivo::particlepanes::fromJson(QJsonDocument::fromJson(saved.toUtf8()).object());
+}
+
+void vtkWindowCatalogue3D::scheduleRestorePanes()
+{
+    if (this->m_paneHost || !this->m_pointTable || this->m_paneRestoreTimer || this->m_paneGrid)
         return;
-    const visivo::particlepanes::PaneSession session = visivo::particlepanes::fromJson(
-            QJsonDocument::fromJson(saved.toUtf8()).object());
-    if (session.panes.size() < 2)
+    const visivo::particlepanes::PaneSession session = this->savedPaneSession();
+    if (session.panes.size() < 2) {
+        this->statusBar()->showMessage(u"No earlier comparison is saved for this table."_s, 6000);
         return;
+    }
     // The rows have to be here before a pane can be made from them: wait, a minute at most.
     auto *timer = new QTimer(this);
     this->m_paneRestoreTimer = timer;
@@ -821,7 +832,7 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
             // the width of this window and not the one it was saved in.
             this->setPaneCount(session.count);
             this->statusBar()->showMessage(
-                    u"Comparison of your last session restored: %1 panes. Close the ones you do not need."_s
+                    u"Last comparison restored: %1 panes."_s
                             .arg(made + 1),
                     10000);
         }
