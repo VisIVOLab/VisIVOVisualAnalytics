@@ -1163,6 +1163,18 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
             actionCompare->setEnabled(this->m_pointTable && !this->remoteDatasetId.isEmpty());
             QObject::connect(actionCompare, &QAction::triggered, this,
                              &vtkWindowCatalogue3D::openQuantityComparison);
+            auto *actionRestore = toolsMenu->addAction(u"Restore Last Comparison"_s);
+            actionRestore->setToolTip(
+                    u"Bring back the panes, quantities and layout this table was last compared "
+                    u"in."_s);
+            // Asked each time the menu opens: a comparison is saved while the window is used.
+            QObject::connect(toolsMenu, &QMenu::aboutToShow, actionRestore, [this, actionRestore]() {
+                actionRestore->setEnabled(this->m_pointTable && !this->remoteDatasetId.isEmpty()
+                                          && !this->m_paneHost && this->livePaneCount() < 2
+                                          && this->savedPaneSession().panes.size() >= 2);
+            });
+            QObject::connect(actionRestore, &QAction::triggered, this,
+                             &vtkWindowCatalogue3D::scheduleRestorePanes);
             auto *actionSelectionDiagnostics = toolsMenu->addAction(
                     u"Selection Diagnostics…"_s);
             actionSelectionDiagnostics->setToolTip(
@@ -1388,9 +1400,12 @@ vtkWindowCatalogue3D::vtkWindowCatalogue3D(const QString &filepath, const QStrin
                      &vtkWindowCatalogue3D::toggleShells);
     this->setupComparisonLink(comparisonSource);
     this->setupSnapshotTimeline(comparisonSource);
-    // The comparison of the last session on this table, when the rows are in.
-    if (!comparisonSource && !this->m_openedByStep)
-        this->scheduleRestorePanes();
+    // The pane grid and its toolbar (1 / 2 / 4, Linked) are there from the start, on one
+    // pane: this window. A comparison pane has no grid of its own: it sits in its host's.
+    if (!this->m_madeAsPeer && this->m_pointTable && !this->remoteDatasetId.isEmpty())
+        this->ensurePaneGrid();
+    // A table opens on one quantity: the comparison of the last session comes back only
+    // when asked for (Tools > Restore Last Comparison).
 }
 
 void vtkWindowCatalogue3D::addAndApplyFilter(const QString &field, const QString &value)

@@ -445,6 +445,37 @@ if (TARGET Qt6::Widgets)
         add_test(NAME VisIVOSessionTreeRemoval COMMAND VisIVOSessionTreeRemovalTest)
         set_tests_properties(VisIVOSessionTreeRemoval PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
+
+        # The strip above the pane grid that the cube and the particle windows share
+        # (PaneToolbar): its items, sizes, glyphs and enable rule. The pane glyphs are
+        # Qt resources of the app; they are compiled in here too.
+        add_executable(VisIVOPaneToolbarTest
+            test_pane_toolbar.cpp
+            ${VISIVO_ROOT}/src/gui/PaneToolbar.cpp
+            ${VISIVO_ROOT}/src/gui/theme/SegmentedToggle.cpp
+            ${VISIVO_ROOT}/src/gui/theme/VisivoTheme.cpp
+        )
+        set_target_properties(VisIVOPaneToolbarTest PROPERTIES AUTOMOC ON)
+        qt_add_resources(VisIVOPaneToolbarTest pane_toolbar_icons
+            PREFIX "/icons"
+            BASE "${VISIVO_ROOT}/resources/icons"
+            FILES
+                ${VISIVO_ROOT}/resources/icons/pane_1.svg
+                ${VISIVO_ROOT}/resources/icons/pane_2.svg
+                ${VISIVO_ROOT}/resources/icons/pane_2_rows.svg
+                ${VISIVO_ROOT}/resources/icons/pane_4.svg
+                ${VISIVO_ROOT}/resources/icons/rail_viz.svg
+        )
+        target_include_directories(VisIVOPaneToolbarTest PRIVATE
+            ${VISIVO_ROOT}/src
+            ${VISIVO_ROOT}/src/app
+            ${VISIVO_ROOT}/src/gui
+            ${VISIVO_ROOT}/src/gui/theme
+        )
+        target_link_libraries(VisIVOPaneToolbarTest PRIVATE Qt::Widgets Qt::Svg Qt::Test)
+        add_test(NAME VisIVOPaneToolbar COMMAND VisIVOPaneToolbarTest)
+        set_tests_properties(VisIVOPaneToolbar PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 120)
     endif()
 endif()
 

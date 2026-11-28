@@ -436,6 +436,8 @@ set(PROJECT_SOURCES
         src/gui/SessionDataTree.h
         src/gui/PaneGrid.cpp
         src/gui/PaneGrid.h
+        src/gui/PaneToolbar.cpp
+        src/gui/PaneToolbar.h
         src/gui/PaneLayoutModel.h
         src/gui/InspectorPanel.cpp
         src/gui/InspectorPanel.h

@@ -59,6 +59,10 @@ constexpr int grownCount(int panes)
 
 constexpr bool canGrow(int panes) { return normalisedCount(panes) < 4; }
 
+/// Whether the facet chips of the pane toolbar can be used: there has to be something to
+/// link to (a second pane, or another window) and the Linked master has to be on.
+constexpr bool linkChipsEnabled(bool hasTargets, bool linkedOn) { return hasTargets && linkedOn; }
+
 /// The first free slot a new pane takes in @p visible, or -1 when every visible
 /// slot is taken. @p taken[i] is true when slot i already holds a view.
 constexpr int firstFreeSlot(const std::array<bool, kSlots> &visible,

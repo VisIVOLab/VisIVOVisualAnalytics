@@ -9,10 +9,10 @@
 
 #include "InspectorPanel.h"
 #include "PaneGrid.h"
+#include "PaneToolbar.h"
 #include "WorkspaceChrome.h"
 #include "app/ProductRegistry.h"
 #include "app/DatasetName.h"
-#include "theme/SegmentedToggle.h"
 #include "theme/VisivoTheme.h"
 #include "ui_vtkWindowCatalogue3D.h"
 
@@ -24,9 +24,9 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QMenu>
-#include <QPushButton>
 #include <QSettings>
 #include <QSplitter>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QStatusBar>
 #include <QTimer>
@@ -83,6 +83,9 @@ int vtkWindowCatalogue3D::paneSlotOf(const vtkWindowCatalogue3D *window) const
 
 bool vtkWindowCatalogue3D::paneStacked() const
 {
+    // A second click on the toolbar's "2" is the user's choice over the width heuristic.
+    if (this->m_paneStackedOverride)
+        return *this->m_paneStackedOverride;
     // Narrow grid: two panes one above the other (as the cube window decides). The grid's
     // own width is only true once it has been laid out; a grid just built (a restored
     // comparison builds it and asks at once) still has the default size of a new widget.
@@ -96,6 +99,9 @@ void vtkWindowCatalogue3D::ensurePaneGrid()
 {
     if (this->m_paneGrid || this->m_paneHost || !this->m_renderStack)
         return;
+    // Opening on one pane is not a comparison to remember: the saved one stays until the
+    // layout really changes.
+    const QScopedValueRollback<bool> quiet(this->m_restoringPanes, true);
     QWidget *container = this->m_renderStack->parentWidget();
     QLayout *layout = container ? container->layout() : nullptr;
     if (!layout)
@@ -104,32 +110,30 @@ void vtkWindowCatalogue3D::ensurePaneGrid()
     this->m_paneRoot = new QWidget(container);
     auto *column = new QVBoxLayout(this->m_paneRoot);
     column->setContentsMargins(0, 0, 0, 0);
-    column->setSpacing(0);
+    column->setSpacing(8);   // as the cube's column above its grid
 
-    // A thin strip above the grid: the layout (1 / 2 / 4) and a way to add a pane.
-    auto *strip = new QWidget(this->m_paneRoot);
-    strip->setObjectName(u"paneStrip"_s);
-    strip->setFixedHeight(30);
-    auto *row = new QHBoxLayout(strip);
-    row->setContentsMargins(10, 0, 10, 0);
-    row->setSpacing(8);
-    auto *caption = new QLabel(u"Panes"_s, strip);
-    caption->setStyleSheet(QStringLiteral("color:%1; font-size:11px;")
-                                   .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
-    row->addWidget(caption);
-    this->m_paneCountToggle = new SegmentedToggle(strip);
-    this->m_paneCountToggle->setItems({ u"1"_s, u"2"_s, u"4"_s });
-    this->m_paneCountToggle->setItemToolTip(0, u"One pane"_s);
-    this->m_paneCountToggle->setItemToolTip(
-            1, u"Two panes. A pane taken out of the layout keeps its quantity."_s);
-    this->m_paneCountToggle->setItemToolTip(2, u"Four panes"_s);
-    row->addWidget(this->m_paneCountToggle);
-    row->addStretch(1);
-    auto *add = new QPushButton(u"Compare another quantity"_s, strip);
-    add->setToolTip(u"Add a pane showing another quantity of these particles. Camera and "
-                    "selection stay linked; quantity, colour map, range and scale are its own."_s);
-    row->addWidget(add);
-    column->addWidget(strip);
+    // The cube window's strip above the grid (PaneToolbar): 1 / 2 / 4, Linked, the render
+    // chip. It is there from the start, on one pane; choosing 2 or 4 adds panes.
+    auto *toolbar = new PaneToolbar(this->m_paneRoot);
+    this->m_paneToolbar = toolbar;
+    column->addWidget(toolbar);
+    QObject::connect(toolbar, &PaneToolbar::paneCountRequested, this,
+                     &vtkWindowCatalogue3D::requestPaneCount);
+    QObject::connect(toolbar, &PaneToolbar::splitFlipRequested, this, [this]() {
+        this->m_paneStackedOverride = !this->m_paneStacked;
+        this->setPaneCount(2);
+    });
+    toolbar->linkedButton()->setToolTip(
+            u"Camera, selection, filters and timeline step follow the other panes. Each pane's own "
+            u"Linked button leaves or joins the group alone."_s);
+    QObject::connect(toolbar->linkedButton(), &QToolButton::clicked, this,
+                     &vtkWindowCatalogue3D::setPanesLinked);
+    this->m_paneRenderChip = toolbar->addChip(
+            { u"render"_s,
+              u"Linked: panes match the rendering (shape, size, render budget, ray-traced light). "
+              u"Quantity, colour map, range and scale stay each pane's own."_s,
+              true, [this](bool on) { this->setPanesRenderingLinked(on); } });
+    toolbar->setLinkAvailable(false, false);   // one pane: nothing to link
 
     auto *splitter = new QSplitter(Qt::Horizontal, this->m_paneRoot);
     splitter->setChildrenCollapsible(false);
@@ -192,11 +196,6 @@ void vtkWindowCatalogue3D::ensurePaneGrid()
             if (w->renderWindow)
                 w->renderWindow->Render();
     });
-    QObject::connect(this->m_paneCountToggle, &SegmentedToggle::currentIndexChanged, this,
-                     [this](int index) { this->setPaneCount(index == 0 ? 1 : index == 1 ? 2 : 4); });
-    QObject::connect(add, &QPushButton::clicked, this,
-                     &vtkWindowCatalogue3D::openQuantityComparison);
-
     this->m_paneWindows[0] = this;
     this->m_paneControlsPage = this->m_pageViz;
     this->m_paneFiltersPage = this->m_pageFilters;
@@ -205,6 +204,7 @@ void vtkWindowCatalogue3D::ensurePaneGrid()
     this->mountPane(0);
     this->setPaneCount(1);
     this->setActivePane(0);
+    this->refreshPaneToolbar();
 }
 
 void vtkWindowCatalogue3D::mountPane(int slot)
@@ -272,6 +272,7 @@ bool vtkWindowCatalogue3D::addPaneWindow(vtkWindowCatalogue3D *peer, int slot)
         return false;
 
     this->m_paneWindows[slot] = peer;
+    this->m_hadComparisonPanes = true;
     peer->m_paneHost = this;
     peer->m_ownerScope = this->m_ownerScope;
     // The pane's quantity names its header and its Session Data row (the host lists them).
@@ -337,10 +338,8 @@ void vtkWindowCatalogue3D::setPaneCount(int panes)
     this->refreshPaneProducts();   // the Session Data badges name the slots the panes are in now
     this->m_paneGrid->applyVisibility(visibleSlots(panes, stacked));
     this->m_paneGrid->equaliseSplits(panes, stacked);
-    if (this->m_paneCountToggle) {
-        const QSignalBlocker block(this->m_paneCountToggle);
-        this->m_paneCountToggle->setCurrentIndex(panes == 1 ? 0 : panes == 2 ? 1 : 2);
-    }
+    if (this->m_paneToolbar)
+        this->m_paneToolbar->setLayoutState(panes, stacked);
     if (!visibleSlots(panes, stacked)[this->m_activePane])
         this->setActivePane(0);
     else
@@ -530,7 +529,7 @@ void vtkWindowCatalogue3D::refreshPaneHeaders()
                 link->hide();
             // The slot says how to fill it.
             if (slot.viewHostLayout && slot.viewHostLayout->count() == 0) {
-                auto *hint = new QLabel(u"No quantity in this pane.\nUse “Compare another quantity”."_s);
+                auto *hint = new QLabel(u"No quantity in this pane.\nOpen its header menu to add one."_s);
                 hint->setAlignment(Qt::AlignCenter);
                 hint->setStyleSheet(QStringLiteral("color:%1; font-size:11px;")
                                             .arg(QLatin1StringView(VisivoTheme::kOnSurfaceVariant())));
@@ -560,6 +559,86 @@ void vtkWindowCatalogue3D::refreshPaneHeaders()
                              "pane autonomous; click again to join them (it adopts their view)."_s);
         }
     }
+    this->refreshPaneToolbar();
+}
+
+int vtkWindowCatalogue3D::livePaneCount() const
+{
+    int n = 0;
+    for (const QPointer<vtkWindowCatalogue3D> &w : this->m_paneWindows)
+        n += w ? 1 : 0;
+    return n;
+}
+
+void vtkWindowCatalogue3D::requestPaneCount(int panes)
+{
+    panes = normalisedCount(panes);
+    // A layout with more slots than panes is filled with the next quantities, as Compare
+    // Quantity does (an explicit choice of the user's); fewer slots hide panes, which keep
+    // their quantity and come back with the layout.
+    int live = this->livePaneCount();
+    while (live < panes) {
+        this->openQuantityComparison();
+        const int now = this->livePaneCount();
+        if (now <= live)
+            break;   // busy or no room: the status bar says which
+        live = now;
+    }
+    if (live >= panes)
+        this->setPaneCount(panes);
+    else if (this->m_paneToolbar)
+        this->m_paneToolbar->setLayoutState(this->m_paneCount, this->m_paneStacked);   // not changed
+}
+
+void vtkWindowCatalogue3D::refreshPaneToolbar()
+{
+    if (!this->m_paneToolbar)
+        return;
+    // The master reads the panes' own state: on only when every pane follows the group.
+    int panes = 0, linked = 0, matched = 0;
+    for (const QPointer<vtkWindowCatalogue3D> &w : this->m_paneWindows) {
+        if (!w)
+            continue;
+        ++panes;
+        linked += (w->m_comparisonLinked && !w->m_comparisonGroup.isEmpty()) ? 1 : 0;
+        matched += w->m_comparisonRepresentationLinked ? 1 : 0;
+    }
+    const bool hasTargets = panes > 1;
+    const bool linkedOn = hasTargets && linked == panes;
+    if (QToolButton *button = this->m_paneToolbar->linkedButton()) {
+        const QSignalBlocker block(button);
+        button->setChecked(linkedOn);
+    }
+    // The render chip needs two panes that follow the group, not all of them: one pane left
+    // unlinked must not lock the others' rendering.
+    this->m_paneToolbar->setLinkAvailable(hasTargets, linked >= 2);
+    PaneToolbar::setChipChecked(this->m_paneRenderChip, panes == 0 || matched == panes);
+}
+
+void vtkWindowCatalogue3D::setPanesLinked(bool linked)
+{
+    // Every pane of the grid, through the same call each pane's own Linked button makes
+    // (joining adopts the group's view). QPointers: a pane may close while another adopts.
+    QList<QPointer<vtkWindowCatalogue3D>> panes;
+    for (const QPointer<vtkWindowCatalogue3D> &w : this->m_paneWindows)
+        if (w)
+            panes << w;
+    for (const QPointer<vtkWindowCatalogue3D> &w : panes)
+        if (w)
+            w->setComparisonLinked(linked);
+    this->refreshPaneHeaders();
+}
+
+void vtkWindowCatalogue3D::setPanesRenderingLinked(bool linked)
+{
+    QList<QPointer<vtkWindowCatalogue3D>> panes;
+    for (const QPointer<vtkWindowCatalogue3D> &w : this->m_paneWindows)
+        if (w)
+            panes << w;
+    for (const QPointer<vtkWindowCatalogue3D> &w : panes)
+        if (w)
+            w->setComparisonRepresentationLinked(linked);
+    this->refreshPaneHeaders();
 }
 
 // ── Session Data ─────────────────────────────────────────────────────────────
@@ -725,6 +804,10 @@ void vtkWindowCatalogue3D::savePaneSession() const
     if (this->m_paneHost || this->m_restoringPanes || !this->m_pointTable
         || this->filepath.isEmpty())
         return;
+    // A window that never held a comparison (it opened on one pane, or is a timeline step's
+    // new window) leaves the saved one alone: Restore Last Comparison is still wanted.
+    if (!this->m_hadComparisonPanes && this->livePaneCount() < 2)
+        return;
     // By table, so the next window on it opens with the same comparison.
     QSettings settings;
     settings.beginGroup(u"layout_v2/particlePanes"_s);
@@ -739,10 +822,8 @@ void vtkWindowCatalogue3D::savePaneSession() const
     settings.endGroup();
 }
 
-void vtkWindowCatalogue3D::scheduleRestorePanes()
+visivo::particlepanes::PaneSession vtkWindowCatalogue3D::savedPaneSession() const
 {
-    if (this->m_paneHost || !this->m_pointTable || this->m_paneRestoreTimer)
-        return;
     QSettings settings;
     settings.beginGroup(u"layout_v2/particlePanes"_s);
     const QString key = QString::fromLatin1(
@@ -750,11 +831,20 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
     const QString saved = settings.value(key).toString();
     settings.endGroup();
     if (saved.isEmpty())
+        return {};
+    return visivo::particlepanes::fromJson(QJsonDocument::fromJson(saved.toUtf8()).object());
+}
+
+void vtkWindowCatalogue3D::scheduleRestorePanes()
+{
+    if (this->m_paneHost || !this->m_pointTable || this->m_paneRestoreTimer
+        || this->livePaneCount() > 1)
         return;
-    const visivo::particlepanes::PaneSession session = visivo::particlepanes::fromJson(
-            QJsonDocument::fromJson(saved.toUtf8()).object());
-    if (session.panes.size() < 2)
+    const visivo::particlepanes::PaneSession session = this->savedPaneSession();
+    if (session.panes.size() < 2) {
+        this->statusBar()->showMessage(u"No earlier comparison is saved for this table."_s, 6000);
         return;
+    }
     // The rows have to be here before a pane can be made from them: wait, a minute at most.
     auto *timer = new QTimer(this);
     this->m_paneRestoreTimer = timer;
@@ -766,7 +856,7 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
             return;
         timer->stop();
         timer->deleteLater();
-        if (!ready || this->m_paneGrid || this->m_closed)
+        if (!ready || this->livePaneCount() > 1 || this->m_closed)
             return;
         // The first pane is this window's own: its quantity, then a pane for each other.
         const auto select = [](vtkWindowCatalogue3D *w, const QString &name) {
@@ -821,7 +911,7 @@ void vtkWindowCatalogue3D::scheduleRestorePanes()
             // the width of this window and not the one it was saved in.
             this->setPaneCount(session.count);
             this->statusBar()->showMessage(
-                    u"Comparison of your last session restored: %1 panes. Close the ones you do not need."_s
+                    u"Last comparison restored: %1 panes."_s
                             .arg(made + 1),
                     10000);
         }
